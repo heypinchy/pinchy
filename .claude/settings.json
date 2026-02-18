@@ -1,17 +1,24 @@
 {
   "permissions": {
     "allow": [
+      "Bash(npm run *)",
+      "Bash(npm test*)",
+      "Bash(npx tsc*)",
+      "Bash(npx drizzle-kit *)",
+      "Bash(docker compose *)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git status*)",
+      "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(docker compose build:*)",
-      "Bash(docker compose:*)",
-      "Bash(test:*)",
-      "Bash(git -C /Users/clemenshelm/projects/pinchy status)",
-      "Bash(git -C /Users/clemenshelm/projects/pinchy diff)",
-      "Bash(git -C /Users/clemenshelm/projects/pinchy add .gitignore Dockerfile docker-compose.yml)",
-      "Bash(git -C:*)"
+      "WebSearch"
     ],
-    "additionalDirectories": [
-      "/Users/clemenshelm/projects/pinchy/docs"
+    "deny": [
+      "Read(.env*)",
+      "Read(secrets/**)",
+      "Bash(curl *)",
+      "Bash(wget *)",
+      "Bash(rm -rf *)"
     ]
   }
 }
