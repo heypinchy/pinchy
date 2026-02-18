@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git commit:*)",
+      "Bash(docker compose build:*)",
+      "Bash(docker compose:*)",
+      "Bash(test:*)",
+      "Bash(git -C /Users/clemenshelm/projects/pinchy status)",
+      "Bash(git -C /Users/clemenshelm/projects/pinchy diff)",
+      "Bash(git -C /Users/clemenshelm/projects/pinchy add .gitignore Dockerfile docker-compose.yml)",
+      "Bash(git -C:*)"
+    ],
+    "additionalDirectories": [
+      "/Users/clemenshelm/projects/pinchy/docs"
+    ]
+  }
+}
