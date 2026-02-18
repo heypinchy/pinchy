@@ -3,6 +3,6 @@ services:
     build: .
     ports:
       - "18789:18789"
-    environment:
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    volumes:
+      - ~/.openclaw:/root/.openclaw
     restart: unless-stopped
