@@ -1,6 +1,15 @@
 "use client";
 
 import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
 export default function SettingsPage() {
   const [apiKey, setApiKey] = useState("");
@@ -21,29 +30,29 @@ export default function SettingsPage() {
     <div className="p-8 max-w-lg">
       <h1 className="text-2xl font-bold mb-6">Settings</h1>
 
-      <section className="space-y-4">
-        <h2 className="text-lg font-semibold">LLM Provider</h2>
-        <div>
-          <label htmlFor="apiKey" className="block text-sm font-medium">
-            Anthropic API Key
-          </label>
-          <input
-            id="apiKey"
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder="sk-ant-..."
-            className="mt-1 block w-full rounded border p-2"
-          />
-        </div>
-        <button
-          onClick={handleSave}
-          className="rounded bg-black text-white px-4 py-2 hover:bg-gray-800"
-        >
-          Speichern
-        </button>
-        {saved && <p className="text-green-600">Gespeichert!</p>}
-      </section>
+      <Card>
+        <CardHeader>
+          <CardTitle>LLM Provider</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-6">
+            <div className="space-y-2">
+              <Label htmlFor="apiKey">Anthropic API Key</Label>
+              <Input
+                id="apiKey"
+                type="password"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+                placeholder="sk-ant-..."
+              />
+            </div>
+            <Button onClick={handleSave}>
+              Speichern
+            </Button>
+            {saved && <p className="text-green-600">Gespeichert!</p>}
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }
