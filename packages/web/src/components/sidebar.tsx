@@ -1,4 +1,14 @@
 import Link from "next/link";
+import { Bot, Settings } from "lucide-react";
+import {
+  Sidebar,
+  SidebarContent,
+  SidebarFooter,
+  SidebarHeader,
+  SidebarMenu,
+  SidebarMenuItem,
+  SidebarMenuButton,
+} from "@/components/ui/sidebar";
 
 interface Agent {
   id: string;
@@ -6,36 +16,44 @@ interface Agent {
   model: string;
 }
 
-interface SidebarProps {
+interface AppSidebarProps {
   agents: Agent[];
 }
 
-export function Sidebar({ agents }: SidebarProps) {
+export function AppSidebar({ agents }: AppSidebarProps) {
   return (
-    <aside className="w-64 border-r h-screen flex flex-col">
-      <div className="p-4 border-b font-bold text-lg">Pinchy</div>
+    <Sidebar>
+      <SidebarHeader>
+        <div className="p-4 font-bold text-lg">Pinchy</div>
+      </SidebarHeader>
 
-      <nav className="flex-1 p-2">
-        {agents.map((agent) => (
-          <Link
-            key={agent.id}
-            href={`/chat/${agent.id}`}
-            className="flex items-center gap-2 p-2 rounded hover:bg-gray-100"
-          >
-            <span>🤖</span>
-            <span>{agent.name}</span>
-          </Link>
-        ))}
-      </nav>
+      <SidebarContent>
+        <SidebarMenu>
+          {agents.map((agent) => (
+            <SidebarMenuItem key={agent.id}>
+              <SidebarMenuButton asChild>
+                <Link href={`/chat/${agent.id}`}>
+                  <Bot className="size-4" />
+                  <span>{agent.name}</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          ))}
+        </SidebarMenu>
+      </SidebarContent>
 
-      <div className="p-2 border-t">
-        <Link
-          href="/settings"
-          className="flex items-center gap-2 p-2 rounded hover:bg-gray-100"
-        >
-          Settings
-        </Link>
-      </div>
-    </aside>
+      <SidebarFooter>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild>
+              <Link href="/settings">
+                <Settings className="size-4" />
+                <span>Settings</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarFooter>
+    </Sidebar>
   );
 }
