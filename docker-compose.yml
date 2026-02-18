@@ -1,0 +1,8 @@
+services:
+  pinchy:
+    build: .
+    ports:
+      - "18789:18789"
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    restart: unless-stopped
