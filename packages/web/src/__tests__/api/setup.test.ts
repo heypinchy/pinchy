@@ -1,17 +1,38 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createAdmin } from "@/lib/setup";
+import { seedDefaultAgent } from "@/db/seed";
 import { POST } from "@/app/api/setup/route";
 
 vi.mock("@/db", () => {
-  const insertMock = vi.fn().mockReturnValue({
-    values: vi.fn().mockReturnValue({
-      returning: vi.fn().mockResolvedValue([{ id: "1", email: "admin@test.com" }]),
-    }),
+  const insertMock = vi.fn().mockImplementation((table) => {
+    const isAgentsTable =
+      table && typeof table === "object" && Symbol.for("drizzle:Name") in table
+        ? table[Symbol.for("drizzle:Name")] === "agents"
+        : false;
+    return {
+      values: vi.fn().mockReturnValue({
+        returning: vi.fn().mockImplementation(() => {
+          if (isAgentsTable) {
+            return Promise.resolve([{
+              id: "agent-1",
+              name: "Smithers",
+              model: "anthropic/claude-sonnet-4-20250514",
+              systemPrompt: "You are Smithers, a helpful and loyal AI assistant. You are professional, efficient, and always ready to help.",
+              createdAt: new Date(),
+            }]);
+          }
+          return Promise.resolve([{ id: "1", email: "admin@test.com" }]);
+        }),
+      }),
+    };
   });
   return {
     db: {
       query: {
         users: {
+          findFirst: vi.fn(),
+        },
+        agents: {
           findFirst: vi.fn(),
         },
       },
@@ -130,5 +151,33 @@ describe("POST /api/setup", () => {
 
     expect(response.status).toBe(403);
     expect(data.error).toBe("Setup already complete");
+  });
+});
+
+describe("seedDefaultAgent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("should create Smithers agent", async () => {
+    vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
+
+    const agent = await seedDefaultAgent();
+    expect(agent.name).toBe("Smithers");
+  });
+
+  it("should return existing agent if one exists", async () => {
+    vi.mocked(db.query.agents.findFirst).mockResolvedValue({
+      id: "existing-agent",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      systemPrompt: "existing prompt",
+      createdAt: new Date(),
+    });
+
+    const agent = await seedDefaultAgent();
+    expect(agent.name).toBe("Smithers");
+    expect(agent.id).toBe("existing-agent");
+    expect(db.insert).not.toHaveBeenCalled();
   });
 });

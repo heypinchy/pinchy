@@ -1,6 +1,7 @@
 import bcrypt from "bcryptjs";
 import { db } from "@/db";
 import { users } from "@/db/schema";
+import { seedDefaultAgent } from "@/db/seed";
 
 export async function isSetupComplete(): Promise<boolean> {
   const firstUser = await db.query.users.findFirst();
@@ -23,6 +24,9 @@ export async function createAdmin(email: string, password: string) {
       role: "admin",
     })
     .returning();
+
+  // Seed default agent
+  await seedDefaultAgent();
 
   return { id: user.id, email: user.email };
 }
