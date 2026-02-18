@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "pnpm --filter @pinchy/web dev",
     "build": "pnpm --filter @pinchy/web build",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "pnpm --filter @pinchy/web test"
   },
   "keywords": [],
   "author": "Clemens Helm",
