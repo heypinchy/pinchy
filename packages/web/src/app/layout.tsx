@@ -16,6 +16,10 @@ const geistMono = Geist_Mono({
 export const metadata: Metadata = {
   title: "Pinchy",
   description: "Enterprise AI Agent Platform",
+  icons: {
+    icon: "/favicon.svg",
+    apple: "/pinchy-logo.png",
+  },
 };
 
 export default function RootLayout({
