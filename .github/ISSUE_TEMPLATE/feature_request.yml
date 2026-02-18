@@ -1,0 +1,44 @@
+name: ✨ Feature Request
+description: Suggest an idea for Pinchy
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Got an idea? We'd love to hear it! For early-stage ideas, consider starting a [Discussion](https://github.com/heypinchy/pinchy/discussions) first.
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      description: Describe the use case. "I need X because Y" is more helpful than "Add X."
+      placeholder: "When managing agents for my team, I often need to..."
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: How do you think this should work?
+    validations:
+      required: false
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Any other approaches you've thought about?
+    validations:
+      required: false
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Plugins / Permissions
+        - Admin UI
+        - Audit Trail
+        - Cross-Channel
+        - Deployment / Docker
+        - Documentation
+        - Other
+    validations:
+      required: false

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Questions & Discussion
+    url: https://github.com/heypinchy/pinchy/discussions
+    about: Ask questions, share ideas, or just say hi.
+  - name: 🔒 Security Vulnerability
+    url: https://github.com/heypinchy/pinchy/blob/main/SECURITY.md
+    about: Please report security issues privately via email, not as GitHub issues.
