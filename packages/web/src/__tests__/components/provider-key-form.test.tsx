@@ -330,5 +330,68 @@ describe("ProviderKeyForm", () => {
         expect(screen.getByTestId("key-configured-indicator")).toBeInTheDocument();
       });
     });
+
+    it("should show 'Remove key' button when configured provider is selected", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+
+      expect(screen.getByRole("button", { name: /remove key/i })).toBeInTheDocument();
+    });
+
+    it("should not show 'Remove key' button for unconfigured provider", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /openai/i }));
+
+      expect(screen.queryByRole("button", { name: /remove key/i })).not.toBeInTheDocument();
+    });
+
+    it("should not show 'Remove key' button in setup wizard mode", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+
+      expect(screen.queryByRole("button", { name: /remove key/i })).not.toBeInTheDocument();
+    });
+
+    it("should call DELETE endpoint and onSuccess after successful removal", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true }),
+      } as Response);
+
+      render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/settings/providers", {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ provider: "anthropic" }),
+        });
+        expect(onSuccess).toHaveBeenCalled();
+      });
+    });
+
+    it("should show error when trying to remove the last configured provider", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: false,
+        json: async () => ({
+          error: "Cannot remove the last configured provider. Add another provider first.",
+        }),
+      } as Response);
+
+      render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove key/i }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/cannot remove the last configured provider/i)).toBeInTheDocument();
+      });
+    });
   });
 });

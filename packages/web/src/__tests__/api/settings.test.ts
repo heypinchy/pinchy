@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { getSetting, setSetting } from "@/lib/settings";
+import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 
 vi.mock("@/db", () => {
   return {
@@ -16,6 +16,9 @@ vi.mock("@/db", () => {
       }),
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockResolvedValue([]),
+      }),
+      delete: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(undefined),
       }),
     },
   };
@@ -77,5 +80,15 @@ describe("settings", () => {
 
     expect(decrypt).not.toHaveBeenCalled();
     expect(result).toBe("anthropic");
+  });
+
+  it("should delete an existing setting", async () => {
+    await deleteSetting("anthropic_api_key");
+
+    expect(db.delete).toHaveBeenCalled();
+  });
+
+  it("should not throw when deleting a non-existent setting", async () => {
+    await expect(deleteSetting("nonexistent")).resolves.toBeUndefined();
   });
 });

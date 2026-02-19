@@ -119,6 +119,7 @@ export function ProviderKeyForm({
   const [error, setError] = useState("");
   const [guideOpen, setGuideOpen] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [removing, setRemoving] = useState(false);
 
   const isConfigured = provider ? configuredProviders?.[provider]?.configured === true : false;
   const hint = provider ? configuredProviders?.[provider]?.hint : undefined;
@@ -265,6 +266,37 @@ export function ProviderKeyForm({
           <Button type="submit" disabled={!apiKey.trim() || loading} className="w-full">
             {loading ? "Validating..." : configuredProviders ? "Save" : submitLabel}
           </Button>
+
+          {configuredProviders && isConfigured && (
+            <Button
+              type="button"
+              variant="ghost"
+              className="w-full text-destructive hover:text-destructive"
+              disabled={removing}
+              onClick={async () => {
+                setRemoving(true);
+                setError("");
+                try {
+                  const res = await fetch("/api/settings/providers", {
+                    method: "DELETE",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ provider }),
+                  });
+                  if (!res.ok) {
+                    const data = await res.json();
+                    throw new Error(data.error || "Failed to remove key");
+                  }
+                  onSuccess();
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : "Failed to remove key");
+                } finally {
+                  setRemoving(false);
+                }
+              }}
+            >
+              {removing ? "Removing..." : "Remove key"}
+            </Button>
+          )}
         </>
       )}
     </form>

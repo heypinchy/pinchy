@@ -23,6 +23,10 @@ export async function setSetting(key: string, value: string, encrypted = false) 
     });
 }
 
+export async function deleteSetting(key: string): Promise<void> {
+  await db.delete(settings).where(eq(settings.key, key));
+}
+
 export async function getAllSettings() {
   return db.select().from(settings);
 }
