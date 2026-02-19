@@ -3,6 +3,7 @@ import { parse } from "url";
 import next from "next";
 import { WebSocketServer, WebSocket } from "ws";
 import { createMessagePayload, parseOpenClawResponse } from "./src/server/ws";
+import { shouldTriggerGreeting, markGreetingSent } from "./src/lib/greeting";
 
 const dev = process.env.NODE_ENV !== "production";
 const app = next({ dev });
@@ -21,6 +22,20 @@ app.prepare().then(() => {
     // Connect to OpenClaw Gateway
     const openclawWs = new WebSocket(OPENCLAW_WS_URL);
     let currentMessageId = crypto.randomUUID();
+
+    openclawWs.on("open", async () => {
+      try {
+        const trigger = await shouldTriggerGreeting();
+        if (trigger) {
+          const greetingPrompt = "Greet the new admin. Briefly introduce yourself as Smithers and explain what you can help with in Pinchy. Keep it to 2-3 sentences.";
+          currentMessageId = crypto.randomUUID();
+          openclawWs.send(JSON.stringify(createMessagePayload(greetingPrompt, "")));
+          await markGreetingSent();
+        }
+      } catch {
+        // Greeting is best-effort, don't break the connection
+      }
+    });
 
     openclawWs.on("message", (data) => {
       try {
