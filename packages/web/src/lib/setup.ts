@@ -2,6 +2,12 @@ import bcrypt from "bcryptjs";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { seedDefaultAgent } from "@/db/seed";
+import { getSetting } from "@/lib/settings";
+
+export async function isProviderConfigured(): Promise<boolean> {
+  const provider = await getSetting("default_provider");
+  return provider !== null;
+}
 
 export async function isSetupComplete(): Promise<boolean> {
   const firstUser = await db.query.users.findFirst();

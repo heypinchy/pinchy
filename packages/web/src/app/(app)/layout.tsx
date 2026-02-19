@@ -1,6 +1,6 @@
 import { redirect } from "next/navigation";
 import { requireAuth } from "@/lib/require-auth";
-import { isSetupComplete } from "@/lib/setup";
+import { isSetupComplete, isProviderConfigured } from "@/lib/setup";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { AppSidebar } from "@/components/sidebar";
@@ -13,6 +13,9 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (!setupComplete) redirect("/setup");
 
   await requireAuth();
+
+  const providerConfigured = await isProviderConfigured();
+  if (!providerConfigured) redirect("/setup/provider");
 
   const allAgents = await db.select().from(agents);
 
