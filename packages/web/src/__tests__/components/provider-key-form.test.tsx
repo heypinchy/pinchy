@@ -127,4 +127,57 @@ describe("ProviderKeyForm", () => {
 
     expect(screen.getByRole("button", { name: /save/i })).toBeInTheDocument();
   });
+
+  describe("provider help guide", () => {
+    it("should show help trigger when a provider is selected", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+
+      expect(screen.getByText(/need help getting a key/i)).toBeInTheDocument();
+    });
+
+    it("should not show guide steps by default", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+
+      expect(screen.queryByText(/sign up/i)).not.toBeInTheDocument();
+    });
+
+    it("should expand to show guide steps when clicked", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+      fireEvent.click(screen.getByText(/need help getting a key/i));
+
+      expect(screen.getByText(/sign up/i)).toBeInTheDocument();
+      expect(screen.getByText(/create key/i)).toBeInTheDocument();
+    });
+
+    it("should include a direct link to the provider key page", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+      fireEvent.click(screen.getByText(/need help getting a key/i));
+
+      const link = screen.getByRole("link", { name: /go to.*anthropic/i });
+      expect(link).toHaveAttribute("href", expect.stringContaining("claude.com"));
+      expect(link).toHaveAttribute("target", "_blank");
+    });
+
+    it("should show different guide when switching providers", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+      fireEvent.click(screen.getByText(/need help getting a key/i));
+
+      expect(screen.getByRole("link", { name: /go to.*anthropic/i })).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole("button", { name: /openai/i }));
+      fireEvent.click(screen.getByText(/need help getting a key/i));
+
+      expect(screen.getByRole("link", { name: /go to.*openai/i })).toBeInTheDocument();
+    });
+  });
 });
