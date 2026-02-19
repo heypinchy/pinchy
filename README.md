@@ -10,6 +10,7 @@
 </p>
 
 <p align="center">
+  <a href="https://docs.heypinchy.com">Docs</a> •
   <a href="https://heypinchy.com">Website</a> •
   <a href="https://heypinchy.com/blog">Blog</a> •
   <a href="https://github.com/heypinchy/pinchy/discussions">Discussions</a> •
@@ -136,8 +137,9 @@ pinchy/
 │   │   └── server/        # WebSocket bridge
 │   └── drizzle/           # Generated migrations
 ├── config/                # OpenClaw config
+├── docs/                  # Documentation (Astro Starlight)
 ├── docker-compose.yml     # Full stack definition
-└── .github/workflows/     # CI pipeline
+└── .github/workflows/     # CI + docs deployment
 ```
 
 ## Origin Story

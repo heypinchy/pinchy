@@ -4,7 +4,7 @@
 
 Pinchy is an **enterprise AI agent platform** built on top of [OpenClaw](https://github.com/openclaw/openclaw). OpenClaw is the most powerful open-source AI agent runtime — but it's designed for individual power users. Pinchy adds the enterprise layer: permissions, audit trails, user management, and governance.
 
-**Status: Pre-MVP.** This repo currently contains only project scaffolding (README, license, contributing guide). No application code has been written yet. Everything described below is the target architecture — not existing code.
+**Status: Early development.** The core is working — setup wizard, authentication, provider configuration, agent chat via OpenClaw, and Docker Compose deployment. Enterprise features (RBAC, audit trail, plugins) are next.
 
 ### The Problem Pinchy Solves
 
@@ -54,28 +54,37 @@ Companies want AI agents but face a trilemma:
 - **Self-Hosted**: Your server, your data, your models. Works without internet
 - **Docker Compose Deployment**: Single `docker compose up` to run everything
 
-## Tech Stack (planned)
+## Tech Stack
 
-- **Runtime**: OpenClaw (Node.js/TypeScript)
-- **Backend API**: Node.js + TypeScript
-- **Frontend**: TBD (likely Astro or Next.js)
-- **Database**: SQLite (dev) / PostgreSQL (production)
-- **Auth**: TBD
+- **Frontend**: Next.js 16, React 19, Tailwind CSS v4, shadcn/ui, assistant-ui
+- **Auth**: Auth.js v5 (credentials provider, JWT sessions)
+- **Database**: PostgreSQL 16, Drizzle ORM
+- **Agent Runtime**: OpenClaw Gateway (WebSocket)
+- **Testing**: Vitest, React Testing Library
+- **CI/CD**: GitHub Actions, ESLint, Prettier
 - **Deployment**: Docker Compose
+- **Documentation**: Astro Starlight, deployed to [docs.heypinchy.com](https://docs.heypinchy.com)
 - **License**: AGPL-3.0
 
 ## Project Structure
 
 ```
 pinchy/
-├── CLAUDE.md          ← You are here
-├── README.md          ← Public-facing project description
-├── CONTRIBUTING.md    ← Contribution guidelines
-├── CHANGELOG.md       ← Version history
-├── LICENSE            ← AGPL-3.0
-├── CODE_OF_CONDUCT.md
-├── SECURITY.md
-└── (source code coming soon)
+├── packages/web/          # Next.js app (frontend + API + WebSocket bridge)
+│   ├── src/
+│   │   ├── app/           # Pages & API routes
+│   │   ├── components/    # React components
+│   │   ├── db/            # Schema & migrations
+│   │   ├── lib/           # Utilities (auth, setup, agents, encryption)
+│   │   ├── hooks/         # React hooks
+│   │   └── server/        # WebSocket bridge
+│   └── drizzle/           # Generated migrations
+├── config/                # OpenClaw config & startup script
+├── docs/                  # Documentation (Astro Starlight, standalone)
+├── docker-compose.yml     # Full stack definition
+├── .github/workflows/     # CI + docs deployment
+├── CLAUDE.md              # ← You are here
+└── README.md              # Public-facing project description
 ```
 
 ## Development Guidelines
@@ -94,6 +103,13 @@ pinchy/
 - **Offline-first** — must work without internet (local models via Ollama)
 - **API-first** — every UI action maps to a REST endpoint
 - **Self-hosted** — no phone-home, no telemetry unless opt-in
+
+### Documentation
+- **Docs site**: `docs/` directory, built with Astro Starlight. Deployed to [docs.heypinchy.com](https://docs.heypinchy.com).
+- **Docs-first process**: Every feature plan MUST include a documentation update task. When behavior changes, docs must be updated in the same PR.
+- **Running docs locally**: `cd docs && pnpm install && pnpm dev` — opens at `http://localhost:4321`.
+- **Docs are standalone**: The `docs/` directory is NOT part of the pnpm workspace. It has its own `package.json` and `pnpm-lock.yaml`.
+- **Content structure**: Follows the [Diataxis framework](https://diataxis.fr/) — tutorials, how-to guides, explanation, and reference.
 
 ### Key Decisions
 - **AGPL-3.0 License**: Prevents proprietary cloud forks without giving back
@@ -135,18 +151,27 @@ Know these when making architectural decisions:
 ## Useful Commands
 
 ```bash
-# Nothing to run yet — project is pre-MVP
-# Future:
-# npm install
-# npm run dev
-# npm test
-# docker compose up
+# Full stack (Docker)
+docker compose up --build
+
+# Local development
+pnpm install
+pnpm dev                 # Start dev server (port 7777)
+pnpm test                # Run test suite
+pnpm lint                # Run ESLint
+pnpm format              # Format with Prettier
+pnpm db:generate         # Generate migration from schema changes
+pnpm db:migrate          # Apply pending migrations
+
+# Documentation
+cd docs && pnpm install && pnpm dev   # Docs dev server (port 4321)
+cd docs && pnpm build                 # Build docs
 ```
 
 ## Context for AI Assistants
 
 When working on this project:
-1. **Nothing is implemented yet** — all architecture descriptions are plans, not code
+1. **The core is working** — setup, auth, provider config, and agent chat are implemented. Enterprise features (RBAC, audit trail, plugins) are planned.
 2. **OpenClaw is the foundation** — familiarize yourself with [OpenClaw docs](https://docs.openclaw.ai) before making architectural decisions
 3. **Keep it simple** — prefer boring, proven technology over clever abstractions
 4. **Test everything** — no PR without tests
@@ -156,3 +181,4 @@ When working on this project:
 8. **AGPL matters** — any code suggestion must be compatible with AGPL-3.0. No proprietary dependencies.
 9. **Pinchy's key differentiator is agent permissions/control** — not just multi-user, but granular agent permissions, RBAC, audit trail. This is the core value prop.
 10. **Build in Public** — assume all code, decisions, and progress will be shared publicly. No secrets in commits.
+11. **Docs-first** — every feature plan must include a documentation update task. Keep [docs.heypinchy.com](https://docs.heypinchy.com) in sync with the code.
