@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
   const writeFileSyncMock = vi.fn();
+  const readFileSyncMock = vi.fn();
   const existsSyncMock = vi.fn().mockReturnValue(true);
   const mkdirSyncMock = vi.fn();
   return {
@@ -10,19 +11,22 @@ vi.mock("fs", async (importOriginal) => {
     default: {
       ...actual,
       writeFileSync: writeFileSyncMock,
+      readFileSync: readFileSyncMock,
       existsSync: existsSyncMock,
       mkdirSync: mkdirSyncMock,
     },
     writeFileSync: writeFileSyncMock,
+    readFileSync: readFileSyncMock,
     existsSync: existsSyncMock,
     mkdirSync: mkdirSyncMock,
   };
 });
 
-import { writeFileSync, existsSync, mkdirSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { writeOpenClawConfig } from "@/lib/openclaw-config";
 
 const mockedWriteFileSync = vi.mocked(writeFileSync);
+const mockedReadFileSync = vi.mocked(readFileSync);
 const mockedExistsSync = vi.mocked(existsSync);
 const mockedMkdirSync = vi.mocked(mkdirSync);
 
@@ -30,6 +34,9 @@ describe("writeOpenClawConfig", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
   });
 
   it("should write config with Anthropic provider", () => {
@@ -60,7 +67,7 @@ describe("writeOpenClawConfig", () => {
     expect(config.env.OPENAI_API_KEY).toBe("sk-key");
   });
 
-  it("should include gateway mode local", () => {
+  it("should include gateway mode local and bind lan", () => {
     writeOpenClawConfig({
       provider: "anthropic",
       apiKey: "sk-ant-key",
@@ -71,6 +78,7 @@ describe("writeOpenClawConfig", () => {
     const config = JSON.parse(written);
 
     expect(config.gateway.mode).toBe("local");
+    expect(config.gateway.bind).toBe("lan");
   });
 
   it("should create directory if it does not exist", () => {
@@ -99,5 +107,67 @@ describe("writeOpenClawConfig", () => {
 
     expect(config.env.GOOGLE_API_KEY).toBe("AIza-key");
     expect(config.agents.defaults.model.primary).toBe("google/gemini-2.0-flash");
+  });
+
+  it("should merge with existing config preserving gateway.auth", () => {
+    const existingConfig = {
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        auth: {
+          token: "existing-secret-token",
+        },
+      },
+      meta: {
+        version: "1.2.3",
+        generatedAt: "2025-01-01T00:00:00Z",
+      },
+      agents: {
+        defaults: {
+          model: { primary: "anthropic/claude-sonnet-4-20250514" },
+        },
+      },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    writeOpenClawConfig({
+      provider: "openai",
+      apiKey: "sk-new-key",
+      model: "openai/gpt-4o",
+    });
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    // Pinchy's fields are applied
+    expect(config.gateway.mode).toBe("local");
+    expect(config.gateway.bind).toBe("lan");
+    expect(config.env.OPENAI_API_KEY).toBe("sk-new-key");
+    expect(config.agents.defaults.model.primary).toBe("openai/gpt-4o");
+
+    // OpenClaw's auto-generated fields are preserved
+    expect(config.gateway.auth.token).toBe("existing-secret-token");
+    expect(config.meta.version).toBe("1.2.3");
+    expect(config.meta.generatedAt).toBe("2025-01-01T00:00:00Z");
+  });
+
+  it("should create config from scratch when no existing file", () => {
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+
+    writeOpenClawConfig({
+      provider: "anthropic",
+      apiKey: "sk-ant-fresh",
+      model: "anthropic/claude-haiku-4-5-20251001",
+    });
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.gateway.mode).toBe("local");
+    expect(config.gateway.bind).toBe("lan");
+    expect(config.env.ANTHROPIC_API_KEY).toBe("sk-ant-fresh");
+    expect(config.agents.defaults.model.primary).toBe("anthropic/claude-haiku-4-5-20251001");
   });
 });
