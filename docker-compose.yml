@@ -11,6 +11,10 @@ services:
       - NEXTAUTH_URL=http://localhost:7777
       - AUTH_TRUST_HOST=true
       - OPENCLAW_WS_URL=ws://openclaw:18789
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
+    volumes:
+      - openclaw-config:/openclaw-config
+      - pinchy-data:/data
     depends_on:
       db:
         condition: service_healthy
@@ -44,3 +48,4 @@ services:
 volumes:
   pgdata:
   openclaw-config:
+  pinchy-data:
