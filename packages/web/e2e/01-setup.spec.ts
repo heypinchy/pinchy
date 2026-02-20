@@ -8,6 +8,7 @@ test.describe("Setup wizard", () => {
     await expect(page.getByText(/welcome to pinchy/i)).toBeVisible();
 
     // Fill the form
+    await page.getByLabel(/name/i).fill("Test Admin");
     await page.getByLabel(/email/i).fill("admin@test.local");
     await page.getByLabel(/password/i).fill("test-password-123");
     await page.getByRole("button", { name: /create account/i }).click();
@@ -24,6 +25,7 @@ test.describe("Setup wizard", () => {
     // Setup was already done in the previous test
     await page.goto("/setup");
 
+    await page.getByLabel(/name/i).fill("Second User");
     await page.getByLabel(/email/i).fill("second@test.local");
     await page.getByLabel(/password/i).fill("test-password-123");
     await page.getByRole("button", { name: /create account/i }).click();
