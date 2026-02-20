@@ -13,16 +13,17 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   const setupComplete = await isSetupComplete();
   if (!setupComplete) redirect("/setup");
 
-  await requireAuth();
+  const session = await requireAuth();
 
   const providerConfigured = await isProviderConfigured();
   if (!providerConfigured) redirect("/setup/provider");
 
   const allAgents = await db.select().from(agents);
+  const isAdmin = session?.user?.role === "admin";
 
   return (
     <SidebarProvider>
-      <AppSidebar agents={allAgents} />
+      <AppSidebar agents={allAgents} isAdmin={isAdmin} />
       <SidebarInset>{children}</SidebarInset>
     </SidebarProvider>
   );

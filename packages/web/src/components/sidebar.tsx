@@ -1,6 +1,6 @@
 import Link from "next/link";
 import Image from "next/image";
-import { Bot, Plus, Settings } from "lucide-react";
+import { Bot, Plus, Settings, User } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -15,13 +15,21 @@ interface Agent {
   id: string;
   name: string;
   model: string;
+  isPersonal: boolean;
 }
 
 interface AppSidebarProps {
   agents: Agent[];
+  isAdmin: boolean;
 }
 
-export function AppSidebar({ agents }: AppSidebarProps) {
+export function AppSidebar({ agents, isAdmin }: AppSidebarProps) {
+  const sortedAgents = [...agents].sort((a, b) => {
+    if (a.isPersonal && !b.isPersonal) return -1;
+    if (!a.isPersonal && b.isPersonal) return 1;
+    return 0;
+  });
+
   return (
     <Sidebar>
       <SidebarHeader>
@@ -33,24 +41,26 @@ export function AppSidebar({ agents }: AppSidebarProps) {
 
       <SidebarContent>
         <SidebarMenu>
-          {agents.map((agent) => (
+          {sortedAgents.map((agent) => (
             <SidebarMenuItem key={agent.id}>
               <SidebarMenuButton asChild>
                 <Link href={`/chat/${agent.id}`}>
-                  <Bot className="size-4" />
+                  {agent.isPersonal ? <User className="size-4" /> : <Bot className="size-4" />}
                   <span>{agent.name}</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
           ))}
-          <SidebarMenuItem>
-            <SidebarMenuButton asChild>
-              <Link href="/agents/new">
-                <Plus className="size-4" />
-                <span>New Agent</span>
-              </Link>
-            </SidebarMenuButton>
-          </SidebarMenuItem>
+          {isAdmin && (
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild>
+                <Link href="/agents/new">
+                  <Plus className="size-4" />
+                  <span>New Agent</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          )}
         </SidebarMenu>
       </SidebarContent>
 
