@@ -3,6 +3,12 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { AgentSettingsGeneral } from "@/components/agent-settings-general";
 
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: vi.fn(),
+  }),
+}));
+
 describe("AgentSettingsGeneral", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
@@ -193,6 +199,38 @@ describe("AgentSettingsGeneral", () => {
 
     await waitFor(() => {
       expect(onSaved).toHaveBeenCalled();
+    });
+  });
+
+  describe("canDelete prop", () => {
+    it("should render Delete Agent button when canDelete is true", () => {
+      render(
+        <AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} canDelete={true} />
+      );
+
+      expect(screen.getByRole("button", { name: /delete agent/i })).toBeInTheDocument();
+    });
+
+    it("should render Danger Zone heading when canDelete is true", () => {
+      render(
+        <AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} canDelete={true} />
+      );
+
+      expect(screen.getByText("Danger Zone")).toBeInTheDocument();
+    });
+
+    it("should NOT render Delete Agent button when canDelete is false", () => {
+      render(
+        <AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} canDelete={false} />
+      );
+
+      expect(screen.queryByRole("button", { name: /delete agent/i })).not.toBeInTheDocument();
+    });
+
+    it("should NOT render Delete Agent button when canDelete is undefined", () => {
+      render(<AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} />);
+
+      expect(screen.queryByRole("button", { name: /delete agent/i })).not.toBeInTheDocument();
     });
   });
 });

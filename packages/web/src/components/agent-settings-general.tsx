@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
 
 interface AgentSettingsGeneralProps {
   agent: { id: string; name: string; model: string };
@@ -13,9 +14,15 @@ interface AgentSettingsGeneralProps {
     models: Array<{ id: string; name: string }>;
   }>;
   onSaved?: () => void;
+  canDelete?: boolean;
 }
 
-export function AgentSettingsGeneral({ agent, providers, onSaved }: AgentSettingsGeneralProps) {
+export function AgentSettingsGeneral({
+  agent,
+  providers,
+  onSaved,
+  canDelete,
+}: AgentSettingsGeneralProps) {
   const [name, setName] = useState(agent.name);
   const [model, setModel] = useState(agent.model);
   const [saving, setSaving] = useState(false);
@@ -97,6 +104,13 @@ export function AgentSettingsGeneral({ agent, providers, onSaved }: AgentSetting
         >
           {feedback.message}
         </p>
+      )}
+
+      {canDelete && (
+        <div className="pt-6 border-t">
+          <h3 className="text-sm font-medium text-destructive mb-2">Danger Zone</h3>
+          <DeleteAgentDialog agentId={agent.id} agentName={agent.name} />
+        </div>
       )}
     </div>
   );

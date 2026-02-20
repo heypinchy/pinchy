@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useParams } from "next/navigation";
+import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AgentSettingsGeneral } from "@/components/agent-settings-general";
@@ -11,6 +12,7 @@ interface Agent {
   id: string;
   name: string;
   model: string;
+  isPersonal: boolean;
 }
 
 interface Provider {
@@ -22,6 +24,7 @@ interface Provider {
 export default function AgentSettingsPage() {
   const params = useParams();
   const agentId = params.agentId as string;
+  const { data: session } = useSession();
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -73,6 +76,8 @@ export default function AgentSettingsPage() {
     return <div className="p-8 text-muted-foreground">Agent not found.</div>;
   }
 
+  const canDelete = session?.user?.role === "admin" && !agent.isPersonal;
+
   return (
     <div className="p-8 max-w-2xl">
       <div className="flex items-center justify-between mb-6">
@@ -93,7 +98,7 @@ export default function AgentSettingsPage() {
         </TabsList>
 
         <TabsContent value="general">
-          <AgentSettingsGeneral agent={agent} providers={providers} />
+          <AgentSettingsGeneral agent={agent} providers={providers} canDelete={canDelete} />
         </TabsContent>
 
         <TabsContent value="soul">
