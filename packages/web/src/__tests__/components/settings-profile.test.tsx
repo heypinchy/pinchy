@@ -3,9 +3,14 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { SettingsProfile } from "@/components/settings-profile";
+import { toast } from "sonner";
 
 vi.mock("next-auth/react", () => ({
   signOut: vi.fn(),
+}));
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 describe("SettingsProfile", () => {
@@ -57,7 +62,7 @@ describe("SettingsProfile", () => {
     });
   });
 
-  it("should show success feedback after saving name", async () => {
+  it("should show success toast after saving name", async () => {
     const user = userEvent.setup();
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
@@ -69,7 +74,7 @@ describe("SettingsProfile", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Name updated successfully")).toBeInTheDocument();
+      expect(toast.success).toHaveBeenCalledWith("Name updated");
     });
   });
 
@@ -105,7 +110,7 @@ describe("SettingsProfile", () => {
     });
   });
 
-  it("should show success feedback after changing password", async () => {
+  it("should show success toast after changing password", async () => {
     const user = userEvent.setup();
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
@@ -120,11 +125,32 @@ describe("SettingsProfile", () => {
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Password changed successfully")).toBeInTheDocument();
+      expect(toast.success).toHaveBeenCalledWith("Password updated");
     });
   });
 
-  it("should show error when passwords do not match", async () => {
+  it("should clear password fields after successful password change", async () => {
+    const user = userEvent.setup();
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ success: true }),
+    } as Response);
+
+    render(<SettingsProfile userName="Alice" />);
+
+    await user.type(screen.getByLabelText("Current Password"), "oldpass123");
+    await user.type(screen.getByLabelText("New Password"), "newpass456");
+    await user.type(screen.getByLabelText("Confirm Password"), "newpass456");
+    await user.click(screen.getByRole("button", { name: "Change Password" }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Current Password")).toHaveValue("");
+      expect(screen.getByLabelText("New Password")).toHaveValue("");
+      expect(screen.getByLabelText("Confirm Password")).toHaveValue("");
+    });
+  });
+
+  it("should show validation error when passwords do not match", async () => {
     const user = userEvent.setup();
 
     render(<SettingsProfile userName="Alice" />);
@@ -135,18 +161,14 @@ describe("SettingsProfile", () => {
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Passwords do not match")).toBeInTheDocument();
+      expect(screen.getByText("Passwords don't match")).toBeInTheDocument();
     });
 
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it("should show error from API when saving name fails", async () => {
+  it("should show validation error when name is empty", async () => {
     const user = userEvent.setup();
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Name is required" }),
-    } as Response);
 
     render(<SettingsProfile userName="Alice" />);
 
@@ -157,9 +179,43 @@ describe("SettingsProfile", () => {
     await waitFor(() => {
       expect(screen.getByText("Name is required")).toBeInTheDocument();
     });
+
+    expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it("should show error from API when changing password fails", async () => {
+  it("should show error toast from API when saving name fails", async () => {
+    const user = userEvent.setup();
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({ error: "Name already taken" }),
+    } as Response);
+
+    render(<SettingsProfile userName="Alice" />);
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Name already taken");
+    });
+  });
+
+  it("should show fallback error toast when saving name fails without message", async () => {
+    const user = userEvent.setup();
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({}),
+    } as Response);
+
+    render(<SettingsProfile userName="Alice" />);
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Failed to update name");
+    });
+  });
+
+  it("should show error toast from API when changing password fails", async () => {
     const user = userEvent.setup();
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: false,
@@ -174,7 +230,26 @@ describe("SettingsProfile", () => {
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
     await waitFor(() => {
-      expect(screen.getByText("Current password is incorrect")).toBeInTheDocument();
+      expect(toast.error).toHaveBeenCalledWith("Current password is incorrect");
+    });
+  });
+
+  it("should show fallback error toast when changing password fails without message", async () => {
+    const user = userEvent.setup();
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({}),
+    } as Response);
+
+    render(<SettingsProfile userName="Alice" />);
+
+    await user.type(screen.getByLabelText("Current Password"), "wrongpass");
+    await user.type(screen.getByLabelText("New Password"), "newpass456");
+    await user.type(screen.getByLabelText("Confirm Password"), "newpass456");
+    await user.click(screen.getByRole("button", { name: "Change Password" }));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith("Failed to change password");
     });
   });
 
