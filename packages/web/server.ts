@@ -12,8 +12,7 @@ const app = next({ dev });
 const handle = app.getRequestHandler();
 
 const OPENCLAW_WS_URL = process.env.OPENCLAW_WS_URL || "ws://localhost:18789";
-const OPENCLAW_CONFIG_PATH =
-  process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
+const OPENCLAW_CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 
 function readGatewayToken(): string {
   try {
@@ -43,10 +42,7 @@ app.prepare().then(() => {
   const router = new ClientRouter(openclawClient);
 
   openclawClient.connect().catch((err) => {
-    console.error(
-      "OpenClaw initial connection failed, will retry:",
-      err.message
-    );
+    console.error("OpenClaw initial connection failed, will retry:", err.message);
   });
 
   openclawClient.on("connected", async () => {
