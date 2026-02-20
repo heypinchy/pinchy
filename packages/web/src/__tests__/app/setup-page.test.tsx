@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import SetupPage from "@/app/setup/page";
 
@@ -69,7 +70,55 @@ describe("Setup Page", () => {
     expect(screen.getByRole("button", { name: /create account/i })).toBeInTheDocument();
   });
 
+  it("should show validation error when name is empty", async () => {
+    const user = userEvent.setup();
+    render(<SetupPage />);
+
+    await user.type(screen.getByLabelText(/email/i), "admin@test.com");
+    await user.type(screen.getByLabelText(/password/i), "password123");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Name is required")).toBeInTheDocument();
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("should show validation error for invalid email", async () => {
+    const user = userEvent.setup();
+    render(<SetupPage />);
+
+    await user.type(screen.getByLabelText(/name/i), "Admin User");
+    await user.type(screen.getByLabelText(/email/i), "not-an-email");
+    await user.type(screen.getByLabelText(/password/i), "password123");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Invalid email address")).toBeInTheDocument();
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("should show validation error when password is too short", async () => {
+    const user = userEvent.setup();
+    render(<SetupPage />);
+
+    await user.type(screen.getByLabelText(/name/i), "Admin User");
+    await user.type(screen.getByLabelText(/email/i), "admin@test.com");
+    await user.type(screen.getByLabelText(/password/i), "short");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Password must be at least 8 characters")).toBeInTheDocument();
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it("should submit name along with email and password", async () => {
+    const user = userEvent.setup();
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       json: async () => ({}),
@@ -77,16 +126,10 @@ describe("Setup Page", () => {
 
     render(<SetupPage />);
 
-    fireEvent.change(screen.getByLabelText(/name/i), {
-      target: { value: "Admin User" },
-    });
-    fireEvent.change(screen.getByLabelText(/email/i), {
-      target: { value: "admin@test.com" },
-    });
-    fireEvent.change(screen.getByLabelText(/password/i), {
-      target: { value: "password123" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    await user.type(screen.getByLabelText(/name/i), "Admin User");
+    await user.type(screen.getByLabelText(/email/i), "admin@test.com");
+    await user.type(screen.getByLabelText(/password/i), "password123");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/setup", {
@@ -102,6 +145,7 @@ describe("Setup Page", () => {
   });
 
   it("should show success state after successful setup", async () => {
+    const user = userEvent.setup();
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       json: async () => ({}),
@@ -109,16 +153,10 @@ describe("Setup Page", () => {
 
     render(<SetupPage />);
 
-    fireEvent.change(screen.getByLabelText(/name/i), {
-      target: { value: "Admin User" },
-    });
-    fireEvent.change(screen.getByLabelText(/email/i), {
-      target: { value: "admin@test.com" },
-    });
-    fireEvent.change(screen.getByLabelText(/password/i), {
-      target: { value: "password123" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    await user.type(screen.getByLabelText(/name/i), "Admin User");
+    await user.type(screen.getByLabelText(/email/i), "admin@test.com");
+    await user.type(screen.getByLabelText(/password/i), "password123");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
       expect(screen.getByText("Account created successfully!")).toBeInTheDocument();
@@ -128,6 +166,7 @@ describe("Setup Page", () => {
   });
 
   it("should navigate to /login when clicking 'Continue to sign in'", async () => {
+    const user = userEvent.setup();
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
       json: async () => ({}),
@@ -135,26 +174,21 @@ describe("Setup Page", () => {
 
     render(<SetupPage />);
 
-    fireEvent.change(screen.getByLabelText(/name/i), {
-      target: { value: "Admin User" },
-    });
-    fireEvent.change(screen.getByLabelText(/email/i), {
-      target: { value: "admin@test.com" },
-    });
-    fireEvent.change(screen.getByLabelText(/password/i), {
-      target: { value: "password123" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    await user.type(screen.getByLabelText(/name/i), "Admin User");
+    await user.type(screen.getByLabelText(/email/i), "admin@test.com");
+    await user.type(screen.getByLabelText(/password/i), "password123");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /continue to sign in/i })).toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /continue to sign in/i }));
+    await user.click(screen.getByRole("button", { name: /continue to sign in/i }));
     expect(pushMock).toHaveBeenCalledWith("/login");
   });
 
   it("should show error message on failed setup", async () => {
+    const user = userEvent.setup();
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: false,
       json: async () => ({ error: "Setup already completed" }),
@@ -162,16 +196,10 @@ describe("Setup Page", () => {
 
     render(<SetupPage />);
 
-    fireEvent.change(screen.getByLabelText(/name/i), {
-      target: { value: "Admin User" },
-    });
-    fireEvent.change(screen.getByLabelText(/email/i), {
-      target: { value: "admin@test.com" },
-    });
-    fireEvent.change(screen.getByLabelText(/password/i), {
-      target: { value: "password123" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    await user.type(screen.getByLabelText(/name/i), "Admin User");
+    await user.type(screen.getByLabelText(/email/i), "admin@test.com");
+    await user.type(screen.getByLabelText(/password/i), "password123");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
       expect(screen.getByText("Setup already completed")).toBeInTheDocument();
