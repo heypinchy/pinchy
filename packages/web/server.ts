@@ -5,6 +5,7 @@ import { WebSocketServer } from "ws";
 import { readFileSync } from "fs";
 import { OpenClawClient } from "openclaw-node";
 import { ClientRouter } from "./src/server/client-router";
+import { validateWsSession } from "./src/server/ws-auth";
 import { shouldTriggerGreeting, markGreetingSent } from "./src/lib/greeting";
 
 const dev = process.env.NODE_ENV !== "production";
@@ -68,12 +69,17 @@ app.prepare().then(() => {
     console.error("OpenClaw client error:", err.message);
   });
 
-  // TODO: Authenticate WebSocket connections (validate session token before accepting)
   const wss = new WebSocketServer({ noServer: true });
 
-  server.on("upgrade", (request, socket, head) => {
+  server.on("upgrade", async (request, socket, head) => {
     const { pathname } = parse(request.url!, true);
     if (pathname === "/api/ws") {
+      const session = await validateWsSession(request.headers.cookie);
+      if (!session) {
+        socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
+        socket.destroy();
+        return;
+      }
       wss.handleUpgrade(request, socket, head, (ws) => {
         wss.emit("connection", ws, request);
       });
