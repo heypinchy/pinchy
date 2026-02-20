@@ -4,6 +4,7 @@ import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { getSetting } from "@/lib/settings";
+import { getTemplate } from "@/lib/agent-templates";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 const OPENCLAW_WORKSPACE_PREFIX =
@@ -95,15 +96,37 @@ export async function regenerateOpenClawConfig() {
     defaults.model = { primary: PROVIDERS[defaultProvider].defaultModel };
   }
 
-  // Build agents list with OpenClaw-side workspace paths
-  const agentsList = allAgents.map((agent) => ({
-    id: agent.id,
-    name: agent.name,
-    model: agent.model,
-    workspace: `${OPENCLAW_WORKSPACE_PREFIX}/${agent.id}`,
-  }));
+  // Build agents list with OpenClaw-side workspace paths, tools.deny, and plugin configs
+  const pluginConfigs: Record<string, Record<string, Record<string, unknown>>> = {};
 
-  const pinchyFields = {
+  const agentsList = allAgents.map((agent) => {
+    const template = agent.templateId ? getTemplate(agent.templateId) : undefined;
+
+    const agentEntry: Record<string, unknown> = {
+      id: agent.id,
+      name: agent.name,
+      model: agent.model,
+      workspace: `${OPENCLAW_WORKSPACE_PREFIX}/${agent.id}`,
+    };
+
+    // Add tools.deny if the template has denied tool groups
+    if (template && template.deniedToolGroups.length > 0) {
+      agentEntry.tools = { deny: template.deniedToolGroups };
+    }
+
+    // Collect plugin config per agent
+    if (template?.pluginId && agent.pluginConfig) {
+      if (!pluginConfigs[template.pluginId]) {
+        pluginConfigs[template.pluginId] = {};
+      }
+      pluginConfigs[template.pluginId][agent.id] = agent.pluginConfig as Record<string, unknown>;
+    }
+
+    return agentEntry;
+  });
+
+  // Build plugins section if any agents use plugins
+  const pinchyFields: Record<string, unknown> = {
     gateway: { mode: "local", bind: "lan" },
     env,
     agents: {
@@ -111,6 +134,19 @@ export async function regenerateOpenClawConfig() {
       list: agentsList,
     },
   };
+
+  if (Object.keys(pluginConfigs).length > 0) {
+    const entries: Record<string, unknown> = {};
+    for (const [pluginId, agentConfigs] of Object.entries(pluginConfigs)) {
+      entries[pluginId] = {
+        enabled: true,
+        config: {
+          agents: agentConfigs,
+        },
+      };
+    }
+    pinchyFields.plugins = { entries };
+  }
 
   const merged = deepMerge(existing, pinchyFields);
 

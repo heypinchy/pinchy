@@ -34,6 +34,30 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock("@/lib/agent-templates", () => ({
+  getTemplate: vi.fn().mockImplementation((id: string) => {
+    if (id === "knowledge-base") {
+      return {
+        name: "Knowledge Base",
+        description: "Answer questions from your docs",
+        deniedToolGroups: ["group:runtime", "group:fs", "group:web"],
+        pluginId: "pinchy-files",
+        defaultSoulMd: "",
+      };
+    }
+    if (id === "custom") {
+      return {
+        name: "Custom Agent",
+        description: "Start from scratch",
+        deniedToolGroups: [],
+        pluginId: null,
+        defaultSoulMd: "",
+      };
+    }
+    return undefined;
+  }),
+}));
+
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { writeOpenClawConfig, regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
@@ -327,5 +351,110 @@ describe("regenerateOpenClawConfig", () => {
 
     expect(config.env).toEqual({});
     expect(config.agents.defaults).toEqual({});
+  });
+
+  it("should include tools.deny for knowledge-base agents", async () => {
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "kb-agent-id",
+          name: "HR Knowledge Base",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          templateId: "knowledge-base",
+          pluginConfig: { allowed_paths: ["/data/hr-docs/", "/data/policies/"] },
+          createdAt: new Date(),
+        },
+        {
+          id: "custom-agent-id",
+          name: "Dev Assistant",
+          model: "anthropic/claude-opus-4-6",
+          templateId: "custom",
+          pluginConfig: null,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const kbAgent = config.agents.list.find((a: { id: string }) => a.id === "kb-agent-id");
+
+    expect(kbAgent.tools).toBeDefined();
+    expect(kbAgent.tools.deny).toContain("group:runtime");
+    expect(kbAgent.tools.deny).toContain("group:fs");
+    expect(kbAgent.tools.deny).toContain("group:web");
+  });
+
+  it("should not include tools.deny for custom agents", async () => {
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "custom-agent-id",
+          name: "Dev Assistant",
+          model: "anthropic/claude-opus-4-6",
+          templateId: "custom",
+          pluginConfig: null,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const customAgent = config.agents.list.find((a: { id: string }) => a.id === "custom-agent-id");
+
+    expect(customAgent.tools).toBeUndefined();
+  });
+
+  it("should include pinchy-files plugin config", async () => {
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "kb-agent-id",
+          name: "HR Knowledge Base",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          templateId: "knowledge-base",
+          pluginConfig: { allowed_paths: ["/data/hr-docs/", "/data/policies/"] },
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-files"]).toBeDefined();
+    expect(config.plugins.entries["pinchy-files"].enabled).toBe(true);
+    expect(config.plugins.entries["pinchy-files"].config.agents["kb-agent-id"]).toEqual({
+      allowed_paths: ["/data/hr-docs/", "/data/policies/"],
+    });
+  });
+
+  it("should not include plugin config when no agents use it", async () => {
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "custom-agent-id",
+          name: "Dev Assistant",
+          model: "anthropic/claude-opus-4-6",
+          templateId: "custom",
+          pluginConfig: null,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins).toBeUndefined();
   });
 });
