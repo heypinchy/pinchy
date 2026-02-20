@@ -2,10 +2,22 @@ import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { deleteWorkspace } from "@/lib/workspace";
 
 export interface UpdateAgentInput {
   name?: string;
   model?: string;
+}
+
+export async function deleteAgent(id: string) {
+  const [deleted] = await db.delete(agents).where(eq(agents.id, id)).returning();
+
+  if (deleted) {
+    deleteWorkspace(id);
+    await regenerateOpenClawConfig();
+  }
+
+  return deleted;
 }
 
 export async function updateAgent(id: string, data: UpdateAgentInput) {
