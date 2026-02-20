@@ -3,7 +3,9 @@ title: API Reference
 description: REST API endpoints for managing agents, templates, and settings.
 ---
 
-All API endpoints require authentication. Unauthenticated requests receive a `401 Unauthorized` response. Authenticate by including a valid session cookie (set during login via the web UI).
+All API endpoints require authentication unless noted otherwise. Unauthenticated requests receive a `401 Unauthorized` response. Authenticate by including a valid session cookie (set during login via the web UI).
+
+Some endpoints are **admin only** — non-admin users receive a `403 Forbidden` response.
 
 ## Agents
 
@@ -88,6 +90,18 @@ Update an agent's name or model.
 
 **Response:** The updated agent object.
 
+### `DELETE /api/agents/:id`
+
+Delete an agent. **Admin only.** Personal agents (auto-created Smithers) cannot be deleted.
+
+**Response:** `204 No Content`
+
+**Errors:**
+- `400` — attempting to delete a personal agent
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — agent not found
+
 ## Templates
 
 ### `GET /api/templates`
@@ -161,3 +175,174 @@ Update a setting.
 Settings with `api_key` in the key name are automatically encrypted at rest.
 
 **Response:** `{ "success": true }`
+
+## Users (admin only)
+
+### `GET /api/users`
+
+List all users.
+
+**Response:**
+
+```json
+[
+  {
+    "id": "uuid",
+    "name": "Alice",
+    "email": "alice@example.com",
+    "role": "admin",
+    "createdAt": "2025-01-15T10:00:00.000Z"
+  }
+]
+```
+
+### `DELETE /api/users/:id`
+
+Delete a user and cascade-delete their personal agents.
+
+**Response:** `204 No Content`
+
+**Errors:**
+- `400` — attempting to delete yourself
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — user not found
+
+### `POST /api/users/:id/reset`
+
+Generate a password reset token for a user. Returns a one-time link the admin can share with the user.
+
+**Response:**
+
+```json
+{
+  "resetUrl": "http://localhost:7777/invite?token=abc123..."
+}
+```
+
+**Errors:**
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — user not found
+
+## Invites (admin only)
+
+### `POST /api/users/invite`
+
+Create an invite for a new user.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `email` | string | Yes | Email address of the invited user |
+
+**Response:** `201 Created`
+
+```json
+{
+  "inviteUrl": "http://localhost:7777/invite?token=abc123..."
+}
+```
+
+**Errors:**
+- `400` — missing email or email already registered
+- `401` — not authenticated
+- `403` — not an admin
+
+### `GET /api/users/invites`
+
+List all invites and their status.
+
+**Response:**
+
+```json
+[
+  {
+    "id": "uuid",
+    "email": "bob@example.com",
+    "status": "pending",
+    "expiresAt": "2025-01-22T10:00:00.000Z",
+    "createdAt": "2025-01-15T10:00:00.000Z"
+  }
+]
+```
+
+### `DELETE /api/users/invites/:id`
+
+Revoke a pending invite.
+
+**Response:** `204 No Content`
+
+**Errors:**
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — invite not found
+
+## Invite Claim (public)
+
+### `POST /api/invite/claim`
+
+Claim an invite token to create a new account or reset a password. **This endpoint does not require authentication.**
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `token` | string | Yes | The invite/reset token from the URL |
+| `name` | string | Yes | Display name for the new user |
+| `password` | string | Yes | Password (min 8 characters) |
+
+**Response:** `201 Created`
+
+```json
+{
+  "success": true
+}
+```
+
+**Errors:**
+- `400` — missing fields, invalid token, or token expired
+
+## User Self-Service
+
+### `PATCH /api/users/me`
+
+Update your own display name.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `name` | string | Yes | New display name |
+
+**Response:**
+
+```json
+{
+  "id": "uuid",
+  "name": "New Name",
+  "email": "alice@example.com"
+}
+```
+
+**Errors:**
+- `400` — missing or empty name
+- `401` — not authenticated
+
+### `POST /api/users/me/password`
+
+Change your own password.
+
+**Request body:**
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `currentPassword` | string | Yes | Current password |
+| `newPassword` | string | Yes | New password (min 8 characters) |
+
+**Response:** `{ "success": true }`
+
+**Errors:**
+- `400` — missing fields or new password too short
+- `401` — not authenticated or current password incorrect
