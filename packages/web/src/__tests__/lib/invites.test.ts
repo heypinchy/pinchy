@@ -318,8 +318,17 @@ describe("claimInvite", () => {
     const { claimInvite } = await import("@/lib/invites");
     const result = await claimInvite("hash2", "user-2");
 
-    expect(result.id).toBe("inv-2");
-    expect(result.claimedByUserId).toBe("user-2");
-    expect(result.claimedAt).toBeInstanceOf(Date);
+    expect(result!.id).toBe("inv-2");
+    expect(result!.claimedByUserId).toBe("user-2");
+    expect(result!.claimedAt).toBeInstanceOf(Date);
+  });
+
+  it("returns null when invite was already claimed (TOCTOU protection)", async () => {
+    returningMock.mockResolvedValue([]);
+
+    const { claimInvite } = await import("@/lib/invites");
+    const result = await claimInvite("already-claimed-hash", "user-3");
+
+    expect(result).toBeNull();
   });
 });

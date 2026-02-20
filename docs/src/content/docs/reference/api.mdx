@@ -94,7 +94,13 @@ Update an agent's name or model.
 
 Delete an agent. **Admin only.** Personal agents (auto-created Smithers) cannot be deleted.
 
-**Response:** `204 No Content`
+**Response:** `200 OK`
+
+```json
+{
+  "success": true
+}
+```
 
 **Errors:**
 - `400` — attempting to delete a personal agent
@@ -200,7 +206,13 @@ List all users.
 
 Delete a user and cascade-delete their personal agents.
 
-**Response:** `204 No Content`
+**Response:** `200 OK`
+
+```json
+{
+  "success": true
+}
+```
 
 **Errors:**
 - `400` — attempting to delete yourself
@@ -210,13 +222,13 @@ Delete a user and cascade-delete their personal agents.
 
 ### `POST /api/users/:id/reset`
 
-Generate a password reset token for a user. Returns a one-time link the admin can share with the user.
+Generate a password reset token for a user. The admin constructs the reset URL from the returned token: `{origin}/invite/{token}`.
 
-**Response:**
+**Response:** `201 Created`
 
 ```json
 {
-  "resetUrl": "http://localhost:7777/invite?token=abc123..."
+  "token": "abc123..."
 }
 ```
 
@@ -229,24 +241,33 @@ Generate a password reset token for a user. Returns a one-time link the admin ca
 
 ### `POST /api/users/invite`
 
-Create an invite for a new user.
+Create an invite for a new user. Returns the full invite object including a plaintext token (shown only once).
 
 **Request body:**
 
 | Field | Type | Required | Description |
 |-------|------|----------|-------------|
-| `email` | string | Yes | Email address of the invited user |
+| `role` | string | Yes | Role for the invited user (`admin` or `user`) |
+| `email` | string | No | Email address of the invited user (optional, for reference) |
 
 **Response:** `201 Created`
 
 ```json
 {
-  "inviteUrl": "http://localhost:7777/invite?token=abc123..."
+  "id": "uuid",
+  "token": "abc123...",
+  "email": "bob@example.com",
+  "role": "user",
+  "type": "invite",
+  "expiresAt": "2025-01-22T10:00:00.000Z",
+  "createdAt": "2025-01-15T10:00:00.000Z"
 }
 ```
 
+The admin constructs the invite URL from the returned token: `{origin}/invite/{token}`.
+
 **Errors:**
-- `400` — missing email or email already registered
+- `400` — missing or invalid role
 - `401` — not authenticated
 - `403` — not an admin
 
@@ -272,7 +293,13 @@ List all invites and their status.
 
 Revoke a pending invite.
 
-**Response:** `204 No Content`
+**Response:** `200 OK`
+
+```json
+{
+  "success": true
+}
+```
 
 **Errors:**
 - `401` — not authenticated
@@ -320,9 +347,7 @@ Update your own display name.
 
 ```json
 {
-  "id": "uuid",
-  "name": "New Name",
-  "email": "alice@example.com"
+  "success": true
 }
 ```
 

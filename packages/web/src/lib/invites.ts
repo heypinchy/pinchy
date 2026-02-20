@@ -52,8 +52,8 @@ export async function claimInvite(tokenHash: string, userId: string) {
   const [updated] = await db
     .update(invites)
     .set({ claimedAt: new Date(), claimedByUserId: userId })
-    .where(eq(invites.tokenHash, tokenHash))
+    .where(and(eq(invites.tokenHash, tokenHash), isNull(invites.claimedAt)))
     .returning();
 
-  return updated;
+  return updated ?? null;
 }

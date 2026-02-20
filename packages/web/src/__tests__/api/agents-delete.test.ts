@@ -26,13 +26,110 @@ import { auth } from "@/lib/auth";
 import { deleteAgent } from "@/lib/agents";
 import { db } from "@/db";
 
+// ── GET /api/agents/[agentId] ────────────────────────────────────────────
+
+describe("GET /api/agents/[agentId]", () => {
+  let GET: typeof import("@/app/api/agents/[agentId]/route").GET;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    GET = mod.GET;
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    vi.mocked(auth).mockResolvedValueOnce(null);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1");
+    const response = await GET(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it("returns agent when authenticated", async () => {
+    vi.mocked(auth).mockResolvedValueOnce({
+      user: { id: "user-1", role: "user" },
+      expires: "",
+    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-20250514",
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1");
+    const response = await GET(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body.name).toBe("Test Agent");
+  });
+});
+
+// ── PATCH /api/agents/[agentId] ─────────────────────────────────────────
+
+describe("PATCH /api/agents/[agentId]", () => {
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  beforeEach(async () => {
+    vi.resetAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    vi.mocked(auth).mockResolvedValueOnce(null);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "New Name" }),
+      headers: { "Content-Type": "application/json" },
+    });
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(401);
+  });
+
+  it("updates agent when authenticated", async () => {
+    vi.mocked(auth).mockResolvedValueOnce({
+      user: { id: "user-1", role: "user" },
+      expires: "",
+    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+
+    const { updateAgent } = await import("@/lib/agents");
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "New Name",
+      model: "anthropic/claude-sonnet-4-20250514",
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "New Name" }),
+      headers: { "Content-Type": "application/json" },
+    });
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body.name).toBe("New Name");
+  });
+});
+
 // ── DELETE /api/agents/[agentId] ─────────────────────────────────────────
 
 describe("DELETE /api/agents/[agentId]", () => {
   let DELETE: typeof import("@/app/api/agents/[agentId]/route").DELETE;
 
   beforeEach(async () => {
-    vi.clearAllMocks();
+    vi.resetAllMocks();
     const mod = await import("@/app/api/agents/[agentId]/route");
     DELETE = mod.DELETE;
   });

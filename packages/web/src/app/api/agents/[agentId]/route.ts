@@ -9,6 +9,11 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ agentId: string }> }
 ) {
+  const session = await auth();
+  if (!session?.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { agentId } = await params;
 
   const agent = await db.query.agents.findFirst({
@@ -26,6 +31,11 @@ export async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ agentId: string }> }
 ) {
+  const session = await auth();
+  if (!session?.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   const { agentId } = await params;
   const body = await request.json();
   const data: { name?: string; model?: string } = {};
