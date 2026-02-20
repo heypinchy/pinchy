@@ -164,4 +164,28 @@ describe("ClientRouter", () => {
 
     expect(clientWs.send).not.toHaveBeenCalled();
   });
+
+  it("should forward structured content array to openclaw", async () => {
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "I see an image" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    const structuredContent = [
+      { type: "text", text: "What is this?" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,abc123" } },
+    ];
+
+    await router.handleMessage(createMockClientWs() as any, {
+      type: "message",
+      content: structuredContent,
+      agentId: "agent-1",
+      sessionKey: "session-1",
+    });
+
+    expect(mockChat).toHaveBeenCalledWith(structuredContent, {
+      sessionKey: "session-1",
+    });
+  });
 });

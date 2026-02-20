@@ -35,9 +35,21 @@ const mockLocalStorage = {
 };
 vi.stubGlobal("localStorage", mockLocalStorage);
 
-// Mock useExternalStoreRuntime
+// Mock @assistant-ui/react with attachment adapters
 vi.mock("@assistant-ui/react", () => ({
   useExternalStoreRuntime: (config: any) => config,
+  SimpleImageAttachmentAdapter: class {
+    accept = "image/*";
+  },
+  SimpleTextAttachmentAdapter: class {
+    accept = "text/plain,text/html,text/markdown,text/csv,text/xml,text/json,text/css";
+  },
+  CompositeAttachmentAdapter: class {
+    accept: string;
+    constructor(adapters: { accept: string }[]) {
+      this.accept = adapters.map((a: { accept: string }) => a.accept).join(",");
+    }
+  },
 }));
 
 describe("useWsRuntime", () => {
@@ -276,5 +288,124 @@ describe("useWsRuntime", () => {
 
   it("getSessionKey should return null when no sessionKey exists", () => {
     expect(getSessionKey("agent-1")).toBeNull();
+  });
+
+  it("should register an attachment adapter with image and code file support", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const runtime = result.current.runtime;
+
+    expect(runtime.adapters).toBeDefined();
+    expect(runtime.adapters.attachments).toBeDefined();
+
+    const acceptedTypes = runtime.adapters.attachments.accept;
+    expect(acceptedTypes).toContain("image/*");
+    expect(acceptedTypes).toContain("text/plain");
+    expect(acceptedTypes).toContain(".ts");
+    expect(acceptedTypes).toContain(".js");
+    expect(acceptedTypes).toContain(".py");
+  });
+
+  it("should send structured content array when message has image attachment", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    act(() => {
+      result.current.runtime.onNew({
+        content: [
+          { type: "text", text: "What is this?" },
+          { type: "image", image: "data:image/png;base64,abc123" },
+        ],
+        parentId: "root",
+      });
+    });
+
+    const sentMessage = JSON.parse(ws.send.mock.calls[0][0]);
+    expect(sentMessage.content).toEqual([
+      { type: "text", text: "What is this?" },
+      { type: "image_url", image_url: { url: "data:image/png;base64,abc123" } },
+    ]);
+  });
+
+  it("should send plain string when message has no image attachment", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello plain" }],
+        parentId: "root",
+      });
+    });
+
+    const sentMessage = JSON.parse(ws.send.mock.calls[0][0]);
+    expect(sentMessage.content).toBe("Hello plain");
+  });
+
+  it("should reject image attachments larger than 5MB", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    // Create a data URL that exceeds 5MB
+    const largeImage = "data:image/png;base64," + "A".repeat(5 * 1024 * 1024 + 1);
+
+    act(() => {
+      result.current.runtime.onNew({
+        content: [
+          { type: "text", text: "Big image" },
+          { type: "image", image: largeImage },
+        ],
+        parentId: "root",
+      });
+    });
+
+    // Should not send via WebSocket
+    expect(ws.send).not.toHaveBeenCalled();
+
+    // Should show an error message in messages
+    const messages = result.current.runtime.messages;
+    const errorMessage = messages.find(
+      (m: any) => m.role === "assistant" && m.content[0]?.text?.includes("5MB")
+    );
+    expect(errorMessage).toBeDefined();
+  });
+
+  it("should store image data on user message for display", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    act(() => {
+      result.current.runtime.onNew({
+        content: [
+          { type: "text", text: "Describe this" },
+          { type: "image", image: "data:image/png;base64,xyz789" },
+        ],
+        parentId: "root",
+      });
+    });
+
+    // The converted messages should include image content for display
+    const messages = result.current.runtime.messages;
+    const userMsg = messages.find((m: any) => m.role === "user");
+    expect(userMsg).toBeDefined();
+
+    const imageContent = userMsg.content.find((c: any) => c.type === "image");
+    expect(imageContent).toBeDefined();
+    expect(imageContent.image).toBe("data:image/png;base64,xyz789");
   });
 });

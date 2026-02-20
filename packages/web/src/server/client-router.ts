@@ -1,11 +1,11 @@
-import type { OpenClawClient } from "openclaw-node";
+import type { OpenClawClient, ContentPart } from "openclaw-node";
 import type { WebSocket } from "ws";
 
 const WS_OPEN = 1;
 
 interface BrowserMessage {
   type: string;
-  content: string;
+  content: string | ContentPart[];
   agentId: string;
   sessionKey?: string;
 }

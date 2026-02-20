@@ -3,15 +3,21 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import {
   useExternalStoreRuntime,
+  SimpleImageAttachmentAdapter,
+  SimpleTextAttachmentAdapter,
+  CompositeAttachmentAdapter,
   type ThreadMessageLike,
   type AppendMessage,
   type AssistantRuntime,
 } from "@assistant-ui/react";
 
+const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+
 interface WsMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
+  images?: string[];
 }
 
 const STREAM_DONE_DEBOUNCE_MS = 1500;
@@ -26,12 +32,32 @@ export function clearSession(agentId: string): void {
 }
 
 function convertMessage(msg: WsMessage): ThreadMessageLike {
+  const parts: Array<{ type: "text"; text: string } | { type: "image"; image: string }> = [
+    { type: "text", text: msg.content },
+  ];
+
+  if (msg.images) {
+    for (const image of msg.images) {
+      parts.push({ type: "image", image });
+    }
+  }
+
   return {
     role: msg.role,
-    content: [{ type: "text", text: msg.content }],
+    content: parts,
     id: msg.id,
   };
 }
+
+class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
+  public override accept =
+    "text/plain,text/html,text/markdown,text/csv,text/xml,text/json,text/css,application/javascript,application/typescript,.js,.ts,.tsx,.jsx,.py,.rs,.go,.sh,.sql,.yaml,.yml,.toml,.json";
+}
+
+const attachmentAdapter = new CompositeAttachmentAdapter([
+  new SimpleImageAttachmentAdapter(),
+  new CodeTextAttachmentAdapter(),
+]);
 
 export function useWsRuntime(agentId: string): {
   runtime: AssistantRuntime;
@@ -117,16 +143,40 @@ export function useWsRuntime(agentId: string): {
 
   const onNew = useCallback(
     async (message: AppendMessage) => {
-      // Extract text content from the AppendMessage
       const textParts = message.content.filter((part) => part.type === "text");
       const text = textParts.map((part) => ("text" in part ? part.text : "")).join("");
+      const imageParts = message.content.filter((part) => part.type === "image");
 
-      if (!text.trim()) return;
+      // Check image size limit
+      for (const part of imageParts) {
+        if (
+          "image" in part &&
+          typeof part.image === "string" &&
+          part.image.length > MAX_IMAGE_SIZE
+        ) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: crypto.randomUUID(),
+              role: "assistant",
+              content: "Image exceeds the 5MB size limit. Please use a smaller image.",
+            },
+          ]);
+          return;
+        }
+      }
+
+      if (!text.trim() && imageParts.length === 0) return;
+
+      const images = imageParts
+        .map((part) => ("image" in part ? (part.image as string) : ""))
+        .filter(Boolean);
 
       const userMessage: WsMessage = {
         id: crypto.randomUUID(),
         role: "user",
         content: text,
+        ...(images.length > 0 && { images }),
       };
 
       // Get or create a sessionKey for this agent
@@ -139,10 +189,25 @@ export function useWsRuntime(agentId: string): {
       setMessages((prev) => [...prev, userMessage]);
       setIsRunning(true);
 
+      // Build content: structured array if images present, plain string otherwise
+      let wsContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+      if (images.length > 0) {
+        const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+        if (text) {
+          parts.push({ type: "text", text });
+        }
+        for (const img of images) {
+          parts.push({ type: "image_url", image_url: { url: img } });
+        }
+        wsContent = parts;
+      } else {
+        wsContent = text;
+      }
+
       wsRef.current?.send(
         JSON.stringify({
           type: "message",
-          content: text,
+          content: wsContent,
           agentId,
           sessionKey,
         })
@@ -158,6 +223,9 @@ export function useWsRuntime(agentId: string): {
     isRunning,
     convertMessage: (msg: ThreadMessageLike) => msg,
     onNew,
+    adapters: {
+      attachments: attachmentAdapter,
+    },
   });
 
   return { runtime, isConnected };

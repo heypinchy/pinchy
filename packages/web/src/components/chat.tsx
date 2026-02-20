@@ -30,8 +30,8 @@ export function Chat({ agentId, agentName, configuring = false }: ChatProps) {
 
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <div className="flex flex-col h-full">
-        <header className="p-4 border-b flex items-center justify-between">
+      <div className="flex flex-col h-full min-h-0">
+        <header className="p-4 border-b flex items-center justify-between shrink-0">
           <h1 className="font-bold">{agentName}</h1>
           <div className="flex items-center gap-3">
             <button
@@ -51,7 +51,7 @@ export function Chat({ agentId, agentName, configuring = false }: ChatProps) {
             <span className={`text-xs ${statusColor}`}>{statusMessage}</span>
           </div>
         </header>
-        <div className="flex-1">
+        <div className="flex-1 min-h-0">
           <Thread />
         </div>
       </div>
