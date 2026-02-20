@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, rmSync } from "fs";
 import { join } from "path";
 
 export const ALLOWED_FILES = ["SOUL.md", "USER.md"] as const;
@@ -43,6 +43,16 @@ export function ensureWorkspace(agentId: string): void {
     if (!existsSync(filePath)) {
       writeFileSync(filePath, PLACEHOLDER_CONTENT[file], "utf-8");
     }
+  }
+}
+
+export function deleteWorkspace(agentId: string): void {
+  assertValidAgentId(agentId);
+  const workspacePath = getWorkspacePath(agentId);
+  try {
+    rmSync(workspacePath, { recursive: true, force: true });
+  } catch {
+    // Workspace may not exist, that's fine
   }
 }
 
