@@ -30,7 +30,26 @@ describe("ClientRouter", () => {
     router = new ClientRouter(mockOpenClawClient as any);
   });
 
-  it("should forward browser message to openclaw client.chat()", async () => {
+  it("should forward browser message to openclaw with provided sessionKey", async () => {
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "Hello!" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(createMockClientWs() as any, {
+      type: "message",
+      content: "Hi Smithers",
+      agentId: "agent-1",
+      sessionKey: "my-session-uuid",
+    });
+
+    expect(mockChat).toHaveBeenCalledWith("Hi Smithers", {
+      sessionKey: "my-session-uuid",
+    });
+  });
+
+  it("should forward browser message to openclaw without sessionKey when not provided", async () => {
     async function* fakeStream() {
       yield { type: "text" as const, text: "Hello!" };
       yield { type: "done" as const, text: "" };
@@ -43,9 +62,7 @@ describe("ClientRouter", () => {
       agentId: "agent-1",
     });
 
-    expect(mockChat).toHaveBeenCalledWith("Hi Smithers", {
-      sessionKey: "agent:main:main",
-    });
+    expect(mockChat).toHaveBeenCalledWith("Hi Smithers", {});
   });
 
   it("should send streamed chunks to browser client", async () => {

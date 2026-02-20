@@ -15,6 +15,15 @@ interface WsMessage {
 }
 
 const STREAM_DONE_DEBOUNCE_MS = 1500;
+const SESSION_KEY_PREFIX = "pinchy:session:";
+
+export function getSessionKey(agentId: string): string | null {
+  return localStorage.getItem(`${SESSION_KEY_PREFIX}${agentId}`);
+}
+
+export function clearSession(agentId: string): void {
+  localStorage.removeItem(`${SESSION_KEY_PREFIX}${agentId}`);
+}
 
 function convertMessage(msg: WsMessage): ThreadMessageLike {
   return {
@@ -120,6 +129,13 @@ export function useWsRuntime(agentId: string): {
         content: text,
       };
 
+      // Get or create a sessionKey for this agent
+      let sessionKey = getSessionKey(agentId);
+      if (!sessionKey) {
+        sessionKey = crypto.randomUUID();
+        localStorage.setItem(`${SESSION_KEY_PREFIX}${agentId}`, sessionKey);
+      }
+
       setMessages((prev) => [...prev, userMessage]);
       setIsRunning(true);
 
@@ -128,6 +144,7 @@ export function useWsRuntime(agentId: string): {
           type: "message",
           content: text,
           agentId,
+          sessionKey,
         })
       );
     },

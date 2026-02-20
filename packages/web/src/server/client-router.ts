@@ -7,6 +7,7 @@ interface BrowserMessage {
   type: string;
   content: string;
   agentId: string;
+  sessionKey?: string;
 }
 
 export class ClientRouter {
@@ -18,9 +19,11 @@ export class ClientRouter {
     try {
       // Use OpenClaw's "main" agent. Pinchy's internal agent IDs don't map to
       // OpenClaw agent IDs. Future: configurable agent mapping.
-      const stream = this.openclawClient.chat(message.content, {
-        sessionKey: "agent:main:main",
-      });
+      const chatOptions: Record<string, string> = {};
+      if (message.sessionKey) {
+        chatOptions.sessionKey = message.sessionKey;
+      }
+      const stream = this.openclawClient.chat(message.content, chatOptions);
 
       for await (const chunk of stream) {
         if (chunk.type === "text") {
