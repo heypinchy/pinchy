@@ -53,4 +53,15 @@ describe("AppSidebar", () => {
     );
     expect(screen.getByRole("link", { name: /settings/i })).toBeInTheDocument();
   });
+
+  it("should render a New Agent link that points to /agents/new", () => {
+    render(
+      <SidebarProvider>
+        <AppSidebar agents={[]} />
+      </SidebarProvider>
+    );
+    const newAgentLink = screen.getByRole("link", { name: /new agent/i });
+    expect(newAgentLink).toBeInTheDocument();
+    expect(newAgentLink).toHaveAttribute("href", "/agents/new");
+  });
 });

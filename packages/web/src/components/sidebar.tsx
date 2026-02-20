@@ -1,6 +1,6 @@
 import Link from "next/link";
 import Image from "next/image";
-import { Bot, Settings } from "lucide-react";
+import { Bot, Plus, Settings } from "lucide-react";
 import {
   Sidebar,
   SidebarContent,
@@ -43,6 +43,14 @@ export function AppSidebar({ agents }: AppSidebarProps) {
               </SidebarMenuButton>
             </SidebarMenuItem>
           ))}
+          <SidebarMenuItem>
+            <SidebarMenuButton asChild>
+              <Link href="/agents/new">
+                <Plus className="size-4" />
+                <span>New Agent</span>
+              </Link>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
         </SidebarMenu>
       </SidebarContent>
 
