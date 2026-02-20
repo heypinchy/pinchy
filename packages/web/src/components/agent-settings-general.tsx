@@ -1,10 +1,36 @@
 "use client";
 
-import { useState } from "react";
+import { useForm } from "react-hook-form";
+import { zodResolver } from "@hookform/resolvers/zod";
+import { z } from "zod";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import {
+  Form,
+  FormControl,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormMessage,
+} from "@/components/ui/form";
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectLabel,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
+
+const agentSettingsSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  model: z.string().min(1, "Model is required"),
+});
+
+type AgentSettingsValues = z.infer<typeof agentSettingsSchema>;
 
 interface AgentSettingsGeneralProps {
   agent: { id: string; name: string; model: string };
@@ -23,88 +49,95 @@ export function AgentSettingsGeneral({
   onSaved,
   canDelete,
 }: AgentSettingsGeneralProps) {
-  const [name, setName] = useState(agent.name);
-  const [model, setModel] = useState(agent.model);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<{
-    type: "success" | "error";
-    message: string;
-  } | null>(null);
+  const form = useForm<AgentSettingsValues>({
+    resolver: zodResolver(agentSettingsSchema),
+    defaultValues: {
+      name: agent.name,
+      model: agent.model,
+    },
+  });
 
   const providersWithModels = providers.filter((p) => p.models.length > 0);
 
-  async function handleSave() {
-    setSaving(true);
-    setFeedback(null);
-
+  async function onSubmit(values: AgentSettingsValues) {
     try {
       const res = await fetch(`/api/agents/${agent.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name, model }),
+        body: JSON.stringify({ name: values.name, model: values.model }),
       });
 
       if (!res.ok) {
-        const data = await res.json();
-        setFeedback({ type: "error", message: data.error || "Failed to save" });
+        toast.error("Failed to save settings");
         return;
       }
 
-      setFeedback({ type: "success", message: "Saved." });
+      toast.success("Agent settings saved");
       onSaved?.();
     } catch {
-      setFeedback({ type: "error", message: "Failed to save" });
-    } finally {
-      setSaving(false);
+      toast.error("Failed to save settings");
     }
   }
 
   return (
     <div className="space-y-6">
-      <div className="space-y-2">
-        <Label htmlFor="agent-name">Name</Label>
-        <Input id="agent-name" value={name} onChange={(e) => setName(e.target.value)} />
-      </div>
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+          <FormField
+            control={form.control}
+            name="name"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Name</FormLabel>
+                <FormControl>
+                  <Input {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
-      <div className="space-y-2">
-        <Label htmlFor="agent-model">Model</Label>
-        <select
-          id="agent-model"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          className="flex h-9 w-full rounded-md border border-input bg-transparent px-3 py-1 text-sm shadow-xs transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-        >
-          {providersWithModels.map((provider) => (
-            <optgroup key={provider.id} label={provider.name}>
-              {provider.models.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.name}
-                </option>
-              ))}
-            </optgroup>
-          ))}
-        </select>
-      </div>
+          <FormField
+            control={form.control}
+            name="model"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Model</FormLabel>
+                <Select onValueChange={field.onChange} defaultValue={field.value}>
+                  <FormControl>
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select a model" />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {providersWithModels.map((provider) => (
+                      <SelectGroup key={provider.id}>
+                        <SelectLabel>{provider.name}</SelectLabel>
+                        {provider.models.map((m) => (
+                          <SelectItem key={m.id} value={m.id}>
+                            {m.name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
-      <div className="space-y-3">
-        <Button onClick={handleSave} disabled={saving}>
-          {saving ? "Saving..." : "Save"}
-        </Button>
+          <div className="space-y-3">
+            <Button type="submit" disabled={form.formState.isSubmitting}>
+              {form.formState.isSubmitting ? "Saving..." : "Save"}
+            </Button>
 
-        <p className="text-sm text-muted-foreground">
-          Saving will briefly disconnect all active chats while the agent runtime restarts.
-        </p>
-      </div>
-
-      {feedback && (
-        <p
-          className={
-            feedback.type === "success" ? "text-sm text-green-600" : "text-sm text-red-600"
-          }
-        >
-          {feedback.message}
-        </p>
-      )}
+            <p className="text-sm text-muted-foreground">
+              Saving will briefly disconnect all active chats while the agent runtime restarts.
+            </p>
+          </div>
+        </form>
+      </Form>
 
       {canDelete && (
         <div className="pt-6 border-t">

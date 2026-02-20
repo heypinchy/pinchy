@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentSettingsGeneral } from "@/components/agent-settings-general";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
+}));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
@@ -49,27 +55,17 @@ describe("AgentSettingsGeneral", () => {
     expect(screen.getByLabelText(/name/i)).toHaveValue("Smithers");
   });
 
-  it("should render a Model label and select element", () => {
+  it("should render a Model label and a select trigger", () => {
     render(<AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} />);
 
-    expect(screen.getByLabelText(/model/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/model/i).tagName).toBe("SELECT");
+    expect(screen.getByText("Model")).toBeInTheDocument();
+    expect(screen.getByRole("combobox")).toBeInTheDocument();
   });
 
-  it("should group models by provider in the select", () => {
+  it("should show the currently selected model in the select trigger", () => {
     render(<AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} />);
 
-    const select = screen.getByLabelText(/model/i);
-    const optgroups = select.querySelectorAll("optgroup");
-    expect(optgroups).toHaveLength(2);
-    expect(optgroups[0]).toHaveAttribute("label", "Anthropic");
-    expect(optgroups[1]).toHaveAttribute("label", "OpenAI");
-  });
-
-  it("should pre-select the current model", () => {
-    render(<AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} />);
-
-    expect(screen.getByLabelText(/model/i)).toHaveValue("anthropic/claude-sonnet-4-20250514");
+    expect(screen.getByRole("combobox")).toHaveTextContent("Claude Sonnet 4");
   });
 
   it("should only show providers that have models", () => {
@@ -77,9 +73,9 @@ describe("AgentSettingsGeneral", () => {
 
     render(<AgentSettingsGeneral agent={defaultAgent} providers={providersWithEmpty} />);
 
-    const select = screen.getByLabelText(/model/i);
-    const optgroups = select.querySelectorAll("optgroup");
-    expect(optgroups).toHaveLength(2); // Google excluded because no models
+    // Google should not appear because it has no models
+    // The trigger should still show only the selected model
+    expect(screen.getByRole("combobox")).toHaveTextContent("Claude Sonnet 4");
   });
 
   it("should render a Save button", () => {
@@ -110,7 +106,7 @@ describe("AgentSettingsGeneral", () => {
 
     render(<AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/agents/agent-1", {
@@ -121,32 +117,33 @@ describe("AgentSettingsGeneral", () => {
     });
   });
 
-  it("should send updated name and model values on save", async () => {
+  it("should send updated name on save", async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
-      json: async () => ({ id: "agent-1", name: "Jeeves", model: "openai/gpt-4o" }),
+      json: async () => ({
+        id: "agent-1",
+        name: "Jeeves",
+        model: "anthropic/claude-sonnet-4-20250514",
+      }),
     } as Response);
 
     render(<AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} />);
 
-    fireEvent.change(screen.getByLabelText(/name/i), {
-      target: { value: "Jeeves" },
-    });
-    fireEvent.change(screen.getByLabelText(/model/i), {
-      target: { value: "openai/gpt-4o" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    const nameInput = screen.getByLabelText(/name/i);
+    await userEvent.clear(nameInput);
+    await userEvent.type(nameInput, "Jeeves");
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/agents/agent-1", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "Jeeves", model: "openai/gpt-4o" }),
+        body: JSON.stringify({ name: "Jeeves", model: "anthropic/claude-sonnet-4-20250514" }),
       });
     });
   });
 
-  it("should show success feedback after successful save", async () => {
+  it("should show success toast after successful save", async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
       json: async () => ({
@@ -158,14 +155,14 @@ describe("AgentSettingsGeneral", () => {
 
     render(<AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/saved/i)).toBeInTheDocument();
+      expect(toast.success).toHaveBeenCalledWith("Agent settings saved");
     });
   });
 
-  it("should show error feedback after failed save", async () => {
+  it("should show error toast after failed save", async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: false,
       json: async () => ({ error: "Something went wrong" }),
@@ -173,10 +170,10 @@ describe("AgentSettingsGeneral", () => {
 
     render(<AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} />);
 
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/something went wrong/i)).toBeInTheDocument();
+      expect(toast.error).toHaveBeenCalledWith("Failed to save settings");
     });
   });
 
@@ -195,7 +192,7 @@ describe("AgentSettingsGeneral", () => {
       <AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} onSaved={onSaved} />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /save/i }));
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
 
     await waitFor(() => {
       expect(onSaved).toHaveBeenCalled();
