@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { agents, settings } from "@/db/schema";
+import { agents, settings, agentRoles } from "@/db/schema";
 
 describe("database schema", () => {
   it("should export agents table", () => {
@@ -23,5 +23,26 @@ describe("database schema", () => {
     expect(columns).toContain("key");
     expect(columns).toContain("value");
     expect(columns).toContain("encrypted");
+  });
+});
+
+describe("agents schema — template and plugin columns", () => {
+  it("should have templateId column", () => {
+    expect(agents.templateId).toBeDefined();
+  });
+
+  it("should have pluginConfig column", () => {
+    expect(agents.pluginConfig).toBeDefined();
+  });
+});
+
+describe("agentRoles schema", () => {
+  it("should be exported", () => {
+    expect(agentRoles).toBeDefined();
+  });
+
+  it("should have agentId and role columns", () => {
+    expect(agentRoles.agentId).toBeDefined();
+    expect(agentRoles.role).toBeDefined();
   });
 });

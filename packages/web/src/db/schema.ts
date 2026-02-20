@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, boolean, integer, primaryKey } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, boolean, integer, primaryKey, jsonb } from "drizzle-orm/pg-core";
 import type { AdapterAccountType } from "next-auth/adapters";
 
 // ── Auth.js tables ─────────────────────────────────────────────────────
@@ -69,7 +69,19 @@ export const agents = pgTable("agents", {
     .$defaultFn(() => crypto.randomUUID()),
   name: text("name").notNull().default("Smithers"),
   model: text("model").notNull(),
+  templateId: text("template_id"),
+  pluginConfig: jsonb("plugin_config"),
   createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const agentRoles = pgTable("agent_roles", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  agentId: text("agent_id")
+    .notNull()
+    .references(() => agents.id, { onDelete: "cascade" }),
+  role: text("role").notNull(),
 });
 
 export const settings = pgTable("settings", {
