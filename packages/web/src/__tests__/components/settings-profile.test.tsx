@@ -4,6 +4,10 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { SettingsProfile } from "@/components/settings-profile";
 
+vi.mock("next-auth/react", () => ({
+  signOut: vi.fn(),
+}));
+
 describe("SettingsProfile", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
@@ -172,5 +176,22 @@ describe("SettingsProfile", () => {
     await waitFor(() => {
       expect(screen.getByText("Current password is incorrect")).toBeInTheDocument();
     });
+  });
+
+  it("should render a Log out button", () => {
+    render(<SettingsProfile userName="Alice" />);
+
+    expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
+  });
+
+  it("should call signOut when Log out is clicked", async () => {
+    const user = userEvent.setup();
+    const { signOut } = await import("next-auth/react");
+
+    render(<SettingsProfile userName="Alice" />);
+
+    await user.click(screen.getByRole("button", { name: "Log out" }));
+
+    expect(signOut).toHaveBeenCalledWith({ callbackUrl: "/login" });
   });
 });

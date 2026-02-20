@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { signOut } from "next-auth/react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -159,6 +160,16 @@ export function SettingsProfile({ userName }: SettingsProfileProps) {
           )}
           <Button onClick={handleChangePassword} disabled={passwordSaving}>
             Change Password
+          </Button>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader>
+          <CardTitle>Session</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <Button variant="outline" onClick={() => signOut({ callbackUrl: "/login" })}>
+            Log out
           </Button>
         </CardContent>
       </Card>
