@@ -1,8 +1,13 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { dirname } from "path";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
+import { db } from "@/db";
+import { agents } from "@/db/schema";
+import { getSetting } from "@/lib/settings";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
+const OPENCLAW_WORKSPACE_PREFIX =
+  process.env.OPENCLAW_WORKSPACE_PREFIX || "/root/.openclaw/workspaces";
 
 interface OpenClawConfigParams {
   provider: ProviderName;
@@ -55,6 +60,55 @@ export function writeOpenClawConfig({ provider, apiKey, model }: OpenClawConfigP
       defaults: {
         model: { primary: model },
       },
+    },
+  };
+
+  const merged = deepMerge(existing, pinchyFields);
+
+  const dir = dirname(CONFIG_PATH);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf-8");
+}
+
+export async function regenerateOpenClawConfig() {
+  const existing = readExistingConfig();
+
+  // Read all agents from DB
+  const allAgents = await db.select().from(agents);
+
+  // Read provider API keys from settings
+  const env: Record<string, string> = {};
+  for (const [, providerConfig] of Object.entries(PROVIDERS)) {
+    const apiKey = await getSetting(providerConfig.settingsKey);
+    if (apiKey) {
+      env[providerConfig.envVar] = apiKey;
+    }
+  }
+
+  // Read default provider to set defaults.model
+  const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
+  const defaults: Record<string, unknown> = {};
+  if (defaultProvider && PROVIDERS[defaultProvider]) {
+    defaults.model = { primary: PROVIDERS[defaultProvider].defaultModel };
+  }
+
+  // Build agents list with OpenClaw-side workspace paths
+  const agentsList = allAgents.map((agent) => ({
+    id: agent.id,
+    name: agent.name,
+    model: agent.model,
+    workspace: `${OPENCLAW_WORKSPACE_PREFIX}/${agent.id}`,
+  }));
+
+  const pinchyFields = {
+    gateway: { mode: "local", bind: "lan" },
+    env,
+    agents: {
+      defaults,
+      list: agentsList,
     },
   };
 
