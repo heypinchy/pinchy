@@ -32,7 +32,7 @@ We appreciate responsible disclosure. Contributors who report valid security iss
 Pinchy is built with security as a core design principle:
 
 - **Self-hosted by default** — your data never leaves your infrastructure
-- **Plugin permission layer** — agents get scoped access, not raw tools
-- **Audit trail** — every agent action is logged
-- **Role-based access control** — granular permissions per user and agent
+- **Agent permission layer** — agents get scoped tool access via an allow-list model. No tools are available by default; admins explicitly enable them per agent.
+- **Two-tier access control** — admin and user roles with agent-level access checks (personal vs. shared agents)
+- **Encryption at rest** — provider API keys are encrypted with AES-256-GCM
 - **Offline-capable** — works without any external network calls
