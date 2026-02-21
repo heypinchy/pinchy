@@ -1,5 +1,6 @@
 import { defineConfig, passthroughImageService } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import starlightClientMermaid from '@pasqal-io/starlight-client-mermaid';
 
 export default defineConfig({
   site: 'https://docs.heypinchy.com',
@@ -9,6 +10,7 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'Pinchy',
+      plugins: [starlightClientMermaid()],
       head: process.env.UMAMI_WEBSITE_ID ? [
         {
           tag: 'script',

@@ -7,36 +7,40 @@ description: How Pinchy wraps OpenClaw, the request flow, and the tech stack.
 
 Pinchy is **not a fork** of OpenClaw. It's a governance layer on top of it. OpenClaw handles agent execution, tool use, and model communication. Pinchy adds authentication, provider management, agent permissions, and (soon) audit trails and team management.
 
-```
-┌─────────────────────────────────────────────┐
-│                  Browser                     │
-│         (Next.js React Frontend)             │
-└──────────┬──────────────────┬───────────────┘
-           │ HTTPS            │ WebSocket
-           │ (pages, API)     │ (/api/ws)
-           ▼                  ▼
-┌─────────────────────────────────────────────┐
-│              Pinchy (Node.js)                │
-│                                             │
-│  ┌──────────┐  ┌──────────┐  ┌───────────┐ │
-│  │ Next.js  │  │    WS    │  │   Auth    │ │
-│  │  Pages   │  │  Bridge  │  │  (Auth.js)│ │
-│  └──────────┘  └────┬─────┘  └───────────┘ │
-│                     │                       │
-│  ┌──────────────────┴───────────────────┐   │
-│  │          Drizzle ORM                 │   │
-│  └──────────────────┬───────────────────┘   │
-│                     │                       │
-└─────────────────────┼───────────────────────┘
-                      │
-          ┌───────────┼───────────┐
-          ▼                       ▼
-┌──────────────────┐   ┌──────────────────┐
-│   PostgreSQL 16  │   │    OpenClaw      │
-│                  │   │    Gateway       │
-│  users, agents,  │   │   (port 18789)  │
-│  settings, keys  │   │                 │
-└──────────────────┘   └──────────────────┘
+```mermaid
+---
+config:
+  theme: base
+  themeVariables:
+    primaryColor: "#fef2f2"
+    primaryBorderColor: "#ef4444"
+    primaryTextColor: "#1c1917"
+    lineColor: "#78716c"
+    secondaryColor: "#fff7ed"
+    tertiaryColor: "#fef2f2"
+    clusterBkg: "#fff7ed"
+    clusterBorder: "#f97316"
+  flowchart:
+    curve: linear
+    rankSpacing: 80
+---
+graph TD
+    Browser["Browser<br/>(Next.js React Frontend)"]
+    Browser --> Pages
+    Browser --> WS
+
+    subgraph Pinchy["Pinchy (Node.js)"]
+        Pages["Next.js Pages<br/>(HTTPS)"]
+        Auth["Auth (Auth.js)"]
+        WS["WS Bridge<br/>(/api/ws)"]
+        ORM["Drizzle ORM"]
+        Pages --- ORM
+        Auth --- ORM
+        WS --- ORM
+    end
+
+    ORM --> DB["PostgreSQL 16"]
+    ORM --> OC["OpenClaw Gateway<br/>(port 18789)"]
 ```
 
 ## Request flow
