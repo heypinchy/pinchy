@@ -104,6 +104,27 @@ describe("POST /api/agents", () => {
     );
   });
 
+  it("should set allowedTools from template", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          allowed_paths: ["/data/hr-docs/"],
+        },
+      }),
+    });
+
+    await POST(request);
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedTools: ["pinchy_ls", "pinchy_read"],
+      })
+    );
+  });
+
   it("should reject unknown template", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",

@@ -96,7 +96,7 @@ export async function regenerateOpenClawConfig() {
     defaults.model = { primary: PROVIDERS[defaultProvider].defaultModel };
   }
 
-  // Build agents list with OpenClaw-side workspace paths, tools.deny, and plugin configs
+  // Build agents list with OpenClaw-side workspace paths, tools.allow, and plugin configs
   const pluginConfigs: Record<string, Record<string, Record<string, unknown>>> = {};
 
   const agentsList = allAgents.map((agent) => {
@@ -109,9 +109,10 @@ export async function regenerateOpenClawConfig() {
       workspace: `${OPENCLAW_WORKSPACE_PREFIX}/${agent.id}`,
     };
 
-    // Add tools.deny if the template has denied tool groups
-    if (template && template.deniedToolGroups.length > 0) {
-      agentEntry.tools = { deny: template.deniedToolGroups };
+    // Add tools.allow if the agent has allowed tools configured
+    const allowedTools = (agent as { allowedTools?: string[] }).allowedTools;
+    if (allowedTools && allowedTools.length > 0) {
+      agentEntry.tools = { allow: allowedTools };
     }
 
     // Collect plugin config per agent

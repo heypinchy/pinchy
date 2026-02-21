@@ -40,7 +40,7 @@ vi.mock("@/lib/agent-templates", () => ({
       return {
         name: "Knowledge Base",
         description: "Answer questions from your docs",
-        deniedToolGroups: ["group:runtime", "group:fs", "group:web"],
+        allowedTools: ["pinchy_ls", "pinchy_read"],
         pluginId: "pinchy-files",
         defaultSoulMd: "",
       };
@@ -49,7 +49,7 @@ vi.mock("@/lib/agent-templates", () => ({
       return {
         name: "Custom Agent",
         description: "Start from scratch",
-        deniedToolGroups: [],
+        allowedTools: [],
         pluginId: null,
         defaultSoulMd: "",
       };
@@ -353,7 +353,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.agents.defaults).toEqual({});
   });
 
-  it("should include tools.deny for knowledge-base agents", async () => {
+  it("should include tools.allow for knowledge-base agents", async () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockResolvedValue([
         {
@@ -362,6 +362,7 @@ describe("regenerateOpenClawConfig", () => {
           model: "anthropic/claude-haiku-4-5-20251001",
           templateId: "knowledge-base",
           pluginConfig: { allowed_paths: ["/data/hr-docs/", "/data/policies/"] },
+          allowedTools: ["pinchy_ls", "pinchy_read"],
           createdAt: new Date(),
         },
         {
@@ -370,6 +371,7 @@ describe("regenerateOpenClawConfig", () => {
           model: "anthropic/claude-opus-4-6",
           templateId: "custom",
           pluginConfig: null,
+          allowedTools: [],
           createdAt: new Date(),
         },
       ]),
@@ -382,12 +384,11 @@ describe("regenerateOpenClawConfig", () => {
     const kbAgent = config.agents.list.find((a: { id: string }) => a.id === "kb-agent-id");
 
     expect(kbAgent.tools).toBeDefined();
-    expect(kbAgent.tools.deny).toContain("group:runtime");
-    expect(kbAgent.tools.deny).toContain("group:fs");
-    expect(kbAgent.tools.deny).toContain("group:web");
+    expect(kbAgent.tools.allow).toContain("pinchy_ls");
+    expect(kbAgent.tools.allow).toContain("pinchy_read");
   });
 
-  it("should not include tools.deny for custom agents", async () => {
+  it("should not include tools.allow for custom agents", async () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockResolvedValue([
         {
@@ -396,6 +397,7 @@ describe("regenerateOpenClawConfig", () => {
           model: "anthropic/claude-opus-4-6",
           templateId: "custom",
           pluginConfig: null,
+          allowedTools: [],
           createdAt: new Date(),
         },
       ]),

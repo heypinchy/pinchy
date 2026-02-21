@@ -87,6 +87,7 @@ export async function POST(request: NextRequest) {
       templateId,
       pluginConfig: template.pluginId ? pluginConfig : null,
       ownerId: session.user.id,
+      allowedTools: template.allowedTools,
     })
     .returning();
 
