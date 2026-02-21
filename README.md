@@ -67,20 +67,23 @@ Then open [http://localhost:7777](http://localhost:7777) — the setup wizard wi
 ### What works today
 
 - **Setup wizard** — Create your admin account on first run
-- **Authentication** — Credentials-based login with session management
-- **Agent chat** — Real-time WebSocket chat with OpenClaw agents
-- **Agent settings** — Configure name, model, and system prompt per agent
-- **Docker Compose deployment** — Single command to run the full stack (Pinchy + OpenClaw + PostgreSQL)
-- **CI pipeline** — Automated linting, testing, and security auditing via GitHub Actions
+- **Authentication** — Credentials-based login with JWT sessions
+- **Multi-user** — Invite users, admin and user roles, personal and shared agents
+- **Agent chat** — Real-time WebSocket chat with OpenClaw agents, conversation history
+- **Agent permissions** — Allow-list model for agent tools (safe and powerful categories)
+- **Agent settings** — Configure name, model, system prompt, and tool permissions per agent
+- **Knowledge Base agents** — Create agents with scoped read-only access to specific directories
+- **Provider management** — Configure API keys for Anthropic, OpenAI, and Google
+- **Docker Compose deployment** — Single command to run the full stack
+- **CI pipeline** — Automated linting, testing, and security auditing
 
 ### What's coming
 
-- Plugin architecture for scoped agent tools
-- Role-based access control (RBAC)
-- Audit trail logging
-- Multi-user and team management
+- Full RBAC with team-scoped permissions
+- Audit trail logging (every agent action)
+- Plugin marketplace for agent tools
 - Cross-channel workflows (email, Slack)
-- Conversation history
+- Admin dashboard with usage analytics
 
 Follow our progress on [the blog](https://heypinchy.com/blog/building-pinchy-in-public) and [LinkedIn](https://linkedin.com/in/clemenshelm).
 
