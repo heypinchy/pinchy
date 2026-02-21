@@ -251,7 +251,7 @@ describe("ClientRouter", () => {
     const messages = clientWs.sent.map((s) => JSON.parse(s));
     expect(messages).toHaveLength(1);
     expect(messages[0].type).toBe("error");
-    expect(messages[0].message).toBe("OpenClaw unavailable");
+    expect(messages[0].message).toBe("Something went wrong. Please try again.");
   });
 
   it("should not send to client if WebSocket is not open", async () => {
@@ -464,7 +464,42 @@ describe("ClientRouter", () => {
     const sent = clientWs.sent.map((s) => JSON.parse(s));
     expect(sent).toHaveLength(1);
     expect(sent[0].type).toBe("error");
-    expect(sent[0].message).toBe("Gateway unavailable");
+    expect(sent[0].message).toBe("Something went wrong. Please try again.");
+  });
+
+  it("should sanitize internal error messages before sending to client", async () => {
+    const clientWs = createMockClientWs();
+    mockChat.mockImplementation(async function* () {
+      throw new Error("ECONNREFUSED 127.0.0.1:18789 - WebSocket connection failed");
+    });
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    expect(messages[0].type).toBe("error");
+    expect(messages[0].message).not.toContain("ECONNREFUSED");
+    expect(messages[0].message).not.toContain("127.0.0.1");
+    expect(messages[0].message).toBe("Something went wrong. Please try again.");
+  });
+
+  it("should sanitize history error messages before sending to client", async () => {
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockRejectedValue(new Error("Internal: /root/.openclaw/config error"));
+
+    await router.handleMessage(clientWs as any, {
+      type: "history",
+      content: "",
+      agentId: "agent-1",
+    });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].type).toBe("error");
+    expect(sent[0].message).not.toContain("/root/");
+    expect(sent[0].message).toBe("Something went wrong. Please try again.");
   });
 
   it("should allow admin to access personal agents of other users", async () => {

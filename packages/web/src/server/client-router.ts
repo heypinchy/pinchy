@@ -112,7 +112,7 @@ export class ClientRouter {
     } catch (err) {
       this.sendToClient(clientWs, {
         type: "error",
-        message: err instanceof Error ? err.message : "Unknown error",
+        message: this.sanitizeError(err),
         messageId,
       });
     }
@@ -157,9 +157,13 @@ export class ClientRouter {
     } catch (err) {
       this.sendToClient(clientWs, {
         type: "error",
-        message: err instanceof Error ? err.message : "Unknown error",
+        message: this.sanitizeError(err),
       });
     }
+  }
+
+  private sanitizeError(_err: unknown): string {
+    return "Something went wrong. Please try again.";
   }
 
   private sendToClient(ws: WebSocket, data: Record<string, unknown>): void {
