@@ -9,6 +9,7 @@ import { ensureWorkspace, writeWorkspaceFile } from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { getSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
+import { appendAuditLog } from "@/lib/audit";
 
 export async function GET() {
   const session = await auth();
@@ -85,6 +86,14 @@ export async function POST(request: NextRequest) {
       allowedTools: template.allowedTools,
     })
     .returning();
+
+  appendAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "agent.created",
+    resource: `agent:${agent.id}`,
+    detail: { name: agent.name, model: agent.model, templateId },
+  }).catch(() => {});
 
   // Create workspace with template's default SOUL.md
   ensureWorkspace(agent.id);

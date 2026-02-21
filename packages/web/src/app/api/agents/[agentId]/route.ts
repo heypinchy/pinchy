@@ -3,6 +3,7 @@ import { updateAgent, deleteAgent } from "@/lib/agents";
 import { auth } from "@/lib/auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { appendAuditLog } from "@/lib/audit";
 
 export async function GET(
   request: NextRequest,
@@ -70,6 +71,14 @@ export async function PATCH(
 
   const agent = await updateAgent(agentId, data);
 
+  appendAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "agent.updated",
+    resource: `agent:${agentId}`,
+    detail: { changes: Object.keys(data) },
+  }).catch(() => {});
+
   // Regenerate config when permissions change
   if (data.allowedTools !== undefined || data.pluginConfig !== undefined) {
     await regenerateOpenClawConfig();
@@ -105,6 +114,14 @@ export async function DELETE(
   }
 
   await deleteAgent(agentId);
+
+  appendAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "agent.deleted",
+    resource: `agent:${agentId}`,
+    detail: { name: agent.name },
+  }).catch(() => {});
 
   return NextResponse.json({ success: true });
 }
