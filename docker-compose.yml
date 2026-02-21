@@ -6,9 +6,9 @@ services:
     ports:
       - "7777:7777"
     environment:
-      - DATABASE_URL=postgresql://pinchy:${DB_PASSWORD:-pinchy_dev}@db:5432/pinchy
-      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-dev-secret-change-in-production}
-      - NEXTAUTH_URL=http://localhost:7777
+      - DATABASE_URL=postgresql://pinchy:${DB_PASSWORD}@db:5432/pinchy
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:7777}
       - AUTH_TRUST_HOST=true
       - OPENCLAW_WS_URL=ws://openclaw:18789
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
@@ -40,7 +40,7 @@ services:
     environment:
       - POSTGRES_DB=pinchy
       - POSTGRES_USER=pinchy
-      - POSTGRES_PASSWORD=${DB_PASSWORD:-pinchy_dev}
+      - POSTGRES_PASSWORD=${DB_PASSWORD}
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pinchy"]
       interval: 5s

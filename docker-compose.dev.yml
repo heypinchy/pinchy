@@ -3,11 +3,17 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.pinchy.dev
+    environment:
+      - DATABASE_URL=postgresql://pinchy:pinchy_dev@db:5432/pinchy
+      - NEXTAUTH_SECRET=dev-secret-do-not-use-in-production
+      - NEXTAUTH_URL=http://localhost:7777
     volumes:
       - ./packages/web:/app/packages/web
       - /app/packages/web/node_modules
       - /app/packages/web/.next
       - ./sample-data:/data/sample-docs
   db:
+    environment:
+      - POSTGRES_PASSWORD=pinchy_dev
     ports:
       - "5433:5432"
