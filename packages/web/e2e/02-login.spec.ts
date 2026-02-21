@@ -12,9 +12,7 @@ test.describe("Login", () => {
     await expect(page).toHaveURL(/\/login/);
   });
 
-  test("logs in with valid credentials and redirects to provider setup", async ({
-    page,
-  }) => {
+  test("logs in with valid credentials and redirects to provider setup", async ({ page }) => {
     await page.goto("/login");
 
     await page.getByLabel(/email/i).fill("admin@test.local");
