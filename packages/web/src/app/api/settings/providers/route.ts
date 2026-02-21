@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
+import { requireAdmin } from "@/lib/api-auth";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { writeOpenClawConfig } from "@/lib/openclaw-config";
@@ -30,10 +31,8 @@ export async function GET() {
 }
 
 export async function DELETE(request: Request) {
-  const session = await auth();
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const adminResult = await requireAdmin();
+  if (adminResult instanceof NextResponse) return adminResult;
 
   const body = await request.json();
   const provider = body.provider as ProviderName;

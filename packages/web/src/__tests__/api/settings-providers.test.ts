@@ -2,7 +2,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GET, DELETE } from "@/app/api/settings/providers/route";
 
 vi.mock("@/lib/auth", () => ({
-  auth: vi.fn().mockResolvedValue({ user: { id: "1", email: "admin@test.com" } }),
+  auth: vi.fn().mockResolvedValue({
+    user: { id: "1", email: "admin@test.com", role: "admin" },
+  }),
 }));
 
 vi.mock("@/lib/providers", () => ({
@@ -152,6 +154,18 @@ describe("DELETE /api/settings/providers", () => {
     const response = await DELETE(makeRequest({ provider: "anthropic" }));
 
     expect(response.status).toBe(401);
+  });
+
+  it("should return 403 when non-admin user tries to delete", async () => {
+    vi.mocked(auth).mockResolvedValueOnce({
+      user: { id: "2", email: "user@test.com", role: "user" },
+    } as any);
+
+    const response = await DELETE(makeRequest({ provider: "anthropic" }));
+
+    expect(response.status).toBe(403);
+    const data = await response.json();
+    expect(data.error).toBe("Forbidden");
   });
 
   it("should return 400 for invalid provider name", async () => {
