@@ -3,6 +3,10 @@ set -e
 
 echo "OpenClaw Gateway starting..."
 
+# Ensure gateway auth token exists before starting (prevents crash loop
+# when no token is configured yet, e.g. on first startup before setup wizard)
+node /ensure-gateway-token.js
+
 # Auto-approve pending device pairing requests (needed for Docker networking
 # where connections come from container IPs, not localhost)
 auto_approve_devices() {

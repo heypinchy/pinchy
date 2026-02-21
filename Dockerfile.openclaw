@@ -5,6 +5,7 @@ RUN apt-get update && apt-get install -y git inotify-tools && rm -rf /var/lib/ap
 RUN npm install -g openclaw@latest
 
 COPY config/openclaw.json /root/.openclaw/openclaw.json
+COPY config/ensure-gateway-token.js /ensure-gateway-token.js
 COPY config/start-openclaw.sh /start-openclaw.sh
 RUN chmod +x /start-openclaw.sh
 
