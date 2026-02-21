@@ -71,8 +71,23 @@ export const agents = pgTable("agents", {
   model: text("model").notNull(),
   templateId: text("template_id"),
   pluginConfig: jsonb("plugin_config"),
+  allowedTools: jsonb("allowed_tools").$type<string[]>().notNull().default([]),
   ownerId: text("owner_id").references(() => users.id, { onDelete: "cascade" }),
   isPersonal: boolean("is_personal").notNull().default(false),
+  createdAt: timestamp("created_at").defaultNow(),
+});
+
+export const chatSessions = pgTable("chat_sessions", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  sessionKey: text("session_key").notNull().unique(),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  agentId: text("agent_id")
+    .notNull()
+    .references(() => agents.id, { onDelete: "cascade" }),
   createdAt: timestamp("created_at").defaultNow(),
 });
 
