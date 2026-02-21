@@ -57,6 +57,13 @@
       "when": 1771697903579,
       "tag": "0007_complex_ultron",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1771704351301,
+      "tag": "0008_dear_vivisector",
+      "breakpoints": true
     }
   ]
 }
