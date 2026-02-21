@@ -57,6 +57,86 @@ vi.mock("@/lib/providers", () => ({
 
 import { ensureWorkspace, writeWorkspaceFile } from "@/lib/workspace";
 
+describe("createSmithersAgent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("inserts an agent with the given model, ownerId, and isPersonal", async () => {
+    const fakeAgent = {
+      id: "agent-shared-1",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    const agent = await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+    });
+
+    expect(valuesMock).toHaveBeenCalledWith({
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+    });
+    expect(agent).toEqual(fakeAgent);
+  });
+
+  it("sets up workspace and writes SOUL.md", async () => {
+    const fakeAgent = {
+      id: "agent-shared-2",
+      name: "Smithers",
+      model: "openai/gpt-4o-mini",
+      ownerId: null,
+      isPersonal: false,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "openai/gpt-4o-mini",
+      ownerId: null,
+      isPersonal: false,
+    });
+
+    expect(ensureWorkspace).toHaveBeenCalledWith("agent-shared-2");
+    expect(writeWorkspaceFile).toHaveBeenCalledWith(
+      "agent-shared-2",
+      "SOUL.md",
+      "# Smithers\n\nTest soul content"
+    );
+  });
+
+  it("returns the created agent", async () => {
+    const fakeAgent = {
+      id: "agent-shared-3",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-99",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    const agent = await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-99",
+      isPersonal: true,
+    });
+
+    expect(agent).toEqual(fakeAgent);
+  });
+});
+
 describe("seedPersonalAgent", () => {
   beforeEach(() => {
     vi.clearAllMocks();
