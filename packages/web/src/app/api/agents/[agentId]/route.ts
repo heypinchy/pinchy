@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { db } from "@/db";
-import { agents } from "@/db/schema";
-import { eq } from "drizzle-orm";
 import { updateAgent, deleteAgent } from "@/lib/agents";
 import { auth } from "@/lib/auth";
-import { assertAgentAccess } from "@/lib/agent-access";
+import { getAgentWithAccess } from "@/lib/agent-access";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 
 export async function GET(
@@ -18,19 +15,13 @@ export async function GET(
 
   const { agentId } = await params;
 
-  const agent = await db.query.agents.findFirst({
-    where: eq(agents.id, agentId),
-  });
-
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
-
-  try {
-    assertAgentAccess(agent, session.user.id!, session.user.role || "user");
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const agentOrError = await getAgentWithAccess(
+    agentId,
+    session.user.id!,
+    session.user.role || "user"
+  );
+  if (agentOrError instanceof NextResponse) return agentOrError;
+  const agent = agentOrError;
 
   return NextResponse.json(agent);
 }
@@ -46,19 +37,13 @@ export async function PATCH(
 
   const { agentId } = await params;
 
-  const existingAgent = await db.query.agents.findFirst({
-    where: eq(agents.id, agentId),
-  });
-
-  if (!existingAgent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
-
-  try {
-    assertAgentAccess(existingAgent, session.user.id!, session.user.role || "user");
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const existingAgentOrError = await getAgentWithAccess(
+    agentId,
+    session.user.id!,
+    session.user.role || "user"
+  );
+  if (existingAgentOrError instanceof NextResponse) return existingAgentOrError;
+  const existingAgent = existingAgentOrError;
 
   const body = await request.json();
 
@@ -107,19 +92,13 @@ export async function DELETE(
 
   const { agentId } = await params;
 
-  const agent = await db.query.agents.findFirst({
-    where: eq(agents.id, agentId),
-  });
-
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
-
-  try {
-    assertAgentAccess(agent, session.user.id!, session.user.role || "user");
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const agentOrError = await getAgentWithAccess(
+    agentId,
+    session.user.id!,
+    session.user.role || "user"
+  );
+  if (agentOrError instanceof NextResponse) return agentOrError;
+  const agent = agentOrError;
 
   if (agent.isPersonal) {
     return NextResponse.json({ error: "Personal agents cannot be deleted" }, { status: 400 });

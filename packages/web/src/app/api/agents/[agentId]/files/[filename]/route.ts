@@ -1,10 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
-import { db } from "@/db";
-import { agents } from "@/db/schema";
-import { eq } from "drizzle-orm";
 import { readWorkspaceFile, writeWorkspaceFile } from "@/lib/workspace";
-import { assertAgentAccess } from "@/lib/agent-access";
+import { getAgentWithAccess } from "@/lib/agent-access";
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
@@ -16,18 +13,12 @@ export async function GET(request: NextRequest, { params }: Params) {
 
   const { agentId, filename } = await params;
 
-  const agent = await db.query.agents.findFirst({
-    where: eq(agents.id, agentId),
-  });
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
-
-  try {
-    assertAgentAccess(agent, session.user.id!, session.user.role || "user");
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const agentOrError = await getAgentWithAccess(
+    agentId,
+    session.user.id!,
+    session.user.role || "user"
+  );
+  if (agentOrError instanceof NextResponse) return agentOrError;
 
   try {
     const content = readWorkspaceFile(agentId, filename);
@@ -46,18 +37,12 @@ export async function PUT(request: NextRequest, { params }: Params) {
 
   const { agentId, filename } = await params;
 
-  const agent = await db.query.agents.findFirst({
-    where: eq(agents.id, agentId),
-  });
-  if (!agent) {
-    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
-  }
-
-  try {
-    assertAgentAccess(agent, session.user.id!, session.user.role || "user");
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const agentOrError = await getAgentWithAccess(
+    agentId,
+    session.user.id!,
+    session.user.role || "user"
+  );
+  if (agentOrError instanceof NextResponse) return agentOrError;
 
   const { content } = await request.json();
 

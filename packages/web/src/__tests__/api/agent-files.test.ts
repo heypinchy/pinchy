@@ -1,22 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 vi.mock("@/lib/auth", () => ({
   auth: vi.fn().mockResolvedValue({ user: { id: "1", email: "admin@test.com" } }),
-}));
-
-vi.mock("@/db", () => ({
-  db: {
-    query: {
-      agents: {
-        findFirst: vi.fn().mockResolvedValue({
-          id: "agent-1",
-          name: "Smithers",
-          model: "anthropic/claude-sonnet-4-20250514",
-        }),
-      },
-    },
-  },
 }));
 
 vi.mock("@/lib/workspace", () => ({
@@ -25,14 +11,22 @@ vi.mock("@/lib/workspace", () => ({
 }));
 
 vi.mock("@/lib/agent-access", () => ({
-  assertAgentAccess: vi.fn(),
+  getAgentWithAccess: vi.fn(),
 }));
 
 import { auth } from "@/lib/auth";
-import { db } from "@/db";
 import { readWorkspaceFile, writeWorkspaceFile } from "@/lib/workspace";
-import { assertAgentAccess } from "@/lib/agent-access";
+import { getAgentWithAccess } from "@/lib/agent-access";
 import { GET, PUT } from "@/app/api/agents/[agentId]/files/[filename]/route";
+
+const defaultAgent = {
+  id: "agent-1",
+  name: "Smithers",
+  model: "anthropic/claude-sonnet-4-20250514",
+  ownerId: null,
+  isPersonal: false,
+  createdAt: new Date(),
+};
 
 function makeGetRequest(agentId: string, filename: string) {
   return new NextRequest(`http://localhost/api/agents/${agentId}/files/${filename}`, {
@@ -57,14 +51,7 @@ describe("GET /api/agents/[agentId]/files/[filename]", () => {
     vi.clearAllMocks();
     // Restore default mocks
     vi.mocked(auth).mockResolvedValue({ user: { id: "1", email: "admin@test.com" } } as any);
-    vi.mocked(db.query.agents.findFirst).mockResolvedValue({
-      id: "agent-1",
-      name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
-      ownerId: null,
-      isPersonal: false,
-      createdAt: new Date(),
-    });
+    vi.mocked(getAgentWithAccess).mockResolvedValue(defaultAgent);
     vi.mocked(readWorkspaceFile).mockReturnValue("# Soul content");
   });
 
@@ -90,9 +77,9 @@ describe("GET /api/agents/[agentId]/files/[filename]", () => {
   });
 
   it("should return 403 when user has no access to agent", async () => {
-    vi.mocked(assertAgentAccess).mockImplementationOnce(() => {
-      throw new Error("Access denied");
-    });
+    vi.mocked(getAgentWithAccess).mockResolvedValueOnce(
+      NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    );
 
     const request = makeGetRequest("agent-1", "SOUL.md");
     const response = await GET(request, makeParams("agent-1", "SOUL.md"));
@@ -103,7 +90,9 @@ describe("GET /api/agents/[agentId]/files/[filename]", () => {
   });
 
   it("should return 404 when agent does not exist", async () => {
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce(undefined);
+    vi.mocked(getAgentWithAccess).mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
 
     const request = makeGetRequest("nonexistent", "SOUL.md");
     const response = await GET(request, makeParams("nonexistent", "SOUL.md"));
@@ -154,14 +143,7 @@ describe("PUT /api/agents/[agentId]/files/[filename]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(auth).mockResolvedValue({ user: { id: "1", email: "admin@test.com" } } as any);
-    vi.mocked(db.query.agents.findFirst).mockResolvedValue({
-      id: "agent-1",
-      name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
-      ownerId: null,
-      isPersonal: false,
-      createdAt: new Date(),
-    });
+    vi.mocked(getAgentWithAccess).mockResolvedValue(defaultAgent);
   });
 
   it("should write file content and return success", async () => {
@@ -190,9 +172,9 @@ describe("PUT /api/agents/[agentId]/files/[filename]", () => {
   });
 
   it("should return 403 when user has no access to agent", async () => {
-    vi.mocked(assertAgentAccess).mockImplementationOnce(() => {
-      throw new Error("Access denied");
-    });
+    vi.mocked(getAgentWithAccess).mockResolvedValueOnce(
+      NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    );
 
     const request = makePutRequest("agent-1", "SOUL.md", { content: "# Evil" });
     const response = await PUT(request, makeParams("agent-1", "SOUL.md"));
@@ -203,7 +185,9 @@ describe("PUT /api/agents/[agentId]/files/[filename]", () => {
   });
 
   it("should return 404 when agent does not exist", async () => {
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce(undefined);
+    vi.mocked(getAgentWithAccess).mockResolvedValueOnce(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
 
     const request = makePutRequest("nonexistent", "SOUL.md", {
       content: "# Updated soul",

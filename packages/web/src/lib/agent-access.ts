@@ -1,3 +1,8 @@
+import { NextResponse } from "next/server";
+import { db } from "@/db";
+import { agents } from "@/db/schema";
+import { eq } from "drizzle-orm";
+
 interface AgentForAccess {
   id: string;
   ownerId: string | null;
@@ -18,4 +23,22 @@ export function assertAgentAccess(agent: AgentForAccess, userId: string, userRol
   if (agent.ownerId === userId) return;
 
   throw new Error("Access denied");
+}
+
+export async function getAgentWithAccess(agentId: string, userId: string, userRole: string) {
+  const agent = await db.query.agents.findFirst({
+    where: eq(agents.id, agentId),
+  });
+
+  if (!agent) {
+    return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+  }
+
+  try {
+    assertAgentAccess(agent, userId, userRole);
+  } catch {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+
+  return agent;
 }

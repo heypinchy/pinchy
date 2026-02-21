@@ -1,5 +1,18 @@
-import { describe, it, expect } from "vitest";
-import { assertAgentAccess } from "@/lib/agent-access";
+import { describe, it, expect, vi } from "vitest";
+import { NextResponse } from "next/server";
+import { assertAgentAccess, getAgentWithAccess } from "@/lib/agent-access";
+
+vi.mock("@/db", () => ({
+  db: {
+    query: {
+      agents: {
+        findFirst: vi.fn(),
+      },
+    },
+  },
+}));
+
+import { db } from "@/db";
 
 describe("assertAgentAccess", () => {
   it("allows admin access to any agent", () => {
@@ -25,5 +38,41 @@ describe("assertAgentAccess", () => {
   it("allows admin access to personal agent of another user", () => {
     const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
     expect(() => assertAgentAccess(agent, "admin-user", "admin")).not.toThrow();
+  });
+});
+
+describe("getAgentWithAccess", () => {
+  const mockFindFirst = db.query.agents.findFirst as ReturnType<typeof vi.fn>;
+
+  it("returns 404 when agent not found", async () => {
+    mockFindFirst.mockResolvedValue(undefined);
+
+    const result = await getAgentWithAccess("nonexistent-id", "user-1", "user");
+
+    expect(result).toBeInstanceOf(NextResponse);
+    expect((result as NextResponse).status).toBe(404);
+  });
+
+  it("returns 403 when user has no access", async () => {
+    mockFindFirst.mockResolvedValue({
+      id: "a1",
+      ownerId: "other-user",
+      isPersonal: true,
+    });
+
+    const result = await getAgentWithAccess("a1", "user-1", "user");
+
+    expect(result).toBeInstanceOf(NextResponse);
+    expect((result as NextResponse).status).toBe(403);
+  });
+
+  it("returns agent when access is granted", async () => {
+    const sharedAgent = { id: "a1", ownerId: null, isPersonal: false };
+    mockFindFirst.mockResolvedValue(sharedAgent);
+
+    const result = await getAgentWithAccess("a1", "user-1", "user");
+
+    expect(result).not.toBeInstanceOf(NextResponse);
+    expect(result).toEqual(sharedAgent);
   });
 });
