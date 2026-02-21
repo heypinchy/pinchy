@@ -6,6 +6,7 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { appendAuditLog } from "@/lib/audit";
 
 const VALID_PROVIDERS: ProviderName[] = ["anthropic", "openai", "google"];
 
@@ -47,6 +48,13 @@ export async function POST(request: NextRequest) {
 
   // Regenerate full OpenClaw config (includes agent list, provider env, model defaults)
   await regenerateOpenClawConfig();
+
+  appendAuditLog({
+    actorType: "user",
+    actorId: sessionOrError.user.id!,
+    eventType: "config.changed",
+    detail: { key: "provider", provider },
+  }).catch(() => {});
 
   return NextResponse.json({ success: true });
 }

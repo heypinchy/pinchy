@@ -5,6 +5,7 @@ import { users, agents } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
+import { appendAuditLog } from "@/lib/audit";
 
 export async function DELETE(
   request: NextRequest,
@@ -32,6 +33,14 @@ export async function DELETE(
   if (deleted.length === 0) {
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
+
+  appendAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.deleted",
+    resource: `user:${userId}`,
+    detail: { email: deleted[0].email },
+  }).catch(() => {});
 
   // Cleanup workspace files for deleted agents
   for (const agent of personalAgents) {
