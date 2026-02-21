@@ -15,24 +15,26 @@ export async function isSetupComplete(): Promise<boolean> {
 }
 
 export async function createAdmin(name: string, email: string, password: string) {
-  const existing = await db.query.users.findFirst();
-  if (existing) {
-    throw new Error("Setup already complete");
-  }
-
   const passwordHash = await bcrypt.hash(password, 12);
 
-  const [user] = await db
-    .insert(users)
-    .values({
-      name,
-      email,
-      passwordHash,
-      role: "admin",
-    })
-    .returning();
+  return await db.transaction(async (tx) => {
+    const existing = await tx.query.users.findFirst();
+    if (existing) {
+      throw new Error("Setup already complete");
+    }
 
-  await seedDefaultAgent(user.id);
+    const [user] = await tx
+      .insert(users)
+      .values({
+        name,
+        email,
+        passwordHash,
+        role: "admin",
+      })
+      .returning();
 
-  return { id: user.id, email: user.email };
+    await seedDefaultAgent(user.id);
+
+    return { id: user.id, email: user.email };
+  });
 }

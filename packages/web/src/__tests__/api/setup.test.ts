@@ -27,17 +27,24 @@ vi.mock("@/db", () => {
       }),
     };
   });
+  const queryMock = {
+    users: {
+      findFirst: vi.fn(),
+    },
+    agents: {
+      findFirst: vi.fn(),
+    },
+  };
   return {
     db: {
-      query: {
-        users: {
-          findFirst: vi.fn(),
-        },
-        agents: {
-          findFirst: vi.fn(),
-        },
-      },
+      query: queryMock,
       insert: insertMock,
+      transaction: vi.fn().mockImplementation(async (callback) => {
+        return callback({
+          query: queryMock,
+          insert: insertMock,
+        });
+      }),
     },
   };
 });
@@ -93,6 +100,14 @@ describe("createAdmin", () => {
     // db.insert is called twice: once for user, once for agent
     // The agent insert receives the ownerId from the created user
     expect(db.insert).toHaveBeenCalledTimes(2);
+  });
+
+  it("should use a database transaction", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+
+    await createAdmin("Admin User", "admin@test.com", "password123");
+
+    expect(db.transaction).toHaveBeenCalledTimes(1);
   });
 
   it("should reject if admin already exists", async () => {
