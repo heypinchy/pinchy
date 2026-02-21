@@ -1,0 +1,29 @@
+# Pinchy Documentation
+
+> Official documentation for Pinchy — the self-hosted enterprise AI agent platform built on OpenClaw.
+
+## What Pinchy Is
+
+Pinchy is a self-hosted, multi-user platform that turns OpenClaw into a team-ready AI agent system. It adds authentication, role-based access control, agent permissions, encrypted API key storage, and a web UI on top of the OpenClaw engine. Everything runs on your own infrastructure.
+
+## Documentation
+
+- [Introduction](https://docs.heypinchy.com/): Overview and what Pinchy does
+- [Quick Start](https://docs.heypinchy.com/getting-started/): Get running in minutes with Docker Compose
+- [Installation](https://docs.heypinchy.com/installation/): Detailed setup instructions
+- [Architecture](https://docs.heypinchy.com/architecture/): How Pinchy works (Next.js, PostgreSQL, OpenClaw Gateway, WebSocket bridge)
+- [Agent Permissions](https://docs.heypinchy.com/concepts/agent-permissions/): How agent access control works (mount points, file access, role-based)
+- [Create a Knowledge Base Agent](https://docs.heypinchy.com/guides/create-knowledge-base-agent/): Step-by-step guide to building a knowledge base agent
+- [Mount Data Directories](https://docs.heypinchy.com/guides/mount-data-directories/): How to give agents access to your files (PDFs, Word, PowerPoint on shared volumes)
+- [API Reference](https://docs.heypinchy.com/reference/api/): REST API endpoints for agents, users, settings, and more
+
+## Key Facts
+
+- **License**: AGPL-3.0 (open source)
+- **Tech Stack**: Next.js, PostgreSQL (Drizzle ORM), Auth.js v5, Docker Compose
+- **Self-Hosted**: All data stays on customer infrastructure, no telemetry, no phone-home
+- **Auth**: Credentials + JWT + bcrypt + role-based (admin/user)
+- **Encryption**: AES-256-GCM for API keys at rest
+- **Source Code**: https://github.com/heypinchy/pinchy
+- **Website**: https://heypinchy.com
+- **Built by**: Clemens Helm (Helmcraft GmbH, Vienna, Austria)

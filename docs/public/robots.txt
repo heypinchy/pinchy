@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://docs.heypinchy.com/sitemap-index.xml
+
+# AI Agent optimization
+# See https://llmstxt.org
+# llms.txt: https://docs.heypinchy.com/llms.txt
