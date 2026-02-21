@@ -24,9 +24,14 @@ vi.mock("@/lib/workspace", () => ({
   writeWorkspaceFile: vi.fn(),
 }));
 
+vi.mock("@/lib/agent-access", () => ({
+  assertAgentAccess: vi.fn(),
+}));
+
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { readWorkspaceFile, writeWorkspaceFile } from "@/lib/workspace";
+import { assertAgentAccess } from "@/lib/agent-access";
 import { GET, PUT } from "@/app/api/agents/[agentId]/files/[filename]/route";
 
 function makeGetRequest(agentId: string, filename: string) {
@@ -56,7 +61,8 @@ describe("GET /api/agents/[agentId]/files/[filename]", () => {
       id: "agent-1",
       name: "Smithers",
       model: "anthropic/claude-sonnet-4-20250514",
-
+      ownerId: null,
+      isPersonal: false,
       createdAt: new Date(),
     });
     vi.mocked(readWorkspaceFile).mockReturnValue("# Soul content");
@@ -81,6 +87,19 @@ describe("GET /api/agents/[agentId]/files/[filename]", () => {
     expect(response.status).toBe(401);
     const data = await response.json();
     expect(data.error).toBe("Unauthorized");
+  });
+
+  it("should return 403 when user has no access to agent", async () => {
+    vi.mocked(assertAgentAccess).mockImplementationOnce(() => {
+      throw new Error("Access denied");
+    });
+
+    const request = makeGetRequest("agent-1", "SOUL.md");
+    const response = await GET(request, makeParams("agent-1", "SOUL.md"));
+
+    expect(response.status).toBe(403);
+    const data = await response.json();
+    expect(data.error).toBe("Forbidden");
   });
 
   it("should return 404 when agent does not exist", async () => {
@@ -139,7 +158,8 @@ describe("PUT /api/agents/[agentId]/files/[filename]", () => {
       id: "agent-1",
       name: "Smithers",
       model: "anthropic/claude-sonnet-4-20250514",
-
+      ownerId: null,
+      isPersonal: false,
       createdAt: new Date(),
     });
   });
@@ -167,6 +187,19 @@ describe("PUT /api/agents/[agentId]/files/[filename]", () => {
     expect(response.status).toBe(401);
     const data = await response.json();
     expect(data.error).toBe("Unauthorized");
+  });
+
+  it("should return 403 when user has no access to agent", async () => {
+    vi.mocked(assertAgentAccess).mockImplementationOnce(() => {
+      throw new Error("Access denied");
+    });
+
+    const request = makePutRequest("agent-1", "SOUL.md", { content: "# Evil" });
+    const response = await PUT(request, makeParams("agent-1", "SOUL.md"));
+
+    expect(response.status).toBe(403);
+    const data = await response.json();
+    expect(data.error).toBe("Forbidden");
   });
 
   it("should return 404 when agent does not exist", async () => {
