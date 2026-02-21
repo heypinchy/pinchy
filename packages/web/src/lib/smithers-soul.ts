@@ -58,10 +58,20 @@ things work, guide them confidently. Here's what you know:
 - Invites are sent as links that new users use to create their account
 - Each invited user gets their own Smithers agent automatically
 
+### Audit Trail
+- Every important action in Pinchy is logged automatically: agent creation,
+  permission changes, user invites, logins, provider configuration, and more
+- Admins can view the full audit log at /audit — it shows who did what, when
+- Each log entry is cryptographically signed (HMAC) to detect tampering
+- Admins can verify the integrity of the entire log with one click
+- The audit log can be exported as CSV for compliance reporting
+- Chat messages are NOT logged in the audit trail — only administrative actions
+
 ### Common Tasks
 - **Change AI model**: Agent Settings → Model dropdown
 - **Add a provider**: Settings → Providers → enter API key
 - **Create a new agent**: Click "+" in the sidebar
 - **Edit agent personality**: Agent Settings → SOUL.md tab
 - **Add organization context**: Agent Settings → USER.md tab
+- **View audit log**: Go to /audit (admin only) for a complete activity log
 `;

@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { Input } from "@/components/ui/input";
 import {
   Select,
   SelectContent,
@@ -76,6 +77,8 @@ export function AuditLogTable() {
   const [limit] = useState(50);
   const [loading, setLoading] = useState(true);
   const [eventTypeFilter, setEventTypeFilter] = useState<string>("");
+  const [dateFrom, setDateFrom] = useState<string>("");
+  const [dateTo, setDateTo] = useState<string>("");
   const [selectedEntry, setSelectedEntry] = useState<AuditEntry | null>(null);
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
 
@@ -89,6 +92,12 @@ export function AuditLogTable() {
       if (eventTypeFilter) {
         params.set("eventType", eventTypeFilter);
       }
+      if (dateFrom) {
+        params.set("from", dateFrom);
+      }
+      if (dateTo) {
+        params.set("to", dateTo);
+      }
 
       const res = await fetch(`/api/audit?${params.toString()}`);
       if (res.ok) {
@@ -99,7 +108,7 @@ export function AuditLogTable() {
     } finally {
       setLoading(false);
     }
-  }, [page, limit, eventTypeFilter]);
+  }, [page, limit, eventTypeFilter, dateFrom, dateTo]);
 
   useEffect(() => {
     setLoading(true);
@@ -148,6 +157,16 @@ export function AuditLogTable() {
     setPage(1);
   }
 
+  function handleDateFromChange(e: React.ChangeEvent<HTMLInputElement>) {
+    setDateFrom(e.target.value);
+    setPage(1);
+  }
+
+  function handleDateToChange(e: React.ChangeEvent<HTMLInputElement>) {
+    setDateTo(e.target.value);
+    setPage(1);
+  }
+
   function truncateDetail(detail: Record<string, unknown>): string {
     const str = JSON.stringify(detail);
     return str.length > 80 ? str.slice(0, 80) + "..." : str;
@@ -174,6 +193,32 @@ export function AuditLogTable() {
               ))}
             </SelectContent>
           </Select>
+
+          <div className="flex items-center gap-2">
+            <label htmlFor="date-from" className="text-sm text-muted-foreground whitespace-nowrap">
+              From
+            </label>
+            <Input
+              id="date-from"
+              type="date"
+              value={dateFrom}
+              onChange={handleDateFromChange}
+              className="w-[160px]"
+            />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <label htmlFor="date-to" className="text-sm text-muted-foreground whitespace-nowrap">
+              To
+            </label>
+            <Input
+              id="date-to"
+              type="date"
+              value={dateTo}
+              onChange={handleDateToChange}
+              className="w-[160px]"
+            />
+          </div>
         </div>
 
         <div className="flex items-center gap-2">

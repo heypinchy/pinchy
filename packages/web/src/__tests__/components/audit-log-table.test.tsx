@@ -291,4 +291,57 @@ describe("AuditLogTable", () => {
       expect(global.fetch).toHaveBeenCalledWith("/api/audit?page=1&limit=50");
     });
   });
+
+  it("should include from and to params in fetch URL when date range is set", async () => {
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getByText("auth.login")).toBeInTheDocument();
+    });
+
+    // Mock the next fetch that will be triggered by changing the date inputs
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockAuditResponse,
+    } as Response);
+
+    const user = userEvent.setup();
+    const fromInput = screen.getByLabelText("From");
+    const toInput = screen.getByLabelText("To");
+
+    // Set the "From" date
+    await user.clear(fromInput);
+    await user.type(fromInput, "2026-02-01");
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("from=2026-02-01"));
+    });
+
+    // Mock the next fetch for the "To" date change
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockAuditResponse,
+    } as Response);
+
+    // Set the "To" date
+    await user.clear(toInput);
+    await user.type(toInput, "2026-02-28");
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("to=2026-02-28"));
+    });
+  });
+
+  it("should render date range inputs", async () => {
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getByText("auth.login")).toBeInTheDocument();
+    });
+
+    expect(screen.getByLabelText("From")).toBeInTheDocument();
+    expect(screen.getByLabelText("To")).toBeInTheDocument();
+    expect(screen.getByLabelText("From")).toHaveAttribute("type", "date");
+    expect(screen.getByLabelText("To")).toHaveAttribute("type", "date");
+  });
 });
