@@ -311,7 +311,7 @@ describe("ClientRouter", () => {
     expect(messages.some((m: any) => m.type === "chunk")).toBe(true);
   });
 
-  it("should extract text from structured content array before sending to openclaw", async () => {
+  it("should send images as attachments to openclaw", async () => {
     async function* fakeStream() {
       yield { type: "text" as const, text: "I see the image" };
       yield { type: "done" as const, text: "" };
@@ -331,6 +331,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("What is this?", {
       sessionKey: "server-session-key",
+      attachments: [{ mimeType: "image/png", content: "abc123" }],
     });
   });
 
@@ -353,6 +354,24 @@ describe("ClientRouter", () => {
     });
 
     expect(mockChat).toHaveBeenCalledWith("First part. Second part.", {
+      sessionKey: "server-session-key",
+    });
+  });
+
+  it("should omit attachments when content has no images", async () => {
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "Hello!" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(createMockClientWs() as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    expect(mockChat).toHaveBeenCalledWith("Hi", {
       sessionKey: "server-session-key",
     });
   });

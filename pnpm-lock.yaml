@@ -57,8 +57,8 @@ importers:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
       openclaw-node:
-        specifier: 0.0.6
-        version: 0.0.6
+        specifier: 0.0.7
+        version: 0.0.7
       postgres:
         specifier: ^3.4.8
         version: 3.4.8
@@ -3919,8 +3919,8 @@ packages:
     resolution: {integrity: sha512-VXJjc87FScF88uafS3JllDgvAm+c/Slfz06lorj2uAY34rlUu0Nt+v8wreiImcrgAjjIHp1rXpTDlLOGw29WwQ==}
     engines: {node: '>=18'}
 
-  openclaw-node@0.0.6:
-    resolution: {integrity: sha512-Rz2ApH09PXlAAKMJCYBU6WamConpGu+H5bpX8Ifh4g6v4p2vSiJc0D0IDD5MQboqWZoeseU2xH+K3WJAX/WKKw==}
+  openclaw-node@0.0.7:
+    resolution: {integrity: sha512-InD9ivuvAGYmcsLdwvBx0Cma34rE2klyyCw+FG94dU/4ZWh8+yF7TsycmMRDV18GmAF9JIqFZbyM6KryUuWwAA==}
     engines: {node: '>=18.0.0'}
 
   optionator@0.9.4:
@@ -8584,7 +8584,7 @@ snapshots:
     dependencies:
       mimic-function: 5.0.1
 
-  openclaw-node@0.0.6:
+  openclaw-node@0.0.7:
     optionalDependencies:
       ws: 8.19.0
     transitivePeerDependencies:

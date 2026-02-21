@@ -1,4 +1,4 @@
-import type { OpenClawClient, ContentPart } from "openclaw-node";
+import type { OpenClawClient, ChatAttachment } from "openclaw-node";
 import type { WebSocket } from "ws";
 import { readSessionHistory } from "@/lib/session-history";
 import { assertAgentAccess } from "@/lib/agent-access";
@@ -8,6 +8,12 @@ import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
 const WS_OPEN = 1;
+
+interface ContentPart {
+  type: string;
+  text?: string;
+  image_url?: { url: string };
+}
 
 interface BrowserMessage {
   type: string;
@@ -50,15 +56,34 @@ export class ClientRouter {
     const messageId = crypto.randomUUID();
 
     try {
-      // Gateway only accepts string messages — extract text from ContentPart[]
-      const text = Array.isArray(message.content)
-        ? message.content
-            .filter((part) => part.type === "text" && "text" in part)
-            .map((part) => (part as { text: string }).text)
-            .join(" ")
-        : message.content;
+      // Extract text and images from structured content
+      let text: string;
+      const attachments: ChatAttachment[] = [];
 
-      const stream = this.openclawClient.chat(text, { sessionKey: session.sessionKey });
+      if (Array.isArray(message.content)) {
+        text = message.content
+          .filter((part) => part.type === "text" && part.text)
+          .map((part) => part.text!)
+          .join(" ");
+
+        for (const part of message.content) {
+          if (part.type === "image_url" && part.image_url?.url) {
+            const match = part.image_url.url.match(/^data:([^;]+);base64,(.+)$/);
+            if (match) {
+              attachments.push({ mimeType: match[1], content: match[2] });
+            }
+          }
+        }
+      } else {
+        text = message.content;
+      }
+
+      const chatOptions: Record<string, unknown> = { sessionKey: session.sessionKey };
+      if (attachments.length > 0) {
+        chatOptions.attachments = attachments;
+      }
+
+      const stream = this.openclawClient.chat(text, chatOptions);
 
       for await (const chunk of stream) {
         if (chunk.type === "text") {
