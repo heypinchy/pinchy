@@ -34,30 +34,6 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock("@/lib/agent-templates", () => ({
-  getTemplate: vi.fn().mockImplementation((id: string) => {
-    if (id === "knowledge-base") {
-      return {
-        name: "Knowledge Base",
-        description: "Answer questions from your docs",
-        allowedTools: ["pinchy_ls", "pinchy_read"],
-        pluginId: "pinchy-files",
-        defaultSoulMd: "",
-      };
-    }
-    if (id === "custom") {
-      return {
-        name: "Custom Agent",
-        description: "Start from scratch",
-        allowedTools: [],
-        pluginId: null,
-        defaultSoulMd: "",
-      };
-    }
-    return undefined;
-  }),
-}));
-
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { writeOpenClawConfig, regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
@@ -258,12 +234,14 @@ describe("regenerateOpenClawConfig", () => {
       name: "Smithers",
       model: "anthropic/claude-opus-4-6",
       workspace: "/root/.openclaw/workspaces/uuid-agent-1",
+      tools: { deny: ["group:runtime", "group:fs", "group:web"] },
     });
     expect(config.agents.list[1]).toEqual({
       id: "uuid-agent-2",
       name: "Jeeves",
       model: "openai/gpt-4o",
       workspace: "/root/.openclaw/workspaces/uuid-agent-2",
+      tools: { deny: ["group:runtime", "group:fs", "group:web"] },
     });
   });
 
@@ -353,7 +331,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.agents.defaults).toEqual({});
   });
 
-  it("should include tools.allow for knowledge-base agents", async () => {
+  it("should deny all groups for agents with only safe tools", async () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockResolvedValue([
         {
@@ -363,15 +341,6 @@ describe("regenerateOpenClawConfig", () => {
           templateId: "knowledge-base",
           pluginConfig: { allowed_paths: ["/data/hr-docs/", "/data/policies/"] },
           allowedTools: ["pinchy_ls", "pinchy_read"],
-          createdAt: new Date(),
-        },
-        {
-          id: "custom-agent-id",
-          name: "Dev Assistant",
-          model: "anthropic/claude-opus-4-6",
-          templateId: "custom",
-          pluginConfig: null,
-          allowedTools: [],
           createdAt: new Date(),
         },
       ]),
@@ -384,11 +353,13 @@ describe("regenerateOpenClawConfig", () => {
     const kbAgent = config.agents.list.find((a: { id: string }) => a.id === "kb-agent-id");
 
     expect(kbAgent.tools).toBeDefined();
-    expect(kbAgent.tools.allow).toContain("pinchy_ls");
-    expect(kbAgent.tools.allow).toContain("pinchy_read");
+    expect(kbAgent.tools.deny).toContain("group:runtime");
+    expect(kbAgent.tools.deny).toContain("group:fs");
+    expect(kbAgent.tools.deny).toContain("group:web");
+    expect(kbAgent.tools.allow).toBeUndefined();
   });
 
-  it("should not include tools.allow for custom agents", async () => {
+  it("should deny all groups for agents with empty allowedTools", async () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockResolvedValue([
         {
@@ -409,10 +380,39 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written);
     const customAgent = config.agents.list.find((a: { id: string }) => a.id === "custom-agent-id");
 
-    expect(customAgent.tools).toBeUndefined();
+    expect(customAgent.tools).toBeDefined();
+    expect(customAgent.tools.deny).toContain("group:runtime");
+    expect(customAgent.tools.deny).toContain("group:fs");
+    expect(customAgent.tools.deny).toContain("group:web");
   });
 
-  it("should include pinchy-files plugin config", async () => {
+  it("should not deny group:runtime when shell is allowed", async () => {
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "power-agent-id",
+          name: "Power Agent",
+          model: "anthropic/claude-opus-4-6",
+          templateId: "custom",
+          pluginConfig: null,
+          allowedTools: ["shell", "pinchy_ls"],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const agent = config.agents.list.find((a: { id: string }) => a.id === "power-agent-id");
+
+    expect(agent.tools.deny).not.toContain("group:runtime");
+    expect(agent.tools.deny).toContain("group:fs");
+    expect(agent.tools.deny).toContain("group:web");
+  });
+
+  it("should include pinchy-files plugin config for agents with safe tools", async () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockResolvedValue([
         {
@@ -421,6 +421,7 @@ describe("regenerateOpenClawConfig", () => {
           model: "anthropic/claude-haiku-4-5-20251001",
           templateId: "knowledge-base",
           pluginConfig: { allowed_paths: ["/data/hr-docs/", "/data/policies/"] },
+          allowedTools: ["pinchy_ls", "pinchy_read"],
           createdAt: new Date(),
         },
       ]),
