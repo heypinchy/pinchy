@@ -64,6 +64,16 @@ For example, if you mounted your HR policies at `/data/hr-policies`, select that
 
 See the [Mount Data Directories](/guides/mount-data-directories/) guide for instructions on making directories available.
 
+## How permissions reach OpenClaw
+
+OpenClaw uses a **deny-list** model internally: by default every tool group is available, and you block what you don't want. Pinchy's allow-list is the opposite — nothing is available until enabled.
+
+To bridge these two models, Pinchy converts the allow-list into a deny-list at config generation time using `computeDeniedGroups()`. This function takes the list of tool IDs an admin has enabled and returns all tool groups that should be blocked. The result is written into each agent's `tools.deny` array in the OpenClaw config.
+
+For example, if an admin enables only `pinchy_ls` and `pinchy_read` (safe tools), `computeDeniedGroups` returns all powerful tool groups (`computer`, `files`, `web_search`, `web_fetch`) so that OpenClaw blocks those capabilities for this agent.
+
+This conversion runs automatically whenever the OpenClaw config is regenerated — admins never interact with the deny-list directly.
+
 ## Agent templates and default permissions
 
 When you create an agent, you pick a template. Each template comes with different default tool permissions:

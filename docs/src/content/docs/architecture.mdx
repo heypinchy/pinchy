@@ -43,13 +43,23 @@ Pinchy is **not a fork** of OpenClaw. It's a governance layer on top of it. Open
 
 When a user sends a message, it flows through three layers:
 
-1. **Browser** → connects via WebSocket to `/api/ws` on Pinchy
-2. **Pinchy** → receives the message, generates a message ID, and forwards it to OpenClaw Gateway via a second WebSocket connection
-3. **OpenClaw** → processes the message through the configured model and streams the response back
+1. **Browser** → connects via WebSocket to `/api/ws` on Pinchy, sending a JSON message with `type`, `content`, and `agentId`
+2. **Pinchy** → authenticates the user, verifies agent access, looks up (or creates) a server-side **chat session**, generates a message ID, and forwards the message to OpenClaw Gateway with the `agentId` and `sessionKey`
+3. **OpenClaw** → routes the message to the correct agent from its config, processes it through the configured model, and streams the response back
 4. **Pinchy** → attaches the message ID and forwards each chunk to the browser
 5. **Browser** → renders the streaming response in real time
 
-Each browser connection gets its own dedicated OpenClaw connection. Pinchy acts as a bridge — it never interprets or modifies the AI response content.
+Each browser connection gets its own `ClientRouter` instance that manages agent access checks and session resolution. Pinchy acts as a bridge — it never interprets or modifies the AI response content.
+
+### Agent routing
+
+When a message arrives, the `ClientRouter` passes the `agentId` from the browser message to OpenClaw via `chatOptions`. OpenClaw uses this to select the matching agent from its `agents.list[]` config — each agent can have its own model, system prompt, tools, and workspace.
+
+### Chat sessions
+
+Pinchy maintains a `chatSessions` table that maps each `(userId, agentId)` pair to a unique `sessionKey`. The session key is opaque and never leaves the server — the browser only sends an `agentId`, and Pinchy resolves the session internally. This ensures users cannot access each other's conversations.
+
+The browser can request conversation history by sending a `{ type: "history", agentId }` message. Pinchy fetches the history from OpenClaw via `openclaw-node` and strips internal metadata (timestamps, thinking blocks) before returning it.
 
 ## Authentication
 
@@ -106,7 +116,8 @@ For the full details, see [Agent Permissions](/concepts/agent-permissions/).
 PostgreSQL 16, accessed via [Drizzle ORM](https://orm.drizzle.team/). The schema includes:
 
 - **Auth tables** — `user`, `account`, `session`, `verificationToken` (managed by Auth.js adapter)
-- **`agents`** — Agent configuration (name, model, system prompt, owner)
+- **`agents`** — Agent configuration (name, model, template, allowed tools, plugin config, owner)
+- **`chatSessions`** — Maps `(userId, agentId)` to a server-side `sessionKey` for OpenClaw conversation continuity
 - **`invites`** — Invite tokens (SHA-256 hashed token, email, expiry, status)
 - **`settings`** — Key-value store for app configuration (provider keys, onboarding state)
 
@@ -122,9 +133,22 @@ Provider API keys are encrypted at rest using **AES-256-GCM**:
 
 ## OpenClaw integration
 
-OpenClaw runs as a separate Docker container. Pinchy communicates with it exclusively via WebSocket on port 18789. The browser never connects to OpenClaw directly.
+OpenClaw runs as a separate Docker container. Pinchy communicates with it via `openclaw-node` (the official Node.js client) over WebSocket on port 18789. The browser never connects to OpenClaw directly.
 
-When a provider API key is saved in Pinchy, it writes the decrypted key to a shared Docker volume (`openclaw-config`). An inotify-based wrapper script inside the OpenClaw container detects the config change and restarts the gateway automatically.
+### Config generation
+
+Pinchy owns the OpenClaw configuration file (`openclaw.json`). Config generation happens in two scenarios:
+
+1. **Initial setup** — during the onboarding wizard, `writeOpenClawConfig()` writes the first config with provider credentials and a randomly generated auth token
+2. **Regeneration** — whenever agents, permissions, or providers change, `regenerateOpenClawConfig()` rebuilds the config from DB state
+
+Regeneration is **idempotent**: it preserves only the `gateway` block (which contains the auth token and OpenClaw-generated fields) and rebuilds everything else — `env`, `agents`, and `plugins` — from the database. This ensures deleted providers and agents are cleaned up automatically.
+
+An inotify-based wrapper script inside the OpenClaw container detects the config change and restarts the gateway automatically.
+
+### Authentication
+
+Pinchy authenticates to OpenClaw Gateway using a bearer token. The token is auto-generated on first setup via `crypto.randomBytes(24)` and stored in the `gateway.auth` block of `openclaw.json`. It never appears in source control.
 
 ## Tech stack
 

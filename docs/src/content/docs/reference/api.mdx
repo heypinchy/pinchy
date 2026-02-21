@@ -7,6 +7,10 @@ All API endpoints require authentication unless noted otherwise. Unauthenticated
 
 Some endpoints are **admin only** — non-admin users receive a `403 Forbidden` response.
 
+## WebSocket (Chat)
+
+Agent chat is handled over WebSocket at `/api/ws`, not via REST. The browser sends JSON messages and receives streaming responses. For details on the WebSocket protocol, message types, and session management, see the [Architecture](/architecture/#request-flow) page.
+
 ## Agents
 
 ### `GET /api/agents`
