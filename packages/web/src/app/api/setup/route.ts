@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdmin } from "@/lib/setup";
+import { validatePassword } from "@/lib/validate-password";
 
 export async function POST(request: NextRequest) {
   try {
@@ -13,11 +14,9 @@ export async function POST(request: NextRequest) {
     if (!email || !emailRegex.test(email)) {
       return NextResponse.json({ error: "A valid email address is required" }, { status: 400 });
     }
-    if (!password || password.length < 8) {
-      return NextResponse.json(
-        { error: "Password must be at least 8 characters" },
-        { status: 400 }
-      );
+    const passwordError = validatePassword(password);
+    if (passwordError) {
+      return NextResponse.json({ error: passwordError }, { status: 400 });
     }
 
     const user = await createAdmin(name.trim(), email, password);
