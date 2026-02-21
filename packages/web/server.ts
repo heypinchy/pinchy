@@ -1,7 +1,7 @@
 import { createServer } from "http";
 import { parse } from "url";
 import next from "next";
-import { WebSocketServer } from "ws";
+import { WebSocketServer, type WebSocket } from "ws";
 import { readFileSync } from "fs";
 import { OpenClawClient } from "openclaw-node";
 import { ClientRouter } from "./src/server/client-router";
@@ -29,10 +29,10 @@ app.prepare().then(() => {
     handle(req, res, parse(req.url!, true));
   });
 
-  let router: ClientRouter | null = null;
+  let openclawClient: OpenClawClient | null = null;
 
   if (OPENCLAW_WS_URL) {
-    const openclawClient = new OpenClawClient({
+    openclawClient = new OpenClawClient({
       url: OPENCLAW_WS_URL,
       token: readGatewayToken(),
       clientId: "gateway-client",
@@ -45,8 +45,6 @@ app.prepare().then(() => {
       maxReconnectAttempts: Infinity,
     });
 
-    router = new ClientRouter(openclawClient);
-
     openclawClient.connect().catch((err) => {
       console.error("OpenClaw initial connection failed, will retry:", err.message);
     });
@@ -58,7 +56,7 @@ app.prepare().then(() => {
         if (trigger) {
           const greetingPrompt =
             "Greet the new admin. Briefly introduce yourself as Smithers and explain what you can help with in Pinchy. Keep it to 2-3 sentences.";
-          openclawClient.chatSync(greetingPrompt).catch(() => {});
+          openclawClient!.chatSync(greetingPrompt).catch(() => {});
           await markGreetingSent();
         }
       } catch {
@@ -78,6 +76,7 @@ app.prepare().then(() => {
   }
 
   const wss = new WebSocketServer({ noServer: true });
+  const sessionMap = new Map<WebSocket, { userId: string; userRole: string }>();
 
   server.on("upgrade", async (request, socket, head) => {
     const { pathname } = parse(request.url!, true);
@@ -89,6 +88,10 @@ app.prepare().then(() => {
         return;
       }
       wss.handleUpgrade(request, socket, head, (ws) => {
+        sessionMap.set(ws, {
+          userId: (session.sub as string) || (session.id as string),
+          userRole: (session.role as string) || "user",
+        });
         wss.emit("connection", ws, request);
       });
     }
@@ -96,6 +99,13 @@ app.prepare().then(() => {
   });
 
   wss.on("connection", (clientWs) => {
+    const sessionInfo = sessionMap.get(clientWs);
+    if (!sessionInfo) return;
+
+    const router = openclawClient
+      ? new ClientRouter(openclawClient, sessionInfo.userId, sessionInfo.userRole)
+      : null;
+
     clientWs.on("message", (data) => {
       try {
         const parsed = JSON.parse(data.toString());
@@ -111,8 +121,13 @@ app.prepare().then(() => {
       }
     });
 
+    clientWs.on("close", () => {
+      sessionMap.delete(clientWs);
+    });
+
     clientWs.on("error", (err) => {
       console.error("Client WebSocket error:", err.message);
+      sessionMap.delete(clientWs);
     });
   });
 

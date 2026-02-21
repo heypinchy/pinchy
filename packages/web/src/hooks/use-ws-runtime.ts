@@ -22,15 +22,6 @@ interface WsMessage {
 }
 
 const STREAM_DONE_DEBOUNCE_MS = 1500;
-const SESSION_KEY_PREFIX = "pinchy:session:";
-
-export function getSessionKey(agentId: string): string | null {
-  return localStorage.getItem(`${SESSION_KEY_PREFIX}${agentId}`);
-}
-
-export function clearSession(agentId: string): void {
-  localStorage.removeItem(`${SESSION_KEY_PREFIX}${agentId}`);
-}
 
 function convertMessage(msg: WsMessage): ThreadMessageLike {
   const parts: Array<{ type: "text"; text: string } | { type: "image"; image: string }> = [
@@ -77,10 +68,7 @@ export function useWsRuntime(agentId: string): {
 
     ws.onopen = () => {
       setIsConnected(true);
-      const sessionKey = getSessionKey(agentId);
-      if (sessionKey) {
-        ws.send(JSON.stringify({ type: "history", sessionKey }));
-      }
+      ws.send(JSON.stringify({ type: "history", agentId }));
     };
 
     ws.onclose = () => {
@@ -225,13 +213,6 @@ export function useWsRuntime(agentId: string): {
         ...(images.length > 0 && { images }),
       };
 
-      // Get or create a sessionKey for this agent
-      let sessionKey = getSessionKey(agentId);
-      if (!sessionKey) {
-        sessionKey = crypto.randomUUID();
-        localStorage.setItem(`${SESSION_KEY_PREFIX}${agentId}`, sessionKey);
-      }
-
       setMessages((prev) => [...prev, userMessage]);
       setIsRunning(true);
 
@@ -255,7 +236,6 @@ export function useWsRuntime(agentId: string): {
           type: "message",
           content: wsContent,
           agentId,
-          sessionKey,
         })
       );
     },

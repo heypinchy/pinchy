@@ -8,7 +8,6 @@ vi.mock("@/hooks/use-ws-runtime", () => ({
     runtime: {},
     isConnected: true,
   }),
-  clearSession: vi.fn(),
 }));
 
 vi.mock("@assistant-ui/react", () => ({
@@ -35,7 +34,7 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import { useWsRuntime, clearSession } from "@/hooks/use-ws-runtime";
+import { useWsRuntime } from "@/hooks/use-ws-runtime";
 
 describe("Chat", () => {
   beforeEach(() => {
@@ -94,7 +93,7 @@ describe("Chat", () => {
     expect(newChatButton).toBeInTheDocument();
   });
 
-  it("should call clearSession and reload when New Chat is clicked", () => {
+  it("should reload the page when New Chat is clicked", () => {
     const reloadMock = vi.fn();
     Object.defineProperty(window, "location", {
       value: { reload: reloadMock },
@@ -105,7 +104,6 @@ describe("Chat", () => {
     const newChatButton = screen.getByRole("button", { name: /new chat/i });
     fireEvent.click(newChatButton);
 
-    expect(clearSession).toHaveBeenCalledWith("agent-1");
     expect(reloadMock).toHaveBeenCalled();
   });
 

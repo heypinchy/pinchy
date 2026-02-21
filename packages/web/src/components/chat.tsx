@@ -2,7 +2,7 @@
 
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/thread";
-import { useWsRuntime, clearSession } from "@/hooks/use-ws-runtime";
+import { useWsRuntime } from "@/hooks/use-ws-runtime";
 import Link from "next/link";
 import { Settings, MessageSquarePlus } from "lucide-react";
 
@@ -24,7 +24,6 @@ export function Chat({ agentId, agentName, configuring = false }: ChatProps) {
   const statusColor = isConnected ? "text-green-600" : "text-destructive";
 
   function handleNewChat() {
-    clearSession(agentId);
     window.location.reload();
   }
 

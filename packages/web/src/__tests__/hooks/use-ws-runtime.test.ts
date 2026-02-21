@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useWsRuntime, clearSession, getSessionKey } from "@/hooks/use-ws-runtime";
+import { useWsRuntime } from "@/hooks/use-ws-runtime";
 
 // Track all created WebSocket instances
 let wsInstances: MockWebSocket[] = [];
@@ -21,19 +21,6 @@ class MockWebSocket {
 }
 
 vi.stubGlobal("WebSocket", MockWebSocket);
-
-// Mock localStorage
-const localStorageStore: Record<string, string> = {};
-const mockLocalStorage = {
-  getItem: vi.fn((key: string) => localStorageStore[key] ?? null),
-  setItem: vi.fn((key: string, value: string) => {
-    localStorageStore[key] = value;
-  }),
-  removeItem: vi.fn((key: string) => {
-    delete localStorageStore[key];
-  }),
-};
-vi.stubGlobal("localStorage", mockLocalStorage);
 
 // Mock @assistant-ui/react with attachment adapters
 vi.mock("@assistant-ui/react", () => ({
@@ -57,8 +44,6 @@ describe("useWsRuntime", () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     wsInstances = [];
-    // Clear localStorage store
-    Object.keys(localStorageStore).forEach((key) => delete localStorageStore[key]);
   });
 
   afterEach(() => {
@@ -192,7 +177,7 @@ describe("useWsRuntime", () => {
     expect(result.current.runtime.isRunning).toBe(false);
   });
 
-  it("should generate and store sessionKey on first message when none exists", () => {
+  it("should send message without sessionKey", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -207,94 +192,12 @@ describe("useWsRuntime", () => {
       });
     });
 
-    // Should have stored a sessionKey in localStorage
-    expect(mockLocalStorage.setItem).toHaveBeenCalledWith(
-      "pinchy:session:agent-1",
-      expect.any(String)
-    );
-
-    // The sent message should include the sessionKey
-    const sentMessage = JSON.parse(ws.send.mock.calls[0][0]);
-    expect(sentMessage.sessionKey).toBeDefined();
-    expect(typeof sentMessage.sessionKey).toBe("string");
-    expect(sentMessage.sessionKey.length).toBeGreaterThan(0);
-  });
-
-  it("should reuse existing sessionKey from localStorage", () => {
-    localStorageStore["pinchy:session:agent-1"] = "existing-session-uuid";
-
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
-    const ws = wsInstances[0];
-
-    act(() => {
-      ws.onopen?.();
-    });
-
-    act(() => {
-      result.current.runtime.onNew({
-        content: [{ type: "text", text: "Hello" }],
-        parentId: "root",
-      });
-    });
-
-    const sentMessage = JSON.parse(ws.send.mock.calls[0][0]);
-    expect(sentMessage.sessionKey).toBe("existing-session-uuid");
-  });
-
-  it("should include sessionKey in all outgoing messages", () => {
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
-    const ws = wsInstances[0];
-
-    act(() => {
-      ws.onopen?.();
-    });
-
-    // Send first message
-    act(() => {
-      result.current.runtime.onNew({
-        content: [{ type: "text", text: "Hello" }],
-        parentId: "root",
-      });
-    });
-
-    // Complete the response so we can send another message
-    act(() => {
-      ws.onmessage?.({
-        data: JSON.stringify({ type: "done", messageId: "msg-1" }),
-      });
-    });
-
-    // Send second message
-    act(() => {
-      result.current.runtime.onNew({
-        content: [{ type: "text", text: "How are you?" }],
-        parentId: "root",
-      });
-    });
-
-    const firstMessage = JSON.parse(ws.send.mock.calls[0][0]);
-    const secondMessage = JSON.parse(ws.send.mock.calls[1][0]);
-
-    // Both messages should have the same sessionKey
-    expect(firstMessage.sessionKey).toBe(secondMessage.sessionKey);
-  });
-
-  it("clearSession should remove sessionKey from localStorage", () => {
-    localStorageStore["pinchy:session:agent-1"] = "some-session-uuid";
-
-    clearSession("agent-1");
-
-    expect(mockLocalStorage.removeItem).toHaveBeenCalledWith("pinchy:session:agent-1");
-  });
-
-  it("getSessionKey should return the stored sessionKey", () => {
-    localStorageStore["pinchy:session:agent-1"] = "stored-uuid";
-
-    expect(getSessionKey("agent-1")).toBe("stored-uuid");
-  });
-
-  it("getSessionKey should return null when no sessionKey exists", () => {
-    expect(getSessionKey("agent-1")).toBeNull();
+    // calls[0] is the history request, calls[1] is the user message
+    const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
+    expect(sentMessage.type).toBe("message");
+    expect(sentMessage.content).toBe("Hello");
+    expect(sentMessage.agentId).toBe("agent-1");
+    expect(sentMessage.sessionKey).toBeUndefined();
   });
 
   it("should register an attachment adapter with image and code file support", () => {
@@ -337,7 +240,8 @@ describe("useWsRuntime", () => {
       });
     });
 
-    const sentMessage = JSON.parse(ws.send.mock.calls[0][0]);
+    // calls[0] is the history request, calls[1] is the user message
+    const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
     expect(sentMessage.content).toEqual([
       { type: "text", text: "What is this?" },
       { type: "image_url", image_url: { url: "data:image/png;base64,abc123" } },
@@ -359,7 +263,8 @@ describe("useWsRuntime", () => {
       });
     });
 
-    const sentMessage = JSON.parse(ws.send.mock.calls[0][0]);
+    // calls[0] is the history request, calls[1] is the user message
+    const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
     expect(sentMessage.content).toBe("Hello plain");
   });
 
@@ -389,8 +294,10 @@ describe("useWsRuntime", () => {
       });
     });
 
-    // Should not send via WebSocket
-    expect(ws.send).not.toHaveBeenCalled();
+    // Should only have sent the history request on connect, not the user message
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    const sentMessage = JSON.parse(ws.send.mock.calls[0][0]);
+    expect(sentMessage.type).toBe("history");
 
     // Should show an error message in messages
     const messages = result.current.runtime.messages;
@@ -400,9 +307,7 @@ describe("useWsRuntime", () => {
     expect(errorMessage).toBeDefined();
   });
 
-  it("should send history request on connect when sessionKey exists", () => {
-    localStorageStore["pinchy:session:agent-1"] = "existing-session";
-
+  it("should send history request on connect with agentId", () => {
     renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -410,25 +315,10 @@ describe("useWsRuntime", () => {
       ws.onopen?.();
     });
 
-    expect(ws.send).toHaveBeenCalledWith(
-      JSON.stringify({ type: "history", sessionKey: "existing-session" })
-    );
-  });
-
-  it("should not send history request on connect when no sessionKey exists", () => {
-    renderHook(() => useWsRuntime("agent-1"));
-    const ws = wsInstances[0];
-
-    act(() => {
-      ws.onopen?.();
-    });
-
-    expect(ws.send).not.toHaveBeenCalled();
+    expect(ws.send).toHaveBeenCalledWith(JSON.stringify({ type: "history", agentId: "agent-1" }));
   });
 
   it("should populate messages from history response", () => {
-    localStorageStore["pinchy:session:agent-1"] = "existing-session";
-
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -457,8 +347,6 @@ describe("useWsRuntime", () => {
   });
 
   it("should map system role to assistant in history messages", () => {
-    localStorageStore["pinchy:session:agent-1"] = "existing-session";
-
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -483,8 +371,6 @@ describe("useWsRuntime", () => {
   });
 
   it("should not overwrite existing messages when history arrives late", () => {
-    localStorageStore["pinchy:session:agent-1"] = "existing-session";
-
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -519,8 +405,6 @@ describe("useWsRuntime", () => {
   });
 
   it("should pass timestamps from history messages into metadata", () => {
-    localStorageStore["pinchy:session:agent-1"] = "existing-session";
-
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -546,8 +430,6 @@ describe("useWsRuntime", () => {
   });
 
   it("should not include metadata when history message has no timestamp", () => {
-    localStorageStore["pinchy:session:agent-1"] = "existing-session";
-
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
