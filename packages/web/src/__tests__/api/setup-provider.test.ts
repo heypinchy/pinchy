@@ -1,8 +1,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { NextResponse } from "next/server";
 import { POST } from "@/app/api/setup/provider/route";
 
-vi.mock("@/lib/auth", () => ({
-  auth: vi.fn().mockResolvedValue({ user: { id: "1", email: "admin@test.com" } }),
+vi.mock("@/lib/api-auth", () => ({
+  requireAdmin: vi
+    .fn()
+    .mockResolvedValue({ user: { id: "1", email: "admin@test.com", role: "admin" } }),
 }));
 
 vi.mock("@/lib/providers", () => ({
@@ -63,7 +66,7 @@ import { validateProviderKey } from "@/lib/providers";
 import { setSetting } from "@/lib/settings";
 import { writeOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
-import { auth } from "@/lib/auth";
+import { requireAdmin } from "@/lib/api-auth";
 
 describe("POST /api/setup/provider", () => {
   beforeEach(() => {
@@ -188,7 +191,9 @@ describe("POST /api/setup/provider", () => {
   });
 
   it("should return 401 when not authenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(requireAdmin).mockResolvedValueOnce(
+      NextResponse.json({ error: "Unauthorized" }, { status: 401 })
+    );
 
     const response = await POST(
       makeRequest({
@@ -198,5 +203,22 @@ describe("POST /api/setup/provider", () => {
     );
 
     expect(response.status).toBe(401);
+  });
+
+  it("should return 403 when non-admin user tries to configure provider", async () => {
+    vi.mocked(requireAdmin).mockResolvedValueOnce(
+      NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    );
+
+    const response = await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-valid",
+      }) as any
+    );
+
+    expect(response.status).toBe(403);
+    const data = await response.json();
+    expect(data.error).toBe("Forbidden");
   });
 });

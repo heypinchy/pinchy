@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { requireAdmin } from "@/lib/api-auth";
 import { validateProviderKey, PROVIDERS, type ProviderName } from "@/lib/providers";
 import { setSetting } from "@/lib/settings";
 import { writeOpenClawConfig } from "@/lib/openclaw-config";
@@ -10,10 +10,8 @@ import { eq } from "drizzle-orm";
 const VALID_PROVIDERS: ProviderName[] = ["anthropic", "openai", "google"];
 
 export async function POST(request: NextRequest) {
-  const session = await auth();
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+  const sessionOrError = await requireAdmin();
+  if (sessionOrError instanceof NextResponse) return sessionOrError;
 
   const body = await request.json();
   const { provider, apiKey } = body;
