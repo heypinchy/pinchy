@@ -76,7 +76,7 @@ app.prepare().then(() => {
     console.log("OPENCLAW_WS_URL not set — skipping OpenClaw connection");
   }
 
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: 1 * 1024 * 1024 });
   const sessionMap = new Map<WebSocket, { userId: string; userRole: string }>();
 
   server.on("upgrade", async (request, socket, head) => {
