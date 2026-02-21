@@ -63,7 +63,7 @@ describe("writeOpenClawConfig", () => {
     expect(mockedWriteFileSync).toHaveBeenCalledWith(
       expect.stringContaining("openclaw.json"),
       expect.stringContaining('"ANTHROPIC_API_KEY": "sk-ant-secret"'),
-      "utf-8"
+      { encoding: "utf-8", mode: 0o600 }
     );
   });
 
@@ -181,6 +181,19 @@ describe("writeOpenClawConfig", () => {
     expect(config.meta.generatedAt).toBe("2025-01-01T00:00:00Z");
   });
 
+  it("should write config with restrictive file permissions", () => {
+    writeOpenClawConfig({
+      provider: "anthropic",
+      apiKey: "sk-ant-secret",
+      model: "anthropic/claude-haiku-4-5-20251001",
+    });
+
+    expect(mockedWriteFileSync).toHaveBeenCalledWith(expect.any(String), expect.any(String), {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
+  });
+
   it("should create config from scratch when no existing file", () => {
     mockedReadFileSync.mockImplementation(() => {
       throw new Error("ENOENT: no such file or directory");
@@ -216,6 +229,15 @@ describe("regenerateOpenClawConfig", () => {
       from: vi.fn().mockResolvedValue([]),
     } as never);
     mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("should write config with restrictive file permissions", async () => {
+    await regenerateOpenClawConfig();
+
+    expect(mockedWriteFileSync).toHaveBeenCalledWith(expect.any(String), expect.any(String), {
+      encoding: "utf-8",
+      mode: 0o600,
+    });
   });
 
   it("should write agents.list with all agents from DB", async () => {

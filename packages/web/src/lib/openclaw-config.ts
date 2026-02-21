@@ -80,7 +80,7 @@ export function writeOpenClawConfig({ provider, apiKey, model }: OpenClawConfigP
     mkdirSync(dir, { recursive: true });
   }
 
-  writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), "utf-8");
+  writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), { encoding: "utf-8", mode: 0o600 });
 }
 
 export async function regenerateOpenClawConfig() {
@@ -171,5 +171,5 @@ export async function regenerateOpenClawConfig() {
     mkdirSync(dir, { recursive: true });
   }
 
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf-8");
+  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o600 });
 }
