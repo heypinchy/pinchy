@@ -16,6 +16,7 @@ services:
       - openclaw-config:/openclaw-config
       - pinchy-data:/data
       - openclaw-extensions:/openclaw-extensions
+    restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
@@ -41,6 +42,7 @@ services:
       - POSTGRES_DB=pinchy
       - POSTGRES_USER=pinchy
       - POSTGRES_PASSWORD=${DB_PASSWORD}
+    restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pinchy"]
       interval: 5s

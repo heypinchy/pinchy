@@ -23,4 +23,12 @@ WORKDIR /app/packages/web
 # Copy Pinchy plugins to OpenClaw extensions directory
 COPY packages/plugins/pinchy-files /openclaw-extensions/pinchy-files
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD node -e "fetch('http://localhost:7777/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+
+# Run as non-root user
+RUN groupadd -r pinchy && useradd -r -g pinchy -d /app pinchy
+RUN chown -R pinchy:pinchy /app /openclaw-extensions
+USER pinchy
+
 CMD ["sh", "-c", "pnpm db:migrate && pnpm start"]
