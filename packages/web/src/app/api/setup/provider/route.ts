@@ -38,7 +38,6 @@ export async function POST(request: NextRequest) {
   // Store encrypted key and default provider
   await setSetting(config.settingsKey, apiKey, true);
   await setSetting("default_provider", provider, false);
-  await setSetting("onboarding_greeting_pending", "true", false);
 
   // Update Smithers agent model
   const smithers = await db.query.agents.findFirst();

@@ -140,17 +140,6 @@ describe("POST /api/setup/provider", () => {
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 
-  it("should set onboarding_greeting_pending", async () => {
-    await POST(
-      makeRequest({
-        provider: "anthropic",
-        apiKey: "sk-ant-key",
-      }) as any
-    );
-
-    expect(setSetting).toHaveBeenCalledWith("onboarding_greeting_pending", "true", false);
-  });
-
   it("should return 400 for invalid provider", async () => {
     const response = await POST(
       makeRequest({

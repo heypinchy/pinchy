@@ -6,7 +6,7 @@ import { readFileSync } from "fs";
 import { OpenClawClient } from "openclaw-node";
 import { ClientRouter } from "./src/server/client-router";
 import { validateWsSession } from "./src/server/ws-auth";
-import { shouldTriggerGreeting, markGreetingSent, getGreetingAgentId } from "./src/lib/greeting";
+
 
 const dev = process.env.NODE_ENV !== "production";
 const app = next({ dev });
@@ -49,20 +49,8 @@ app.prepare().then(() => {
       console.error("OpenClaw initial connection failed, will retry:", err.message);
     });
 
-    openclawClient.on("connected", async () => {
+    openclawClient.on("connected", () => {
       console.log("Connected to OpenClaw Gateway");
-      try {
-        const trigger = await shouldTriggerGreeting();
-        if (trigger) {
-          const agentId = await getGreetingAgentId();
-          const greetingPrompt =
-            "Greet the new admin. Briefly introduce yourself as Smithers and explain what you can help with in Pinchy. Keep it to 2-3 sentences.";
-          openclawClient!.chatSync(greetingPrompt, { agentId }).catch(() => {});
-          await markGreetingSent();
-        }
-      } catch {
-        // Greeting is best-effort
-      }
     });
 
     openclawClient.on("disconnected", () => {
