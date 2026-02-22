@@ -44,10 +44,10 @@ Create a new agent. The agent inherits default tool permissions from its templat
 
 **Request body:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | string | Yes | Display name for the agent |
-| `templateId` | string | Yes | Template to use (`knowledge-base` or `custom`) |
+| Field        | Type   | Required | Description                                    |
+| ------------ | ------ | -------- | ---------------------------------------------- |
+| `name`       | string | Yes      | Display name for the agent                     |
+| `templateId` | string | Yes      | Template to use (`knowledge-base` or `custom`) |
 
 **Example — Knowledge Base agent:**
 
@@ -70,6 +70,7 @@ Create a new agent. The agent inherits default tool permissions from its templat
 **Response:** `201 Created` with the created agent object.
 
 **Errors:**
+
 - `400` — missing or invalid `name` or `templateId`
 - `401` — not authenticated
 
@@ -85,12 +86,12 @@ Update an agent's settings. Any combination of fields can be included.
 
 **Request body:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | string | No | New display name |
-| `model` | string | No | New model identifier |
-| `allowedTools` | string[] | No | List of tool IDs the agent can use (**admin only**) |
-| `pluginConfig` | object | No | Plugin configuration, e.g. `{ "allowed_paths": ["/data/hr"] }` (**admin only**) |
+| Field          | Type     | Required | Description                                                                     |
+| -------------- | -------- | -------- | ------------------------------------------------------------------------------- |
+| `name`         | string   | No       | New display name                                                                |
+| `model`        | string   | No       | New model identifier                                                            |
+| `allowedTools` | string[] | No       | List of tool IDs the agent can use (**admin only**)                             |
+| `pluginConfig` | object   | No       | Plugin configuration, e.g. `{ "allowed_paths": ["/data/hr"] }` (**admin only**) |
 
 **Example — update permissions:**
 
@@ -106,6 +107,7 @@ Update an agent's settings. Any combination of fields can be included.
 **Response:** The updated agent object.
 
 **Errors:**
+
 - `400` — cannot change permissions for personal agents
 - `401` — not authenticated
 - `403` — only admins can change `allowedTools` or `pluginConfig`
@@ -124,6 +126,7 @@ Delete an agent. **Admin only.** Personal agents (auto-created Smithers) cannot 
 ```
 
 **Errors:**
+
 - `400` — attempting to delete a personal agent
 - `401` — not authenticated
 - `403` — not an admin
@@ -194,10 +197,10 @@ Update a setting.
 
 **Request body:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `key` | string | Yes | Setting key |
-| `value` | string | Yes | Setting value |
+| Field   | Type   | Required | Description   |
+| ------- | ------ | -------- | ------------- |
+| `key`   | string | Yes      | Setting key   |
+| `value` | string | Yes      | Setting value |
 
 Settings with `api_key` in the key name are automatically encrypted at rest.
 
@@ -236,6 +239,7 @@ Delete a user and cascade-delete their personal agents.
 ```
 
 **Errors:**
+
 - `400` — attempting to delete yourself
 - `401` — not authenticated
 - `403` — not an admin
@@ -254,6 +258,7 @@ Generate a password reset token for a user. The admin constructs the reset URL f
 ```
 
 **Errors:**
+
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — user not found
@@ -266,10 +271,10 @@ Create an invite for a new user. Returns the full invite object including a plai
 
 **Request body:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `role` | string | Yes | Role for the invited user (`admin` or `user`) |
-| `email` | string | No | Email address of the invited user (optional, for reference) |
+| Field   | Type   | Required | Description                                                 |
+| ------- | ------ | -------- | ----------------------------------------------------------- |
+| `role`  | string | Yes      | Role for the invited user (`admin` or `user`)               |
+| `email` | string | No       | Email address of the invited user (optional, for reference) |
 
 **Response:** `201 Created`
 
@@ -288,6 +293,7 @@ Create an invite for a new user. Returns the full invite object including a plai
 The admin constructs the invite URL from the returned token: `{origin}/invite/{token}`.
 
 **Errors:**
+
 - `400` — missing or invalid role
 - `401` — not authenticated
 - `403` — not an admin
@@ -323,6 +329,7 @@ Revoke a pending invite.
 ```
 
 **Errors:**
+
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — invite not found
@@ -335,11 +342,11 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 
 **Request body:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `token` | string | Yes | The invite/reset token from the URL |
-| `name` | string | Yes | Display name for the new user |
-| `password` | string | Yes | Password (min 8 characters) |
+| Field      | Type   | Required | Description                         |
+| ---------- | ------ | -------- | ----------------------------------- |
+| `token`    | string | Yes      | The invite/reset token from the URL |
+| `name`     | string | Yes      | Display name for the new user       |
+| `password` | string | Yes      | Password (min 8 characters)         |
 
 **Response:** `201 Created`
 
@@ -350,6 +357,7 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 ```
 
 **Errors:**
+
 - `400` — missing fields, invalid token, or token expired
 
 ## Audit Trail (admin only)
@@ -360,14 +368,14 @@ Retrieve a paginated, filterable audit log. **Admin only.**
 
 **Query parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `page` | number | 1 | Page number |
-| `limit` | number | 50 | Entries per page |
-| `eventType` | string | — | Filter by event type (e.g., `auth.login`, `tool.execute`) |
-| `actorId` | string | — | Filter by user ID |
-| `from` | string | — | Start date (ISO 8601) |
-| `to` | string | — | End date (ISO 8601) |
+| Parameter   | Type   | Default | Description                                               |
+| ----------- | ------ | ------- | --------------------------------------------------------- |
+| `page`      | number | 1       | Page number                                               |
+| `limit`     | number | 50      | Entries per page                                          |
+| `eventType` | string | —       | Filter by event type (e.g., `auth.login`, `tool.execute`) |
+| `actorId`   | string | —       | Filter by user ID                                         |
+| `from`      | string | —       | Start date (ISO 8601)                                     |
+| `to`        | string | —       | End date (ISO 8601)                                       |
 
 **Response:**
 
@@ -391,6 +399,7 @@ Retrieve a paginated, filterable audit log. **Admin only.**
 ```
 
 **Errors:**
+
 - `401` — not authenticated
 - `403` — not an admin
 
@@ -400,10 +409,10 @@ Verify the integrity of audit log entries by recomputing HMAC signatures. **Admi
 
 **Query parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `fromId` | string | — | Start verification from this entry ID (optional) |
-| `toId` | string | — | End verification at this entry ID (optional) |
+| Parameter | Type   | Default | Description                                      |
+| --------- | ------ | ------- | ------------------------------------------------ |
+| `fromId`  | string | —       | Start verification from this entry ID (optional) |
+| `toId`    | string | —       | End verification at this entry ID (optional)     |
 
 **Response:**
 
@@ -418,6 +427,7 @@ Verify the integrity of audit log entries by recomputing HMAC signatures. **Admi
 If tampered entries are found, `verified` is `false` and `tamperedEntries` contains the IDs of entries with mismatched signatures.
 
 **Errors:**
+
 - `401` — not authenticated
 - `403` — not an admin
 
@@ -427,16 +437,17 @@ Export the audit log as a CSV file. Supports the same filters as `GET /api/audit
 
 **Query parameters:**
 
-| Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
-| `eventType` | string | — | Filter by event type |
-| `actorId` | string | — | Filter by user ID |
-| `from` | string | — | Start date (ISO 8601) |
-| `to` | string | — | End date (ISO 8601) |
+| Parameter   | Type   | Default | Description           |
+| ----------- | ------ | ------- | --------------------- |
+| `eventType` | string | —       | Filter by event type  |
+| `actorId`   | string | —       | Filter by user ID     |
+| `from`      | string | —       | Start date (ISO 8601) |
+| `to`        | string | —       | End date (ISO 8601)   |
 
 **Response:** `200 OK` with `Content-Type: text/csv` and `Content-Disposition: attachment; filename="audit-log.csv"`.
 
 **Errors:**
+
 - `401` — not authenticated
 - `403` — not an admin
 
@@ -448,9 +459,9 @@ Update your own display name.
 
 **Request body:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `name` | string | Yes | New display name |
+| Field  | Type   | Required | Description      |
+| ------ | ------ | -------- | ---------------- |
+| `name` | string | Yes      | New display name |
 
 **Response:**
 
@@ -461,6 +472,7 @@ Update your own display name.
 ```
 
 **Errors:**
+
 - `400` — missing or empty name
 - `401` — not authenticated
 
@@ -470,13 +482,14 @@ Change your own password.
 
 **Request body:**
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `currentPassword` | string | Yes | Current password |
-| `newPassword` | string | Yes | New password (min 8 characters) |
+| Field             | Type   | Required | Description                     |
+| ----------------- | ------ | -------- | ------------------------------- |
+| `currentPassword` | string | Yes      | Current password                |
+| `newPassword`     | string | Yes      | New password (min 8 characters) |
 
 **Response:** `{ "success": true }`
 
 **Errors:**
+
 - `400` — missing fields or new password too short
 - `401` — not authenticated or current password incorrect

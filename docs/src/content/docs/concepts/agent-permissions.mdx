@@ -21,10 +21,10 @@ Pinchy organizes tools into two categories:
 
 Safe tools provide **sandboxed access** to directories the admin has approved. The agent cannot access anything outside those directories.
 
-| Tool | What it does |
-|------|-------------|
-| **List approved directories** | List files in directories the admin has selected |
-| **Read approved files** | Read file contents from approved directories only |
+| Tool                          | What it does                                      |
+| ----------------------------- | ------------------------------------------------- |
+| **List approved directories** | List files in directories the admin has selected  |
+| **Read approved files**       | Read file contents from approved directories only |
 
 When you enable a safe tool, a directory picker appears so you can select which directories under `/data/` the agent can access. Every file access request is validated against these directories at runtime.
 
@@ -32,13 +32,13 @@ When you enable a safe tool, a directory picker appears so you can select which 
 
 Powerful tools give the agent **direct access to the server**. Only enable them if you understand the risks.
 
-| Tool | What it does |
-|------|-------------|
-| **Run commands** | Execute shell commands on the server |
-| **Read any file** | Read any file on the system, without restrictions |
-| **Write files** | Create and modify files on the system |
-| **Browse the web** | Fetch web pages |
-| **Search the web** | Perform web searches |
+| Tool               | What it does                                      |
+| ------------------ | ------------------------------------------------- |
+| **Run commands**   | Execute shell commands on the server              |
+| **Read any file**  | Read any file on the system, without restrictions |
+| **Write files**    | Create and modify files on the system             |
+| **Browse the web** | Fetch web pages                                   |
+| **Search the web** | Perform web searches                              |
 
 An agent with powerful tools enabled has significantly broader capabilities. Use these only for trusted, internal use cases.
 
@@ -78,10 +78,10 @@ This conversion runs automatically whenever the OpenClaw config is regenerated â
 
 When you create an agent, you pick a template. Each template comes with different default tool permissions:
 
-| Template | Default tools | Use case |
-|----------|--------------|----------|
-| **Knowledge Base** | `pinchy_ls`, `pinchy_read` (safe tools) | Answer questions from selected documents |
-| **Custom Agent** | None | Start from scratch, configure permissions manually |
+| Template           | Default tools                           | Use case                                           |
+| ------------------ | --------------------------------------- | -------------------------------------------------- |
+| **Knowledge Base** | `pinchy_ls`, `pinchy_read` (safe tools) | Answer questions from selected documents           |
+| **Custom Agent**   | None                                    | Start from scratch, configure permissions manually |
 
 After creating an agent, you can change its permissions at any time via the Permissions tab.
 

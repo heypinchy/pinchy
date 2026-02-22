@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'pnpm-lock.yaml'
-      - 'Dockerfile.pinchy'
+      - "pnpm-lock.yaml"
+      - "Dockerfile.pinchy"
   workflow_dispatch:
 
 permissions:

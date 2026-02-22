@@ -15,39 +15,39 @@ Pinchy logs 12 event types across five categories:
 
 ### Tool execution
 
-| Event Type | Description |
-|------------|-------------|
+| Event Type     | Description                                                          |
+| -------------- | -------------------------------------------------------------------- |
 | `tool.execute` | An agent executed a tool (shell command, file read, web fetch, etc.) |
-| `tool.denied` | An agent attempted to use a tool that was not in its allow-list |
+| `tool.denied`  | An agent attempted to use a tool that was not in its allow-list      |
 
 ### Authentication
 
-| Event Type | Description |
-|------------|-------------|
-| `auth.login` | A user successfully logged in |
+| Event Type    | Description                                            |
+| ------------- | ------------------------------------------------------ |
+| `auth.login`  | A user successfully logged in                          |
 | `auth.failed` | A login attempt failed (wrong password, unknown email) |
-| `auth.logout` | A user logged out |
+| `auth.logout` | A user logged out                                      |
 
 ### Agent management
 
-| Event Type | Description |
-|------------|-------------|
-| `agent.created` | A new agent was created |
+| Event Type      | Description                                     |
+| --------------- | ----------------------------------------------- |
+| `agent.created` | A new agent was created                         |
 | `agent.updated` | An agent's settings or permissions were changed |
-| `agent.deleted` | An agent was deleted |
+| `agent.deleted` | An agent was deleted                            |
 
 ### User management
 
-| Event Type | Description |
-|------------|-------------|
-| `user.invited` | An admin invited a new user |
+| Event Type     | Description                          |
+| -------------- | ------------------------------------ |
+| `user.invited` | An admin invited a new user          |
 | `user.updated` | A user's profile or role was changed |
-| `user.deleted` | A user account was deleted |
+| `user.deleted` | A user account was deleted           |
 
 ### Configuration
 
-| Event Type | Description |
-|------------|-------------|
+| Event Type       | Description                                                         |
+| ---------------- | ------------------------------------------------------------------- |
 | `config.changed` | A system configuration setting was changed (e.g., provider API key) |
 
 ### What is NOT logged

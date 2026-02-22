@@ -23,11 +23,11 @@ docker compose up --build
 
 The `docker-compose.yml` defines three services:
 
-| Service | Image | Port | Purpose |
-|---------|-------|------|---------|
-| `pinchy` | Custom (Next.js) | 7777 (exposed) | Web UI, API, WebSocket bridge |
-| `openclaw` | Custom (Node.js) | 18789 (internal) | AI agent runtime |
-| `db` | `postgres:16` | 5432 (internal) | Database |
+| Service    | Image            | Port             | Purpose                       |
+| ---------- | ---------------- | ---------------- | ----------------------------- |
+| `pinchy`   | Custom (Next.js) | 7777 (exposed)   | Web UI, API, WebSocket bridge |
+| `openclaw` | Custom (Node.js) | 18789 (internal) | AI agent runtime              |
+| `db`       | `postgres:16`    | 5432 (internal)  | Database                      |
 
 Only port **7777** is exposed to the host. OpenClaw and PostgreSQL are only reachable within the Docker network.
 
@@ -61,12 +61,12 @@ AUDIT_HMAC_SECRET=
 
 Docker volumes ensure data survives container restarts:
 
-| Volume | Mounted at | Purpose |
-|--------|-----------|---------|
-| `pgdata` | `/var/lib/postgresql/data` | PostgreSQL data |
-| `openclaw-config` | `/root/.openclaw` (OpenClaw), `/openclaw-config` (Pinchy) | Shared OpenClaw configuration |
-| `pinchy-data` | `/data` | Auto-generated encryption key and agent-accessible files |
-| `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw) | Pinchy plugins for OpenClaw |
+| Volume                | Mounted at                                                               | Purpose                                                  |
+| --------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------- |
+| `pgdata`              | `/var/lib/postgresql/data`                                               | PostgreSQL data                                          |
+| `openclaw-config`     | `/root/.openclaw` (OpenClaw), `/openclaw-config` (Pinchy)                | Shared OpenClaw configuration                            |
+| `pinchy-data`         | `/data`                                                                  | Auto-generated encryption key and agent-accessible files |
+| `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw) | Pinchy plugins for OpenClaw                              |
 
 ### Port configuration
 
