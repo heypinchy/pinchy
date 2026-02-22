@@ -4,6 +4,7 @@ export interface AgentTemplate {
   allowedTools: string[];
   pluginId: string | null;
   defaultSoulMd: string;
+  defaultGreeting: string | null;
 }
 
 export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
@@ -15,6 +16,8 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
     defaultSoulMd: `<!-- Describe your agent's personality here. For example:
 You are a helpful knowledge base assistant. You answer questions
 based on the documents available to you. Always cite your sources. -->`,
+    defaultGreeting:
+      "Hello! I'm your knowledge base assistant. Ask me anything about the documents I have access to.",
   },
   custom: {
     name: "Custom Agent",
@@ -22,6 +25,7 @@ based on the documents available to you. Always cite your sources. -->`,
     allowedTools: [],
     pluginId: null,
     defaultSoulMd: `<!-- Describe your agent's personality and instructions here. -->`,
+    defaultGreeting: null,
   },
 };
 

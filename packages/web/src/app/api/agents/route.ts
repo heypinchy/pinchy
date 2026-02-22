@@ -84,6 +84,7 @@ export async function POST(request: NextRequest) {
       pluginConfig: template.pluginId && pluginConfig ? pluginConfig : null,
       ownerId: session.user.id,
       allowedTools: template.allowedTools,
+      greetingMessage: template.defaultGreeting,
     })
     .returning();
 

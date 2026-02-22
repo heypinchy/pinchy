@@ -53,6 +53,7 @@ import { NextRequest } from "next/server";
 import { validateAllowedPaths } from "@/lib/path-validation";
 import { ensureWorkspace, writeWorkspaceFile } from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 
 describe("POST /api/agents", () => {
   beforeEach(() => {
@@ -170,5 +171,44 @@ describe("POST /api/agents", () => {
     const response = await POST(request);
     expect(response.status).toBe(201);
     expect(validateAllowedPaths).not.toHaveBeenCalled();
+  });
+
+  it("should set greetingMessage from template's defaultGreeting", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          allowed_paths: ["/data/hr-docs/"],
+        },
+      }),
+    });
+
+    await POST(request);
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        greetingMessage: AGENT_TEMPLATES["knowledge-base"].defaultGreeting,
+      })
+    );
+  });
+
+  it("should set greetingMessage to null for custom template", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Dev Assistant",
+        templateId: "custom",
+      }),
+    });
+
+    await POST(request);
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        greetingMessage: null,
+      })
+    );
   });
 });

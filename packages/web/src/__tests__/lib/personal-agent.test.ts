@@ -56,6 +56,7 @@ vi.mock("@/lib/providers", () => ({
 }));
 
 import { ensureWorkspace, writeWorkspaceFile } from "@/lib/workspace";
+import { SMITHERS_GREETING } from "@/lib/personal-agent";
 
 describe("createSmithersAgent", () => {
   beforeEach(() => {
@@ -85,8 +86,35 @@ describe("createSmithersAgent", () => {
       model: "anthropic/claude-sonnet-4-20250514",
       ownerId: "user-1",
       isPersonal: true,
+      greetingMessage: SMITHERS_GREETING,
     });
     expect(agent).toEqual(fakeAgent);
+  });
+
+  it("includes the Smithers greeting message in the insert", async () => {
+    const fakeAgent = {
+      id: "agent-greeting-1",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      greetingMessage: SMITHERS_GREETING,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+    });
+
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        greetingMessage: SMITHERS_GREETING,
+      })
+    );
   });
 
   it("sets up workspace and writes SOUL.md", async () => {
