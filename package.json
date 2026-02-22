@@ -22,6 +22,9 @@
       "pnpm -C packages/web exec eslint --no-warn-ignored",
       "pnpm -C packages/web exec prettier --write"
     ],
+    "packages/web/*.{ts,js}": [
+      "pnpm -C packages/web exec prettier --write"
+    ],
     "packages/web/**/*.{json,css,md}": [
       "pnpm -C packages/web exec prettier --write"
     ],
