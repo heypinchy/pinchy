@@ -7,7 +7,6 @@ import { OpenClawClient } from "openclaw-node";
 import { ClientRouter } from "./src/server/client-router";
 import { validateWsSession } from "./src/server/ws-auth";
 
-
 const dev = process.env.NODE_ENV !== "production";
 const app = next({ dev });
 const handle = app.getRequestHandler();
