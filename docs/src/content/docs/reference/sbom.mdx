@@ -1,0 +1,65 @@
+---
+title: Software Bill of Materials (SBOM)
+description: Pinchy's SBOM — a machine-readable inventory of all software components in the Docker image.
+---
+
+## What is an SBOM?
+
+A Software Bill of Materials (SBOM) is a machine-readable list of every software component included in a product. It lists packages, versions, and licenses — similar to an ingredient list on food packaging.
+
+SBOMs are increasingly required for enterprise software procurement and are mandated by frameworks like the US Executive Order 14028 and the EU Cyber Resilience Act.
+
+## How Pinchy generates its SBOM
+
+Pinchy generates an SBOM automatically in CI using [Syft](https://github.com/anchore/syft) via the `anchore/sbom-action` GitHub Action. The SBOM is generated from the production Docker image (`Dockerfile.pinchy`) and published in **SPDX JSON** format.
+
+The pipeline runs on every push to `main` that changes `pnpm-lock.yaml` or `Dockerfile.pinchy`.
+
+## What the SBOM covers
+
+The SBOM covers the **Pinchy Web Docker image**, which includes:
+
+- **Node.js runtime** and system packages from the base image
+- **npm packages** — Next.js, React, Drizzle ORM, Auth.js, and all transitive dependencies
+- **OS-level packages** from the Alpine/Debian base layer
+
+### Components not included
+
+The following components run as separate containers and are not covered by Pinchy's SBOM:
+
+| Component | Security information |
+|-----------|---------------------|
+| **PostgreSQL** | See [postgresql.org/support/security](https://www.postgresql.org/support/security/) |
+| **OpenClaw Gateway** | See [OpenClaw docs](https://docs.openclaw.ai) |
+
+## Downloading the SBOM
+
+The SBOM is available as a CI artifact from the GitHub Actions workflow:
+
+1. Go to the [Pinchy GitHub repository](https://github.com/heypinchy/pinchy)
+2. Navigate to **Actions** → **SBOM Generation**
+3. Select the latest successful run
+4. Download the `sbom` artifact containing `sbom.spdx.json`
+
+## Using the SBOM
+
+### Vulnerability scanning
+
+Feed the SBOM into vulnerability scanners like [Grype](https://github.com/anchore/grype):
+
+```bash
+grype sbom:sbom.spdx.json
+```
+
+### License compliance
+
+Extract license information from the SBOM to verify compliance with your organization's policies:
+
+```bash
+# List all unique licenses
+cat sbom.spdx.json | jq -r '.packages[].licenseConcluded' | sort -u
+```
+
+### Supply chain verification
+
+Use the SBOM to verify that no unexpected packages were introduced between releases by diffing two SBOM files.

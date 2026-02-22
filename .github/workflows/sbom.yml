@@ -1,0 +1,36 @@
+name: SBOM Generation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'pnpm-lock.yaml'
+      - 'Dockerfile.pinchy'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sbom:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Pinchy image
+        run: docker build -f Dockerfile.pinchy -t pinchy:sbom .
+
+      - name: Generate SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          image: pinchy:sbom
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: sbom.spdx.json
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.spdx.json
+          retention-days: 90
