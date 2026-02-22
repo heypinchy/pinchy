@@ -112,4 +112,19 @@ describe("Chat", () => {
     const settingsLink = screen.getByRole("link", { name: /settings/i });
     expect(settingsLink).toHaveAttribute("href", "/chat/my-special-agent/settings");
   });
+
+  it("should show 'Shared' badge for shared agents", () => {
+    render(<Chat agentId="agent-1" agentName="Sales Bot" isPersonal={false} />);
+    expect(screen.getByText("Shared")).toBeInTheDocument();
+  });
+
+  it("should show 'Private' badge for personal agents", () => {
+    render(<Chat agentId="agent-1" agentName="Smithers" isPersonal={true} />);
+    expect(screen.getByText("Private")).toBeInTheDocument();
+  });
+
+  it("should default to 'Shared' badge when isPersonal is not provided", () => {
+    render(<Chat agentId="agent-1" agentName="Sales Bot" />);
+    expect(screen.getByText("Shared")).toBeInTheDocument();
+  });
 });

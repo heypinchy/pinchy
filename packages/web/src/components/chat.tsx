@@ -5,6 +5,8 @@ import { Thread } from "@/components/assistant-ui/thread";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
 import Link from "next/link";
 import { Settings, MessageSquarePlus } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
 interface ChatProps {
   agentId: string;
@@ -32,7 +34,23 @@ export function Chat({ agentId, agentName, configuring = false, isPersonal = fal
     <AssistantRuntimeProvider runtime={runtime}>
       <div className="flex flex-col h-full min-h-0">
         <header className="p-4 border-b flex items-center justify-between shrink-0">
-          <h1 className="font-bold">{agentName}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="font-bold">{agentName}</h1>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Badge variant="outline" className="text-xs font-normal">
+                    {isPersonal ? "Private" : "Shared"}
+                  </Badge>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {isPersonal
+                    ? "Your conversations are private and not shared with anyone."
+                    : "Your conversations help build team knowledge that's available to all team members."}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          </div>
           <div className="flex items-center gap-3">
             <button
               onClick={handleNewChat}
