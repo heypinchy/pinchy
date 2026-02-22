@@ -35,12 +35,17 @@ vi.mock("@/lib/agent-access", () => ({
   assertAgentAccess: vi.fn(),
 }));
 
+let capturedChatProps: Record<string, unknown> = {};
+
 vi.mock("@/components/chat", () => ({
-  Chat: ({ agentId, agentName }: { agentId: string; agentName: string }) => (
-    <div data-testid="mock-chat">
-      {agentName} ({agentId})
-    </div>
-  ),
+  Chat: (props: Record<string, unknown>) => {
+    capturedChatProps = props;
+    return (
+      <div data-testid="mock-chat">
+        {props.agentName as string} ({props.agentId as string})
+      </div>
+    );
+  },
 }));
 
 import { db } from "@/db";
@@ -56,6 +61,7 @@ const mockAssertAgentAccess = assertAgentAccess as ReturnType<typeof vi.fn>;
 describe("ChatPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    capturedChatProps = {};
   });
 
   it("calls notFound when a non-admin user tries to access another user's personal agent", async () => {
@@ -138,5 +144,47 @@ describe("ChatPage", () => {
     expect(screen.getByText("Someone's Agent (agent-3)")).toBeInTheDocument();
     expect(mockNotFound).not.toHaveBeenCalled();
     expect(mockAssertAgentAccess).toHaveBeenCalledWith(personalAgent, "admin-user", "admin");
+  });
+
+  it("passes isPersonal=false to Chat for a shared agent", async () => {
+    const sharedAgent = {
+      id: "agent-shared",
+      name: "Shared Agent",
+      ownerId: null,
+      isPersonal: false,
+    };
+
+    mockRequireAuth.mockResolvedValue({
+      user: { id: "user-1", role: "user" },
+    });
+
+    mockFindFirst.mockResolvedValue(sharedAgent);
+    mockAssertAgentAccess.mockImplementation(() => {});
+
+    const result = await ChatPage({ params: Promise.resolve({ agentId: "agent-shared" }) });
+    render(result);
+
+    expect(capturedChatProps.isPersonal).toBe(false);
+  });
+
+  it("passes isPersonal=true to Chat for a personal agent", async () => {
+    const personalAgent = {
+      id: "agent-personal",
+      name: "My Agent",
+      ownerId: "user-1",
+      isPersonal: true,
+    };
+
+    mockRequireAuth.mockResolvedValue({
+      user: { id: "user-1", role: "user" },
+    });
+
+    mockFindFirst.mockResolvedValue(personalAgent);
+    mockAssertAgentAccess.mockImplementation(() => {});
+
+    const result = await ChatPage({ params: Promise.resolve({ agentId: "agent-personal" }) });
+    render(result);
+
+    expect(capturedChatProps.isPersonal).toBe(true);
   });
 });

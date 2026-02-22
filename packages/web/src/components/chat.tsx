@@ -10,9 +10,10 @@ interface ChatProps {
   agentId: string;
   agentName: string;
   configuring?: boolean;
+  isPersonal?: boolean;
 }
 
-export function Chat({ agentId, agentName, configuring = false }: ChatProps) {
+export function Chat({ agentId, agentName, configuring = false, isPersonal = false }: ChatProps) {
   const { runtime, isConnected } = useWsRuntime(agentId);
 
   const statusMessage = !isConnected
