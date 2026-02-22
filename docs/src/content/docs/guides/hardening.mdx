@@ -1,0 +1,389 @@
+---
+title: Hardening Guide
+description: Security best practices for deploying Pinchy in production environments.
+---
+
+This guide covers security hardening measures for production Pinchy deployments. Pinchy is self-hosted — infrastructure security is your responsibility. These recommendations assume a Linux server with Docker, but most apply to any OS.
+
+## Reverse proxy with TLS
+
+Never expose the Pinchy Web service directly. Use a reverse proxy with TLS termination.
+
+### Caddy (recommended — automatic HTTPS)
+
+```
+pinchy.example.com {
+    reverse_proxy localhost:7777
+}
+```
+
+Caddy automatically provisions and renews Let's Encrypt certificates.
+
+### nginx
+
+```nginx
+server {
+    listen 443 ssl http2;
+    server_name pinchy.example.com;
+
+    ssl_certificate     /etc/letsencrypt/live/pinchy.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/pinchy.example.com/privkey.pem;
+
+    # TLS hardening
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+
+    # Security headers
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Content-Type-Options nosniff always;
+    add_header X-Frame-Options DENY always;
+
+    location / {
+        proxy_pass http://127.0.0.1:7777;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # WebSocket support (required for agent communication)
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+
+server {
+    listen 80;
+    server_name pinchy.example.com;
+    return 301 https://$host$request_uri;
+}
+```
+
+:::caution
+WebSocket support is required. Without the `Upgrade` and `Connection` headers, agent communication will fail.
+:::
+
+## Firewall rules
+
+Only port 443 (HTTPS) needs to be exposed. Block everything else.
+
+### UFW (Ubuntu/Debian)
+
+```bash
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ssh
+ufw allow 443/tcp
+ufw enable
+```
+
+### iptables
+
+```bash
+iptables -A INPUT -p tcp --dport 22 -j ACCEPT
+iptables -A INPUT -p tcp --dport 443 -j ACCEPT
+iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
+iptables -A INPUT -i lo -j ACCEPT
+iptables -A INPUT -j DROP
+```
+
+:::note
+PostgreSQL (port 5432) and OpenClaw Gateway should never be exposed to the network. Both bind to localhost by default in Pinchy's Docker Compose configuration.
+:::
+
+## Disk encryption
+
+PostgreSQL stores all Pinchy data on disk — user accounts, agent configurations, audit logs, and encrypted API keys. Encrypt the underlying volume.
+
+### Linux (LUKS)
+
+```bash
+# Encrypt the partition (destructive — do this before deploying)
+cryptsetup luksFormat /dev/sdX
+cryptsetup open /dev/sdX pinchy-data
+mkfs.ext4 /dev/mapper/pinchy-data
+mount /dev/mapper/pinchy-data /var/lib/docker/volumes
+```
+
+### macOS (FileVault)
+
+Enable FileVault in System Settings → Privacy & Security. This encrypts the entire startup disk, including Docker volumes.
+
+:::tip
+Even with disk encryption, AES-256-GCM encryption is applied to sensitive fields like LLM provider API keys in the database. Disk encryption is a defense-in-depth measure.
+:::
+
+## Docker security
+
+### Run as non-root
+
+The Pinchy Docker image runs as a non-root user by default. Verify this is not overridden in your `docker-compose.yml`:
+
+```yaml
+services:
+  pinchy:
+    # Do NOT add: user: root
+    security_opt:
+      - no-new-privileges:true
+```
+
+### Read-only filesystem
+
+Mount the container filesystem as read-only and whitelist only the directories that need writes:
+
+```yaml
+services:
+  pinchy:
+    read_only: true
+    tmpfs:
+      - /tmp
+    volumes:
+      - pinchy-data:/data
+```
+
+### Resource limits
+
+Prevent a single container from consuming all host resources:
+
+```yaml
+services:
+  pinchy:
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          memory: 512M
+  db:
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+```
+
+## Environment variable protection
+
+The `.env` file contains secrets like `DATABASE_URL`, `AUTH_SECRET`, and `AUDIT_HMAC_SECRET`. Protect it.
+
+### File permissions
+
+```bash
+chmod 600 .env
+chown root:root .env
+```
+
+### Docker Secrets (Swarm mode)
+
+If you use Docker Swarm, use secrets instead of environment variables:
+
+```yaml
+services:
+  pinchy:
+    secrets:
+      - db_password
+      - auth_secret
+      - audit_hmac_secret
+
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+  auth_secret:
+    file: ./secrets/auth_secret.txt
+  audit_hmac_secret:
+    file: ./secrets/audit_hmac_secret.txt
+```
+
+:::caution
+Never commit `.env` files or secrets to version control. The `.gitignore` in the Pinchy repository already excludes `.env`, but verify this in your deployment setup.
+:::
+
+## Network isolation
+
+Pinchy's Docker Compose setup uses an internal network. PostgreSQL and OpenClaw are not exposed to the host network.
+
+### Verify network isolation
+
+```bash
+# Check that only Pinchy Web publishes ports
+docker compose ps --format "table {{.Name}}\t{{.Ports}}"
+```
+
+Only the `pinchy` service should show a published port (7777 by default). The `db` and `openclaw` services should show no published ports, or only `127.0.0.1:PORT` bindings.
+
+### Custom Docker network
+
+For additional isolation, define an explicit internal network:
+
+```yaml
+networks:
+  pinchy-internal:
+    internal: true
+  pinchy-external:
+
+services:
+  pinchy:
+    networks:
+      - pinchy-internal
+      - pinchy-external
+    ports:
+      - "127.0.0.1:7777:7777"
+  db:
+    networks:
+      - pinchy-internal
+  openclaw:
+    networks:
+      - pinchy-internal
+```
+
+The `internal: true` flag prevents containers on that network from reaching the internet. The `pinchy` service bridges both networks — it can reach the database and OpenClaw internally, while also serving HTTP traffic.
+
+:::note
+Binding to `127.0.0.1:7777` ensures the Pinchy Web service is only reachable from localhost. The reverse proxy running on the same host forwards traffic from port 443.
+:::
+
+## AUDIT_HMAC_SECRET configuration
+
+The audit trail uses HMAC-SHA256 to sign every log entry. By default, Pinchy auto-generates a secret at startup. For production, set a persistent secret.
+
+### Generate a secret
+
+```bash
+openssl rand -hex 32
+```
+
+### Set it in your environment
+
+```bash
+# .env
+AUDIT_HMAC_SECRET=your-generated-hex-string
+```
+
+:::caution
+If the HMAC secret changes, previously signed audit entries will fail integrity verification. Back up your HMAC secret securely and never rotate it unless you understand the consequences. See [Audit Trail](/concepts/audit-trail/) for details on integrity verification.
+:::
+
+## Backup & recovery
+
+### PostgreSQL backups
+
+Create regular backups with `pg_dump`:
+
+```bash
+# Backup
+docker compose exec db pg_dump -U pinchy pinchy | gzip > "pinchy-backup-$(date +%Y%m%d).sql.gz"
+
+# Restore
+gunzip < pinchy-backup-20260222.sql.gz | docker compose exec -T db psql -U pinchy pinchy
+```
+
+### Encrypted backups
+
+Encrypt backups before storing them off-site:
+
+```bash
+# Backup + encrypt with GPG
+docker compose exec db pg_dump -U pinchy pinchy | gzip | gpg --symmetric --cipher-algo AES256 > "pinchy-backup-$(date +%Y%m%d).sql.gz.gpg"
+
+# Decrypt + restore
+gpg --decrypt pinchy-backup-20260222.sql.gz.gpg | gunzip | docker compose exec -T db psql -U pinchy pinchy
+```
+
+### Backup schedule
+
+Set up a cron job for daily backups:
+
+```bash
+# /etc/cron.d/pinchy-backup
+0 3 * * * root cd /opt/pinchy && docker compose exec -T db pg_dump -U pinchy pinchy | gzip | gpg --symmetric --batch --passphrase-file /root/.pinchy-backup-passphrase --cipher-algo AES256 > /backups/pinchy-$(date +\%Y\%m\%d).sql.gz.gpg
+```
+
+:::tip
+Test your restore process regularly. A backup that cannot be restored is not a backup.
+:::
+
+## Update strategy
+
+### Docker image updates
+
+Check for new Pinchy releases and update:
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Always read the release notes before updating. Back up the database first.
+
+### Dependency scanning
+
+Use tools like Trivy to scan your running images for known vulnerabilities:
+
+```bash
+trivy image ghcr.io/heypinchy/pinchy:latest
+```
+
+Consider integrating this into a CI pipeline or running it on a schedule. See the [SBOM reference](/reference/sbom/) for information about Pinchy's software bill of materials.
+
+## Monitoring & alerting
+
+### Health endpoint
+
+Monitor the Pinchy Web service by polling its health endpoint:
+
+```bash
+curl -f https://pinchy.example.com/api/health || echo "Pinchy is down"
+```
+
+### Docker health checks
+
+Add health checks to your `docker-compose.yml`:
+
+```yaml
+services:
+  pinchy:
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:7777/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+  db:
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pinchy"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+```
+
+### Log monitoring
+
+Monitor Docker logs for errors and suspicious activity:
+
+```bash
+# Follow all service logs
+docker compose logs -f
+
+# Filter for errors
+docker compose logs pinchy 2>&1 | grep -i error
+```
+
+For production, forward logs to a centralized logging system (e.g., Loki, Elasticsearch) and set up alerts for:
+
+- Authentication failures (`auth.failed` audit events)
+- Denied tool executions (`tool.denied` audit events)
+- Container restarts
+- High error rates
+
+### Audit log monitoring
+
+Use the audit trail API to monitor for security-relevant events programmatically:
+
+```bash
+# Check for failed logins in the last 24 hours
+curl -b session_cookie "https://pinchy.example.com/api/audit?eventType=auth.failed&from=$(date -d '24 hours ago' -Iseconds)"
+```
+
+See [Audit Trail](/concepts/audit-trail/) for the full API reference.
