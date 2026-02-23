@@ -737,6 +737,76 @@ describe("useWsRuntime", () => {
     });
   });
 
+  describe("isHistoryLoaded", () => {
+    it("should return isHistoryLoaded as false initially", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      expect(result.current.isHistoryLoaded).toBe(false);
+    });
+
+    it("should set isHistoryLoaded to true when history message is received", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [],
+          }),
+        });
+      });
+
+      expect(result.current.isHistoryLoaded).toBe(true);
+    });
+
+    it("should set isHistoryLoaded to true when history has messages", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [{ role: "assistant", content: "Hello!" }],
+          }),
+        });
+      });
+
+      expect(result.current.isHistoryLoaded).toBe(true);
+    });
+
+    it("should reset isHistoryLoaded to false on disconnect", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "history", messages: [] }),
+        });
+      });
+
+      expect(result.current.isHistoryLoaded).toBe(true);
+
+      act(() => {
+        ws.onclose?.();
+      });
+
+      expect(result.current.isHistoryLoaded).toBe(false);
+    });
+  });
+
   describe("auto-reconnect", () => {
     it("should reconnect after connection closes unexpectedly", () => {
       renderHook(() => useWsRuntime("agent-1"));

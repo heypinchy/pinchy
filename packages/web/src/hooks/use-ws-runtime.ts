@@ -59,11 +59,13 @@ export function useWsRuntime(agentId: string): {
   runtime: AssistantRuntime;
   isConnected: boolean;
   isDelayed: boolean;
+  isHistoryLoaded: boolean;
 } {
   const [messages, setMessages] = useState<WsMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isDelayed, setIsDelayed] = useState(false);
+  const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -88,6 +90,7 @@ export function useWsRuntime(agentId: string): {
       ws.onclose = () => {
         setIsConnected(false);
         setIsRunning(false);
+        setIsHistoryLoaded(false);
 
         if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
           const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 30000);
@@ -117,6 +120,7 @@ export function useWsRuntime(agentId: string): {
                 })
               );
             });
+            setIsHistoryLoaded(true);
             return;
           }
 
@@ -308,5 +312,5 @@ export function useWsRuntime(agentId: string): {
     },
   });
 
-  return { runtime, isConnected, isDelayed };
+  return { runtime, isConnected, isDelayed, isHistoryLoaded };
 }
