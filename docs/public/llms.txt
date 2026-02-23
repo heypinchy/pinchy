@@ -12,7 +12,12 @@ Pinchy is a self-hosted, multi-user platform that turns OpenClaw into a team-rea
 - [Quick Start](https://docs.heypinchy.com/getting-started/): Get running in minutes with Docker Compose
 - [Installation](https://docs.heypinchy.com/installation/): Detailed setup instructions
 - [Architecture](https://docs.heypinchy.com/architecture/): How Pinchy works (Next.js, PostgreSQL, OpenClaw Gateway, WebSocket bridge)
+- [Philosophy](https://docs.heypinchy.com/concepts/philosophy/): What Pinchy stands for — Security + Ease, Smart Defaults, Agents as Personalities
 - [Agent Permissions](https://docs.heypinchy.com/concepts/agent-permissions/): How agent access control works (mount points, file access, role-based)
+- [Audit Trail](https://docs.heypinchy.com/concepts/audit-trail/): Cryptographic audit logging with HMAC-signed entries
+- [Agent Memory](https://docs.heypinchy.com/explanation/agent-memory/): How agent memory and context works
+- [Hardening Guide](https://docs.heypinchy.com/guides/hardening/): Security hardening for production deployments
+- [SBOM](https://docs.heypinchy.com/reference/sbom/): Software Bill of Materials
 - [Create a Knowledge Base Agent](https://docs.heypinchy.com/guides/create-knowledge-base-agent/): Step-by-step guide to building a knowledge base agent
 - [Mount Data Directories](https://docs.heypinchy.com/guides/mount-data-directories/): How to give agents access to your files (PDFs, Word, PowerPoint on shared volumes)
 - [API Reference](https://docs.heypinchy.com/reference/api/): REST API endpoints for agents, users, settings, and more

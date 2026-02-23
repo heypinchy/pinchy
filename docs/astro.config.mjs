@@ -23,6 +23,14 @@ export default defineConfig({
           },
         ] : []),
         {
+          tag: 'meta',
+          attrs: { property: 'og:image', content: 'https://docs.heypinchy.com/og-image.png' },
+        },
+        {
+          tag: 'meta',
+          attrs: { name: 'twitter:image', content: 'https://docs.heypinchy.com/og-image.png' },
+        },
+        {
           tag: 'script',
           attrs: { type: 'application/ld+json' },
           content: JSON.stringify({
@@ -40,7 +48,45 @@ export default defineConfig({
               name: 'Pinchy',
               applicationCategory: 'DeveloperApplication',
               operatingSystem: 'Linux, Docker',
+              license: 'https://www.gnu.org/licenses/agpl-3.0.html',
+              offers: {
+                '@type': 'Offer',
+                price: '0',
+                priceCurrency: 'USD',
+              },
+              author: {
+                '@type': 'Person',
+                name: 'Clemens Helm',
+                url: 'https://clemenshelm.com',
+              },
             },
+            potentialAction: {
+              '@type': 'SearchAction',
+              target: 'https://docs.heypinchy.com/?search={search_term_string}',
+              'query-input': 'required name=search_term_string',
+            },
+          }),
+        },
+        {
+          tag: 'script',
+          attrs: { type: 'application/ld+json' },
+          content: JSON.stringify({
+            '@context': 'https://schema.org',
+            '@type': 'BreadcrumbList',
+            itemListElement: [
+              {
+                '@type': 'ListItem',
+                position: 1,
+                name: 'Pinchy',
+                item: 'https://heypinchy.com',
+              },
+              {
+                '@type': 'ListItem',
+                position: 2,
+                name: 'Documentation',
+                item: 'https://docs.heypinchy.com',
+              },
+            ],
           }),
         },
       ],
