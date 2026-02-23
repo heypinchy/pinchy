@@ -113,13 +113,16 @@ export const STARTUP_MESSAGES = [
 const ROTATION_INTERVAL_MS = 3000;
 
 const ThreadWelcome: FC<{ isHistoryLoaded?: boolean }> = ({ isHistoryLoaded = false }) => {
-  const [messageIndex, setMessageIndex] = useState(() =>
-    Math.floor(Math.random() * STARTUP_MESSAGES.length)
-  );
-  const indexRef = useRef(messageIndex);
+  const [messageIndex, setMessageIndex] = useState(0);
+  const indexRef = useRef(0);
 
   useEffect(() => {
-    if (isHistoryLoaded) return; // Don't rotate when ready
+    if (isHistoryLoaded) return;
+    // Pick a random starting message on mount (avoids hydration mismatch)
+    const initial = Math.floor(Math.random() * STARTUP_MESSAGES.length);
+    indexRef.current = initial;
+    setMessageIndex(initial);
+
     const timer = setInterval(() => {
       let next: number;
       do {
