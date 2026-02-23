@@ -135,9 +135,10 @@ describe("NewAgentForm", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/mount.*folders/i)).toBeInTheDocument();
-      expect(
-        screen.getByRole("link", { name: /how to mount data directories/i })
-      ).toHaveAttribute("href", "https://docs.heypinchy.com/guides/mount-data-directories/");
+      expect(screen.getByRole("link", { name: /how to mount data directories/i })).toHaveAttribute(
+        "href",
+        "https://docs.heypinchy.com/guides/mount-data-directories/"
+      );
     });
   });
 

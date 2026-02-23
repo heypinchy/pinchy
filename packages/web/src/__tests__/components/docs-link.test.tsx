@@ -23,10 +23,7 @@ describe("DocsLink", () => {
 describe("DocsLink path validation", () => {
   const docsContentDir = resolve(__dirname, "../../../../../docs/src/content/docs");
 
-  const usedPaths = [
-    "guides/mount-data-directories",
-    "guides/create-knowledge-base-agent",
-  ];
+  const usedPaths = ["guides/mount-data-directories", "guides/create-knowledge-base-agent"];
 
   for (const docPath of usedPaths) {
     it(`docs page exists: ${docPath}`, () => {

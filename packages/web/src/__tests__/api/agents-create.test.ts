@@ -5,9 +5,7 @@ vi.mock("next/cache", () => ({
 }));
 
 vi.mock("@/lib/auth", () => ({
-  auth: vi
-    .fn()
-    .mockResolvedValue({ user: { id: "1", email: "admin@test.com", role: "admin" } }),
+  auth: vi.fn().mockResolvedValue({ user: { id: "1", email: "admin@test.com", role: "admin" } }),
 }));
 
 const { insertValuesMock } = vi.hoisted(() => ({

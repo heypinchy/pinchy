@@ -26,16 +26,13 @@ describe("GET /api/data-directories", () => {
           { path: "/data/documents", name: "documents" },
           { path: "/data/hr-docs", name: "hr-docs" },
         ],
-      }),
+      })
     );
 
     const response = await GET();
     const body = await response.json();
 
-    expect(readFileSync).toHaveBeenCalledWith(
-      "/openclaw-config/data-directories.json",
-      "utf-8",
-    );
+    expect(readFileSync).toHaveBeenCalledWith("/openclaw-config/data-directories.json", "utf-8");
     expect(body.directories).toEqual([
       { path: "/data/documents", name: "documents" },
       { path: "/data/hr-docs", name: "hr-docs" },

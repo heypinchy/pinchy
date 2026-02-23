@@ -19,13 +19,9 @@
   },
   "lint-staged": {
     "packages/web/src/**/*.{ts,tsx}": [
-      "pnpm -C packages/web exec eslint --no-warn-ignored",
-      "pnpm -C packages/web exec prettier --write"
+      "pnpm -C packages/web exec eslint --no-warn-ignored"
     ],
-    "packages/web/*.{ts,js}": [
-      "pnpm -C packages/web exec prettier --write"
-    ],
-    "packages/web/**/*.{json,css,md}": [
+    "packages/web/**/*.{ts,tsx,js,mjs,cjs,json,css,md}": [
       "pnpm -C packages/web exec prettier --write"
     ],
     "docs/src/**/*.{mdx,md}": [

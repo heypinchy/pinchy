@@ -147,9 +147,7 @@ export function NewAgentForm() {
             <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
               <Card>
                 <CardHeader>
-                  <CardTitle>
-                    New {selectedTemplateObj?.name ?? "Agent"}
-                  </CardTitle>
+                  <CardTitle>New {selectedTemplateObj?.name ?? "Agent"}</CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <FormField
