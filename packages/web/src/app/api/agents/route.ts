@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
@@ -43,6 +44,10 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  if (session.user.role !== "admin") {
+    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
+  }
+
   const body = await request.json();
   const { name, templateId, pluginConfig } = body;
 
@@ -59,10 +64,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Unknown template: ${templateId}` }, { status: 400 });
   }
 
-  // Validate pluginConfig if provided
-  if (template.pluginId && pluginConfig?.allowed_paths) {
+  // Templates with pluginId require directory selection
+  if (template.pluginId) {
+    const paths = pluginConfig?.allowed_paths;
+    if (!Array.isArray(paths) || paths.length === 0) {
+      return NextResponse.json(
+        { error: "At least one directory must be selected" },
+        { status: 400 }
+      );
+    }
     try {
-      validateAllowedPaths(pluginConfig.allowed_paths);
+      validateAllowedPaths(paths);
     } catch (error) {
       const message = error instanceof Error ? error.message : "Invalid paths";
       return NextResponse.json({ error: message }, { status: 400 });
@@ -101,6 +113,8 @@ export async function POST(request: NextRequest) {
   writeWorkspaceFile(agent.id, "SOUL.md", template.defaultSoulMd);
 
   await regenerateOpenClawConfig();
+
+  revalidatePath("/", "layout");
 
   return NextResponse.json(agent, { status: 201 });
 }

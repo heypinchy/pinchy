@@ -4,10 +4,12 @@ import "@testing-library/jest-dom";
 import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
 
 const pushMock = vi.fn();
+const refreshMock = vi.fn();
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
     push: pushMock,
+    refresh: refreshMock,
   }),
 }));
 

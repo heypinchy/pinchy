@@ -96,7 +96,7 @@ export default function AgentSettingsPage() {
   const showPermissions = isAdmin && !agent.isPersonal;
 
   return (
-    <div className="p-8 max-w-2xl">
+    <div className="overflow-y-auto p-8 max-w-2xl">
       <div className="flex items-center justify-between mb-6">
         <Link
           href={`/chat/${agentId}`}

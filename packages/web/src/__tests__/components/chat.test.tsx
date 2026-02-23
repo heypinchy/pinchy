@@ -7,6 +7,7 @@ vi.mock("@/hooks/use-ws-runtime", () => ({
   useWsRuntime: vi.fn().mockReturnValue({
     runtime: {},
     isConnected: true,
+    isDelayed: false,
   }),
 }));
 
@@ -42,6 +43,7 @@ describe("Chat", () => {
     vi.mocked(useWsRuntime).mockReturnValue({
       runtime: {} as any,
       isConnected: true,
+      isDelayed: false,
     });
   });
 
@@ -64,6 +66,7 @@ describe("Chat", () => {
     vi.mocked(useWsRuntime).mockReturnValue({
       runtime: {} as any,
       isConnected: false,
+      isDelayed: false,
     });
 
     render(<Chat agentId="agent-1" agentName="Smithers" />);
@@ -74,6 +77,7 @@ describe("Chat", () => {
     vi.mocked(useWsRuntime).mockReturnValue({
       runtime: {} as any,
       isConnected: false,
+      isDelayed: false,
     });
 
     render(<Chat agentId="agent-1" agentName="Smithers" configuring={true} />);
@@ -126,5 +130,21 @@ describe("Chat", () => {
   it("should default to 'Shared' badge when isPersonal is not provided", () => {
     render(<Chat agentId="agent-1" agentName="Sales Bot" />);
     expect(screen.getByText("Shared")).toBeInTheDocument();
+  });
+
+  it("should show delayed response hint when isDelayed is true", () => {
+    vi.mocked(useWsRuntime).mockReturnValue({
+      runtime: {} as any,
+      isConnected: true,
+      isDelayed: true,
+    });
+
+    render(<Chat agentId="agent-1" agentName="Smithers" />);
+    expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument();
+  });
+
+  it("should not show delayed response hint when isDelayed is false", () => {
+    render(<Chat agentId="agent-1" agentName="Smithers" />);
+    expect(screen.queryByText(/taking longer than usual/i)).not.toBeInTheDocument();
   });
 });

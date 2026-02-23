@@ -34,21 +34,21 @@ Subtle lobster humor is welcome. Clown energy is not. Personality enhances — i
 
 ### 4. Powerful, not overwhelming
 
-The depth is there, but you discover it gradually. Like Rails: convention over configuration. Generators, scaffolds, sensible defaults — and full control when you need it.
+The depth is there, but you discover it gradually. Smart defaults everywhere, full control when you need it.
 
 - ✅ Show the simple path first, link to advanced options
 - ❌ Show every option on one screen with a "Simple Mode" toggle
 
-## The Rails Principle
+## Smart Defaults
 
-Pinchy follows **Convention over Configuration** for AI agents:
+Pinchy should work out of the box with zero configuration. Every feature ships with sensible defaults:
 
-| Concept | How Pinchy does it |
+| Principle | How it works |
 |---|---|
-| Smart defaults | Agents work out of the box with pre-built personality templates |
-| Templates over blank slates | Personality presets (like Rails generators) instead of "write your own SOUL.md" |
-| Progressive disclosure | Simple UI by default, advanced config available but not required |
-| Zero-config setup | Docker Compose up and you're running |
+| **Works immediately** | `docker compose up` and you're running. No config files to write first. |
+| **Templates over blank slates** | Pre-built personality presets instead of "write your own prompt from scratch" |
+| **Progressive disclosure** | Simple UI by default, advanced options available but not in the way |
+| **Customize when you want** | Every default can be overridden. Nothing is locked down. |
 
 ## Voice Characteristics
 

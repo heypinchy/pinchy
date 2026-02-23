@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { revalidatePath } from "next/cache";
 import { updateAgent, deleteAgent } from "@/lib/agents";
 import { auth } from "@/lib/auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
@@ -128,6 +129,8 @@ export async function DELETE(
     resource: `agent:${agentId}`,
     detail: { name: agent.name },
   }).catch(() => {});
+
+  revalidatePath("/", "layout");
 
   return NextResponse.json({ success: true });
 }

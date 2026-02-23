@@ -114,11 +114,11 @@ describe("getOrCreateSession", () => {
     );
   });
 
-  it("generates a sessionKey as a UUID when creating", async () => {
+  it("generates per-user sessionKey including userId and agentId", async () => {
     findFirstMock.mockResolvedValue(undefined);
     const newSession = {
       id: "s4",
-      sessionKey: "generated-uuid",
+      sessionKey: "user:u1:agent:a1",
       userId: "u1",
       agentId: "a1",
       runtimeActivated: false,
@@ -128,10 +128,25 @@ describe("getOrCreateSession", () => {
     await getOrCreateSession("u1", "a1");
 
     const passedValues = valuesMock.mock.calls[0][0];
-    // sessionKey should be a valid UUID v4 format
-    expect(passedValues.sessionKey).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-    );
+    expect(passedValues.sessionKey).toBe("user:u1:agent:a1");
+  });
+
+  it("generates different sessionKeys for different users on same agent", async () => {
+    findFirstMock.mockResolvedValue(undefined);
+    returningMock.mockResolvedValue([
+      { id: "s-a", sessionKey: "user:userA:agent:a1", userId: "userA", agentId: "a1", runtimeActivated: false },
+    ]);
+    await getOrCreateSession("userA", "a1");
+
+    vi.clearAllMocks();
+    findFirstMock.mockResolvedValue(undefined);
+    returningMock.mockResolvedValue([
+      { id: "s-b", sessionKey: "user:userB:agent:a1", userId: "userB", agentId: "a1", runtimeActivated: false },
+    ]);
+    await getOrCreateSession("userB", "a1");
+
+    const passedValues = valuesMock.mock.calls[0][0];
+    expect(passedValues.sessionKey).toBe("user:userB:agent:a1");
   });
 
   it("returns runtimeActivated from existing session", async () => {
@@ -179,6 +194,27 @@ describe("getOrCreateSession", () => {
         orderBy: expect.any(Object),
       })
     );
+  });
+
+  it("handles unique constraint conflict by falling back to existing session", async () => {
+    const existingSession = {
+      id: "s-existing",
+      sessionKey: "agent:a1:main",
+      userId: "u-other",
+      agentId: "a1",
+      runtimeActivated: true,
+    };
+    // First findFirst returns nothing (different userId), insert fails with constraint
+    findFirstMock
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(existingSession);
+    const uniqueError = new Error("duplicate key value violates unique constraint");
+    (uniqueError as Error & { code: string }).code = "23505";
+    returningMock.mockRejectedValue(uniqueError);
+
+    const result = await getOrCreateSession("u1", "a1");
+
+    expect(result).toEqual(existingSession);
   });
 });
 

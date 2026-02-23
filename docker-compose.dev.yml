@@ -11,6 +11,9 @@ services:
       - ./packages/web:/app/packages/web
       - /app/packages/web/node_modules
       - /app/packages/web/.next
+  openclaw:
+    volumes:
+      - ./packages/plugins/pinchy-files:/root/.openclaw/extensions/pinchy-files
       - ./sample-data:/data/sample-docs
   db:
     environment:

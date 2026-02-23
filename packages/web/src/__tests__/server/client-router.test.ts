@@ -143,7 +143,7 @@ describe("ClientRouter", () => {
     expect(messages[0].message).toBe("Access denied");
   });
 
-  it("should pass only agentId (no sessionKey) to OpenClaw chat", async () => {
+  it("should pass agentId and sessionKey to OpenClaw chat", async () => {
     async function* fakeStream() {
       yield { type: "text" as const, text: "Hello!" };
       yield { type: "done" as const, text: "" };
@@ -158,6 +158,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("Hi Smithers", {
       agentId: "agent-1",
+      sessionKey: "server-session-key",
     });
   });
 
@@ -323,6 +324,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("Hi", {
       agentId: "agent-1",
+      sessionKey: "server-session-key",
     });
     expect(mockSessionsHistory).not.toHaveBeenCalled();
     const messages = clientWs.sent.map((s) => JSON.parse(s));
@@ -349,6 +351,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("What is this?", {
       agentId: "agent-1",
+      sessionKey: "server-session-key",
       attachments: [{ mimeType: "image/png", content: "abc123" }],
     });
   });
@@ -373,6 +376,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("First part. Second part.", {
       agentId: "agent-1",
+      sessionKey: "server-session-key",
     });
   });
 
@@ -391,6 +395,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("Hi", {
       agentId: "agent-1",
+      sessionKey: "server-session-key",
     });
   });
 
@@ -573,6 +578,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("What can you do?", {
       agentId: "agent-1",
+      sessionKey: "brand-new-key",
       extraSystemPrompt: expect.stringContaining("Hello! I'm Smithers."),
     });
   });
@@ -592,6 +598,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("Hi", {
       agentId: "agent-1",
+      sessionKey: "server-session-key",
     });
   });
 
@@ -621,6 +628,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("Hi", {
       agentId: "agent-1",
+      sessionKey: "brand-new-key",
     });
   });
 

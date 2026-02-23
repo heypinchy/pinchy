@@ -1,0 +1,25 @@
+{
+  "id": "pinchy-files",
+  "name": "Pinchy Files",
+  "description": "Scoped read-only file access for Pinchy Knowledge Base agents.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "agents": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "allowed_paths": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["allowed_paths"]
+        }
+      }
+    },
+    "required": ["agents"]
+  }
+}

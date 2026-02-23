@@ -7,6 +7,20 @@ echo "OpenClaw Gateway starting..."
 # when no token is configured yet, e.g. on first startup before setup wizard)
 node /ensure-gateway-token.js
 
+# Scan /data/ for available directories and write to shared config
+# so Pinchy can read them without needing a /data mount
+scan_data_directories() {
+  if [ -d /data ]; then
+    ls -d /data/*/ 2>/dev/null | sed 's|/$||' | \
+      node -e "const lines=require('fs').readFileSync('/dev/stdin','utf8').trim().split('\n').filter(Boolean); \
+      const dirs=lines.map(p=>({path:p,name:require('path').basename(p)})); \
+      console.log(JSON.stringify({directories:dirs}))" \
+      > /root/.openclaw/data-directories.json
+  else
+    echo '{"directories":[]}' > /root/.openclaw/data-directories.json
+  fi
+}
+
 # Auto-approve pending device pairing requests (needed for Docker networking
 # where connections come from container IPs, not localhost)
 auto_approve_devices() {
@@ -22,6 +36,7 @@ auto_approve_devices() {
 }
 
 while true; do
+    scan_data_directories
     openclaw gateway --port 18789 &
     PID=$!
     echo "OpenClaw Gateway running (pid: $PID)"

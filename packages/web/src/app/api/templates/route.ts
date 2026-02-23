@@ -12,6 +12,7 @@ export async function GET(request: NextRequest) {
     id,
     name: template.name,
     description: template.description,
+    requiresDirectories: template.pluginId !== null,
   }));
 
   return NextResponse.json({ templates });

@@ -6,14 +6,12 @@ vi.mock("@/lib/auth", () => ({
 
 vi.mock("fs", () => {
   const mocks = {
-    existsSync: vi.fn(),
-    readdirSync: vi.fn(),
-    statSync: vi.fn(),
+    readFileSync: vi.fn(),
   };
   return { ...mocks, default: mocks };
 });
 
-import { existsSync, readdirSync, statSync } from "fs";
+import { readFileSync } from "fs";
 import { GET } from "@/app/api/data-directories/route";
 
 describe("GET /api/data-directories", () => {
@@ -21,26 +19,33 @@ describe("GET /api/data-directories", () => {
     vi.clearAllMocks();
   });
 
-  it("should return directories under /data/", async () => {
-    vi.mocked(existsSync).mockReturnValue(true);
-    vi.mocked(readdirSync).mockReturnValue(["documents", "hr-docs", ".hidden"] as any);
-    vi.mocked(statSync)
-      .mockReturnValueOnce({ isDirectory: () => true } as any)
-      .mockReturnValueOnce({ isDirectory: () => true } as any)
-      .mockReturnValueOnce({ isDirectory: () => true } as any);
+  it("should return directories from JSON file", async () => {
+    vi.mocked(readFileSync).mockReturnValue(
+      JSON.stringify({
+        directories: [
+          { path: "/data/documents", name: "documents" },
+          { path: "/data/hr-docs", name: "hr-docs" },
+        ],
+      }),
+    );
 
     const response = await GET();
     const body = await response.json();
 
+    expect(readFileSync).toHaveBeenCalledWith(
+      "/openclaw-config/data-directories.json",
+      "utf-8",
+    );
     expect(body.directories).toEqual([
       { path: "/data/documents", name: "documents" },
       { path: "/data/hr-docs", name: "hr-docs" },
     ]);
-    expect(body.directories).toHaveLength(2);
   });
 
-  it("should return empty array when /data/ does not exist", async () => {
-    vi.mocked(existsSync).mockReturnValue(false);
+  it("should return empty array when JSON file does not exist", async () => {
+    vi.mocked(readFileSync).mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
 
     const response = await GET();
     const body = await response.json();

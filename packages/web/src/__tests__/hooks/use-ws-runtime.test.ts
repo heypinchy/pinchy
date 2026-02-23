@@ -542,6 +542,201 @@ describe("useWsRuntime", () => {
     expect(imageContent.image).toBe("data:image/png;base64,xyz789");
   });
 
+  describe("isDelayed", () => {
+    it("should return isDelayed as false initially", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      expect(result.current.isDelayed).toBe(false);
+    });
+
+    it("should set isDelayed to true after 15 seconds without response", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      expect(result.current.isDelayed).toBe(false);
+
+      // Advance 14 seconds — not yet delayed
+      act(() => {
+        vi.advanceTimersByTime(14000);
+      });
+      expect(result.current.isDelayed).toBe(false);
+
+      // Advance to 15 seconds — now delayed
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(result.current.isDelayed).toBe(true);
+    });
+
+    it("should reset isDelayed when a chunk arrives", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      // Let it become delayed
+      act(() => {
+        vi.advanceTimersByTime(15000);
+      });
+      expect(result.current.isDelayed).toBe(true);
+
+      // Chunk arrives — should reset
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "chunk",
+            content: "Hi",
+            messageId: "msg-1",
+          }),
+        });
+      });
+      expect(result.current.isDelayed).toBe(false);
+    });
+
+    it("should cancel delay timer when chunk arrives before timeout", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      // Chunk arrives at 5 seconds
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "chunk",
+            content: "Hi",
+            messageId: "msg-1",
+          }),
+        });
+      });
+
+      // Advance past 15 seconds — should NOT be delayed since chunk arrived
+      act(() => {
+        vi.advanceTimersByTime(15000);
+      });
+      expect(result.current.isDelayed).toBe(false);
+    });
+
+    it("should reset isDelayed on done message", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(15000);
+      });
+      expect(result.current.isDelayed).toBe(true);
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "chunk",
+            content: "Response",
+            messageId: "msg-1",
+          }),
+        });
+      });
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "done", messageId: "msg-1" }),
+        });
+      });
+
+      expect(result.current.isDelayed).toBe(false);
+    });
+
+    it("should reset isDelayed on error message", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(15000);
+      });
+      expect(result.current.isDelayed).toBe(true);
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "error",
+            message: "Something went wrong",
+            messageId: "msg-1",
+          }),
+        });
+      });
+
+      expect(result.current.isDelayed).toBe(false);
+    });
+
+    it("should not be delayed when no message has been sent", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      // Advance time without sending a message
+      act(() => {
+        vi.advanceTimersByTime(30000);
+      });
+
+      expect(result.current.isDelayed).toBe(false);
+    });
+  });
+
   describe("auto-reconnect", () => {
     it("should reconnect after connection closes unexpectedly", () => {
       renderHook(() => useWsRuntime("agent-1"));

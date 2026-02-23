@@ -3,6 +3,10 @@ import { NextRequest } from "next/server";
 
 // ── Mocks ────────────────────────────────────────────────────────────────
 
+vi.mock("next/cache", () => ({
+  revalidatePath: vi.fn(),
+}));
+
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
@@ -75,7 +79,7 @@ describe("POST /api/agents audit logging", () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     vi.mocked(auth).mockResolvedValue({
-      user: { id: "user-1", email: "admin@test.com" },
+      user: { id: "user-1", email: "admin@test.com", role: "admin" },
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
     const mod = await import("@/app/api/agents/route");

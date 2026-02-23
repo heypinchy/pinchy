@@ -67,7 +67,7 @@ export default function LoginPage() {
         <Card className="w-full">
           <CardHeader>
             <CardTitle>Sign in to Pinchy</CardTitle>
-            <CardDescription>Enter the credentials you created during setup.</CardDescription>
+            <CardDescription>Enter your email and password to continue.</CardDescription>
           </CardHeader>
           <CardContent>
             <Form {...form}>

@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, act } from "@testing-library/react";
 import "@testing-library/jest-dom";
 
 vi.mock("@assistant-ui/react", () => ({
@@ -74,20 +74,51 @@ vi.mock("@/components/ui/button", () => ({
 }));
 
 import { Thread } from "@/components/assistant-ui/thread";
+import { STARTUP_MESSAGES } from "@/components/assistant-ui/thread";
 
-describe("ThreadWelcome privacy notice", () => {
-  it("shows shared agent notice when isPersonal is false", () => {
-    render(<Thread isPersonal={false} />);
-    expect(screen.getByText(/conversations help build team knowledge/i)).toBeInTheDocument();
+describe("ThreadWelcome startup messages", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
   });
 
-  it("shows private agent notice when isPersonal is true", () => {
-    render(<Thread isPersonal={true} />);
-    expect(screen.getByText(/conversations are private/i)).toBeInTheDocument();
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
-  it("defaults to shared notice when isPersonal is not provided", () => {
+  it("shows a startup message from the known list", () => {
     render(<Thread />);
-    expect(screen.getByText(/conversations help build team knowledge/i)).toBeInTheDocument();
+    const messageEl = screen.getByTestId("startup-message");
+    expect(STARTUP_MESSAGES).toContain(messageEl.textContent);
+  });
+
+  it("does not show the old 'Hello there' greeting", () => {
+    render(<Thread />);
+    expect(screen.queryByText("Hello there!")).not.toBeInTheDocument();
+  });
+
+  it("does not show the old privacy notice", () => {
+    render(<Thread />);
+    expect(screen.queryByText(/conversations help build team knowledge/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/conversations are private/i)).not.toBeInTheDocument();
+  });
+
+  it("shows 'Starting agent...' heading", () => {
+    render(<Thread />);
+    expect(screen.getByText("Starting agent...")).toBeInTheDocument();
+  });
+
+  it("rotates to a different message after interval", () => {
+    render(<Thread />);
+    const firstMessage = screen.getByTestId("startup-message").textContent;
+
+    // Advance past the rotation interval (3 seconds)
+    act(() => {
+      vi.advanceTimersByTime(3000);
+    });
+
+    const secondMessage = screen.getByTestId("startup-message").textContent;
+    // Both should be valid messages
+    expect(STARTUP_MESSAGES).toContain(firstMessage);
+    expect(STARTUP_MESSAGES).toContain(secondMessage);
   });
 });

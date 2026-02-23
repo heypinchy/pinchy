@@ -15,7 +15,6 @@ import {
   ComposerPrimitive,
   ErrorPrimitive,
   MessagePrimitive,
-  SuggestionPrimitive,
   ThreadPrimitive,
   useMessage,
 } from "@assistant-ui/react";
@@ -28,7 +27,7 @@ import {
   MoreHorizontalIcon,
   SquareIcon,
 } from "lucide-react";
-import type { FC } from "react";
+import { type FC, useState, useEffect, useRef } from "react";
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -55,11 +54,7 @@ const MessageTimestamp: FC = () => {
   return <span className="text-xs text-muted-foreground/60">{formatTimestamp(timestamp)}</span>;
 };
 
-interface ThreadProps {
-  isPersonal?: boolean;
-}
-
-export const Thread: FC<ThreadProps> = ({ isPersonal = false }) => {
+export const Thread: FC = () => {
   return (
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root @container flex h-full flex-col bg-background"
@@ -69,7 +64,7 @@ export const Thread: FC<ThreadProps> = ({ isPersonal = false }) => {
     >
       <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4">
         <AuiIf condition={(s) => s.thread.isEmpty}>
-          <ThreadWelcome isPersonal={isPersonal} />
+          <ThreadWelcome />
         </AuiIf>
 
         <ThreadPrimitive.Messages
@@ -102,57 +97,55 @@ const ThreadScrollToBottom: FC = () => {
   );
 };
 
-const ThreadWelcome: FC<{ isPersonal: boolean }> = ({ isPersonal }) => {
+export const STARTUP_MESSAGES = [
+  "Sharpening the claws...",
+  "Polishing the shell...",
+  "Stretching the antennae...",
+  "Emerging from the deep...",
+  "Checking the tide...",
+  "Adjusting the pincers...",
+  "Scanning the seabed...",
+  "Snapping into action...",
+  "Warming up...",
+  "Waving hello...",
+];
+
+const ROTATION_INTERVAL_MS = 3000;
+
+const ThreadWelcome: FC = () => {
+  const [messageIndex, setMessageIndex] = useState(() =>
+    Math.floor(Math.random() * STARTUP_MESSAGES.length)
+  );
+  const indexRef = useRef(messageIndex);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      let next: number;
+      do {
+        next = Math.floor(Math.random() * STARTUP_MESSAGES.length);
+      } while (next === indexRef.current && STARTUP_MESSAGES.length > 1);
+      indexRef.current = next;
+      setMessageIndex(next);
+    }, ROTATION_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, []);
+
   return (
     <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
-        <div className="aui-thread-welcome-message flex size-full flex-col justify-center px-4">
-          <h1 className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both font-semibold text-2xl duration-200">
-            Hello there!
-          </h1>
-          <p className="aui-thread-welcome-message-inner fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-muted-foreground text-xl delay-75 duration-200">
-            How can I help you today?
+        <div className="flex flex-col items-center gap-3">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground" />
+          <p className="text-sm font-medium text-muted-foreground">
+            Starting agent...
           </p>
-          <p className="fade-in slide-in-from-bottom-1 animate-in fill-mode-both text-xs text-muted-foreground/70 delay-150 duration-200 mt-4">
-            {isPersonal
-              ? "Your conversations are private and not shared with anyone."
-              : "This is a shared agent. Your conversations help build team knowledge that's available to all team members."}
+          <p
+            data-testid="startup-message"
+            className="text-xs text-muted-foreground/60 transition-opacity duration-300"
+          >
+            {STARTUP_MESSAGES[messageIndex]}
           </p>
         </div>
       </div>
-      <ThreadSuggestions />
-    </div>
-  );
-};
-
-const ThreadSuggestions: FC = () => {
-  return (
-    <div className="aui-thread-welcome-suggestions grid w-full @md:grid-cols-2 gap-2 pb-4">
-      <ThreadPrimitive.Suggestions
-        components={{
-          Suggestion: ThreadSuggestionItem,
-        }}
-      />
-    </div>
-  );
-};
-
-const ThreadSuggestionItem: FC = () => {
-  return (
-    <div className="aui-thread-welcome-suggestion-display fade-in slide-in-from-bottom-2 @md:nth-[n+3]:block nth-[n+3]:hidden animate-in fill-mode-both duration-200">
-      <SuggestionPrimitive.Trigger send asChild>
-        <Button
-          variant="ghost"
-          className="aui-thread-welcome-suggestion h-auto w-full @md:flex-col flex-wrap items-start justify-start gap-1 rounded-2xl border px-4 py-3 text-left text-sm transition-colors hover:bg-muted"
-        >
-          <span className="aui-thread-welcome-suggestion-text-1 font-medium">
-            <SuggestionPrimitive.Title />
-          </span>
-          <span className="aui-thread-welcome-suggestion-text-2 text-muted-foreground">
-            <SuggestionPrimitive.Description />
-          </span>
-        </Button>
-      </SuggestionPrimitive.Trigger>
     </div>
   );
 };

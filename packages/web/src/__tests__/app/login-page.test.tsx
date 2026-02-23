@@ -44,7 +44,7 @@ describe("Login Page", () => {
 
   it("should display login description", () => {
     render(<LoginPage />);
-    expect(screen.getByText("Enter the credentials you created during setup.")).toBeInTheDocument();
+    expect(screen.getByText("Enter your email and password to continue.")).toBeInTheDocument();
   });
 
   it("should render email and password fields", () => {

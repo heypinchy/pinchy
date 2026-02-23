@@ -22,6 +22,7 @@ interface WsMessage {
 }
 
 const STREAM_DONE_DEBOUNCE_MS = 1500;
+const DELAY_HINT_MS = 15_000;
 
 function convertMessage(msg: WsMessage): ThreadMessageLike {
   const parts: Array<{ type: "text"; text: string } | { type: "image"; image: string }> = [
@@ -57,12 +58,15 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 export function useWsRuntime(agentId: string): {
   runtime: AssistantRuntime;
   isConnected: boolean;
+  isDelayed: boolean;
 } {
   const [messages, setMessages] = useState<WsMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
+  const [isDelayed, setIsDelayed] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -117,6 +121,12 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "chunk") {
+            if (delayTimerRef.current) {
+              clearTimeout(delayTimerRef.current);
+              delayTimerRef.current = null;
+            }
+            setIsDelayed(false);
+
             setMessages((prev) => {
               const last = prev[prev.length - 1];
               if (last?.role === "assistant" && last.id === data.messageId) {
@@ -146,6 +156,11 @@ export function useWsRuntime(agentId: string): {
             if (debounceTimerRef.current) {
               clearTimeout(debounceTimerRef.current);
             }
+            if (delayTimerRef.current) {
+              clearTimeout(delayTimerRef.current);
+              delayTimerRef.current = null;
+            }
+            setIsDelayed(false);
             setIsRunning(false);
           }
 
@@ -153,6 +168,11 @@ export function useWsRuntime(agentId: string): {
             if (debounceTimerRef.current) {
               clearTimeout(debounceTimerRef.current);
             }
+            if (delayTimerRef.current) {
+              clearTimeout(delayTimerRef.current);
+              delayTimerRef.current = null;
+            }
+            setIsDelayed(false);
             setMessages((prev) => [
               ...prev,
               {
@@ -180,6 +200,9 @@ export function useWsRuntime(agentId: string): {
       }
       if (debounceTimerRef.current) {
         clearTimeout(debounceTimerRef.current);
+      }
+      if (delayTimerRef.current) {
+        clearTimeout(delayTimerRef.current);
       }
       wsRef.current?.close();
     };
@@ -239,6 +262,14 @@ export function useWsRuntime(agentId: string): {
       setMessages((prev) => [...prev, userMessage]);
       setIsRunning(true);
 
+      // Start delay hint timer
+      if (delayTimerRef.current) {
+        clearTimeout(delayTimerRef.current);
+      }
+      delayTimerRef.current = setTimeout(() => {
+        setIsDelayed(true);
+      }, DELAY_HINT_MS);
+
       // Build content: structured array if images present, plain string otherwise
       let wsContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
       if (images.length > 0) {
@@ -277,5 +308,5 @@ export function useWsRuntime(agentId: string): {
     },
   });
 
-  return { runtime, isConnected };
+  return { runtime, isConnected, isDelayed };
 }

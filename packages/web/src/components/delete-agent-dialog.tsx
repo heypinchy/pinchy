@@ -33,6 +33,7 @@ export function DeleteAgentDialog({ agentId, agentName }: DeleteAgentDialogProps
         return;
       }
       router.push("/");
+      router.refresh();
     } catch {
       setError("Failed to delete agent");
     }

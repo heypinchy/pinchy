@@ -22,16 +22,28 @@ export async function getOrCreateSession(userId: string, agentId: string): Promi
 
   if (existing) return existing;
 
-  const [session] = await db
-    .insert(chatSessions)
-    .values({
-      sessionKey: crypto.randomUUID(),
-      userId,
-      agentId,
-    })
-    .returning();
+  try {
+    const [session] = await db
+      .insert(chatSessions)
+      .values({
+        sessionKey: `user:${userId}:agent:${agentId}`,
+        userId,
+        agentId,
+      })
+      .returning();
 
-  return session;
+    return session;
+  } catch (err) {
+    // Handle unique constraint violation (e.g. session_key already exists for another user)
+    if (err instanceof Error && "code" in err && (err as Error & { code: string }).code === "23505") {
+      const fallback = await db.query.chatSessions.findFirst({
+        where: eq(chatSessions.agentId, agentId),
+        orderBy: desc(chatSessions.createdAt),
+      });
+      if (fallback) return fallback;
+    }
+    throw err;
+  }
 }
 
 /**

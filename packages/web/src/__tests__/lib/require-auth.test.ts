@@ -1,8 +1,17 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockAuth, mockRedirect } = vi.hoisted(() => ({
+class RedirectError extends Error {
+  constructor(public url: string) {
+    super(`NEXT_REDIRECT: ${url}`);
+  }
+}
+
+const { mockAuth, mockRedirect, mockFindFirst } = vi.hoisted(() => ({
   mockAuth: vi.fn(),
-  mockRedirect: vi.fn(),
+  mockRedirect: vi.fn().mockImplementation((url: string) => {
+    throw new RedirectError(url);
+  }),
+  mockFindFirst: vi.fn(),
 }));
 
 vi.mock("@/lib/auth", () => ({
@@ -15,7 +24,13 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("@/db", () => ({
-  db: {},
+  db: {
+    query: {
+      users: {
+        findFirst: mockFindFirst,
+      },
+    },
+  },
 }));
 
 vi.mock("next-auth", () => ({
@@ -41,9 +56,7 @@ describe("requireAuth", () => {
   it("redirects to /login when auth() returns null", async () => {
     mockAuth.mockResolvedValue(null);
 
-    await requireAuth();
-
-    expect(mockRedirect).toHaveBeenCalledWith("/login");
+    await expect(requireAuth()).rejects.toThrow("NEXT_REDIRECT: /login");
   });
 
   it("redirects to /login when auth() returns an error object", async () => {
@@ -51,29 +64,37 @@ describe("requireAuth", () => {
       message: "There was a problem with the server configuration.",
     });
 
-    await requireAuth();
-
-    expect(mockRedirect).toHaveBeenCalledWith("/login");
+    await expect(requireAuth()).rejects.toThrow("NEXT_REDIRECT: /login");
   });
 
   it("redirects to /login when session has no user", async () => {
     mockAuth.mockResolvedValue({ expires: "2026-03-01T00:00:00.000Z" });
 
-    await requireAuth();
-
-    expect(mockRedirect).toHaveBeenCalledWith("/login");
+    await expect(requireAuth()).rejects.toThrow("NEXT_REDIRECT: /login");
   });
 
-  it("returns the session when user is present", async () => {
+  it("returns the session when user exists in DB", async () => {
     const validSession = {
       user: { id: "1", email: "admin@test.com", name: "Admin" },
       expires: "2026-03-01T00:00:00.000Z",
     };
     mockAuth.mockResolvedValue(validSession);
+    mockFindFirst.mockResolvedValue({ id: "1", email: "admin@test.com" });
 
     const result = await requireAuth();
 
     expect(mockRedirect).not.toHaveBeenCalled();
     expect(result).toEqual(validSession);
+  });
+
+  it("redirects to /login when user ID does not exist in DB (stale JWT)", async () => {
+    const staleSession = {
+      user: { id: "nonexistent-id", email: "old@test.com", name: "Gone" },
+      expires: "2026-03-01T00:00:00.000Z",
+    };
+    mockAuth.mockResolvedValue(staleSession);
+    mockFindFirst.mockResolvedValue(undefined);
+
+    await expect(requireAuth()).rejects.toThrow("NEXT_REDIRECT: /login");
   });
 });

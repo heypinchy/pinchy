@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+vi.mock("next/cache", () => ({
+  revalidatePath: vi.fn(),
+}));
+
 vi.mock("@/lib/auth", () => ({
-  auth: vi.fn().mockResolvedValue({ user: { id: "1", email: "admin@test.com" } }),
+  auth: vi
+    .fn()
+    .mockResolvedValue({ user: { id: "1", email: "admin@test.com", role: "admin" } }),
 }));
 
 const { insertValuesMock } = vi.hoisted(() => ({
@@ -50,6 +56,7 @@ vi.mock("@/lib/settings", () => ({
 
 import { POST } from "@/app/api/agents/route";
 import { NextRequest } from "next/server";
+import { auth } from "@/lib/auth";
 import { validateAllowedPaths } from "@/lib/path-validation";
 import { ensureWorkspace, writeWorkspaceFile } from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
@@ -58,6 +65,26 @@ import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 describe("POST /api/agents", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("should return 403 for non-admin users", async () => {
+    vi.mocked(auth).mockResolvedValueOnce({
+      user: { id: "2", email: "user@test.com", role: "user" },
+      expires: "",
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Test Agent",
+        templateId: "custom",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(403);
+    const body = await response.json();
+    expect(body.error).toBe("Admin access required");
   });
 
   it("should create an agent from a knowledge-base template", async () => {
@@ -140,7 +167,7 @@ describe("POST /api/agents", () => {
     expect(response.status).toBe(400);
   });
 
-  it("should create a knowledge-base agent without pluginConfig (set later via Permissions tab)", async () => {
+  it("should reject knowledge-base agent without allowed_paths", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({
@@ -150,13 +177,9 @@ describe("POST /api/agents", () => {
     });
 
     const response = await POST(request);
-    expect(response.status).toBe(201);
-    expect(validateAllowedPaths).not.toHaveBeenCalled();
-    expect(insertValuesMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        pluginConfig: null,
-      })
-    );
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("At least one directory must be selected");
   });
 
   it("should create a custom agent without pluginConfig", async () => {

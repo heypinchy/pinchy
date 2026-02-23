@@ -173,7 +173,7 @@ Read the full story on [heypinchy.com](https://heypinchy.com/blog/building-pinch
 
 ## Philosophy
 
-We care about how Pinchy *feels*, not just what it does. Security + Ease is our core tension — enterprise-grade protection that feels light, not intimidating. Convention over Configuration for AI agents: smart defaults, personality templates, zero-config setup, full customization when you need it.
+We care about how Pinchy *feels*, not just what it does. Security + Ease is our core tension — enterprise-grade protection that feels light, not intimidating. Smart defaults everywhere, personality templates instead of blank slates, zero-config setup, and full customization when you need it.
 
 Read more in our [Philosophy docs](https://docs.heypinchy.com/concepts/philosophy) and [`PERSONALITY.md`](PERSONALITY.md).
 
