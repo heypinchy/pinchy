@@ -28,6 +28,10 @@ First off — thank you! Every contribution matters, whether it's code, docs, bu
 5. **Update docs** if your change affects user-facing behavior.
 6. Submit your PR and fill out the template.
 
+### Voice & Personality
+
+Pinchy has a personality. Before writing any user-facing text — UI labels, tooltips, error messages, empty states, docs — read [`PERSONALITY.md`](PERSONALITY.md). It defines how Pinchy sounds and why.
+
 ### Improving Documentation
 
 Docs PRs are always welcome — typo fixes, better examples, translations. No change is too small.

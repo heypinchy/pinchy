@@ -171,11 +171,17 @@ Pinchy started when an AI agent sent a WhatsApp message it shouldn't have — le
 
 Read the full story on [heypinchy.com](https://heypinchy.com/blog/building-pinchy-in-public).
 
+## Philosophy
+
+We care about how Pinchy *feels*, not just what it does. Security + Ease is our core tension — enterprise-grade protection that feels light, not intimidating. Convention over Configuration for AI agents: smart defaults, personality templates, zero-config setup, full customization when you need it.
+
+Read more in our [Philosophy docs](https://docs.heypinchy.com/concepts/philosophy) and [`PERSONALITY.md`](PERSONALITY.md).
+
 ## Contributing
 
 We love contributions! Whether it's code, docs, bug reports, or ideas — all are welcome.
 
-Please read our [Contributing Guide](CONTRIBUTING.md) before submitting a PR.
+Please read our [Contributing Guide](CONTRIBUTING.md) before submitting a PR. If you're writing any user-facing text, also check our [Personality Guide](PERSONALITY.md).
 
 ## Community
 
