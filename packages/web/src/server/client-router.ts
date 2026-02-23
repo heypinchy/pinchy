@@ -130,6 +130,16 @@ export class ClientRouter {
           }).catch(() => {});
         }
 
+        if (chunk.type === "error") {
+          console.error("OpenClaw error chunk:", chunk.text);
+          this.sendToClient(clientWs, {
+            type: "error",
+            message:
+              "Something went wrong connecting to the agent. Try refreshing — if it persists, check the logs.",
+            messageId,
+          });
+        }
+
         if (chunk.type === "done") {
           this.sessionCache.add(sessionKey);
           this.sendToClient(clientWs, {

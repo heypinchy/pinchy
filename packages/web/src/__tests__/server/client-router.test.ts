@@ -918,6 +918,39 @@ describe("ClientRouter", () => {
     expect(sent[0].messages).toHaveLength(2);
   });
 
+  it("should send error to client when stream yields an error chunk", async () => {
+    const clientWs = createMockClientWs();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    async function* fakeStream() {
+      yield { type: "error" as const, text: "INVALID_REQUEST: model overloaded" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const errorMsg = messages.find((m: any) => m.type === "error");
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.message).toContain("Something went wrong");
+    expect(errorMsg.message).not.toContain("INVALID_REQUEST");
+    expect(errorMsg.message).not.toContain("overloaded");
+    expect(errorMsg.messageId).toBeTruthy();
+
+    // Should log the actual error server-side
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining("OpenClaw error chunk"),
+      expect.stringContaining("INVALID_REQUEST")
+    );
+
+    consoleSpy.mockRestore();
+  });
+
   it("should return empty history when sessions.list fails and no greeting", async () => {
     const freshCache = new SessionCache();
     const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
