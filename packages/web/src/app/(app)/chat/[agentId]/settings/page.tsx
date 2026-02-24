@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useParams } from "next/navigation";
+import { useState, useEffect, useCallback } from "react";
+import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -35,8 +35,13 @@ interface Provider {
 
 export default function AgentSettingsPage() {
   const params = useParams();
+  const router = useRouter();
   const agentId = params.agentId as string;
   const { data: session } = useSession();
+
+  const refreshSidebar = useCallback(() => {
+    router.refresh();
+  }, [router]);
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -130,6 +135,7 @@ export default function AgentSettingsPage() {
             }}
             providers={providers}
             canDelete={canDelete}
+            onSaved={refreshSidebar}
           />
         </TabsContent>
 
@@ -142,6 +148,7 @@ export default function AgentSettingsPage() {
               personalityPresetId: agent.personalityPresetId,
             }}
             soulContent={soulContent}
+            onSaved={refreshSidebar}
           />
         </TabsContent>
 

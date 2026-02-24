@@ -218,4 +218,20 @@ describe("AgentSettingsPersonality", () => {
       expect(toast.success).toHaveBeenCalledWith("Personality settings saved");
     });
   });
+
+  it("calls onSaved callback after successful save", async () => {
+    const onSaved = vi.fn();
+    vi.mocked(global.fetch).mockResolvedValue({
+      ok: true,
+      json: async () => ({}),
+    } as Response);
+
+    render(<AgentSettingsPersonality {...defaultProps} onSaved={onSaved} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => {
+      expect(onSaved).toHaveBeenCalled();
+    });
+  });
 });
