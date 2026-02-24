@@ -27,7 +27,7 @@ import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
 
 const agentSettingsSchema = z.object({
   name: z.string().min(1, "Name is required"),
-  tagline: z.string().optional().default(""),
+  tagline: z.string(),
   model: z.string().min(1, "Model is required"),
 });
 

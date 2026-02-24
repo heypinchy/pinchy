@@ -36,7 +36,7 @@ interface Directory {
 
 const agentFormSchema = z.object({
   name: z.string().min(1, "Name is required"),
-  tagline: z.string().optional().default(""),
+  tagline: z.string(),
 });
 
 type AgentFormValues = z.infer<typeof agentFormSchema>;
