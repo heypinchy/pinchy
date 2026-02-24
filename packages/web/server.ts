@@ -7,6 +7,7 @@ import { OpenClawClient } from "openclaw-node";
 import { ClientRouter } from "./src/server/client-router";
 import { SessionCache } from "./src/server/session-cache";
 import { validateWsSession } from "./src/server/ws-auth";
+import { restartState } from "./src/server/restart-state";
 
 const dev = process.env.NODE_ENV !== "production";
 const app = next({ dev });
@@ -21,6 +22,15 @@ function readGatewayToken(): string {
     return config.gateway?.auth?.token ?? "";
   } catch {
     return "";
+  }
+}
+
+if (process.env.NODE_ENV === "production") {
+  const dbUrl = process.env.DATABASE_URL || "";
+  if (dbUrl.includes(":pinchy_dev@")) {
+    console.warn(
+      "WARNING: Using default DB_PASSWORD. Set a secure password via .env for production."
+    );
   }
 }
 
@@ -51,6 +61,9 @@ app.prepare().then(() => {
 
     openclawClient.on("connected", () => {
       console.log("Connected to OpenClaw Gateway");
+      if (restartState.isRestarting) {
+        restartState.notifyReady();
+      }
     });
 
     openclawClient.on("disconnected", () => {
@@ -68,6 +81,16 @@ app.prepare().then(() => {
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1 * 1024 * 1024 });
   const sessionMap = new Map<WebSocket, { userId: string; userRole: string }>();
+
+  function broadcastToClients(message: Record<string, unknown>) {
+    const payload = JSON.stringify(message);
+    for (const [clientWs] of sessionMap) {
+      if (clientWs.readyState === 1) clientWs.send(payload);
+    }
+  }
+
+  restartState.on("restarting", () => broadcastToClients({ type: "openclaw:restarting" }));
+  restartState.on("ready", () => broadcastToClients({ type: "openclaw:ready" }));
 
   server.on("upgrade", async (request, socket, head) => {
     const { pathname } = parse(request.url!, true);

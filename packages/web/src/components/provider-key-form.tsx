@@ -11,6 +11,7 @@ import { Label } from "@/components/ui/label";
 import { Form, FormControl, FormField, FormItem, FormLabel } from "@/components/ui/form";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Lock, ChevronDown, ExternalLink, CircleCheck, CircleX } from "lucide-react";
+import { useRestart } from "@/components/restart-provider";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -140,6 +141,7 @@ export function ProviderKeyForm({
   const [guideOpen, setGuideOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [validationStatus, setValidationStatus] = useState<"idle" | "success" | "error">("idle");
+  const { triggerRestart } = useRestart();
 
   const form = useForm<ProviderKeyFormValues>({
     resolver: zodResolver(providerKeySchema),
@@ -184,6 +186,7 @@ export function ProviderKeyForm({
       setValidationStatus("success");
       form.reset();
       toast.success("API key saved");
+      triggerRestart();
       onSuccess();
     } catch (err) {
       const message = err instanceof Error ? err.message : "Setup failed";
@@ -300,8 +303,13 @@ export function ProviderKeyForm({
             </Collapsible>
 
             <Button type="submit" disabled={!apiKeyValue.trim() || loading} className="w-full">
-              {loading ? "Validating..." : configuredProviders ? "Save" : submitLabel}
+              {loading ? "Validating..." : configuredProviders ? "Save & restart" : submitLabel}
             </Button>
+            {configuredProviders && (
+              <p className="text-xs text-muted-foreground text-center">
+                Saving will briefly restart the agent runtime.
+              </p>
+            )}
 
             {configuredProviders && isConfigured && (
               <AlertDialog>
@@ -340,6 +348,7 @@ export function ProviderKeyForm({
                             const data = await res.json();
                             throw new Error(data.error || "Failed to remove key");
                           }
+                          triggerRestart();
                           onSuccess();
                         } catch (err) {
                           toast.error(err instanceof Error ? err.message : "Failed to remove key");

@@ -3,7 +3,6 @@ import { revalidatePath } from "next/cache";
 import { updateAgent, deleteAgent } from "@/lib/agents";
 import { auth } from "@/lib/auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
-import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { appendAuditLog } from "@/lib/audit";
 
 export async function GET(
@@ -85,11 +84,6 @@ export async function PATCH(
     resource: `agent:${agentId}`,
     detail: { changes: Object.keys(data) },
   }).catch(() => {});
-
-  // Regenerate config when permissions change
-  if (data.allowedTools !== undefined || data.pluginConfig !== undefined) {
-    await regenerateOpenClawConfig();
-  }
 
   return NextResponse.json(agent);
 }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { useRestart } from "@/components/restart-provider";
 import {
   useExternalStoreRuntime,
   SimpleImageAttachmentAdapter,
@@ -61,6 +62,7 @@ export function useWsRuntime(agentId: string): {
   isDelayed: boolean;
   isHistoryLoaded: boolean;
 } {
+  const { triggerRestart } = useRestart();
   const [messages, setMessages] = useState<WsMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
@@ -72,6 +74,18 @@ export function useWsRuntime(agentId: string): {
   const mountedRef = useRef(true);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Reset state when switching agents — prevents stale messages from
+  // one agent blocking history load for a different agent.
+  // Uses "adjust state during render" pattern (React-recommended over useEffect).
+  const [prevAgentId, setPrevAgentId] = useState(agentId);
+  if (prevAgentId !== agentId) {
+    setPrevAgentId(agentId);
+    setMessages([]);
+    setIsRunning(false);
+    setIsDelayed(false);
+    setIsHistoryLoaded(false);
+  }
 
   useEffect(() => {
     mountedRef.current = true;
@@ -93,7 +107,7 @@ export function useWsRuntime(agentId: string): {
         setIsHistoryLoaded(false);
 
         if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
-          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 30000);
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 5000);
           reconnectAttemptRef.current++;
           reconnectTimerRef.current = setTimeout(connect, delay);
         }
@@ -107,6 +121,11 @@ export function useWsRuntime(agentId: string): {
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
+
+          if (data.type === "openclaw:restarting") {
+            triggerRestart();
+            return;
+          }
 
           if (data.type === "history") {
             setMessages((prev) => {

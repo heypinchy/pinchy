@@ -7,6 +7,7 @@ import { agents } from "@/db/schema";
 import { getSetting } from "@/lib/settings";
 import { computeDeniedGroups } from "@/lib/tool-registry";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
+import { restartState } from "@/server/restart-state";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 
@@ -81,6 +82,7 @@ export function writeOpenClawConfig({ provider, apiKey, model }: OpenClawConfigP
   }
 
   writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), { encoding: "utf-8", mode: 0o600 });
+  restartState.notifyRestart();
 }
 
 export async function regenerateOpenClawConfig() {
@@ -172,4 +174,5 @@ export async function regenerateOpenClawConfig() {
   }
 
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o600 });
+  restartState.notifyRestart();
 }

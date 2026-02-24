@@ -34,6 +34,10 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock("@/server/restart-state", () => ({
+  restartState: { notifyRestart: vi.fn() },
+}));
+
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { writeOpenClawConfig, regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
@@ -528,5 +532,39 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written);
 
     expect(config.plugins).toBeUndefined();
+  });
+});
+
+describe("restart-state integration", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([]),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("writeOpenClawConfig calls restartState.notifyRestart", async () => {
+    const { restartState } = await import("@/server/restart-state");
+
+    writeOpenClawConfig({
+      provider: "anthropic",
+      apiKey: "sk-ant-key",
+      model: "anthropic/claude-haiku-4-5-20251001",
+    });
+
+    expect(restartState.notifyRestart).toHaveBeenCalledOnce();
+  });
+
+  it("regenerateOpenClawConfig calls restartState.notifyRestart", async () => {
+    const { restartState } = await import("@/server/restart-state");
+
+    await regenerateOpenClawConfig();
+
+    expect(restartState.notifyRestart).toHaveBeenCalledOnce();
   });
 });

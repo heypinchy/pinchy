@@ -67,6 +67,14 @@ things work, guide them confidently. Here's what you know:
 - The audit log can be exported as CSV for compliance reporting
 - Chat messages are NOT logged in the audit trail — only administrative actions
 
+### Settings & Restarts
+- When an admin saves settings that affect the agent runtime (provider keys,
+  agent permissions, creating/deleting agents), the runtime restarts briefly
+- During this restart (~5-10 seconds), a full-screen "Applying changes" overlay
+  appears — this is normal and expected
+- Active chats resume automatically once the restart completes
+- Buttons that trigger a restart say "Save & restart" so users know what to expect
+
 ### Common Tasks
 - **Change AI model**: Agent Settings → Model dropdown
 - **Add a provider**: Settings → Providers → enter API key
