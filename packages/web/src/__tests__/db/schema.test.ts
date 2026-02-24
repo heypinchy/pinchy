@@ -80,6 +80,20 @@ describe("agents schema — greetingMessage column", () => {
   });
 });
 
+describe("agents schema — personality columns", () => {
+  it("should have tagline column", () => {
+    expect(agents.tagline).toBeDefined();
+  });
+
+  it("should have avatarSeed column", () => {
+    expect(agents.avatarSeed).toBeDefined();
+  });
+
+  it("should have personalityPresetId column", () => {
+    expect(agents.personalityPresetId).toBeDefined();
+  });
+});
+
 describe("agentRoles removal", () => {
   it("should NOT export agentRoles", () => {
     expect("agentRoles" in schema).toBe(false);

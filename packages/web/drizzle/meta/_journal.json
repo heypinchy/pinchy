@@ -78,6 +78,13 @@
       "when": 1771848610960,
       "tag": "0010_short_shriek",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1771915964348,
+      "tag": "0011_numerous_dark_beast",
+      "breakpoints": true
     }
   ]
 }
