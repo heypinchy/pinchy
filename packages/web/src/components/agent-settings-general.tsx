@@ -24,6 +24,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
+import { useRestart } from "@/components/restart-provider";
 
 const agentSettingsSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -50,6 +51,7 @@ export function AgentSettingsGeneral({
   onSaved,
   canDelete,
 }: AgentSettingsGeneralProps) {
+  const { triggerRestart } = useRestart();
   const form = useForm<AgentSettingsValues>({
     resolver: zodResolver(agentSettingsSchema),
     defaultValues: {
@@ -75,6 +77,7 @@ export function AgentSettingsGeneral({
       }
 
       toast.success("Agent settings saved");
+      triggerRestart();
       onSaved?.();
     } catch {
       toast.error("Failed to save settings");
@@ -144,7 +147,7 @@ export function AgentSettingsGeneral({
 
           <div className="space-y-3">
             <Button type="submit" disabled={form.formState.isSubmitting}>
-              {form.formState.isSubmitting ? "Saving..." : "Save"}
+              {form.formState.isSubmitting ? "Saving..." : "Save & restart"}
             </Button>
 
             <p className="text-sm text-muted-foreground">

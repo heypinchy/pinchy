@@ -27,6 +27,7 @@ export default async function ChatPage({ params }: { params: Promise<{ agentId: 
 
   return (
     <Chat
+      key={agent.id}
       agentId={agent.id}
       agentName={agent.name}
       isPersonal={agent.isPersonal}

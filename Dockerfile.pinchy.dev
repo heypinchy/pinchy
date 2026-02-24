@@ -13,6 +13,8 @@ RUN pnpm install --frozen-lockfile
 # but copying them here ensures the image also works standalone.
 COPY packages/web packages/web
 
+RUN mkdir -p /app/secrets
+
 EXPOSE 7777
 
 ENV PORT=7777

@@ -55,6 +55,8 @@ docker compose up --build
 
 Then open [http://localhost:7777](http://localhost:7777) — the setup wizard will guide you through creating your admin account.
 
+> **Production:** Copy `.env.example` to `.env` and set secure values for `DB_PASSWORD` and `NEXTAUTH_SECRET`. The defaults are for local evaluation only.
+
 ### Prerequisites
 
 - Docker & Docker Compose
@@ -62,7 +64,7 @@ Then open [http://localhost:7777](http://localhost:7777) — the setup wizard wi
 
 ## Status
 
-> 🚧 **Pinchy is in early development.** The core is working — setup, auth, chat with agents via OpenClaw. We're building the enterprise features (RBAC, audit trail, plugins) next.
+> 🚧 **Pinchy is in early development.** The core is working — setup, auth, multi-user, agent chat, permissions, knowledge base agents, and audit trail. We're building the enterprise features (granular RBAC, plugin marketplace, cross-channel workflows) next.
 
 ### What works today
 
@@ -93,7 +95,7 @@ Follow our progress on [the blog](https://heypinchy.com/blog/building-pinchy-in-
 |-------|-----------|
 | Frontend | Next.js 16, React 19, TailwindCSS v4, shadcn/ui |
 | Auth | Auth.js v5 (credentials provider) |
-| Database | PostgreSQL 16, Drizzle ORM |
+| Database | PostgreSQL 17, Drizzle ORM |
 | Agent Runtime | OpenClaw Gateway (WebSocket) |
 | Testing | Vitest, React Testing Library |
 | CI/CD | GitHub Actions, ESLint, Prettier, Husky |

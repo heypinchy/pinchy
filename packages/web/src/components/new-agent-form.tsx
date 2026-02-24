@@ -20,6 +20,7 @@ import { TemplateSelector } from "@/components/template-selector";
 import { DirectoryPicker } from "@/components/directory-picker";
 import { DocsLink } from "@/components/docs-link";
 import { ArrowLeft, ExternalLink, Info } from "lucide-react";
+import { useRestart } from "@/components/restart-provider";
 
 interface Template {
   id: string;
@@ -49,6 +50,7 @@ export function NewAgentForm() {
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const { triggerRestart } = useRestart();
 
   const form = useForm<AgentFormValues>({
     resolver: zodResolver(agentFormSchema),
@@ -122,6 +124,7 @@ export function NewAgentForm() {
       }
 
       const agent = await res.json();
+      triggerRestart();
       router.push(`/chat/${agent.id}`);
       router.refresh();
     } catch {

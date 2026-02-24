@@ -51,7 +51,7 @@ AUDIT_HMAC_SECRET=
 
 **`NEXTAUTH_SECRET`** — Used by Auth.js to sign JWT session tokens. Generate one with `openssl rand -hex 32`.
 
-**`ENCRYPTION_KEY`** — Used to encrypt provider API keys at rest (AES-256-GCM). If omitted, Pinchy auto-generates a key and persists it in the `pinchy-data` Docker volume. Set this explicitly if you want to share the key across deployments.
+**`ENCRYPTION_KEY`** — Used to encrypt provider API keys at rest (AES-256-GCM). If omitted, Pinchy auto-generates a key and persists it in the `pinchy-secrets` Docker volume. For production, we recommend setting this explicitly with `openssl rand -hex 32`.
 
 **`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. If omitted, Pinchy auto-generates a secret at startup. Set this explicitly if you need consistent signatures across restarts or deployments.
 
@@ -61,12 +61,13 @@ AUDIT_HMAC_SECRET=
 
 Docker volumes ensure data survives container restarts:
 
-| Volume                | Mounted at                                                               | Purpose                                                  |
-| --------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------- |
-| `pgdata`              | `/var/lib/postgresql/data`                                               | PostgreSQL data                                          |
-| `openclaw-config`     | `/root/.openclaw` (OpenClaw), `/openclaw-config` (Pinchy)                | Shared OpenClaw configuration                            |
-| `pinchy-data`         | `/data`                                                                  | Auto-generated encryption key and agent-accessible files |
-| `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw) | Pinchy plugins for OpenClaw                              |
+| Volume                | Mounted at                                                               | Purpose                                           |
+| --------------------- | ------------------------------------------------------------------------ | ------------------------------------------------- |
+| `pgdata`              | `/var/lib/postgresql/data`                                               | PostgreSQL data                                   |
+| `openclaw-config`     | `/root/.openclaw` (OpenClaw), `/openclaw-config` (Pinchy)                | Shared OpenClaw configuration                     |
+| `pinchy-data`         | `/data` (OpenClaw)                                                       | Agent-accessible files (Knowledge Base documents) |
+| `pinchy-secrets`      | `/app/secrets` (Pinchy)                                                  | Auto-generated encryption and HMAC keys           |
+| `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw) | Pinchy plugins for OpenClaw                       |
 
 ### Port configuration
 

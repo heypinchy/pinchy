@@ -4,7 +4,7 @@
 
 Pinchy is an **enterprise AI agent platform** built on top of [OpenClaw](https://github.com/openclaw/openclaw). OpenClaw is the most powerful open-source AI agent runtime — but it's designed for individual power users. Pinchy adds the enterprise layer: permissions, audit trails, user management, and governance.
 
-**Status: Early development.** The core is working — setup wizard, authentication, provider configuration, agent chat via OpenClaw, audit trail, and Docker Compose deployment. Enterprise features (RBAC, plugins) are next.
+**Status: Early development.** The core is working — setup wizard, authentication, provider configuration, agent chat via OpenClaw, agent permissions (allow-list model), knowledge base agents, user management with invite system, personal and shared agents, audit trail, and Docker Compose deployment. Enterprise features (granular RBAC, plugin marketplace, cross-channel workflows) are next.
 
 ### The Problem Pinchy Solves
 
@@ -47,21 +47,26 @@ Companies want AI agents but face a trilemma:
 
 ### Core Concepts (planned and implemented)
 
-- **Plugin Architecture**: Agents get scoped tools (e.g., "Create Jira Ticket"), not raw shell access
-- **RBAC**: Who can use which agent, what each agent can do — per team, per role
-- **Audit Trail** (implemented): Every agent action logged — who, what, when. HMAC-SHA256 signed rows, integrity verification, CSV export. Compliance-ready.
-- **Cross-Channel Workflows**: Input on email, output on Slack. Properly routed and permissioned
-- **Self-Hosted**: Your server, your data, your models. Works without internet
-- **Docker Compose Deployment**: Single `docker compose up` to run everything
+- **Plugin Architecture** (partially implemented): Agents get scoped tools, not raw shell access. The `pinchy-files` plugin is the first working plugin (read-only file access for Knowledge Base agents). Plugin marketplace is planned.
+- **Agent Permissions** (implemented): Allow-list model — agents start with zero tools, admins grant specific capabilities. Safe tools (list/read approved dirs) vs. powerful tools (shell, write, web).
+- **RBAC** (partially implemented): Admin/user roles with agent access control (admins see all, users see shared + personal agents). Granular per-team/per-role RBAC is planned.
+- **Audit Trail** (implemented): Every admin action logged — who, what, when. HMAC-SHA256 signed rows, integrity verification, CSV export. Compliance-ready.
+- **User Management** (implemented): Invite system with token-based onboarding, admin and user roles, password management.
+- **Knowledge Base Agents** (implemented): Scoped read-only access to specific directories. Template-based creation.
+- **Cross-Channel Workflows**: Input on email, output on Slack. Properly routed and permissioned. (Planned)
+- **Self-Hosted**: Your server, your data, your models. Works without internet.
+- **Docker Compose Deployment**: Single `docker compose up` to run everything.
 
 ## Tech Stack
 
 - **Frontend**: Next.js 16, React 19, Tailwind CSS v4, shadcn/ui, assistant-ui
+- **State Management**: zustand
 - **Auth**: Auth.js v5 (credentials provider, JWT sessions)
-- **Database**: PostgreSQL 16, Drizzle ORM
-- **Agent Runtime**: OpenClaw Gateway (WebSocket)
-- **Testing**: Vitest, React Testing Library
-- **CI/CD**: GitHub Actions, ESLint, Prettier
+- **Database**: PostgreSQL 17, Drizzle ORM
+- **Agent Runtime**: OpenClaw Gateway (WebSocket), openclaw-node client
+- **Testing**: Vitest, React Testing Library, Playwright (E2E)
+- **CI/CD**: GitHub Actions, ESLint, Prettier, Husky + lint-staged (pre-commit)
+- **Security**: AES-256-GCM encryption (API keys), HMAC-SHA256 (audit trail), SBOM generation (Syft)
 - **Deployment**: Docker Compose
 - **Documentation**: Astro Starlight, deployed to [docs.heypinchy.com](https://docs.heypinchy.com)
 - **License**: AGPL-3.0
@@ -70,23 +75,32 @@ Companies want AI agents but face a trilemma:
 
 ```
 pinchy/
-├── packages/web/          # Next.js app (frontend + API + WebSocket bridge)
-│   ├── src/
-│   │   ├── app/           # Pages & API routes
-│   │   ├── components/    # React components
-│   │   ├── db/            # Schema & migrations
-│   │   ├── lib/           # Utilities (auth, setup, agents, encryption)
-│   │   ├── hooks/         # React hooks
-│   │   └── server/        # WebSocket bridge
-│   └── drizzle/           # Generated migrations
+├── packages/
+│   ├── web/               # Next.js app (frontend + API + WebSocket bridge)
+│   │   ├── src/
+│   │   │   ├── app/       # Pages & API routes
+│   │   │   ├── components/ # React components (+ shadcn/ui + assistant-ui)
+│   │   │   ├── db/        # Schema & migrations
+│   │   │   ├── lib/       # Utilities (auth, setup, agents, encryption, audit)
+│   │   │   ├── hooks/     # React hooks
+│   │   │   └── server/    # WebSocket bridge (client-router, ws-auth)
+│   │   ├── e2e/           # Playwright E2E tests
+│   │   └── drizzle/       # Generated migrations
+│   └── plugins/
+│       └── pinchy-files/  # Knowledge base file-access plugin for OpenClaw
 ├── config/                # OpenClaw config & startup script
+├── sample-data/           # Sample docs for dev/testing (mounted at /data/)
 ├── docs/                  # Documentation (Astro Starlight, standalone)
 ├── docker-compose.yml     # Full stack definition (production)
 ├── docker-compose.dev.yml # Dev override (hot reload, exposed DB port)
 ├── Dockerfile.pinchy      # Production image
 ├── Dockerfile.pinchy.dev  # Dev image (no build step, runs pnpm dev)
-├── .github/workflows/     # CI + docs deployment
+├── Dockerfile.openclaw    # OpenClaw runtime image
+├── .github/workflows/     # CI, docs deployment, SBOM generation
 ├── CLAUDE.md              # ← You are here
+├── PERSONALITY.md         # Brand voice & tone guide (read before writing UI text)
+├── CONTRIBUTING.md        # Contribution guidelines
+├── SECURITY.md            # Security policy & vulnerability reporting
 └── README.md              # Public-facing project description
 ```
 
@@ -138,7 +152,7 @@ Pinchy was born when an AI agent accidentally sent its entire internal reasoning
 - **Clemens' Website**: [clemenshelm.com](https://clemenshelm.com) — Pinchy project page with origin story. Source: `/Users/clemenshelm/Projects/avenir/clemenshelm-com/`
 - **OpenClaw Docs**: [docs.openclaw.ai](https://docs.openclaw.ai) — essential reading for understanding the runtime
 - **OpenClaw Discord**: Active community, Clemens is a member. Useful for upstream questions.
-- **Pinchy Brand & Voice**: English, "We" perspective, Basecamp-inspired tone. Lobster humor welcome. See `heypinchy.com` for examples.
+- **Pinchy Brand & Voice**: See [`PERSONALITY.md`](PERSONALITY.md) for the complete voice guide. English, "We" perspective, Basecamp-inspired tone. Lobster humor welcome. Read before writing any user-facing text.
 
 ## Competitor Landscape
 
@@ -184,7 +198,7 @@ cd docs && pnpm build                 # Build docs
 ## Context for AI Assistants
 
 When working on this project:
-1. **The core is working** — setup, auth, provider config, agent chat, and audit trail are implemented. Enterprise features (RBAC, plugins) are planned.
+1. **The core is working** — setup, auth, provider config, agent chat, agent permissions (allow-list), knowledge base agents, user management (invites), personal/shared agents, and audit trail are all implemented. Enterprise features (granular RBAC, plugin marketplace, cross-channel workflows) are planned.
 2. **OpenClaw is the foundation** — familiarize yourself with [OpenClaw docs](https://docs.openclaw.ai) before making architectural decisions
 3. **Keep it simple** — prefer boring, proven technology over clever abstractions
 4. **Test everything** — no PR without tests

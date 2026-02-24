@@ -112,6 +112,12 @@ export class ClientRouter {
       const stream = this.openclawClient.chat(text, chatOptions);
 
       for await (const chunk of stream) {
+        // Stop consuming the stream if the browser disconnected — frees
+        // server resources while letting OpenClaw finish on its side.
+        if (clientWs.readyState !== WS_OPEN) {
+          break;
+        }
+
         if (chunk.type === "text") {
           this.sendToClient(clientWs, {
             type: "chunk",

@@ -167,6 +167,17 @@ describe("encryption", () => {
       mod.getOrCreateSecret(SECRET_NAME);
       expect(mockedReadFileSync).toHaveBeenCalledWith(`/custom/dir/${FILE_NAME}`, "utf-8");
     });
+
+    it("should default to /app/secrets when ENCRYPTION_KEY_DIR is not set", async () => {
+      mockedExistsSync.mockImplementation((path) => {
+        return String(path).endsWith(FILE_NAME);
+      });
+      mockedReadFileSync.mockReturnValue("e".repeat(64));
+
+      const mod = await import("@/lib/encryption");
+      mod.getOrCreateSecret(SECRET_NAME);
+      expect(mockedReadFileSync).toHaveBeenCalledWith(`/app/secrets/${FILE_NAME}`, "utf-8");
+    });
   });
 
   describe("key file fallback", () => {

@@ -7,6 +7,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { DirectoryPicker } from "@/components/directory-picker";
 import { getToolsByCategory } from "@/lib/tool-registry";
+import { useRestart } from "@/components/restart-provider";
 
 interface AgentSettingsPermissionsProps {
   agent: {
@@ -23,6 +24,7 @@ export function AgentSettingsPermissions({ agent, directories }: AgentSettingsPe
     agent.pluginConfig?.allowed_paths ?? []
   );
   const [saving, setSaving] = useState(false);
+  const { triggerRestart } = useRestart();
 
   const safeTools = getToolsByCategory("safe");
   const powerfulTools = getToolsByCategory("powerful");
@@ -53,6 +55,7 @@ export function AgentSettingsPermissions({ agent, directories }: AgentSettingsPe
       }
 
       toast.success("Permissions saved");
+      triggerRestart();
     } catch {
       toast.error("Failed to save permissions");
     } finally {
@@ -117,9 +120,14 @@ export function AgentSettingsPermissions({ agent, directories }: AgentSettingsPe
         </div>
       </section>
 
-      <Button onClick={handleSave} disabled={saving}>
-        {saving ? "Saving..." : "Save"}
-      </Button>
+      <div className="space-y-3">
+        <Button onClick={handleSave} disabled={saving}>
+          {saving ? "Saving..." : "Save & restart"}
+        </Button>
+        <p className="text-sm text-muted-foreground">
+          Saving will briefly disconnect all active chats while the agent runtime restarts.
+        </p>
+      </div>
     </div>
   );
 }

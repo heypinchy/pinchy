@@ -246,7 +246,6 @@ describe("PATCH /api/agents/[agentId]", () => {
     expect(updateAgent).toHaveBeenCalledWith("agent-1", {
       allowedTools: ["shell", "pinchy_ls"],
     });
-    expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 
   it("returns 403 when non-admin tries to update allowedTools", async () => {
@@ -303,7 +302,7 @@ describe("PATCH /api/agents/[agentId]", () => {
     expect(body.error).toBe("Cannot change permissions for personal agents");
   });
 
-  it("does not regenerate config when only updating name", async () => {
+  it("does not call regenerateOpenClawConfig directly (updateAgent handles it)", async () => {
     vi.mocked(auth).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
@@ -368,7 +367,6 @@ describe("PATCH /api/agents/[agentId]", () => {
     expect(updateAgent).toHaveBeenCalledWith("agent-1", {
       pluginConfig: { allowed_paths: ["/data/docs/"] },
     });
-    expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 
   it("should update greeting message", async () => {

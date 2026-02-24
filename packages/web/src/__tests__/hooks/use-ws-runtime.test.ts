@@ -22,6 +22,11 @@ class MockWebSocket {
 
 vi.stubGlobal("WebSocket", MockWebSocket);
 
+const mockTriggerRestart = vi.fn();
+vi.mock("@/components/restart-provider", () => ({
+  useRestart: () => ({ isRestarting: false, triggerRestart: mockTriggerRestart }),
+}));
+
 // Mock @assistant-ui/react with attachment adapters
 vi.mock("@assistant-ui/react", () => ({
   useExternalStoreRuntime: (config: any) => config,
@@ -911,6 +916,38 @@ describe("useWsRuntime", () => {
       expect(wsInstances).toHaveLength(3);
     });
 
+    it("should cap backoff at 5 seconds", () => {
+      renderHook(() => useWsRuntime("agent-1"));
+      const ws1 = wsInstances[0];
+
+      act(() => {
+        ws1.onopen?.();
+      });
+
+      // Disconnect 4 times: delays are 1s, 2s, 4s, 5s (capped)
+      for (let i = 0; i < 4; i++) {
+        const ws = wsInstances[wsInstances.length - 1];
+        act(() => {
+          ws.onclose?.();
+        });
+        act(() => {
+          vi.advanceTimersByTime(5000);
+        });
+      }
+
+      // 5th disconnect: should still reconnect after 5s (not 16s or 32s)
+      const ws5 = wsInstances[wsInstances.length - 1];
+      act(() => {
+        ws5.onclose?.();
+      });
+
+      // After 5s the next reconnect should happen (capped, not 16s)
+      act(() => {
+        vi.advanceTimersByTime(5000);
+      });
+      expect(wsInstances).toHaveLength(6); // original + 5 reconnects
+    });
+
     it("should stop reconnecting after max attempts", () => {
       renderHook(() => useWsRuntime("agent-1"));
       const ws1 = wsInstances[0];
@@ -925,8 +962,8 @@ describe("useWsRuntime", () => {
           ws.onclose?.();
         });
         act(() => {
-          vi.advanceTimersByTime(30000);
-        }); // Max delay
+          vi.advanceTimersByTime(5000);
+        }); // Max delay (capped at 5s)
       }
 
       expect(wsInstances).toHaveLength(11); // original + 10 reconnects
@@ -940,6 +977,134 @@ describe("useWsRuntime", () => {
         vi.advanceTimersByTime(60000);
       });
       expect(wsInstances).toHaveLength(11); // No new connection
+    });
+  });
+
+  describe("agent switching", () => {
+    it("should reset messages when agentId changes", () => {
+      const { result, rerender } = renderHook(({ agentId }) => useWsRuntime(agentId), {
+        initialProps: { agentId: "agent-1" },
+      });
+      const ws1 = wsInstances[0];
+
+      // Connect and load history for agent-1
+      act(() => {
+        ws1.onopen?.();
+      });
+      act(() => {
+        ws1.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [
+              { role: "user", content: "Hello" },
+              { role: "assistant", content: "Hi from agent 1!" },
+            ],
+          }),
+        });
+      });
+
+      expect(result.current.runtime.messages).toHaveLength(2);
+
+      // Switch to agent-2
+      rerender({ agentId: "agent-2" });
+      const ws2 = wsInstances[1];
+
+      // Connect to new agent
+      act(() => {
+        ws2.onopen?.();
+      });
+
+      // History from agent-2 arrives
+      act(() => {
+        ws2.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [{ role: "assistant", content: "Welcome to agent 2!" }],
+          }),
+        });
+      });
+
+      // Should show agent-2's history, NOT agent-1's
+      const messages = result.current.runtime.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].content[0].text).toBe("Welcome to agent 2!");
+    });
+
+    it("should load history for new agent even when previous agent had messages", () => {
+      const { result, rerender } = renderHook(({ agentId }) => useWsRuntime(agentId), {
+        initialProps: { agentId: "agent-1" },
+      });
+      const ws1 = wsInstances[0];
+
+      // Chat with agent-1
+      act(() => {
+        ws1.onopen?.();
+      });
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello agent 1" }],
+          parentId: "root",
+        });
+      });
+
+      // Switch to agent-2
+      rerender({ agentId: "agent-2" });
+      const ws2 = wsInstances[1];
+
+      act(() => {
+        ws2.onopen?.();
+      });
+
+      // Agent-2 has empty history
+      act(() => {
+        ws2.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [],
+          }),
+        });
+      });
+
+      // Should be empty — agent-1's messages must not leak into agent-2
+      expect(result.current.runtime.messages).toHaveLength(0);
+    });
+  });
+
+  describe("openclaw restart messages", () => {
+    it("should call triggerRestart when openclaw:restarting message is received", () => {
+      renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "openclaw:restarting" }),
+        });
+      });
+
+      expect(mockTriggerRestart).toHaveBeenCalledOnce();
+    });
+
+    it("should ignore openclaw:ready messages (RestartProvider handles transition)", () => {
+      renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      // Should not throw or cause issues
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "openclaw:ready" }),
+        });
+      });
+
+      // triggerRestart should NOT be called for ready messages
+      expect(mockTriggerRestart).not.toHaveBeenCalled();
     });
   });
 });

@@ -6,8 +6,8 @@ services:
     ports:
       - "7777:7777"
     environment:
-      - DATABASE_URL=postgresql://pinchy:${DB_PASSWORD}@db:5432/pinchy
-      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET}
+      - DATABASE_URL=postgresql://pinchy:${DB_PASSWORD:-pinchy_dev}@db:5432/pinchy
+      - NEXTAUTH_SECRET=${NEXTAUTH_SECRET:-}
       - NEXTAUTH_URL=${NEXTAUTH_URL:-http://localhost:7777}
       - AUTH_TRUST_HOST=true
       - OPENCLAW_WS_URL=ws://openclaw:18789
@@ -15,6 +15,7 @@ services:
     volumes:
       - openclaw-config:/openclaw-config
       - openclaw-extensions:/openclaw-extensions
+      - pinchy-secrets:/app/secrets
     restart: unless-stopped
     depends_on:
       db:
@@ -41,7 +42,7 @@ services:
     environment:
       - POSTGRES_DB=pinchy
       - POSTGRES_USER=pinchy
-      - POSTGRES_PASSWORD=${DB_PASSWORD}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-pinchy_dev}
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U pinchy"]
@@ -53,4 +54,5 @@ volumes:
   pgdata:
   openclaw-config:
   pinchy-data:
+  pinchy-secrets:
   openclaw-extensions:

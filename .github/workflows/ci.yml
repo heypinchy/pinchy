@@ -77,15 +77,51 @@ jobs:
         env:
           CI: true
 
-  docker:
-    name: Docker build
+  docker-smoke:
+    name: Docker smoke test
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build Docker image
-        run: docker build -f Dockerfile.pinchy -t pinchy:ci .
+      - name: Start production stack
+        run: docker compose up --build -d
+
+      - name: Wait for health (production)
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7777/api/health; then
+              echo "Production stack healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Production health check failed"
+          docker compose logs pinchy
+          exit 1
+
+      - name: Tear down production
+        run: docker compose down -v
+
+      - name: Start dev stack
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
+
+      - name: Wait for health (dev)
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7777/api/health; then
+              echo "Dev stack healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Dev health check failed"
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy
+          exit 1
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v
 
   audit:
     name: Security audit

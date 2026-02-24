@@ -160,7 +160,7 @@ Migrations are generated with `drizzle-kit generate` and applied automatically o
 
 Provider API keys are encrypted at rest using **AES-256-GCM**:
 
-- A 256-bit encryption key is either provided via the `ENCRYPTION_KEY` environment variable or auto-generated and persisted in the `pinchy-data` Docker volume
+- A 256-bit encryption key is either provided via the `ENCRYPTION_KEY` environment variable or auto-generated and persisted in the `pinchy-secrets` Docker volume
 - Each encrypted value stores the IV, auth tag, and ciphertext together
 - Decryption happens on-demand when Pinchy writes the OpenClaw configuration file
 

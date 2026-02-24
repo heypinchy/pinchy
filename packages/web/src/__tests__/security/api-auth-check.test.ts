@@ -27,6 +27,7 @@ const PUBLIC_ROUTES = [
   "api/setup/status/route.ts",
   "api/invite/claim/route.ts",
   "api/health/route.ts",
+  "api/health/openclaw/route.ts",
 ];
 
 function findRouteFiles(dir: string): string[] {

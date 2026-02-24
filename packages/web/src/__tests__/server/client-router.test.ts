@@ -276,6 +276,39 @@ describe("ClientRouter", () => {
     expect(clientWs.send).not.toHaveBeenCalled();
   });
 
+  it("should stop consuming stream early when client WebSocket closes mid-stream", async () => {
+    const clientWs = createMockClientWs();
+    let chunksYielded = 0;
+
+    async function* fakeStream() {
+      chunksYielded++;
+      yield { type: "text" as const, text: "First " };
+      // Simulate WS closing after first chunk is consumed
+      clientWs.readyState = 3; // CLOSED
+      chunksYielded++;
+      yield { type: "text" as const, text: "Second " };
+      chunksYielded++;
+      yield { type: "text" as const, text: "Third" };
+      chunksYielded++;
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    // Should stop consuming after detecting the closed WS, not drain the entire stream
+    expect(chunksYielded).toBe(2);
+    // Only the first chunk should have been sent
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const textChunks = messages.filter((m: any) => m.type === "chunk");
+    expect(textChunks).toHaveLength(1);
+    expect(textChunks[0].content).toBe("First ");
+  });
+
   it("should return empty history when session has no messages", async () => {
     const clientWs = createMockClientWs();
     mockSessionsHistory.mockResolvedValue({ messages: [] });

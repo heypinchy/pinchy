@@ -8,7 +8,7 @@ const IV_LENGTH = 12;
 export function getOrCreateSecret(name: string): Buffer {
   const envVarName = name.toUpperCase();
   const fileName = `.${name}`;
-  const keyFileDir = process.env.ENCRYPTION_KEY_DIR || "/data";
+  const keyFileDir = process.env.ENCRYPTION_KEY_DIR || "/app/secrets";
   const keyFilePath = join(keyFileDir, fileName);
 
   // Priority 1: Environment variable

@@ -69,6 +69,7 @@ vi.mock("@/lib/settings", () => ({
 import { auth } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
 import { deleteAgent, updateAgent } from "@/lib/agents";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 
 // ── POST /api/agents — agent.created audit ──────────────────────────────
@@ -207,5 +208,50 @@ describe("DELETE /api/agents/[agentId] audit logging", () => {
       resource: "agent:agent-1",
       detail: { name: "Shared Agent" },
     });
+  });
+});
+
+// ── PATCH /api/agents/[agentId] — config regeneration ─────────────────
+
+describe("PATCH /api/agents/[agentId] config regeneration", () => {
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  it("should not call regenerateOpenClawConfig directly when allowedTools change (updateAgent handles it)", async () => {
+    vi.mocked(auth).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      isPersonal: false,
+      ownerId: null,
+    } as never);
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      allowedTools: ["shell"],
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ allowedTools: ["shell"] }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 });
