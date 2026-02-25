@@ -63,9 +63,15 @@ Each invited user gets their own personal **Smithers** agent, created automatica
 
 ## 7. Create a Knowledge Base Agent (optional)
 
-You can create agents from templates. Creating an agent is simple: pick a template, give it a name, and click Create.
+You can create agents from templates. Creating an agent is simple: pick a template, give it a name, add an optional tagline, and click Create. Each agent gets a unique auto-generated avatar.
 
-For example, a **Knowledge Base** agent can read files in directories you select — but has no access to anything else by default. After creating the agent, open its **Settings → Permissions** tab to configure which directories it can access.
+For example, a **Knowledge Base** agent can read files in directories you select — but has no access to anything else by default. After creating the agent, you can customize it through the agent settings tabs:
+
+- **General** — Change the agent's name, tagline, avatar, and model
+- **Personality** — Choose a personality preset or write custom personality instructions (SOUL.md)
+- **Instructions** — Define what the agent should do and how it should handle tasks (AGENTS.md)
+- **Context** — Add organization-specific context like company info or team conventions (USER.md)
+- **Permissions** — Configure which tools and directories the agent can access
 
 To try it out, mount a directory with documents into the Pinchy container and create an agent from the Knowledge Base template. See the [Create a Knowledge Base Agent](/guides/create-knowledge-base-agent/) guide for the full walkthrough.
 

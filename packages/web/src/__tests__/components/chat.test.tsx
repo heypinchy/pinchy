@@ -84,9 +84,11 @@ describe("Chat", () => {
     expect(screen.getByText("Smithers")).toBeInTheDocument();
   });
 
-  it("should show 'Connected' when WebSocket is connected", () => {
+  it("should show connected status indicator when WebSocket is connected", () => {
     render(<Chat agentId="agent-1" agentName="Smithers" />);
-    expect(screen.getByText("Connected")).toBeInTheDocument();
+    const dot = screen.getByLabelText("Connected");
+    expect(dot).toBeInTheDocument();
+    expect(dot.className).toContain("bg-green-600");
   });
 
   it("should render the Thread component", () => {
@@ -94,7 +96,7 @@ describe("Chat", () => {
     expect(screen.getByTestId("thread")).toBeInTheDocument();
   });
 
-  it("should show 'Disconnected' when WebSocket is not connected", () => {
+  it("should show disconnected status indicator when WebSocket is not connected", () => {
     vi.mocked(useWsRuntime).mockReturnValue({
       runtime: {} as any,
       isConnected: false,
@@ -103,10 +105,12 @@ describe("Chat", () => {
     });
 
     render(<Chat agentId="agent-1" agentName="Smithers" />);
-    expect(screen.getByText("Disconnected")).toBeInTheDocument();
+    const dot = screen.getByLabelText("Disconnected");
+    expect(dot).toBeInTheDocument();
+    expect(dot.className).toContain("bg-destructive");
   });
 
-  it("should show 'Applying your changes' when configuring", () => {
+  it("should show 'Applying your changes' in status tooltip when configuring", () => {
     vi.mocked(useWsRuntime).mockReturnValue({
       runtime: {} as any,
       isConnected: false,
@@ -115,7 +119,7 @@ describe("Chat", () => {
     });
 
     render(<Chat agentId="agent-1" agentName="Smithers" configuring={true} />);
-    expect(screen.getByText(/applying your changes/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/applying your changes/i)).toBeInTheDocument();
   });
 
   it("should render a settings link with correct href", () => {
@@ -181,5 +185,19 @@ describe("Chat", () => {
   it("should not show delayed response hint when isDelayed is false", () => {
     render(<Chat agentId="agent-1" agentName="Smithers" />);
     expect(screen.queryByText(/taking longer than usual/i)).not.toBeInTheDocument();
+  });
+
+  it("should render avatar image in header when avatarUrl is provided", () => {
+    const { container } = render(
+      <Chat agentId="agent-1" agentName="Smithers" avatarUrl="data:image/svg+xml;utf8,test" />
+    );
+    const avatar = container.querySelector('img[src="data:image/svg+xml;utf8,test"]');
+    expect(avatar).toBeInTheDocument();
+  });
+
+  it("should not render avatar image in header when avatarUrl is not provided", () => {
+    const { container } = render(<Chat agentId="agent-1" agentName="Smithers" />);
+    const avatars = container.querySelectorAll("header img");
+    expect(avatars.length).toBe(0);
   });
 });

@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { Chat } from "@/components/chat";
 import { requireAuth } from "@/lib/require-auth";
 import { assertAgentAccess } from "@/lib/agent-access";
+import { getAgentAvatarSvg } from "@/lib/avatar";
 
 export default async function ChatPage({ params }: { params: Promise<{ agentId: string }> }) {
   const { agentId } = await params;
@@ -22,7 +23,15 @@ export default async function ChatPage({ params }: { params: Promise<{ agentId: 
     notFound();
   }
 
+  const avatarUrl = getAgentAvatarSvg({ avatarSeed: agent.avatarSeed, name: agent.name });
+
   return (
-    <Chat key={agent.id} agentId={agent.id} agentName={agent.name} isPersonal={agent.isPersonal} />
+    <Chat
+      key={agent.id}
+      agentId={agent.id}
+      agentName={agent.name}
+      isPersonal={agent.isPersonal}
+      avatarUrl={avatarUrl}
+    />
   );
 }

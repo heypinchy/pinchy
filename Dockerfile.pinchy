@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-RUN npm install -g pnpm
+RUN corepack enable
 
 WORKDIR /app
 
@@ -31,4 +31,4 @@ RUN groupadd -r pinchy && useradd -r -g pinchy -d /app pinchy
 RUN mkdir -p /app/secrets && chown -R pinchy:pinchy /app /app/secrets /openclaw-extensions
 USER pinchy
 
-CMD ["sh", "-c", "pnpm db:migrate && pnpm start"]
+CMD ["sh", "-c", "echo '[pinchy] Running database migrations...' && pnpm db:migrate && echo '[pinchy] Starting server...' && exec pnpm start"]

@@ -1,3 +1,5 @@
+export { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
+
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -10,6 +12,9 @@ export interface UpdateAgentInput {
   allowedTools?: string[];
   pluginConfig?: unknown;
   greetingMessage?: string | null;
+  tagline?: string | null;
+  avatarSeed?: string | null;
+  personalityPresetId?: string | null;
 }
 
 export async function deleteAgent(id: string) {

@@ -15,10 +15,14 @@ vi.mock("@/lib/auth", () => ({
   auth: vi.fn(),
 }));
 
-vi.mock("@/lib/agents", () => ({
-  deleteAgent: vi.fn().mockResolvedValue({ id: "agent-1", name: "Test Agent" }),
-  updateAgent: vi.fn(),
-}));
+vi.mock("@/lib/agents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/agents")>();
+  return {
+    ...actual,
+    deleteAgent: vi.fn().mockResolvedValue({ id: "agent-1", name: "Test Agent" }),
+    updateAgent: vi.fn(),
+  };
+});
 
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
@@ -54,6 +58,7 @@ vi.mock("@/db", () => ({
 vi.mock("@/lib/workspace", () => ({
   ensureWorkspace: vi.fn(),
   writeWorkspaceFile: vi.fn(),
+  writeIdentityFile: vi.fn(),
 }));
 
 vi.mock("@/lib/path-validation", () => ({
@@ -70,6 +75,7 @@ import { auth } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
 import { deleteAgent, updateAgent } from "@/lib/agents";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { writeIdentityFile } from "@/lib/workspace";
 import { db } from "@/db";
 
 // ── POST /api/agents — agent.created audit ──────────────────────────────
@@ -208,6 +214,192 @@ describe("DELETE /api/agents/[agentId] audit logging", () => {
       resource: "agent:agent-1",
       detail: { name: "Shared Agent" },
     });
+  });
+});
+
+// ── PATCH /api/agents/[agentId] — IDENTITY.md regeneration ────────────
+
+describe("PATCH /api/agents/[agentId] IDENTITY.md regeneration", () => {
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  it("calls writeIdentityFile when PATCH includes name", async () => {
+    vi.mocked(auth).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Old Name",
+      isPersonal: false,
+      ownerId: null,
+    } as never);
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "New Name",
+      tagline: "Some tagline",
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "New Name" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(writeIdentityFile).toHaveBeenCalledWith("agent-1", {
+      name: "New Name",
+      tagline: "Some tagline",
+    });
+  });
+
+  it("calls writeIdentityFile when PATCH includes tagline", async () => {
+    vi.mocked(auth).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Agent",
+      isPersonal: false,
+      ownerId: null,
+    } as never);
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Agent",
+      tagline: "New tagline",
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ tagline: "New tagline" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(writeIdentityFile).toHaveBeenCalledWith("agent-1", {
+      name: "Agent",
+      tagline: "New tagline",
+    });
+  });
+
+  it("does not call writeIdentityFile when PATCH only includes model", async () => {
+    vi.mocked(auth).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Agent",
+      isPersonal: false,
+      ownerId: null,
+    } as never);
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Agent",
+      model: "openai/gpt-4o",
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ model: "openai/gpt-4o" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(writeIdentityFile).not.toHaveBeenCalled();
+  });
+});
+
+// ── PATCH /api/agents/[agentId] — name length validation ──────────────
+
+describe("PATCH /api/agents/[agentId] name length validation", () => {
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  it("should reject name longer than 30 characters", async () => {
+    vi.mocked(auth).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      isPersonal: false,
+      ownerId: null,
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "A".repeat(31) }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/name/i);
+  });
+
+  it("should accept name with exactly 30 characters", async () => {
+    vi.mocked(auth).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      isPersonal: false,
+      ownerId: null,
+    } as never);
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "A".repeat(30),
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "A".repeat(30) }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
   });
 });
 

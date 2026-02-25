@@ -48,8 +48,7 @@ app.prepare().then(() => {
       clientId: "gateway-client",
       clientVersion: "0.1.0",
       scopes: ["operator.admin"],
-      deviceIdentityPath:
-        process.env.DEVICE_IDENTITY_PATH || "/openclaw-config/device-identity.json",
+      deviceIdentityPath: process.env.DEVICE_IDENTITY_PATH || "/app/secrets/device-identity.json",
       autoReconnect: true,
       reconnectIntervalMs: 1000,
       maxReconnectAttempts: Infinity,

@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { readWorkspaceFile, writeWorkspaceFile } from "@/lib/workspace";
 import { getAgentWithAccess } from "@/lib/agent-access";
+import { restartState } from "@/server/restart-state";
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
@@ -52,6 +53,7 @@ export async function PUT(request: NextRequest, { params }: Params) {
 
   try {
     writeWorkspaceFile(agentId, filename, content);
+    restartState.notifyRestart();
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Invalid file";

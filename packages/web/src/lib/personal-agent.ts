@@ -1,12 +1,10 @@
 import { db } from "@/db";
 import { agents } from "@/db/schema";
-import { ensureWorkspace, writeWorkspaceFile } from "@/lib/workspace";
+import { ensureWorkspace, writeWorkspaceFile, writeIdentityFile } from "@/lib/workspace";
 import { getSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { SMITHERS_SOUL_MD } from "@/lib/smithers-soul";
-
-export const SMITHERS_GREETING =
-  "Welcome! I'm Smithers, your personal assistant on Pinchy. I'm here to help you navigate the platform, manage agents, and get the most out of your setup. How can I help you today?";
+import { PERSONALITY_PRESETS, resolveGreetingMessage } from "@/lib/personality-presets";
 
 interface CreateSmithersOptions {
   model: string;
@@ -15,6 +13,8 @@ interface CreateSmithersOptions {
 }
 
 export async function createSmithersAgent({ model, ownerId, isPersonal }: CreateSmithersOptions) {
+  const preset = PERSONALITY_PRESETS["the-butler"];
+
   const [agent] = await db
     .insert(agents)
     .values({
@@ -22,12 +22,16 @@ export async function createSmithersAgent({ model, ownerId, isPersonal }: Create
       model,
       ownerId,
       isPersonal,
-      greetingMessage: SMITHERS_GREETING,
+      tagline: "Your reliable personal assistant",
+      avatarSeed: "__smithers__",
+      personalityPresetId: "the-butler",
+      greetingMessage: resolveGreetingMessage(preset.greetingMessage, "Smithers"),
     })
     .returning();
 
   ensureWorkspace(agent.id);
   writeWorkspaceFile(agent.id, "SOUL.md", SMITHERS_SOUL_MD);
+  writeIdentityFile(agent.id, { name: agent.name, tagline: agent.tagline });
 
   return agent;
 }

@@ -21,12 +21,14 @@ describe("GET /api/templates", () => {
           name: "Knowledge Base",
           description: "Answer questions from your docs",
           requiresDirectories: true,
+          defaultTagline: "Answer questions from your docs",
         }),
         expect.objectContaining({
           id: "custom",
           name: "Custom Agent",
           description: "Start from scratch",
           requiresDirectories: false,
+          defaultTagline: null,
         }),
       ])
     );

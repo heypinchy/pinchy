@@ -23,6 +23,7 @@ describe("AgentSettingsGeneral", () => {
     name: "Smithers",
     model: "anthropic/claude-sonnet-4-20250514",
     isPersonal: false,
+    tagline: "Your reliable assistant",
   };
   const defaultProviders = [
     {
@@ -54,6 +55,13 @@ describe("AgentSettingsGeneral", () => {
 
     expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/name/i)).toHaveValue("Smithers");
+  });
+
+  it("should render tagline input pre-filled with agent tagline", () => {
+    render(<AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} />);
+
+    expect(screen.getByLabelText(/tagline/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/tagline/i)).toHaveValue("Your reliable assistant");
   });
 
   it("should render a Model label and a select trigger", () => {
@@ -113,7 +121,11 @@ describe("AgentSettingsGeneral", () => {
       expect(global.fetch).toHaveBeenCalledWith("/api/agents/agent-1", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "Smithers", model: "anthropic/claude-sonnet-4-20250514" }),
+        body: JSON.stringify({
+          name: "Smithers",
+          tagline: "Your reliable assistant",
+          model: "anthropic/claude-sonnet-4-20250514",
+        }),
       });
     });
   });
@@ -139,7 +151,11 @@ describe("AgentSettingsGeneral", () => {
       expect(global.fetch).toHaveBeenCalledWith("/api/agents/agent-1", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: "Jeeves", model: "anthropic/claude-sonnet-4-20250514" }),
+        body: JSON.stringify({
+          name: "Jeeves",
+          tagline: "Your reliable assistant",
+          model: "anthropic/claude-sonnet-4-20250514",
+        }),
       });
     });
   });
@@ -198,6 +214,12 @@ describe("AgentSettingsGeneral", () => {
     await waitFor(() => {
       expect(onSaved).toHaveBeenCalled();
     });
+  });
+
+  it("should have maxLength attribute on name input", () => {
+    render(<AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} />);
+
+    expect(screen.getByLabelText(/name/i)).toHaveAttribute("maxLength", "30");
   });
 
   describe("canDelete prop", () => {

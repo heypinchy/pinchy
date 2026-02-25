@@ -11,13 +11,21 @@ vi.mock("@/lib/auth", () => ({
   auth: vi.fn(),
 }));
 
-vi.mock("@/lib/agents", () => ({
-  deleteAgent: vi.fn().mockResolvedValue({ id: "agent-1", name: "Test Agent" }),
-  updateAgent: vi.fn(),
-}));
+vi.mock("@/lib/agents", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/agents")>();
+  return {
+    ...actual,
+    deleteAgent: vi.fn().mockResolvedValue({ id: "agent-1", name: "Test Agent" }),
+    updateAgent: vi.fn(),
+  };
+});
 
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/workspace", () => ({
+  writeIdentityFile: vi.fn(),
 }));
 
 vi.mock("@/db", () => ({

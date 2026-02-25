@@ -58,6 +58,7 @@ vi.mock("bcryptjs", () => ({
 vi.mock("@/lib/workspace", () => ({
   ensureWorkspace: vi.fn(),
   writeWorkspaceFile: vi.fn(),
+  writeIdentityFile: vi.fn(),
 }));
 
 vi.mock("@/lib/smithers-soul", () => ({

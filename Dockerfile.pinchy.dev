@@ -1,6 +1,6 @@
 FROM node:22-slim
 
-RUN npm install -g pnpm
+RUN corepack enable
 
 WORKDIR /app
 

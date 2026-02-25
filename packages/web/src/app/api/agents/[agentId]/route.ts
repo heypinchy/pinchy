@@ -1,9 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { revalidatePath } from "next/cache";
-import { updateAgent, deleteAgent } from "@/lib/agents";
+import { updateAgent, deleteAgent, AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
 import { auth } from "@/lib/auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { appendAuditLog } from "@/lib/audit";
+import { writeIdentityFile } from "@/lib/workspace";
 
 export async function GET(
   request: NextRequest,
@@ -48,6 +49,17 @@ export async function PATCH(
 
   const body = await request.json();
 
+  if (
+    body.name !== undefined &&
+    typeof body.name === "string" &&
+    body.name.length > AGENT_NAME_MAX_LENGTH
+  ) {
+    return NextResponse.json(
+      { error: `Name must be ${AGENT_NAME_MAX_LENGTH} characters or less` },
+      { status: 400 }
+    );
+  }
+
   // Only admins can change permissions
   if (body.allowedTools !== undefined) {
     if (session.user.role !== "admin") {
@@ -68,14 +80,27 @@ export async function PATCH(
     allowedTools?: string[];
     pluginConfig?: unknown;
     greetingMessage?: string | null;
+    tagline?: string | null;
+    avatarSeed?: string | null;
+    personalityPresetId?: string | null;
   } = {};
   if (body.name !== undefined) data.name = body.name;
   if (body.model !== undefined) data.model = body.model;
   if (body.allowedTools !== undefined) data.allowedTools = body.allowedTools;
   if (body.pluginConfig !== undefined) data.pluginConfig = body.pluginConfig;
   if (body.greetingMessage !== undefined) data.greetingMessage = body.greetingMessage;
+  if (body.tagline !== undefined) data.tagline = body.tagline;
+  if (body.avatarSeed !== undefined) data.avatarSeed = body.avatarSeed;
+  if (body.personalityPresetId !== undefined) data.personalityPresetId = body.personalityPresetId;
 
   const agent = await updateAgent(agentId, data);
+
+  if (data.name !== undefined || data.tagline !== undefined) {
+    writeIdentityFile(agentId, {
+      name: agent.name,
+      tagline: agent.tagline,
+    });
+  }
 
   appendAuditLog({
     actorType: "user",

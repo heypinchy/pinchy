@@ -45,6 +45,7 @@ vi.mock("@assistant-ui/react", () => ({
     Error: ({ children }: any) => <div>{children}</div>,
   },
   useMessage: () => ({}),
+  useComposerRuntime: () => null,
 }));
 
 vi.mock("@/components/assistant-ui/attachment", () => ({
@@ -73,8 +74,17 @@ vi.mock("@/components/ui/button", () => ({
   Button: ({ children, ...props }: any) => <button {...props}>{children}</button>,
 }));
 
+vi.mock("@/components/chat", async () => {
+  const React = await import("react");
+  return {
+    AgentAvatarContext: React.createContext<string | null>(null),
+    AgentIdContext: React.createContext<string | null>(null),
+  };
+});
+
 import { Thread } from "@/components/assistant-ui/thread";
 import { STARTUP_MESSAGES } from "@/components/assistant-ui/thread";
+import { AgentAvatarContext } from "@/components/chat";
 
 describe("ThreadWelcome — loading state (isHistoryLoaded=false)", () => {
   beforeEach(() => {
@@ -130,5 +140,25 @@ describe("ThreadWelcome — ready state (isHistoryLoaded=true)", () => {
   it("does NOT show startup messages", () => {
     render(<Thread isHistoryLoaded={true} />);
     expect(screen.queryByTestId("startup-message")).not.toBeInTheDocument();
+  });
+
+  it("shows avatar in ready state when provided via context", () => {
+    const { container } = render(
+      <AgentAvatarContext.Provider value="data:image/svg+xml;utf8,test-avatar">
+        <Thread isHistoryLoaded={true} />
+      </AgentAvatarContext.Provider>
+    );
+    const avatar = container.querySelector('img[src="data:image/svg+xml;utf8,test-avatar"]');
+    expect(avatar).toBeInTheDocument();
+  });
+
+  it("does not show avatar in ready state when context is null", () => {
+    const { container } = render(
+      <AgentAvatarContext.Provider value={null}>
+        <Thread isHistoryLoaded={true} />
+      </AgentAvatarContext.Provider>
+    );
+    const avatars = container.querySelectorAll("img");
+    expect(avatars.length).toBe(0);
   });
 });

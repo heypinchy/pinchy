@@ -26,15 +26,21 @@ import {
 import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
 import { useRestart } from "@/components/restart-provider";
 
+import { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
+
 const agentSettingsSchema = z.object({
-  name: z.string().min(1, "Name is required"),
+  name: z
+    .string()
+    .min(1, "Name is required")
+    .max(AGENT_NAME_MAX_LENGTH, `Name must be ${AGENT_NAME_MAX_LENGTH} characters or less`),
+  tagline: z.string(),
   model: z.string().min(1, "Model is required"),
 });
 
 type AgentSettingsValues = z.infer<typeof agentSettingsSchema>;
 
 interface AgentSettingsGeneralProps {
-  agent: { id: string; name: string; model: string; isPersonal?: boolean };
+  agent: { id: string; name: string; model: string; isPersonal?: boolean; tagline?: string | null };
   providers: Array<{
     id: string;
     name: string;
@@ -55,6 +61,7 @@ export function AgentSettingsGeneral({
     resolver: zodResolver(agentSettingsSchema),
     defaultValues: {
       name: agent.name,
+      tagline: agent.tagline || "",
       model: agent.model,
     },
   });
@@ -66,7 +73,7 @@ export function AgentSettingsGeneral({
       const res = await fetch(`/api/agents/${agent.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: values.name, model: values.model }),
+        body: JSON.stringify({ name: values.name, tagline: values.tagline, model: values.model }),
       });
 
       if (!res.ok) {
@@ -93,9 +100,22 @@ export function AgentSettingsGeneral({
               <FormItem>
                 <FormLabel>Name</FormLabel>
                 <FormControl>
-                  <Input {...field} />
+                  <Input maxLength={AGENT_NAME_MAX_LENGTH} {...field} />
                 </FormControl>
                 <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="tagline"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Tagline</FormLabel>
+                <FormControl>
+                  <Input placeholder="e.g. Answers questions from your HR documents" {...field} />
+                </FormControl>
               </FormItem>
             )}
           />

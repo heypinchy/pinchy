@@ -3,6 +3,24 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { AgentSettingsFile } from "@/components/agent-settings-file";
 
+vi.mock("@/components/markdown-editor", () => ({
+  MarkdownEditor: ({
+    value,
+    onChange,
+    className,
+  }: {
+    value: string;
+    onChange: (v: string) => void;
+    className?: string;
+  }) => (
+    <textarea
+      className={`font-mono ${className ?? ""}`}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  ),
+}));
+
 describe("AgentSettingsFile", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
@@ -39,10 +57,10 @@ describe("AgentSettingsFile", () => {
       expect(textarea).toHaveClass("font-mono");
     });
 
-    it("should render a Save button", () => {
+    it("should render a 'Save & restart' button", () => {
       render(<AgentSettingsFile agentId="agent-1" filename="SOUL.md" content="" />);
 
-      expect(screen.getByRole("button", { name: /save/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Save & restart" })).toBeInTheDocument();
     });
 
     it("should PUT to the correct API endpoint on save", async () => {
@@ -146,6 +164,35 @@ describe("AgentSettingsFile", () => {
 
       await waitFor(() => {
         expect(screen.getByText(/failed to save file/i)).toBeInTheDocument();
+      });
+    });
+  });
+
+  describe("AGENTS.md", () => {
+    it("should render the AGENTS.md explanation text", () => {
+      render(<AgentSettingsFile agentId="agent-1" filename="AGENTS.md" content="" />);
+
+      expect(screen.getByText(/operating instructions/i)).toBeInTheDocument();
+    });
+
+    it("should PUT to the AGENTS.md API endpoint on save", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true }),
+      } as Response);
+
+      render(
+        <AgentSettingsFile agentId="agent-1" filename="AGENTS.md" content="Some instructions" />
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/agents/agent-1/files/AGENTS.md", {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ content: "Some instructions" }),
+        });
       });
     });
   });

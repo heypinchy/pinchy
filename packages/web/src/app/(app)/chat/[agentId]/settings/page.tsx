@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { useParams } from "next/navigation";
+import { useState, useEffect, useCallback } from "react";
+import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AgentSettingsGeneral } from "@/components/agent-settings-general";
 import { AgentSettingsFile } from "@/components/agent-settings-file";
+import { AgentSettingsPersonality } from "@/components/agent-settings-personality";
 import { AgentSettingsPermissions } from "@/components/agent-settings-permissions";
 
 interface Agent {
@@ -16,6 +17,9 @@ interface Agent {
   isPersonal: boolean;
   allowedTools: string[];
   pluginConfig: { allowed_paths?: string[] } | null;
+  tagline: string | null;
+  avatarSeed: string | null;
+  personalityPresetId: string | null;
 }
 
 interface Directory {
@@ -31,57 +35,70 @@ interface Provider {
 
 export default function AgentSettingsPage() {
   const params = useParams();
+  const router = useRouter();
   const agentId = params.agentId as string;
   const { data: session } = useSession();
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [soulContent, setSoulContent] = useState("");
+  const [agentsContent, setAgentsContent] = useState("");
   const [userContent, setUserContent] = useState("");
   const [directories, setDirectories] = useState<Directory[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function fetchData() {
-      try {
-        const [agentRes, modelsRes, soulRes, userRes, dirRes] = await Promise.all([
-          fetch(`/api/agents/${agentId}`),
-          fetch("/api/providers/models"),
-          fetch(`/api/agents/${agentId}/files/SOUL.md`),
-          fetch(`/api/agents/${agentId}/files/USER.md`),
-          fetch("/api/data-directories"),
-        ]);
+  const fetchData = useCallback(async () => {
+    try {
+      const [agentRes, modelsRes, soulRes, agentsRes, userRes, dirRes] = await Promise.all([
+        fetch(`/api/agents/${agentId}`),
+        fetch("/api/providers/models"),
+        fetch(`/api/agents/${agentId}/files/SOUL.md`),
+        fetch(`/api/agents/${agentId}/files/AGENTS.md`),
+        fetch(`/api/agents/${agentId}/files/USER.md`),
+        fetch("/api/data-directories"),
+      ]);
 
-        if (agentRes.ok) {
-          setAgent(await agentRes.json());
-        }
-
-        if (modelsRes.ok) {
-          const data = await modelsRes.json();
-          setProviders(data.providers || []);
-        }
-
-        if (soulRes.ok) {
-          const data = await soulRes.json();
-          setSoulContent(data.content || "");
-        }
-
-        if (userRes.ok) {
-          const data = await userRes.json();
-          setUserContent(data.content || "");
-        }
-
-        if (dirRes.ok) {
-          const data = await dirRes.json();
-          setDirectories(data.directories || []);
-        }
-      } finally {
-        setLoading(false);
+      if (agentRes.ok) {
+        setAgent(await agentRes.json());
       }
-    }
 
-    fetchData();
+      if (modelsRes.ok) {
+        const data = await modelsRes.json();
+        setProviders(data.providers || []);
+      }
+
+      if (soulRes.ok) {
+        const data = await soulRes.json();
+        setSoulContent(data.content || "");
+      }
+
+      if (agentsRes.ok) {
+        const data = await agentsRes.json();
+        setAgentsContent(data.content || "");
+      }
+
+      if (userRes.ok) {
+        const data = await userRes.json();
+        setUserContent(data.content || "");
+      }
+
+      if (dirRes.ok) {
+        const data = await dirRes.json();
+        setDirectories(data.directories || []);
+      }
+    } finally {
+      setLoading(false);
+    }
   }, [agentId]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  const handleSaved = useCallback(() => {
+    router.refresh();
+    fetchData();
+  }, [router, fetchData]);
 
   if (loading) {
     return <div className="p-8 text-muted-foreground">Loading...</div>;
@@ -110,17 +127,42 @@ export default function AgentSettingsPage() {
       <Tabs defaultValue="general">
         <TabsList>
           <TabsTrigger value="general">General</TabsTrigger>
-          <TabsTrigger value="soul">SOUL.md</TabsTrigger>
-          <TabsTrigger value="user">USER.md</TabsTrigger>
+          <TabsTrigger value="personality">Personality</TabsTrigger>
+          <TabsTrigger value="instructions">Instructions</TabsTrigger>
+          <TabsTrigger value="user">Context</TabsTrigger>
           {showPermissions && <TabsTrigger value="permissions">Permissions</TabsTrigger>}
         </TabsList>
 
         <TabsContent value="general">
-          <AgentSettingsGeneral agent={agent} providers={providers} canDelete={canDelete} />
+          <AgentSettingsGeneral
+            agent={{
+              id: agent.id,
+              name: agent.name,
+              model: agent.model,
+              isPersonal: agent.isPersonal,
+              tagline: agent.tagline,
+            }}
+            providers={providers}
+            canDelete={canDelete}
+            onSaved={handleSaved}
+          />
         </TabsContent>
 
-        <TabsContent value="soul">
-          <AgentSettingsFile agentId={agentId} filename="SOUL.md" content={soulContent} />
+        <TabsContent value="personality">
+          <AgentSettingsPersonality
+            agentId={agentId}
+            agent={{
+              avatarSeed: agent.avatarSeed,
+              name: agent.name,
+              personalityPresetId: agent.personalityPresetId,
+            }}
+            soulContent={soulContent}
+            onSaved={handleSaved}
+          />
+        </TabsContent>
+
+        <TabsContent value="instructions">
+          <AgentSettingsFile agentId={agentId} filename="AGENTS.md" content={agentsContent} />
         </TabsContent>
 
         <TabsContent value="user">

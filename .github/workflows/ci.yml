@@ -86,6 +86,9 @@ jobs:
 
       - name: Start production stack
         run: docker compose up --build -d
+        env:
+          NEXTAUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
       - name: Wait for health (production)
         run: |
@@ -94,17 +97,28 @@ jobs:
               echo "Production stack healthy"
               exit 0
             fi
+            echo "Attempt $i: not ready yet"
+            # Show container status on first and every 5th attempt
+            if [ "$i" -eq 1 ] || [ $((i % 5)) -eq 0 ]; then
+              docker compose ps
+              docker compose logs --tail=20 pinchy
+            fi
             sleep 2
           done
           echo "Production health check failed"
+          docker compose ps
           docker compose logs pinchy
           exit 1
 
       - name: Tear down production
+        if: always()
         run: docker compose down -v
 
       - name: Start dev stack
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
+        env:
+          NEXTAUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
       - name: Wait for health (dev)
         run: |
@@ -113,9 +127,15 @@ jobs:
               echo "Dev stack healthy"
               exit 0
             fi
+            echo "Attempt $i: not ready yet"
+            if [ "$i" -eq 1 ] || [ $((i % 5)) -eq 0 ]; then
+              docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
+              docker compose -f docker-compose.yml -f docker-compose.dev.yml logs --tail=20 pinchy
+            fi
             sleep 2
           done
           echo "Dev health check failed"
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
           docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy
           exit 1
 

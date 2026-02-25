@@ -23,6 +23,7 @@ vi.mock("@/db", () => ({
             templateId: "knowledge-base",
             pluginConfig: { allowed_paths: ["/data/hr-docs/"] },
             ownerId: "1",
+            tagline: "Answer questions from your docs",
           },
         ]),
       }),
@@ -36,6 +37,7 @@ vi.mock("@/db", () => ({
 vi.mock("@/lib/workspace", () => ({
   ensureWorkspace: vi.fn(),
   writeWorkspaceFile: vi.fn(),
+  writeIdentityFile: vi.fn(),
 }));
 
 vi.mock("@/lib/openclaw-config", () => ({
@@ -52,13 +54,35 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue("anthropic"),
 }));
 
+vi.mock("@/lib/personality-presets", () => ({
+  getPersonalityPreset: vi.fn((id: string) => {
+    const presets: Record<string, { greetingMessage: string | null; soulMd: string }> = {
+      "the-professor": {
+        greetingMessage:
+          "Hello! I'm {name}, and I'm here to help you find answers in your documents.",
+        soulMd: "# Professor SOUL.md",
+      },
+      "the-butler": {
+        greetingMessage: "Good day. I'm {name}. How may I be of assistance?",
+        soulMd: "# Butler SOUL.md",
+      },
+    };
+    return presets[id];
+  }),
+  resolveGreetingMessage: (greeting: string | null, name: string) =>
+    greeting ? greeting.replace("{name}", name) : null,
+}));
+
+vi.mock("@/lib/avatar", () => ({
+  generateAvatarSeed: vi.fn().mockReturnValue("mock-seed-uuid"),
+}));
+
 import { POST } from "@/app/api/agents/route";
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { validateAllowedPaths } from "@/lib/path-validation";
-import { ensureWorkspace, writeWorkspaceFile } from "@/lib/workspace";
+import { ensureWorkspace, writeWorkspaceFile, writeIdentityFile } from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 
 describe("POST /api/agents", () => {
   beforeEach(() => {
@@ -151,6 +175,34 @@ describe("POST /api/agents", () => {
     );
   });
 
+  it("should reject name longer than 30 characters", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "A".repeat(31),
+        templateId: "custom",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/name/i);
+  });
+
+  it("should accept name with exactly 30 characters", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "A".repeat(30),
+        templateId: "custom",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+  });
+
   it("should reject unknown template", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
@@ -194,7 +246,7 @@ describe("POST /api/agents", () => {
     expect(validateAllowedPaths).not.toHaveBeenCalled();
   });
 
-  it("should set greetingMessage from template's defaultGreeting", async () => {
+  it("should set greetingMessage from personality preset", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({
@@ -210,12 +262,116 @@ describe("POST /api/agents", () => {
 
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        greetingMessage: AGENT_TEMPLATES["knowledge-base"].defaultGreeting,
+        greetingMessage:
+          "Hello! I'm HR Knowledge Base, and I'm here to help you find answers in your documents.",
+        personalityPresetId: "the-professor",
       })
     );
   });
 
-  it("should set greetingMessage to null for custom template", async () => {
+  it("should set avatarSeed from generateAvatarSeed", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          allowed_paths: ["/data/hr-docs/"],
+        },
+      }),
+    });
+
+    await POST(request);
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        avatarSeed: "mock-seed-uuid",
+      })
+    );
+  });
+
+  it("should write SOUL.md from personality preset", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          allowed_paths: ["/data/hr-docs/"],
+        },
+      }),
+    });
+
+    await POST(request);
+
+    expect(writeWorkspaceFile).toHaveBeenCalledWith(
+      "new-agent-id",
+      "SOUL.md",
+      "# Professor SOUL.md"
+    );
+  });
+
+  it("should use tagline from request body when provided", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Bot",
+        templateId: "custom",
+        tagline: "Custom tagline",
+      }),
+    });
+
+    await POST(request);
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tagline: "Custom tagline",
+      })
+    );
+  });
+
+  it("should call writeIdentityFile after creating agent", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          allowed_paths: ["/data/hr-docs/"],
+        },
+      }),
+    });
+
+    await POST(request);
+
+    expect(writeIdentityFile).toHaveBeenCalledWith("new-agent-id", {
+      name: "HR Knowledge Base",
+      tagline: "Answer questions from your docs",
+    });
+  });
+
+  it("should write AGENTS.md when template has defaultAgentsMd", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          allowed_paths: ["/data/hr-docs/"],
+        },
+      }),
+    });
+
+    await POST(request);
+
+    expect(writeWorkspaceFile).toHaveBeenCalledWith(
+      "new-agent-id",
+      "AGENTS.md",
+      expect.stringContaining("knowledge base agent")
+    );
+  });
+
+  it("should not write AGENTS.md when template has null defaultAgentsMd", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({
@@ -226,9 +382,30 @@ describe("POST /api/agents", () => {
 
     await POST(request);
 
+    expect(writeWorkspaceFile).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "AGENTS.md",
+      expect.anything()
+    );
+  });
+
+  it("should use template defaultTagline when tagline not provided", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          allowed_paths: ["/data/hr-docs/"],
+        },
+      }),
+    });
+
+    await POST(request);
+
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        greetingMessage: null,
+        tagline: "Answer questions from your docs",
       })
     );
   });

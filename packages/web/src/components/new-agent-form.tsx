@@ -27,6 +27,7 @@ interface Template {
   name: string;
   description: string;
   requiresDirectories: boolean;
+  defaultTagline: string | null;
 }
 
 interface Directory {
@@ -34,8 +35,14 @@ interface Directory {
   name: string;
 }
 
+import { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
+
 const agentFormSchema = z.object({
-  name: z.string().min(1, "Name is required"),
+  name: z
+    .string()
+    .min(1, "Name is required")
+    .max(AGENT_NAME_MAX_LENGTH, `Name must be ${AGENT_NAME_MAX_LENGTH} characters or less`),
+  tagline: z.string(),
 });
 
 type AgentFormValues = z.infer<typeof agentFormSchema>;
@@ -52,7 +59,7 @@ export function NewAgentForm() {
 
   const form = useForm<AgentFormValues>({
     resolver: zodResolver(agentFormSchema),
-    defaultValues: { name: "" },
+    defaultValues: { name: "", tagline: "" },
   });
 
   const fetchData = useCallback(async () => {
@@ -85,11 +92,14 @@ export function NewAgentForm() {
     fetchDirectories();
   }, [requiresDirectories]);
 
-  // Reset directory selection when switching templates
+  // Reset directory selection and pre-fill tagline when switching templates
   useEffect(() => {
     setSelectedPaths([]);
     setDirectories([]);
-  }, [selectedTemplate]);
+    if (selectedTemplateObj) {
+      form.setValue("tagline", selectedTemplateObj.defaultTagline || "");
+    }
+  }, [selectedTemplate]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function onSubmit(values: AgentFormValues) {
     setError(null);
@@ -98,6 +108,7 @@ export function NewAgentForm() {
     try {
       const body: Record<string, unknown> = {
         name: values.name.trim(),
+        tagline: values.tagline?.trim() || null,
         templateId: selectedTemplate,
       };
 
@@ -160,9 +171,29 @@ export function NewAgentForm() {
                       <FormItem>
                         <FormLabel>Name</FormLabel>
                         <FormControl>
-                          <Input placeholder="e.g. HR Knowledge Base" {...field} />
+                          <Input
+                            placeholder="e.g. HR Knowledge Base"
+                            maxLength={AGENT_NAME_MAX_LENGTH}
+                            {...field}
+                          />
                         </FormControl>
                         <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+
+                  <FormField
+                    control={form.control}
+                    name="tagline"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Tagline</FormLabel>
+                        <FormControl>
+                          <Input
+                            placeholder="e.g. Answers HR questions from your documents"
+                            {...field}
+                          />
+                        </FormControl>
                       </FormItem>
                     )}
                   />

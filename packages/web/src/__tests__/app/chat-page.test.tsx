@@ -35,6 +35,13 @@ vi.mock("@/lib/agent-access", () => ({
   assertAgentAccess: vi.fn(),
 }));
 
+vi.mock("@/lib/avatar", () => ({
+  getAgentAvatarSvg: vi.fn(
+    (agent: { avatarSeed: string | null; name: string }) =>
+      `data:image/svg+xml;utf8,mock-${agent.avatarSeed ?? agent.name}`
+  ),
+}));
+
 let capturedChatProps: Record<string, unknown> = {};
 
 vi.mock("@/components/chat", () => ({
@@ -186,5 +193,27 @@ describe("ChatPage", () => {
     render(result);
 
     expect(capturedChatProps.isPersonal).toBe(true);
+  });
+
+  it("passes avatarUrl to Chat computed from agent fields", async () => {
+    const agentWithAvatar = {
+      id: "agent-avatar",
+      name: "Avatar Agent",
+      ownerId: null,
+      isPersonal: false,
+      avatarSeed: "my-seed",
+    };
+
+    mockRequireAuth.mockResolvedValue({
+      user: { id: "user-1", role: "user" },
+    });
+
+    mockFindFirst.mockResolvedValue(agentWithAvatar);
+    mockAssertAgentAccess.mockImplementation(() => {});
+
+    const result = await ChatPage({ params: Promise.resolve({ agentId: "agent-avatar" }) });
+    render(result);
+
+    expect(capturedChatProps.avatarUrl).toBe("data:image/svg+xml;utf8,mock-my-seed");
   });
 });
