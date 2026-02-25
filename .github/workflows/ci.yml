@@ -86,6 +86,9 @@ jobs:
 
       - name: Start production stack
         run: docker compose up --build -d
+        env:
+          NEXTAUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
       - name: Wait for health (production)
         run: |
@@ -101,10 +104,14 @@ jobs:
           exit 1
 
       - name: Tear down production
+        if: always()
         run: docker compose down -v
 
       - name: Start dev stack
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d
+        env:
+          NEXTAUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
       - name: Wait for health (dev)
         run: |
