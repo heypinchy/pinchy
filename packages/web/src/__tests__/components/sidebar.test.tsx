@@ -278,5 +278,56 @@ describe("AppSidebar", () => {
       expect(links[0]).toHaveTextContent("My Personal Agent");
       expect(links[1]).toHaveTextContent("Shared Agent");
     });
+
+    it("should sort non-personal agents alphabetically by name", () => {
+      const agents = [
+        {
+          id: "1",
+          name: "Smithers",
+          model: "anthropic/claude-sonnet-4-20250514",
+          isPersonal: true,
+          tagline: null,
+          avatarSeed: "__smithers__",
+        },
+        {
+          id: "2",
+          name: "Zara",
+          model: "anthropic/claude-sonnet-4-20250514",
+          isPersonal: false,
+          tagline: null,
+          avatarSeed: null,
+        },
+        {
+          id: "3",
+          name: "Ada",
+          model: "anthropic/claude-sonnet-4-20250514",
+          isPersonal: false,
+          tagline: null,
+          avatarSeed: null,
+        },
+        {
+          id: "4",
+          name: "Maya",
+          model: "anthropic/claude-sonnet-4-20250514",
+          isPersonal: false,
+          tagline: null,
+          avatarSeed: null,
+        },
+      ];
+      render(
+        <SidebarProvider>
+          <AppSidebar agents={agents} isAdmin={false} />
+        </SidebarProvider>
+      );
+      const links = screen.getAllByRole("link").filter((link) => {
+        const href = link.getAttribute("href");
+        return href?.startsWith("/chat/");
+      });
+      expect(links).toHaveLength(4);
+      expect(links[0]).toHaveTextContent("Smithers");
+      expect(links[1]).toHaveTextContent("Ada");
+      expect(links[2]).toHaveTextContent("Maya");
+      expect(links[3]).toHaveTextContent("Zara");
+    });
   });
 });

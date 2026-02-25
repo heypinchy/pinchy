@@ -34,7 +34,7 @@ export function AppSidebar({ agents, isAdmin }: AppSidebarProps) {
   const sortedAgents = [...agents].sort((a, b) => {
     if (a.isPersonal && !b.isPersonal) return -1;
     if (!a.isPersonal && b.isPersonal) return 1;
-    return 0;
+    return a.name.localeCompare(b.name);
   });
 
   return (
