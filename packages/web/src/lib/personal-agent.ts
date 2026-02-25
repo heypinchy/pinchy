@@ -1,6 +1,12 @@
 import { db } from "@/db";
 import { agents } from "@/db/schema";
-import { ensureWorkspace, writeWorkspaceFile, writeIdentityFile } from "@/lib/workspace";
+import {
+  ensureWorkspace,
+  writeWorkspaceFile,
+  writeWorkspaceFileInternal,
+  writeIdentityFile,
+} from "@/lib/workspace";
+import { getContextForAgent } from "@/lib/context-sync";
 import { getSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { SMITHERS_SOUL_MD } from "@/lib/smithers-soul";
@@ -32,6 +38,12 @@ export async function createSmithersAgent({ model, ownerId, isPersonal }: Create
   ensureWorkspace(agent.id);
   writeWorkspaceFile(agent.id, "SOUL.md", SMITHERS_SOUL_MD);
   writeIdentityFile(agent.id, { name: agent.name, tagline: agent.tagline });
+
+  const context = await getContextForAgent({
+    isPersonal: agent.isPersonal,
+    ownerId: agent.ownerId,
+  });
+  writeWorkspaceFileInternal(agent.id, "USER.md", context);
 
   return agent;
 }
