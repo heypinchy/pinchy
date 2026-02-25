@@ -216,6 +216,12 @@ describe("AgentSettingsGeneral", () => {
     });
   });
 
+  it("should have maxLength attribute on name input", () => {
+    render(<AgentSettingsGeneral agent={defaultAgent} providers={defaultProviders} />);
+
+    expect(screen.getByLabelText(/name/i)).toHaveAttribute("maxLength", "30");
+  });
+
   describe("canDelete prop", () => {
     it("should render Delete Agent button when canDelete is true", () => {
       render(

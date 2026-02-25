@@ -64,9 +64,14 @@ export function AppSidebar({ agents, isAdmin }: AppSidebarProps) {
                         className="size-8 rounded-full shrink-0"
                       />
                       <div className="flex flex-col min-w-0">
-                        <span className="truncate font-medium">{agent.name}</span>
+                        <span className="truncate font-medium" title={agent.name}>
+                          {agent.name}
+                        </span>
                         {agent.tagline && (
-                          <span className="text-xs text-muted-foreground/70 truncate">
+                          <span
+                            className="text-xs text-muted-foreground/70 truncate"
+                            title={agent.tagline}
+                          >
                             {agent.tagline}
                           </span>
                         )}

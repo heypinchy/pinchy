@@ -29,6 +29,40 @@ const mockTemplates = [
   },
 ];
 
+describe("NewAgentForm — name max length", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "/api/templates") {
+        return {
+          ok: true,
+          json: async () => ({ templates: mockTemplates }),
+        } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("should have maxLength attribute on name input", async () => {
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Custom Agent")).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText("Custom Agent"));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toHaveAttribute("maxLength", "30");
+    });
+  });
+});
+
 describe("NewAgentForm — tagline field", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 

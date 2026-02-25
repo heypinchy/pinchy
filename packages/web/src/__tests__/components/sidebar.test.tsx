@@ -160,6 +160,46 @@ describe("AppSidebar", () => {
       expect(screen.getByText("Answers HR questions")).toBeInTheDocument();
     });
 
+    it("should show title tooltip on tagline for hover", () => {
+      const agents = [
+        {
+          id: "1",
+          name: "HR Bot",
+          model: "anthropic/claude-sonnet-4-20250514",
+          isPersonal: false,
+          tagline: "Answers HR questions from your documents",
+          avatarSeed: null,
+        },
+      ];
+      render(
+        <SidebarProvider>
+          <AppSidebar agents={agents} isAdmin={false} />
+        </SidebarProvider>
+      );
+      const tagline = screen.getByText("Answers HR questions from your documents");
+      expect(tagline).toHaveAttribute("title", "Answers HR questions from your documents");
+    });
+
+    it("should show title tooltip on agent name for hover", () => {
+      const agents = [
+        {
+          id: "1",
+          name: "A Very Long Agent Name That Gets Truncated",
+          model: "anthropic/claude-sonnet-4-20250514",
+          isPersonal: false,
+          tagline: null,
+          avatarSeed: null,
+        },
+      ];
+      render(
+        <SidebarProvider>
+          <AppSidebar agents={agents} isAdmin={false} />
+        </SidebarProvider>
+      );
+      const name = screen.getByText("A Very Long Agent Name That Gets Truncated");
+      expect(name).toHaveAttribute("title", "A Very Long Agent Name That Gets Truncated");
+    });
+
     it("should not render tagline when null", () => {
       const agents = [
         {
