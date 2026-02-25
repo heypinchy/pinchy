@@ -43,9 +43,9 @@ export function Chat({
   return (
     <AssistantRuntimeProvider runtime={runtime}>
       <AgentAvatarContext.Provider value={avatarUrl ?? null}>
-        <div className="flex flex-col h-full min-h-0 animate-in fade-in duration-300">
+        <div className="flex flex-col h-full min-h-0">
           <header className="p-4 border-b flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 animate-in fade-in duration-300">
               {avatarUrl && (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img src={avatarUrl} alt="" className="size-7 rounded-full" />
@@ -84,7 +84,7 @@ export function Chat({
               <span className={`text-xs ${statusColor}`}>{statusMessage}</span>
             </div>
           </header>
-          <div className="flex-1 min-h-0">
+          <div className="flex-1 min-h-0 animate-in fade-in duration-300">
             <Thread isHistoryLoaded={isHistoryLoaded} />
           </div>
           {isDelayed && (
