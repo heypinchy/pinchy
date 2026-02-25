@@ -39,10 +39,6 @@ export default function AgentSettingsPage() {
   const agentId = params.agentId as string;
   const { data: session } = useSession();
 
-  const refreshSidebar = useCallback(() => {
-    router.refresh();
-  }, [router]);
-
   const [agent, setAgent] = useState<Agent | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [soulContent, setSoulContent] = useState("");
@@ -51,53 +47,58 @@ export default function AgentSettingsPage() {
   const [directories, setDirectories] = useState<Directory[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    async function fetchData() {
-      try {
-        const [agentRes, modelsRes, soulRes, agentsRes, userRes, dirRes] = await Promise.all([
-          fetch(`/api/agents/${agentId}`),
-          fetch("/api/providers/models"),
-          fetch(`/api/agents/${agentId}/files/SOUL.md`),
-          fetch(`/api/agents/${agentId}/files/AGENTS.md`),
-          fetch(`/api/agents/${agentId}/files/USER.md`),
-          fetch("/api/data-directories"),
-        ]);
+  const fetchData = useCallback(async () => {
+    try {
+      const [agentRes, modelsRes, soulRes, agentsRes, userRes, dirRes] = await Promise.all([
+        fetch(`/api/agents/${agentId}`),
+        fetch("/api/providers/models"),
+        fetch(`/api/agents/${agentId}/files/SOUL.md`),
+        fetch(`/api/agents/${agentId}/files/AGENTS.md`),
+        fetch(`/api/agents/${agentId}/files/USER.md`),
+        fetch("/api/data-directories"),
+      ]);
 
-        if (agentRes.ok) {
-          setAgent(await agentRes.json());
-        }
-
-        if (modelsRes.ok) {
-          const data = await modelsRes.json();
-          setProviders(data.providers || []);
-        }
-
-        if (soulRes.ok) {
-          const data = await soulRes.json();
-          setSoulContent(data.content || "");
-        }
-
-        if (agentsRes.ok) {
-          const data = await agentsRes.json();
-          setAgentsContent(data.content || "");
-        }
-
-        if (userRes.ok) {
-          const data = await userRes.json();
-          setUserContent(data.content || "");
-        }
-
-        if (dirRes.ok) {
-          const data = await dirRes.json();
-          setDirectories(data.directories || []);
-        }
-      } finally {
-        setLoading(false);
+      if (agentRes.ok) {
+        setAgent(await agentRes.json());
       }
-    }
 
-    fetchData();
+      if (modelsRes.ok) {
+        const data = await modelsRes.json();
+        setProviders(data.providers || []);
+      }
+
+      if (soulRes.ok) {
+        const data = await soulRes.json();
+        setSoulContent(data.content || "");
+      }
+
+      if (agentsRes.ok) {
+        const data = await agentsRes.json();
+        setAgentsContent(data.content || "");
+      }
+
+      if (userRes.ok) {
+        const data = await userRes.json();
+        setUserContent(data.content || "");
+      }
+
+      if (dirRes.ok) {
+        const data = await dirRes.json();
+        setDirectories(data.directories || []);
+      }
+    } finally {
+      setLoading(false);
+    }
   }, [agentId]);
+
+  useEffect(() => {
+    fetchData();
+  }, [fetchData]);
+
+  const handleSaved = useCallback(() => {
+    router.refresh();
+    fetchData();
+  }, [router, fetchData]);
 
   if (loading) {
     return <div className="p-8 text-muted-foreground">Loading...</div>;
@@ -143,7 +144,7 @@ export default function AgentSettingsPage() {
             }}
             providers={providers}
             canDelete={canDelete}
-            onSaved={refreshSidebar}
+            onSaved={handleSaved}
           />
         </TabsContent>
 
@@ -156,7 +157,7 @@ export default function AgentSettingsPage() {
               personalityPresetId: agent.personalityPresetId,
             }}
             soulContent={soulContent}
-            onSaved={refreshSidebar}
+            onSaved={handleSaved}
           />
         </TabsContent>
 
