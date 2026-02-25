@@ -1,0 +1,64 @@
+/* Markdown syntax highlighting for PrismJS tokens */
+
+/* Headings: # ## ### etc. — title and important are on the SAME element */
+.markdown-editor .token.title.important {
+  color: var(--color-primary);
+  font-weight: bold;
+  font-size: 1.1em;
+}
+
+/* Heading punctuation (the # characters) */
+.markdown-editor .token.title .token.punctuation {
+  color: oklch(0.65 0.1 60);
+}
+
+.markdown-editor .token.bold {
+  font-weight: bold;
+}
+
+.markdown-editor .token.italic {
+  font-style: italic;
+}
+
+/* Strikethrough: ~~text~~ — content is nested inside strike */
+.markdown-editor .token.strike .token.content {
+  text-decoration: line-through;
+}
+
+/* Links and URLs */
+.markdown-editor .token.url,
+.markdown-editor .token.url-reference .token.string {
+  color: oklch(0.5 0.15 250);
+}
+
+/* List markers (-, *, 1.) */
+.markdown-editor .token.list.punctuation {
+  color: oklch(0.5 0.15 150);
+  font-weight: bold;
+}
+
+/* Blockquotes */
+.markdown-editor .token.blockquote.punctuation,
+.markdown-editor .token.blockquote {
+  color: oklch(0.55 0 0);
+  font-style: italic;
+}
+
+/* Horizontal rules */
+.markdown-editor .token.hr.punctuation {
+  color: oklch(0.55 0 0);
+}
+
+/* Inline code */
+.markdown-editor .token.code-snippet,
+.markdown-editor .token.code.keyword {
+  color: oklch(0.5 0.12 20);
+  background: oklch(0.95 0 0);
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+/* HTML comments */
+.markdown-editor .token.comment {
+  color: oklch(0.6 0 0);
+}
