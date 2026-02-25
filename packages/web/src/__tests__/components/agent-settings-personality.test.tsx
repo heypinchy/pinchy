@@ -5,6 +5,24 @@ import "@testing-library/jest-dom";
 import { AgentSettingsPersonality } from "@/components/agent-settings-personality";
 import { toast } from "sonner";
 
+vi.mock("@/components/markdown-editor", () => ({
+  MarkdownEditor: ({
+    value,
+    onChange,
+    className,
+  }: {
+    value: string;
+    onChange: (v: string) => void;
+    className?: string;
+  }) => (
+    <textarea
+      className={`font-mono ${className ?? ""}`}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  ),
+}));
+
 vi.mock("sonner", () => ({
   toast: { success: vi.fn(), error: vi.fn() },
 }));
@@ -140,7 +158,9 @@ describe("AgentSettingsPersonality", () => {
 
     await userEvent.click(screen.getByText("The Professor"));
 
-    expect(screen.getByText(/this will replace your current soul\.md/i)).toBeInTheDocument();
+    expect(
+      screen.getByText(/this will replace your current personality text/i)
+    ).toBeInTheDocument();
   });
 
   it("confirming preset switch updates SOUL.md textarea", async () => {
@@ -149,6 +169,7 @@ describe("AgentSettingsPersonality", () => {
     await userEvent.click(screen.getByText("The Professor"));
     await userEvent.click(screen.getByRole("button", { name: /continue/i }));
 
+    await userEvent.click(screen.getByRole("button", { name: /customize/i }));
     expect(screen.getByRole("textbox")).toHaveValue("Professor soul content");
   });
 
@@ -158,12 +179,14 @@ describe("AgentSettingsPersonality", () => {
     await userEvent.click(screen.getByText("The Professor"));
     await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
 
+    await userEvent.click(screen.getByRole("button", { name: /customize/i }));
     expect(screen.getByRole("textbox")).toHaveValue("Butler soul content");
   });
 
   it("editing SOUL.md clears preset selection when content differs", async () => {
     render(<AgentSettingsPersonality {...defaultProps} />);
 
+    await userEvent.click(screen.getByRole("button", { name: /customize/i }));
     const textarea = screen.getByRole("textbox");
     await userEvent.clear(textarea);
     await userEvent.type(textarea, "Modified content");
@@ -171,10 +194,26 @@ describe("AgentSettingsPersonality", () => {
     expect(screen.getByText("Customized")).toBeInTheDocument();
   });
 
-  it("renders SOUL.md textarea with current content", () => {
+  it("does not show SOUL.md textarea by default", () => {
     render(<AgentSettingsPersonality {...defaultProps} />);
 
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+  });
+
+  it("shows SOUL.md textarea after clicking Customize button", async () => {
+    render(<AgentSettingsPersonality {...defaultProps} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /customize/i }));
+
     expect(screen.getByRole("textbox")).toHaveValue("Butler soul content");
+  });
+
+  it("shows explanation text when SOUL.md editor is revealed", async () => {
+    render(<AgentSettingsPersonality {...defaultProps} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /customize/i }));
+
+    expect(screen.getByText(/defines your agent's personality/i)).toBeInTheDocument();
   });
 
   it("save sends PATCH and PUT requests", async () => {

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { MarkdownEditor } from "@/components/markdown-editor";
 import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
@@ -18,7 +18,8 @@ import {
 import { Card, CardContent } from "@/components/ui/card";
 import { getAgentAvatarSvg, generateAvatarSeed } from "@/lib/avatar";
 import { PERSONALITY_PRESETS, getPersonalityPreset } from "@/lib/personality-presets";
-import { Dices } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Dices, ChevronRight } from "lucide-react";
 
 interface AgentSettingsPersonalityProps {
   agentId: string;
@@ -43,6 +44,7 @@ export function AgentSettingsPersonality({
   const [pendingPresetId, setPendingPresetId] = useState<string | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [showEditor, setShowEditor] = useState(false);
 
   const avatarUrl = getAgentAvatarSvg({
     avatarSeed,
@@ -170,19 +172,38 @@ export function AgentSettingsPersonality({
         </div>
       </div>
 
-      {/* SOUL.md Editor */}
-      <div className="space-y-2">
-        <h3 className="text-sm font-medium">SOUL.md</h3>
-        <Textarea
-          value={content}
-          onChange={(e) => handleContentChange(e.target.value)}
-          className="min-h-[300px] font-mono text-sm"
-        />
-      </div>
+      {/* SOUL.md Editor (collapsible) */}
+      <Collapsible open={showEditor} onOpenChange={setShowEditor}>
+        <CollapsibleTrigger asChild>
+          <button
+            type="button"
+            className="flex items-center gap-1 text-sm font-medium hover:text-foreground transition-colors"
+          >
+            <ChevronRight
+              className={`size-4 transition-transform ${showEditor ? "rotate-90" : ""}`}
+            />
+            Customize
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="space-y-2 pt-2">
+            <p className="text-sm text-muted-foreground">
+              Defines your agent&apos;s personality — tone, style, and character. The presets above
+              fill in sensible defaults, but you can edit the text below to fine-tune exactly how
+              your agent communicates.
+            </p>
+            <MarkdownEditor
+              value={content}
+              onChange={handleContentChange}
+              className="min-h-[300px]"
+            />
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* Save */}
       <Button onClick={handleSave} disabled={saving}>
-        {saving ? "Saving..." : "Save"}
+        {saving ? "Saving..." : "Save & restart"}
       </Button>
 
       {/* Confirmation Dialog */}
@@ -191,7 +212,7 @@ export function AgentSettingsPersonality({
           <AlertDialogHeader>
             <AlertDialogTitle>Switch Personality</AlertDialogTitle>
             <AlertDialogDescription>
-              This will replace your current SOUL.md content. Continue?
+              This will replace your current personality text. Continue?
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
