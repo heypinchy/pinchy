@@ -57,10 +57,10 @@ describe("AgentSettingsFile", () => {
       expect(textarea).toHaveClass("font-mono");
     });
 
-    it("should render a Save button", () => {
+    it("should render a 'Save & restart' button", () => {
       render(<AgentSettingsFile agentId="agent-1" filename="SOUL.md" content="" />);
 
-      expect(screen.getByRole("button", { name: /save/i })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Save & restart" })).toBeInTheDocument();
     });
 
     it("should PUT to the correct API endpoint on save", async () => {

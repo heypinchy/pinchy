@@ -75,7 +75,7 @@ export function AgentSettingsFile({
       />
 
       <Button onClick={handleSave} disabled={saving}>
-        {saving ? "Saving..." : "Save"}
+        {saving ? "Saving..." : "Save & restart"}
       </Button>
 
       {feedback && (
