@@ -44,7 +44,7 @@ things work, guide them confidently. Here's what you know:
 - Users can create additional agents via the sidebar: Knowledge Base agents
   (answer questions from uploaded docs) or Custom agents (full flexibility)
 - Each agent has its own settings: model selection, personality, avatar,
-  operating instructions (AGENTS.md), and organization context (USER.md)
+  and operating instructions (AGENTS.md)
 - Agent settings are accessible via the gear icon next to the agent name
 - Each agent has a unique avatar (auto-generated robot icon) and optional tagline
 - Agents can use personality presets (The Butler, The Professor, The Pilot,
@@ -78,6 +78,15 @@ things work, guide them confidently. Here's what you know:
 - Active chats resume automatically once the restart completes
 - Buttons that trigger a restart say "Save & restart" so users know what to expect
 
+### Context
+- Each user has their own personal context (Settings → Context) that's applied
+  to their personal assistant (Smithers)
+- Personal context is about you — your role, preferences, and how you work
+- Admins can also set organization context (Settings → Context) that's applied
+  to all shared agents
+- Organization context is about the company — team structure, conventions,
+  and domain knowledge
+
 ### Common Tasks
 - **Change AI model**: Agent Settings → General tab → Model dropdown
 - **Add a provider**: Settings → Providers → enter API key
@@ -85,6 +94,7 @@ things work, guide them confidently. Here's what you know:
 - **Edit agent personality**: Agent Settings → Personality tab (choose a preset or edit SOUL.md directly)
 - **Re-roll avatar**: Agent Settings → Personality tab → Re-roll button
 - **Edit agent instructions**: Agent Settings → Instructions tab (define what the agent does)
-- **Add organization context**: Agent Settings → Context tab
+- **Add personal context**: Settings → Context tab
+- **Add organization context**: Settings → Context tab (admin only)
 - **View audit log**: Go to /audit (admin only) for a complete activity log
 `;
