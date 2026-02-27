@@ -117,6 +117,7 @@ export async function regenerateOpenClawConfig() {
 
   // Build agents list with OpenClaw-side workspace paths, tools.deny, and plugin configs
   const pluginConfigs: Record<string, Record<string, Record<string, unknown>>> = {};
+  let contextPluginAgents: Record<string, { tools: string[]; userId: string }> | undefined;
 
   const agentsList = allAgents.map((agent) => {
     const agentEntry: Record<string, unknown> = {
@@ -133,13 +134,25 @@ export async function regenerateOpenClawConfig() {
       agentEntry.tools = { deny: deniedGroups };
     }
 
-    // Collect plugin config for agents that have safe (pinchy_*) tools
-    const hasSafeTools = allowedTools.some((t: string) => t.startsWith("pinchy_"));
-    if (hasSafeTools && agent.pluginConfig) {
+    // Collect plugin config for agents that have file tools (pinchy_ls, pinchy_read)
+    const hasFileTools = allowedTools.some((t: string) => t === "pinchy_ls" || t === "pinchy_read");
+    if (hasFileTools && agent.pluginConfig) {
       if (!pluginConfigs["pinchy-files"]) {
         pluginConfigs["pinchy-files"] = {};
       }
       pluginConfigs["pinchy-files"][agent.id] = agent.pluginConfig as Record<string, unknown>;
+    }
+
+    // Collect plugin config for agents that have context tools (pinchy_save_*)
+    const contextTools = allowedTools.filter((t: string) => t.startsWith("pinchy_save_"));
+    if (contextTools.length > 0 && agent.ownerId) {
+      if (!contextPluginAgents) {
+        contextPluginAgents = {};
+      }
+      contextPluginAgents[agent.id] = {
+        tools: contextTools.map((t: string) => t.replace("pinchy_", "")),
+        userId: agent.ownerId,
+      };
     }
 
     return agentEntry;
@@ -155,7 +168,7 @@ export async function regenerateOpenClawConfig() {
     },
   };
 
-  if (Object.keys(pluginConfigs).length > 0) {
+  if (Object.keys(pluginConfigs).length > 0 || contextPluginAgents) {
     const entries: Record<string, unknown> = {};
     for (const [pluginId, agentConfigs] of Object.entries(pluginConfigs)) {
       entries[pluginId] = {
@@ -165,6 +178,23 @@ export async function regenerateOpenClawConfig() {
         },
       };
     }
+
+    if (contextPluginAgents) {
+      const gatewayAuth = (gateway as Record<string, unknown>).auth as
+        | Record<string, unknown>
+        | undefined;
+      const gatewayToken = (gatewayAuth?.token as string) || "";
+
+      entries["pinchy-context"] = {
+        enabled: true,
+        config: {
+          apiBaseUrl: process.env.PINCHY_INTERNAL_URL || "http://pinchy:7777",
+          gatewayToken,
+          agents: contextPluginAgents,
+        },
+      };
+    }
+
     config.plugins = { entries };
   }
 
