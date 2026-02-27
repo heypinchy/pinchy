@@ -825,6 +825,29 @@ describe("ClientRouter", () => {
     });
   });
 
+  it("should handle tool_result with no colon separator gracefully", async () => {
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "tool_result" as const, text: "raw output without colon" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Do something",
+      agentId: "agent-1",
+    });
+
+    expect(mockAppendAuditLog).toHaveBeenCalledWith({
+      actorType: "agent",
+      actorId: "agent-1",
+      eventType: "tool.execute",
+      resource: "agent:agent-1",
+      detail: { toolName: "unknown", phase: "end", result: "raw output without colon" },
+    });
+  });
+
   it("should allow admin to access personal agents of other users", async () => {
     const adminRouter = new ClientRouter(
       mockOpenClawClient as any,

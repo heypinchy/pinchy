@@ -136,6 +136,7 @@ export class ClientRouter {
           }).catch(() => {});
         }
 
+        // openclaw-node v0.2.0 formats tool_result as "toolName: output"
         if (chunk.type === "tool_result") {
           const colonIdx = chunk.text.indexOf(": ");
           const toolName = colonIdx >= 0 ? chunk.text.slice(0, colonIdx) : "unknown";
