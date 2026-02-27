@@ -1,0 +1,34 @@
+{
+  "id": "pinchy-context",
+  "name": "Pinchy Context",
+  "description": "Allows agents to save user and organization context during onboarding.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string"
+      },
+      "gatewayToken": {
+        "type": "string"
+      },
+      "agents": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "tools": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "userId": {
+              "type": "string"
+            }
+          },
+          "required": ["tools", "userId"]
+        }
+      }
+    },
+    "required": ["apiBaseUrl", "gatewayToken", "agents"]
+  }
+}
