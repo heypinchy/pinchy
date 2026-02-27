@@ -60,53 +60,55 @@ export default function SettingsPage() {
   }, [isAdmin, fetchStatus, fetchContext, fetchOrgContext]);
 
   return (
-    <div className="p-8 max-w-lg">
-      <h1 className="text-2xl font-bold mb-6">Settings</h1>
+    <div className="overflow-y-auto">
+      <div className="p-8 max-w-lg">
+        <h1 className="text-2xl font-bold mb-6">Settings</h1>
 
-      <Tabs defaultValue={isAdmin ? "provider" : "context"}>
-        <TabsList>
-          {isAdmin && <TabsTrigger value="provider">Provider</TabsTrigger>}
-          {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
-          <TabsTrigger value="context">Context</TabsTrigger>
-          <TabsTrigger value="profile">Profile</TabsTrigger>
-        </TabsList>
+        <Tabs defaultValue={isAdmin ? "provider" : "context"}>
+          <TabsList>
+            {isAdmin && <TabsTrigger value="provider">Provider</TabsTrigger>}
+            {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
+            <TabsTrigger value="context">Context</TabsTrigger>
+            <TabsTrigger value="profile">Profile</TabsTrigger>
+          </TabsList>
 
-        {isAdmin && (
-          <TabsContent value="provider">
-            <Card>
-              <CardHeader>
-                <CardTitle>LLM Provider</CardTitle>
-              </CardHeader>
-              <CardContent>
-                {loading ? (
-                  <p>Loading...</p>
-                ) : (
-                  <ProviderKeyForm
-                    onSuccess={fetchStatus}
-                    submitLabel="Save"
-                    configuredProviders={status?.providers}
-                    defaultProvider={status?.defaultProvider}
-                  />
-                )}
-              </CardContent>
-            </Card>
+          {isAdmin && (
+            <TabsContent value="provider">
+              <Card>
+                <CardHeader>
+                  <CardTitle>LLM Provider</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {loading ? (
+                    <p>Loading...</p>
+                  ) : (
+                    <ProviderKeyForm
+                      onSuccess={fetchStatus}
+                      submitLabel="Save"
+                      configuredProviders={status?.providers}
+                      defaultProvider={status?.defaultProvider}
+                    />
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
+
+          {isAdmin && (
+            <TabsContent value="users">
+              <SettingsUsers currentUserId={session?.user?.id ?? ""} />
+            </TabsContent>
+          )}
+
+          <TabsContent value="context">
+            <SettingsContext userContext={userContext} orgContext={orgContext} isAdmin={isAdmin} />
           </TabsContent>
-        )}
 
-        {isAdmin && (
-          <TabsContent value="users">
-            <SettingsUsers currentUserId={session?.user?.id ?? ""} />
+          <TabsContent value="profile">
+            <SettingsProfile userName={session?.user?.name ?? ""} />
           </TabsContent>
-        )}
-
-        <TabsContent value="context">
-          <SettingsContext userContext={userContext} orgContext={orgContext} isAdmin={isAdmin} />
-        </TabsContent>
-
-        <TabsContent value="profile">
-          <SettingsProfile userName={session?.user?.name ?? ""} />
-        </TabsContent>
-      </Tabs>
+        </Tabs>
+      </div>
     </div>
   );
 }
