@@ -38,6 +38,10 @@ vi.mock("@/server/restart-state", () => ({
   restartState: { notifyRestart: vi.fn() },
 }));
 
+vi.mock("@/lib/migrate-onboarding", () => ({
+  migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { writeOpenClawConfig, regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";

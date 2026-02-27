@@ -8,6 +8,7 @@ import { getSetting } from "@/lib/settings";
 import { computeDeniedGroups } from "@/lib/tool-registry";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { restartState } from "@/server/restart-state";
+import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 
@@ -205,4 +206,8 @@ export async function regenerateOpenClawConfig() {
 
   writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o600 });
   restartState.notifyRestart();
+
+  // Migrate existing Smithers agents that don't have onboarding set up yet.
+  // This is idempotent — skips agents whose owners already have context.
+  await migrateExistingSmithers();
 }
