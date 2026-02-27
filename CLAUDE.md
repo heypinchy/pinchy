@@ -4,7 +4,7 @@
 
 Pinchy is an **enterprise AI agent platform** built on top of [OpenClaw](https://github.com/openclaw/openclaw). OpenClaw is the most powerful open-source AI agent runtime — but it's designed for individual power users. Pinchy adds the enterprise layer: permissions, audit trails, user management, and governance.
 
-**Status: Early development.** The core is working — setup wizard, authentication, provider configuration, agent chat via OpenClaw, agent permissions (allow-list model), knowledge base agents, user management with invite system, personal and shared agents, audit trail, and Docker Compose deployment. Enterprise features (granular RBAC, plugin marketplace, cross-channel workflows) are next.
+**Status: Early development.** The core is working — setup wizard, authentication, provider configuration, agent chat via OpenClaw, agent permissions (allow-list model), knowledge base agents, user management with invite system, personal and shared agents, per-user/org context management, Smithers onboarding interview, audit trail, and Docker Compose deployment. Enterprise features (granular RBAC, plugin marketplace, cross-channel workflows) are next.
 
 ### The Problem Pinchy Solves
 
@@ -47,12 +47,13 @@ Companies want AI agents but face a trilemma:
 
 ### Core Concepts (planned and implemented)
 
-- **Plugin Architecture** (partially implemented): Agents get scoped tools, not raw shell access. The `pinchy-files` plugin is the first working plugin (read-only file access for Knowledge Base agents). Plugin marketplace is planned.
+- **Plugin Architecture** (partially implemented): Agents get scoped tools, not raw shell access. Two plugins implemented: `pinchy-files` (read-only file access for Knowledge Base agents) and `pinchy-context` (saves user/org context during Smithers onboarding interview). Plugin marketplace is planned.
 - **Agent Permissions** (implemented): Allow-list model — agents start with zero tools, admins grant specific capabilities. Safe tools (list/read approved dirs) vs. powerful tools (shell, write, web).
 - **RBAC** (partially implemented): Admin/user roles with agent access control (admins see all, users see shared + personal agents). Granular per-team/per-role RBAC is planned.
 - **Audit Trail** (implemented): Every admin action logged — who, what, when. HMAC-SHA256 signed rows, integrity verification, CSV export. Compliance-ready.
 - **User Management** (implemented): Invite system with token-based onboarding, admin and user roles, password management.
 - **Knowledge Base Agents** (implemented): Scoped read-only access to specific directories. Template-based creation.
+- **Smithers Onboarding** (implemented): New users get an onboarding interview — Smithers learns about them through conversation and saves their context via plugin tools. Admins are additionally asked about their organization.
 - **Cross-Channel Workflows**: Input on email, output on Slack. Properly routed and permissioned. (Planned)
 - **Self-Hosted**: Your server, your data, your models. Works without internet.
 - **Docker Compose Deployment**: Single `docker compose up` to run everything.

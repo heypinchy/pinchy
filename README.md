@@ -75,6 +75,8 @@ Then open [http://localhost:7777](http://localhost:7777) — the setup wizard wi
 - **Agent permissions** — Allow-list model for agent tools (safe and powerful categories)
 - **Agent settings** — Configure name, model, system prompt, and tool permissions per agent
 - **Knowledge Base agents** — Create agents with scoped read-only access to specific directories
+- **Context management** — Per-user personal context and organization-wide context, editable in Settings
+- **Smithers onboarding** — New users get an onboarding interview where Smithers learns about them through conversation
 - **Provider management** — Configure API keys for Anthropic, OpenAI, and Google
 - **Docker Compose deployment** — Single command to run the full stack
 - **Audit trail** — Cryptographic audit logging with HMAC-signed entries, integrity verification, and CSV export
