@@ -48,6 +48,11 @@ vi.mock("@/lib/personality-presets", () => ({
     greeting ? greeting.replace("{name}", name) : null,
 }));
 
+// ── Mock @/lib/onboarding-prompt ─────────────────────────────────────────────
+vi.mock("@/lib/onboarding-prompt", () => ({
+  getOnboardingPrompt: vi.fn().mockReturnValue("## Onboarding\n\nTest onboarding content"),
+}));
+
 // ── Mock @/lib/providers ─────────────────────────────────────────────────────
 vi.mock("@/lib/providers", () => ({
   PROVIDERS: {
@@ -114,6 +119,7 @@ describe("createSmithersAgent", () => {
       avatarSeed: "__smithers__",
       personalityPresetId: "the-butler",
       greetingMessage: "Good day. I'm Smithers. How may I be of assistance?",
+      allowedTools: ["pinchy_save_user_context"],
     });
     expect(agent).toEqual(fakeAgent);
   });
@@ -268,6 +274,113 @@ describe("createSmithersAgent", () => {
     });
 
     expect(agent).toEqual(fakeAgent);
+  });
+
+  it("sets allowedTools with save_user_context for non-admin user", async () => {
+    getContextForAgentMock.mockResolvedValueOnce("");
+    const fakeAgent = {
+      id: "agent-tools-1",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      isAdmin: false,
+    });
+
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedTools: ["pinchy_save_user_context"],
+      })
+    );
+  });
+
+  it("sets allowedTools with both context tools for admin user", async () => {
+    getContextForAgentMock.mockResolvedValueOnce("");
+    const fakeAgent = {
+      id: "agent-tools-2",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "admin-1",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "admin-1",
+      isPersonal: true,
+      isAdmin: true,
+    });
+
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedTools: ["pinchy_save_user_context", "pinchy_save_org_context"],
+      })
+    );
+  });
+
+  it("writes ONBOARDING.md to workspace when no context exists", async () => {
+    getContextForAgentMock.mockResolvedValueOnce("");
+    const fakeAgent = {
+      id: "agent-onboard-1",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      isAdmin: false,
+    });
+
+    expect(writeWorkspaceFileInternal).toHaveBeenCalledWith(
+      "agent-onboard-1",
+      "ONBOARDING.md",
+      expect.stringContaining("Onboarding")
+    );
+  });
+
+  it("does NOT write ONBOARDING.md when user already has context", async () => {
+    getContextForAgentMock.mockResolvedValueOnce("I am a developer");
+    const fakeAgent = {
+      id: "agent-onboard-2",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      isAdmin: false,
+    });
+
+    const onboardingCalls = vi
+      .mocked(writeWorkspaceFileInternal)
+      .mock.calls.filter((call) => call[1] === "ONBOARDING.md");
+    expect(onboardingCalls).toHaveLength(0);
   });
 });
 

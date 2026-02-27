@@ -11,15 +11,26 @@ import { getSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { SMITHERS_SOUL_MD } from "@/lib/smithers-soul";
 import { PERSONALITY_PRESETS, resolveGreetingMessage } from "@/lib/personality-presets";
+import { getOnboardingPrompt } from "@/lib/onboarding-prompt";
 
 interface CreateSmithersOptions {
   model: string;
   ownerId: string | null;
   isPersonal: boolean;
+  isAdmin?: boolean;
 }
 
-export async function createSmithersAgent({ model, ownerId, isPersonal }: CreateSmithersOptions) {
+export async function createSmithersAgent({
+  model,
+  ownerId,
+  isPersonal,
+  isAdmin = false,
+}: CreateSmithersOptions) {
   const preset = PERSONALITY_PRESETS["the-butler"];
+
+  const allowedTools = isAdmin
+    ? ["pinchy_save_user_context", "pinchy_save_org_context"]
+    : ["pinchy_save_user_context"];
 
   const [agent] = await db
     .insert(agents)
@@ -32,6 +43,7 @@ export async function createSmithersAgent({ model, ownerId, isPersonal }: Create
       avatarSeed: "__smithers__",
       personalityPresetId: "the-butler",
       greetingMessage: resolveGreetingMessage(preset.greetingMessage, "Smithers"),
+      allowedTools,
     })
     .returning();
 
@@ -45,14 +57,19 @@ export async function createSmithersAgent({ model, ownerId, isPersonal }: Create
   });
   writeWorkspaceFileInternal(agent.id, "USER.md", context);
 
+  // Write onboarding prompt if user has no context yet
+  if (!context) {
+    writeWorkspaceFileInternal(agent.id, "ONBOARDING.md", getOnboardingPrompt(isAdmin));
+  }
+
   return agent;
 }
 
-export async function seedPersonalAgent(userId: string) {
+export async function seedPersonalAgent(userId: string, isAdmin = false) {
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
   const model = defaultProvider
     ? PROVIDERS[defaultProvider].defaultModel
     : "anthropic/claude-sonnet-4-20250514";
 
-  return createSmithersAgent({ model, ownerId: userId, isPersonal: true });
+  return createSmithersAgent({ model, ownerId: userId, isPersonal: true, isAdmin });
 }

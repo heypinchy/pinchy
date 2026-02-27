@@ -55,6 +55,7 @@ describe("seedDefaultAgent", () => {
       model: "anthropic/claude-sonnet-4-20250514",
       ownerId: null,
       isPersonal: false,
+      isAdmin: false,
     });
   });
 
@@ -78,6 +79,7 @@ describe("seedDefaultAgent", () => {
       model: "anthropic/claude-sonnet-4-20250514",
       ownerId: "user-1",
       isPersonal: true,
+      isAdmin: true,
     });
   });
 
