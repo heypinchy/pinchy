@@ -624,7 +624,7 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
-  it("should not include plugin config when no agents use it", async () => {
+  it("should disable pinchy-context when no agents use context tools", async () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockResolvedValue([
         {
@@ -643,7 +643,11 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.plugins).toBeUndefined();
+    // pinchy-context is always present (OpenClaw auto-discovers it) but disabled
+    expect(config.plugins.entries["pinchy-context"].enabled).toBe(false);
+    expect(config.plugins.entries["pinchy-context"].config.agents).toEqual({});
+    // pinchy-files should not be present when no agents use file tools
+    expect(config.plugins.entries["pinchy-files"]).toBeUndefined();
   });
 });
 

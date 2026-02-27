@@ -169,33 +169,33 @@ export async function regenerateOpenClawConfig() {
     },
   };
 
-  if (Object.keys(pluginConfigs).length > 0 || contextPluginAgents) {
-    const entries: Record<string, unknown> = {};
-    for (const [pluginId, agentConfigs] of Object.entries(pluginConfigs)) {
-      entries[pluginId] = {
-        enabled: true,
-        config: {
-          agents: agentConfigs,
-        },
-      };
-    }
+  const entries: Record<string, unknown> = {};
+  for (const [pluginId, agentConfigs] of Object.entries(pluginConfigs)) {
+    entries[pluginId] = {
+      enabled: true,
+      config: {
+        agents: agentConfigs,
+      },
+    };
+  }
 
-    if (contextPluginAgents) {
-      const gatewayAuth = (gateway as Record<string, unknown>).auth as
-        | Record<string, unknown>
-        | undefined;
-      const gatewayToken = (gatewayAuth?.token as string) || "";
+  // Always include pinchy-context config — OpenClaw auto-discovers installed
+  // plugins and validates their config even when no agents use them.
+  const gatewayAuth = (gateway as Record<string, unknown>).auth as
+    | Record<string, unknown>
+    | undefined;
+  const gatewayToken = (gatewayAuth?.token as string) || "";
 
-      entries["pinchy-context"] = {
-        enabled: true,
-        config: {
-          apiBaseUrl: process.env.PINCHY_INTERNAL_URL || "http://pinchy:7777",
-          gatewayToken,
-          agents: contextPluginAgents,
-        },
-      };
-    }
+  entries["pinchy-context"] = {
+    enabled: contextPluginAgents ? true : false,
+    config: {
+      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || "http://pinchy:7777",
+      gatewayToken,
+      agents: contextPluginAgents ?? {},
+    },
+  };
 
+  if (Object.keys(entries).length > 0) {
     config.plugins = { entries };
   }
 
