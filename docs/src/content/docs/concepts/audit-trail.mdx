@@ -20,6 +20,13 @@ Pinchy logs 12 event types across five categories:
 | `tool.execute` | An agent executed a tool (shell command, file read, web fetch, etc.) |
 | `tool.denied`  | An agent attempted to use a tool that was not in its allow-list      |
 
+Each `tool.execute` event produces **two audit entries** per tool call:
+
+- **Start** — logged when the agent begins a tool call. Detail: `{ toolName, phase: "start" }`
+- **End** — logged when the tool returns a result. Detail: `{ toolName, phase: "end", result }`
+
+This lets admins see not just which tools were used, but also what results they produced.
+
 ### Authentication
 
 | Event Type    | Description                                            |

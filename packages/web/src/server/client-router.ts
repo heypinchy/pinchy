@@ -126,13 +126,27 @@ export class ClientRouter {
           });
         }
 
-        if (chunk.type === "tool_use" || chunk.type === "tool_result") {
+        if (chunk.type === "tool_use") {
           appendAuditLog({
             actorType: "agent",
             actorId: message.agentId,
             eventType: "tool.execute",
             resource: `agent:${message.agentId}`,
-            detail: { chunkType: chunk.type, text: chunk.text },
+            detail: { toolName: chunk.text, phase: "start" },
+          }).catch(() => {});
+        }
+
+        // openclaw-node v0.2.0 formats tool_result as "toolName: output"
+        if (chunk.type === "tool_result") {
+          const colonIdx = chunk.text.indexOf(": ");
+          const toolName = colonIdx >= 0 ? chunk.text.slice(0, colonIdx) : "unknown";
+          const result = colonIdx >= 0 ? chunk.text.slice(colonIdx + 2) : chunk.text;
+          appendAuditLog({
+            actorType: "agent",
+            actorId: message.agentId,
+            eventType: "tool.execute",
+            resource: `agent:${message.agentId}`,
+            detail: { toolName, phase: "end", result },
           }).catch(() => {});
         }
 
