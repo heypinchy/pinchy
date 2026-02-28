@@ -32,6 +32,22 @@ vi.mock("@/components/settings-users", () => ({
   ),
 }));
 
+vi.mock("@/components/settings-context", () => ({
+  SettingsContext: ({
+    userContext,
+    orgContext,
+    isAdmin,
+  }: {
+    userContext: string;
+    orgContext: string;
+    isAdmin: boolean;
+  }) => (
+    <div data-testid="mock-settings-context">
+      Context (isAdmin: {String(isAdmin)}, userContext: {userContext}, orgContext: {orgContext})
+    </div>
+  ),
+}));
+
 vi.mock("@/components/settings-profile", () => ({
   SettingsProfile: ({ userName }: { userName: string }) => (
     <div data-testid="mock-settings-profile">Profile (userName: {userName})</div>
@@ -60,6 +76,34 @@ describe("Settings Page", () => {
     status: "authenticated",
   };
 
+  function mockContextFetches() {
+    return {
+      ok: true,
+      json: async () => ({ content: "" }),
+    } as Response;
+  }
+
+  function setupAdminFetchMocks(providerData?: object) {
+    const pd = providerData ?? {
+      defaultProvider: null,
+      providers: {
+        anthropic: { configured: false },
+        openai: { configured: false },
+        google: { configured: false },
+      },
+    };
+    vi.mocked(global.fetch).mockImplementation(async (url) => {
+      const path = typeof url === "string" ? url : url.toString();
+      if (path === "/api/settings/providers") {
+        return { ok: true, json: async () => pd } as Response;
+      }
+      if (path === "/api/users/me/context" || path === "/api/settings/context") {
+        return mockContextFetches();
+      }
+      return { ok: false } as Response;
+    });
+  }
+
   beforeEach(() => {
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
     vi.clearAllMocks();
@@ -72,17 +116,7 @@ describe("Settings Page", () => {
   });
 
   it("should render the page title", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        defaultProvider: null,
-        providers: {
-          anthropic: { configured: false },
-          openai: { configured: false },
-          google: { configured: false },
-        },
-      }),
-    });
+    setupAdminFetchMocks();
 
     render(<SettingsPage />);
 
@@ -96,40 +130,21 @@ describe("Settings Page", () => {
       mockUseSession.mockReturnValue(adminSession);
     });
 
-    it("should render Provider, Users, and Profile tabs", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          defaultProvider: null,
-          providers: {
-            anthropic: { configured: false },
-            openai: { configured: false },
-            google: { configured: false },
-          },
-        }),
-      });
+    it("should render Provider, Users, Context, and Profile tabs", async () => {
+      setupAdminFetchMocks();
 
       render(<SettingsPage />);
 
       await waitFor(() => {
         expect(screen.getByRole("tab", { name: "Provider" })).toBeInTheDocument();
         expect(screen.getByRole("tab", { name: "Users" })).toBeInTheDocument();
+        expect(screen.getByRole("tab", { name: "Context" })).toBeInTheDocument();
         expect(screen.getByRole("tab", { name: "Profile" })).toBeInTheDocument();
       });
     });
 
     it("should show Provider tab content by default for admin", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          defaultProvider: null,
-          providers: {
-            anthropic: { configured: false },
-            openai: { configured: false },
-            google: { configured: false },
-          },
-        }),
-      });
+      setupAdminFetchMocks();
 
       render(<SettingsPage />);
 
@@ -139,17 +154,7 @@ describe("Settings Page", () => {
     });
 
     it("should render LLM Provider section with ProviderKeyForm", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({
-          defaultProvider: null,
-          providers: {
-            anthropic: { configured: false },
-            openai: { configured: false },
-            google: { configured: false },
-          },
-        }),
-      });
+      setupAdminFetchMocks();
 
       render(<SettingsPage />);
 
@@ -159,7 +164,13 @@ describe("Settings Page", () => {
     });
 
     it("should show loading state while fetching provider status", () => {
-      vi.mocked(global.fetch).mockReturnValueOnce(new Promise(() => {}));
+      vi.mocked(global.fetch).mockImplementation(async (url) => {
+        const path = typeof url === "string" ? url : url.toString();
+        if (path === "/api/settings/providers") {
+          return new Promise(() => {}) as unknown as Response;
+        }
+        return mockContextFetches();
+      });
 
       render(<SettingsPage />);
 
@@ -176,10 +187,7 @@ describe("Settings Page", () => {
         },
       };
 
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => providerData,
-      });
+      setupAdminFetchMocks(providerData);
 
       render(<SettingsPage />);
 
@@ -192,24 +200,7 @@ describe("Settings Page", () => {
     });
 
     it("should re-fetch provider status after onSuccess", async () => {
-      const providerData = {
-        defaultProvider: "anthropic",
-        providers: {
-          anthropic: { configured: true },
-          openai: { configured: false },
-          google: { configured: false },
-        },
-      };
-
-      vi.mocked(global.fetch)
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => providerData,
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => providerData,
-        });
+      setupAdminFetchMocks();
 
       render(<SettingsPage />);
 
@@ -220,7 +211,7 @@ describe("Settings Page", () => {
       capturedProviderProps.onSuccess!();
 
       await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledTimes(2);
+        expect(global.fetch).toHaveBeenCalledWith("/api/settings/providers");
       });
     });
   });
@@ -230,24 +221,34 @@ describe("Settings Page", () => {
       mockUseSession.mockReturnValue(userSession);
     });
 
-    it("should only show Profile tab", () => {
+    it("should show Context and Profile tabs but not Provider or Users", () => {
+      vi.mocked(global.fetch).mockImplementation(async () => mockContextFetches());
+
       render(<SettingsPage />);
 
+      expect(screen.getByRole("tab", { name: "Context" })).toBeInTheDocument();
       expect(screen.getByRole("tab", { name: "Profile" })).toBeInTheDocument();
       expect(screen.queryByRole("tab", { name: "Provider" })).not.toBeInTheDocument();
       expect(screen.queryByRole("tab", { name: "Users" })).not.toBeInTheDocument();
     });
 
-    it("should show Profile tab content by default", () => {
+    it("should show Context tab content by default", () => {
+      vi.mocked(global.fetch).mockImplementation(async () => mockContextFetches());
+
       render(<SettingsPage />);
 
-      expect(screen.getByTestId("mock-settings-profile")).toBeInTheDocument();
+      expect(screen.getByTestId("mock-settings-context")).toBeInTheDocument();
     });
 
-    it("should not fetch provider status", () => {
+    it("should fetch user context but not provider status", async () => {
+      vi.mocked(global.fetch).mockImplementation(async () => mockContextFetches());
+
       render(<SettingsPage />);
 
-      expect(global.fetch).not.toHaveBeenCalled();
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/users/me/context");
+        expect(global.fetch).not.toHaveBeenCalledWith("/api/settings/providers");
+      });
     });
   });
 });

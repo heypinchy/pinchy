@@ -18,6 +18,7 @@ const AUTH_PATTERNS = [
   /\brequireAdmin\(\)/,
   /\brequireAuth\(\)/,
   /\bgetAgentWithAccess\(/,
+  /\bvalidateGatewayToken\(/,
 ];
 
 // Routes that are intentionally public (no auth required)

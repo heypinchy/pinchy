@@ -15,7 +15,14 @@ vi.mock("@/db", () => ({
 vi.mock("@/lib/workspace", () => ({
   ensureWorkspace: vi.fn(),
   writeWorkspaceFile: vi.fn(),
+  writeWorkspaceFileInternal: vi.fn(),
   writeIdentityFile: vi.fn(),
+}));
+
+// ── Mock @/lib/context-sync ─────────────────────────────────────────────────
+const getContextForAgentMock = vi.fn().mockResolvedValue("");
+vi.mock("@/lib/context-sync", () => ({
+  getContextForAgent: (...args: unknown[]) => getContextForAgentMock(...args),
 }));
 
 // ── Mock @/lib/settings ──────────────────────────────────────────────────────
@@ -39,6 +46,11 @@ vi.mock("@/lib/personality-presets", () => ({
   },
   resolveGreetingMessage: (greeting: string | null, name: string) =>
     greeting ? greeting.replace("{name}", name) : null,
+}));
+
+// ── Mock @/lib/onboarding-prompt ─────────────────────────────────────────────
+vi.mock("@/lib/onboarding-prompt", () => ({
+  getOnboardingPrompt: vi.fn().mockReturnValue("## Onboarding\n\nTest onboarding content"),
 }));
 
 // ── Mock @/lib/providers ─────────────────────────────────────────────────────
@@ -68,7 +80,12 @@ vi.mock("@/lib/providers", () => ({
   },
 }));
 
-import { ensureWorkspace, writeWorkspaceFile, writeIdentityFile } from "@/lib/workspace";
+import {
+  ensureWorkspace,
+  writeWorkspaceFile,
+  writeWorkspaceFileInternal,
+  writeIdentityFile,
+} from "@/lib/workspace";
 
 describe("createSmithersAgent", () => {
   beforeEach(() => {
@@ -102,6 +119,7 @@ describe("createSmithersAgent", () => {
       avatarSeed: "__smithers__",
       personalityPresetId: "the-butler",
       greetingMessage: "Good day. I'm Smithers. How may I be of assistance?",
+      allowedTools: ["pinchy_save_user_context"],
     });
     expect(agent).toEqual(fakeAgent);
   });
@@ -183,6 +201,60 @@ describe("createSmithersAgent", () => {
     });
   });
 
+  it("writes user context to USER.md in workspace", async () => {
+    getContextForAgentMock.mockResolvedValueOnce("I am a developer in Vienna");
+    const fakeAgent = {
+      id: "agent-context-1",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      tagline: "Your reliable personal assistant",
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+    });
+
+    expect(getContextForAgentMock).toHaveBeenCalledWith({
+      isPersonal: true,
+      ownerId: "user-1",
+    });
+    expect(writeWorkspaceFileInternal).toHaveBeenCalledWith(
+      "agent-context-1",
+      "USER.md",
+      "I am a developer in Vienna"
+    );
+  });
+
+  it("writes empty string to USER.md when no context exists", async () => {
+    getContextForAgentMock.mockResolvedValueOnce("");
+    const fakeAgent = {
+      id: "agent-context-2",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-2",
+      isPersonal: true,
+      tagline: "Your reliable personal assistant",
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-2",
+      isPersonal: true,
+    });
+
+    expect(writeWorkspaceFileInternal).toHaveBeenCalledWith("agent-context-2", "USER.md", "");
+  });
+
   it("returns the created agent", async () => {
     const fakeAgent = {
       id: "agent-shared-3",
@@ -202,6 +274,113 @@ describe("createSmithersAgent", () => {
     });
 
     expect(agent).toEqual(fakeAgent);
+  });
+
+  it("sets allowedTools with save_user_context for non-admin user", async () => {
+    getContextForAgentMock.mockResolvedValueOnce("");
+    const fakeAgent = {
+      id: "agent-tools-1",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      isAdmin: false,
+    });
+
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedTools: ["pinchy_save_user_context"],
+      })
+    );
+  });
+
+  it("sets allowedTools with both context tools for admin user", async () => {
+    getContextForAgentMock.mockResolvedValueOnce("");
+    const fakeAgent = {
+      id: "agent-tools-2",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "admin-1",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "admin-1",
+      isPersonal: true,
+      isAdmin: true,
+    });
+
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedTools: ["pinchy_save_user_context", "pinchy_save_org_context"],
+      })
+    );
+  });
+
+  it("writes ONBOARDING.md to workspace when no context exists", async () => {
+    getContextForAgentMock.mockResolvedValueOnce("");
+    const fakeAgent = {
+      id: "agent-onboard-1",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      isAdmin: false,
+    });
+
+    expect(writeWorkspaceFileInternal).toHaveBeenCalledWith(
+      "agent-onboard-1",
+      "ONBOARDING.md",
+      expect.stringContaining("Onboarding")
+    );
+  });
+
+  it("does NOT write ONBOARDING.md when user already has context", async () => {
+    getContextForAgentMock.mockResolvedValueOnce("I am a developer");
+    const fakeAgent = {
+      id: "agent-onboard-2",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      isAdmin: false,
+    });
+
+    const onboardingCalls = vi
+      .mocked(writeWorkspaceFileInternal)
+      .mock.calls.filter((call) => call[1] === "ONBOARDING.md");
+    expect(onboardingCalls).toHaveLength(0);
   });
 });
 

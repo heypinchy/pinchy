@@ -122,16 +122,17 @@ describe("GET /api/agents/[agentId]/files/[filename]", () => {
     expect(data.error).toBe("File not allowed: SECRET.md");
   });
 
-  it("should read USER.md file", async () => {
-    vi.mocked(readWorkspaceFile).mockReturnValueOnce("# User context");
+  it("should return 400 for USER.md (no longer in ALLOWED_FILES)", async () => {
+    vi.mocked(readWorkspaceFile).mockImplementationOnce(() => {
+      throw new Error("File not allowed: USER.md");
+    });
 
     const request = makeGetRequest("agent-1", "USER.md");
     const response = await GET(request, makeParams("agent-1", "USER.md"));
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.content).toBe("# User context");
-    expect(readWorkspaceFile).toHaveBeenCalledWith("agent-1", "USER.md");
+    expect(data.error).toBe("File not allowed: USER.md");
   });
 
   it("should read AGENTS.md file", async () => {
@@ -246,16 +247,19 @@ describe("PUT /api/agents/[agentId]/files/[filename]", () => {
     expect(data.error).toBe("File not allowed: HACK.md");
   });
 
-  it("should write USER.md file", async () => {
+  it("should return 400 for USER.md PUT (no longer in ALLOWED_FILES)", async () => {
+    vi.mocked(writeWorkspaceFile).mockImplementationOnce(() => {
+      throw new Error("File not allowed: USER.md");
+    });
+
     const request = makePutRequest("agent-1", "USER.md", {
       content: "# Team info",
     });
     const response = await PUT(request, makeParams("agent-1", "USER.md"));
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.success).toBe(true);
-    expect(writeWorkspaceFile).toHaveBeenCalledWith("agent-1", "USER.md", "# Team info");
+    expect(data.error).toBe("File not allowed: USER.md");
   });
 
   it("should write AGENTS.md file", async () => {

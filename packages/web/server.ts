@@ -34,7 +34,23 @@ if (process.env.NODE_ENV === "production") {
   }
 }
 
-app.prepare().then(() => {
+app.prepare().then(async () => {
+  // Regenerate OpenClaw config on startup to ensure it's in sync with code changes.
+  // This handles cases like new plugin configs or changed config structure after updates.
+  try {
+    const { isSetupComplete } = await import("./src/lib/setup");
+    if (await isSetupComplete()) {
+      const { regenerateOpenClawConfig } = await import("./src/lib/openclaw-config");
+      await regenerateOpenClawConfig();
+      console.log("[pinchy] OpenClaw config regenerated from DB state");
+    }
+  } catch (err) {
+    console.error(
+      "[pinchy] Failed to regenerate OpenClaw config on startup:",
+      err instanceof Error ? err.message : err
+    );
+  }
+
   const server = createServer((req, res) => {
     handle(req, res, parse(req.url!, true));
   });

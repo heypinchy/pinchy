@@ -38,6 +38,10 @@ vi.mock("@/server/restart-state", () => ({
   restartState: { notifyRestart: vi.fn() },
 }));
 
+vi.mock("@/lib/migrate-onboarding", () => ({
+  migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { writeOpenClawConfig, regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
@@ -512,7 +516,115 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.gateway.auth.token).toBe("existing-token");
   });
 
-  it("should not include plugin config when no agents use it", async () => {
+  it("should include pinchy-context plugin config for agents with context tools", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "smithers-1",
+          name: "Smithers",
+          model: "anthropic/claude-sonnet-4-20250514",
+          pluginConfig: null,
+          allowedTools: ["pinchy_save_user_context"],
+          ownerId: "user-1",
+          isPersonal: true,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-context"]).toBeDefined();
+    expect(config.plugins.entries["pinchy-context"].enabled).toBe(true);
+    expect(config.plugins.entries["pinchy-context"].config.apiBaseUrl).toBe("http://pinchy:7777");
+    expect(config.plugins.entries["pinchy-context"].config.gatewayToken).toBe("gw-token-123");
+    expect(config.plugins.entries["pinchy-context"].config.agents["smithers-1"]).toEqual({
+      tools: ["save_user_context"],
+      userId: "user-1",
+    });
+  });
+
+  it("should include both pinchy-files and pinchy-context when agents use both", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "smithers-1",
+          name: "Smithers",
+          model: "anthropic/claude-sonnet-4-20250514",
+          pluginConfig: null,
+          allowedTools: ["pinchy_save_user_context"],
+          ownerId: "user-1",
+          isPersonal: true,
+          createdAt: new Date(),
+        },
+        {
+          id: "kb-agent",
+          name: "KB Agent",
+          model: "anthropic/claude-sonnet-4-20250514",
+          pluginConfig: { allowed_paths: ["/data/docs/"] },
+          allowedTools: ["pinchy_ls", "pinchy_read"],
+          ownerId: null,
+          isPersonal: false,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-files"]).toBeDefined();
+    expect(config.plugins.entries["pinchy-context"]).toBeDefined();
+  });
+
+  it("should include both save tools for admin Smithers", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "admin-smithers",
+          name: "Smithers",
+          model: "anthropic/claude-sonnet-4-20250514",
+          pluginConfig: null,
+          allowedTools: ["pinchy_save_user_context", "pinchy_save_org_context"],
+          ownerId: "admin-1",
+          isPersonal: true,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-context"].config.agents["admin-smithers"]).toEqual({
+      tools: ["save_user_context", "save_org_context"],
+      userId: "admin-1",
+    });
+  });
+
+  it("should disable pinchy-context when no agents use context tools", async () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockResolvedValue([
         {
@@ -531,7 +643,11 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.plugins).toBeUndefined();
+    // pinchy-context is always present (OpenClaw auto-discovers it) but disabled
+    expect(config.plugins.entries["pinchy-context"].enabled).toBe(false);
+    expect(config.plugins.entries["pinchy-context"].config.agents).toEqual({});
+    // pinchy-files should not be present when no agents use file tools
+    expect(config.plugins.entries["pinchy-files"]).toBeUndefined();
   });
 });
 

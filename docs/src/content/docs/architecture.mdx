@@ -132,6 +132,8 @@ Tools are organized into two categories:
 
 When an agent has safe tools enabled, the `pinchy-files` plugin validates every file access request against the agent's allowed directories, with symlink resolution to prevent escapes.
 
+Smithers agents also use the `pinchy-context` plugin, which provides `save_user_context` and `save_org_context` tools. These tools call Pinchy's internal API (authenticated via a shared gateway token) to save context from the onboarding interview directly to the database and sync it to agent workspaces.
+
 All agent-accessible files live under `/data/` in the container, mounted via Docker volumes. This means even if all software layers failed, the agent can only see files that were explicitly mounted.
 
 ### Agent access control

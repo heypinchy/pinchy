@@ -204,7 +204,7 @@ describe("POST /api/invite/claim", () => {
 
     await POST(request);
 
-    expect(seedPersonalAgent).toHaveBeenCalledWith("new-user-id");
+    expect(seedPersonalAgent).toHaveBeenCalledWith("new-user-id", false);
   });
 
   it("marks the invite as claimed with the new user's id", async () => {

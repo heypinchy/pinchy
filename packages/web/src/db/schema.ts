@@ -24,6 +24,7 @@ export const users = pgTable("user", {
   image: text("image"),
   passwordHash: text("password_hash"),
   role: text("role").notNull().default("user"),
+  context: text("context"),
 });
 
 export const accounts = pgTable(
