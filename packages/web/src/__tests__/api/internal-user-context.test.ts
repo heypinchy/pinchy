@@ -28,13 +28,8 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
-vi.mock("@/server/restart-state", () => ({
-  restartState: { notifyRestart: vi.fn() },
-}));
-
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { syncUserContextToWorkspaces } from "@/lib/context-sync";
-import { restartState } from "@/server/restart-state";
 import { db } from "@/db";
 import { PUT } from "@/app/api/internal/users/[userId]/context/route";
 
@@ -79,7 +74,6 @@ describe("PUT /api/internal/users/:userId/context", () => {
 
     expect(res.status).toBe(200);
     expect(syncUserContextToWorkspaces).toHaveBeenCalledWith("user-1");
-    expect(restartState.notifyRestart).toHaveBeenCalled();
   });
 
   it("returns onboardingComplete: true for non-admin users", async () => {

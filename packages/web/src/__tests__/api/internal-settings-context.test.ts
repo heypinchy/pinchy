@@ -13,14 +13,9 @@ vi.mock("@/lib/context-sync", () => ({
   syncOrgContextToWorkspaces: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/server/restart-state", () => ({
-  restartState: { notifyRestart: vi.fn() },
-}));
-
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { setSetting } from "@/lib/settings";
 import { syncOrgContextToWorkspaces } from "@/lib/context-sync";
-import { restartState } from "@/server/restart-state";
 import { PUT } from "@/app/api/internal/settings/context/route";
 
 function makePutRequest(body: Record<string, unknown>) {
@@ -53,7 +48,6 @@ describe("PUT /api/internal/settings/context", () => {
     expect(res.status).toBe(200);
     expect(setSetting).toHaveBeenCalledWith("org_context", "# Org Info");
     expect(syncOrgContextToWorkspaces).toHaveBeenCalled();
-    expect(restartState.notifyRestart).toHaveBeenCalled();
   });
 
   it("returns onboardingComplete: true", async () => {

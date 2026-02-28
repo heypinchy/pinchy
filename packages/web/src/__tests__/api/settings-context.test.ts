@@ -18,13 +18,6 @@ vi.mock("@/lib/context-sync", () => ({
   syncOrgContextToWorkspaces: (...args: unknown[]) => mockSyncOrgContextToWorkspaces(...args),
 }));
 
-const { mockNotifyRestart } = vi.hoisted(() => ({
-  mockNotifyRestart: vi.fn(),
-}));
-vi.mock("@/server/restart-state", () => ({
-  restartState: { notifyRestart: mockNotifyRestart },
-}));
-
 import { auth } from "@/lib/auth";
 import { GET, PUT } from "@/app/api/settings/context/route";
 import { NextRequest } from "next/server";
@@ -126,12 +119,6 @@ describe("PUT /api/settings/context", () => {
     await PUT(makePutRequest({ content: "New org context" }));
 
     expect(mockSyncOrgContextToWorkspaces).toHaveBeenCalled();
-  });
-
-  it("should call restartState.notifyRestart()", async () => {
-    await PUT(makePutRequest({ content: "New org context" }));
-
-    expect(mockNotifyRestart).toHaveBeenCalled();
   });
 
   it("should return 400 when content is not a string", async () => {

@@ -4,7 +4,6 @@ import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { syncUserContextToWorkspaces } from "@/lib/context-sync";
-import { restartState } from "@/server/restart-state";
 
 export async function GET() {
   const session = await auth();
@@ -30,7 +29,6 @@ export async function PUT(request: NextRequest) {
   await db.update(users).set({ context: content }).where(eq(users.id, session.user.id));
 
   await syncUserContextToWorkspaces(session.user.id);
-  restartState.notifyRestart();
 
   return NextResponse.json({ success: true });
 }

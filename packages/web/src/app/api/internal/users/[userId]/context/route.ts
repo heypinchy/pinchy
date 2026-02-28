@@ -5,7 +5,6 @@ import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { syncUserContextToWorkspaces } from "@/lib/context-sync";
 import { getSetting } from "@/lib/settings";
-import { restartState } from "@/server/restart-state";
 
 export async function PUT(
   request: NextRequest,
@@ -24,7 +23,6 @@ export async function PUT(
 
   await db.update(users).set({ context: content }).where(eq(users.id, userId));
   await syncUserContextToWorkspaces(userId);
-  restartState.notifyRestart();
 
   // Determine if onboarding is complete
   const user = await db.query.users.findFirst({
