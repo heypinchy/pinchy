@@ -199,6 +199,18 @@ export async function regenerateOpenClawConfig() {
     },
   };
 
+  // Always include pinchy-files with valid config — OpenClaw auto-discovers
+  // plugins from the extensions directory and validates their config even when
+  // no agents use them. Without this, OpenClaw enters a restart loop.
+  if (!entries["pinchy-files"]) {
+    entries["pinchy-files"] = {
+      enabled: false,
+      config: {
+        agents: {},
+      },
+    };
+  }
+
   if (Object.keys(entries).length > 0) {
     config.plugins = { entries };
   }

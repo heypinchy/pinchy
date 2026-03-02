@@ -51,6 +51,7 @@ vi.mock("@/lib/personality-presets", () => ({
 // ── Mock @/lib/onboarding-prompt ─────────────────────────────────────────────
 vi.mock("@/lib/onboarding-prompt", () => ({
   getOnboardingPrompt: vi.fn().mockReturnValue("## Onboarding\n\nTest onboarding content"),
+  ONBOARDING_GREETING: "Test onboarding greeting",
 }));
 
 // ── Mock @/lib/providers ─────────────────────────────────────────────────────
@@ -118,7 +119,7 @@ describe("createSmithersAgent", () => {
       tagline: "Your reliable personal assistant",
       avatarSeed: "__smithers__",
       personalityPresetId: "the-butler",
-      greetingMessage: "Good day. I'm Smithers. How may I be of assistance?",
+      greetingMessage: "Test onboarding greeting",
       allowedTools: ["pinchy_save_user_context"],
     });
     expect(agent).toEqual(fakeAgent);
@@ -131,7 +132,7 @@ describe("createSmithersAgent", () => {
       model: "anthropic/claude-sonnet-4-20250514",
       ownerId: "user-1",
       isPersonal: true,
-      greetingMessage: "Good day. I'm Smithers. How may I be of assistance?",
+      greetingMessage: "Test onboarding greeting",
       createdAt: new Date(),
     };
     returningMock.mockResolvedValue([fakeAgent]);
@@ -145,7 +146,7 @@ describe("createSmithersAgent", () => {
 
     expect(valuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        greetingMessage: "Good day. I'm Smithers. How may I be of assistance?",
+        greetingMessage: "Test onboarding greeting",
       })
     );
   });

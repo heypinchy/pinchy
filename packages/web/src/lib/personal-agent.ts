@@ -10,8 +10,7 @@ import { getContextForAgent } from "@/lib/context-sync";
 import { getSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { SMITHERS_SOUL_MD } from "@/lib/smithers-soul";
-import { PERSONALITY_PRESETS, resolveGreetingMessage } from "@/lib/personality-presets";
-import { getOnboardingPrompt } from "@/lib/onboarding-prompt";
+import { getOnboardingPrompt, ONBOARDING_GREETING } from "@/lib/onboarding-prompt";
 
 interface CreateSmithersOptions {
   model: string;
@@ -26,8 +25,6 @@ export async function createSmithersAgent({
   isPersonal,
   isAdmin = false,
 }: CreateSmithersOptions) {
-  const preset = PERSONALITY_PRESETS["the-butler"];
-
   const allowedTools = isAdmin
     ? ["pinchy_save_user_context", "pinchy_save_org_context"]
     : ["pinchy_save_user_context"];
@@ -42,7 +39,7 @@ export async function createSmithersAgent({
       tagline: "Your reliable personal assistant",
       avatarSeed: "__smithers__",
       personalityPresetId: "the-butler",
-      greetingMessage: resolveGreetingMessage(preset.greetingMessage, "Smithers"),
+      greetingMessage: ONBOARDING_GREETING,
       allowedTools,
     })
     .returning();
