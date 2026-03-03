@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { validateProviderKey, PROVIDERS, type ProviderName } from "@/lib/providers";
-import { setSetting } from "@/lib/settings";
+import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { db } from "@/db";
@@ -36,14 +36,28 @@ export async function POST(request: NextRequest) {
 
   const config = PROVIDERS[provider as ProviderName];
 
+  // Check if any other providers are already configured (before saving the new one)
+  let isFirstProvider = true;
+  for (const [name, providerConfig] of Object.entries(PROVIDERS)) {
+    if (name !== provider) {
+      const existingKey = await getSetting(providerConfig.settingsKey);
+      if (existingKey !== null) {
+        isFirstProvider = false;
+        break;
+      }
+    }
+  }
+
   // Store encrypted key and default provider
   await setSetting(config.settingsKey, apiKey, true);
   await setSetting("default_provider", provider, false);
 
-  // Update Smithers agent model
-  const smithers = await db.query.agents.findFirst();
-  if (smithers) {
-    await db.update(agents).set({ model: config.defaultModel }).where(eq(agents.id, smithers.id));
+  // Only update agent model when adding the first provider
+  if (isFirstProvider) {
+    const smithers = await db.query.agents.findFirst();
+    if (smithers) {
+      await db.update(agents).set({ model: config.defaultModel }).where(eq(agents.id, smithers.id));
+    }
   }
 
   // Regenerate full OpenClaw config (includes agent list, provider env, model defaults)
