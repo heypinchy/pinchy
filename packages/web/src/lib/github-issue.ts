@@ -57,3 +57,23 @@ export function buildGitHubIssueUrl(context: IssueContext): string {
   const params = new URLSearchParams({ title, body });
   return `${REPO_URL}?${params.toString()}`;
 }
+
+const DIAGNOSTICS_TIMEOUT_MS = 3000;
+
+export async function fetchDiagnostics(): Promise<DiagnosticsResult | null> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), DIAGNOSTICS_TIMEOUT_MS);
+
+    const res = await fetch("/api/diagnostics", {
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+
+    if (!res.ok) return null;
+
+    return (await res.json()) as DiagnosticsResult;
+  } catch {
+    return null;
+  }
+}
