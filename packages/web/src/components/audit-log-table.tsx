@@ -56,20 +56,6 @@ interface VerifyResult {
   invalidIds: number[];
 }
 
-const EVENT_TYPES = [
-  "auth.login",
-  "auth.failed",
-  "auth.logout",
-  "agent.created",
-  "agent.updated",
-  "agent.deleted",
-  "user.invited",
-  "user.updated",
-  "user.deleted",
-  "config.changed",
-  "tool.denied",
-];
-
 function isNegativeEvent(eventType: string): boolean {
   return (
     eventType.includes("failed") || eventType.includes("deleted") || eventType.includes("denied")
@@ -145,6 +131,14 @@ export function AuditLogTable() {
   const [dateTo, setDateTo] = useState<string>("");
   const [selectedEntry, setSelectedEntry] = useState<AuditEntry | null>(null);
   const [verifyResult, setVerifyResult] = useState<VerifyResult | null>(null);
+  const [availableEventTypes, setAvailableEventTypes] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetch("/api/audit/event-types")
+      .then((res) => res.json())
+      .then((data: { eventTypes: string[] }) => setAvailableEventTypes(data.eventTypes))
+      .catch(() => {});
+  }, []);
 
   const totalPages = Math.max(1, Math.ceil(total / limit));
 
@@ -255,7 +249,7 @@ export function AuditLogTable() {
           </SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All Events</SelectItem>
-            {EVENT_TYPES.map((type) => (
+            {availableEventTypes.map((type) => (
               <SelectItem key={type} value={type}>
                 {type}
               </SelectItem>
@@ -289,7 +283,7 @@ export function AuditLogTable() {
           />
         </div>
 
-        <Button variant="outline" onClick={handleExportCsv}>
+        <Button variant="outline" onClick={handleExportCsv} className="ml-auto">
           Export CSV
         </Button>
       </div>

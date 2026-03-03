@@ -29,7 +29,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   return (
     <SidebarProvider>
       <AppSidebar agents={visibleAgents} isAdmin={isAdmin} />
-      <SidebarInset>{children}</SidebarInset>
+      <SidebarInset className="overflow-y-auto">{children}</SidebarInset>
     </SidebarProvider>
   );
 }
