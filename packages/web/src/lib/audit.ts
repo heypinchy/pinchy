@@ -5,7 +5,7 @@ import { auditLog } from "@/db/schema";
 import { getOrCreateSecret } from "@/lib/encryption";
 
 export type AuditEventType =
-  | "tool.execute"
+  | `tool.${string}`
   | "tool.denied"
   | "auth.login"
   | "auth.failed"
