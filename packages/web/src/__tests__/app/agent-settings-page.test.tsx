@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import AgentSettingsPage from "@/app/(app)/chat/[agentId]/settings/page";
@@ -38,6 +38,11 @@ vi.mock("@/components/agent-settings-permissions", () => ({
   },
 }));
 
+const mockTriggerRestart = vi.fn();
+vi.mock("@/components/restart-provider", () => ({
+  useRestart: () => ({ triggerRestart: mockTriggerRestart }),
+}));
+
 vi.mock("next/navigation", () => ({
   useParams: vi.fn().mockReturnValue({ agentId: "agent-1" }),
   useRouter: vi.fn().mockReturnValue({ refresh: vi.fn(), push: vi.fn() }),
@@ -47,12 +52,6 @@ vi.mock("next-auth/react", () => ({
   useSession: vi.fn().mockReturnValue({
     data: { user: { id: "1", email: "admin@test.com", role: "admin" } },
   }),
-}));
-
-vi.mock("next/link", () => ({
-  default: ({ children, ...props }: { children: React.ReactNode; href: string }) => (
-    <a {...props}>{children}</a>
-  ),
 }));
 
 vi.mock("sonner", () => ({
@@ -101,6 +100,7 @@ describe("AgentSettingsPage", () => {
     capturedOnChangePersonality = undefined;
     capturedOnChangeInstructions = undefined;
     capturedOnChangePermissions = undefined;
+    mockTriggerRestart.mockClear();
     fetchSpy = mockFetchResponses();
   });
 
@@ -131,10 +131,12 @@ describe("AgentSettingsPage", () => {
     await waitFor(() => screen.getByText("Agent Settings"));
 
     // Simulate personality tab reporting dirty
-    capturedOnChangePersonality?.(
-      { avatarSeed: "new-seed", presetId: null, soulContent: "New soul" },
-      true
-    );
+    act(() => {
+      capturedOnChangePersonality?.(
+        { avatarSeed: "new-seed", presetId: null, soulContent: "New soul" },
+        true
+      );
+    });
 
     await waitFor(() => {
       const btn = screen.getByRole("button", { name: /save/i });
@@ -148,10 +150,12 @@ describe("AgentSettingsPage", () => {
     await waitFor(() => screen.getByText("Agent Settings"));
 
     // Simulate general tab reporting dirty
-    capturedOnChangeGeneral?.(
-      { name: "New Name", tagline: "tagline", model: "anthropic/claude-sonnet-4-20250514" },
-      true
-    );
+    act(() => {
+      capturedOnChangeGeneral?.(
+        { name: "New Name", tagline: "tagline", model: "anthropic/claude-sonnet-4-20250514" },
+        true
+      );
+    });
 
     await waitFor(() => {
       expect(screen.getByRole("button", { name: /save & restart/i })).toBeInTheDocument();
@@ -162,10 +166,12 @@ describe("AgentSettingsPage", () => {
     render(<AgentSettingsPage />);
     await waitFor(() => screen.getByText("Agent Settings"));
 
-    capturedOnChangePersonality?.(
-      { avatarSeed: "new-seed", presetId: null, soulContent: "changed" },
-      true
-    );
+    act(() => {
+      capturedOnChangePersonality?.(
+        { avatarSeed: "new-seed", presetId: null, soulContent: "changed" },
+        true
+      );
+    });
 
     await waitFor(() => {
       // The personality tab trigger should have a dirty indicator
@@ -179,11 +185,13 @@ describe("AgentSettingsPage", () => {
     await waitFor(() => screen.getByText("Agent Settings"));
 
     // Mark personality and instructions dirty
-    capturedOnChangePersonality?.(
-      { avatarSeed: "new-seed", presetId: null, soulContent: "New soul" },
-      true
-    );
-    capturedOnChangeInstructions?.("New instructions", true);
+    act(() => {
+      capturedOnChangePersonality?.(
+        { avatarSeed: "new-seed", presetId: null, soulContent: "New soul" },
+        true
+      );
+      capturedOnChangeInstructions?.("New instructions", true);
+    });
 
     await waitFor(() => screen.getByRole("button", { name: /save/i }));
 
@@ -206,10 +214,12 @@ describe("AgentSettingsPage", () => {
     render(<AgentSettingsPage />);
     await waitFor(() => screen.getByText("Agent Settings"));
 
-    capturedOnChangeGeneral?.(
-      { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-20250514" },
-      true
-    );
+    act(() => {
+      capturedOnChangeGeneral?.(
+        { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-20250514" },
+        true
+      );
+    });
 
     await waitFor(() => screen.getByRole("button", { name: /save & restart/i }));
     await userEvent.click(screen.getByRole("button", { name: /save & restart/i }));
@@ -219,16 +229,45 @@ describe("AgentSettingsPage", () => {
     });
   });
 
+  it("should call triggerRestart after confirming Save & Restart", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
+
+    act(() => {
+      capturedOnChangeGeneral?.(
+        { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-20250514" },
+        true
+      );
+    });
+
+    await waitFor(() => screen.getByRole("button", { name: /save & restart/i }));
+
+    fetchSpy.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: /save & restart/i }));
+
+    // Confirm in the dialog — the AlertDialogAction button
+    await waitFor(() => screen.getByText(/apply changes and restart/i));
+    const confirmButtons = screen.getAllByRole("button", { name: /save & restart/i });
+    // The dialog's confirm button is the last one rendered
+    await userEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() => {
+      expect(mockTriggerRestart).toHaveBeenCalled();
+    });
+  });
+
   it("should set window.onbeforeunload when there are dirty tabs", async () => {
     render(<AgentSettingsPage />);
     await waitFor(() => screen.getByText("Agent Settings"));
 
     expect(window.onbeforeunload).toBeNull();
 
-    capturedOnChangeGeneral?.(
-      { name: "Changed", tagline: "", model: "anthropic/claude-sonnet-4-20250514" },
-      true
-    );
+    act(() => {
+      capturedOnChangeGeneral?.(
+        { name: "Changed", tagline: "", model: "anthropic/claude-sonnet-4-20250514" },
+        true
+      );
+    });
 
     await waitFor(() => {
       expect(window.onbeforeunload).not.toBeNull();
@@ -239,10 +278,12 @@ describe("AgentSettingsPage", () => {
     render(<AgentSettingsPage />);
     await waitFor(() => screen.getByText("Agent Settings"));
 
-    capturedOnChangePersonality?.(
-      { avatarSeed: "new", presetId: null, soulContent: "changed" },
-      true
-    );
+    act(() => {
+      capturedOnChangePersonality?.(
+        { avatarSeed: "new", presetId: null, soulContent: "changed" },
+        true
+      );
+    });
 
     await waitFor(() => screen.getByRole("button", { name: /save/i }));
 
@@ -251,6 +292,26 @@ describe("AgentSettingsPage", () => {
 
     await waitFor(() => {
       expect(window.onbeforeunload).toBeNull();
+    });
+  });
+
+  it("should show nav warning dialog when clicking Back to Chat with dirty state", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
+
+    act(() => {
+      capturedOnChangePersonality?.(
+        { avatarSeed: "new-seed", presetId: null, soulContent: "changed" },
+        true
+      );
+    });
+
+    await waitFor(() => screen.getByRole("button", { name: /save/i }));
+
+    await userEvent.click(screen.getByRole("button", { name: /← back to chat/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/leave without saving/i)).toBeInTheDocument();
     });
   });
 });

@@ -64,6 +64,15 @@ interface PermissionsValues {
 
 type DirtyTabs = Set<"general" | "personality" | "instructions" | "permissions">;
 
+function DirtyDot() {
+  return (
+    <span
+      className="ml-1 size-1.5 rounded-full bg-amber-500 inline-block"
+      aria-label="unsaved changes"
+    />
+  );
+}
+
 export default function AgentSettingsPage() {
   const params = useParams();
   const router = useRouter();
@@ -276,15 +285,6 @@ export default function AgentSettingsPage() {
   const canDelete = isAdmin && !agent.isPersonal;
   const showPermissions = isAdmin && !agent.isPersonal;
 
-  function DirtyDot() {
-    return (
-      <span
-        className="ml-1 size-1.5 rounded-full bg-amber-500 inline-block"
-        aria-label="unsaved changes"
-      />
-    );
-  }
-
   return (
     <div className="overflow-y-auto p-8 max-w-2xl">
       <div className="flex items-center justify-between mb-6">
@@ -382,17 +382,19 @@ export default function AgentSettingsPage() {
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Apply changes and restart?</AlertDialogTitle>
-            <AlertDialogDescription>
-              <span className="block mb-2">Changes to apply:</span>
-              <ul className="list-disc list-inside space-y-1">
-                {dirtyTabs.has("general") && <li>General settings (name, model)</li>}
-                {dirtyTabs.has("personality") && <li>Personality (avatar, soul)</li>}
-                {dirtyTabs.has("instructions") && <li>Instructions</li>}
-                {dirtyTabs.has("permissions") && <li>Permissions</li>}
-              </ul>
-              <span className="block mt-3 text-muted-foreground">
-                Active chats will be briefly disconnected.
-              </span>
+            <AlertDialogDescription asChild>
+              <div>
+                <span className="block mb-2">Changes to apply:</span>
+                <ul className="list-disc list-inside space-y-1">
+                  {dirtyTabs.has("general") && <li>General settings (name, model)</li>}
+                  {dirtyTabs.has("personality") && <li>Personality (avatar, soul)</li>}
+                  {dirtyTabs.has("instructions") && <li>Instructions</li>}
+                  {dirtyTabs.has("permissions") && <li>Permissions</li>}
+                </ul>
+                <span className="block mt-3 text-muted-foreground">
+                  Active chats will be briefly disconnected.
+                </span>
+              </div>
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
