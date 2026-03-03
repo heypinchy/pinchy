@@ -11,6 +11,8 @@
       "Bash(git status*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
+      "Bash(pnpm test *)",
+      "Bash(pnpm install *)",
       "WebSearch"
     ],
     "deny": [
