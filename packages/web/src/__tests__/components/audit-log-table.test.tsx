@@ -59,6 +59,10 @@ describe("AuditLogTable", () => {
     limit: 50,
   };
 
+  const mockEventTypesResponse = {
+    eventTypes: ["agent.created", "auth.failed", "auth.login"],
+  };
+
   beforeEach(() => {
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
     vi.clearAllMocks();
@@ -68,17 +72,32 @@ describe("AuditLogTable", () => {
     fetchSpy.mockRestore();
   });
 
-  function renderWithEntriesLoaded() {
+  /**
+   * The component makes two fetches on mount, in definition order:
+   *   1. GET /api/audit/event-types  (useEffect with no deps)
+   *   2. GET /api/audit?...          (useEffect depending on fetchEntries)
+   */
+  function mockEventTypesThenEntries(eventTypesOverride?: object, entriesOverride?: object) {
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
-      json: async () => mockAuditResponse,
+      json: async () => eventTypesOverride ?? mockEventTypesResponse,
     } as Response);
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => entriesOverride ?? mockAuditResponse,
+    } as Response);
+  }
 
+  function renderWithEntriesLoaded() {
+    mockEventTypesThenEntries();
     render(<AuditLogTable />);
   }
 
   it("should show loading state initially", () => {
-    vi.mocked(global.fetch).mockReturnValueOnce(new Promise(() => {}));
+    // Both fetches stay pending so loading never resolves
+    vi.mocked(global.fetch)
+      .mockReturnValueOnce(new Promise(() => {}))
+      .mockReturnValueOnce(new Promise(() => {}));
 
     render(<AuditLogTable />);
 
@@ -101,10 +120,7 @@ describe("AuditLogTable", () => {
   });
 
   it("should display 'No entries found' when empty", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ entries: [], total: 0, page: 1, limit: 50 }),
-    } as Response);
+    mockEventTypesThenEntries(undefined, { entries: [], total: 0, page: 1, limit: 50 });
 
     render(<AuditLogTable />);
 
@@ -140,7 +156,49 @@ describe("AuditLogTable", () => {
     await user.click(screen.getByRole("button", { name: "Export CSV" }));
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith("/api/audit/export");
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/audit/export"));
+    });
+
+    createObjectURLSpy.mockRestore();
+    revokeObjectURLSpy.mockRestore();
+  });
+
+  it("should pass active filters to export CSV", async () => {
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    // Set a date filter
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockAuditResponse,
+    } as Response);
+
+    const user = userEvent.setup();
+    await user.type(screen.getByLabelText("From"), "2026-02-01");
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("from=2026-02-01"));
+    });
+
+    // Now click Export CSV — it should include the from filter
+    const csvContent = "id,timestamp,eventType\n1,2026-02-21,auth.login";
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      text: async () => csvContent,
+    } as Response);
+
+    const createObjectURLSpy = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:http://localhost/fake");
+    const revokeObjectURLSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    await user.click(screen.getByRole("button", { name: "Export CSV" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("from=2026-02-01"));
     });
 
     createObjectURLSpy.mockRestore();
@@ -216,15 +274,12 @@ describe("AuditLogTable", () => {
   });
 
   it("should paginate with Previous and Next buttons", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        entries: mockEntries,
-        total: 120,
-        page: 1,
-        limit: 50,
-      }),
-    } as Response);
+    mockEventTypesThenEntries(undefined, {
+      entries: mockEntries,
+      total: 120,
+      page: 1,
+      limit: 50,
+    });
 
     render(<AuditLogTable />);
 
@@ -275,6 +330,15 @@ describe("AuditLogTable", () => {
 
     // The default value should show "All Events"
     expect(screen.getByText("All Events")).toBeInTheDocument();
+  });
+
+  it("should fetch event types from API on mount to populate dropdown", async () => {
+    mockEventTypesThenEntries({ eventTypes: ["tool.bash", "tool.read", "agent.deleted"] });
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/audit/event-types");
+    });
   });
 
   it("should open sheet with full detail when row is clicked", async () => {
@@ -383,15 +447,12 @@ describe("AuditLogTable", () => {
       },
     ];
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        entries: entriesWithDeletedActor,
-        total: 1,
-        page: 1,
-        limit: 50,
-      }),
-    } as Response);
+    mockEventTypesThenEntries(undefined, {
+      entries: entriesWithDeletedActor,
+      total: 1,
+      page: 1,
+      limit: 50,
+    });
 
     render(<AuditLogTable />);
 
@@ -418,15 +479,12 @@ describe("AuditLogTable", () => {
       },
     ];
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        entries: entriesWithDeletedResource,
-        total: 1,
-        page: 1,
-        limit: 50,
-      }),
-    } as Response);
+    mockEventTypesThenEntries(undefined, {
+      entries: entriesWithDeletedResource,
+      total: 1,
+      page: 1,
+      limit: 50,
+    });
 
     render(<AuditLogTable />);
 
@@ -453,15 +511,12 @@ describe("AuditLogTable", () => {
       },
     ];
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
-        entries: entriesWithNullName,
-        total: 1,
-        page: 1,
-        limit: 50,
-      }),
-    } as Response);
+    mockEventTypesThenEntries(undefined, {
+      entries: entriesWithNullName,
+      total: 1,
+      page: 1,
+      limit: 50,
+    });
 
     render(<AuditLogTable />);
 
