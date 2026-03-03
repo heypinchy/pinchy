@@ -196,41 +196,4 @@ describe("AgentSettingsFile", () => {
       });
     });
   });
-
-  describe("USER.md", () => {
-    it("should render the USER.md explanation text", () => {
-      render(<AgentSettingsFile agentId="agent-1" filename="USER.md" content="" />);
-
-      expect(
-        screen.getByText(/this is context about the people and organization/i)
-      ).toBeInTheDocument();
-    });
-
-    it("should not render the SOUL.md explanation text", () => {
-      render(<AgentSettingsFile agentId="agent-1" filename="USER.md" content="" />);
-
-      expect(
-        screen.queryByText(/this is your agent's personality and identity/i)
-      ).not.toBeInTheDocument();
-    });
-
-    it("should PUT to the USER.md API endpoint on save", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
-
-      render(<AgentSettingsFile agentId="agent-1" filename="USER.md" content="Team info here" />);
-
-      fireEvent.click(screen.getByRole("button", { name: /save/i }));
-
-      await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith("/api/agents/agent-1/files/USER.md", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: "Team info here" }),
-        });
-      });
-    });
-  });
 });

@@ -58,7 +58,12 @@ vi.mock("bcryptjs", () => ({
 vi.mock("@/lib/workspace", () => ({
   ensureWorkspace: vi.fn(),
   writeWorkspaceFile: vi.fn(),
+  writeWorkspaceFileInternal: vi.fn(),
   writeIdentityFile: vi.fn(),
+}));
+
+vi.mock("@/lib/context-sync", () => ({
+  getContextForAgent: vi.fn().mockResolvedValue(""),
 }));
 
 vi.mock("@/lib/smithers-soul", () => ({

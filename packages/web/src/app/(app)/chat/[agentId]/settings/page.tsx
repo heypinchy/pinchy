@@ -43,18 +43,16 @@ export default function AgentSettingsPage() {
   const [providers, setProviders] = useState<Provider[]>([]);
   const [soulContent, setSoulContent] = useState("");
   const [agentsContent, setAgentsContent] = useState("");
-  const [userContent, setUserContent] = useState("");
   const [directories, setDirectories] = useState<Directory[]>([]);
   const [loading, setLoading] = useState(true);
 
   const fetchData = useCallback(async () => {
     try {
-      const [agentRes, modelsRes, soulRes, agentsRes, userRes, dirRes] = await Promise.all([
+      const [agentRes, modelsRes, soulRes, agentsRes, dirRes] = await Promise.all([
         fetch(`/api/agents/${agentId}`),
         fetch("/api/providers/models"),
         fetch(`/api/agents/${agentId}/files/SOUL.md`),
         fetch(`/api/agents/${agentId}/files/AGENTS.md`),
-        fetch(`/api/agents/${agentId}/files/USER.md`),
         fetch("/api/data-directories"),
       ]);
 
@@ -75,11 +73,6 @@ export default function AgentSettingsPage() {
       if (agentsRes.ok) {
         const data = await agentsRes.json();
         setAgentsContent(data.content || "");
-      }
-
-      if (userRes.ok) {
-        const data = await userRes.json();
-        setUserContent(data.content || "");
       }
 
       if (dirRes.ok) {
@@ -129,7 +122,6 @@ export default function AgentSettingsPage() {
           <TabsTrigger value="general">General</TabsTrigger>
           <TabsTrigger value="personality">Personality</TabsTrigger>
           <TabsTrigger value="instructions">Instructions</TabsTrigger>
-          <TabsTrigger value="user">Context</TabsTrigger>
           {showPermissions && <TabsTrigger value="permissions">Permissions</TabsTrigger>}
         </TabsList>
 
@@ -163,10 +155,6 @@ export default function AgentSettingsPage() {
 
         <TabsContent value="instructions">
           <AgentSettingsFile agentId={agentId} filename="AGENTS.md" content={agentsContent} />
-        </TabsContent>
-
-        <TabsContent value="user">
-          <AgentSettingsFile agentId={agentId} filename="USER.md" content={userContent} />
         </TabsContent>
 
         {showPermissions && (

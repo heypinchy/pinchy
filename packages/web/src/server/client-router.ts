@@ -4,7 +4,7 @@ import { assertAgentAccess } from "@/lib/agent-access";
 import { appendAuditLog } from "@/lib/audit";
 import { SessionCache } from "@/server/session-cache";
 import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { agents, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
 const WS_OPEN = 1;
@@ -105,8 +105,24 @@ export class ClientRouter {
       if (attachments.length > 0) {
         chatOptions.attachments = attachments;
       }
+
+      // Build extraSystemPrompt from user context + greeting
+      const extraPromptParts: string[] = [];
+      if (!agent.isPersonal) {
+        const user = await db.query.users.findFirst({
+          where: eq(users.id, this.userId),
+        });
+        if (user?.context) {
+          extraPromptParts.push(`## About the current user\n${user.context}`);
+        }
+      }
       if (!this.sessionCache.has(sessionKey) && agent.greetingMessage) {
-        chatOptions.extraSystemPrompt = `The user just opened this chat for the first time. You already greeted them with this message: "${agent.greetingMessage}". Do not introduce yourself again. Continue the conversation naturally.`;
+        extraPromptParts.push(
+          `The user just opened this chat for the first time. You already greeted them with this message: "${agent.greetingMessage}". Do not introduce yourself again. Continue the conversation naturally.`
+        );
+      }
+      if (extraPromptParts.length > 0) {
+        chatOptions.extraSystemPrompt = extraPromptParts.join("\n\n");
       }
 
       const stream = this.openclawClient.chat(text, chatOptions);

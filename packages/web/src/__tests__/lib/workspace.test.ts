@@ -31,6 +31,7 @@ import {
   ensureWorkspace,
   readWorkspaceFile,
   writeWorkspaceFile,
+  writeWorkspaceFileInternal,
   generateIdentityContent,
   writeIdentityFile,
 } from "@/lib/workspace";
@@ -41,8 +42,8 @@ const mockedExistsSync = vi.mocked(existsSync);
 const mockedMkdirSync = vi.mocked(mkdirSync);
 
 describe("ALLOWED_FILES", () => {
-  it("should contain SOUL.md, USER.md, and AGENTS.md", () => {
-    expect(ALLOWED_FILES).toEqual(["SOUL.md", "USER.md", "AGENTS.md"]);
+  it("should contain SOUL.md and AGENTS.md (not USER.md)", () => {
+    expect(ALLOWED_FILES).toEqual(["SOUL.md", "AGENTS.md"]);
   });
 
   it("should be a readonly array", () => {
@@ -170,15 +171,13 @@ describe("ensureWorkspace", () => {
     expect(soulCall![1]).toContain("Describe your agent's personality here");
   });
 
-  it("should create USER.md with placeholder content when missing", () => {
+  it("should not create USER.md placeholder", () => {
     ensureWorkspace("agent-123");
 
     const userCall = mockedWriteFileSync.mock.calls.find(
       (call) => typeof call[0] === "string" && call[0].endsWith("USER.md")
     );
-    expect(userCall).toBeDefined();
-    expect(userCall![0]).toBe("/openclaw-config/workspaces/agent-123/USER.md");
-    expect(userCall![1]).toContain("Add context about your team or organization here");
+    expect(userCall).toBeUndefined();
   });
 
   it("should not overwrite existing SOUL.md", () => {
@@ -192,19 +191,6 @@ describe("ensureWorkspace", () => {
       (call) => typeof call[0] === "string" && call[0].endsWith("SOUL.md")
     );
     expect(soulCall).toBeUndefined();
-  });
-
-  it("should not overwrite existing USER.md", () => {
-    mockedExistsSync.mockImplementation((p) => {
-      return typeof p === "string" && p.endsWith("USER.md");
-    });
-
-    ensureWorkspace("agent-123");
-
-    const userCall = mockedWriteFileSync.mock.calls.find(
-      (call) => typeof call[0] === "string" && call[0].endsWith("USER.md")
-    );
-    expect(userCall).toBeUndefined();
   });
 
   it("should create AGENTS.md with placeholder content when missing", () => {
@@ -249,16 +235,8 @@ describe("readWorkspaceFile", () => {
     expect(content).toBe("You are a helpful assistant.");
   });
 
-  it("should read USER.md content", () => {
-    mockedReadFileSync.mockReturnValue("We are a startup.");
-
-    const content = readWorkspaceFile("agent-123", "USER.md");
-
-    expect(mockedReadFileSync).toHaveBeenCalledWith(
-      "/openclaw-config/workspaces/agent-123/USER.md",
-      "utf-8"
-    );
-    expect(content).toBe("We are a startup.");
+  it("should throw on USER.md (no longer in ALLOWED_FILES)", () => {
+    expect(() => readWorkspaceFile("agent-123", "USER.md")).toThrow("File not allowed: USER.md");
   });
 
   it("should read AGENTS.md content", () => {
@@ -321,13 +299,9 @@ describe("writeWorkspaceFile", () => {
     );
   });
 
-  it("should write content to USER.md", () => {
-    writeWorkspaceFile("agent-123", "USER.md", "We build e-commerce software.");
-
-    expect(mockedWriteFileSync).toHaveBeenCalledWith(
-      "/openclaw-config/workspaces/agent-123/USER.md",
-      "We build e-commerce software.",
-      "utf-8"
+  it("should throw on USER.md (no longer in ALLOWED_FILES)", () => {
+    expect(() => writeWorkspaceFile("agent-123", "USER.md", "content")).toThrow(
+      "File not allowed: USER.md"
     );
   });
 
@@ -462,5 +436,48 @@ describe("writeIdentityFile", () => {
     expect(() => writeWorkspaceFile("agent-123", "IDENTITY.md", "content")).toThrow(
       "File not allowed: IDENTITY.md"
     );
+  });
+});
+
+describe("writeWorkspaceFileInternal", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(false);
+  });
+
+  it("should write USER.md bypassing ALLOWED_FILES check", () => {
+    writeWorkspaceFileInternal("agent-123", "USER.md", "org context content");
+
+    expect(mockedWriteFileSync).toHaveBeenCalledWith(
+      "/openclaw-config/workspaces/agent-123/USER.md",
+      "org context content",
+      "utf-8"
+    );
+  });
+
+  it("should create directory if it does not exist", () => {
+    writeWorkspaceFileInternal("agent-456", "USER.md", "content");
+
+    expect(mockedMkdirSync).toHaveBeenCalledWith("/openclaw-config/workspaces/agent-456", {
+      recursive: true,
+    });
+  });
+
+  it("should not create directory if it already exists", () => {
+    mockedExistsSync.mockReturnValue(true);
+
+    writeWorkspaceFileInternal("agent-456", "USER.md", "content");
+
+    expect(mockedMkdirSync).not.toHaveBeenCalled();
+  });
+
+  it("should reject invalid agentId with path traversal", () => {
+    expect(() => writeWorkspaceFileInternal("../evil", "USER.md", "content")).toThrow(
+      "Invalid agentId: ../evil"
+    );
+  });
+
+  it("should reject empty agentId", () => {
+    expect(() => writeWorkspaceFileInternal("", "USER.md", "content")).toThrow("Invalid agentId: ");
   });
 });

@@ -37,7 +37,13 @@ vi.mock("@/db", () => ({
 vi.mock("@/lib/workspace", () => ({
   ensureWorkspace: vi.fn(),
   writeWorkspaceFile: vi.fn(),
+  writeWorkspaceFileInternal: vi.fn(),
   writeIdentityFile: vi.fn(),
+}));
+
+const mockGetContextForAgent = vi.fn().mockResolvedValue("");
+vi.mock("@/lib/context-sync", () => ({
+  getContextForAgent: (...args: unknown[]) => mockGetContextForAgent(...args),
 }));
 
 vi.mock("@/lib/openclaw-config", () => ({
@@ -81,7 +87,12 @@ import { POST } from "@/app/api/agents/route";
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { validateAllowedPaths } from "@/lib/path-validation";
-import { ensureWorkspace, writeWorkspaceFile, writeIdentityFile } from "@/lib/workspace";
+import {
+  ensureWorkspace,
+  writeWorkspaceFile,
+  writeWorkspaceFileInternal,
+  writeIdentityFile,
+} from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 
 describe("POST /api/agents", () => {
@@ -387,6 +398,49 @@ describe("POST /api/agents", () => {
       "AGENTS.md",
       expect.anything()
     );
+  });
+
+  it("should write org context to USER.md when creating shared agent", async () => {
+    mockGetContextForAgent.mockResolvedValueOnce("We are a Vienna-based team");
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          allowed_paths: ["/data/hr-docs/"],
+        },
+      }),
+    });
+
+    await POST(request);
+
+    expect(mockGetContextForAgent).toHaveBeenCalledWith({
+      isPersonal: false,
+      ownerId: "1",
+    });
+    expect(writeWorkspaceFileInternal).toHaveBeenCalledWith(
+      "new-agent-id",
+      "USER.md",
+      "We are a Vienna-based team"
+    );
+  });
+
+  it("should write empty string to USER.md when no context exists", async () => {
+    mockGetContextForAgent.mockResolvedValueOnce("");
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Dev Assistant",
+        templateId: "custom",
+      }),
+    });
+
+    await POST(request);
+
+    expect(writeWorkspaceFileInternal).toHaveBeenCalledWith("new-agent-id", "USER.md", "");
   });
 
   it("should use template defaultTagline when tagline not provided", async () => {

@@ -64,9 +64,6 @@ function mockFetchResponses() {
     if (urlStr.includes("/api/agents/agent-1/files/AGENTS.md")) {
       return { ok: true, json: async () => ({ content: "# Agents" }) } as Response;
     }
-    if (urlStr.includes("/api/agents/agent-1/files/USER.md")) {
-      return { ok: true, json: async () => ({ content: "# User" }) } as Response;
-    }
     if (urlStr.includes("/api/agents/agent-1")) {
       return { ok: true, json: async () => agentData } as Response;
     }

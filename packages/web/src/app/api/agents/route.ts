@@ -9,7 +9,13 @@ import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-
 import { generateAvatarSeed } from "@/lib/avatar";
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
 import { validateAllowedPaths } from "@/lib/path-validation";
-import { ensureWorkspace, writeWorkspaceFile, writeIdentityFile } from "@/lib/workspace";
+import {
+  ensureWorkspace,
+  writeWorkspaceFile,
+  writeWorkspaceFileInternal,
+  writeIdentityFile,
+} from "@/lib/workspace";
+import { getContextForAgent } from "@/lib/context-sync";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { getSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
@@ -131,6 +137,11 @@ export async function POST(request: NextRequest) {
   if (template.defaultAgentsMd) {
     writeWorkspaceFile(agent.id, "AGENTS.md", template.defaultAgentsMd);
   }
+  const context = await getContextForAgent({
+    isPersonal: false,
+    ownerId: session.user.id!,
+  });
+  writeWorkspaceFileInternal(agent.id, "USER.md", context);
 
   await regenerateOpenClawConfig();
 

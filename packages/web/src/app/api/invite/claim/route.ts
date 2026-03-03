@@ -60,7 +60,7 @@ export async function POST(request: NextRequest) {
     })
     .returning();
 
-  await seedPersonalAgent(user.id);
+  await seedPersonalAgent(user.id, invite.role === "admin");
   await claimInvite(invite.tokenHash, user.id);
   await regenerateOpenClawConfig();
 

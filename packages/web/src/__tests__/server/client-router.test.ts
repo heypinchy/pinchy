@@ -1,14 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { EventEmitter } from "events";
 
-const { mockChat, mockSessionsHistory, mockSessionsList, mockFindFirst, mockAppendAuditLog } =
-  vi.hoisted(() => ({
-    mockChat: vi.fn(),
-    mockSessionsHistory: vi.fn(),
-    mockSessionsList: vi.fn(),
-    mockFindFirst: vi.fn(),
-    mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
-  }));
+const {
+  mockChat,
+  mockSessionsHistory,
+  mockSessionsList,
+  mockFindFirst,
+  mockUserFindFirst,
+  mockAppendAuditLog,
+} = vi.hoisted(() => ({
+  mockChat: vi.fn(),
+  mockSessionsHistory: vi.fn(),
+  mockSessionsList: vi.fn(),
+  mockFindFirst: vi.fn(),
+  mockUserFindFirst: vi.fn(),
+  mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock("@/lib/agent-access", () => ({
   assertAgentAccess: vi.fn((agent, userId, userRole) => {
@@ -25,12 +32,16 @@ vi.mock("@/db", () => ({
       agents: {
         findFirst: mockFindFirst,
       },
+      users: {
+        findFirst: mockUserFindFirst,
+      },
     },
   },
 }));
 
 vi.mock("@/db/schema", () => ({
   agents: { id: "id" },
+  users: { id: "id" },
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -87,6 +98,8 @@ describe("ClientRouter", () => {
 
     // Default: agent exists and is accessible
     mockFindFirst.mockResolvedValue(defaultAgent);
+    // Default: user has no context
+    mockUserFindFirst.mockResolvedValue({ id: "user-1", context: null });
   });
 
   it("should return error when agent not found", async () => {
@@ -1028,5 +1041,154 @@ describe("ClientRouter", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0].type).toBe("history");
     expect(sent[0].messages).toEqual([]);
+  });
+
+  describe("per-user context injection for shared agents", () => {
+    it("should include user context in extraSystemPrompt for shared agents", async () => {
+      mockUserFindFirst.mockResolvedValue({
+        id: "user-1",
+        context: "I'm a designer who prefers visual examples.",
+      });
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        isPersonal: false,
+      });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith(
+        "Hi",
+        expect.objectContaining({
+          extraSystemPrompt: expect.stringContaining("I'm a designer who prefers visual examples."),
+        })
+      );
+    });
+
+    it("should NOT include user context for personal agents", async () => {
+      mockUserFindFirst.mockResolvedValue({
+        id: "user-1",
+        context: "I'm a designer who prefers visual examples.",
+      });
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        isPersonal: true,
+        ownerId: "user-1",
+      });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith("Hi", {
+        agentId: "agent-1",
+        sessionKey: "agent:agent-1:user-user-1",
+      });
+      expect(mockUserFindFirst).not.toHaveBeenCalled();
+    });
+
+    it("should NOT include user context when user has no context set", async () => {
+      mockUserFindFirst.mockResolvedValue({ id: "user-1", context: null });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith("Hi", {
+        agentId: "agent-1",
+        sessionKey: "agent:agent-1:user-user-1",
+      });
+    });
+
+    it("should combine user context and greeting on first message to shared agent", async () => {
+      const freshCache = new SessionCache();
+      const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+      mockUserFindFirst.mockResolvedValue({
+        id: "user-1",
+        context: "I'm a backend engineer.",
+      });
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        isPersonal: false,
+        greetingMessage: "Hello! How can I help?",
+      });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Sure!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await freshRouter.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Help me debug",
+        agentId: "agent-1",
+      });
+
+      const callArgs = mockChat.mock.calls[0][1];
+      expect(callArgs.extraSystemPrompt).toContain("I'm a backend engineer.");
+      expect(callArgs.extraSystemPrompt).toContain("Hello! How can I help?");
+    });
+
+    it("should include user context on every message, not just the first", async () => {
+      mockUserFindFirst.mockResolvedValue({
+        id: "user-1",
+        context: "I'm a designer.",
+      });
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        isPersonal: false,
+      });
+
+      // First message
+      async function* fakeStream1() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream1());
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      // Second message (session is now in cache)
+      async function* fakeStream2() {
+        yield { type: "text" as const, text: "Sure!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream2());
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Follow up",
+        agentId: "agent-1",
+      });
+
+      // Both calls should include user context
+      expect(mockChat).toHaveBeenCalledTimes(2);
+      expect(mockChat.mock.calls[0][1].extraSystemPrompt).toContain("I'm a designer.");
+      expect(mockChat.mock.calls[1][1].extraSystemPrompt).toContain("I'm a designer.");
+    });
   });
 });

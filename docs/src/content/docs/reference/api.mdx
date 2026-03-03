@@ -206,6 +206,40 @@ Settings with `api_key` in the key name are automatically encrypted at rest.
 
 **Response:** `{ "success": true }`
 
+## Organization Context (admin only)
+
+### `GET /api/settings/context`
+
+Get the organization context. **Admin only.**
+
+**Response:**
+
+```json
+{
+  "content": "Acme Corp is a SaaS company focused on..."
+}
+```
+
+Returns `{ "content": "" }` if no org context has been set.
+
+### `PUT /api/settings/context`
+
+Update the organization context. This is synced to all shared agent workspaces and triggers a runtime restart.
+
+**Request body:**
+
+| Field     | Type   | Required | Description                     |
+| --------- | ------ | -------- | ------------------------------- |
+| `content` | string | Yes      | Organization context (Markdown) |
+
+**Response:** `{ "success": true }`
+
+**Errors:**
+
+- `400` — content is not a string
+- `401` — not authenticated
+- `403` — not an admin
+
 ## Users (admin only)
 
 ### `GET /api/users`
@@ -474,6 +508,37 @@ Update your own display name.
 **Errors:**
 
 - `400` — missing or empty name
+- `401` — not authenticated
+
+### `GET /api/users/me/context`
+
+Get your personal context.
+
+**Response:**
+
+```json
+{
+  "content": "I'm Alice, a product manager at Acme Corp..."
+}
+```
+
+Returns `{ "content": "" }` if no context has been set.
+
+### `PUT /api/users/me/context`
+
+Update your personal context. This is synced to your Smithers agent's workspace and triggers a runtime restart.
+
+**Request body:**
+
+| Field     | Type   | Required | Description                      |
+| --------- | ------ | -------- | -------------------------------- |
+| `content` | string | Yes      | Your personal context (Markdown) |
+
+**Response:** `{ "success": true }`
+
+**Errors:**
+
+- `400` — content is not a string
 - `401` — not authenticated
 
 ### `POST /api/users/me/password`

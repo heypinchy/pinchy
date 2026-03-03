@@ -9,5 +9,6 @@ export async function seedDefaultAgent(ownerId?: string) {
     model: "anthropic/claude-sonnet-4-20250514",
     ownerId: ownerId ?? null,
     isPersonal: ownerId ? true : false,
+    isAdmin: ownerId ? true : false,
   });
 }

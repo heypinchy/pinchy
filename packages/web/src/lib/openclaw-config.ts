@@ -8,6 +8,7 @@ import { getSetting } from "@/lib/settings";
 import { computeDeniedGroups } from "@/lib/tool-registry";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { restartState } from "@/server/restart-state";
+import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 
@@ -86,6 +87,10 @@ export function writeOpenClawConfig({ provider, apiKey, model }: OpenClawConfigP
 }
 
 export async function regenerateOpenClawConfig() {
+  // Migrate existing Smithers agents first, so their updated allowedTools
+  // are reflected in the config we're about to generate.
+  await migrateExistingSmithers();
+
   const existing = readExistingConfig();
 
   // Preserve only the gateway block from existing config (contains auth token,
@@ -117,6 +122,7 @@ export async function regenerateOpenClawConfig() {
 
   // Build agents list with OpenClaw-side workspace paths, tools.deny, and plugin configs
   const pluginConfigs: Record<string, Record<string, Record<string, unknown>>> = {};
+  let contextPluginAgents: Record<string, { tools: string[]; userId: string }> | undefined;
 
   const agentsList = allAgents.map((agent) => {
     const agentEntry: Record<string, unknown> = {
@@ -133,13 +139,25 @@ export async function regenerateOpenClawConfig() {
       agentEntry.tools = { deny: deniedGroups };
     }
 
-    // Collect plugin config for agents that have safe (pinchy_*) tools
-    const hasSafeTools = allowedTools.some((t: string) => t.startsWith("pinchy_"));
-    if (hasSafeTools && agent.pluginConfig) {
+    // Collect plugin config for agents that have file tools (pinchy_ls, pinchy_read)
+    const hasFileTools = allowedTools.some((t: string) => t === "pinchy_ls" || t === "pinchy_read");
+    if (hasFileTools && agent.pluginConfig) {
       if (!pluginConfigs["pinchy-files"]) {
         pluginConfigs["pinchy-files"] = {};
       }
       pluginConfigs["pinchy-files"][agent.id] = agent.pluginConfig as Record<string, unknown>;
+    }
+
+    // Collect plugin config for agents that have context tools (pinchy_save_*)
+    const contextTools = allowedTools.filter((t: string) => t.startsWith("pinchy_save_"));
+    if (contextTools.length > 0 && agent.ownerId) {
+      if (!contextPluginAgents) {
+        contextPluginAgents = {};
+      }
+      contextPluginAgents[agent.id] = {
+        tools: contextTools.map((t: string) => t.replace("pinchy_", "")),
+        userId: agent.ownerId,
+      };
     }
 
     return agentEntry;
@@ -155,16 +173,45 @@ export async function regenerateOpenClawConfig() {
     },
   };
 
-  if (Object.keys(pluginConfigs).length > 0) {
-    const entries: Record<string, unknown> = {};
-    for (const [pluginId, agentConfigs] of Object.entries(pluginConfigs)) {
-      entries[pluginId] = {
-        enabled: true,
-        config: {
-          agents: agentConfigs,
-        },
-      };
-    }
+  const entries: Record<string, unknown> = {};
+  for (const [pluginId, agentConfigs] of Object.entries(pluginConfigs)) {
+    entries[pluginId] = {
+      enabled: true,
+      config: {
+        agents: agentConfigs,
+      },
+    };
+  }
+
+  // Always include pinchy-context config — OpenClaw auto-discovers installed
+  // plugins and validates their config even when no agents use them.
+  const gatewayAuth = (gateway as Record<string, unknown>).auth as
+    | Record<string, unknown>
+    | undefined;
+  const gatewayToken = (gatewayAuth?.token as string) || "";
+
+  entries["pinchy-context"] = {
+    enabled: contextPluginAgents ? true : false,
+    config: {
+      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || "http://pinchy:7777",
+      gatewayToken,
+      agents: contextPluginAgents ?? {},
+    },
+  };
+
+  // Always include pinchy-files with valid config — OpenClaw auto-discovers
+  // plugins from the extensions directory and validates their config even when
+  // no agents use them. Without this, OpenClaw enters a restart loop.
+  if (!entries["pinchy-files"]) {
+    entries["pinchy-files"] = {
+      enabled: false,
+      config: {
+        agents: {},
+      },
+    };
+  }
+
+  if (Object.keys(entries).length > 0) {
     config.plugins = { entries };
   }
 

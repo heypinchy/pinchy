@@ -1,19 +1,33 @@
 import { db } from "@/db";
 import { agents } from "@/db/schema";
-import { ensureWorkspace, writeWorkspaceFile, writeIdentityFile } from "@/lib/workspace";
+import {
+  ensureWorkspace,
+  writeWorkspaceFile,
+  writeWorkspaceFileInternal,
+  writeIdentityFile,
+} from "@/lib/workspace";
+import { getContextForAgent } from "@/lib/context-sync";
 import { getSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { SMITHERS_SOUL_MD } from "@/lib/smithers-soul";
-import { PERSONALITY_PRESETS, resolveGreetingMessage } from "@/lib/personality-presets";
+import { getOnboardingPrompt, ONBOARDING_GREETING } from "@/lib/onboarding-prompt";
 
 interface CreateSmithersOptions {
   model: string;
   ownerId: string | null;
   isPersonal: boolean;
+  isAdmin?: boolean;
 }
 
-export async function createSmithersAgent({ model, ownerId, isPersonal }: CreateSmithersOptions) {
-  const preset = PERSONALITY_PRESETS["the-butler"];
+export async function createSmithersAgent({
+  model,
+  ownerId,
+  isPersonal,
+  isAdmin = false,
+}: CreateSmithersOptions) {
+  const allowedTools = isAdmin
+    ? ["pinchy_save_user_context", "pinchy_save_org_context"]
+    : ["pinchy_save_user_context"];
 
   const [agent] = await db
     .insert(agents)
@@ -25,7 +39,8 @@ export async function createSmithersAgent({ model, ownerId, isPersonal }: Create
       tagline: "Your reliable personal assistant",
       avatarSeed: "__smithers__",
       personalityPresetId: "the-butler",
-      greetingMessage: resolveGreetingMessage(preset.greetingMessage, "Smithers"),
+      greetingMessage: ONBOARDING_GREETING,
+      allowedTools,
     })
     .returning();
 
@@ -33,14 +48,24 @@ export async function createSmithersAgent({ model, ownerId, isPersonal }: Create
   writeWorkspaceFile(agent.id, "SOUL.md", SMITHERS_SOUL_MD);
   writeIdentityFile(agent.id, { name: agent.name, tagline: agent.tagline });
 
+  const context = await getContextForAgent({
+    isPersonal: agent.isPersonal,
+    ownerId: agent.ownerId,
+  });
+
+  // Write onboarding prompt to USER.md if user has no context yet.
+  // OpenClaw reads USER.md as part of the agent's system prompt, so putting
+  // onboarding instructions there ensures Smithers sees them.
+  writeWorkspaceFileInternal(agent.id, "USER.md", context || getOnboardingPrompt(isAdmin));
+
   return agent;
 }
 
-export async function seedPersonalAgent(userId: string) {
+export async function seedPersonalAgent(userId: string, isAdmin = false) {
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
   const model = defaultProvider
     ? PROVIDERS[defaultProvider].defaultModel
     : "anthropic/claude-sonnet-4-20250514";
 
-  return createSmithersAgent({ model, ownerId: userId, isPersonal: true });
+  return createSmithersAgent({ model, ownerId: userId, isPersonal: true, isAdmin });
 }

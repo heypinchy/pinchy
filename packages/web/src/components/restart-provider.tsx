@@ -80,7 +80,9 @@ export function RestartProvider({ children }: { children: React.ReactNode }) {
           <div className="flex flex-col items-center gap-4 text-center">
             <div className="h-8 w-8 animate-spin rounded-full border-4 border-muted-foreground border-t-transparent" />
             <p className="text-lg font-medium">Applying changes</p>
-            <p className="text-sm text-muted-foreground">Your agents will be back in a moment.</p>
+            <p className="text-sm text-muted-foreground">
+              Hang tight — it&apos;ll only take a moment.
+            </p>
           </div>
         </div>
       )}
