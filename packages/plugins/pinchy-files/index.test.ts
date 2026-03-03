@@ -116,4 +116,58 @@ describe("pinchy-files plugin", () => {
     expect(plugin.name).toBe("Pinchy Files");
     expect(plugin.configSchema).toBeDefined();
   });
+
+  it("pinchy_ls path parameter description includes the allowed paths", async () => {
+    const api = createMockApi({ "agent-1": { allowed_paths: ["/data/docs/"] } });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const lsFactory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_ls"
+    )?.[0];
+    const tool = lsFactory({ agentId: "agent-1" });
+
+    const pathParamDescription = tool.parameters.properties.path.description;
+    expect(pathParamDescription).toContain("/data/docs/");
+  });
+
+  it("pinchy_ls description instructs model to use it first", async () => {
+    const api = createMockApi({ "agent-1": { allowed_paths: ["/data/docs/"] } });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const lsFactory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_ls"
+    )?.[0];
+    const tool = lsFactory({ agentId: "agent-1" });
+
+    expect(tool.description.toLowerCase()).toMatch(/first|start/);
+  });
+
+  it("pinchy_read path parameter description includes the allowed paths", async () => {
+    const api = createMockApi({ "agent-1": { allowed_paths: ["/data/docs/"] } });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const readFactory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_read"
+    )?.[0];
+    const tool = readFactory({ agentId: "agent-1" });
+
+    const pathParamDescription = tool.parameters.properties.path.description;
+    expect(pathParamDescription).toContain("/data/docs/");
+  });
+
+  it("pinchy_read description tells model to use pinchy_ls first", async () => {
+    const api = createMockApi({ "agent-1": { allowed_paths: ["/data/docs/"] } });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const readFactory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_read"
+    )?.[0];
+    const tool = readFactory({ agentId: "agent-1" });
+
+    expect(tool.description).toContain("pinchy_ls");
+  });
 });

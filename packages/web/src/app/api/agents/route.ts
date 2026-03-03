@@ -4,7 +4,7 @@ import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { agents, activeAgents } from "@/db/schema";
 import { eq, or, and } from "drizzle-orm";
-import { getTemplate } from "@/lib/agent-templates";
+import { getTemplate, generateAgentsMd } from "@/lib/agent-templates";
 import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-presets";
 import { generateAvatarSeed } from "@/lib/avatar";
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
@@ -134,8 +134,12 @@ export async function POST(request: NextRequest) {
   ensureWorkspace(agent.id);
   writeWorkspaceFile(agent.id, "SOUL.md", preset?.soulMd ?? "");
   writeIdentityFile(agent.id, { name: agent.name, tagline: agent.tagline });
-  if (template.defaultAgentsMd) {
-    writeWorkspaceFile(agent.id, "AGENTS.md", template.defaultAgentsMd);
+  const agentsMd = generateAgentsMd(
+    template,
+    template.pluginId && pluginConfig ? pluginConfig : undefined
+  );
+  if (agentsMd) {
+    writeWorkspaceFile(agent.id, "AGENTS.md", agentsMd);
   }
   const context = await getContextForAgent({
     isPersonal: false,

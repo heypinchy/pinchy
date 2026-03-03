@@ -36,12 +36,17 @@ vi.mock("@/lib/providers", () => ({
 }));
 
 vi.mock("@/lib/settings", () => ({
+  getSetting: vi.fn().mockResolvedValue(null),
   setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/openclaw-config", () => ({
   writeOpenClawConfig: vi.fn(),
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/provider-models", () => ({
+  resetCache: vi.fn(),
 }));
 
 vi.mock("@/db", () => ({
@@ -64,14 +69,21 @@ vi.mock("@/db", () => ({
 }));
 
 import { validateProviderKey } from "@/lib/providers";
-import { setSetting } from "@/lib/settings";
+import { getSetting, setSetting } from "@/lib/settings";
 import { writeOpenClawConfig, regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { requireAdmin } from "@/lib/api-auth";
+import { resetCache } from "@/lib/provider-models";
 
 describe("POST /api/setup/provider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(getSetting).mockResolvedValue(null);
+    vi.mocked(db.query.agents.findFirst).mockResolvedValue({
+      id: "agent-1",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+    });
   });
 
   function makeRequest(body: Record<string, unknown>) {
@@ -118,7 +130,8 @@ describe("POST /api/setup/provider", () => {
     expect(setSetting).toHaveBeenCalledWith("default_provider", "anthropic", false);
   });
 
-  it("should update Smithers model to provider default", async () => {
+  it("should update agent model when adding the first provider", async () => {
+    // No other providers configured (getSetting returns null for all)
     await POST(
       makeRequest({
         provider: "openai",
@@ -127,6 +140,23 @@ describe("POST /api/setup/provider", () => {
     );
 
     expect(db.update).toHaveBeenCalled();
+  });
+
+  it("should not update agent model when a second provider is added", async () => {
+    // OpenAI is already configured
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "openai_api_key") return "sk-openai-existing";
+      return null;
+    });
+
+    await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-key",
+      }) as any
+    );
+
+    expect(db.update).not.toHaveBeenCalled();
   });
 
   it("should regenerate full OpenClaw config including agent list", async () => {
@@ -138,6 +168,17 @@ describe("POST /api/setup/provider", () => {
     );
 
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("should reset model cache after saving provider", async () => {
+    await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-key",
+      }) as any
+    );
+
+    expect(resetCache).toHaveBeenCalled();
   });
 
   it("should return 400 for invalid provider", async () => {

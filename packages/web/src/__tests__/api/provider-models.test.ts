@@ -8,14 +8,13 @@ vi.mock("@/lib/provider-models", () => ({
   fetchProviderModels: vi.fn().mockResolvedValue([]),
 }));
 
-import { GET, resetCache } from "@/app/api/providers/models/route";
+import { GET } from "@/app/api/providers/models/route";
 import { auth } from "@/lib/auth";
 import { fetchProviderModels } from "@/lib/provider-models";
 
 describe("GET /api/providers/models", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    resetCache();
     vi.mocked(auth).mockResolvedValue({
       user: { id: "1", email: "admin@test.com" },
       expires: "",
@@ -55,23 +54,5 @@ describe("GET /api/providers/models", () => {
         },
       ],
     });
-  });
-
-  it("caches results for subsequent requests", async () => {
-    vi.mocked(fetchProviderModels).mockResolvedValue([
-      {
-        id: "anthropic",
-        name: "Anthropic",
-        models: [{ id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" }],
-      },
-    ]);
-
-    // First request
-    await GET();
-    // Second request
-    await GET();
-
-    // fetchProviderModels should only be called once due to caching
-    expect(fetchProviderModels).toHaveBeenCalledTimes(1);
   });
 });

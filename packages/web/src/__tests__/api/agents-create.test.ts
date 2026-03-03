@@ -382,6 +382,48 @@ describe("POST /api/agents", () => {
     );
   });
 
+  it("should include allowed paths in AGENTS.md for knowledge-base agents", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          allowed_paths: ["/data/hr-docs/"],
+        },
+      }),
+    });
+
+    await POST(request);
+
+    expect(writeWorkspaceFile).toHaveBeenCalledWith(
+      "new-agent-id",
+      "AGENTS.md",
+      expect.stringContaining("/data/hr-docs/")
+    );
+  });
+
+  it("should include pinchy_ls instructions in AGENTS.md for knowledge-base agents", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "HR Knowledge Base",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          allowed_paths: ["/data/hr-docs/"],
+        },
+      }),
+    });
+
+    await POST(request);
+
+    expect(writeWorkspaceFile).toHaveBeenCalledWith(
+      "new-agent-id",
+      "AGENTS.md",
+      expect.stringContaining("pinchy_ls")
+    );
+  });
+
   it("should not write AGENTS.md when template has null defaultAgentsMd", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { AGENT_TEMPLATES, getTemplate } from "@/lib/agent-templates";
+import { AGENT_TEMPLATES, getTemplate, generateAgentsMd } from "@/lib/agent-templates";
 
 describe("agent-templates", () => {
   it("should have a knowledge-base template", () => {
@@ -62,5 +62,45 @@ describe("agent-templates", () => {
 
   it("custom should have null defaultAgentsMd", () => {
     expect(AGENT_TEMPLATES["custom"].defaultAgentsMd).toBeNull();
+  });
+});
+
+describe("generateAgentsMd", () => {
+  it("should include allowed paths for knowledge-base template", () => {
+    const template = AGENT_TEMPLATES["knowledge-base"];
+    const content = generateAgentsMd(template, { allowed_paths: ["/data/hr-docs/"] });
+    expect(content).toContain("/data/hr-docs/");
+  });
+
+  it("should instruct the agent to use pinchy_ls before reading files", () => {
+    const template = AGENT_TEMPLATES["knowledge-base"];
+    const content = generateAgentsMd(template, { allowed_paths: ["/data/hr-docs/"] });
+    expect(content).toContain("pinchy_ls");
+  });
+
+  it("should preserve the base knowledge base instructions", () => {
+    const template = AGENT_TEMPLATES["knowledge-base"];
+    const content = generateAgentsMd(template, { allowed_paths: ["/data/hr-docs/"] });
+    expect(content).toContain("knowledge base agent");
+    expect(content).toContain("cite");
+  });
+
+  it("should include all provided paths when multiple paths given", () => {
+    const template = AGENT_TEMPLATES["knowledge-base"];
+    const content = generateAgentsMd(template, { allowed_paths: ["/data/docs/", "/data/hr/"] });
+    expect(content).toContain("/data/docs/");
+    expect(content).toContain("/data/hr/");
+  });
+
+  it("should return defaultAgentsMd unchanged for custom template", () => {
+    const template = AGENT_TEMPLATES["custom"];
+    const content = generateAgentsMd(template, undefined);
+    expect(content).toBe(template.defaultAgentsMd);
+  });
+
+  it("should return defaultAgentsMd when no pluginConfig provided for knowledge-base", () => {
+    const template = AGENT_TEMPLATES["knowledge-base"];
+    const content = generateAgentsMd(template, undefined);
+    expect(content).toBe(template.defaultAgentsMd);
   });
 });

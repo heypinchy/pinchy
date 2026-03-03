@@ -66,11 +66,11 @@ const plugin = {
         return {
           name: "pinchy_ls",
           label: "List Files",
-          description: `List files and directories. You have access to: ${pathList}`,
+          description: `List files and directories. Start here first to discover available files. Your knowledge base is at: ${pathList}`,
           parameters: {
             type: "object",
             properties: {
-              path: { type: "string", description: "Directory path to list" },
+              path: { type: "string", description: `Directory to list. Use one of these paths: ${pathList}` },
             },
             required: ["path"],
           },
@@ -127,13 +127,13 @@ const plugin = {
         return {
           name: "pinchy_read",
           label: "Read File",
-          description: `Read a file's content. You have access to: ${pathList}`,
+          description: `Read a file's content. Use pinchy_ls first to discover the exact file path. Your knowledge base is at: ${pathList}`,
           parameters: {
             type: "object",
             properties: {
               path: {
                 type: "string",
-                description: "File path to read",
+                description: `Full file path to read. Use pinchy_ls to discover available files in: ${pathList}`,
               },
             },
             required: ["path"],
