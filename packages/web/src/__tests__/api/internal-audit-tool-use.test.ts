@@ -56,7 +56,8 @@ describe("POST /api/internal/audit/tool-use", () => {
     expect(res.status).toBe(400);
   });
 
-  it("writes tool.execute start audit events", async () => {
+  // Change 1: start phase is skipped — no audit log entry written
+  it("returns 200 and does not write an audit log entry for start phase", async () => {
     const res = await POST(
       makeRequest({
         phase: "start",
@@ -71,25 +72,55 @@ describe("POST /api/internal/audit/tool-use", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(appendAuditLog).toHaveBeenCalledWith({
-      actorType: "agent",
-      actorId: "agent-1",
-      eventType: "tool.execute",
-      resource: "agent:agent-1",
-      detail: {
-        toolName: "pinchy_read",
-        phase: "start",
-        runId: "run-1",
-        toolCallId: "tool-1",
-        sessionKey: "agent:agent-1:user-user-1",
-        sessionId: "session-1",
-        params: { path: "/data/policy.md" },
-        source: "openclaw_hook",
-      },
-    });
+    const body = await res.json();
+    expect(body).toEqual({ success: true });
+    expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
-  it("writes tool.execute end audit events", async () => {
+  // Change 2: eventType becomes tool.<toolName>
+  it("uses tool.<toolName> as eventType for end phase", async () => {
+    const res = await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "browser",
+        agentId: "agent-2",
+        runId: "run-2",
+        toolCallId: "tool-2",
+        sessionKey: "agent:agent-2:user-user-1",
+        sessionId: "session-2",
+        result: { ok: true },
+        error: "none",
+        durationMs: 123,
+      })
+    );
+
+    expect(res.status).toBe(200);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "tool.browser",
+      })
+    );
+  });
+
+  it("uses tool.<toolName> as eventType with different tool names", async () => {
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "WebFetch",
+        agentId: "agent-3",
+        result: "fetched",
+      })
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "tool.WebFetch",
+      })
+    );
+  });
+
+  // Change 3: actor becomes the user extracted from sessionKey
+  it("uses user as actorType and extracts userId from sessionKey", async () => {
     const res = await POST(
       makeRequest({
         phase: "end",
@@ -107,9 +138,9 @@ describe("POST /api/internal/audit/tool-use", () => {
 
     expect(res.status).toBe(200);
     expect(appendAuditLog).toHaveBeenCalledWith({
-      actorType: "agent",
-      actorId: "agent-2",
-      eventType: "tool.execute",
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "tool.browser",
       resource: "agent:agent-2",
       detail: {
         toolName: "browser",
@@ -126,7 +157,7 @@ describe("POST /api/internal/audit/tool-use", () => {
     });
   });
 
-  it("derives actorId from sessionKey when agentId is omitted", async () => {
+  it("falls back to agent actorType when sessionKey has no user portion", async () => {
     const res = await POST(
       makeRequest({
         phase: "end",
@@ -140,7 +171,7 @@ describe("POST /api/internal/audit/tool-use", () => {
     expect(appendAuditLog).toHaveBeenCalledWith({
       actorType: "agent",
       actorId: "derived-agent-id",
-      eventType: "tool.execute",
+      eventType: "tool.pinchy_read",
       resource: "agent:derived-agent-id",
       detail: {
         toolName: "pinchy_read",
@@ -155,9 +186,10 @@ describe("POST /api/internal/audit/tool-use", () => {
   it("uses unknown-agent fallback when neither agentId nor sessionKey are present", async () => {
     const res = await POST(
       makeRequest({
-        phase: "start",
+        phase: "end",
         toolName: "browser",
         params: { action: "open" },
+        result: "done",
       })
     );
 
@@ -165,12 +197,13 @@ describe("POST /api/internal/audit/tool-use", () => {
     expect(appendAuditLog).toHaveBeenCalledWith({
       actorType: "agent",
       actorId: "unknown-agent",
-      eventType: "tool.execute",
+      eventType: "tool.browser",
       resource: "agent:unknown-agent",
       detail: {
         toolName: "browser",
-        phase: "start",
+        phase: "end",
         params: { action: "open" },
+        result: "done",
         source: "openclaw_hook",
       },
     });

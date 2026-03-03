@@ -32,6 +32,12 @@ function extractAgentIdFromSessionKey(sessionKey?: string): string | undefined {
   return match?.[1];
 }
 
+function extractUserIdFromSessionKey(sessionKey?: string): string | undefined {
+  if (!sessionKey) return undefined;
+  const match = /^agent:[^:]+:user-(.+)$/.exec(sessionKey);
+  return match?.[1];
+}
+
 function parsePayload(value: unknown): ToolAuditPayload | null {
   if (!isObject(value)) return null;
 
@@ -80,6 +86,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
   }
 
+  // Change 1: Only log end phase — start phase carries no result/duration, skip it
+  if (payload.phase === "start") {
+    return NextResponse.json({ success: true });
+  }
+
   const detail: Record<string, unknown> = {
     toolName: payload.toolName,
     phase: payload.phase,
@@ -92,16 +103,20 @@ export async function POST(request: NextRequest) {
   if (payload.sessionId) detail.sessionId = payload.sessionId;
   if (payload.params !== undefined) detail.params = payload.params;
 
-  if (payload.phase === "end") {
-    if (payload.result !== undefined) detail.result = payload.result;
-    if (payload.error) detail.error = payload.error;
-    if (payload.durationMs !== undefined) detail.durationMs = payload.durationMs;
-  }
+  if (payload.result !== undefined) detail.result = payload.result;
+  if (payload.error) detail.error = payload.error;
+  if (payload.durationMs !== undefined) detail.durationMs = payload.durationMs;
+
+  // Change 3: Actor becomes the user extracted from sessionKey when possible
+  const userId = extractUserIdFromSessionKey(payload.sessionKey);
+  const actorType = userId ? "user" : "agent";
+  const actorId = userId ?? payload.agentId;
 
   await appendAuditLog({
-    actorType: "agent",
-    actorId: payload.agentId,
-    eventType: "tool.execute",
+    actorType,
+    actorId,
+    // Change 2: eventType becomes tool.<toolName>
+    eventType: `tool.${payload.toolName}`,
     resource: `agent:${payload.agentId}`,
     detail,
   });
