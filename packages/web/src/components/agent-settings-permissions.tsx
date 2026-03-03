@@ -34,30 +34,24 @@ export function AgentSettingsPermissions({
 
   const hasSafeToolChecked = safeTools.some((tool) => allowedTools.includes(tool.id));
 
-  function notifyChange(tools: string[], paths: string[]) {
-    const isDirty =
-      JSON.stringify([...tools].sort()) !==
-        JSON.stringify([...initialAllowedTools.current].sort()) ||
-      JSON.stringify([...paths].sort()) !== JSON.stringify([...initialAllowedPaths.current].sort());
-    onChange({ allowedTools: tools, allowedPaths: paths }, isDirty);
-  }
-
+  // Notify parent after every state change (and on mount)
   useEffect(() => {
-    notifyChange(allowedTools, allowedPaths);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    const isDirty =
+      JSON.stringify([...allowedTools].sort()) !==
+        JSON.stringify([...initialAllowedTools.current].sort()) ||
+      JSON.stringify([...allowedPaths].sort()) !==
+        JSON.stringify([...initialAllowedPaths.current].sort());
+    onChange({ allowedTools, allowedPaths }, isDirty);
+  }, [allowedTools, allowedPaths, onChange]);
 
   function handleToolToggle(toolId: string) {
-    setAllowedTools((prev) => {
-      const next = prev.includes(toolId) ? prev.filter((id) => id !== toolId) : [...prev, toolId];
-      notifyChange(next, allowedPaths);
-      return next;
-    });
+    setAllowedTools((prev) =>
+      prev.includes(toolId) ? prev.filter((id) => id !== toolId) : [...prev, toolId]
+    );
   }
 
   function handlePathsChange(newPaths: string[]) {
     setAllowedPaths(newPaths);
-    notifyChange(allowedTools, newPaths);
   }
 
   return (
