@@ -409,6 +409,77 @@ describe("useWsRuntime", () => {
     expect(messages[0].content[0].text).toBe("New message");
   });
 
+  it("should replace a partial assistant message with canonical history after reconnect", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws1 = wsInstances[0];
+
+    act(() => {
+      ws1.onopen?.();
+    });
+
+    act(() => {
+      ws1.onmessage?.({
+        data: JSON.stringify({
+          type: "history",
+          messages: [
+            { role: "user", content: "Hi" },
+            { role: "assistant", content: "Hallo!" },
+          ],
+        }),
+      });
+    });
+
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Wie ist die Vacation Policy?" }],
+        parentId: "root",
+      });
+    });
+
+    act(() => {
+      ws1.onmessage?.({
+        data: JSON.stringify({
+          type: "chunk",
+          content: "Ich schaue nach. Urlaub**: 25 Tage",
+          messageId: "assistant-1",
+        }),
+      });
+    });
+
+    let messages = result.current.runtime.messages;
+    expect(messages[messages.length - 1].content[0].text).toContain("Urlaub**");
+
+    // Simulate a disconnect and reconnect cycle.
+    act(() => {
+      ws1.onclose?.();
+      vi.advanceTimersByTime(1000);
+    });
+
+    const ws2 = wsInstances[1];
+    act(() => {
+      ws2.onopen?.();
+    });
+
+    act(() => {
+      ws2.onmessage?.({
+        data: JSON.stringify({
+          type: "history",
+          messages: [
+            { role: "user", content: "Hi" },
+            { role: "assistant", content: "Hallo!" },
+            { role: "user", content: "Wie ist die Vacation Policy?" },
+            { role: "assistant", content: "Ich schaue nach. **Urlaubsanspruch:** 25 Tage" },
+          ],
+        }),
+      });
+    });
+
+    messages = result.current.runtime.messages;
+    expect(messages[messages.length - 1].content[0].text).toBe(
+      "Ich schaue nach. **Urlaubsanspruch:** 25 Tage"
+    );
+  });
+
   it("should pass timestamps from history messages into metadata", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];

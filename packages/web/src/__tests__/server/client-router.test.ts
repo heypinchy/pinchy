@@ -100,6 +100,8 @@ describe("ClientRouter", () => {
     mockFindFirst.mockResolvedValue(defaultAgent);
     // Default: user has no context
     mockUserFindFirst.mockResolvedValue({ id: "user-1", context: null });
+    // Default: empty history for history-mode requests
+    mockSessionsHistory.mockResolvedValue({ messages: [] });
   });
 
   it("should return error when agent not found", async () => {
@@ -805,7 +807,7 @@ describe("ClientRouter", () => {
     });
   });
 
-  it("should log audit event when agent uses a tool", async () => {
+  it("should not write tool.execute audit events in client router", async () => {
     const clientWs = createMockClientWs();
     async function* fakeStream() {
       yield { type: "tool_use" as const, text: "search_web" };
@@ -821,44 +823,51 @@ describe("ClientRouter", () => {
       agentId: "agent-1",
     });
 
-    expect(mockAppendAuditLog).toHaveBeenCalledTimes(2);
-    expect(mockAppendAuditLog).toHaveBeenCalledWith({
-      actorType: "agent",
-      actorId: "agent-1",
-      eventType: "tool.execute",
-      resource: "agent:agent-1",
-      detail: { toolName: "search_web", phase: "start" },
-    });
-    expect(mockAppendAuditLog).toHaveBeenCalledWith({
-      actorType: "agent",
-      actorId: "agent-1",
-      eventType: "tool.execute",
-      resource: "agent:agent-1",
-      detail: { toolName: "search_web", phase: "end", result: "Found 10 results" },
-    });
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
   });
 
-  it("should handle tool_result with no colon separator gracefully", async () => {
+  it("should not derive tool usage from session history in client router", async () => {
     const clientWs = createMockClientWs();
+    const now = Date.now();
+
     async function* fakeStream() {
-      yield { type: "tool_result" as const, text: "raw output without colon" };
+      yield { type: "text" as const, text: "Answer text only" };
       yield { type: "done" as const, text: "" };
     }
     mockChat.mockReturnValue(fakeStream());
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "assistant",
+          timestamp: now,
+          content: [
+            {
+              type: "toolCall",
+              id: "tool-call-1",
+              name: "pinchy_read",
+              arguments: { path: "/data/sample-docs/vacation-policy.md" },
+            },
+          ],
+        },
+        {
+          role: "toolResult",
+          timestamp: now,
+          toolCallId: "tool-call-1",
+          toolName: "pinchy_read",
+          isError: false,
+          content: [{ type: "text", text: "Vacation policy content" }],
+        },
+      ],
+    });
 
     await router.handleMessage(clientWs as any, {
       type: "message",
-      content: "Do something",
+      content: "Question",
       agentId: "agent-1",
     });
 
-    expect(mockAppendAuditLog).toHaveBeenCalledWith({
-      actorType: "agent",
-      actorId: "agent-1",
-      eventType: "tool.execute",
-      resource: "agent:agent-1",
-      detail: { toolName: "unknown", phase: "end", result: "raw output without colon" },
-    });
+    expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    expect(mockSessionsHistory).not.toHaveBeenCalled();
   });
 
   it("should allow admin to access personal agents of other users", async () => {

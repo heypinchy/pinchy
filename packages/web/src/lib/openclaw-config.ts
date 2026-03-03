@@ -199,6 +199,16 @@ export async function regenerateOpenClawConfig() {
     },
   };
 
+  // Always include pinchy-audit and keep it enabled. It logs tool usage from
+  // OpenClaw hooks so built-in and custom tools are captured at source.
+  entries["pinchy-audit"] = {
+    enabled: true,
+    config: {
+      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || "http://pinchy:7777",
+      gatewayToken,
+    },
+  };
+
   // Always include pinchy-files with valid config — OpenClaw auto-discovers
   // plugins from the extensions directory and validates their config even when
   // no agents use them. Without this, OpenClaw enters a restart loop.

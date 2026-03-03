@@ -74,6 +74,7 @@ export function useWsRuntime(agentId: string): {
   const mountedRef = useRef(true);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const shouldRecoverFromHistoryRef = useRef(false);
 
   // Reset state when switching agents — prevents stale messages from
   // one agent blocking history load for a different agent.
@@ -90,6 +91,7 @@ export function useWsRuntime(agentId: string): {
   useEffect(() => {
     mountedRef.current = true;
     reconnectAttemptRef.current = 0;
+    shouldRecoverFromHistoryRef.current = false;
 
     function connect() {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -107,6 +109,7 @@ export function useWsRuntime(agentId: string): {
         setIsHistoryLoaded(false);
 
         if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
+          shouldRecoverFromHistoryRef.current = true;
           const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 5000);
           reconnectAttemptRef.current++;
           reconnectTimerRef.current = setTimeout(connect, delay);
@@ -128,17 +131,28 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "history") {
+            const historyMessages = (data.messages ?? []).map(
+              (msg: { role: string; content: string; timestamp?: string }) => ({
+                id: crypto.randomUUID(),
+                role: msg.role === "system" ? "assistant" : msg.role,
+                content: msg.content,
+                timestamp: msg.timestamp,
+              })
+            );
+            const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
             setMessages((prev) => {
-              if (prev.length > 0) return prev;
-              return (data.messages ?? []).map(
-                (msg: { role: string; content: string; timestamp?: string }) => ({
-                  id: crypto.randomUUID(),
-                  role: msg.role === "system" ? "assistant" : msg.role,
-                  content: msg.content,
-                  timestamp: msg.timestamp,
-                })
-              );
+              if (prev.length === 0) return historyMessages;
+
+              // After reconnects, replace a partial trailing assistant message
+              // with canonical history from the server.
+              const last = prev[prev.length - 1];
+              if (shouldRecoverFromHistory && last?.role === "assistant") {
+                return historyMessages;
+              }
+
+              return prev;
             });
+            shouldRecoverFromHistoryRef.current = false;
             setIsHistoryLoaded(true);
             return;
           }

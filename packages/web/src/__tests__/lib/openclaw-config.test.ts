@@ -552,6 +552,25 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
+  it("should include pinchy-audit plugin config", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-audit"]).toBeDefined();
+    expect(config.plugins.entries["pinchy-audit"].enabled).toBe(true);
+    expect(config.plugins.entries["pinchy-audit"].config).toEqual({
+      apiBaseUrl: "http://pinchy:7777",
+      gatewayToken: "gw-token-123",
+    });
+  });
+
   it("should include both pinchy-files and pinchy-context when agents use both", async () => {
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "gw-token" } },
@@ -649,6 +668,8 @@ describe("regenerateOpenClawConfig", () => {
     // pinchy-files is always present (OpenClaw auto-discovers it) but disabled
     expect(config.plugins.entries["pinchy-files"].enabled).toBe(false);
     expect(config.plugins.entries["pinchy-files"].config.agents).toEqual({});
+    // pinchy-audit is always enabled to capture tool usage at source
+    expect(config.plugins.entries["pinchy-audit"].enabled).toBe(true);
   });
 });
 

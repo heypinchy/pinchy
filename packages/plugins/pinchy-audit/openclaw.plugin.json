@@ -1,0 +1,18 @@
+{
+  "id": "pinchy-audit",
+  "name": "Pinchy Audit",
+  "description": "Source-level tool execution audit logging for all OpenClaw tools.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "apiBaseUrl": {
+        "type": "string"
+      },
+      "gatewayToken": {
+        "type": "string"
+      }
+    },
+    "required": ["apiBaseUrl", "gatewayToken"]
+  }
+}

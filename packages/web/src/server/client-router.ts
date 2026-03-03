@@ -24,7 +24,7 @@ interface BrowserMessage {
 
 interface HistoryMessage {
   role: string;
-  content: string | { type: string; text?: string }[];
+  content?: unknown;
   timestamp?: number;
 }
 
@@ -60,7 +60,9 @@ export class ClientRouter {
         eventType: "tool.denied",
         resource: `agent:${message.agentId}`,
         detail: { reason: "access_denied" },
-      }).catch(() => {});
+      }).catch((err) => {
+        console.error("Failed to write audit log for tool.denied:", err);
+      });
       this.sendToClient(clientWs, { type: "error", message: "Access denied" });
       return;
     }
@@ -140,30 +142,6 @@ export class ClientRouter {
             content: chunk.text,
             messageId,
           });
-        }
-
-        if (chunk.type === "tool_use") {
-          appendAuditLog({
-            actorType: "agent",
-            actorId: message.agentId,
-            eventType: "tool.execute",
-            resource: `agent:${message.agentId}`,
-            detail: { toolName: chunk.text, phase: "start" },
-          }).catch(() => {});
-        }
-
-        // openclaw-node v0.2.0 formats tool_result as "toolName: output"
-        if (chunk.type === "tool_result") {
-          const colonIdx = chunk.text.indexOf(": ");
-          const toolName = colonIdx >= 0 ? chunk.text.slice(0, colonIdx) : "unknown";
-          const result = colonIdx >= 0 ? chunk.text.slice(colonIdx + 2) : chunk.text;
-          appendAuditLog({
-            actorType: "agent",
-            actorId: message.agentId,
-            eventType: "tool.execute",
-            resource: `agent:${message.agentId}`,
-            detail: { toolName, phase: "end", result },
-          }).catch(() => {});
         }
 
         if (chunk.type === "error") {
