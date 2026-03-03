@@ -3,7 +3,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useSession } from "next-auth/react";
-import Link from "next/link";
 import { toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -87,6 +86,7 @@ export default function AgentSettingsPage() {
 
   const [dirtyTabs, setDirtyTabs] = useState<DirtyTabs>(new Set());
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
+  const [showNavWarning, setShowNavWarning] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const fetchData = useCallback(async () => {
@@ -288,12 +288,18 @@ export default function AgentSettingsPage() {
   return (
     <div className="overflow-y-auto p-8 max-w-2xl">
       <div className="flex items-center justify-between mb-6">
-        <Link
-          href={`/chat/${agentId}`}
+        <button
+          onClick={() => {
+            if (hasDirtyTabs) {
+              setShowNavWarning(true);
+            } else {
+              router.push(`/chat/${agentId}`);
+            }
+          }}
           className="text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           &larr; Back to Chat
-        </Link>
+        </button>
         <h1 className="text-2xl font-bold">Agent Settings</h1>
       </div>
 
@@ -392,6 +398,24 @@ export default function AgentSettingsPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={executeSave}>Save & Restart</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      {/* Navigation warning dialog */}
+      <AlertDialog open={showNavWarning} onOpenChange={setShowNavWarning}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Leave without saving?</AlertDialogTitle>
+            <AlertDialogDescription>
+              You have unsaved changes. They will be lost if you leave.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Stay</AlertDialogCancel>
+            <AlertDialogAction onClick={() => router.push(`/chat/${agentId}`)}>
+              Leave
+            </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
