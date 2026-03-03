@@ -73,7 +73,7 @@ export default function SettingsPage() {
           </TabsList>
 
           {isAdmin && (
-            <TabsContent value="provider">
+            <TabsContent value="provider" keepMounted>
               <Card>
                 <CardHeader>
                   <CardTitle>LLM Provider</CardTitle>
@@ -95,16 +95,16 @@ export default function SettingsPage() {
           )}
 
           {isAdmin && (
-            <TabsContent value="users">
+            <TabsContent value="users" keepMounted>
               <SettingsUsers currentUserId={session?.user?.id ?? ""} />
             </TabsContent>
           )}
 
-          <TabsContent value="context">
+          <TabsContent value="context" keepMounted>
             <SettingsContext userContext={userContext} orgContext={orgContext} isAdmin={isAdmin} />
           </TabsContent>
 
-          <TabsContent value="profile">
+          <TabsContent value="profile" keepMounted>
             <SettingsProfile userName={session?.user?.name ?? ""} />
           </TabsContent>
         </Tabs>

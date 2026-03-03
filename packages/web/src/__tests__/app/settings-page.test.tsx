@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import SettingsPage from "@/app/(app)/settings/page";
 
@@ -213,6 +214,31 @@ describe("Settings Page", () => {
       await waitFor(() => {
         expect(global.fetch).toHaveBeenCalledWith("/api/settings/providers");
       });
+    });
+  });
+
+  describe("Tab state preservation (keepMounted)", () => {
+    beforeEach(() => {
+      mockUseSession.mockReturnValue(adminSession);
+    });
+
+    it("should keep Context tab content mounted when switching away", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage />);
+
+      // Wait for the page to finish loading (tabs become available)
+      await waitFor(() => screen.getByRole("tab", { name: "Context" }));
+
+      // Switch to Context tab
+      await userEvent.click(screen.getByRole("tab", { name: "Context" }));
+      await waitFor(() => screen.getByTestId("mock-settings-context"));
+
+      // Switch to Profile tab
+      await userEvent.click(screen.getByRole("tab", { name: "Profile" }));
+
+      // Context tab content should still be in the DOM (keepMounted)
+      expect(screen.getByTestId("mock-settings-context")).toBeInTheDocument();
     });
   });
 
