@@ -146,7 +146,9 @@ describe("GET /api/audit/export", () => {
     const response = await GET(request as any);
 
     expect(response.status).toBe(200);
+    const expectedToDate = new Date("2026-02-01");
+    expectedToDate.setUTCHours(23, 59, 59, 999);
     expect(gte).toHaveBeenCalledWith("timestamp", new Date("2026-01-01"));
-    expect(lte).toHaveBeenCalledWith("timestamp", new Date("2026-02-01"));
+    expect(lte).toHaveBeenCalledWith("timestamp", expectedToDate);
   });
 });

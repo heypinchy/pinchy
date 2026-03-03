@@ -266,6 +266,19 @@ describe("GET /api/audit", () => {
     expect(lte).toHaveBeenCalledWith("timestamp", new Date("2026-02-28T23:59:59Z"));
   });
 
+  it("sets to-date to end of UTC day when only a date string is provided", async () => {
+    const { lte } = await import("drizzle-orm");
+    setupMocks([]);
+
+    const request = new NextRequest("http://localhost:7777/api/audit?to=2026-03-03");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const expectedEndOfDay = new Date("2026-03-03");
+    expectedEndOfDay.setUTCHours(23, 59, 59, 999);
+    expect(lte).toHaveBeenCalledWith("timestamp", expectedEndOfDay);
+  });
+
   it("returns total count of 0 when no entries exist", async () => {
     setupMocks([], 0);
 

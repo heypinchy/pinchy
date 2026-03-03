@@ -18,7 +18,11 @@ export async function GET(request: NextRequest) {
   if (eventType) conditions.push(eq(auditLog.eventType, eventType));
   if (actorId) conditions.push(eq(auditLog.actorId, actorId));
   if (from) conditions.push(gte(auditLog.timestamp, new Date(from)));
-  if (to) conditions.push(lte(auditLog.timestamp, new Date(to)));
+  if (to) {
+    const toDate = new Date(to);
+    if (!to.includes("T") && !to.includes(" ")) toDate.setUTCHours(23, 59, 59, 999);
+    conditions.push(lte(auditLog.timestamp, toDate));
+  }
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
