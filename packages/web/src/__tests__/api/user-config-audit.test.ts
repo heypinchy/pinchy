@@ -17,7 +17,12 @@ vi.mock("@/lib/invites", () => ({
 
 vi.mock("@/lib/settings", () => ({
   getAllSettings: vi.fn().mockResolvedValue([]),
+  getSetting: vi.fn().mockResolvedValue(null),
   setSetting: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/provider-models", () => ({
+  resetCache: vi.fn(),
 }));
 
 vi.mock("@/lib/providers", () => ({

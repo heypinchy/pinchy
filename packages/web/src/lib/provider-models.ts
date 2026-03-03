@@ -1,6 +1,15 @@
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
 
+let cachedResult: ProviderModels[] | null = null;
+let cachedAt: number = 0;
+const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+export function resetCache() {
+  cachedResult = null;
+  cachedAt = 0;
+}
+
 export interface ModelInfo {
   id: string;
   name: string;
@@ -90,6 +99,11 @@ async function fetchModelsForProvider(
 }
 
 export async function fetchProviderModels(): Promise<ProviderModels[]> {
+  const now = Date.now();
+  if (cachedResult && now - cachedAt < CACHE_TTL_MS) {
+    return cachedResult;
+  }
+
   const results: ProviderModels[] = [];
 
   for (const [providerName, providerConfig] of Object.entries(PROVIDERS)) {
@@ -112,5 +126,7 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
     }
   }
 
+  cachedResult = results;
+  cachedAt = now;
   return results;
 }

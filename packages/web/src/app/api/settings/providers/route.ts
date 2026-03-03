@@ -4,6 +4,7 @@ import { requireAdmin } from "@/lib/api-auth";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { writeOpenClawConfig } from "@/lib/openclaw-config";
+import { resetCache } from "@/lib/provider-models";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -66,21 +67,26 @@ export async function DELETE(request: Request) {
   }
 
   await deleteSetting(config.settingsKey);
+  resetCache();
 
-  // If this was the default provider, switch to another
-  const currentDefault = await getSetting("default_provider");
-  if (currentDefault === provider) {
-    const remaining = configuredProviders.find((p) => p.name !== provider);
-    if (remaining) {
-      await setSetting("default_provider", remaining.name, false);
-
-      const smithers = await db.query.agents.findFirst();
-      if (smithers) {
+  const remaining = configuredProviders.find((p) => p.name !== provider);
+  if (remaining) {
+    // Migrate all agents using the removed provider to the remaining provider's default model
+    const allAgents = await db.query.agents.findMany();
+    const providerPrefix = `${provider}/`;
+    for (const agent of allAgents) {
+      if (agent.model?.startsWith(providerPrefix)) {
         await db
           .update(agents)
           .set({ model: remaining.config.defaultModel })
-          .where(eq(agents.id, smithers.id));
+          .where(eq(agents.id, agent.id));
       }
+    }
+
+    // If this was the default provider, switch default and update OpenClaw config
+    const currentDefault = await getSetting("default_provider");
+    if (currentDefault === provider) {
+      await setSetting("default_provider", remaining.name, false);
 
       const newApiKey = await getSetting(remaining.config.settingsKey);
       if (newApiKey) {

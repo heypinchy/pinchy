@@ -43,9 +43,18 @@ vi.mock("@/lib/openclaw-config", () => ({
   writeOpenClawConfig: vi.fn(),
 }));
 
+vi.mock("@/lib/provider-models", () => ({
+  resetCache: vi.fn(),
+}));
+
 vi.mock("@/db", () => ({
   db: {
-    query: { agents: { findFirst: vi.fn().mockResolvedValue({ id: "agent-1" }) } },
+    query: {
+      agents: {
+        findFirst: vi.fn().mockResolvedValue({ id: "agent-1" }),
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    },
     update: vi.fn().mockReturnValue({
       set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
     }),
@@ -58,6 +67,8 @@ vi.mock("drizzle-orm", () => ({
 
 import { auth } from "@/lib/auth";
 import { getSetting, deleteSetting, setSetting } from "@/lib/settings";
+import { resetCache } from "@/lib/provider-models";
+import { db } from "@/db";
 
 describe("GET /api/settings/providers", () => {
   beforeEach(() => {
@@ -249,5 +260,53 @@ describe("DELETE /api/settings/providers", () => {
     expect(response.status).toBe(200);
     expect(deleteSetting).toHaveBeenCalledWith("openai_api_key");
     expect(setSetting).not.toHaveBeenCalled();
+  });
+
+  it("should reset model cache after deleting a provider", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "openai_api_key") return "sk-openai-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await DELETE(makeRequest({ provider: "openai" }));
+
+    expect(resetCache).toHaveBeenCalled();
+  });
+
+  it("should migrate all agents using the removed provider to the new default model", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "openai_api_key") return "sk-openai-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
+      { id: "agent-1", model: "openai/gpt-4o-mini" },
+      { id: "agent-2", model: "openai/gpt-4o" },
+      { id: "agent-3", model: "anthropic/claude-haiku-4-5-20251001" },
+    ] as any[]);
+
+    await DELETE(makeRequest({ provider: "openai" }));
+
+    // Only the 2 openai agents should be migrated, not the anthropic one
+    expect(db.update).toHaveBeenCalledTimes(2);
+  });
+
+  it("should not migrate agents that use a different provider", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "openai_api_key") return "sk-openai-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
+      { id: "agent-1", model: "anthropic/claude-haiku-4-5-20251001" },
+    ] as any[]);
+
+    await DELETE(makeRequest({ provider: "openai" }));
+
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
