@@ -96,11 +96,7 @@ function ActorCell({
         </Badge>
       </span>
     );
-  return (
-    <Link href="/settings" className="underline" onClick={(e) => e.stopPropagation()}>
-      {actorName}
-    </Link>
-  );
+  return <span>{actorName}</span>;
 }
 
 function ResourceCell({
