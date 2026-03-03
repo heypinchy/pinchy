@@ -251,6 +251,8 @@ export function AuditLogTable() {
     setPage(1);
   }
 
+  const tamperedIds = verifyResult && !verifyResult.valid ? new Set(verifyResult.invalidIds) : null;
+
   if (loading && entries.length === 0) {
     return <p>Loading...</p>;
   }
@@ -322,7 +324,8 @@ export function AuditLogTable() {
           ) : (
             <span>
               {verifyResult.invalidIds.length} tampered entries detected out of{" "}
-              {verifyResult.totalChecked} checked. IDs: {verifyResult.invalidIds.join(", ")}
+              {verifyResult.totalChecked} checked. Tampered entries are highlighted in the table
+              below.
             </span>
           )}
         </div>
@@ -339,7 +342,8 @@ export function AuditLogTable() {
                 key={entry.id}
                 role="button"
                 tabIndex={0}
-                className="rounded border p-3 space-y-1 cursor-pointer hover:bg-muted/50"
+                className={`rounded border p-3 space-y-1 cursor-pointer hover:bg-muted/50 ${tamperedIds?.has(entry.id) ? "border-red-400 bg-red-50 dark:bg-red-950/20" : ""}`}
+                data-tampered={tamperedIds?.has(entry.id) ? "true" : undefined}
                 onClick={() => setSelectedEntry(entry)}
                 onKeyDown={(e) => {
                   if (e.target !== e.currentTarget) return;
@@ -396,7 +400,8 @@ export function AuditLogTable() {
                   {entries.map((entry) => (
                     <TableRow
                       key={entry.id}
-                      className="cursor-pointer hover:bg-muted/50"
+                      className={`cursor-pointer hover:bg-muted/50 ${tamperedIds?.has(entry.id) ? "bg-red-50 dark:bg-red-950/20" : ""}`}
+                      data-tampered={tamperedIds?.has(entry.id) ? "true" : undefined}
                       tabIndex={0}
                       onClick={() => setSelectedEntry(entry)}
                       onKeyDown={(e) => {

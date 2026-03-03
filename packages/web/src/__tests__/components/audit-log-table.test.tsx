@@ -534,6 +534,57 @@ describe("AuditLogTable", () => {
     expect(codeElement!.innerHTML).toContain('class="token');
   });
 
+  it("should highlight tampered rows with data attribute after integrity check", async () => {
+    renderWithEntriesLoaded(); // mockEntries have ids 1, 2, 3
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ valid: false, totalChecked: 3, invalidIds: [1, 3] }),
+    } as Response);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 tampered entries/)).toBeInTheDocument();
+    });
+
+    // Desktop table rows: row 0 is header, rows 1-3 are data rows
+    const rows = screen.getAllByRole("row");
+    expect(rows[1]).toHaveAttribute("data-tampered", "true"); // id:1 — tampered
+    expect(rows[2]).not.toHaveAttribute("data-tampered"); // id:2 — clean
+    expect(rows[3]).toHaveAttribute("data-tampered", "true"); // id:3 — tampered
+  });
+
+  it("should show 'highlighted in table' message instead of listing tampered IDs", async () => {
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ valid: false, totalChecked: 3, invalidIds: [1, 3] }),
+    } as Response);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Verify Integrity" }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/2 tampered entries/)).toBeInTheDocument();
+    });
+
+    // Should NOT show raw ID list
+    expect(screen.queryByText(/IDs:/)).not.toBeInTheDocument();
+    // Should direct user to the table
+    expect(screen.getByText(/highlighted/i)).toBeInTheDocument();
+  });
+
   it("should show truncated actorId when actorName is null", async () => {
     const entriesWithNullName = [
       {
