@@ -13,6 +13,7 @@ export async function GET() {
       name: users.name,
       email: users.email,
       role: users.role,
+      deletedAt: users.deletedAt,
     })
     .from(users);
 
