@@ -158,7 +158,7 @@ export default function AgentSettingsPage() {
 
         {showPermissions && (
           <TabsContent value="permissions">
-            <AgentSettingsPermissions agent={agent} directories={directories} />
+            <AgentSettingsPermissions agent={agent} directories={directories} onChange={() => {}} />
           </TabsContent>
         )}
       </Tabs>
