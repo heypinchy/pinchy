@@ -1,10 +1,9 @@
 "use client";
 
-import { useForm } from "react-hook-form";
+import { useEffect } from "react";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
   Form,
@@ -24,7 +23,6 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
-import { useRestart } from "@/components/restart-provider";
 
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
 
@@ -46,17 +44,16 @@ interface AgentSettingsGeneralProps {
     name: string;
     models: Array<{ id: string; name: string }>;
   }>;
-  onSaved?: () => void;
   canDelete?: boolean;
+  onChange: (values: AgentSettingsValues, isDirty: boolean) => void;
 }
 
 export function AgentSettingsGeneral({
   agent,
   providers,
-  onSaved,
   canDelete,
+  onChange,
 }: AgentSettingsGeneralProps) {
-  const { triggerRestart } = useRestart();
   const form = useForm<AgentSettingsValues>({
     resolver: zodResolver(agentSettingsSchema),
     defaultValues: {
@@ -66,33 +63,27 @@ export function AgentSettingsGeneral({
     },
   });
 
+  const values = useWatch({ control: form.control });
+
+  useEffect(() => {
+    onChange(
+      {
+        name: values.name ?? "",
+        tagline: values.tagline ?? "",
+        model: values.model ?? "",
+      },
+      form.formState.isDirty
+    );
+    // onChange must be stable (useCallback in parent) to avoid loops
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [values, form.formState.isDirty]);
+
   const providersWithModels = providers.filter((p) => p.models.length > 0);
-
-  async function onSubmit(values: AgentSettingsValues) {
-    try {
-      const res = await fetch(`/api/agents/${agent.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: values.name, tagline: values.tagline, model: values.model }),
-      });
-
-      if (!res.ok) {
-        toast.error("Failed to save settings");
-        return;
-      }
-
-      toast.success("Agent settings saved");
-      triggerRestart();
-      onSaved?.();
-    } catch {
-      toast.error("Failed to save settings");
-    }
-  }
 
   return (
     <div className="space-y-6">
       <Form {...form}>
-        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+        <form className="space-y-6">
           <FormField
             control={form.control}
             name="name"
@@ -149,16 +140,6 @@ export function AgentSettingsGeneral({
               </FormItem>
             )}
           />
-
-          <div className="space-y-3">
-            <Button type="submit" disabled={form.formState.isSubmitting}>
-              {form.formState.isSubmitting ? "Saving..." : "Save & restart"}
-            </Button>
-
-            <p className="text-sm text-muted-foreground">
-              Saving will briefly disconnect all active chats while the agent runtime restarts.
-            </p>
-          </div>
         </form>
       </Form>
 
