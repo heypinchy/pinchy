@@ -21,16 +21,11 @@ test.describe("Setup wizard", () => {
     await expect(page).toHaveURL(/\/login/);
   });
 
-  test("shows error when setup already complete", async ({ page }) => {
+  test("redirects away when setup already complete", async ({ page }) => {
     // Setup was already done in the previous test
     await page.goto("/setup");
 
-    await page.getByLabel(/name/i).fill("Second User");
-    await page.getByLabel(/email/i).fill("second@test.local");
-    await page.getByLabel(/password/i).fill("test-password-123");
-    await page.getByRole("button", { name: /create account/i }).click();
-
-    // Should show error (setup already complete)
-    await expect(page.getByText(/already/i)).toBeVisible();
+    // Should redirect away — setup page is no longer accessible once complete
+    await expect(page).not.toHaveURL(/\/setup$/, { timeout: 5000 });
   });
 });
