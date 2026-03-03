@@ -136,7 +136,7 @@ export default function AgentSettingsPage() {
             }}
             providers={providers}
             canDelete={canDelete}
-            onSaved={handleSaved}
+            onChange={() => {}}
           />
         </TabsContent>
 
