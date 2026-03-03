@@ -13,8 +13,12 @@ describe("AuditLogTable", () => {
       timestamp: "2026-02-21T10:00:00.000Z",
       actorType: "user",
       actorId: "user-1",
+      actorName: "Alice Admin",
+      actorDeleted: false,
       eventType: "auth.login",
       resource: null,
+      resourceName: null,
+      resourceDeleted: false,
       detail: { email: "admin@example.com" },
       rowHmac: "abc123",
     },
@@ -23,8 +27,12 @@ describe("AuditLogTable", () => {
       timestamp: "2026-02-21T11:00:00.000Z",
       actorType: "user",
       actorId: "user-2",
+      actorName: "Bob User",
+      actorDeleted: false,
       eventType: "agent.created",
-      resource: "agent-1",
+      resource: "agent:agent-1",
+      resourceName: "Smithers",
+      resourceDeleted: false,
       detail: { name: "Smithers" },
       rowHmac: "def456",
     },
@@ -33,8 +41,12 @@ describe("AuditLogTable", () => {
       timestamp: "2026-02-21T12:00:00.000Z",
       actorType: "user",
       actorId: "user-3",
+      actorName: null,
+      actorDeleted: false,
       eventType: "auth.failed",
       resource: null,
+      resourceName: null,
+      resourceDeleted: false,
       detail: { reason: "Invalid credentials" },
       rowHmac: "ghi789",
     },
@@ -77,13 +89,15 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("auth.login")).toBeInTheDocument();
+      // Both mobile and desktop render event types — use getAllByText
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    expect(screen.getByText("agent.created")).toBeInTheDocument();
-    expect(screen.getByText("auth.failed")).toBeInTheDocument();
-    expect(screen.getByText("user-1")).toBeInTheDocument();
-    expect(screen.getByText("user-2")).toBeInTheDocument();
+    expect(screen.getAllByText("agent.created").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("auth.failed").length).toBeGreaterThan(0);
+    // Actor names are now shown instead of raw IDs
+    expect(screen.getAllByText("Alice Admin").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Bob User").length).toBeGreaterThan(0);
   });
 
   it("should display 'No entries found' when empty", async () => {
@@ -103,7 +117,7 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("auth.login")).toBeInTheDocument();
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
     // Mock the export fetch
@@ -137,7 +151,7 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("auth.login")).toBeInTheDocument();
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
     vi.mocked(global.fetch).mockResolvedValueOnce({
@@ -161,7 +175,7 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("auth.login")).toBeInTheDocument();
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
     vi.mocked(global.fetch).mockResolvedValueOnce({
@@ -181,22 +195,24 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("auth.failed")).toBeInTheDocument();
+      expect(screen.getAllByText("auth.failed").length).toBeGreaterThan(0);
     });
 
-    const failedBadge = screen.getByText("auth.failed");
-    expect(failedBadge).toHaveAttribute("data-variant", "destructive");
+    const failedBadges = screen.getAllByText("auth.failed");
+    // At least one badge should have the destructive variant
+    expect(failedBadges.some((el) => el.getAttribute("data-variant") === "destructive")).toBe(true);
   });
 
   it("should show secondary badge for normal events", async () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("auth.login")).toBeInTheDocument();
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    const loginBadge = screen.getByText("auth.login");
-    expect(loginBadge).toHaveAttribute("data-variant", "secondary");
+    const loginBadges = screen.getAllByText("auth.login");
+    // At least one badge should have the secondary variant
+    expect(loginBadges.some((el) => el.getAttribute("data-variant") === "secondary")).toBe(true);
   });
 
   it("should paginate with Previous and Next buttons", async () => {
@@ -213,7 +229,7 @@ describe("AuditLogTable", () => {
     render(<AuditLogTable />);
 
     await waitFor(() => {
-      expect(screen.getByText("auth.login")).toBeInTheDocument();
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
     expect(screen.getByText("Page 1 of 3")).toBeInTheDocument();
@@ -248,7 +264,7 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("auth.login")).toBeInTheDocument();
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
     // Verify the event type filter exists and is accessible
@@ -265,12 +281,16 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("auth.login")).toBeInTheDocument();
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
     const user = userEvent.setup();
-    const firstRow = screen.getByText("auth.login").closest("tr")!;
-    await user.click(firstRow);
+    // Click the first clickable container (mobile card or table row) that contains auth.login
+    const allLoginElements = screen.getAllByText("auth.login");
+    // Find the first one that has a clickable ancestor (tr or div with rounded border)
+    const clickableRow =
+      allLoginElements[0].closest("tr") ?? allLoginElements[0].closest("div.rounded");
+    await user.click(clickableRow!);
 
     await waitFor(() => {
       expect(screen.getByText("Entry Detail")).toBeInTheDocument();
@@ -296,7 +316,7 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("auth.login")).toBeInTheDocument();
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
     // Mock the next fetch that will be triggered by changing the date inputs
@@ -336,7 +356,7 @@ describe("AuditLogTable", () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("auth.login")).toBeInTheDocument();
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
     expect(screen.getByLabelText("From")).toBeInTheDocument();

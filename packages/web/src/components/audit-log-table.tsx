@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -32,8 +33,12 @@ interface AuditEntry {
   timestamp: string;
   actorType: string;
   actorId: string;
+  actorName: string | null;
+  actorDeleted: boolean;
   eventType: string;
   resource: string | null;
+  resourceName: string | null;
+  resourceDeleted: boolean;
   detail: Record<string, unknown>;
   rowHmac: string;
 }
@@ -67,7 +72,67 @@ const EVENT_TYPES = [
 ];
 
 function isNegativeEvent(eventType: string): boolean {
-  return eventType.endsWith(".denied") || eventType.endsWith(".failed");
+  return (
+    eventType.includes("failed") || eventType.includes("deleted") || eventType.includes("denied")
+  );
+}
+
+function ActorCell({
+  actorId,
+  actorName,
+  actorDeleted,
+}: {
+  actorId: string;
+  actorName: string | null;
+  actorDeleted: boolean;
+}) {
+  if (!actorName)
+    return <span className="font-mono text-xs text-muted-foreground">{actorId.slice(0, 8)}…</span>;
+  if (actorDeleted)
+    return (
+      <span>
+        {actorName}{" "}
+        <Badge variant="outline" className="text-xs ml-1">
+          deactivated
+        </Badge>
+      </span>
+    );
+  return (
+    <Link href="/settings" className="underline">
+      {actorName}
+    </Link>
+  );
+}
+
+function ResourceCell({
+  resource,
+  resourceName,
+  resourceDeleted,
+}: {
+  resource: string | null;
+  resourceName: string | null;
+  resourceDeleted: boolean;
+}) {
+  if (!resource) return <span>-</span>;
+  if (!resourceName)
+    return <span className="font-mono text-xs text-muted-foreground">{resource}</span>;
+  if (resourceDeleted)
+    return (
+      <span>
+        {resourceName}{" "}
+        <Badge variant="outline" className="text-xs ml-1">
+          deleted
+        </Badge>
+      </span>
+    );
+  const agentId = resource.startsWith("agent:") ? resource.slice(6) : null;
+  if (agentId)
+    return (
+      <Link href={`/chat/${agentId}`} className="underline">
+        {resourceName}
+      </Link>
+    );
+  return <span>{resourceName}</span>;
 }
 
 export function AuditLogTable() {
@@ -178,10 +243,10 @@ export function AuditLogTable() {
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between gap-4">
-        <div className="flex items-center gap-4">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
           <Select value={eventTypeFilter || "all"} onValueChange={handleEventTypeChange}>
-            <SelectTrigger aria-label="Event Type" className="w-[200px]">
+            <SelectTrigger aria-label="Event Type" className="w-full sm:w-[200px]">
               <SelectValue placeholder="All Events" />
             </SelectTrigger>
             <SelectContent>
@@ -203,7 +268,7 @@ export function AuditLogTable() {
               type="date"
               value={dateFrom}
               onChange={handleDateFromChange}
-              className="w-[160px]"
+              className="w-full sm:w-[160px]"
             />
           </div>
 
@@ -216,7 +281,7 @@ export function AuditLogTable() {
               type="date"
               value={dateTo}
               onChange={handleDateToChange}
-              className="w-[160px]"
+              className="w-full sm:w-[160px]"
             />
           </div>
         </div>
@@ -254,38 +319,93 @@ export function AuditLogTable() {
         <p>No entries found.</p>
       ) : (
         <>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Timestamp</TableHead>
-                <TableHead>Actor</TableHead>
-                <TableHead>Event Type</TableHead>
-                <TableHead>Resource</TableHead>
-                <TableHead>Detail</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {entries.map((entry) => (
-                <TableRow
-                  key={entry.id}
-                  className="cursor-pointer hover:bg-muted/50"
-                  onClick={() => setSelectedEntry(entry)}
-                >
-                  <TableCell>{new Date(entry.timestamp).toLocaleString()}</TableCell>
-                  <TableCell>{entry.actorId}</TableCell>
-                  <TableCell>
-                    <Badge variant={isNegativeEvent(entry.eventType) ? "destructive" : "secondary"}>
-                      {entry.eventType}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>{entry.resource ?? "-"}</TableCell>
-                  <TableCell className="max-w-[300px] truncate">
-                    {truncateDetail(entry.detail)}
-                  </TableCell>
+          {/* Mobile card-view */}
+          <div className="block md:hidden space-y-2">
+            {entries.map((entry) => (
+              <div
+                key={entry.id}
+                className="rounded border p-3 space-y-1 cursor-pointer hover:bg-muted/50"
+                onClick={() => setSelectedEntry(entry)}
+              >
+                <div className="flex items-center justify-between">
+                  <Badge variant={isNegativeEvent(entry.eventType) ? "destructive" : "secondary"}>
+                    {entry.eventType}
+                  </Badge>
+                  <span className="text-xs text-muted-foreground">
+                    {new Date(entry.timestamp).toLocaleString()}
+                  </span>
+                </div>
+                <div className="text-sm">
+                  <span className="text-muted-foreground">Actor: </span>
+                  <ActorCell
+                    actorId={entry.actorId}
+                    actorName={entry.actorName}
+                    actorDeleted={entry.actorDeleted}
+                  />
+                </div>
+                {entry.resource && (
+                  <div className="text-sm">
+                    <span className="text-muted-foreground">Resource: </span>
+                    <ResourceCell
+                      resource={entry.resource}
+                      resourceName={entry.resourceName}
+                      resourceDeleted={entry.resourceDeleted}
+                    />
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop table */}
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Timestamp</TableHead>
+                  <TableHead>Actor</TableHead>
+                  <TableHead>Event Type</TableHead>
+                  <TableHead>Resource</TableHead>
+                  <TableHead>Detail</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {entries.map((entry) => (
+                  <TableRow
+                    key={entry.id}
+                    className="cursor-pointer hover:bg-muted/50"
+                    onClick={() => setSelectedEntry(entry)}
+                  >
+                    <TableCell>{new Date(entry.timestamp).toLocaleString()}</TableCell>
+                    <TableCell>
+                      <ActorCell
+                        actorId={entry.actorId}
+                        actorName={entry.actorName}
+                        actorDeleted={entry.actorDeleted}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={isNegativeEvent(entry.eventType) ? "destructive" : "secondary"}
+                      >
+                        {entry.eventType}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <ResourceCell
+                        resource={entry.resource}
+                        resourceName={entry.resourceName}
+                        resourceDeleted={entry.resourceDeleted}
+                      />
+                    </TableCell>
+                    <TableCell className="max-w-[300px] truncate">
+                      {truncateDetail(entry.detail)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
 
           <div className="flex items-center justify-between">
             <Button variant="outline" onClick={handlePrevious} disabled={page <= 1}>
@@ -316,7 +436,12 @@ export function AuditLogTable() {
               <div>
                 <p className="text-sm font-medium text-muted-foreground">Actor</p>
                 <p>
-                  {selectedEntry.actorType}: {selectedEntry.actorId}
+                  {selectedEntry.actorType}:{" "}
+                  <ActorCell
+                    actorId={selectedEntry.actorId}
+                    actorName={selectedEntry.actorName}
+                    actorDeleted={selectedEntry.actorDeleted}
+                  />
                 </p>
               </div>
               <div>
@@ -325,7 +450,11 @@ export function AuditLogTable() {
               </div>
               <div>
                 <p className="text-sm font-medium text-muted-foreground">Resource</p>
-                <p>{selectedEntry.resource ?? "-"}</p>
+                <ResourceCell
+                  resource={selectedEntry.resource}
+                  resourceName={selectedEntry.resourceName}
+                  resourceDeleted={selectedEntry.resourceDeleted}
+                />
               </div>
               <div>
                 <p className="text-sm font-medium text-muted-foreground">Detail</p>
