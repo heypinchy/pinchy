@@ -253,6 +253,50 @@ describe("SettingsProfile", () => {
     });
   });
 
+  describe("onDirtyChange callback", () => {
+    it("should call onDirtyChange(true) when name is changed from default", async () => {
+      const user = userEvent.setup();
+      const onDirtyChange = vi.fn();
+      render(<SettingsProfile userName="Alice" onDirtyChange={onDirtyChange} />);
+
+      const nameInput = screen.getByLabelText("Name");
+      await user.clear(nameInput);
+      await user.type(nameInput, "Bob");
+
+      expect(onDirtyChange).toHaveBeenCalledWith(true);
+    });
+
+    it("should call onDirtyChange(true) when a password field is typed", async () => {
+      const user = userEvent.setup();
+      const onDirtyChange = vi.fn();
+      render(<SettingsProfile userName="Alice" onDirtyChange={onDirtyChange} />);
+
+      await user.type(screen.getByLabelText("Current Password"), "somepass");
+
+      expect(onDirtyChange).toHaveBeenCalledWith(true);
+    });
+
+    it("should call onDirtyChange(false) after successful password change", async () => {
+      const user = userEvent.setup();
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true }),
+      } as Response);
+
+      const onDirtyChange = vi.fn();
+      render(<SettingsProfile userName="Alice" onDirtyChange={onDirtyChange} />);
+
+      await user.type(screen.getByLabelText("Current Password"), "oldpass123");
+      await user.type(screen.getByLabelText("New Password"), "newpass456");
+      await user.type(screen.getByLabelText("Confirm Password"), "newpass456");
+      await user.click(screen.getByRole("button", { name: "Change Password" }));
+
+      await waitFor(() => {
+        expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+      });
+    });
+  });
+
   it("should render a Log out button", () => {
     render(<SettingsProfile userName="Alice" />);
 

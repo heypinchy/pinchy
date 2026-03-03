@@ -111,6 +111,67 @@ describe("SettingsContext", () => {
     });
   });
 
+  describe("onDirtyChange callback", () => {
+    it("should call onDirtyChange(false) on mount (initially clean)", () => {
+      const onDirtyChange = vi.fn();
+      render(
+        <SettingsContext
+          userContext="original"
+          orgContext=""
+          isAdmin={false}
+          onDirtyChange={onDirtyChange}
+        />
+      );
+
+      expect(onDirtyChange).toHaveBeenCalledWith(false);
+    });
+
+    it("should call onDirtyChange(true) when content is changed", () => {
+      const onDirtyChange = vi.fn();
+      render(
+        <SettingsContext
+          userContext="original"
+          orgContext=""
+          isAdmin={false}
+          onDirtyChange={onDirtyChange}
+        />
+      );
+
+      const textarea = screen.getByDisplayValue("original");
+      fireEvent.change(textarea, { target: { value: "changed" } });
+
+      expect(onDirtyChange).toHaveBeenCalledWith(true);
+    });
+
+    it("should call onDirtyChange(false) after content is successfully saved", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true }),
+      } as Response);
+
+      const onDirtyChange = vi.fn();
+      render(
+        <SettingsContext
+          userContext="original"
+          orgContext=""
+          isAdmin={false}
+          onDirtyChange={onDirtyChange}
+        />
+      );
+
+      const textarea = screen.getByDisplayValue("original");
+      fireEvent.change(textarea, { target: { value: "changed" } });
+
+      expect(onDirtyChange).toHaveBeenCalledWith(true);
+
+      fireEvent.click(screen.getByRole("button", { name: /save/i }));
+
+      await waitFor(() => {
+        expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+      });
+    });
+  });
+
   it("shows error feedback on failure", async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: false,

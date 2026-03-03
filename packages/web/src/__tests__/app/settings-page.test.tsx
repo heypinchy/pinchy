@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import SettingsPage from "@/app/(app)/settings/page";
@@ -11,14 +11,20 @@ let capturedProviderProps: {
   defaultProvider?: string | null;
 } = {};
 
+let capturedOnDirtyChangeProvider: ((isDirty: boolean) => void) | undefined;
+let capturedOnDirtyChangeContext: ((isDirty: boolean) => void) | undefined;
+let capturedOnDirtyChangeProfile: ((isDirty: boolean) => void) | undefined;
+
 vi.mock("@/components/provider-key-form", () => ({
   ProviderKeyForm: (props: {
     onSuccess: () => void;
     submitLabel?: string;
     configuredProviders?: Record<string, { configured: boolean }>;
     defaultProvider?: string | null;
+    onDirtyChange?: (isDirty: boolean) => void;
   }) => {
     capturedProviderProps = props;
+    capturedOnDirtyChangeProvider = props.onDirtyChange;
     return (
       <button onClick={props.onSuccess} data-testid="mock-provider-form">
         {props.submitLabel || "Continue"}
@@ -38,21 +44,33 @@ vi.mock("@/components/settings-context", () => ({
     userContext,
     orgContext,
     isAdmin,
+    onDirtyChange,
   }: {
     userContext: string;
     orgContext: string;
     isAdmin: boolean;
-  }) => (
-    <div data-testid="mock-settings-context">
-      Context (isAdmin: {String(isAdmin)}, userContext: {userContext}, orgContext: {orgContext})
-    </div>
-  ),
+    onDirtyChange?: (isDirty: boolean) => void;
+  }) => {
+    capturedOnDirtyChangeContext = onDirtyChange;
+    return (
+      <div data-testid="mock-settings-context">
+        Context (isAdmin: {String(isAdmin)}, userContext: {userContext}, orgContext: {orgContext})
+      </div>
+    );
+  },
 }));
 
 vi.mock("@/components/settings-profile", () => ({
-  SettingsProfile: ({ userName }: { userName: string }) => (
-    <div data-testid="mock-settings-profile">Profile (userName: {userName})</div>
-  ),
+  SettingsProfile: ({
+    userName,
+    onDirtyChange,
+  }: {
+    userName: string;
+    onDirtyChange?: (isDirty: boolean) => void;
+  }) => {
+    capturedOnDirtyChangeProfile = onDirtyChange;
+    return <div data-testid="mock-settings-profile">Profile (userName: {userName})</div>;
+  },
 }));
 
 const mockUseSession = vi.fn();
@@ -109,6 +127,9 @@ describe("Settings Page", () => {
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
     vi.clearAllMocks();
     capturedProviderProps = {};
+    capturedOnDirtyChangeProvider = undefined;
+    capturedOnDirtyChangeContext = undefined;
+    capturedOnDirtyChangeProfile = undefined;
     mockUseSession.mockReturnValue(adminSession);
   });
 
@@ -239,6 +260,81 @@ describe("Settings Page", () => {
 
       // Context tab content should still be in the DOM (keepMounted)
       expect(screen.getByTestId("mock-settings-context")).toBeInTheDocument();
+    });
+  });
+
+  describe("dirty dot indicators", () => {
+    it("should show dirty dot on Provider tab when ProviderKeyForm reports dirty", async () => {
+      setupAdminFetchMocks();
+      render(<SettingsPage />);
+      await waitFor(() => screen.getByTestId("mock-provider-form"));
+
+      act(() => {
+        capturedOnDirtyChangeProvider?.(true);
+      });
+
+      await waitFor(() => {
+        const providerTab = screen.getByRole("tab", { name: /provider/i });
+        expect(providerTab.querySelector("[aria-label='unsaved changes']")).toBeInTheDocument();
+      });
+    });
+
+    it("should show dirty dot on Context tab when SettingsContext reports dirty", async () => {
+      setupAdminFetchMocks();
+      render(<SettingsPage />);
+      await waitFor(() => screen.getByRole("tab", { name: "Context" }));
+
+      act(() => {
+        capturedOnDirtyChangeContext?.(true);
+      });
+
+      await waitFor(() => {
+        const contextTab = screen.getByRole("tab", { name: /context/i });
+        expect(contextTab.querySelector("[aria-label='unsaved changes']")).toBeInTheDocument();
+      });
+    });
+
+    it("should show dirty dot on Profile tab when SettingsProfile reports dirty", async () => {
+      setupAdminFetchMocks();
+      render(<SettingsPage />);
+      await waitFor(() => screen.getByRole("tab", { name: "Profile" }));
+
+      act(() => {
+        capturedOnDirtyChangeProfile?.(true);
+      });
+
+      await waitFor(() => {
+        const profileTab = screen.getByRole("tab", { name: /profile/i });
+        expect(profileTab.querySelector("[aria-label='unsaved changes']")).toBeInTheDocument();
+      });
+    });
+
+    it("should remove dirty dot when tab reports clean again", async () => {
+      setupAdminFetchMocks();
+      render(<SettingsPage />);
+      await waitFor(() => screen.getByTestId("mock-provider-form"));
+
+      act(() => {
+        capturedOnDirtyChangeProvider?.(true);
+      });
+      await waitFor(() => {
+        expect(
+          screen
+            .getByRole("tab", { name: /provider/i })
+            .querySelector("[aria-label='unsaved changes']")
+        ).toBeInTheDocument();
+      });
+
+      act(() => {
+        capturedOnDirtyChangeProvider?.(false);
+      });
+      await waitFor(() => {
+        expect(
+          screen
+            .getByRole("tab", { name: /provider/i })
+            .querySelector("[aria-label='unsaved changes']")
+        ).not.toBeInTheDocument();
+      });
     });
   });
 

@@ -14,6 +14,15 @@ interface ProviderStatus {
   providers: Record<string, { configured: boolean }>;
 }
 
+function DirtyDot() {
+  return (
+    <span
+      className="ml-1 size-1.5 rounded-full bg-amber-500 inline-block"
+      aria-label="unsaved changes"
+    />
+  );
+}
+
 export default function SettingsPage() {
   const { data: session } = useSession();
   const isAdmin = session?.user?.role === "admin";
@@ -22,6 +31,10 @@ export default function SettingsPage() {
   const [loading, setLoading] = useState(true);
   const [userContext, setUserContext] = useState("");
   const [orgContext, setOrgContext] = useState("");
+
+  const [providerDirty, setProviderDirty] = useState(false);
+  const [contextDirty, setContextDirty] = useState(false);
+  const [profileDirty, setProfileDirty] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -59,6 +72,18 @@ export default function SettingsPage() {
     fetchContext();
   }, [isAdmin, fetchStatus, fetchContext, fetchOrgContext]);
 
+  const handleProviderDirtyChange = useCallback((isDirty: boolean) => {
+    setProviderDirty(isDirty);
+  }, []);
+
+  const handleContextDirtyChange = useCallback((isDirty: boolean) => {
+    setContextDirty(isDirty);
+  }, []);
+
+  const handleProfileDirtyChange = useCallback((isDirty: boolean) => {
+    setProfileDirty(isDirty);
+  }, []);
+
   return (
     <div className="overflow-y-auto">
       <div className="p-8 max-w-lg">
@@ -66,10 +91,12 @@ export default function SettingsPage() {
 
         <Tabs defaultValue={isAdmin ? "provider" : "context"}>
           <TabsList>
-            {isAdmin && <TabsTrigger value="provider">Provider</TabsTrigger>}
+            {isAdmin && (
+              <TabsTrigger value="provider">Provider {providerDirty && <DirtyDot />}</TabsTrigger>
+            )}
             {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
-            <TabsTrigger value="context">Context</TabsTrigger>
-            <TabsTrigger value="profile">Profile</TabsTrigger>
+            <TabsTrigger value="context">Context {contextDirty && <DirtyDot />}</TabsTrigger>
+            <TabsTrigger value="profile">Profile {profileDirty && <DirtyDot />}</TabsTrigger>
           </TabsList>
 
           {isAdmin && (
@@ -87,6 +114,7 @@ export default function SettingsPage() {
                       submitLabel="Save"
                       configuredProviders={status?.providers}
                       defaultProvider={status?.defaultProvider}
+                      onDirtyChange={handleProviderDirtyChange}
                     />
                   )}
                 </CardContent>
@@ -101,11 +129,19 @@ export default function SettingsPage() {
           )}
 
           <TabsContent value="context" keepMounted>
-            <SettingsContext userContext={userContext} orgContext={orgContext} isAdmin={isAdmin} />
+            <SettingsContext
+              userContext={userContext}
+              orgContext={orgContext}
+              isAdmin={isAdmin}
+              onDirtyChange={handleContextDirtyChange}
+            />
           </TabsContent>
 
           <TabsContent value="profile" keepMounted>
-            <SettingsProfile userName={session?.user?.name ?? ""} />
+            <SettingsProfile
+              userName={session?.user?.name ?? ""}
+              onDirtyChange={handleProfileDirtyChange}
+            />
           </TabsContent>
         </Tabs>
       </div>

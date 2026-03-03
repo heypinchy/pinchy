@@ -157,6 +157,40 @@ describe("ProviderKeyForm", () => {
     expect(screen.getByRole("button", { name: /save/i })).toBeInTheDocument();
   });
 
+  describe("onDirtyChange callback", () => {
+    it("should call onDirtyChange(true) when provider is selected and API key is typed", () => {
+      const onDirtyChange = vi.fn();
+      render(<ProviderKeyForm onSuccess={onSuccess} onDirtyChange={onDirtyChange} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+      fireEvent.change(screen.getByLabelText(/api key/i), {
+        target: { value: "sk-ant-somekey" },
+      });
+
+      expect(onDirtyChange).toHaveBeenCalledWith(true);
+    });
+
+    it("should call onDirtyChange(false) after successful save", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true }),
+      } as Response);
+
+      const onDirtyChange = vi.fn();
+      render(<ProviderKeyForm onSuccess={onSuccess} onDirtyChange={onDirtyChange} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+      fireEvent.change(screen.getByLabelText(/api key/i), {
+        target: { value: "sk-ant-somekey" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+      await waitFor(() => {
+        expect(onDirtyChange).toHaveBeenLastCalledWith(false);
+      });
+    });
+  });
+
   describe("provider help guide", () => {
     it("should show help trigger when a provider is selected", () => {
       render(<ProviderKeyForm onSuccess={onSuccess} />);
