@@ -18,14 +18,18 @@ export interface UpdateAgentInput {
 }
 
 export async function deleteAgent(id: string) {
-  const [deleted] = await db.delete(agents).where(eq(agents.id, id)).returning();
+  const [updated] = await db
+    .update(agents)
+    .set({ deletedAt: new Date() })
+    .where(eq(agents.id, id))
+    .returning();
 
-  if (deleted) {
+  if (updated) {
     deleteWorkspace(id);
     await regenerateOpenClawConfig();
   }
 
-  return deleted;
+  return updated;
 }
 
 export async function updateAgent(id: string, data: UpdateAgentInput) {
