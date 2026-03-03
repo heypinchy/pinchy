@@ -48,7 +48,7 @@ export async function DELETE(
   // Soft-delete personal agents + cleanup workspaces
   for (const agent of personalAgents) {
     await db.update(agents).set({ deletedAt: new Date() }).where(eq(agents.id, agent.id));
-    deleteWorkspace(agent.id);
+    deleteWorkspace(agent.id); // synchronous (uses rmSync)
   }
 
   await regenerateOpenClawConfig();

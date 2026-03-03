@@ -10,6 +10,7 @@ vi.mock("@/db", () => ({
 }));
 
 import { auth } from "@/lib/auth";
+import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 
@@ -59,6 +60,12 @@ describe("POST /api/users/[userId]/reactivate", () => {
     expect(res.status).toBe(200);
     expect(db.update).toHaveBeenCalledWith(users);
     expect(mockUpdate.set).toHaveBeenCalledWith({ deletedAt: null });
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "user.updated",
+        detail: expect.objectContaining({ action: "reactivated" }),
+      })
+    );
   });
 
   it("returns 404 when user not found", async () => {
@@ -78,6 +85,24 @@ describe("POST /api/users/[userId]/reactivate", () => {
       method: "POST",
     });
     const res = await POST(req, { params: Promise.resolve({ userId: "nonexistent" }) });
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when user is already active (deletedAt is null)", async () => {
+    vi.mocked(auth).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([]),
+      }),
+    } as never);
+
+    const req = new NextRequest("http://localhost/api/users/u1/reactivate", { method: "POST" });
+    const res = await POST(req, { params: Promise.resolve({ userId: "u1" }) });
     expect(res.status).toBe(404);
   });
 });

@@ -43,6 +43,7 @@ vi.mock("@/db", () => ({
 import { auth } from "@/lib/auth";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
+import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 
@@ -205,6 +206,9 @@ describe("DELETE /api/users/[userId]", () => {
       expect.objectContaining({ deletedAt: expect.any(Date) })
     );
     expect(db.delete).not.toHaveBeenCalled();
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "user.deleted" })
+    );
   });
 
   it("returns 404 when user not found", async () => {
