@@ -3,6 +3,7 @@ import { requireAdmin } from "@/lib/api-auth";
 import { validateProviderKey, PROVIDERS, type ProviderName } from "@/lib/providers";
 import { setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { resetCache } from "@/lib/provider-models";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -47,6 +48,7 @@ export async function POST(request: NextRequest) {
 
   // Regenerate full OpenClaw config (includes agent list, provider env, model defaults)
   await regenerateOpenClawConfig();
+  resetCache();
 
   appendAuditLog({
     actorType: "user",

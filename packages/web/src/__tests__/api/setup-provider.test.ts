@@ -44,6 +44,10 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/provider-models", () => ({
+  resetCache: vi.fn(),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     update: vi.fn().mockReturnValue({
@@ -68,6 +72,7 @@ import { setSetting } from "@/lib/settings";
 import { writeOpenClawConfig, regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { requireAdmin } from "@/lib/api-auth";
+import { resetCache } from "@/lib/provider-models";
 
 describe("POST /api/setup/provider", () => {
   beforeEach(() => {
@@ -138,6 +143,17 @@ describe("POST /api/setup/provider", () => {
     );
 
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("should reset model cache after saving provider", async () => {
+    await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-key",
+      }) as any
+    );
+
+    expect(resetCache).toHaveBeenCalled();
   });
 
   it("should return 400 for invalid provider", async () => {

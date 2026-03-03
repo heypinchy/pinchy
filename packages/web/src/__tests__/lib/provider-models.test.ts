@@ -32,12 +32,13 @@ vi.mock("@/lib/settings", () => ({
 
 global.fetch = vi.fn();
 
-import { fetchProviderModels } from "@/lib/provider-models";
+import { fetchProviderModels, resetCache } from "@/lib/provider-models";
 import { getSetting } from "@/lib/settings";
 
 describe("fetchProviderModels", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetCache();
     vi.mocked(getSetting).mockResolvedValue(null);
   });
 
@@ -234,5 +235,42 @@ describe("fetchProviderModels", () => {
       { id: "openai/gpt-4o-mini", name: "GPT-4o Mini" },
       { id: "openai/o1", name: "o1" },
     ]);
+  });
+
+  it("caches results for subsequent calls", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test-key";
+      return null;
+    });
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({ data: [{ id: "claude-opus-4-6", display_name: "Claude Opus 4.6" }] }),
+        { status: 200 }
+      )
+    );
+
+    await fetchProviderModels();
+    await fetchProviderModels();
+
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("resetCache() causes next call to fetch fresh data", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test-key";
+      return null;
+    });
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({ data: [{ id: "claude-opus-4-6", display_name: "Claude Opus 4.6" }] }),
+        { status: 200 }
+      )
+    );
+
+    await fetchProviderModels();
+    resetCache();
+    await fetchProviderModels();
+
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 });

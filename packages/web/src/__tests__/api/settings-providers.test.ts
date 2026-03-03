@@ -43,6 +43,10 @@ vi.mock("@/lib/openclaw-config", () => ({
   writeOpenClawConfig: vi.fn(),
 }));
 
+vi.mock("@/lib/provider-models", () => ({
+  resetCache: vi.fn(),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     query: { agents: { findFirst: vi.fn().mockResolvedValue({ id: "agent-1" }) } },
@@ -58,6 +62,7 @@ vi.mock("drizzle-orm", () => ({
 
 import { auth } from "@/lib/auth";
 import { getSetting, deleteSetting, setSetting } from "@/lib/settings";
+import { resetCache } from "@/lib/provider-models";
 
 describe("GET /api/settings/providers", () => {
   beforeEach(() => {
@@ -249,5 +254,18 @@ describe("DELETE /api/settings/providers", () => {
     expect(response.status).toBe(200);
     expect(deleteSetting).toHaveBeenCalledWith("openai_api_key");
     expect(setSetting).not.toHaveBeenCalled();
+  });
+
+  it("should reset model cache after deleting a provider", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "openai_api_key") return "sk-openai-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await DELETE(makeRequest({ provider: "openai" }));
+
+    expect(resetCache).toHaveBeenCalled();
   });
 });

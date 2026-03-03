@@ -4,6 +4,7 @@ import { requireAdmin } from "@/lib/api-auth";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { writeOpenClawConfig } from "@/lib/openclaw-config";
+import { resetCache } from "@/lib/provider-models";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -66,6 +67,7 @@ export async function DELETE(request: Request) {
   }
 
   await deleteSetting(config.settingsKey);
+  resetCache();
 
   // If this was the default provider, switch to another
   const currentDefault = await getSetting("default_provider");
