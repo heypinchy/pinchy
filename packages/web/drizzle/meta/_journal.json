@@ -99,6 +99,13 @@
       "when": 1772524006221,
       "tag": "0013_black_serpent_society",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1772524542626,
+      "tag": "0014_curvy_ravenous",
+      "breakpoints": true
     }
   ]
 }

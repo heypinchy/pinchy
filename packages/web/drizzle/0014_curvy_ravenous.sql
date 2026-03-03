@@ -1,0 +1,2 @@
+CREATE VIEW "public"."active_agents" AS (select "id", "name", "model", "template_id", "plugin_config", "allowed_tools", "owner_id", "is_personal", "greeting_message", "tagline", "avatar_seed", "personality_preset_id", "created_at", "deleted_at" from "agents" where "agents"."deleted_at" is null);--> statement-breakpoint
+CREATE VIEW "public"."active_users" AS (select "id", "name", "email", "emailVerified", "image", "password_hash", "role", "context", "deleted_at" from "user" where "user"."deleted_at" is null);

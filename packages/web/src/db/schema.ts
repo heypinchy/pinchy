@@ -9,7 +9,9 @@ import {
   index,
   serial,
   pgEnum,
+  pgView,
 } from "drizzle-orm/pg-core";
+import { isNull } from "drizzle-orm";
 import type { AdapterAccountType } from "next-auth/adapters";
 
 // ── Auth.js tables ─────────────────────────────────────────────────────
@@ -143,4 +145,14 @@ export const auditLog = pgTable(
     index("idx_audit_actor").on(table.actorId),
     index("idx_audit_event").on(table.eventType),
   ]
+);
+
+// ── Soft-delete views ─────────────────────────────────────────────────
+
+export const activeAgents = pgView("active_agents").as((qb) =>
+  qb.select().from(agents).where(isNull(agents.deletedAt))
+);
+
+export const activeUsers = pgView("active_users").as((qb) =>
+  qb.select().from(users).where(isNull(users.deletedAt))
 );

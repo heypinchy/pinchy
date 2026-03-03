@@ -110,3 +110,13 @@ describe("soft-delete columns", () => {
     expect(users.deletedAt).toBeDefined();
   });
 });
+
+describe("soft-delete views", () => {
+  it("exports activeAgents view", () => {
+    expect(schema.activeAgents).toBeDefined();
+  });
+
+  it("exports activeUsers view", () => {
+    expect(schema.activeUsers).toBeDefined();
+  });
+});

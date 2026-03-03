@@ -52,9 +52,13 @@ vi.mock("@/db", () => ({
   },
 }));
 
-vi.mock("drizzle-orm", () => ({
-  eq: vi.fn(),
-}));
+vi.mock("drizzle-orm", async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...(actual as object),
+    eq: vi.fn(),
+  };
+});
 
 import { auth } from "@/lib/auth";
 import { getSetting, deleteSetting, setSetting } from "@/lib/settings";
