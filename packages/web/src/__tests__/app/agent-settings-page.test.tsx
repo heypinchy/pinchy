@@ -119,11 +119,12 @@ describe("AgentSettingsPage", () => {
     expect(screen.getByRole("tab", { name: /permissions/i })).toBeInTheDocument();
   });
 
-  it("should NOT show the save button when nothing is dirty", async () => {
+  it("should show a disabled save button when nothing is dirty", async () => {
     render(<AgentSettingsPage />);
     await waitFor(() => screen.getByText("Agent Settings"));
 
-    expect(screen.queryByRole("button", { name: /save/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /save/i })).toBeDisabled();
+    expect(screen.getByText("All changes saved")).toBeInTheDocument();
   });
 
   it("should show 'Save' button (not restart) when only non-restart tab is dirty", async () => {

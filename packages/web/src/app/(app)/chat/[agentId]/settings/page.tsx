@@ -287,7 +287,7 @@ export default function AgentSettingsPage() {
   const showPermissions = isAdmin && !agent.isPersonal;
 
   return (
-    <div className={`overflow-y-auto p-8 max-w-2xl${hasDirtyTabs ? " pb-24" : ""}`}>
+    <div className="overflow-y-auto p-8 pb-24 max-w-2xl">
       <div className="flex items-center justify-between mb-6">
         <button
           onClick={() => {
@@ -364,24 +364,24 @@ export default function AgentSettingsPage() {
         )}
       </Tabs>
 
-      {/* Sticky save bar — fixed at bottom of viewport when there are unsaved changes */}
-      {hasDirtyTabs && (
-        <div className="fixed bottom-0 left-0 right-0 z-50 border-t bg-background px-6 py-3 flex items-center justify-between">
-          <span className="text-sm text-muted-foreground">Unsaved changes</span>
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button size="sm" onClick={handleSaveClick} disabled={saving}>
-                  {saving ? "Saving..." : needsRestart ? "Save & Restart" : "Save"}
-                </Button>
-              </TooltipTrigger>
-              {needsRestart && (
-                <TooltipContent>Will briefly restart the agent runtime</TooltipContent>
-              )}
-            </Tooltip>
-          </TooltipProvider>
-        </div>
-      )}
+      {/* Sticky save bar — always visible, right of sidebar */}
+      <div className="fixed bottom-0 left-[var(--sidebar-width)] right-0 z-50 border-t bg-background px-6 py-3 flex items-center justify-between">
+        <span className="text-sm text-muted-foreground">
+          {hasDirtyTabs ? "Unsaved changes" : "All changes saved"}
+        </span>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button size="sm" onClick={handleSaveClick} disabled={!hasDirtyTabs || saving}>
+                {saving ? "Saving..." : needsRestart ? "Save & Restart" : "Save"}
+              </Button>
+            </TooltipTrigger>
+            {needsRestart && (
+              <TooltipContent>Will briefly restart the agent runtime</TooltipContent>
+            )}
+          </Tooltip>
+        </TooltipProvider>
+      </div>
 
       {/* Confirmation dialog for restart */}
       <AlertDialog open={showConfirmDialog} onOpenChange={setShowConfirmDialog}>
