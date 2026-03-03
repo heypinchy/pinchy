@@ -1,6 +1,13 @@
 import type { NextConfig } from "next";
+import { readFileSync } from "fs";
+import { join } from "path";
+
+const pkg = JSON.parse(readFileSync(join(__dirname, "package.json"), "utf-8"));
 
 const nextConfig: NextConfig = {
+  env: {
+    NEXT_PUBLIC_PINCHY_VERSION: pkg.version,
+  },
   async headers() {
     return [
       {
