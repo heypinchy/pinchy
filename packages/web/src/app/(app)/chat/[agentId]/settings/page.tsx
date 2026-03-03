@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -35,7 +35,6 @@ interface Provider {
 
 export default function AgentSettingsPage() {
   const params = useParams();
-  const router = useRouter();
   const agentId = params.agentId as string;
   const { data: session } = useSession();
 
@@ -87,11 +86,6 @@ export default function AgentSettingsPage() {
   useEffect(() => {
     fetchData();
   }, [fetchData]);
-
-  const handleSaved = useCallback(() => {
-    router.refresh();
-    fetchData();
-  }, [router, fetchData]);
 
   if (loading) {
     return <div className="p-8 text-muted-foreground">Loading...</div>;
