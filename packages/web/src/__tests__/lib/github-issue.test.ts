@@ -101,6 +101,16 @@ describe("buildGitHubIssueUrl", () => {
     expect(title.length).toBeLessThanOrEqual(80);
   });
 
+  it("should handle special characters in error messages", () => {
+    const url = buildGitHubIssueUrl({
+      error: "Failed: key=abc&status=error#hash",
+      page: "/setup",
+    });
+    const parsed = new URL(url);
+    const body = parsed.searchParams.get("body")!;
+    expect(body).toContain("key=abc&status=error#hash");
+  });
+
   it("should include docker logs instruction in body", () => {
     const url = buildGitHubIssueUrl({
       error: "Setup failed",
