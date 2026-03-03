@@ -180,7 +180,11 @@ export function AuditLogTable() {
   }, [fetchEntries]);
 
   async function handleExportCsv() {
-    const res = await fetch("/api/audit/export");
+    const params = new URLSearchParams();
+    if (eventTypeFilter) params.set("eventType", eventTypeFilter);
+    if (dateFrom) params.set("from", dateFrom);
+    if (dateTo) params.set("to", dateTo);
+    const res = await fetch(`/api/audit/export?${params.toString()}`);
     if (res.ok) {
       const csvText = await res.text();
       const blob = new Blob([csvText], { type: "text/csv" });
@@ -237,57 +241,57 @@ export function AuditLogTable() {
 
   return (
     <div className="space-y-4">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
-          <Select value={eventTypeFilter || "all"} onValueChange={handleEventTypeChange}>
-            <SelectTrigger aria-label="Event Type" className="w-full sm:w-[200px]">
-              <SelectValue placeholder="All Events" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All Events</SelectItem>
-              {EVENT_TYPES.map((type) => (
-                <SelectItem key={type} value={type}>
-                  {type}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Audit Trail</h1>
+        <Button variant="outline" onClick={handleVerifyIntegrity} className="shrink-0">
+          Verify Integrity
+        </Button>
+      </div>
 
-          <div className="flex items-center gap-2">
-            <label htmlFor="date-from" className="text-sm text-muted-foreground whitespace-nowrap">
-              From
-            </label>
-            <Input
-              id="date-from"
-              type="date"
-              value={dateFrom}
-              onChange={handleDateFromChange}
-              className="w-full sm:w-[160px]"
-            />
-          </div>
+      <div className="flex flex-wrap items-center gap-3">
+        <Select value={eventTypeFilter || "all"} onValueChange={handleEventTypeChange}>
+          <SelectTrigger aria-label="Event Type" className="w-[200px]">
+            <SelectValue placeholder="All Events" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All Events</SelectItem>
+            {EVENT_TYPES.map((type) => (
+              <SelectItem key={type} value={type}>
+                {type}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
 
-          <div className="flex items-center gap-2">
-            <label htmlFor="date-to" className="text-sm text-muted-foreground whitespace-nowrap">
-              To
-            </label>
-            <Input
-              id="date-to"
-              type="date"
-              value={dateTo}
-              onChange={handleDateToChange}
-              className="w-full sm:w-[160px]"
-            />
-          </div>
+        <div className="flex items-center gap-2">
+          <label htmlFor="date-from" className="text-sm text-muted-foreground whitespace-nowrap">
+            From
+          </label>
+          <Input
+            id="date-from"
+            type="date"
+            value={dateFrom}
+            onChange={handleDateFromChange}
+            className="w-[160px]"
+          />
         </div>
 
         <div className="flex items-center gap-2">
-          <Button variant="outline" onClick={handleVerifyIntegrity}>
-            Verify Integrity
-          </Button>
-          <Button variant="outline" onClick={handleExportCsv}>
-            Export CSV
-          </Button>
+          <label htmlFor="date-to" className="text-sm text-muted-foreground whitespace-nowrap">
+            To
+          </label>
+          <Input
+            id="date-to"
+            type="date"
+            value={dateTo}
+            onChange={handleDateToChange}
+            className="w-[160px]"
+          />
         </div>
+
+        <Button variant="outline" onClick={handleExportCsv}>
+          Export CSV
+        </Button>
       </div>
 
       {verifyResult && (

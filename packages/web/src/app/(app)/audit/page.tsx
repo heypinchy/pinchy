@@ -9,8 +9,7 @@ export default async function AuditPage() {
   }
 
   return (
-    <div className="p-8 space-y-6">
-      <h1 className="text-2xl font-bold">Audit Trail</h1>
+    <div className="p-8">
       <AuditLogTable />
     </div>
   );
