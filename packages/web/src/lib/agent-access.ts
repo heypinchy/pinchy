@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { activeAgents } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
 interface AgentForAccess {
@@ -26,9 +26,8 @@ export function assertAgentAccess(agent: AgentForAccess, userId: string, userRol
 }
 
 export async function getAgentWithAccess(agentId: string, userId: string, userRole: string) {
-  const agent = await db.query.agents.findFirst({
-    where: eq(agents.id, agentId),
-  });
+  const rows = await db.select().from(activeAgents).where(eq(activeAgents.id, agentId));
+  const agent = rows[0];
 
   if (!agent) {
     return NextResponse.json({ error: "Agent not found" }, { status: 404 });

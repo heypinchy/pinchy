@@ -4,15 +4,27 @@ import { assertAgentAccess, getAgentWithAccess } from "@/lib/agent-access";
 
 vi.mock("@/db", () => ({
   db: {
-    query: {
-      agents: {
-        findFirst: vi.fn(),
-      },
-    },
+    select: vi.fn(),
   },
 }));
 
+vi.mock("@/db/schema", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/db/schema")>();
+  return {
+    ...actual,
+    activeAgents: actual.activeAgents,
+  };
+});
+
 import { db } from "@/db";
+
+function mockSelectChain(resolvedValue: unknown) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(resolvedValue),
+    }),
+  } as never);
+}
 
 describe("assertAgentAccess", () => {
   it("allows admin access to any agent", () => {
@@ -42,10 +54,8 @@ describe("assertAgentAccess", () => {
 });
 
 describe("getAgentWithAccess", () => {
-  const mockFindFirst = db.query.agents.findFirst as ReturnType<typeof vi.fn>;
-
   it("returns 404 when agent not found", async () => {
-    mockFindFirst.mockResolvedValue(undefined);
+    mockSelectChain([]);
 
     const result = await getAgentWithAccess("nonexistent-id", "user-1", "user");
 
@@ -54,11 +64,7 @@ describe("getAgentWithAccess", () => {
   });
 
   it("returns 403 when user has no access", async () => {
-    mockFindFirst.mockResolvedValue({
-      id: "a1",
-      ownerId: "other-user",
-      isPersonal: true,
-    });
+    mockSelectChain([{ id: "a1", ownerId: "other-user", isPersonal: true }]);
 
     const result = await getAgentWithAccess("a1", "user-1", "user");
 
@@ -68,11 +74,25 @@ describe("getAgentWithAccess", () => {
 
   it("returns agent when access is granted", async () => {
     const sharedAgent = { id: "a1", ownerId: null, isPersonal: false };
-    mockFindFirst.mockResolvedValue(sharedAgent);
+    mockSelectChain([sharedAgent]);
 
     const result = await getAgentWithAccess("a1", "user-1", "user");
 
     expect(result).not.toBeInstanceOf(NextResponse);
     expect(result).toEqual(sharedAgent);
+  });
+
+  it("returns 404 for soft-deleted agent (not in active_agents view)", async () => {
+    // The activeAgents view returns no results for soft-deleted agents
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    } as never);
+
+    const result = await getAgentWithAccess("deleted-agent", "user-1", "user");
+    expect(result).toBeInstanceOf(NextResponse);
+    const res = result as NextResponse;
+    expect(res.status).toBe(404);
   });
 });

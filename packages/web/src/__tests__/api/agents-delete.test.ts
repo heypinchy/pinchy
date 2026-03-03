@@ -30,18 +30,30 @@ vi.mock("@/lib/workspace", () => ({
 
 vi.mock("@/db", () => ({
   db: {
-    query: {
-      agents: {
-        findFirst: vi.fn(),
-      },
-    },
+    select: vi.fn(),
   },
 }));
+
+vi.mock("@/db/schema", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/db/schema")>();
+  return {
+    ...actual,
+    activeAgents: actual.activeAgents,
+  };
+});
 
 import { auth } from "@/lib/auth";
 import { deleteAgent, updateAgent } from "@/lib/agents";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
+
+function mockAgent(agent: Record<string, unknown> | undefined) {
+  vi.mocked(db.select).mockReturnValueOnce({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(agent ? [agent] : []),
+    }),
+  } as never);
+}
 
 // ── GET /api/agents/[agentId] ────────────────────────────────────────────
 
@@ -70,13 +82,13 @@ describe("GET /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Test Agent",
       model: "anthropic/claude-sonnet-4-20250514",
       isPersonal: false,
       ownerId: null,
-    } as never);
+    });
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1");
     const response = await GET(request, {
@@ -94,13 +106,13 @@ describe("GET /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Personal Agent",
       model: "anthropic/claude-sonnet-4-20250514",
       isPersonal: true,
       ownerId: "user-1",
-    } as never);
+    });
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1");
     const response = await GET(request, {
@@ -144,12 +156,12 @@ describe("PATCH /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Test Agent",
       isPersonal: false,
       ownerId: null,
-    } as never);
+    });
 
     const { updateAgent } = await import("@/lib/agents");
     vi.mocked(updateAgent).mockResolvedValueOnce({
@@ -178,12 +190,12 @@ describe("PATCH /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Personal Agent",
       isPersonal: true,
       ownerId: "user-1",
-    } as never);
+    });
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
@@ -205,7 +217,7 @@ describe("PATCH /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce(undefined);
+    mockAgent(undefined);
 
     const request = new NextRequest("http://localhost:7777/api/agents/nonexistent", {
       method: "PATCH",
@@ -227,12 +239,12 @@ describe("PATCH /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Shared Agent",
       isPersonal: false,
       ownerId: null,
-    } as never);
+    });
 
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
@@ -262,12 +274,12 @@ describe("PATCH /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Shared Agent",
       isPersonal: false,
       ownerId: null,
-    } as never);
+    });
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
@@ -289,12 +301,12 @@ describe("PATCH /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Personal Agent",
       isPersonal: true,
       ownerId: "admin-1",
-    } as never);
+    });
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
@@ -316,12 +328,12 @@ describe("PATCH /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Shared Agent",
       isPersonal: false,
       ownerId: null,
-    } as never);
+    });
 
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
@@ -348,12 +360,12 @@ describe("PATCH /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Shared Agent",
       isPersonal: false,
       ownerId: null,
-    } as never);
+    });
 
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
@@ -383,12 +395,12 @@ describe("PATCH /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Test Agent",
       isPersonal: false,
       ownerId: null,
-    } as never);
+    });
 
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
@@ -418,12 +430,12 @@ describe("PATCH /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Test Agent",
       isPersonal: false,
       ownerId: null,
-    } as never);
+    });
 
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
@@ -500,11 +512,11 @@ describe("DELETE /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Personal Agent",
       isPersonal: true,
-    } as never);
+    });
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "DELETE",
@@ -525,7 +537,7 @@ describe("DELETE /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce(undefined);
+    mockAgent(undefined);
 
     const request = new NextRequest("http://localhost:7777/api/agents/nonexistent", {
       method: "DELETE",
@@ -546,11 +558,11 @@ describe("DELETE /api/agents/[agentId]", () => {
       expires: "",
     } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
 
-    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+    mockAgent({
       id: "agent-1",
       name: "Shared Agent",
       isPersonal: false,
-    } as never);
+    });
 
     vi.mocked(deleteAgent).mockResolvedValueOnce({
       id: "agent-1",
