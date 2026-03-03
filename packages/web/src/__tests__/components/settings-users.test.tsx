@@ -14,9 +14,15 @@ describe("SettingsUsers", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   const mockUsers = [
-    { id: "user-1", name: "Alice Admin", email: "alice@example.com", role: "admin" },
-    { id: "user-2", name: "Bob User", email: "bob@example.com", role: "user" },
-    { id: "user-3", name: "Carol User", email: "carol@example.com", role: "user" },
+    {
+      id: "user-1",
+      name: "Alice Admin",
+      email: "alice@example.com",
+      role: "admin",
+      deletedAt: null,
+    },
+    { id: "user-2", name: "Bob User", email: "bob@example.com", role: "user", deletedAt: null },
+    { id: "user-3", name: "Carol User", email: "carol@example.com", role: "user", deletedAt: null },
   ];
 
   beforeEach(() => {
@@ -97,13 +103,13 @@ describe("SettingsUsers", () => {
       expect(screen.getByText("Alice Admin")).toBeInTheDocument();
     });
 
-    // Find the row for Alice (current user) - should not have a Delete button
+    // Find the row for Alice (current user) - should not have a Deactivate button
     const aliceRow = screen.getByText("Alice Admin").closest("tr")!;
-    expect(within(aliceRow).queryByRole("button", { name: "Delete" })).not.toBeInTheDocument();
+    expect(within(aliceRow).queryByRole("button", { name: "Deactivate" })).not.toBeInTheDocument();
 
-    // Other users should have Delete buttons
+    // Other users should have Deactivate buttons
     const bobRow = screen.getByText("Bob User").closest("tr")!;
-    expect(within(bobRow).getByRole("button", { name: "Delete" })).toBeInTheDocument();
+    expect(within(bobRow).getByRole("button", { name: "Deactivate" })).toBeInTheDocument();
   });
 
   it("should show Reset button per user (not for current user)", async () => {
@@ -129,11 +135,11 @@ describe("SettingsUsers", () => {
     });
 
     const bobRow = screen.getByText("Bob User").closest("tr")!;
-    await user.click(within(bobRow).getByRole("button", { name: "Delete" }));
+    await user.click(within(bobRow).getByRole("button", { name: "Deactivate" }));
 
     // Confirmation dialog should appear
     await waitFor(() => {
-      expect(screen.getByText("Delete User")).toBeInTheDocument();
+      expect(screen.getByText("Deactivate User")).toBeInTheDocument();
     });
 
     vi.mocked(global.fetch).mockResolvedValueOnce({
@@ -147,7 +153,7 @@ describe("SettingsUsers", () => {
       json: async () => ({ users: [mockUsers[0], mockUsers[2]] }),
     } as Response);
 
-    await user.click(screen.getByRole("button", { name: "Confirm Delete" }));
+    await user.click(screen.getByRole("button", { name: "Confirm Deactivate" }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/users/user-2", {

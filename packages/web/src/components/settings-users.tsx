@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,6 +29,7 @@ interface User {
   name: string;
   email: string;
   role: string;
+  deletedAt: string | null;
 }
 
 interface SettingsUsersProps {
@@ -38,7 +40,7 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [deleteUserId, setDeleteUserId] = useState<string | null>(null);
+  const [deactivateUserId, setDeactivateUserId] = useState<string | null>(null);
   const [resetLink, setResetLink] = useState<string | null>(null);
 
   const fetchUsers = useCallback(async () => {
@@ -57,9 +59,14 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
     fetchUsers();
   }, [fetchUsers]);
 
-  async function handleDelete(userId: string) {
+  async function handleDeactivate(userId: string) {
     await fetch(`/api/users/${userId}`, { method: "DELETE" });
-    setDeleteUserId(null);
+    setDeactivateUserId(null);
+    fetchUsers();
+  }
+
+  async function handleReactivate(userId: string) {
+    await fetch(`/api/users/${userId}/reactivate`, { method: "POST" });
     fetchUsers();
   }
 
@@ -111,23 +118,46 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
             </TableHeader>
             <TableBody>
               {users.map((user) => (
-                <TableRow key={user.id}>
-                  <TableCell>{user.name}</TableCell>
+                <TableRow key={user.id} className={user.deletedAt ? "opacity-50" : ""}>
+                  <TableCell>
+                    {user.name}
+                    {user.deletedAt && (
+                      <Badge variant="outline" className="ml-2 text-xs">
+                        deactivated
+                      </Badge>
+                    )}
+                  </TableCell>
                   <TableCell>{user.email}</TableCell>
                   <TableCell>{user.role}</TableCell>
                   <TableCell className="space-x-2">
                     {user.id !== currentUserId && (
                       <>
-                        <Button variant="outline" size="sm" onClick={() => handleReset(user.id)}>
-                          Reset
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={() => setDeleteUserId(user.id)}
-                        >
-                          Delete
-                        </Button>
+                        {!user.deletedAt ? (
+                          <>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => handleReset(user.id)}
+                            >
+                              Reset
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => setDeactivateUserId(user.id)}
+                            >
+                              Deactivate
+                            </Button>
+                          </>
+                        ) : (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleReactivate(user.id)}
+                          >
+                            Reactivate
+                          </Button>
+                        )}
                       </>
                     )}
                   </TableCell>
@@ -140,21 +170,24 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
 
       <InviteDialog open={inviteOpen} onOpenChange={setInviteOpen} />
 
-      <AlertDialog open={!!deleteUserId} onOpenChange={(open) => !open && setDeleteUserId(null)}>
+      <AlertDialog
+        open={!!deactivateUserId}
+        onOpenChange={(open) => !open && setDeactivateUserId(null)}
+      >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete User</AlertDialogTitle>
+            <AlertDialogTitle>Deactivate User</AlertDialogTitle>
             <AlertDialogDescription>
-              Are you sure you want to delete this user? This action cannot be undone.
+              This user will no longer be able to log in. You can reactivate them later.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               variant="destructive"
-              onClick={() => deleteUserId && handleDelete(deleteUserId)}
+              onClick={() => deactivateUserId && handleDeactivate(deactivateUserId)}
             >
-              Confirm Delete
+              Confirm Deactivate
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
