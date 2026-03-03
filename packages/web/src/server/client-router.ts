@@ -120,8 +120,9 @@ export class ClientRouter {
         extraPromptParts.push(`## About the current user\n${user.context}`);
       }
       if (!this.sessionCache.has(sessionKey) && agent.greetingMessage) {
+        const personalizedGreeting = this.resolveUserPlaceholder(agent.greetingMessage, user?.name);
         extraPromptParts.push(
-          `The user just opened this chat for the first time. You already greeted them with this message: "${agent.greetingMessage}". Do not introduce yourself again. Continue the conversation naturally.`
+          `The user just opened this chat for the first time. You already greeted them with this message: "${personalizedGreeting}". Do not introduce yourself again. Continue the conversation naturally.`
         );
       }
       if (extraPromptParts.length > 0) {
@@ -189,9 +190,8 @@ export class ClientRouter {
           this.sessionCache.refresh(sessions);
         } catch {
           // If we can't list sessions, fall back to greeting/empty
-          const messages = agent.greetingMessage
-            ? [{ role: "assistant", content: agent.greetingMessage }]
-            : [];
+          const greeting = await this.getPersonalizedGreeting(agent.greetingMessage);
+          const messages = greeting ? [{ role: "assistant", content: greeting }] : [];
           this.sendToClient(clientWs, { type: "history", messages });
           return;
         }
@@ -199,9 +199,8 @@ export class ClientRouter {
 
       if (!this.sessionCache.has(sessionKey)) {
         // Session doesn't exist in OpenClaw yet — return greeting or empty
-        const messages = agent.greetingMessage
-          ? [{ role: "assistant", content: agent.greetingMessage }]
-          : [];
+        const greeting = await this.getPersonalizedGreeting(agent.greetingMessage);
+        const messages = greeting ? [{ role: "assistant", content: greeting }] : [];
         this.sendToClient(clientWs, { type: "history", messages });
         return;
       }
@@ -263,6 +262,23 @@ export class ClientRouter {
       };
       this.openclawClient.once("connected", onConnected);
     });
+  }
+
+  private resolveUserPlaceholder(text: string, userName: string | null | undefined): string {
+    if (userName) {
+      return text.replace(/\{user\}/g, userName);
+    }
+    // Remove ", {user}" patterns first, then any remaining "{user}" with trailing punctuation
+    return text.replace(/,\s*\{user\}/g, "").replace(/\{user\}[,.]?\s*/g, "");
+  }
+
+  private async getPersonalizedGreeting(
+    rawGreeting: string | null | undefined
+  ): Promise<string | null> {
+    if (!rawGreeting) return null;
+    if (!rawGreeting.includes("{user}")) return rawGreeting;
+    const user = await db.query.users.findFirst({ where: eq(users.id, this.userId) });
+    return this.resolveUserPlaceholder(rawGreeting, user?.name);
   }
 
   private sanitizeError(err: unknown): string {

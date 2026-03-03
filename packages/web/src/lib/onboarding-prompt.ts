@@ -44,7 +44,7 @@ Markdown. Let them know the organization context can be edited in
 **Settings → Context** as well.`;
 
 export const ONBOARDING_GREETING =
-  "Good day. I'm Smithers — your personal assistant. Before we dive in, I'd love to learn a bit about you so I can be as helpful as possible. What do you do, and how do you prefer to work?";
+  "Good day, {user}. I'm Smithers — your personal assistant. Before we dive in, I'd love to learn a bit about you so I can be as helpful as possible. What do you do, and how do you prefer to work?";
 
 export function getOnboardingPrompt(isAdmin: boolean): string {
   return isAdmin ? USER_ONBOARDING + ORG_ONBOARDING : USER_ONBOARDING;
