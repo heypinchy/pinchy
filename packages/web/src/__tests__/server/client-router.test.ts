@@ -1108,7 +1108,8 @@ describe("ClientRouter", () => {
         agentId: "agent-1",
         sessionKey: "agent:agent-1:user-user-1",
       });
-      expect(mockUserFindFirst).not.toHaveBeenCalled();
+      // User IS fetched (for name injection), but context is not injected for personal agents
+      expect(mockUserFindFirst).toHaveBeenCalled();
     });
 
     it("should NOT include user context when user has no context set", async () => {
@@ -1198,6 +1199,152 @@ describe("ClientRouter", () => {
       expect(mockChat).toHaveBeenCalledTimes(2);
       expect(mockChat.mock.calls[0][1].extraSystemPrompt).toContain("I'm a designer.");
       expect(mockChat.mock.calls[1][1].extraSystemPrompt).toContain("I'm a designer.");
+    });
+  });
+
+  describe("user name injection", () => {
+    it("should inject user name in extraSystemPrompt for personal agents", async () => {
+      mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Alice", context: null });
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        isPersonal: true,
+        ownerId: "user-1",
+      });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith(
+        "Hi",
+        expect.objectContaining({
+          extraSystemPrompt: expect.stringContaining("Alice"),
+        })
+      );
+    });
+
+    it("should inject user name in extraSystemPrompt for shared agents", async () => {
+      mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Bob", context: null });
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        isPersonal: false,
+      });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith(
+        "Hi",
+        expect.objectContaining({
+          extraSystemPrompt: expect.stringContaining("Bob"),
+        })
+      );
+    });
+
+    it("should NOT inject name when user has no name set", async () => {
+      mockUserFindFirst.mockResolvedValue({ id: "user-1", name: null, context: null });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith("Hi", {
+        agentId: "agent-1",
+        sessionKey: "agent:agent-1:user-user-1",
+      });
+    });
+  });
+
+  describe("{user} placeholder in greeting messages", () => {
+    it("should resolve {user} in greeting with user's name when showing history", async () => {
+      const freshCache = new SessionCache();
+      const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+      mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Clemens", context: null });
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        greetingMessage: "Good day, {user}. I'm Smithers. How may I help?",
+      });
+      mockSessionsList.mockResolvedValue({ sessions: [] });
+
+      const clientWs = createMockClientWs();
+      await freshRouter.handleMessage(clientWs as any, {
+        type: "history",
+        content: "",
+        agentId: "agent-1",
+      });
+
+      const sent = clientWs.sent.map((s) => JSON.parse(s));
+      expect(sent[0].messages[0].content).toBe("Good day, Clemens. I'm Smithers. How may I help?");
+    });
+
+    it("should resolve {user} in extraSystemPrompt greeting context on first message", async () => {
+      const freshCache = new SessionCache();
+      const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+      mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Clemens", context: null });
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        greetingMessage: "Good day, {user}. I'm Smithers. How may I help?",
+      });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Of course!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await freshRouter.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const callArgs = mockChat.mock.calls[0][1];
+      expect(callArgs.extraSystemPrompt).toContain("Good day, Clemens.");
+      expect(callArgs.extraSystemPrompt).not.toContain("{user}");
+    });
+
+    it("should gracefully remove {user} from greeting when user has no name", async () => {
+      const freshCache = new SessionCache();
+      const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+      mockUserFindFirst.mockResolvedValue({ id: "user-1", name: null, context: null });
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        greetingMessage: "Good day, {user}. I'm Smithers. How may I help?",
+      });
+      mockSessionsList.mockResolvedValue({ sessions: [] });
+
+      const clientWs = createMockClientWs();
+      await freshRouter.handleMessage(clientWs as any, {
+        type: "history",
+        content: "",
+        agentId: "agent-1",
+      });
+
+      const sent = clientWs.sent.map((s) => JSON.parse(s));
+      const greeting = sent[0].messages[0].content;
+      expect(greeting).not.toContain("{user}");
+      expect(greeting).toContain("I'm Smithers");
     });
   });
 });

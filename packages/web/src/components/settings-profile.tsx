@@ -1,7 +1,8 @@
 "use client";
 
+import { useEffect } from "react";
 import { signOut } from "next-auth/react";
-import { useForm } from "react-hook-form";
+import { useForm, useFormState } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { toast } from "sonner";
@@ -37,9 +38,10 @@ type PasswordFormValues = z.infer<typeof passwordSchema>;
 
 interface SettingsProfileProps {
   userName: string;
+  onDirtyChange?: (isDirty: boolean) => void;
 }
 
-export function SettingsProfile({ userName }: SettingsProfileProps) {
+export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProps) {
   const nameForm = useForm<NameFormValues>({
     resolver: zodResolver(nameSchema),
     defaultValues: { name: userName },
@@ -50,6 +52,13 @@ export function SettingsProfile({ userName }: SettingsProfileProps) {
     defaultValues: { currentPassword: "", newPassword: "", confirmPassword: "" },
   });
 
+  const { isDirty: isNameDirty } = useFormState({ control: nameForm.control });
+  const { isDirty: isPasswordDirty } = useFormState({ control: passwordForm.control });
+
+  useEffect(() => {
+    onDirtyChange?.(isNameDirty || isPasswordDirty);
+  }, [isNameDirty, isPasswordDirty, onDirtyChange]);
+
   async function onNameSubmit(values: NameFormValues) {
     try {
       const res = await fetch("/api/users/me", {
@@ -59,6 +68,7 @@ export function SettingsProfile({ userName }: SettingsProfileProps) {
       });
       if (res.ok) {
         toast.success("Name updated");
+        nameForm.reset({ name: values.name });
       } else {
         const data = await res.json();
         toast.error(data.error || "Failed to update name");

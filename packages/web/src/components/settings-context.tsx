@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { MarkdownEditor } from "@/components/markdown-editor";
@@ -9,6 +9,7 @@ interface SettingsContextProps {
   userContext: string;
   orgContext: string;
   isAdmin: boolean;
+  onDirtyChange?: (isDirty: boolean) => void;
 }
 
 function ContextSection({
@@ -16,18 +17,25 @@ function ContextSection({
   explanation,
   initialContent,
   apiUrl,
+  onDirtyChange,
 }: {
   title: string;
   explanation: string;
   initialContent: string;
   apiUrl: string;
+  onDirtyChange?: (isDirty: boolean) => void;
 }) {
   const [content, setContent] = useState(initialContent);
+  const [savedContent, setSavedContent] = useState(initialContent);
   const [saving, setSaving] = useState(false);
   const [feedback, setFeedback] = useState<{
     type: "success" | "error";
     message: string;
   } | null>(null);
+
+  useEffect(() => {
+    onDirtyChange?.(content !== savedContent);
+  }, [content, savedContent, onDirtyChange]);
 
   async function handleSave() {
     setSaving(true);
@@ -49,6 +57,7 @@ function ContextSection({
         return;
       }
 
+      setSavedContent(content);
       setFeedback({
         type: "success",
         message: "Saved. Changes will apply to your next conversation.",
@@ -77,7 +86,7 @@ function ContextSection({
         />
 
         <Button onClick={handleSave} disabled={saving}>
-          {saving ? "Saving..." : "Save & restart"}
+          {saving ? "Saving..." : "Save"}
         </Button>
 
         {feedback && (
@@ -94,7 +103,19 @@ function ContextSection({
   );
 }
 
-export function SettingsContext({ userContext, orgContext, isAdmin }: SettingsContextProps) {
+export function SettingsContext({
+  userContext,
+  orgContext,
+  isAdmin,
+  onDirtyChange,
+}: SettingsContextProps) {
+  const [userSectionDirty, setUserSectionDirty] = useState(false);
+  const [orgSectionDirty, setOrgSectionDirty] = useState(false);
+
+  useEffect(() => {
+    onDirtyChange?.(userSectionDirty || orgSectionDirty);
+  }, [userSectionDirty, orgSectionDirty, onDirtyChange]);
+
   return (
     <div className="space-y-6">
       <ContextSection
@@ -102,6 +123,7 @@ export function SettingsContext({ userContext, orgContext, isAdmin }: SettingsCo
         explanation="This is context about you — your role, preferences, and how you work. It's applied to your personal assistant."
         initialContent={userContext}
         apiUrl="/api/users/me/context"
+        onDirtyChange={setUserSectionDirty}
       />
 
       {isAdmin && (
@@ -110,6 +132,7 @@ export function SettingsContext({ userContext, orgContext, isAdmin }: SettingsCo
           explanation="This is context about your organization — team structure, conventions, and domain knowledge. It's applied to all shared agents."
           initialContent={orgContext}
           apiUrl="/api/settings/context"
+          onDirtyChange={setOrgSectionDirty}
         />
       )}
     </div>

@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { Button } from "@/components/ui/button";
+import { useState, useEffect, useRef } from "react";
 import { MarkdownEditor } from "@/components/markdown-editor";
 
 const EXPLANATIONS: Record<string, string> = {
@@ -15,76 +14,33 @@ interface AgentSettingsFileProps {
   agentId: string;
   filename: "SOUL.md" | "AGENTS.md";
   content: string;
+  onChange: (content: string, isDirty: boolean) => void;
 }
 
 export function AgentSettingsFile({
-  agentId,
+  agentId: _agentId,
   filename,
   content: initialContent,
+  onChange,
 }: AgentSettingsFileProps) {
   const [content, setContent] = useState(initialContent);
-  const [saving, setSaving] = useState(false);
-  const [feedback, setFeedback] = useState<{
-    type: "success" | "error";
-    message: string;
-  } | null>(null);
+  const initialRef = useRef(initialContent);
 
-  async function handleSave() {
-    setSaving(true);
-    setFeedback(null);
+  // Notify parent on mount with isDirty=false
+  useEffect(() => {
+    onChange(initialRef.current, false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    try {
-      const res = await fetch(`/api/agents/${agentId}/files/${filename}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ content }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        setFeedback({
-          type: "error",
-          message: data.error || "Failed to save file",
-        });
-        return;
-      }
-
-      setFeedback({
-        type: "success",
-        message: "Saved. Changes will apply to your next conversation.",
-      });
-    } catch {
-      setFeedback({ type: "error", message: "Failed to save file" });
-    } finally {
-      setSaving(false);
-    }
+  function handleChange(newContent: string) {
+    setContent(newContent);
+    onChange(newContent, newContent !== initialRef.current);
   }
 
   return (
     <div className="space-y-4">
       <p className="text-sm text-muted-foreground">{EXPLANATIONS[filename]}</p>
-
-      <MarkdownEditor
-        value={content}
-        onChange={(v) => {
-          setContent(v);
-          setFeedback(null);
-        }}
-      />
-
-      <Button onClick={handleSave} disabled={saving}>
-        {saving ? "Saving..." : "Save & restart"}
-      </Button>
-
-      {feedback && (
-        <p
-          className={
-            feedback.type === "success" ? "text-sm text-green-600" : "text-sm text-red-600"
-          }
-        >
-          {feedback.message}
-        </p>
-      )}
+      <MarkdownEditor value={content} onChange={handleChange} />
     </div>
   );
 }

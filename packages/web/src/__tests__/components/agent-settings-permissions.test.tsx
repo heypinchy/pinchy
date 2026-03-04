@@ -1,17 +1,10 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentSettingsPermissions } from "@/components/agent-settings-permissions";
-import { toast } from "sonner";
-
-vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
-}));
 
 describe("AgentSettingsPermissions", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
-
   const defaultAgent = {
     id: "agent-1",
     name: "Smithers",
@@ -26,17 +19,14 @@ describe("AgentSettingsPermissions", () => {
     { path: "/data/reports", name: "reports" },
   ];
 
-  beforeEach(() => {
-    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    fetchSpy.mockRestore();
-  });
-
   it("should render Safe Tools heading with checkboxes for safe tools", () => {
-    render(<AgentSettingsPermissions agent={defaultAgent} directories={defaultDirectories} />);
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
 
     expect(screen.getByText("Safe Tools")).toBeInTheDocument();
     expect(screen.getByLabelText("List approved directories")).toBeInTheDocument();
@@ -44,7 +34,13 @@ describe("AgentSettingsPermissions", () => {
   });
 
   it("should render Powerful Tools heading with checkboxes for powerful tools", () => {
-    render(<AgentSettingsPermissions agent={defaultAgent} directories={defaultDirectories} />);
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
 
     expect(screen.getByText("Powerful Tools")).toBeInTheDocument();
     expect(screen.getByLabelText("Run commands")).toBeInTheDocument();
@@ -55,7 +51,13 @@ describe("AgentSettingsPermissions", () => {
   });
 
   it("should show a warning message in the Powerful Tools section", () => {
-    render(<AgentSettingsPermissions agent={defaultAgent} directories={defaultDirectories} />);
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
 
     expect(
       screen.getByText(/these tools give the agent direct access to your server/i)
@@ -63,7 +65,13 @@ describe("AgentSettingsPermissions", () => {
   });
 
   it("should show DirectoryPicker when a safe tool is checked", async () => {
-    render(<AgentSettingsPermissions agent={defaultAgent} directories={defaultDirectories} />);
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
 
     // DirectoryPicker should not be visible initially (no safe tools checked)
     expect(screen.queryByText("Allowed Directories")).not.toBeInTheDocument();
@@ -76,7 +84,13 @@ describe("AgentSettingsPermissions", () => {
   });
 
   it("should NOT show DirectoryPicker when no safe tools are checked", () => {
-    render(<AgentSettingsPermissions agent={defaultAgent} directories={defaultDirectories} />);
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
 
     expect(screen.queryByText("Allowed Directories")).not.toBeInTheDocument();
   });
@@ -88,66 +102,61 @@ describe("AgentSettingsPermissions", () => {
       pluginConfig: { allowed_paths: ["/data/docs"] },
     };
 
-    render(<AgentSettingsPermissions agent={agentWithTools} directories={defaultDirectories} />);
+    render(
+      <AgentSettingsPermissions
+        agent={agentWithTools}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
 
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
   });
 
-  it("should call PATCH with allowedTools and pluginConfig on save", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ id: "agent-1" }),
-    } as Response);
+  describe("onChange behavior", () => {
+    it("should NOT render a Save button", () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          onChange={onChange}
+        />
+      );
+      expect(screen.queryByRole("button", { name: /save/i })).not.toBeInTheDocument();
+    });
 
-    const agentWithTools = {
-      ...defaultAgent,
-      allowedTools: ["pinchy_ls", "shell"],
-      pluginConfig: { allowed_paths: ["/data/docs"] },
-    };
+    it("should call onChange when a tool is toggled", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          onChange={onChange}
+        />
+      );
 
-    render(<AgentSettingsPermissions agent={agentWithTools} directories={defaultDirectories} />);
+      await userEvent.click(screen.getByLabelText("List approved directories"));
 
-    await userEvent.click(screen.getByRole("button", { name: /save/i }));
-
-    await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith("/api/agents/agent-1", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          allowedTools: ["pinchy_ls", "shell"],
-          pluginConfig: { allowed_paths: ["/data/docs"] },
-        }),
+      await waitFor(() => {
+        expect(onChange).toHaveBeenCalledWith(
+          expect.objectContaining({ allowedTools: expect.arrayContaining(["pinchy_ls"]) }),
+          true
+        );
       });
     });
-  });
 
-  it("should show success toast on successful save", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ id: "agent-1" }),
-    } as Response);
+    it("should call onChange with isDirty=false on mount when no changes", () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          onChange={onChange}
+        />
+      );
 
-    render(<AgentSettingsPermissions agent={defaultAgent} directories={defaultDirectories} />);
-
-    await userEvent.click(screen.getByRole("button", { name: /save/i }));
-
-    await waitFor(() => {
-      expect(toast.success).toHaveBeenCalledWith("Permissions saved");
-    });
-  });
-
-  it("should show error toast on failed save", async () => {
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Forbidden" }),
-    } as Response);
-
-    render(<AgentSettingsPermissions agent={defaultAgent} directories={defaultDirectories} />);
-
-    await userEvent.click(screen.getByRole("button", { name: /save/i }));
-
-    await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Failed to save permissions");
+      expect(onChange).toHaveBeenCalledWith({ allowedTools: [], allowedPaths: [] }, false);
     });
   });
 });

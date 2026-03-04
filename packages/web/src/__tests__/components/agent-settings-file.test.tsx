@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { AgentSettingsFile } from "@/components/agent-settings-file";
 
@@ -22,20 +22,11 @@ vi.mock("@/components/markdown-editor", () => ({
 }));
 
 describe("AgentSettingsFile", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
-
-  beforeEach(() => {
-    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    fetchSpy.mockRestore();
-  });
-
   describe("SOUL.md", () => {
     it("should render the SOUL.md explanation text", () => {
-      render(<AgentSettingsFile agentId="agent-1" filename="SOUL.md" content="" />);
+      render(
+        <AgentSettingsFile agentId="agent-1" filename="SOUL.md" content="" onChange={vi.fn()} />
+      );
 
       expect(
         screen.getByText(/this is your agent's personality and identity/i)
@@ -48,6 +39,7 @@ describe("AgentSettingsFile", () => {
           agentId="agent-1"
           filename="SOUL.md"
           content="You are a helpful assistant."
+          onChange={vi.fn()}
         />
       );
 
@@ -56,144 +48,54 @@ describe("AgentSettingsFile", () => {
       expect(textarea).toHaveValue("You are a helpful assistant.");
       expect(textarea).toHaveClass("font-mono");
     });
-
-    it("should render a 'Save & restart' button", () => {
-      render(<AgentSettingsFile agentId="agent-1" filename="SOUL.md" content="" />);
-
-      expect(screen.getByRole("button", { name: "Save & restart" })).toBeInTheDocument();
-    });
-
-    it("should PUT to the correct API endpoint on save", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
-
-      render(
-        <AgentSettingsFile
-          agentId="agent-1"
-          filename="SOUL.md"
-          content="You are a helpful assistant."
-        />
-      );
-
-      fireEvent.click(screen.getByRole("button", { name: /save/i }));
-
-      await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith("/api/agents/agent-1/files/SOUL.md", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: "You are a helpful assistant." }),
-        });
-      });
-    });
-
-    it("should send updated content on save", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
-
-      render(<AgentSettingsFile agentId="agent-1" filename="SOUL.md" content="Original content" />);
-
-      fireEvent.change(screen.getByRole("textbox"), {
-        target: { value: "Updated content" },
-      });
-      fireEvent.click(screen.getByRole("button", { name: /save/i }));
-
-      await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith("/api/agents/agent-1/files/SOUL.md", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: "Updated content" }),
-        });
-      });
-    });
-
-    it("should show success banner after save", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
-
-      render(<AgentSettingsFile agentId="agent-1" filename="SOUL.md" content="" />);
-
-      fireEvent.click(screen.getByRole("button", { name: /save/i }));
-
-      await waitFor(() => {
-        expect(
-          screen.getByText(/saved\. changes will apply to your next conversation\./i)
-        ).toBeInTheDocument();
-      });
-    });
-
-    it("should hide success banner when content is edited again", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
-
-      render(<AgentSettingsFile agentId="agent-1" filename="SOUL.md" content="" />);
-
-      fireEvent.click(screen.getByRole("button", { name: /save/i }));
-
-      await waitFor(() => {
-        expect(
-          screen.getByText(/saved\. changes will apply to your next conversation\./i)
-        ).toBeInTheDocument();
-      });
-
-      fireEvent.change(screen.getByRole("textbox"), {
-        target: { value: "new edit" },
-      });
-
-      expect(
-        screen.queryByText(/saved\. changes will apply to your next conversation\./i)
-      ).not.toBeInTheDocument();
-    });
-
-    it("should show error feedback after failed save", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: false,
-        json: async () => ({ error: "Failed to save file" }),
-      } as Response);
-
-      render(<AgentSettingsFile agentId="agent-1" filename="SOUL.md" content="" />);
-
-      fireEvent.click(screen.getByRole("button", { name: /save/i }));
-
-      await waitFor(() => {
-        expect(screen.getByText(/failed to save file/i)).toBeInTheDocument();
-      });
-    });
   });
 
   describe("AGENTS.md", () => {
     it("should render the AGENTS.md explanation text", () => {
-      render(<AgentSettingsFile agentId="agent-1" filename="AGENTS.md" content="" />);
+      render(
+        <AgentSettingsFile agentId="agent-1" filename="AGENTS.md" content="" onChange={vi.fn()} />
+      );
 
       expect(screen.getByText(/operating instructions/i)).toBeInTheDocument();
     });
+  });
 
-    it("should PUT to the AGENTS.md API endpoint on save", async () => {
-      vi.mocked(global.fetch).mockResolvedValueOnce({
-        ok: true,
-        json: async () => ({ success: true }),
-      } as Response);
-
+  describe("onChange behavior", () => {
+    it("should NOT render a Save button", () => {
+      const onChange = vi.fn();
       render(
-        <AgentSettingsFile agentId="agent-1" filename="AGENTS.md" content="Some instructions" />
+        <AgentSettingsFile agentId="agent-1" filename="SOUL.md" content="" onChange={onChange} />
+      );
+      expect(screen.queryByRole("button", { name: /save/i })).not.toBeInTheDocument();
+    });
+
+    it("should call onChange when content changes", () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsFile
+          agentId="agent-1"
+          filename="SOUL.md"
+          content="Original"
+          onChange={onChange}
+        />
       );
 
-      fireEvent.click(screen.getByRole("button", { name: /save/i }));
+      fireEvent.change(screen.getByRole("textbox"), { target: { value: "Updated" } });
 
-      await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith("/api/agents/agent-1/files/AGENTS.md", {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content: "Some instructions" }),
-        });
-      });
+      expect(onChange).toHaveBeenCalledWith("Updated", true);
+    });
+
+    it("should call onChange with isDirty=false for unchanged content on mount", () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsFile
+          agentId="agent-1"
+          filename="SOUL.md"
+          content="Initial"
+          onChange={onChange}
+        />
+      );
+      expect(onChange).toHaveBeenCalledWith("Initial", false);
     });
   });
 });

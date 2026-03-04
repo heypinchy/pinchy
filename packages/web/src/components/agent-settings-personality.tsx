@@ -1,7 +1,6 @@
 "use client";
 
-import { useState } from "react";
-import { toast } from "sonner";
+import { useState, useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { MarkdownEditor } from "@/components/markdown-editor";
 import { Badge } from "@/components/ui/badge";
@@ -29,30 +28,61 @@ interface AgentSettingsPersonalityProps {
     personalityPresetId: string | null;
   };
   soulContent: string;
-  onSaved?: () => void;
+  onChange: (
+    values: { avatarSeed: string | null; presetId: string | null; soulContent: string },
+    isDirty: boolean
+  ) => void;
 }
 
 export function AgentSettingsPersonality({
-  agentId,
+  agentId: _agentId,
   agent,
   soulContent,
-  onSaved,
+  onChange,
 }: AgentSettingsPersonalityProps) {
   const [avatarSeed, setAvatarSeed] = useState(agent.avatarSeed);
   const [presetId, setPresetId] = useState<string | null>(agent.personalityPresetId);
   const [content, setContent] = useState(soulContent);
   const [pendingPresetId, setPendingPresetId] = useState<string | null>(null);
   const [showConfirm, setShowConfirm] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [showEditor, setShowEditor] = useState(false);
+
+  const initialValues = useRef({
+    avatarSeed: agent.avatarSeed,
+    presetId: agent.personalityPresetId,
+    soulContent,
+  });
 
   const avatarUrl = getAgentAvatarSvg({
     avatarSeed,
     name: agent.name,
   });
 
+  function notifyChange(
+    newAvatarSeed: string | null,
+    newPresetId: string | null,
+    newContent: string
+  ) {
+    const isDirty =
+      newAvatarSeed !== initialValues.current.avatarSeed ||
+      newPresetId !== initialValues.current.presetId ||
+      newContent !== initialValues.current.soulContent;
+    onChange(
+      { avatarSeed: newAvatarSeed, presetId: newPresetId, soulContent: newContent },
+      isDirty
+    );
+  }
+
+  // Notify on mount with isDirty=false
+  useEffect(() => {
+    notifyChange(avatarSeed, presetId, content);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   function handleReRoll() {
-    setAvatarSeed(generateAvatarSeed());
+    const newSeed = generateAvatarSeed();
+    setAvatarSeed(newSeed);
+    notifyChange(newSeed, presetId, content);
   }
 
   function handlePresetClick(id: string) {
@@ -64,6 +94,7 @@ export function AgentSettingsPersonality({
     // If content matches the target preset, switch directly
     if (content === preset.soulMd) {
       setPresetId(id);
+      notifyChange(avatarSeed, id, content);
       return;
     }
 
@@ -76,10 +107,14 @@ export function AgentSettingsPersonality({
     const preset = getPersonalityPreset(pendingPresetId);
     if (!preset) return;
 
-    setContent(preset.soulMd);
-    setPresetId(pendingPresetId);
+    const newContent = preset.soulMd;
+    const newPresetId = pendingPresetId;
+
+    setContent(newContent);
+    setPresetId(newPresetId);
     setPendingPresetId(null);
     setShowConfirm(false);
+    notifyChange(avatarSeed, newPresetId, newContent);
   }
 
   function handleCancelSwitch() {
@@ -91,45 +126,15 @@ export function AgentSettingsPersonality({
     setContent(newContent);
 
     // Check if content still matches the active preset
+    let newPresetId = presetId;
     if (presetId) {
       const preset = getPersonalityPreset(presetId);
       if (preset && newContent !== preset.soulMd) {
         setPresetId(null);
+        newPresetId = null;
       }
     }
-  }
-
-  async function handleSave() {
-    setSaving(true);
-    try {
-      const [patchRes, putRes] = await Promise.all([
-        fetch(`/api/agents/${agentId}`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            avatarSeed,
-            personalityPresetId: presetId,
-          }),
-        }),
-        fetch(`/api/agents/${agentId}/files/SOUL.md`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ content }),
-        }),
-      ]);
-
-      if (!patchRes.ok || !putRes.ok) {
-        toast.error("Failed to save personality settings");
-        return;
-      }
-
-      toast.success("Personality settings saved");
-      onSaved?.();
-    } catch {
-      toast.error("Failed to save personality settings");
-    } finally {
-      setSaving(false);
-    }
+    notifyChange(avatarSeed, newPresetId, newContent);
   }
 
   return (
@@ -200,11 +205,6 @@ export function AgentSettingsPersonality({
           </div>
         </CollapsibleContent>
       </Collapsible>
-
-      {/* Save */}
-      <Button onClick={handleSave} disabled={saving}>
-        {saving ? "Saving..." : "Save & restart"}
-      </Button>
 
       {/* Confirmation Dialog */}
       <AlertDialog open={showConfirm} onOpenChange={setShowConfirm}>

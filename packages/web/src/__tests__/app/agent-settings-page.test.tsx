@@ -1,34 +1,51 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import AgentSettingsPage from "@/app/(app)/chat/[agentId]/settings/page";
 
-// Capture the onSaved callback from the personality component
-let capturedOnSaved: (() => void) | undefined;
+// Capture onChange callbacks from tab components
+let capturedOnChangeGeneral: ((v: unknown, isDirty: boolean) => void) | undefined;
+let capturedOnChangePersonality: ((v: unknown, isDirty: boolean) => void) | undefined;
+let capturedOnChangeInstructions: ((v: string, isDirty: boolean) => void) | undefined;
+let capturedOnChangePermissions: ((v: unknown, isDirty: boolean) => void) | undefined;
 
 vi.mock("@/components/agent-settings-general", () => ({
-  AgentSettingsGeneral: () => <div data-testid="general-tab">General</div>,
+  AgentSettingsGeneral: (props: { onChange: (v: unknown, isDirty: boolean) => void }) => {
+    capturedOnChangeGeneral = props.onChange;
+    return <div data-testid="general-tab">General</div>;
+  },
 }));
 
 vi.mock("@/components/agent-settings-personality", () => ({
-  AgentSettingsPersonality: (props: { onSaved?: () => void }) => {
-    capturedOnSaved = props.onSaved;
+  AgentSettingsPersonality: (props: { onChange: (v: unknown, isDirty: boolean) => void }) => {
+    capturedOnChangePersonality = props.onChange;
     return <div data-testid="personality-tab">Personality</div>;
   },
 }));
 
 vi.mock("@/components/agent-settings-file", () => ({
-  AgentSettingsFile: () => <div data-testid="file-tab">File</div>,
+  AgentSettingsFile: (props: { onChange: (v: string, isDirty: boolean) => void }) => {
+    capturedOnChangeInstructions = props.onChange;
+    return <div data-testid="instructions-tab">Instructions</div>;
+  },
 }));
 
 vi.mock("@/components/agent-settings-permissions", () => ({
-  AgentSettingsPermissions: () => <div data-testid="permissions-tab">Permissions</div>,
+  AgentSettingsPermissions: (props: { onChange: (v: unknown, isDirty: boolean) => void }) => {
+    capturedOnChangePermissions = props.onChange;
+    return <div data-testid="permissions-tab">Permissions</div>;
+  },
+}));
+
+const mockTriggerRestart = vi.fn();
+vi.mock("@/components/restart-provider", () => ({
+  useRestart: () => ({ triggerRestart: mockTriggerRestart }),
 }));
 
 vi.mock("next/navigation", () => ({
   useParams: vi.fn().mockReturnValue({ agentId: "agent-1" }),
-  useRouter: vi.fn().mockReturnValue({ refresh: vi.fn() }),
+  useRouter: vi.fn().mockReturnValue({ refresh: vi.fn(), push: vi.fn() }),
 }));
 
 vi.mock("next-auth/react", () => ({
@@ -37,10 +54,8 @@ vi.mock("next-auth/react", () => ({
   }),
 }));
 
-vi.mock("next/link", () => ({
-  default: ({ children, ...props }: { children: React.ReactNode; href: string }) => (
-    <a {...props}>{children}</a>
-  ),
+vi.mock("sonner", () => ({
+  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 const agentData = {
@@ -64,7 +79,7 @@ function mockFetchResponses() {
     if (urlStr.includes("/api/agents/agent-1/files/AGENTS.md")) {
       return { ok: true, json: async () => ({ content: "# Agents" }) } as Response;
     }
-    if (urlStr.includes("/api/agents/agent-1")) {
+    if (urlStr.includes("/api/agents/agent-1") && !urlStr.includes("/files/")) {
       return { ok: true, json: async () => agentData } as Response;
     }
     if (urlStr.includes("/api/providers/models")) {
@@ -73,7 +88,7 @@ function mockFetchResponses() {
     if (urlStr.includes("/api/data-directories")) {
       return { ok: true, json: async () => ({ directories: [] }) } as Response;
     }
-    return { ok: false, json: async () => ({}) } as Response;
+    return { ok: true, json: async () => ({}) } as Response;
   });
 }
 
@@ -81,65 +96,223 @@ describe("AgentSettingsPage", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    capturedOnSaved = undefined;
+    capturedOnChangeGeneral = undefined;
+    capturedOnChangePersonality = undefined;
+    capturedOnChangeInstructions = undefined;
+    capturedOnChangePermissions = undefined;
+    mockTriggerRestart.mockClear();
     fetchSpy = mockFetchResponses();
   });
 
   afterEach(() => {
     fetchSpy.mockRestore();
+    vi.clearAllMocks();
   });
 
-  it("should re-fetch agent data after onSaved is called", async () => {
+  it("should render all tab labels", async () => {
     render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
 
-    // Wait for initial data load, then switch to Personality tab
-    await waitFor(() => {
-      expect(screen.getByText("Agent Settings")).toBeInTheDocument();
-    });
-    await userEvent.click(screen.getByRole("tab", { name: /personality/i }));
+    expect(screen.getByRole("tab", { name: /general/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /personality/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /instructions/i })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: /permissions/i })).toBeInTheDocument();
+  });
 
-    await waitFor(() => {
-      expect(screen.getByTestId("personality-tab")).toBeInTheDocument();
-    });
+  it("should show a disabled save button when nothing is dirty", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
 
-    const initialFetchCount = fetchSpy.mock.calls.length;
+    expect(screen.getByRole("button", { name: /save/i })).toBeDisabled();
+    expect(screen.getByText("All changes saved")).toBeInTheDocument();
+  });
 
-    // Trigger onSaved callback (simulates personality save)
-    capturedOnSaved?.();
+  it("should show 'Save' button (not restart) when only non-restart tab is dirty", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
 
-    // Should re-fetch agent data and files
-    await waitFor(() => {
-      const newCalls = fetchSpy.mock.calls.slice(initialFetchCount);
-      const agentRefetch = newCalls.some(
-        ([url]) =>
-          typeof url === "string" && url.includes("/api/agents/agent-1") && !url.includes("/files/")
+    // Simulate personality tab reporting dirty
+    act(() => {
+      capturedOnChangePersonality?.(
+        { avatarSeed: "new-seed", presetId: null, soulContent: "New soul" },
+        true
       );
-      expect(agentRefetch).toBe(true);
+    });
+
+    await waitFor(() => {
+      const btn = screen.getByRole("button", { name: /save/i });
+      expect(btn).toBeInTheDocument();
+      expect(btn).not.toHaveTextContent(/restart/i);
     });
   });
 
-  it("should re-fetch SOUL.md content after onSaved is called", async () => {
+  it("should show 'Save & Restart' button when a restart-requiring tab is dirty", async () => {
     render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
 
-    await waitFor(() => {
-      expect(screen.getByText("Agent Settings")).toBeInTheDocument();
-    });
-    await userEvent.click(screen.getByRole("tab", { name: /personality/i }));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("personality-tab")).toBeInTheDocument();
-    });
-
-    const initialFetchCount = fetchSpy.mock.calls.length;
-
-    capturedOnSaved?.();
-
-    await waitFor(() => {
-      const newCalls = fetchSpy.mock.calls.slice(initialFetchCount);
-      const soulRefetch = newCalls.some(
-        ([url]) => typeof url === "string" && url.includes("/files/SOUL.md")
+    // Simulate general tab reporting dirty
+    act(() => {
+      capturedOnChangeGeneral?.(
+        { name: "New Name", tagline: "tagline", model: "anthropic/claude-sonnet-4-20250514" },
+        true
       );
-      expect(soulRefetch).toBe(true);
+    });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /save & restart/i })).toBeInTheDocument();
+    });
+  });
+
+  it("should show dot indicator on dirty tab", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
+
+    act(() => {
+      capturedOnChangePersonality?.(
+        { avatarSeed: "new-seed", presetId: null, soulContent: "changed" },
+        true
+      );
+    });
+
+    await waitFor(() => {
+      // The personality tab trigger should have a dirty indicator
+      const personalityTab = screen.getByRole("tab", { name: /personality/i });
+      expect(personalityTab.querySelector("[aria-label='unsaved changes']")).toBeInTheDocument();
+    });
+  });
+
+  it("should call PATCH and file PUT APIs on Save", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
+
+    // Mark personality and instructions dirty
+    act(() => {
+      capturedOnChangePersonality?.(
+        { avatarSeed: "new-seed", presetId: null, soulContent: "New soul" },
+        true
+      );
+      capturedOnChangeInstructions?.("New instructions", true);
+    });
+
+    await waitFor(() => screen.getByRole("button", { name: /save/i }));
+
+    fetchSpy.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map(([url, opts]) => ({
+        url: typeof url === "string" ? url : url.toString(),
+        method: (opts as RequestInit)?.method,
+        body: (opts as RequestInit)?.body,
+      }));
+
+      expect(calls.some((c) => c.url.includes("SOUL.md") && c.method === "PUT")).toBe(true);
+      expect(calls.some((c) => c.url.includes("AGENTS.md") && c.method === "PUT")).toBe(true);
+    });
+  });
+
+  it("should show confirmation dialog before Save & Restart", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
+
+    act(() => {
+      capturedOnChangeGeneral?.(
+        { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-20250514" },
+        true
+      );
+    });
+
+    await waitFor(() => screen.getByRole("button", { name: /save & restart/i }));
+    await userEvent.click(screen.getByRole("button", { name: /save & restart/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/apply changes and restart/i)).toBeInTheDocument();
+    });
+  });
+
+  it("should call triggerRestart after confirming Save & Restart", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
+
+    act(() => {
+      capturedOnChangeGeneral?.(
+        { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-20250514" },
+        true
+      );
+    });
+
+    await waitFor(() => screen.getByRole("button", { name: /save & restart/i }));
+
+    fetchSpy.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: /save & restart/i }));
+
+    // Confirm in the dialog — the AlertDialogAction button
+    await waitFor(() => screen.getByText(/apply changes and restart/i));
+    const confirmButtons = screen.getAllByRole("button", { name: /save & restart/i });
+    // The dialog's confirm button is the last one rendered
+    await userEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() => {
+      expect(mockTriggerRestart).toHaveBeenCalled();
+    });
+  });
+
+  it("should set window.onbeforeunload when there are dirty tabs", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
+
+    expect(window.onbeforeunload).toBeNull();
+
+    act(() => {
+      capturedOnChangeGeneral?.(
+        { name: "Changed", tagline: "", model: "anthropic/claude-sonnet-4-20250514" },
+        true
+      );
+    });
+
+    await waitFor(() => {
+      expect(window.onbeforeunload).not.toBeNull();
+    });
+  });
+
+  it("should clear window.onbeforeunload when dirty tabs are cleared after save", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
+
+    act(() => {
+      capturedOnChangePersonality?.(
+        { avatarSeed: "new", presetId: null, soulContent: "changed" },
+        true
+      );
+    });
+
+    await waitFor(() => screen.getByRole("button", { name: /save/i }));
+
+    fetchSpy.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => {
+      expect(window.onbeforeunload).toBeNull();
+    });
+  });
+
+  it("should show nav warning dialog when clicking Back to Chat with dirty state", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
+
+    act(() => {
+      capturedOnChangePersonality?.(
+        { avatarSeed: "new-seed", presetId: null, soulContent: "changed" },
+        true
+      );
+    });
+
+    await waitFor(() => screen.getByRole("button", { name: /save/i }));
+
+    await userEvent.click(screen.getByRole("button", { name: /← back to chat/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/leave without saving/i)).toBeInTheDocument();
     });
   });
 });

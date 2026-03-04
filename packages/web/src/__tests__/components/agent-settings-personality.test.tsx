@@ -1,9 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentSettingsPersonality } from "@/components/agent-settings-personality";
-import { toast } from "sonner";
 
 vi.mock("@/components/markdown-editor", () => ({
   MarkdownEditor: ({
@@ -21,10 +20,6 @@ vi.mock("@/components/markdown-editor", () => ({
       onChange={(e) => onChange(e.target.value)}
     />
   ),
-}));
-
-vi.mock("sonner", () => ({
-  toast: { success: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock("@/lib/avatar", () => ({
@@ -77,8 +72,6 @@ vi.mock("@/lib/personality-presets", () => ({
 }));
 
 describe("AgentSettingsPersonality", () => {
-  let fetchSpy: ReturnType<typeof vi.spyOn>;
-
   const defaultProps = {
     agentId: "agent-1",
     agent: {
@@ -87,16 +80,8 @@ describe("AgentSettingsPersonality", () => {
       personalityPresetId: "the-butler" as string | null,
     },
     soulContent: "Butler soul content",
+    onChange: vi.fn(),
   };
-
-  beforeEach(() => {
-    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
-    vi.clearAllMocks();
-  });
-
-  afterEach(() => {
-    fetchSpy.mockRestore();
-  });
 
   it("renders the current avatar", () => {
     const { container } = render(<AgentSettingsPersonality {...defaultProps} />);
@@ -109,7 +94,7 @@ describe("AgentSettingsPersonality", () => {
     expect(screen.getByRole("button", { name: /re-roll/i })).toBeInTheDocument();
   });
 
-  it("clicking re-roll changes avatar without calling API", async () => {
+  it("clicking re-roll changes the avatar seed", async () => {
     const { container } = render(<AgentSettingsPersonality {...defaultProps} />);
 
     await userEvent.click(screen.getByRole("button", { name: /re-roll/i }));
@@ -118,7 +103,6 @@ describe("AgentSettingsPersonality", () => {
       'img[src="data:image/svg+xml;utf8,mock-new-random-seed"]'
     );
     expect(newAvatar).toBeInTheDocument();
-    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("hides re-roll button when avatarSeed is __smithers__", () => {
@@ -216,61 +200,57 @@ describe("AgentSettingsPersonality", () => {
     expect(screen.getByText(/defines your agent's personality/i)).toBeInTheDocument();
   });
 
-  it("save sends PATCH and PUT requests", async () => {
-    vi.mocked(global.fetch).mockResolvedValue({
-      ok: true,
-      json: async () => ({}),
-    } as Response);
-
-    render(<AgentSettingsPersonality {...defaultProps} />);
-
-    await userEvent.click(screen.getByRole("button", { name: /save/i }));
-
-    await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledTimes(2);
-      expect(global.fetch).toHaveBeenCalledWith(
-        "/api/agents/agent-1",
-        expect.objectContaining({
-          method: "PATCH",
-        })
+  describe("onChange behavior", () => {
+    it("should NOT render a Save button", () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPersonality
+          agentId="agent-1"
+          agent={{ avatarSeed: "seed-1", name: "Smithers", personalityPresetId: "the-butler" }}
+          soulContent="Butler soul content"
+          onChange={onChange}
+        />
       );
-      expect(global.fetch).toHaveBeenCalledWith(
-        "/api/agents/agent-1/files/SOUL.md",
-        expect.objectContaining({
-          method: "PUT",
-        })
+
+      expect(screen.queryByRole("button", { name: /save/i })).not.toBeInTheDocument();
+    });
+
+    it("should call onChange with current values on mount", () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPersonality
+          agentId="agent-1"
+          agent={{ avatarSeed: "seed-1", name: "Smithers", personalityPresetId: "the-butler" }}
+          soulContent="Butler soul content"
+          onChange={onChange}
+        />
+      );
+
+      expect(onChange).toHaveBeenCalledWith(
+        { avatarSeed: "seed-1", presetId: "the-butler", soulContent: "Butler soul content" },
+        false
       );
     });
-  });
 
-  it("shows success toast after save", async () => {
-    vi.mocked(global.fetch).mockResolvedValue({
-      ok: true,
-      json: async () => ({}),
-    } as Response);
+    it("should call onChange with isDirty=true when avatar is re-rolled", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPersonality
+          agentId="agent-1"
+          agent={{ avatarSeed: "seed-1", name: "Smithers", personalityPresetId: "the-butler" }}
+          soulContent="Butler soul content"
+          onChange={onChange}
+        />
+      );
 
-    render(<AgentSettingsPersonality {...defaultProps} />);
+      await userEvent.click(screen.getByRole("button", { name: /re-roll/i }));
 
-    await userEvent.click(screen.getByRole("button", { name: /save/i }));
-
-    await waitFor(() => {
-      expect(toast.success).toHaveBeenCalledWith("Personality settings saved");
-    });
-  });
-
-  it("calls onSaved callback after successful save", async () => {
-    const onSaved = vi.fn();
-    vi.mocked(global.fetch).mockResolvedValue({
-      ok: true,
-      json: async () => ({}),
-    } as Response);
-
-    render(<AgentSettingsPersonality {...defaultProps} onSaved={onSaved} />);
-
-    await userEvent.click(screen.getByRole("button", { name: /save/i }));
-
-    await waitFor(() => {
-      expect(onSaved).toHaveBeenCalled();
+      await waitFor(() => {
+        expect(onChange).toHaveBeenCalledWith(
+          expect.objectContaining({ avatarSeed: "new-random-seed" }),
+          true
+        );
+      });
     });
   });
 });

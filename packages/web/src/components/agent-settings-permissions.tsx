@@ -1,13 +1,10 @@
 "use client";
 
-import { useState } from "react";
-import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { useState, useRef, useEffect } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { DirectoryPicker } from "@/components/directory-picker";
 import { getToolsByCategory } from "@/lib/tool-registry";
-import { useRestart } from "@/components/restart-provider";
 
 interface AgentSettingsPermissionsProps {
   agent: {
@@ -16,20 +13,36 @@ interface AgentSettingsPermissionsProps {
     pluginConfig: { allowed_paths?: string[] } | null;
   };
   directories: Array<{ path: string; name: string }>;
+  onChange: (values: { allowedTools: string[]; allowedPaths: string[] }, isDirty: boolean) => void;
 }
 
-export function AgentSettingsPermissions({ agent, directories }: AgentSettingsPermissionsProps) {
+export function AgentSettingsPermissions({
+  agent,
+  directories,
+  onChange,
+}: AgentSettingsPermissionsProps) {
   const [allowedTools, setAllowedTools] = useState<string[]>(agent.allowedTools);
   const [allowedPaths, setAllowedPaths] = useState<string[]>(
     agent.pluginConfig?.allowed_paths ?? []
   );
-  const [saving, setSaving] = useState(false);
-  const { triggerRestart } = useRestart();
+
+  const initialAllowedTools = useRef(agent.allowedTools);
+  const initialAllowedPaths = useRef(agent.pluginConfig?.allowed_paths ?? []);
 
   const safeTools = getToolsByCategory("safe");
   const powerfulTools = getToolsByCategory("powerful");
 
   const hasSafeToolChecked = safeTools.some((tool) => allowedTools.includes(tool.id));
+
+  // Notify parent after every state change (and on mount)
+  useEffect(() => {
+    const isDirty =
+      JSON.stringify([...allowedTools].sort()) !==
+        JSON.stringify([...initialAllowedTools.current].sort()) ||
+      JSON.stringify([...allowedPaths].sort()) !==
+        JSON.stringify([...initialAllowedPaths.current].sort());
+    onChange({ allowedTools, allowedPaths }, isDirty);
+  }, [allowedTools, allowedPaths, onChange]);
 
   function handleToolToggle(toolId: string) {
     setAllowedTools((prev) =>
@@ -37,30 +50,8 @@ export function AgentSettingsPermissions({ agent, directories }: AgentSettingsPe
     );
   }
 
-  async function handleSave() {
-    setSaving(true);
-    try {
-      const res = await fetch(`/api/agents/${agent.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          allowedTools,
-          pluginConfig: { allowed_paths: allowedPaths },
-        }),
-      });
-
-      if (!res.ok) {
-        toast.error("Failed to save permissions");
-        return;
-      }
-
-      toast.success("Permissions saved");
-      triggerRestart();
-    } catch {
-      toast.error("Failed to save permissions");
-    } finally {
-      setSaving(false);
-    }
+  function handlePathsChange(newPaths: string[]) {
+    setAllowedPaths(newPaths);
   }
 
   return (
@@ -90,7 +81,7 @@ export function AgentSettingsPermissions({ agent, directories }: AgentSettingsPe
             <DirectoryPicker
               directories={directories}
               selected={allowedPaths}
-              onChange={setAllowedPaths}
+              onChange={handlePathsChange}
             />
           </div>
         )}
@@ -119,15 +110,6 @@ export function AgentSettingsPermissions({ agent, directories }: AgentSettingsPe
           ))}
         </div>
       </section>
-
-      <div className="space-y-3">
-        <Button onClick={handleSave} disabled={saving}>
-          {saving ? "Saving..." : "Save & restart"}
-        </Button>
-        <p className="text-sm text-muted-foreground">
-          Saving will briefly disconnect all active chats while the agent runtime restarts.
-        </p>
-      </div>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -128,6 +128,7 @@ interface ProviderKeyFormProps {
   submitLabel?: string;
   configuredProviders?: Record<string, { configured: boolean; hint?: string }>;
   defaultProvider?: string | null;
+  onDirtyChange?: (isDirty: boolean) => void;
 }
 
 export function ProviderKeyForm({
@@ -135,6 +136,7 @@ export function ProviderKeyForm({
   submitLabel = "Continue",
   configuredProviders,
   defaultProvider,
+  onDirtyChange,
 }: ProviderKeyFormProps) {
   const [provider, setProvider] = useState<ProviderName | null>(null);
   const [loading, setLoading] = useState(false);
@@ -149,6 +151,10 @@ export function ProviderKeyForm({
   });
 
   const apiKeyValue = form.watch("apiKey");
+
+  useEffect(() => {
+    onDirtyChange?.(!!provider && apiKeyValue.trim().length > 0);
+  }, [provider, apiKeyValue, onDirtyChange]);
 
   const isConfigured = provider ? configuredProviders?.[provider]?.configured === true : false;
   const hint = provider ? configuredProviders?.[provider]?.hint : undefined;

@@ -29,4 +29,14 @@ describe("SMITHERS_SOUL_MD", () => {
     expect(SMITHERS_SOUL_MD).toContain("never say");
     expect(SMITHERS_SOUL_MD.toLowerCase()).toContain("nice to meet you");
   });
+
+  it("does not list name as something to gather during onboarding (name is in system context)", () => {
+    // Name is injected via extraSystemPrompt — no need to gather it during onboarding
+    expect(SMITHERS_SOUL_MD).not.toContain("four key details");
+  });
+
+  it("notes that user name is available in system context rather than needing to be learned", () => {
+    expect(SMITHERS_SOUL_MD).not.toContain("When you learn the user's name");
+    expect(SMITHERS_SOUL_MD).toContain("available in your context");
+  });
 });
