@@ -287,7 +287,7 @@ export default function AgentSettingsPage() {
   const showPermissions = isAdmin && !agent.isPersonal;
 
   return (
-    <div className="overflow-y-auto p-8 pb-24 max-w-2xl">
+    <div className="overflow-y-auto p-4 md:p-8 pb-24 max-w-2xl">
       <div className="flex items-center justify-between mb-6">
         <button
           onClick={() => {
@@ -305,7 +305,7 @@ export default function AgentSettingsPage() {
       </div>
 
       <Tabs defaultValue="general">
-        <TabsList>
+        <TabsList className="overflow-x-auto">
           <TabsTrigger value="general">
             General {dirtyTabs.has("general") && <DirtyDot />}
           </TabsTrigger>
@@ -365,7 +365,7 @@ export default function AgentSettingsPage() {
       </Tabs>
 
       {/* Sticky save bar — always visible, right of sidebar */}
-      <div className="fixed bottom-0 left-[var(--sidebar-width)] right-0 z-50 border-t bg-background px-6 py-3 flex items-center justify-between">
+      <div className="fixed bottom-0 left-0 md:left-[var(--sidebar-width)] right-0 z-50 border-t bg-background px-4 md:px-6 py-3 flex items-center justify-between">
         <span className="text-sm text-muted-foreground">
           {hasDirtyTabs ? "Unsaved changes" : "All changes saved"}
         </span>

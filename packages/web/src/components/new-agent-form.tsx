@@ -142,7 +142,7 @@ export function NewAgentForm() {
   const createDisabled = submitting || (requiresDirectories && selectedPaths.length === 0);
 
   return (
-    <div className="p-8 max-w-lg">
+    <div className="p-4 md:p-8 max-w-lg">
       <h1 className="text-2xl font-bold mb-6">Create New Agent</h1>
 
       {!selectedTemplate ? (

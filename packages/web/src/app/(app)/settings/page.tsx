@@ -86,11 +86,11 @@ export default function SettingsPage() {
 
   return (
     <div className="overflow-y-auto">
-      <div className="p-8 max-w-lg">
+      <div className="p-4 md:p-8 max-w-lg">
         <h1 className="text-2xl font-bold mb-6">Settings</h1>
 
         <Tabs defaultValue={isAdmin ? "provider" : "context"}>
-          <TabsList>
+          <TabsList className="overflow-x-auto">
             {isAdmin && (
               <TabsTrigger value="provider">Provider {providerDirty && <DirtyDot />}</TabsTrigger>
             )}
