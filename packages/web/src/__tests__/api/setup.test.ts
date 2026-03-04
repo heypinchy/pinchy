@@ -39,19 +39,22 @@ vi.mock("@/db", () => {
     db: {
       query: queryMock,
       insert: insertMock,
-      transaction: vi.fn().mockImplementation(async (callback) => {
-        return callback({
-          query: queryMock,
-          insert: insertMock,
-        });
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue(undefined),
+        }),
       }),
     },
   };
 });
 
-vi.mock("bcryptjs", () => ({
-  default: {
-    hash: vi.fn().mockResolvedValue("hashed_password"),
+vi.mock("@/lib/auth", () => ({
+  auth: {
+    api: {
+      signUpEmail: vi.fn().mockResolvedValue({
+        user: { id: "1", email: "admin@test.com" },
+      }),
+    },
   },
 }));
 
@@ -71,6 +74,7 @@ vi.mock("@/lib/smithers-soul", () => ({
 }));
 
 import { ensureWorkspace } from "@/lib/workspace";
+import { auth } from "@/lib/auth";
 
 import { db } from "@/db";
 
@@ -79,22 +83,23 @@ describe("createAdmin", () => {
     vi.clearAllMocks();
   });
 
-  it("should create admin user with hashed password", async () => {
+  it("should create admin user via Better Auth signUpEmail", async () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
 
     const result = await createAdmin("Admin User", "admin@test.com", "password123");
 
     expect(result).toEqual({ id: "1", email: "admin@test.com" });
-    expect(db.insert).toHaveBeenCalled();
+    expect(auth.api.signUpEmail).toHaveBeenCalledWith({
+      body: { name: "Admin User", email: "admin@test.com", password: "password123" },
+    });
   });
 
-  it("should accept and store name", async () => {
+  it("should set admin role after user creation", async () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
 
     await createAdmin("Admin User", "admin@test.com", "password123");
 
-    const insertCalls = vi.mocked(db.insert).mock.calls;
-    expect(insertCalls.length).toBeGreaterThan(0);
+    expect(db.update).toHaveBeenCalled();
   });
 
   it("should pass user id to seedDefaultAgent", async () => {
@@ -103,17 +108,8 @@ describe("createAdmin", () => {
 
     await createAdmin("Admin User", "admin@test.com", "password123");
 
-    // db.insert is called twice: once for user, once for agent
-    // The agent insert receives the ownerId from the created user
-    expect(db.insert).toHaveBeenCalledTimes(2);
-  });
-
-  it("should use a database transaction", async () => {
-    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
-
-    await createAdmin("Admin User", "admin@test.com", "password123");
-
-    expect(db.transaction).toHaveBeenCalledTimes(1);
+    // db.insert is called once for the agent (user creation is via auth API)
+    expect(db.insert).toHaveBeenCalled();
   });
 
   it("should reject if admin already exists", async () => {

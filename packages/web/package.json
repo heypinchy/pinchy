@@ -20,6 +20,7 @@
   "dependencies": {
     "@assistant-ui/react": "^0.12.11",
     "@assistant-ui/react-markdown": "^0.12.4",
+    "@better-auth/drizzle-adapter": "^1.5.3",
     "@dicebear/core": "^9.3.2",
     "@dicebear/fun-emoji": "^9.3.2",
     "@hookform/resolvers": "^5.2.2",
