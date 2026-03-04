@@ -127,7 +127,23 @@ describe("buildIssueBody", () => {
     expect(body).not.toContain("Server Diagnostics");
   });
 
-  it("should include docker logs instruction", () => {
+  it("should include captured logs when provided via diagnostics", () => {
+    const body = buildIssueBody({
+      error: "Setup failed",
+      page: "/setup",
+      diagnostics: {
+        database: "unreachable",
+        openclaw: "connected",
+        version: "0.1.0",
+        nodeEnv: "production",
+        logs: "2026-03-04T08:00:00Z [ERROR] DB connection refused\n2026-03-04T08:00:01Z [WARN] Retrying...",
+      },
+    });
+    expect(body).toContain("DB connection refused");
+    expect(body).toContain("Retrying...");
+  });
+
+  it("should show manual logs instruction when no logs available", () => {
     const body = buildIssueBody({
       error: "Setup failed",
       page: "/setup",
@@ -163,6 +179,7 @@ describe("fetchDiagnostics", () => {
         openclaw: "connected",
         version: "0.1.0",
         nodeEnv: "production",
+        logs: "[ERROR] something happened",
       }),
     } as Response);
 
@@ -173,6 +190,7 @@ describe("fetchDiagnostics", () => {
       openclaw: "connected",
       version: "0.1.0",
       nodeEnv: "production",
+      logs: "[ERROR] something happened",
     });
     expect(fetchSpy).toHaveBeenCalledWith(
       "/api/diagnostics",

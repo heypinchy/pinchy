@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
+import { logCapture } from "@/lib/log-capture";
 
 async function checkDatabase(): Promise<"connected" | "unreachable"> {
   try {
@@ -38,5 +39,6 @@ export async function GET() {
     openclaw,
     version: process.env.NEXT_PUBLIC_PINCHY_VERSION ?? "unknown",
     nodeEnv: process.env.NODE_ENV ?? "unknown",
+    logs: logCapture.formatAsText(),
   });
 }

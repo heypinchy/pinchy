@@ -3,6 +3,7 @@ export interface DiagnosticsResult {
   openclaw: "connected" | "unreachable";
   version: string;
   nodeEnv: string;
+  logs?: string;
 }
 
 export interface IssueContext {
@@ -62,16 +63,19 @@ export function buildIssueBody(context: IssueContext): string {
     );
   }
 
-  sections.push(
-    "",
-    "**Steps to reproduce:**",
-    "1. ",
-    "",
-    "**Logs:** (run `docker compose logs pinchy --tail 200` and paste below)",
-    "```",
-    "",
-    "```"
-  );
+  sections.push("", "**Steps to reproduce:**", "1. ");
+
+  if (diagnostics?.logs) {
+    sections.push("", "**Logs:**", "```", diagnostics.logs, "```");
+  } else {
+    sections.push(
+      "",
+      "**Logs:** (run `docker compose logs pinchy --tail 200` and paste below)",
+      "```",
+      "",
+      "```"
+    );
+  }
 
   return sections.join("\n");
 }
