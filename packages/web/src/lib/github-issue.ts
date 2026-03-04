@@ -15,12 +15,32 @@ export interface IssueContext {
 const REPO_URL = "https://github.com/heypinchy/pinchy/issues/new";
 const MAX_TITLE_LENGTH = 80;
 
+function buildTitle(error: string): string {
+  const truncatedError = error.length > 60 ? error.slice(0, 57) + "..." : error;
+  return `Setup error: ${truncatedError}`.slice(0, MAX_TITLE_LENGTH);
+}
+
+/**
+ * Returns a GitHub new-issue URL with only the title and a short paste hint.
+ * The full issue body should be copied to clipboard separately via buildIssueBody().
+ */
 export function buildGitHubIssueUrl(context: IssueContext): string {
+  const title = buildTitle(context.error);
+  const body =
+    "**Paste your clipboard below** (Cmd+V / Ctrl+V) — diagnostic info was copied automatically.\n\n---\n";
+
+  const params = new URLSearchParams({ title, body });
+  return `${REPO_URL}?${params.toString()}`;
+}
+
+/**
+ * Builds the full issue body text for copying to clipboard.
+ * Contains error details, environment info, diagnostics, and log instructions.
+ */
+export function buildIssueBody(context: IssueContext): string {
   const { error, statusCode, page, diagnostics } = context;
 
   const errorSuffix = statusCode ? ` (HTTP ${statusCode})` : "";
-  const truncatedError = error.length > 60 ? error.slice(0, 57) + "..." : error;
-  const title = `Setup error: ${truncatedError}`.slice(0, MAX_TITLE_LENGTH);
 
   const sections: string[] = [
     `**Error:** ${error}${errorSuffix}`,
@@ -53,9 +73,7 @@ export function buildGitHubIssueUrl(context: IssueContext): string {
     "```"
   );
 
-  const body = sections.join("\n");
-  const params = new URLSearchParams({ title, body });
-  return `${REPO_URL}?${params.toString()}`;
+  return sections.join("\n");
 }
 
 const DIAGNOSTICS_TIMEOUT_MS = 3000;

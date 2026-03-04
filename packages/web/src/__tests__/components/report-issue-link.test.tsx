@@ -7,10 +7,12 @@ import { ReportIssueLink } from "@/components/report-issue-link";
 const mockBuildGitHubIssueUrl = vi
   .fn()
   .mockReturnValue("https://github.com/heypinchy/pinchy/issues/new?title=test");
+const mockBuildIssueBody = vi.fn().mockReturnValue("**Error:** Test error\n\n**Environment:**\n");
 const mockFetchDiagnostics = vi.fn().mockResolvedValue(null);
 
 vi.mock("@/lib/github-issue", () => ({
   buildGitHubIssueUrl: (...args: unknown[]) => mockBuildGitHubIssueUrl(...args),
+  buildIssueBody: (...args: unknown[]) => mockBuildIssueBody(...args),
   fetchDiagnostics: () => mockFetchDiagnostics(),
 }));
 
@@ -24,6 +26,11 @@ describe("ReportIssueLink", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     windowOpenSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      writable: true,
+      configurable: true,
+    });
   });
 
   afterEach(() => {
@@ -35,7 +42,7 @@ describe("ReportIssueLink", () => {
     expect(screen.getByRole("button", { name: /report this issue/i })).toBeInTheDocument();
   });
 
-  it("should fetch diagnostics and open GitHub URL on click", async () => {
+  it("should fetch diagnostics, build body and URL, and open GitHub on click", async () => {
     const user = userEvent.setup();
     const diagnostics = {
       database: "connected" as const,
@@ -50,6 +57,12 @@ describe("ReportIssueLink", () => {
 
     await waitFor(() => {
       expect(mockFetchDiagnostics).toHaveBeenCalled();
+      expect(mockBuildIssueBody).toHaveBeenCalledWith({
+        error: "Connection refused",
+        statusCode: 500,
+        page: "/setup",
+        diagnostics,
+      });
       expect(mockBuildGitHubIssueUrl).toHaveBeenCalledWith({
         error: "Connection refused",
         statusCode: 500,
@@ -64,6 +77,18 @@ describe("ReportIssueLink", () => {
     });
   });
 
+  it("should show copied confirmation when clipboard write succeeds", async () => {
+    const user = userEvent.setup();
+    mockFetchDiagnostics.mockResolvedValueOnce(null);
+
+    render(<ReportIssueLink error="Test error" />);
+    await user.click(screen.getByRole("button", { name: /report this issue/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/copied/i)).toBeInTheDocument();
+    });
+  });
+
   it("should open GitHub URL without diagnostics when fetch fails", async () => {
     const user = userEvent.setup();
     mockFetchDiagnostics.mockRejectedValueOnce(new Error("Network error"));
@@ -72,7 +97,7 @@ describe("ReportIssueLink", () => {
     await user.click(screen.getByRole("button", { name: /report this issue/i }));
 
     await waitFor(() => {
-      expect(mockBuildGitHubIssueUrl).toHaveBeenCalledWith(
+      expect(mockBuildIssueBody).toHaveBeenCalledWith(
         expect.objectContaining({ diagnostics: undefined })
       );
       expect(windowOpenSpy).toHaveBeenCalled();
@@ -89,5 +114,22 @@ describe("ReportIssueLink", () => {
     await user.click(screen.getByRole("button", { name: /report this issue/i }));
 
     expect(screen.getByRole("button", { name: /report this issue/i })).toBeDisabled();
+  });
+
+  it("should still open GitHub URL when clipboard write fails", async () => {
+    const user = userEvent.setup();
+    mockFetchDiagnostics.mockResolvedValueOnce(null);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockRejectedValue(new Error("Clipboard denied")) },
+      writable: true,
+      configurable: true,
+    });
+
+    render(<ReportIssueLink error="Test error" />);
+    await user.click(screen.getByRole("button", { name: /report this issue/i }));
+
+    await waitFor(() => {
+      expect(windowOpenSpy).toHaveBeenCalled();
+    });
   });
 });

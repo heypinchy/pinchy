@@ -2,8 +2,8 @@
 
 import { useState } from "react";
 import { usePathname } from "next/navigation";
-import { ExternalLink, Loader2 } from "lucide-react";
-import { buildGitHubIssueUrl, fetchDiagnostics } from "@/lib/github-issue";
+import { Check, ExternalLink, Loader2 } from "lucide-react";
+import { buildGitHubIssueUrl, buildIssueBody, fetchDiagnostics } from "@/lib/github-issue";
 
 interface ReportIssueLinkProps {
   error: string;
@@ -13,6 +13,7 @@ interface ReportIssueLinkProps {
 export function ReportIssueLink({ error, statusCode }: ReportIssueLinkProps) {
   const pathname = usePathname();
   const [loading, setLoading] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   async function handleClick() {
     setLoading(true);
@@ -24,16 +25,30 @@ export function ReportIssueLink({ error, statusCode }: ReportIssueLinkProps) {
         // Diagnostics fetch failed — continue without them
       }
 
-      const url = buildGitHubIssueUrl({
-        error,
-        statusCode,
-        page: pathname,
-        diagnostics,
-      });
+      const context = { error, statusCode, page: pathname, diagnostics };
+      const body = buildIssueBody(context);
+
+      try {
+        await navigator.clipboard.writeText(body);
+        setCopied(true);
+      } catch {
+        // Clipboard write failed — still open GitHub
+      }
+
+      const url = buildGitHubIssueUrl(context);
       window.open(url, "_blank", "noopener,noreferrer");
     } finally {
       setLoading(false);
     }
+  }
+
+  if (copied) {
+    return (
+      <span className="inline-flex items-center gap-1 text-sm text-muted-foreground shrink-0">
+        <Check className="size-3" />
+        Copied — paste into the issue
+      </span>
+    );
   }
 
   return (
