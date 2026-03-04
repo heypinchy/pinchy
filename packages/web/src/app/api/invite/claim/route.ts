@@ -34,7 +34,14 @@ export async function POST(request: NextRequest) {
     }
 
     // Use Better Auth admin API to set password
-    await auth.api.setUserPassword({
+    // setUserPassword is provided by the admin plugin but not included in the inferred API type
+    await (
+      auth.api as unknown as {
+        setUserPassword: (opts: {
+          body: { userId: string; newPassword: string };
+        }) => Promise<unknown>;
+      }
+    ).setUserPassword({
       body: { userId: existingUser.id, newPassword: password },
     });
 

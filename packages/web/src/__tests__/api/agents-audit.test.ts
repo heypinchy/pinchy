@@ -15,13 +15,17 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/auth", () => ({
-  auth: {
-    api: {
-      getSession: vi.fn(),
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi.fn();
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+      },
     },
-  },
-}));
+  };
+});
 
 vi.mock("@/lib/agents", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/agents")>();

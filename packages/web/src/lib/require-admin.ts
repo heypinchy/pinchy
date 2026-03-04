@@ -1,9 +1,9 @@
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 
 export async function requireAdmin() {
-  const session = await auth.api.getSession({
+  const session = await getSession({
     headers: await headers(),
   });
 

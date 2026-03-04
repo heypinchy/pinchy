@@ -1,4 +1,4 @@
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 
 export async function validateWsSession(
   cookieHeader: string | undefined
@@ -6,7 +6,7 @@ export async function validateWsSession(
   if (!cookieHeader) return null;
 
   try {
-    const session = await auth.api.getSession({
+    const session = await getSession({
       headers: new Headers({ cookie: cookieHeader }),
     });
 
@@ -14,7 +14,7 @@ export async function validateWsSession(
 
     return {
       userId: session.user.id,
-      userRole: (session.user as { role?: string }).role ?? "user",
+      userRole: session.user.role ?? "user",
     };
   } catch {
     return null;

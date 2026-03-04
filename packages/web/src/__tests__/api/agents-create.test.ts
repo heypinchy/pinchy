@@ -8,15 +8,19 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
-vi.mock("@/lib/auth", () => ({
-  auth: {
-    api: {
-      getSession: vi
-        .fn()
-        .mockResolvedValue({ user: { id: "1", email: "admin@test.com", role: "admin" } }),
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi
+    .fn()
+    .mockResolvedValue({ user: { id: "1", email: "admin@test.com", role: "admin" } });
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+      },
     },
-  },
-}));
+  };
+});
 
 const { insertValuesMock } = vi.hoisted(() => ({
   insertValuesMock: vi.fn(),

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { readWorkspaceFile, writeWorkspaceFile } from "@/lib/workspace";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { restartState } from "@/server/restart-state";
@@ -8,18 +8,14 @@ import { restartState } from "@/server/restart-state";
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
 export async function GET(request: NextRequest, { params }: Params) {
-  const session = await auth.api.getSession({ headers: await headers() });
+  const session = await getSession({ headers: await headers() });
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const { agentId, filename } = await params;
 
-  const agentOrError = await getAgentWithAccess(
-    agentId,
-    session.user.id!,
-    session.user.role || "user"
-  );
+  const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
   if (agentOrError instanceof NextResponse) return agentOrError;
 
   try {
@@ -32,18 +28,14 @@ export async function GET(request: NextRequest, { params }: Params) {
 }
 
 export async function PUT(request: NextRequest, { params }: Params) {
-  const session = await auth.api.getSession({ headers: await headers() });
+  const session = await getSession({ headers: await headers() });
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const { agentId, filename } = await params;
 
-  const agentOrError = await getAgentWithAccess(
-    agentId,
-    session.user.id!,
-    session.user.role || "user"
-  );
+  const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
   if (agentOrError instanceof NextResponse) return agentOrError;
 
   const { content } = await request.json();

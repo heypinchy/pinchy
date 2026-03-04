@@ -6,7 +6,7 @@ import { resolve, relative } from "path";
  * Security test: ensures all API routes have authentication checks.
  *
  * Every API route must use either:
- * - auth.api.getSession() from @/lib/auth
+ * - getSession() from @/lib/auth
  * - requireAdmin() from @/lib/api-auth
  * - requireAuth() from @/lib/require-auth
  *
@@ -15,6 +15,7 @@ import { resolve, relative } from "path";
 
 const AUTH_PATTERNS = [
   /\bauth\.api\.getSession\(/,
+  /\bgetSession\(/,
   /\brequireAdmin\(\)/,
   /\brequireAuth\(\)/,
   /\bgetAgentWithAccess\(/,
@@ -64,7 +65,7 @@ describe("API route authentication", () => {
 
       expect(
         hasAuth,
-        `Route ${routeFile} is missing an authentication check. Add auth.api.getSession(), requireAdmin(), or requireAuth(). If this route is intentionally public, add it to PUBLIC_ROUTES in this test file.`
+        `Route ${routeFile} is missing an authentication check. Add getSession(), requireAdmin(), or requireAuth(). If this route is intentionally public, add it to PUBLIC_ROUTES in this test file.`
       ).toBe(true);
     });
   }

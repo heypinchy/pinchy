@@ -5,13 +5,17 @@ vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
 }));
 
-vi.mock("@/lib/auth", () => ({
-  auth: {
-    api: {
-      getSession: vi.fn().mockResolvedValue({ user: { id: "1", email: "admin@test.com" } }),
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi.fn().mockResolvedValue({ user: { id: "1", email: "admin@test.com" } });
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+      },
     },
-  },
-}));
+  };
+});
 
 vi.mock("@/lib/workspace", () => ({
   readWorkspaceFile: vi.fn().mockReturnValue("# Soul content"),

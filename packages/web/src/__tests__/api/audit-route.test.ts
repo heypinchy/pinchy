@@ -42,7 +42,7 @@ vi.mock("@/db/schema", () => ({
   users: {
     id: "id",
     name: "name",
-    deletedAt: "deleted_at",
+    banned: "banned",
   },
   agents: {
     id: "id",
@@ -84,11 +84,11 @@ describe("GET /api/audit", () => {
       detail: null,
       rowHmac: "hmac-1",
       actorName: null,
-      actorDeleted: null,
+      actorBanned: null,
       resourceAgentName: null,
       resourceAgentDeleted: null,
       resourceUserName: null,
-      resourceUserDeleted: null,
+      resourceUserBanned: null,
     },
     {
       id: 2,
@@ -100,11 +100,11 @@ describe("GET /api/audit", () => {
       detail: { key: "provider" },
       rowHmac: "hmac-2",
       actorName: null,
-      actorDeleted: null,
+      actorBanned: null,
       resourceAgentName: null,
       resourceAgentDeleted: null,
       resourceUserName: null,
-      resourceUserDeleted: null,
+      resourceUserBanned: null,
     },
   ];
 
@@ -303,11 +303,11 @@ describe("GET /api/audit", () => {
         detail: {},
         rowHmac: "abc",
         actorName: "Alice",
-        actorDeleted: null,
+        actorBanned: null,
         resourceAgentName: null,
         resourceAgentDeleted: null,
         resourceUserName: null,
-        resourceUserDeleted: null,
+        resourceUserBanned: null,
       },
     ];
 
@@ -337,11 +337,11 @@ describe("GET /api/audit", () => {
         detail: {},
         rowHmac: "def",
         actorName: "Alice",
-        actorDeleted: null,
+        actorBanned: null,
         resourceAgentName: "Smithers",
         resourceAgentDeleted: null,
         resourceUserName: null,
-        resourceUserDeleted: null,
+        resourceUserBanned: null,
       },
     ];
 
@@ -359,7 +359,7 @@ describe("GET /api/audit", () => {
     expect(body.entries[0].resourceName).toBe("Smithers");
   });
 
-  it("sets actorDeleted to false when actorDeleted is null", async () => {
+  it("sets actorDeleted to false when actorBanned is null", async () => {
     const entries = [
       {
         id: 3,
@@ -371,11 +371,11 @@ describe("GET /api/audit", () => {
         detail: {},
         rowHmac: "ghi",
         actorName: "Bob",
-        actorDeleted: null,
+        actorBanned: null,
         resourceAgentName: null,
         resourceAgentDeleted: null,
         resourceUserName: null,
-        resourceUserDeleted: null,
+        resourceUserBanned: null,
       },
     ];
 
@@ -390,7 +390,7 @@ describe("GET /api/audit", () => {
     expect(body.entries[0].actorDeleted).toBe(false);
   });
 
-  it("sets actorDeleted to true when actorDeleted is a timestamp", async () => {
+  it("sets actorDeleted to true when actorBanned is true", async () => {
     const entries = [
       {
         id: 4,
@@ -401,12 +401,12 @@ describe("GET /api/audit", () => {
         resource: null,
         detail: {},
         rowHmac: "jkl",
-        actorName: "Deleted User",
-        actorDeleted: new Date("2026-01-01"),
+        actorName: "Banned User",
+        actorBanned: true,
         resourceAgentName: null,
         resourceAgentDeleted: null,
         resourceUserName: null,
-        resourceUserDeleted: null,
+        resourceUserBanned: null,
       },
     ];
 
@@ -429,7 +429,7 @@ describe("GET /api/audit", () => {
         resourceAgentName: null,
         resourceAgentDeleted: null,
         resourceUserName: "Charlie",
-        resourceUserDeleted: null,
+        resourceUserBanned: null,
       },
     ];
 
@@ -452,7 +452,7 @@ describe("GET /api/audit", () => {
         resourceAgentName: "Old Agent",
         resourceAgentDeleted: new Date("2024-01-01"),
         resourceUserName: null,
-        resourceUserDeleted: null,
+        resourceUserBanned: null,
       },
     ];
 
@@ -468,15 +468,15 @@ describe("GET /api/audit", () => {
     expect(body.entries[0].resourceDeleted).toBe(true);
   });
 
-  it("sets resourceDeleted to true when user resource has deletedAt", async () => {
+  it("sets resourceDeleted to true when user resource is banned", async () => {
     const entries = [
       {
         ...sampleEntries[0],
         resource: "user:user-2",
         resourceAgentName: null,
         resourceAgentDeleted: null,
-        resourceUserName: "Deleted User",
-        resourceUserDeleted: new Date("2024-06-01"),
+        resourceUserName: "Banned User",
+        resourceUserBanned: true,
       },
     ];
 
@@ -488,7 +488,7 @@ describe("GET /api/audit", () => {
     const req = new NextRequest("http://localhost/api/audit");
     const res = await GET(req);
     const body = await res.json();
-    expect(body.entries[0].resourceName).toBe("Deleted User");
+    expect(body.entries[0].resourceName).toBe("Banned User");
     expect(body.entries[0].resourceDeleted).toBe(true);
   });
 });

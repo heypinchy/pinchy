@@ -15,6 +15,7 @@ const { mockGetSession, mockRedirect, mockHeaders } = vi.hoisted(() => ({
 }));
 
 vi.mock("@/lib/auth", () => ({
+  getSession: mockGetSession,
   auth: {
     api: {
       getSession: mockGetSession,

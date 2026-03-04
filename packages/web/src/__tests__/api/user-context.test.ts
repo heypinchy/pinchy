@@ -4,15 +4,19 @@ vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
 }));
 
-vi.mock("@/lib/auth", () => ({
-  auth: {
-    api: {
-      getSession: vi
-        .fn()
-        .mockResolvedValue({ user: { id: "user-1", email: "user@test.com", role: "user" } }),
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi
+    .fn()
+    .mockResolvedValue({ user: { id: "user-1", email: "user@test.com", role: "user" } });
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+      },
     },
-  },
-}));
+  };
+});
 
 const mockFindFirst = vi.fn();
 const mockUpdate = vi.fn();

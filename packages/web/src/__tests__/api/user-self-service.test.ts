@@ -7,14 +7,18 @@ vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
 }));
 
-vi.mock("@/lib/auth", () => ({
-  auth: {
-    api: {
-      getSession: vi.fn(),
-      changePassword: vi.fn(),
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi.fn();
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+        changePassword: vi.fn(),
+      },
     },
-  },
-}));
+  };
+});
 
 vi.mock("@/db", () => ({
   db: {

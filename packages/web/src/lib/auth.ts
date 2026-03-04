@@ -2,6 +2,7 @@ import { betterAuth } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { createAuthMiddleware } from "better-auth/api";
 import { admin } from "better-auth/plugins";
+import { verifyPassword as verifyScrypt } from "better-auth/crypto";
 import bcrypt from "bcryptjs";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
@@ -79,8 +80,8 @@ export const auth = betterAuth({
         if (hash.startsWith("$2")) {
           return bcrypt.compare(password, hash);
         }
-        // Return undefined to fall through to Better Auth's scrypt
-        return undefined;
+        // Fall through to Better Auth's default scrypt verifier
+        return verifyScrypt({ password, hash });
       },
     },
   },
@@ -106,5 +107,23 @@ export const auth = betterAuth({
   },
 });
 
-// Type export for use in other files
-export type Session = typeof auth.$Infer.Session;
+// Better Auth v1.5.3 doesn't infer admin plugin fields in $Infer.Session.
+// Manually extend the session type to include them.
+type InferredSession = typeof auth.$Infer.Session;
+export type Session = {
+  session: InferredSession["session"];
+  user: InferredSession["user"] & {
+    role: string;
+    banned: boolean;
+    banReason: string | null;
+    banExpires: Date | null;
+  };
+};
+
+/**
+ * Typed wrapper around auth.api.getSession that includes admin plugin fields.
+ */
+export async function getSession(opts: { headers: Headers }): Promise<Session | null> {
+  const session = await auth.api.getSession(opts);
+  return session as Session | null;
+}

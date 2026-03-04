@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
-import { auth, type Session } from "@/lib/auth";
+import { getSession, type Session } from "@/lib/auth";
 
 /**
  * Check auth + admin role for API routes.
  * Returns the session if the user is an admin, or a NextResponse error otherwise.
  */
 export async function requireAdmin(): Promise<Session | NextResponse> {
-  const session = await auth.api.getSession({
+  const session = await getSession({
     headers: await headers(),
   });
   if (!session?.user) {

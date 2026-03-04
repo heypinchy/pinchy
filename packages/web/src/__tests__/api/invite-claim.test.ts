@@ -17,6 +17,7 @@ vi.mock("@/lib/openclaw-config", () => ({
 }));
 
 vi.mock("@/lib/auth", () => ({
+  getSession: vi.fn(),
   auth: {
     api: {
       signUpEmail: vi.fn().mockResolvedValue({
