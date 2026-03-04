@@ -329,18 +329,30 @@ describe("AppSidebar", () => {
     });
   });
 
-  it("should render a Report a bug link in the footer", () => {
+  it("should render a Report a bug button in the footer", () => {
     render(
       <SidebarProvider>
         <AppSidebar agents={[]} isAdmin={false} />
       </SidebarProvider>
     );
-    const link = screen.getByRole("link", { name: /report a bug/i });
-    expect(link).toBeInTheDocument();
-    expect(link).toHaveAttribute(
-      "href",
-      expect.stringContaining("github.com/heypinchy/pinchy/issues/new")
+    expect(screen.getByRole("button", { name: /report a bug/i })).toBeInTheDocument();
+  });
+
+  it("should open bug report URL when Report a bug is clicked", async () => {
+    const user = userEvent.setup();
+    const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+    render(
+      <SidebarProvider>
+        <AppSidebar agents={[]} isAdmin={false} />
+      </SidebarProvider>
     );
+    await user.click(screen.getByRole("button", { name: /report a bug/i }));
+    expect(openSpy).toHaveBeenCalledWith(
+      expect.stringContaining("github.com/heypinchy/pinchy/issues/new"),
+      "_blank",
+      "noopener,noreferrer"
+    );
+    openSpy.mockRestore();
   });
 
   describe("agent ordering", () => {

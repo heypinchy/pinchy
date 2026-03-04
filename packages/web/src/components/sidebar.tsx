@@ -133,11 +133,13 @@ export function AppSidebar({ agents, isAdmin }: AppSidebarProps) {
             </SidebarMenuItem>
           )}
           <SidebarMenuItem>
-            <SidebarMenuButton asChild>
-              <a href={buildBugReportUrl(pathname)} target="_blank" rel="noopener noreferrer">
-                <Bug className="size-4" />
-                <span>Report a bug</span>
-              </a>
+            <SidebarMenuButton
+              onClick={() =>
+                window.open(buildBugReportUrl(pathname), "_blank", "noopener,noreferrer")
+              }
+            >
+              <Bug className="size-4" />
+              <span>Report a bug</span>
             </SidebarMenuButton>
           </SidebarMenuItem>
           <SidebarMenuItem>
