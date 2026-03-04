@@ -5,7 +5,8 @@ import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/thread";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
 import Link from "next/link";
-import { Settings, MessageSquarePlus } from "lucide-react";
+import { Settings } from "lucide-react";
+import { MobileChatHeader } from "@/components/mobile-chat-header";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 
@@ -37,16 +38,13 @@ export function Chat({
 
   const statusColor = isConnected ? "text-green-600" : "text-destructive";
 
-  function handleNewChat() {
-    window.location.reload();
-  }
-
   return (
     <AgentIdContext.Provider value={agentId}>
       <AssistantRuntimeProvider runtime={runtime}>
         <AgentAvatarContext.Provider value={avatarUrl ?? null}>
           <div className="flex flex-col h-full min-h-0">
-            <header className="p-4 border-b flex items-center justify-between shrink-0">
+            <MobileChatHeader agentId={agentId} agentName={agentName} avatarUrl={avatarUrl} />
+            <header className="hidden md:flex p-4 border-b items-center justify-between shrink-0">
               <div className="flex items-center gap-2 animate-in fade-in duration-300">
                 {avatarUrl && (
                   // eslint-disable-next-line @next/next/no-img-element
@@ -69,13 +67,6 @@ export function Chat({
                 </TooltipProvider>
               </div>
               <div className="flex items-center gap-3">
-                <button
-                  onClick={handleNewChat}
-                  aria-label="New Chat"
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <MessageSquarePlus className="h-5 w-5" />
-                </button>
                 <Link
                   href={`/chat/${agentId}/settings`}
                   aria-label="Settings"

@@ -24,6 +24,14 @@ vi.mock("@/components/assistant-ui/thread", () => ({
   ),
 }));
 
+vi.mock("@/components/mobile-chat-header", () => ({
+  MobileChatHeader: ({ agentId, agentName }: any) => (
+    <div data-testid="mobile-chat-header" data-agent-id={agentId}>
+      {agentName}
+    </div>
+  ),
+}));
+
 vi.mock("next/link", () => ({
   default: ({
     children,
@@ -81,7 +89,8 @@ describe("Chat", () => {
 
   it("should render agent name in header", () => {
     render(<Chat agentId="agent-1" agentName="Smithers" />);
-    expect(screen.getByText("Smithers")).toBeInTheDocument();
+    const elements = screen.getAllByText("Smithers");
+    expect(elements.length).toBeGreaterThanOrEqual(1);
   });
 
   it("should show connected status indicator when WebSocket is connected", () => {
@@ -129,24 +138,11 @@ describe("Chat", () => {
     expect(settingsLink).toHaveAttribute("href", "/chat/agent-1/settings");
   });
 
-  it("should render a New Chat button", () => {
+  it("should render MobileChatHeader", () => {
     render(<Chat agentId="agent-1" agentName="Smithers" />);
-    const newChatButton = screen.getByRole("button", { name: /new chat/i });
-    expect(newChatButton).toBeInTheDocument();
-  });
-
-  it("should reload the page when New Chat is clicked", () => {
-    const reloadMock = vi.fn();
-    Object.defineProperty(window, "location", {
-      value: { reload: reloadMock },
-      writable: true,
-    });
-
-    render(<Chat agentId="agent-1" agentName="Smithers" />);
-    const newChatButton = screen.getByRole("button", { name: /new chat/i });
-    fireEvent.click(newChatButton);
-
-    expect(reloadMock).toHaveBeenCalled();
+    const mobileHeader = screen.getByTestId("mobile-chat-header");
+    expect(mobileHeader).toBeInTheDocument();
+    expect(mobileHeader).toHaveAttribute("data-agent-id", "agent-1");
   });
 
   it("should render the settings link with the correct agent-specific href", () => {
