@@ -63,7 +63,11 @@ export function buildIssueBody(context: IssueContext): string {
     );
   }
 
-  sections.push("", "**Steps to reproduce:**", "1. ");
+  sections.push(
+    "",
+    "**Steps to reproduce:** *(please describe what you did before the error occurred)*",
+    "1. "
+  );
 
   if (diagnostics?.logs) {
     sections.push("", "**Logs:**", "```", diagnostics.logs, "```");

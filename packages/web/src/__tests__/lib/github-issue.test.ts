@@ -158,6 +158,15 @@ describe("buildIssueBody", () => {
     });
     expect(body).toContain("key=abc&status=error#hash");
   });
+
+  it("should include a hint in the steps to reproduce section", () => {
+    const body = buildIssueBody({
+      error: "Setup failed",
+      page: "/setup",
+    });
+    expect(body).toContain("Steps to reproduce");
+    expect(body).toMatch(/please describe/i);
+  });
 });
 
 describe("fetchDiagnostics", () => {
