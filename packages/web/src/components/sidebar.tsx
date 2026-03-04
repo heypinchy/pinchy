@@ -18,15 +18,8 @@ import {
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { getAgentAvatarSvg } from "@/lib/avatar";
-
-interface Agent {
-  id: string;
-  name: string;
-  model: string;
-  isPersonal: boolean;
-  tagline: string | null;
-  avatarSeed: string | null;
-}
+import { sortAgents } from "@/components/agent-list";
+import type { Agent } from "@/components/agent-list";
 
 interface AppSidebarProps {
   agents: Agent[];
@@ -35,11 +28,7 @@ interface AppSidebarProps {
 
 export function AppSidebar({ agents, isAdmin }: AppSidebarProps) {
   const pathname = usePathname();
-  const sortedAgents = [...agents].sort((a, b) => {
-    if (a.isPersonal && !b.isPersonal) return -1;
-    if (!a.isPersonal && b.isPersonal) return 1;
-    return a.name.localeCompare(b.name);
-  });
+  const sortedAgents = sortAgents(agents);
 
   return (
     <Sidebar>
