@@ -298,15 +298,15 @@ export function useWsRuntime(agentId: string): {
 
       if (!text.trim() && images.length === 0) return;
 
-      // Implicit abort: if a stream is running, abort it first
+      // If a stream is running, clean up client-side state.
+      // Don't send an explicit abort — just send the new message and let
+      // the server handle it. OpenClaw can hang if abort + chat overlap.
       if (isRunningRef.current) {
         pendingNewStreamRef.current = true;
-        // Clear old stream's debounce timer to prevent it from resetting isRunning
         if (debounceTimerRef.current) {
           clearTimeout(debounceTimerRef.current);
           debounceTimerRef.current = null;
         }
-        wsRef.current?.send(JSON.stringify({ type: "abort", agentId }));
       }
 
       const userMessage: WsMessage = {

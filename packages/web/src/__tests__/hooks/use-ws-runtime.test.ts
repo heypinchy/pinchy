@@ -1223,7 +1223,7 @@ describe("useWsRuntime", () => {
       expect(result.current.isDelayed).toBe(false);
     });
 
-    it("should send abort before new message when isRunning is true", () => {
+    it("should send new message without client-side abort when isRunning is true", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws = wsInstances[0];
 
@@ -1260,16 +1260,16 @@ describe("useWsRuntime", () => {
         });
       });
 
-      // Should have sent: history, message1, abort, message2
+      // Should have sent: history, message1, message2 (no client-side abort)
+      // Server handles abort internally when it receives the new message
       const calls = ws.send.mock.calls.map((c: any) => JSON.parse(c[0]));
-      const abortIdx = calls.findIndex((c: any) => c.type === "abort");
-      const msg2Idx = calls.findIndex(
+      const abortCalls = calls.filter((c: any) => c.type === "abort");
+      const msg2 = calls.find(
         (c: any) => c.type === "message" && c.content === "Actually, different question"
       );
 
-      expect(abortIdx).toBeGreaterThan(-1);
-      expect(msg2Idx).toBeGreaterThan(abortIdx);
-      expect(calls[abortIdx].agentId).toBe("agent-1");
+      expect(abortCalls).toHaveLength(0);
+      expect(msg2).toBeDefined();
     });
 
     it("should not send abort before new message when not streaming", () => {

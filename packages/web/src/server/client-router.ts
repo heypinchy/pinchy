@@ -29,6 +29,10 @@ interface HistoryMessage {
 }
 
 export class ClientRouter {
+  // Tracks active streams per session key. When a new message comes in
+  // for a session that's already streaming, we abort the old stream first.
+  private activeStreams = new Map<string, Promise<void>>();
+
   constructor(
     private openclawClient: OpenClawClient,
     private userId: string,
@@ -73,9 +77,9 @@ export class ClientRouter {
 
     if (message.type === "abort") {
       const sessionKey = this.computeSessionKey(message.agentId);
-      console.log("[DEBUG] abort: calling chatAbort");
       await this.openclawClient.chatAbort(sessionKey);
-      console.log("[DEBUG] abort: chatAbort resolved, sending aborted");
+      // Wait for the active stream to finish before confirming
+      await this.activeStreams.get(sessionKey)?.catch(() => {});
       this.sendToClient(clientWs, { type: "aborted" });
       return;
     }
@@ -83,7 +87,12 @@ export class ClientRouter {
     const sessionKey = this.computeSessionKey(message.agentId);
 
     const messageId = crypto.randomUUID();
-    console.log("[DEBUG] message: start, messageId=", messageId);
+
+    // If there's an active stream for this session, abort it and wait
+    if (this.activeStreams.has(sessionKey)) {
+      await this.openclawClient.chatAbort(sessionKey);
+      await this.activeStreams.get(sessionKey)?.catch(() => {});
+    }
 
     try {
       await this.waitForConnection();
@@ -139,48 +148,52 @@ export class ClientRouter {
         chatOptions.extraSystemPrompt = extraPromptParts.join("\n\n");
       }
 
-      console.log("[DEBUG] message: calling chat(), messageId=", messageId);
       const stream = this.openclawClient.chat(text, chatOptions);
-      console.log("[DEBUG] message: chat() returned stream, entering for-await");
 
-      for await (const chunk of stream) {
-        // Stop consuming the stream if the browser disconnected — frees
-        // server resources while letting OpenClaw finish on its side.
-        if (clientWs.readyState !== WS_OPEN) {
-          break;
+      const streamPromise = (async () => {
+        for await (const chunk of stream) {
+          if (clientWs.readyState !== WS_OPEN) {
+            break;
+          }
+
+          if (chunk.type === "text") {
+            this.sendToClient(clientWs, {
+              type: "chunk",
+              content: chunk.text,
+              messageId,
+            });
+          }
+
+          if (chunk.type === "error") {
+            console.error("OpenClaw error chunk:", chunk.text);
+            this.sendToClient(clientWs, {
+              type: "error",
+              message:
+                "Something went wrong connecting to the agent. Try refreshing — if it persists, check the logs.",
+              messageId,
+            });
+          }
+
+          if (chunk.type === "done") {
+            this.sessionCache.add(sessionKey);
+            this.sendToClient(clientWs, {
+              type: "done",
+              messageId,
+            });
+          }
         }
+      })();
 
-        console.log("[DEBUG] chunk type=", chunk.type, "messageId=", messageId);
-
-        if (chunk.type === "text") {
-          this.sendToClient(clientWs, {
-            type: "chunk",
-            content: chunk.text,
-            messageId,
-          });
-        }
-
-        if (chunk.type === "error") {
-          console.error("OpenClaw error chunk:", chunk.text);
-          this.sendToClient(clientWs, {
-            type: "error",
-            message:
-              "Something went wrong connecting to the agent. Try refreshing — if it persists, check the logs.",
-            messageId,
-          });
-        }
-
-        if (chunk.type === "done") {
-          this.sessionCache.add(sessionKey);
-          this.sendToClient(clientWs, {
-            type: "done",
-            messageId,
-          });
+      this.activeStreams.set(sessionKey, streamPromise);
+      try {
+        await streamPromise;
+      } finally {
+        // Only delete if this is still the active stream (not replaced by a newer one)
+        if (this.activeStreams.get(sessionKey) === streamPromise) {
+          this.activeStreams.delete(sessionKey);
         }
       }
-      console.log("[DEBUG] message: for-await exited, messageId=", messageId);
     } catch (err) {
-      console.log("[DEBUG] message: CAUGHT ERROR, messageId=", messageId, err);
       this.sendToClient(clientWs, {
         type: "error",
         message: this.sanitizeError(err),
