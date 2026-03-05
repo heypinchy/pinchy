@@ -30,6 +30,7 @@ const PUBLIC_ROUTES = [
   "api/invite/claim/route.ts",
   "api/health/route.ts",
   "api/health/openclaw/route.ts",
+  "api/diagnostics/route.ts",
 ];
 
 function findRouteFiles(dir: string): string[] {

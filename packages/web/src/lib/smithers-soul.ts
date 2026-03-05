@@ -36,6 +36,9 @@ things work, guide them confidently. Here's what you know:
   database, and the OpenClaw agent runtime
 - First-time setup happens through a setup wizard: create an admin account,
   configure an AI provider, and you're ready to go
+- If something goes wrong during setup, error messages include a "Report this
+  issue" link that opens a pre-filled GitHub issue with error details and
+  server diagnostics — users can review everything before submitting
 - Supported providers: Anthropic (Claude), OpenAI (GPT), Google (Gemini).
   Each needs an API key entered in Settings → Providers
 

@@ -12,6 +12,7 @@ import { Form, FormControl, FormField, FormItem, FormLabel } from "@/components/
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Lock, ChevronDown, ExternalLink, CircleCheck, CircleX } from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
+import { ReportIssueLink } from "@/components/report-issue-link";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -143,6 +144,7 @@ export function ProviderKeyForm({
   const [guideOpen, setGuideOpen] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [validationStatus, setValidationStatus] = useState<"idle" | "success" | "error">("idle");
+  const [error, setError] = useState("");
   const { triggerRestart } = useRestart();
 
   const form = useForm<ProviderKeyFormValues>({
@@ -169,6 +171,7 @@ export function ProviderKeyForm({
     if (!provider) return;
 
     setLoading(true);
+    setError("");
     setValidationStatus("idle");
 
     try {
@@ -197,7 +200,7 @@ export function ProviderKeyForm({
     } catch (err) {
       const message = err instanceof Error ? err.message : "Setup failed";
       setValidationStatus("error");
-      toast.error(message);
+      setError(message);
     } finally {
       setLoading(false);
     }
@@ -221,6 +224,7 @@ export function ProviderKeyForm({
                       form.reset();
                       setGuideOpen(false);
                       setValidationStatus("idle");
+                      setError("");
                     }}
                   >
                     {config.name}
@@ -275,6 +279,13 @@ export function ProviderKeyForm({
                 </FormItem>
               )}
             />
+
+            {error && (
+              <div className="flex items-start justify-between gap-2">
+                <p className="text-sm text-destructive">{error}</p>
+                <ReportIssueLink error={error} />
+              </div>
+            )}
 
             <Collapsible open={guideOpen} onOpenChange={setGuideOpen}>
               <CollapsibleTrigger className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">

@@ -17,6 +17,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { CheckCircle2 } from "lucide-react";
+import { ReportIssueLink } from "@/components/report-issue-link";
 
 const setupSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -93,7 +94,12 @@ export function SetupForm() {
           <CardContent>
             <Form {...form}>
               <form onSubmit={form.handleSubmit(onSubmit)} noValidate className="space-y-6">
-                {error && <p className="text-destructive">{error}</p>}
+                {error && (
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm text-destructive">{error}</p>
+                    <ReportIssueLink error={error} />
+                  </div>
+                )}
 
                 <FormField
                   control={form.control}
