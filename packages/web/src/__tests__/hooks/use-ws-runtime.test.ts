@@ -1223,6 +1223,76 @@ describe("useWsRuntime", () => {
       expect(result.current.isDelayed).toBe(false);
     });
 
+    it("should send abort before new message when isRunning is true", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      // First message
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "First question" }],
+          parentId: "root",
+        });
+      });
+
+      // Receive a chunk so we're mid-stream
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "chunk",
+            content: "Let me explain...",
+            messageId: "msg-1",
+          }),
+        });
+      });
+
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      // Send second message while streaming
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Actually, different question" }],
+          parentId: "root",
+        });
+      });
+
+      // Should have sent: history, message1, abort, message2
+      const calls = ws.send.mock.calls.map((c: any) => JSON.parse(c[0]));
+      const abortIdx = calls.findIndex((c: any) => c.type === "abort");
+      const msg2Idx = calls.findIndex(
+        (c: any) => c.type === "message" && c.content === "Actually, different question"
+      );
+
+      expect(abortIdx).toBeGreaterThan(-1);
+      expect(msg2Idx).toBeGreaterThan(abortIdx);
+      expect(calls[abortIdx].agentId).toBe("agent-1");
+    });
+
+    it("should not send abort before new message when not streaming", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      // Send message when not streaming
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      const calls = ws.send.mock.calls.map((c: any) => JSON.parse(c[0]));
+      const abortCalls = calls.filter((c: any) => c.type === "abort");
+      expect(abortCalls).toHaveLength(0);
+    });
+
     it("should handle aborted message from server", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws = wsInstances[0];

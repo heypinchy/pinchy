@@ -65,6 +65,11 @@ export function useWsRuntime(agentId: string): {
   const { triggerRestart } = useRestart();
   const [messages, setMessages] = useState<WsMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
+  const isRunningRef = useRef(false);
+  // Keep ref in sync with state so onNew can read it without stale closures
+  useEffect(() => {
+    isRunningRef.current = isRunning;
+  }, [isRunning]);
   const [isConnected, setIsConnected] = useState(false);
   const [isDelayed, setIsDelayed] = useState(false);
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
@@ -106,6 +111,7 @@ export function useWsRuntime(agentId: string): {
       ws.onclose = () => {
         setIsConnected(false);
         setIsRunning(false);
+
         setIsHistoryLoaded(false);
 
         if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
@@ -301,6 +307,11 @@ export function useWsRuntime(agentId: string): {
 
       if (!text.trim() && images.length === 0) return;
 
+      // Implicit abort: if a stream is running, abort it first
+      if (isRunningRef.current) {
+        wsRef.current?.send(JSON.stringify({ type: "abort", agentId }));
+      }
+
       const userMessage: WsMessage = {
         id: crypto.randomUUID(),
         role: "user",
@@ -349,6 +360,7 @@ export function useWsRuntime(agentId: string): {
   const onCancel = useCallback(() => {
     wsRef.current?.send(JSON.stringify({ type: "abort", agentId }));
     setIsRunning(false);
+    isRunningRef.current = false;
     setIsDelayed(false);
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
