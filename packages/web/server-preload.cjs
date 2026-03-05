@@ -1,5 +1,5 @@
-// Auto-generate NEXTAUTH_SECRET if not set (same pattern as encryption.ts getOrCreateSecret)
-if (!process.env.NEXTAUTH_SECRET) {
+// Auto-generate BETTER_AUTH_SECRET if not set (same pattern as encryption.ts getOrCreateSecret)
+if (!process.env.BETTER_AUTH_SECRET) {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { existsSync, readFileSync, writeFileSync } = require("fs");
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -8,19 +8,19 @@ if (!process.env.NEXTAUTH_SECRET) {
   const { join } = require("path");
 
   const secretsDir = process.env.ENCRYPTION_KEY_DIR || "/app/secrets";
-  const secretPath = join(secretsDir, ".nextauth_secret");
+  const secretPath = join(secretsDir, ".better_auth_secret");
 
   try {
     if (existsSync(secretPath)) {
-      process.env.NEXTAUTH_SECRET = readFileSync(secretPath, "utf-8").trim();
+      process.env.BETTER_AUTH_SECRET = readFileSync(secretPath, "utf-8").trim();
     } else if (existsSync(secretsDir)) {
       const secret = randomBytes(32).toString("hex");
       writeFileSync(secretPath, secret, { mode: 0o600 });
-      process.env.NEXTAUTH_SECRET = secret;
-      console.log("Generated NEXTAUTH_SECRET (persisted to secrets volume)");
+      process.env.BETTER_AUTH_SECRET = secret;
+      console.log("Generated BETTER_AUTH_SECRET (persisted to secrets volume)");
     }
   } catch {
-    // Fall through — Auth.js handles missing secret with its own error
+    // Fall through — Better Auth handles missing secret with its own error
   }
 }
 
