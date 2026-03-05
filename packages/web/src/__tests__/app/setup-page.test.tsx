@@ -12,6 +12,7 @@ const { pushMock, mockRedirect, mockIsSetupComplete } = vi.hoisted(() => ({
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: pushMock }),
   redirect: mockRedirect,
+  usePathname: () => "/setup",
 }));
 
 vi.mock("next/image", () => ({
@@ -26,6 +27,11 @@ vi.mock("next/image", () => ({
 
 vi.mock("@/lib/setup", () => ({
   isSetupComplete: mockIsSetupComplete,
+}));
+
+vi.mock("@/lib/github-issue", () => ({
+  buildGitHubIssueUrl: vi.fn().mockReturnValue("https://github.com/test"),
+  fetchDiagnostics: vi.fn().mockResolvedValue(null),
 }));
 
 import { SetupForm } from "@/components/setup-form";
@@ -200,6 +206,26 @@ describe("Setup Form", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Setup already completed")).toBeInTheDocument();
+    });
+  });
+
+  it("should show report issue link when error occurs", async () => {
+    const user = userEvent.setup();
+    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({ error: "Setup already completed" }),
+    });
+
+    render(<SetupForm />);
+
+    await user.type(screen.getByLabelText(/name/i), "Admin User");
+    await user.type(screen.getByLabelText(/email/i), "admin@test.com");
+    await user.type(screen.getByLabelText(/password/i), "password123");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Setup already completed")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /report this issue/i })).toBeInTheDocument();
     });
   });
 });

@@ -1,9 +1,21 @@
 import { describe, it, expect, vi } from "vitest";
 import { NextRequest } from "next/server";
 
-vi.mock("@/lib/auth", () => ({
-  auth: vi.fn().mockResolvedValue({ user: { id: "1", email: "admin@test.com" } }),
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
 }));
+
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi.fn().mockResolvedValue({ user: { id: "1", email: "admin@test.com" } });
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+      },
+    },
+  };
+});
 
 import { GET } from "@/app/api/templates/route";
 import { auth } from "@/lib/auth";
@@ -35,7 +47,7 @@ describe("GET /api/templates", () => {
   });
 
   it("should return 401 without auth", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
     const response = await GET(request);

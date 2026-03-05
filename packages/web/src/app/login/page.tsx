@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { signIn } from "next-auth/react";
+import { authClient } from "@/lib/auth-client";
 import { useRouter } from "next/navigation";
 import Image from "next/image";
 import { useForm } from "react-hook-form";
@@ -41,13 +41,12 @@ export default function LoginPage() {
     setError("");
 
     try {
-      const result = await signIn("credentials", {
+      const { error } = await authClient.signIn.email({
         email: values.email,
         password: values.password,
-        redirect: false,
       });
 
-      if (result?.error) {
+      if (error) {
         setError("Invalid email or password");
       } else {
         router.push("/");

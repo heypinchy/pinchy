@@ -45,11 +45,11 @@ export async function GET(request: NextRequest) {
         detail: auditLog.detail,
         rowHmac: auditLog.rowHmac,
         actorName: actorUser.name,
-        actorDeleted: actorUser.deletedAt,
+        actorBanned: actorUser.banned,
         resourceAgentName: resourceAgent.name,
         resourceAgentDeleted: resourceAgent.deletedAt,
         resourceUserName: resourceUser.name,
-        resourceUserDeleted: resourceUser.deletedAt,
+        resourceUserBanned: resourceUser.banned,
       })
       .from(auditLog)
       .leftJoin(actorUser, eq(actorUser.id, auditLog.actorId))
@@ -68,11 +68,11 @@ export async function GET(request: NextRequest) {
     actorType: e.actorType,
     actorId: e.actorId,
     actorName: e.actorName ?? null,
-    actorDeleted: !!e.actorDeleted,
+    actorDeleted: !!e.actorBanned,
     eventType: e.eventType,
     resource: e.resource,
     resourceName: e.resourceAgentName ?? e.resourceUserName ?? null,
-    resourceDeleted: !!(e.resourceAgentDeleted ?? e.resourceUserDeleted ?? false),
+    resourceDeleted: !!(e.resourceAgentDeleted ?? e.resourceUserBanned ?? false),
     detail: e.detail,
     rowHmac: e.rowHmac,
   }));

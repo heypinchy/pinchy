@@ -39,8 +39,8 @@ Create a `.env` file in the project root to override defaults:
 # Database password (default: pinchy_dev)
 DB_PASSWORD=your-secure-password
 
-# Auth.js session secret (default: dev-secret-change-in-production)
-NEXTAUTH_SECRET=your-random-secret
+# Better Auth session secret (default: dev-secret-change-in-production)
+BETTER_AUTH_SECRET=your-random-secret
 
 # Encryption key for API keys — 64 hex characters (auto-generated if omitted)
 ENCRYPTION_KEY=
@@ -49,7 +49,7 @@ ENCRYPTION_KEY=
 AUDIT_HMAC_SECRET=
 ```
 
-**`NEXTAUTH_SECRET`** — Used by Auth.js to sign JWT session tokens. Generate one with `openssl rand -hex 32`.
+**`BETTER_AUTH_SECRET`** — Used by Better Auth for session security. Generate one with `openssl rand -hex 32`.
 
 **`ENCRYPTION_KEY`** — Used to encrypt provider API keys at rest (AES-256-GCM). If omitted, Pinchy auto-generates a key and persists it in the `pinchy-secrets` Docker volume. For production, we recommend setting this explicitly with `openssl rand -hex 32`.
 

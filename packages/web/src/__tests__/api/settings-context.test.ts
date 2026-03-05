@@ -1,10 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/auth", () => ({
-  auth: vi
-    .fn()
-    .mockResolvedValue({ user: { id: "admin-1", email: "admin@test.com", role: "admin" } }),
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
 }));
+
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi
+    .fn()
+    .mockResolvedValue({ user: { id: "admin-1", email: "admin@test.com", role: "admin" } });
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+      },
+    },
+  };
+});
 
 const mockGetSetting = vi.fn();
 const mockSetSetting = vi.fn().mockResolvedValue(undefined);
@@ -37,21 +49,21 @@ function makePutRequest(body: Record<string, unknown>) {
 describe("GET /api/settings/context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(auth).mockResolvedValue({
+    vi.mocked(auth.api.getSession).mockResolvedValue({
       user: { id: "admin-1", email: "admin@test.com", role: "admin" },
       expires: "",
     });
   });
 
   it("should return 401 when unauthenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const response = await GET(makeGetRequest());
     expect(response.status).toBe(401);
   });
 
   it("should return 403 for non-admin", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", email: "user@test.com", role: "user" },
       expires: "",
     });
@@ -83,21 +95,21 @@ describe("GET /api/settings/context", () => {
 describe("PUT /api/settings/context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(auth).mockResolvedValue({
+    vi.mocked(auth.api.getSession).mockResolvedValue({
       user: { id: "admin-1", email: "admin@test.com", role: "admin" },
       expires: "",
     });
   });
 
   it("should return 401 when unauthenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const response = await PUT(makePutRequest({ content: "test" }));
     expect(response.status).toBe(401);
   });
 
   it("should return 403 for non-admin", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", email: "user@test.com", role: "user" },
       expires: "",
     });

@@ -3,9 +3,21 @@ import { NextRequest } from "next/server";
 
 // ── Mocks ────────────────────────────────────────────────────────────────
 
-vi.mock("@/lib/auth", () => ({
-  auth: vi.fn(),
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
 }));
+
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi.fn();
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+      },
+    },
+  };
+});
 
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
@@ -59,7 +71,7 @@ describe("GET /api/users", () => {
   });
 
   it("returns 401 when not authenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const response = await GET();
     expect(response.status).toBe(401);
@@ -69,10 +81,10 @@ describe("GET /api/users", () => {
   });
 
   it("returns 403 when user is not admin", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     const response = await GET();
     expect(response.status).toBe(403);
@@ -81,11 +93,11 @@ describe("GET /api/users", () => {
     expect(body.error).toBe("Forbidden");
   });
 
-  it("returns list of users without passwordHash", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+  it("returns only selected user fields", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     const fakeUsers = [
       { id: "user-1", name: "Alice", email: "alice@test.com", role: "user" },
@@ -105,25 +117,24 @@ describe("GET /api/users", () => {
     expect(body.users[0].name).toBe("Alice");
     expect(body.users[0].email).toBe("alice@test.com");
     expect(body.users[0].role).toBe("user");
-    // Ensure passwordHash is NOT in the response
-    expect(body.users[0]).not.toHaveProperty("passwordHash");
+    // Ensure only selected fields are returned (no sensitive data leaks)
+    expect(Object.keys(body.users[0]).sort()).toEqual(["email", "id", "name", "role"]);
   });
 
-  it("includes deletedAt in user list", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+  it("includes banned status in user list", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
-    const deactivatedDate = new Date("2024-01-15T10:00:00Z");
     const fakeUsers = [
-      { id: "user-1", name: "Alice", email: "alice@test.com", role: "user", deletedAt: null },
+      { id: "user-1", name: "Alice", email: "alice@test.com", role: "user", banned: false },
       {
         id: "user-2",
         name: "Bob",
         email: "bob@test.com",
         role: "admin",
-        deletedAt: deactivatedDate,
+        banned: true,
       },
     ];
 
@@ -135,8 +146,8 @@ describe("GET /api/users", () => {
     expect(response.status).toBe(200);
 
     const body = await response.json();
-    expect(body.users[0].deletedAt).toBeNull();
-    expect(body.users[1].deletedAt).toBeTruthy();
+    expect(body.users[0].banned).toBe(false);
+    expect(body.users[1].banned).toBe(true);
   });
 });
 
@@ -152,7 +163,7 @@ describe("DELETE /api/users/[userId]", () => {
   });
 
   it("returns 401 when not authenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const request = new NextRequest("http://localhost:7777/api/users/user-1", {
       method: "DELETE",
@@ -168,10 +179,10 @@ describe("DELETE /api/users/[userId]", () => {
   });
 
   it("returns 403 when user is not admin", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     const request = new NextRequest("http://localhost:7777/api/users/user-2", {
       method: "DELETE",
@@ -187,10 +198,10 @@ describe("DELETE /api/users/[userId]", () => {
   });
 
   it("returns 400 when admin tries to deactivate themselves", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     const request = new NextRequest("http://localhost:7777/api/users/admin-1", {
       method: "DELETE",
@@ -205,8 +216,8 @@ describe("DELETE /api/users/[userId]", () => {
     expect(body.error).toBe("Cannot deactivate your own account");
   });
 
-  it("soft-deletes user by setting deletedAt", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+  it("bans user by setting banned flag", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
     } as never);
@@ -233,7 +244,7 @@ describe("DELETE /api/users/[userId]", () => {
     expect(response.status).toBe(200);
     expect(db.update).toHaveBeenCalledWith(users);
     expect(mockUpdate.set).toHaveBeenCalledWith(
-      expect.objectContaining({ deletedAt: expect.any(Date) })
+      expect.objectContaining({ banned: true, banReason: "Deactivated by admin" })
     );
     expect(db.delete).not.toHaveBeenCalled();
     expect(appendAuditLog).toHaveBeenCalledWith(
@@ -242,10 +253,10 @@ describe("DELETE /api/users/[userId]", () => {
   });
 
   it("returns 404 when user not found", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     // Mock: select personal agents returns empty
     vi.mocked(db.select).mockReturnValueOnce({
@@ -276,10 +287,10 @@ describe("DELETE /api/users/[userId]", () => {
   });
 
   it("returns 200 on successful deletion", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     // Mock: select personal agents returns one agent
     vi.mocked(db.select).mockReturnValueOnce({
@@ -316,10 +327,10 @@ describe("DELETE /api/users/[userId]", () => {
   });
 
   it("deletes user's personal agents' workspace files", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     // Mock: select personal agents returns two agents
     vi.mocked(db.select).mockReturnValueOnce({
@@ -362,10 +373,10 @@ describe("DELETE /api/users/[userId]", () => {
   });
 
   it("calls regenerateOpenClawConfig after deletion", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     // Mock: select personal agents returns one agent
     vi.mocked(db.select).mockReturnValueOnce({

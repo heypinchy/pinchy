@@ -25,6 +25,7 @@ export async function POST(request: NextRequest) {
     if (error instanceof Error && error.message === "Setup already complete") {
       return NextResponse.json({ error: "Setup already complete" }, { status: 403 });
     }
+    console.error("[setup] createAdmin failed:", error);
     return NextResponse.json({ error: "Internal server error" }, { status: 500 });
   }
 }

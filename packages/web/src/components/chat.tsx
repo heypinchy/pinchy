@@ -19,6 +19,7 @@ interface ChatProps {
   configuring?: boolean;
   isPersonal?: boolean;
   avatarUrl?: string;
+  canEdit?: boolean;
 }
 
 export function Chat({
@@ -27,6 +28,7 @@ export function Chat({
   configuring = false,
   isPersonal = false,
   avatarUrl,
+  canEdit = false,
 }: ChatProps) {
   const { runtime, isConnected, isDelayed, isHistoryLoaded } = useWsRuntime(agentId);
 
@@ -43,7 +45,12 @@ export function Chat({
       <AssistantRuntimeProvider runtime={runtime}>
         <AgentAvatarContext.Provider value={avatarUrl ?? null}>
           <div className="flex flex-col h-full min-h-0">
-            <MobileChatHeader agentId={agentId} agentName={agentName} avatarUrl={avatarUrl} />
+            <MobileChatHeader
+              agentId={agentId}
+              agentName={agentName}
+              avatarUrl={avatarUrl}
+              canEdit={canEdit}
+            />
             <header className="hidden md:flex p-4 border-b items-center justify-between shrink-0">
               <div className="flex items-center gap-2 animate-in fade-in duration-300">
                 {avatarUrl && (
@@ -67,13 +74,15 @@ export function Chat({
                 </TooltipProvider>
               </div>
               <div className="flex items-center gap-3">
-                <Link
-                  href={`/chat/${agentId}/settings`}
-                  aria-label="Settings"
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Settings className="h-5 w-5" />
-                </Link>
+                {canEdit && (
+                  <Link
+                    href={`/chat/${agentId}/settings`}
+                    aria-label="Settings"
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Settings className="h-5 w-5" />
+                  </Link>
+                )}
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>

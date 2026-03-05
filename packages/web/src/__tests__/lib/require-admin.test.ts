@@ -8,35 +8,27 @@ class RedirectError extends Error {
   }
 }
 
-const { mockAuth, mockRedirect } = vi.hoisted(() => ({
-  mockAuth: vi.fn(),
+const { mockGetSession, mockRedirect, mockHeaders } = vi.hoisted(() => ({
+  mockGetSession: vi.fn(),
   mockRedirect: vi.fn(),
+  mockHeaders: vi.fn().mockResolvedValue(new Headers()),
 }));
 
 vi.mock("@/lib/auth", () => ({
-  auth: mockAuth,
-  authConfig: {},
+  getSession: mockGetSession,
+  auth: {
+    api: {
+      getSession: mockGetSession,
+    },
+  },
 }));
 
 vi.mock("next/navigation", () => ({
   redirect: mockRedirect,
 }));
 
-vi.mock("@/db", () => ({
-  db: {},
-}));
-
-vi.mock("next-auth", () => ({
-  default: vi.fn(() => ({
-    handlers: { GET: vi.fn(), POST: vi.fn() },
-    auth: vi.fn(),
-    signIn: vi.fn(),
-    signOut: vi.fn(),
-  })),
-}));
-
-vi.mock("@auth/drizzle-adapter", () => ({
-  DrizzleAdapter: vi.fn(),
+vi.mock("next/headers", () => ({
+  headers: mockHeaders,
 }));
 
 import { requireAdmin } from "@/lib/require-admin";
@@ -50,7 +42,7 @@ describe("requireAdmin", () => {
   });
 
   it("redirects to /login when no session", async () => {
-    mockAuth.mockResolvedValue(null);
+    mockGetSession.mockResolvedValue(null);
 
     await expect(requireAdmin()).rejects.toThrow("NEXT_REDIRECT: /login");
 
@@ -58,9 +50,9 @@ describe("requireAdmin", () => {
   });
 
   it("redirects to /login when session has no user id", async () => {
-    mockAuth.mockResolvedValue({
+    mockGetSession.mockResolvedValue({
       user: { email: "a@b.com" },
-      expires: "2026-03-01T00:00:00.000Z",
+      session: { expiresAt: "2026-03-01T00:00:00.000Z" },
     });
 
     await expect(requireAdmin()).rejects.toThrow("NEXT_REDIRECT: /login");
@@ -69,9 +61,9 @@ describe("requireAdmin", () => {
   });
 
   it("redirects to / when user role is not admin", async () => {
-    mockAuth.mockResolvedValue({
+    mockGetSession.mockResolvedValue({
       user: { id: "user-1", email: "a@b.com", role: "user" },
-      expires: "2026-03-01T00:00:00.000Z",
+      session: { expiresAt: "2026-03-01T00:00:00.000Z" },
     });
 
     await expect(requireAdmin()).rejects.toThrow("NEXT_REDIRECT: /");
@@ -82,9 +74,9 @@ describe("requireAdmin", () => {
   it("returns session when user role is admin", async () => {
     const adminSession = {
       user: { id: "user-1", email: "admin@test.com", name: "Admin", role: "admin" },
-      expires: "2026-03-01T00:00:00.000Z",
+      session: { expiresAt: "2026-03-01T00:00:00.000Z" },
     };
-    mockAuth.mockResolvedValue(adminSession);
+    mockGetSession.mockResolvedValue(adminSession);
 
     const result = await requireAdmin();
 

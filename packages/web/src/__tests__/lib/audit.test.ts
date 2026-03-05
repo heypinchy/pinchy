@@ -55,6 +55,66 @@ describe("computeRowHmac", () => {
     expect(computeRowHmac(secret, fields)).not.toBe(computeRowHmac(secret2, fields));
   });
 
+  it("should produce the same HMAC regardless of detail key order (JSONB roundtrip)", () => {
+    const base = {
+      timestamp: new Date("2026-02-21T10:00:00Z"),
+      eventType: "user.invited",
+      actorType: "user" as const,
+      actorId: "user-1",
+      resource: null,
+    };
+
+    // Original JS insertion order
+    const hmacOriginal = computeRowHmac(secret, {
+      ...base,
+      detail: { email: "test@example.com", role: "user" },
+    });
+
+    // After PostgreSQL JSONB roundtrip (keys sorted by length, then alphabetically)
+    const hmacFromDb = computeRowHmac(secret, {
+      ...base,
+      detail: { role: "user", email: "test@example.com" },
+    });
+
+    expect(hmacOriginal).toBe(hmacFromDb);
+  });
+
+  it("should produce the same HMAC for nested objects with reordered keys", () => {
+    const base = {
+      timestamp: new Date("2026-02-21T10:00:00Z"),
+      eventType: "tool.pinchy_ls" as const,
+      actorType: "user" as const,
+      actorId: "user-1",
+      resource: "agent:abc",
+    };
+
+    // Original JS order: toolName, phase, source, params, result
+    const hmacOriginal = computeRowHmac(secret, {
+      ...base,
+      detail: {
+        toolName: "pinchy_ls",
+        phase: "end",
+        source: "openclaw_hook",
+        params: { path: "/data" },
+        result: { content: [{ text: "ok", type: "text" }] },
+      },
+    });
+
+    // JSONB reordered: sorted by key length then alphabetically
+    const hmacFromDb = computeRowHmac(secret, {
+      ...base,
+      detail: {
+        phase: "end",
+        params: { path: "/data" },
+        result: { content: [{ type: "text", text: "ok" }] },
+        source: "openclaw_hook",
+        toolName: "pinchy_ls",
+      },
+    });
+
+    expect(hmacOriginal).toBe(hmacFromDb);
+  });
+
   it("should handle null resource and detail", () => {
     const hmac = computeRowHmac(secret, {
       timestamp: new Date("2026-02-21T10:00:00Z"),

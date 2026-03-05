@@ -13,7 +13,7 @@ export async function GET() {
       name: users.name,
       email: users.email,
       role: users.role,
-      deletedAt: users.deletedAt,
+      banned: users.banned,
     })
     .from(users);
 

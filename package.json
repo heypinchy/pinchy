@@ -17,6 +17,12 @@
     "husky": "^9.1.7",
     "lint-staged": "^16.2.7"
   },
+  "pnpm": {
+    "overrides": {
+      "rollup@>=4.0.0 <4.59.0": ">=4.59.0",
+      "esbuild@<=0.24.2": ">=0.25.0"
+    }
+  },
   "lint-staged": {
     "packages/web/src/**/*.{ts,tsx}": [
       "pnpm -C packages/web exec eslint --no-warn-ignored"

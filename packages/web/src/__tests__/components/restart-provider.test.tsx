@@ -6,18 +6,29 @@ import React from "react";
 // Track fetch calls manually
 let fetchResponses: Array<{ status: string; since?: number }> = [];
 let fetchCallCount = 0;
+let diagnosticsResponse: Record<string, unknown> | null = null;
 
 const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
   fetchCallCount = 0;
   fetchResponses = [{ status: "ok" }];
+  diagnosticsResponse = null;
   globalThis.fetch = vi.fn(async (input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
     if (url.includes("/api/health/openclaw")) {
       const response = fetchResponses[Math.min(fetchCallCount, fetchResponses.length - 1)];
       fetchCallCount++;
       return new Response(JSON.stringify(response), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.includes("/api/diagnostics")) {
+      if (!diagnosticsResponse) {
+        return new Response("", { status: 500 });
+      }
+      return new Response(JSON.stringify(diagnosticsResponse), {
         status: 200,
         headers: { "Content-Type": "application/json" },
       });
@@ -150,6 +161,93 @@ describe("RestartProvider", () => {
 
     await waitFor(() => {
       expect(screen.getByText(/applying changes/i)).toBeInTheDocument();
+    });
+  });
+
+  it("shows error state with report link after timeout", async () => {
+    const { RestartProvider, useRestart } = await import("@/components/restart-provider");
+
+    function Consumer() {
+      const { triggerRestart } = useRestart();
+      return <button onClick={triggerRestart}>trigger</button>;
+    }
+
+    render(
+      <RestartProvider>
+        <Consumer />
+      </RestartProvider>
+    );
+
+    // Wait for initial health check
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    // Server keeps reporting "restarting" indefinitely
+    fetchResponses = [{ status: "restarting", since: Date.now() }];
+    fetchCallCount = 0;
+
+    await act(async () => {
+      screen.getByText("trigger").click();
+    });
+
+    expect(screen.getByText(/applying changes/i)).toBeInTheDocument();
+
+    // Advance past the 30s timeout
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+
+    // Should show error state instead of spinner
+    await waitFor(() => {
+      expect(screen.queryByText(/applying changes/i)).not.toBeInTheDocument();
+      expect(screen.getByText(/taking longer than expected/i)).toBeInTheDocument();
+      expect(screen.getByText(/report this issue/i)).toBeInTheDocument();
+    });
+  });
+
+  it("shows diagnostics details on timeout when available", async () => {
+    const { RestartProvider, useRestart } = await import("@/components/restart-provider");
+
+    function Consumer() {
+      const { triggerRestart } = useRestart();
+      return <button onClick={triggerRestart}>trigger</button>;
+    }
+
+    render(
+      <RestartProvider>
+        <Consumer />
+      </RestartProvider>
+    );
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(100);
+    });
+
+    fetchResponses = [{ status: "restarting", since: Date.now() }];
+    fetchCallCount = 0;
+    diagnosticsResponse = {
+      database: "connected",
+      openclaw: "unreachable",
+      version: "0.1.0",
+      nodeEnv: "production",
+    };
+
+    await act(async () => {
+      screen.getByText("trigger").click();
+    });
+
+    // Advance past the 30s timeout
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(31_000);
+    });
+
+    // Should fetch diagnostics and display status
+    await waitFor(() => {
+      expect(screen.getByText("OpenClaw")).toBeInTheDocument();
+      expect(screen.getByText("unreachable")).toBeInTheDocument();
+      expect(screen.getByText("Database")).toBeInTheDocument();
+      expect(screen.getByText("connected")).toBeInTheDocument();
     });
   });
 

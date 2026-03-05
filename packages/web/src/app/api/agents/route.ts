@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
+import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
 import { db } from "@/db";
 import { agents, activeAgents } from "@/db/schema";
 import { eq, or, and } from "drizzle-orm";
@@ -22,7 +23,7 @@ import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { appendAuditLog } from "@/lib/audit";
 
 export async function GET() {
-  const session = await auth();
+  const session = await getSession({ headers: await headers() });
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
@@ -48,7 +49,7 @@ export async function GET() {
 }
 
 export async function POST(request: NextRequest) {
-  const session = await auth();
+  const session = await getSession({ headers: await headers() });
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

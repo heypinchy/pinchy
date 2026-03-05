@@ -104,19 +104,10 @@ describe("soft-delete columns", () => {
   it("agents table has deletedAt column", () => {
     expect(agents.deletedAt).toBeDefined();
   });
-
-  it("users table has deletedAt column", () => {
-    const { users } = schema;
-    expect(users.deletedAt).toBeDefined();
-  });
 });
 
 describe("soft-delete views", () => {
   it("exports activeAgents view", () => {
     expect(schema.activeAgents).toBeDefined();
-  });
-
-  it("exports activeUsers view", () => {
-    expect(schema.activeUsers).toBeDefined();
   });
 });

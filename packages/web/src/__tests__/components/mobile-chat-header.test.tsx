@@ -44,10 +44,15 @@ describe("MobileChatHeader", () => {
     expect(name).toHaveClass("font-bold");
   });
 
-  it("renders a settings link with aria-label", () => {
-    render(<MobileChatHeader {...defaultProps} />);
+  it("renders a settings link when canEdit is true", () => {
+    render(<MobileChatHeader {...defaultProps} canEdit={true} />);
     const settingsLink = screen.getByRole("link", { name: "Settings" });
     expect(settingsLink).toHaveAttribute("href", "/chat/agent-123/settings");
+  });
+
+  it("does not render a settings link when canEdit is false", () => {
+    render(<MobileChatHeader {...defaultProps} canEdit={false} />);
+    expect(screen.queryByRole("link", { name: "Settings" })).not.toBeInTheDocument();
   });
 
   it("does not render an avatar when avatarUrl is not provided", () => {

@@ -8,6 +8,9 @@ import { ClientRouter } from "./src/server/client-router";
 import { SessionCache } from "./src/server/session-cache";
 import { validateWsSession } from "./src/server/ws-auth";
 import { restartState } from "./src/server/restart-state";
+import { logCapture } from "./src/lib/log-capture";
+
+logCapture.install();
 
 const dev = process.env.NODE_ENV !== "production";
 const app = next({ dev });
@@ -110,17 +113,15 @@ app.prepare().then(async () => {
   server.on("upgrade", async (request, socket, head) => {
     const { pathname } = parse(request.url!, true);
     if (pathname === "/api/ws") {
-      const session = await validateWsSession(request.headers.cookie);
-      if (!session) {
+      const sessionInfo = await validateWsSession(request.headers.cookie);
+      if (!sessionInfo) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
       }
+      const { userId, userRole } = sessionInfo;
       wss.handleUpgrade(request, socket, head, (ws) => {
-        sessionMap.set(ws, {
-          userId: (session.sub as string) || (session.id as string),
-          userRole: (session.role as string) || "user",
-        });
+        sessionMap.set(ws, { userId, userRole });
         wss.emit("connection", ws, request);
       });
     }

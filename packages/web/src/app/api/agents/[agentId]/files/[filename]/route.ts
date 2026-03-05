@@ -1,24 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { headers } from "next/headers";
+import { getSession } from "@/lib/auth";
 import { readWorkspaceFile, writeWorkspaceFile } from "@/lib/workspace";
-import { getAgentWithAccess } from "@/lib/agent-access";
-import { restartState } from "@/server/restart-state";
+import { getAgentWithAccess, assertAgentWriteAccess } from "@/lib/agent-access";
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
 export async function GET(request: NextRequest, { params }: Params) {
-  const session = await auth();
+  const session = await getSession({ headers: await headers() });
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const { agentId, filename } = await params;
 
-  const agentOrError = await getAgentWithAccess(
-    agentId,
-    session.user.id!,
-    session.user.role || "user"
-  );
+  const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
   if (agentOrError instanceof NextResponse) return agentOrError;
 
   try {
@@ -31,19 +27,22 @@ export async function GET(request: NextRequest, { params }: Params) {
 }
 
 export async function PUT(request: NextRequest, { params }: Params) {
-  const session = await auth();
+  const session = await getSession({ headers: await headers() });
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
   const { agentId, filename } = await params;
 
-  const agentOrError = await getAgentWithAccess(
-    agentId,
-    session.user.id!,
-    session.user.role || "user"
-  );
+  const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
   if (agentOrError instanceof NextResponse) return agentOrError;
+
+  // Only admins or personal agent owners can modify agent files
+  try {
+    assertAgentWriteAccess(agentOrError, session.user.id!, session.user.role);
+  } catch {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
 
   const { content } = await request.json();
 
@@ -53,7 +52,6 @@ export async function PUT(request: NextRequest, { params }: Params) {
 
   try {
     writeWorkspaceFile(agentId, filename, content);
-    restartState.notifyRestart();
     return NextResponse.json({ success: true });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Invalid file";

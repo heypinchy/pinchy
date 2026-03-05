@@ -1,9 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockAppendAuditLog, mockFindFirst, mockCompare } = vi.hoisted(() => ({
+const { mockAppendAuditLog } = vi.hoisted(() => ({
   mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
-  mockFindFirst: vi.fn(),
-  mockCompare: vi.fn(),
 }));
 
 vi.mock("@/lib/audit", () => ({
@@ -11,71 +9,82 @@ vi.mock("@/lib/audit", () => ({
 }));
 
 vi.mock("@/db", () => ({
-  db: {
-    query: {
-      users: {
-        findFirst: mockFindFirst,
-      },
-    },
-  },
+  db: {},
 }));
 
-vi.mock("next-auth", () => ({
-  default: vi.fn(() => ({
-    handlers: { GET: vi.fn(), POST: vi.fn() },
-    auth: vi.fn(),
-    signIn: vi.fn(),
-    signOut: vi.fn(),
+vi.mock("@/db/schema", () => ({
+  users: {},
+  sessions: {},
+  accounts: {},
+}));
+
+vi.mock("better-auth", () => ({
+  betterAuth: vi.fn(() => ({
+    handler: vi.fn(),
+    api: {},
+    $Infer: { Session: {} },
   })),
 }));
 
-vi.mock("@auth/drizzle-adapter", () => ({
-  DrizzleAdapter: vi.fn(),
+vi.mock("better-auth/adapters/drizzle", () => ({
+  drizzleAdapter: vi.fn(),
+}));
+
+vi.mock("better-auth/plugins", () => ({
+  admin: vi.fn(() => ({})),
 }));
 
 vi.mock("bcryptjs", () => ({
-  default: {
-    compare: mockCompare,
-  },
+  default: { compare: vi.fn() },
 }));
 
-import { authConfig } from "@/lib/auth";
+// Mock createAuthMiddleware to pass through the handler function
+vi.mock("better-auth/api", () => ({
+  createAuthMiddleware: vi.fn((handler: unknown) => handler),
+}));
 
-// The real authorize function is stored in provider.options.authorize
-// (the top-level authorize is a stub that returns null)
+import { auditAfterHook } from "@/lib/auth";
+
+// The auditAfterHook is the raw handler function (because createAuthMiddleware is mocked)
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
-const credentialsProvider = authConfig.providers[0] as any;
-const authorize = credentialsProvider.options.authorize;
+const handler = auditAfterHook as any;
 
-describe("auth audit logging", () => {
+function createMockContext(overrides: Record<string, unknown> = {}) {
+  return {
+    path: "/sign-in/email",
+    body: { email: "user@example.com" },
+    context: {
+      newSession: null,
+      session: null,
+    },
+    ...overrides,
+  };
+}
+
+describe("auth audit logging (Better Auth hooks)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  describe("authorize", () => {
-    it("should log auth.login on successful authentication", async () => {
-      const mockUser = {
-        id: "user-123",
-        email: "admin@example.com",
-        name: "Admin",
-        role: "admin",
-        passwordHash: "$2a$10$hashedpassword",
-      };
-
-      mockFindFirst.mockResolvedValue(mockUser);
-      mockCompare.mockResolvedValue(true as never);
-
-      const result = await authorize({
-        email: "admin@example.com",
-        password: "Password1",
+  describe("sign-in hooks", () => {
+    it("should log auth.login on successful sign-in", async () => {
+      const ctx = createMockContext({
+        context: {
+          newSession: {
+            user: {
+              id: "user-123",
+              email: "admin@example.com",
+              name: "Admin",
+            },
+            session: { id: "session-1" },
+          },
+          session: null,
+        },
+        body: { email: "admin@example.com" },
       });
 
-      expect(result).toEqual({
-        id: "user-123",
-        email: "admin@example.com",
-        name: "Admin",
-        role: "admin",
-      });
+      await handler(ctx);
+
       expect(mockAppendAuditLog).toHaveBeenCalledWith({
         actorType: "user",
         actorId: "user-123",
@@ -84,162 +93,145 @@ describe("auth audit logging", () => {
       });
     });
 
-    it("should log auth.failed with reason user_not_found when user does not exist", async () => {
-      mockFindFirst.mockResolvedValue(undefined);
-
-      const result = await authorize({
-        email: "unknown@example.com",
-        password: "Password1",
+    it("should log auth.failed on failed sign-in", async () => {
+      const ctx = createMockContext({
+        context: {
+          newSession: null,
+          session: null,
+        },
+        body: { email: "unknown@example.com" },
       });
 
-      expect(result).toBeNull();
+      await handler(ctx);
+
       expect(mockAppendAuditLog).toHaveBeenCalledWith({
         actorType: "system",
         actorId: "system",
         eventType: "auth.failed",
-        detail: { email: "unknown@example.com", reason: "user_not_found" },
+        detail: { email: "unknown@example.com", reason: "invalid_credentials" },
       });
     });
 
-    it("should log auth.failed with reason user_not_found when user has no password hash", async () => {
-      const mockUser = {
-        id: "user-456",
-        email: "nopw@example.com",
-        name: "No Password",
-        role: "user",
-        passwordHash: null,
-      };
-
-      mockFindFirst.mockResolvedValue(mockUser);
-
-      const result = await authorize({
-        email: "nopw@example.com",
-        password: "Password1",
+    it("should use 'unknown' email when body has no email", async () => {
+      const ctx = createMockContext({
+        context: {
+          newSession: null,
+          session: null,
+        },
+        body: {},
       });
 
-      expect(result).toBeNull();
+      await handler(ctx);
+
       expect(mockAppendAuditLog).toHaveBeenCalledWith({
         actorType: "system",
         actorId: "system",
         eventType: "auth.failed",
-        detail: { email: "nopw@example.com", reason: "user_not_found" },
+        detail: { email: "unknown", reason: "invalid_credentials" },
       });
     });
 
-    it("should log auth.failed with reason invalid_password when password is wrong", async () => {
-      const mockUser = {
-        id: "user-789",
-        email: "valid@example.com",
-        name: "Valid User",
-        role: "user",
-        passwordHash: "$2a$10$hashedpassword",
-      };
-
-      mockFindFirst.mockResolvedValue(mockUser);
-      mockCompare.mockResolvedValue(false as never);
-
-      const result = await authorize({
-        email: "valid@example.com",
-        password: "WrongPassword1",
-      });
-
-      expect(result).toBeNull();
-      expect(mockAppendAuditLog).toHaveBeenCalledWith({
-        actorType: "system",
-        actorId: "system",
-        eventType: "auth.failed",
-        detail: { email: "valid@example.com", reason: "invalid_password" },
-      });
-    });
-
-    it("should reject login for deactivated user", async () => {
-      const mockUser = {
-        id: "user-1",
-        email: "user@test.com",
-        name: "Test User",
-        role: "user",
-        passwordHash: "$2a$10$hashedpassword",
-        deletedAt: new Date(),
-      };
-
-      mockFindFirst.mockResolvedValue(mockUser);
-      mockCompare.mockResolvedValue(true as never);
-
-      const result = await authorize({
-        email: "user@test.com",
-        password: "password",
-      });
-
-      expect(result).toBeNull();
-      expect(mockAppendAuditLog).toHaveBeenCalledWith({
-        actorType: "system",
-        actorId: "system",
-        eventType: "auth.failed",
-        detail: { email: "user@test.com", reason: "account_deactivated" },
-      });
-    });
-
-    it("should not break authentication if audit logging fails", async () => {
-      const mockUser = {
-        id: "user-123",
-        email: "admin@example.com",
-        name: "Admin",
-        role: "admin",
-        passwordHash: "$2a$10$hashedpassword",
-      };
-
-      mockFindFirst.mockResolvedValue(mockUser);
-      mockCompare.mockResolvedValue(true as never);
+    it("should not break auth if audit logging fails on successful login", async () => {
       mockAppendAuditLog.mockRejectedValue(new Error("DB connection lost"));
 
-      const result = await authorize({
-        email: "admin@example.com",
-        password: "Password1",
+      const ctx = createMockContext({
+        context: {
+          newSession: {
+            user: { id: "user-123", email: "admin@example.com" },
+            session: { id: "session-1" },
+          },
+          session: null,
+        },
+        body: { email: "admin@example.com" },
       });
 
-      expect(result).toEqual({
-        id: "user-123",
-        email: "admin@example.com",
-        name: "Admin",
-        role: "admin",
+      // Should not throw
+      await expect(handler(ctx)).resolves.not.toThrow();
+    });
+
+    it("should not break auth if audit logging fails on failed login", async () => {
+      mockAppendAuditLog.mockRejectedValue(new Error("DB connection lost"));
+
+      const ctx = createMockContext({
+        context: {
+          newSession: null,
+          session: null,
+        },
+        body: { email: "bad@example.com" },
       });
+
+      // Should not throw
+      await expect(handler(ctx)).resolves.not.toThrow();
     });
   });
 
-  describe("signOut event", () => {
-    it("should have events.signOut defined", () => {
-      expect(authConfig.events?.signOut).toBeDefined();
-      expect(typeof authConfig.events?.signOut).toBe("function");
-    });
+  describe("sign-out hooks", () => {
+    it("should log auth.logout on sign-out", async () => {
+      const ctx = createMockContext({
+        path: "/sign-out",
+        body: {},
+        context: {
+          newSession: null,
+          session: {
+            user: { id: "user-456" },
+            session: { id: "session-2" },
+          },
+        },
+      });
 
-    it("should log auth.logout on signOut with token", async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const signOutHandler = authConfig.events?.signOut as any;
-
-      await signOutHandler({ token: { sub: "user-123" } });
+      await handler(ctx);
 
       expect(mockAppendAuditLog).toHaveBeenCalledWith({
         actorType: "user",
-        actorId: "user-123",
+        actorId: "user-456",
         eventType: "auth.logout",
         detail: {},
       });
     });
 
-    it("should not log auth.logout when token has no sub", async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const signOutHandler = authConfig.events?.signOut as any;
+    it("should not log auth.logout when session has no user", async () => {
+      const ctx = createMockContext({
+        path: "/sign-out",
+        body: {},
+        context: {
+          newSession: null,
+          session: null,
+        },
+      });
 
-      await signOutHandler({ token: {} });
+      await handler(ctx);
 
       expect(mockAppendAuditLog).not.toHaveBeenCalled();
     });
 
-    it("should not log auth.logout when message has no token", async () => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const signOutHandler = authConfig.events?.signOut as any;
+    it("should not break auth if audit logging fails on sign-out", async () => {
+      mockAppendAuditLog.mockRejectedValue(new Error("DB connection lost"));
 
-      await signOutHandler({ session: {} });
+      const ctx = createMockContext({
+        path: "/sign-out",
+        body: {},
+        context: {
+          newSession: null,
+          session: {
+            user: { id: "user-456" },
+            session: { id: "session-2" },
+          },
+        },
+      });
+
+      // Should not throw
+      await expect(handler(ctx)).resolves.not.toThrow();
+    });
+  });
+
+  describe("non-auth paths", () => {
+    it("should not log anything for unrelated paths", async () => {
+      const ctx = createMockContext({
+        path: "/get-session",
+        body: {},
+      });
+
+      await handler(ctx);
 
       expect(mockAppendAuditLog).not.toHaveBeenCalled();
     });

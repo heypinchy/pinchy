@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import bcrypt from "bcryptjs";
+import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -24,10 +24,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Invalid or expired invite link" }, { status: 410 });
   }
 
-  const passwordHash = await bcrypt.hash(password, 12);
-
   if (invite.type === "reset") {
-    // Password reset: update existing user
     const existingUser = invite.email
       ? await db.query.users.findFirst({ where: eq(users.email, invite.email) })
       : null;
@@ -36,10 +33,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "User not found" }, { status: 404 });
     }
 
-    await db
-      .update(users)
-      .set({ passwordHash, name: name || existingUser.name })
-      .where(eq(users.id, existingUser.id));
+    // Use Better Auth admin API to set password
+    // setUserPassword is provided by the admin plugin but not included in the inferred API type
+    await (
+      auth.api as unknown as {
+        setUserPassword: (opts: {
+          body: { userId: string; newPassword: string };
+        }) => Promise<unknown>;
+      }
+    ).setUserPassword({
+      body: { userId: existingUser.id, newPassword: password },
+    });
+
+    if (name) {
+      await db.update(users).set({ name }).where(eq(users.id, existingUser.id));
+    }
     await claimInvite(invite.tokenHash, existingUser.id);
 
     return NextResponse.json({ success: true }, { status: 200 });
@@ -50,18 +58,20 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Name is required" }, { status: 400 });
   }
 
-  const [user] = await db
-    .insert(users)
-    .values({
-      email: invite.email,
-      name: name.trim(),
-      passwordHash,
-      role: invite.role,
-    })
-    .returning();
+  const result = await auth.api.signUpEmail({
+    body: { name: name.trim(), email: invite.email!, password },
+  });
 
-  await seedPersonalAgent(user.id, invite.role === "admin");
-  await claimInvite(invite.tokenHash, user.id);
+  if (!result?.user) {
+    return NextResponse.json({ error: "Failed to create user" }, { status: 500 });
+  }
+
+  if (invite.role !== "user") {
+    await db.update(users).set({ role: invite.role }).where(eq(users.id, result.user.id));
+  }
+
+  await seedPersonalAgent(result.user.id, invite.role === "admin");
+  await claimInvite(invite.tokenHash, result.user.id);
   await regenerateOpenClawConfig();
 
   return NextResponse.json({ success: true }, { status: 201 });

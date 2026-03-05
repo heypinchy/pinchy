@@ -3,16 +3,22 @@ import { NextRequest } from "next/server";
 
 // ── Mocks ────────────────────────────────────────────────────────────────
 
-vi.mock("@/lib/auth", () => ({
-  auth: vi.fn(),
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
 }));
 
-vi.mock("bcryptjs", () => ({
-  default: {
-    compare: vi.fn(),
-    hash: vi.fn().mockResolvedValue("new_hashed_password"),
-  },
-}));
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi.fn();
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+        changePassword: vi.fn(),
+      },
+    },
+  };
+});
 
 vi.mock("@/db", () => ({
   db: {
@@ -31,7 +37,6 @@ vi.mock("@/db", () => ({
 
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
-import bcrypt from "bcryptjs";
 
 // ── PATCH /api/users/me ─────────────────────────────────────────────────
 
@@ -52,7 +57,7 @@ describe("PATCH /api/users/me", () => {
   }
 
   it("returns 401 when not authenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const request = makeRequest({ name: "New Name" });
 
@@ -64,10 +69,10 @@ describe("PATCH /api/users/me", () => {
   });
 
   it("returns 400 when name is empty", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     const request = makeRequest({ name: "" });
 
@@ -79,10 +84,10 @@ describe("PATCH /api/users/me", () => {
   });
 
   it("returns 400 when name is whitespace only", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     const request = makeRequest({ name: "   " });
 
@@ -94,10 +99,10 @@ describe("PATCH /api/users/me", () => {
   });
 
   it("returns 200 and updates user name on success", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     const request = makeRequest({ name: "Updated Name" });
 
@@ -112,10 +117,10 @@ describe("PATCH /api/users/me", () => {
   });
 
   it("trims the name before saving", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     const request = makeRequest({ name: "  Trimmed Name  " });
 
@@ -147,7 +152,7 @@ describe("POST /api/users/me/password", () => {
   }
 
   it("returns 401 when not authenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const request = makeRequest({
       currentPassword: "old123456",
@@ -162,10 +167,10 @@ describe("POST /api/users/me/password", () => {
   });
 
   it("returns 400 when currentPassword is missing", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     const request = makeRequest({ newPassword: "new123456" });
 
@@ -177,10 +182,10 @@ describe("POST /api/users/me/password", () => {
   });
 
   it("returns 400 when newPassword is too short (< 8)", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     const request = makeRequest({
       currentPassword: "old123456",
@@ -195,22 +200,14 @@ describe("POST /api/users/me/password", () => {
   });
 
   it("returns 403 when currentPassword is incorrect", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
-    vi.mocked(db.query.users.findFirst).mockResolvedValueOnce({
-      id: "user-1",
-      email: "user@test.com",
-      name: "Test User",
-      emailVerified: null,
-      image: null,
-      passwordHash: "existing_hash",
-      role: "user",
-    });
-
-    vi.mocked(bcrypt.compare).mockResolvedValueOnce(false as never);
+    vi.mocked((auth.api as any).changePassword).mockRejectedValueOnce(
+      new Error("Invalid password")
+    );
 
     const request = makeRequest({
       currentPassword: "wrongpassword",
@@ -225,22 +222,12 @@ describe("POST /api/users/me/password", () => {
   });
 
   it("returns 200 and updates password on success", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
-    vi.mocked(db.query.users.findFirst).mockResolvedValueOnce({
-      id: "user-1",
-      email: "user@test.com",
-      name: "Test User",
-      emailVerified: null,
-      image: null,
-      passwordHash: "existing_hash",
-      role: "user",
-    });
-
-    vi.mocked(bcrypt.compare).mockResolvedValueOnce(true as never);
+    vi.mocked((auth.api as any).changePassword).mockResolvedValueOnce({});
 
     const request = makeRequest({
       currentPassword: "old123456",
@@ -253,28 +240,27 @@ describe("POST /api/users/me/password", () => {
     const body = await response.json();
     expect(body.success).toBe(true);
 
-    // Verify bcrypt.hash was called with the new password and 12 salt rounds
-    expect(bcrypt.hash).toHaveBeenCalledWith("new123456", 12);
-
-    // Verify db.update was called
-    expect(db.update).toHaveBeenCalled();
+    // Verify auth.api.changePassword was called with the correct arguments
+    expect((auth.api as any).changePassword).toHaveBeenCalledWith(
+      expect.objectContaining({
+        body: {
+          currentPassword: "old123456",
+          newPassword: "new123456",
+          revokeOtherSessions: false,
+        },
+      })
+    );
   });
 
-  it("returns 401 when user has no passwordHash", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+  it("returns 403 when changePassword throws (e.g., no password set)", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
-    vi.mocked(db.query.users.findFirst).mockResolvedValueOnce({
-      id: "user-1",
-      email: "user@test.com",
-      name: "Test User",
-      emailVerified: null,
-      image: null,
-      passwordHash: null,
-      role: "user",
-    });
+    vi.mocked((auth.api as any).changePassword).mockRejectedValueOnce(
+      new Error("Password not set")
+    );
 
     const request = makeRequest({
       currentPassword: "old123456",
@@ -282,9 +268,9 @@ describe("POST /api/users/me/password", () => {
     });
 
     const response = await POST(request);
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(403);
 
     const body = await response.json();
-    expect(body.error).toBe("Unauthorized");
+    expect(body.error).toBe("Current password is incorrect");
   });
 });

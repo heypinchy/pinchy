@@ -3,16 +3,22 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import LoginPage from "@/app/login/page";
-import { signIn } from "next-auth/react";
 
-vi.mock("next/navigation", () => ({
-  useRouter: () => ({
-    push: vi.fn(),
-  }),
+const mockSignInEmail = vi.fn();
+
+vi.mock("@/lib/auth-client", () => ({
+  authClient: {
+    signIn: {
+      email: (...args: unknown[]) => mockSignInEmail(...args),
+    },
+  },
 }));
 
-vi.mock("next-auth/react", () => ({
-  signIn: vi.fn(),
+const mockPush = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({
+    push: mockPush,
+  }),
 }));
 
 vi.mock("next/image", () => ({
@@ -70,7 +76,7 @@ describe("Login Page", () => {
       expect(screen.getByText("Invalid email address")).toBeInTheDocument();
     });
 
-    expect(signIn).not.toHaveBeenCalled();
+    expect(mockSignInEmail).not.toHaveBeenCalled();
   });
 
   it("should show validation error when password is empty", async () => {
@@ -84,12 +90,12 @@ describe("Login Page", () => {
       expect(screen.getByText("Password is required")).toBeInTheDocument();
     });
 
-    expect(signIn).not.toHaveBeenCalled();
+    expect(mockSignInEmail).not.toHaveBeenCalled();
   });
 
-  it("should call signIn with form values on valid submission", async () => {
+  it("should call authClient.signIn.email with form values on valid submission", async () => {
     const user = userEvent.setup();
-    vi.mocked(signIn).mockResolvedValue({ error: undefined, ok: true, status: 200, url: "/" });
+    mockSignInEmail.mockResolvedValue({ error: null });
 
     render(<LoginPage />);
 
@@ -98,21 +104,32 @@ describe("Login Page", () => {
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => {
-      expect(signIn).toHaveBeenCalledWith("credentials", {
+      expect(mockSignInEmail).toHaveBeenCalledWith({
         email: "user@example.com",
         password: "mypassword",
-        redirect: false,
       });
     });
   });
 
-  it("should display API error when signIn returns an error", async () => {
+  it("should redirect to / on successful login", async () => {
     const user = userEvent.setup();
-    vi.mocked(signIn).mockResolvedValue({
-      error: "CredentialsSignin",
-      ok: false,
-      status: 401,
-      url: null,
+    mockSignInEmail.mockResolvedValue({ error: null });
+
+    render(<LoginPage />);
+
+    await user.type(screen.getByLabelText(/email/i), "user@example.com");
+    await user.type(screen.getByLabelText(/password/i), "mypassword");
+    await user.click(screen.getByRole("button", { name: /sign in/i }));
+
+    await waitFor(() => {
+      expect(mockPush).toHaveBeenCalledWith("/");
+    });
+  });
+
+  it("should display error when signIn returns an error", async () => {
+    const user = userEvent.setup();
+    mockSignInEmail.mockResolvedValue({
+      error: { message: "Invalid credentials" },
     });
 
     render(<LoginPage />);

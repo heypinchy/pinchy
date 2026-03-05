@@ -10,17 +10,36 @@ interface AgentForAccess {
 }
 
 /**
- * Check if a user has access to an agent. Throws if access is denied.
+ * Check if a user has READ access to an agent. Throws if access is denied.
  *
  * Rules:
  * - Admin can access everything
- * - Shared agents (isPersonal=false) are accessible to all authenticated users
+ * - Shared agents (isPersonal=false) are readable by all authenticated users
  * - Personal agents are only accessible to their owner
  */
 export function assertAgentAccess(agent: AgentForAccess, userId: string, userRole: string): void {
   if (userRole === "admin") return;
   if (!agent.isPersonal) return;
   if (agent.ownerId === userId) return;
+
+  throw new Error("Access denied");
+}
+
+/**
+ * Check if a user has WRITE access to an agent. Throws if access is denied.
+ *
+ * Rules:
+ * - Admin can modify any agent
+ * - Personal agent owners can modify their own agents
+ * - Non-admin users CANNOT modify shared agents
+ */
+export function assertAgentWriteAccess(
+  agent: AgentForAccess,
+  userId: string,
+  userRole: string
+): void {
+  if (userRole === "admin") return;
+  if (agent.isPersonal && agent.ownerId === userId) return;
 
   throw new Error("Access denied");
 }

@@ -1,96 +1,92 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { validateWsSession } from "@/server/ws-auth";
 
-vi.mock("next-auth/jwt", () => ({
-  decode: vi.fn(),
+const { mockGetSession } = vi.hoisted(() => ({
+  mockGetSession: vi.fn(),
 }));
 
-import { decode } from "next-auth/jwt";
+vi.mock("@/lib/auth", () => ({
+  getSession: mockGetSession,
+  auth: {
+    api: {
+      getSession: mockGetSession,
+    },
+  },
+}));
+
+import { validateWsSession } from "@/server/ws-auth";
 
 describe("validateWsSession", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.stubEnv("NEXTAUTH_SECRET", "test-secret");
   });
 
-  it("should reject when no cookie header is provided", async () => {
+  it("returns null when no cookie header is provided", async () => {
     const result = await validateWsSession(undefined);
 
     expect(result).toBeNull();
-    expect(decode).not.toHaveBeenCalled();
+    expect(mockGetSession).not.toHaveBeenCalled();
   });
 
-  it("should reject when no session token cookie is present", async () => {
-    const result = await validateWsSession("other_cookie=value");
+  it("returns null when getSession returns null", async () => {
+    mockGetSession.mockResolvedValue(null);
 
-    expect(result).toBeNull();
-    expect(decode).not.toHaveBeenCalled();
-  });
-
-  it("should reject when session token is invalid", async () => {
-    vi.mocked(decode).mockResolvedValueOnce(null);
-
-    const result = await validateWsSession("authjs.session-token=invalid-token");
-
-    expect(result).toBeNull();
-    expect(decode).toHaveBeenCalledWith({
-      token: "invalid-token",
-      secret: "test-secret",
-      salt: "authjs.session-token",
-    });
-  });
-
-  it("should return session when token is valid", async () => {
-    vi.mocked(decode).mockResolvedValueOnce({
-      sub: "user-123",
-      email: "admin@test.com",
-    });
-
-    const result = await validateWsSession("authjs.session-token=valid-token");
-
-    expect(result).toEqual({ sub: "user-123", email: "admin@test.com" });
-  });
-
-  it("should handle __Secure- prefixed cookie for HTTPS", async () => {
-    vi.mocked(decode).mockResolvedValueOnce({
-      sub: "user-123",
-    });
-
-    const result = await validateWsSession("__Secure-authjs.session-token=secure-token");
-
-    expect(result).toEqual({ sub: "user-123" });
-    expect(decode).toHaveBeenCalledWith({
-      token: "secure-token",
-      secret: "test-secret",
-      salt: "__Secure-authjs.session-token",
-    });
-  });
-
-  it("should reject when decode throws an error", async () => {
-    vi.mocked(decode).mockRejectedValueOnce(new Error("Invalid JWT"));
-
-    const result = await validateWsSession("authjs.session-token=corrupt-token");
+    const result = await validateWsSession("some_cookie=value");
 
     expect(result).toBeNull();
   });
 
-  it("should reject when no secret is configured", async () => {
-    vi.stubEnv("NEXTAUTH_SECRET", "");
-    vi.stubEnv("AUTH_SECRET", "");
+  it("returns null when session has no user", async () => {
+    mockGetSession.mockResolvedValue({ session: { expiresAt: "2026-03-01" } });
 
-    const result = await validateWsSession("authjs.session-token=valid-token");
+    const result = await validateWsSession("some_cookie=value");
 
     expect(result).toBeNull();
-    expect(decode).not.toHaveBeenCalled();
   });
 
-  it("should prefer AUTH_SECRET over NEXTAUTH_SECRET", async () => {
-    vi.stubEnv("AUTH_SECRET", "auth-secret");
-    vi.stubEnv("NEXTAUTH_SECRET", "nextauth-secret");
-    vi.mocked(decode).mockResolvedValueOnce({ sub: "user-1" });
+  it("returns userId and userRole when session is valid", async () => {
+    mockGetSession.mockResolvedValue({
+      user: { id: "user-123", email: "admin@test.com", role: "admin" },
+      session: { expiresAt: "2026-03-01" },
+    });
 
-    await validateWsSession("authjs.session-token=token");
+    const result = await validateWsSession("better-auth.session_token=valid-token");
 
-    expect(decode).toHaveBeenCalledWith(expect.objectContaining({ secret: "auth-secret" }));
+    expect(result).toEqual({ userId: "user-123", userRole: "admin" });
+    expect(mockGetSession).toHaveBeenCalledWith({
+      headers: expect.any(Headers),
+    });
+  });
+
+  it("defaults userRole to 'user' when role is not set", async () => {
+    mockGetSession.mockResolvedValue({
+      user: { id: "user-456", email: "user@test.com" },
+      session: { expiresAt: "2026-03-01" },
+    });
+
+    const result = await validateWsSession("better-auth.session_token=valid-token");
+
+    expect(result).toEqual({ userId: "user-456", userRole: "user" });
+  });
+
+  it("returns null when getSession throws an error", async () => {
+    mockGetSession.mockRejectedValue(new Error("Session error"));
+
+    const result = await validateWsSession("better-auth.session_token=corrupt-token");
+
+    expect(result).toBeNull();
+  });
+
+  it("passes cookie header to getSession via Headers object", async () => {
+    mockGetSession.mockResolvedValue({
+      user: { id: "user-789", role: "admin" },
+      session: { expiresAt: "2026-03-01" },
+    });
+
+    await validateWsSession("better-auth.session_token=abc123; other=xyz");
+
+    expect(mockGetSession).toHaveBeenCalledTimes(1);
+    const callArgs = mockGetSession.mock.calls[0][0];
+    expect(callArgs.headers).toBeInstanceOf(Headers);
+    expect(callArgs.headers.get("cookie")).toBe("better-auth.session_token=abc123; other=xyz");
   });
 });

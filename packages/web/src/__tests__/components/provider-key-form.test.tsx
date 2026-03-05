@@ -7,6 +7,15 @@ import { toast } from "sonner";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
+vi.mock("@/lib/github-issue", () => ({
+  buildGitHubIssueUrl: vi.fn().mockReturnValue("https://github.com/test"),
+  fetchDiagnostics: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/setup/provider",
+}));
+
 describe("ProviderKeyForm", () => {
   const onSuccess = vi.fn();
   let fetchSpy: ReturnType<typeof vi.spyOn>;
@@ -80,7 +89,7 @@ describe("ProviderKeyForm", () => {
     });
   });
 
-  it("should show error toast on failed validation", async () => {
+  it("should show inline error message on failed validation", async () => {
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: false,
       json: async () => ({ error: "Invalid API key. Please check and try again." }),
@@ -95,7 +104,26 @@ describe("ProviderKeyForm", () => {
     fireEvent.click(screen.getByRole("button", { name: /continue/i }));
 
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Invalid API key. Please check and try again.");
+      expect(screen.getByText("Invalid API key. Please check and try again.")).toBeInTheDocument();
+    });
+  });
+
+  it("should show report issue link on failed validation", async () => {
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({ error: "Invalid API key." }),
+    } as Response);
+
+    render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+    fireEvent.change(screen.getByLabelText(/api key/i), {
+      target: { value: "sk-ant-invalid" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /report this issue/i })).toBeInTheDocument();
     });
   });
 
@@ -349,7 +377,7 @@ describe("ProviderKeyForm", () => {
       await waitFor(() => {
         expect(screen.getByTestId("key-error-indicator")).toBeInTheDocument();
         expect(screen.queryByTestId("key-configured-indicator")).not.toBeInTheDocument();
-        expect(toast.error).toHaveBeenCalledWith("Invalid API key.");
+        expect(screen.getByText("Invalid API key.")).toBeInTheDocument();
       });
     });
 

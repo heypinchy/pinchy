@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { ClipboardList, Plus, Settings } from "lucide-react";
+import { Bug, ClipboardList, Plus, Settings } from "lucide-react";
 import { LogoutButton } from "@/components/logout-button";
 import {
   Sidebar,
@@ -20,6 +20,7 @@ import { Button } from "@/components/ui/button";
 import { getAgentAvatarSvg } from "@/lib/avatar";
 import { sortAgents } from "@/components/agent-list";
 import type { Agent } from "@/components/agent-list";
+import { buildBugReportUrl } from "@/lib/github-issue";
 
 interface AppSidebarProps {
   agents: Agent[];
@@ -53,7 +54,7 @@ export function AppSidebar({ agents, isAdmin }: AppSidebarProps) {
                       isActive={isActive}
                       className={`transition-colors duration-200 ${
                         isActive
-                          ? "data-[active=true]:bg-[oklch(0.92_0.005_60)] data-[active=true]:text-foreground hover:bg-[oklch(0.92_0.005_60)] hover:text-foreground"
+                          ? "data-[active=true]:bg-[oklch(0.92_0.005_60)] data-[active=true]:text-foreground hover:bg-[oklch(0.92_0.005_60)] hover:text-foreground dark:data-[active=true]:bg-[oklch(0.30_0.005_60)] dark:data-[active=true]:text-foreground dark:hover:bg-[oklch(0.30_0.005_60)] dark:hover:text-foreground"
                           : ""
                       }`}
                     >
@@ -120,6 +121,16 @@ export function AppSidebar({ agents, isAdmin }: AppSidebarProps) {
               </SidebarMenuButton>
             </SidebarMenuItem>
           )}
+          <SidebarMenuItem>
+            <SidebarMenuButton
+              onClick={() =>
+                window.open(buildBugReportUrl(pathname), "_blank", "noopener,noreferrer")
+              }
+            >
+              <Bug className="size-4" />
+              <span>Report a bug</span>
+            </SidebarMenuButton>
+          </SidebarMenuItem>
           <SidebarMenuItem>
             <LogoutButton />
           </SidebarMenuItem>

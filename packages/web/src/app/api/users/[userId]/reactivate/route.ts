@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
-import { and, eq, isNotNull } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
 
 export async function POST(
@@ -17,8 +17,8 @@ export async function POST(
 
   const [reactivated] = await db
     .update(users)
-    .set({ deletedAt: null })
-    .where(and(eq(users.id, userId), isNotNull(users.deletedAt)))
+    .set({ banned: false, banReason: null, banExpires: null })
+    .where(and(eq(users.id, userId), eq(users.banned, true)))
     .returning();
 
   if (!reactivated) {

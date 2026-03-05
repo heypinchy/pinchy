@@ -29,7 +29,7 @@ export async function DELETE(
 
   const [deactivated] = await db
     .update(users)
-    .set({ deletedAt: new Date() })
+    .set({ banned: true, banReason: "Deactivated by admin" })
     .where(eq(users.id, userId))
     .returning();
 

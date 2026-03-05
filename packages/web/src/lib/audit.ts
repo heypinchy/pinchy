@@ -27,6 +27,26 @@ interface HmacFields {
   detail: unknown;
 }
 
+/**
+ * Recursively sort object keys to produce a canonical JSON representation.
+ * PostgreSQL JSONB reorders keys (by length, then alphabetically), so without
+ * canonical sorting the HMAC computed at insert time (JS key order) would
+ * differ from the HMAC recomputed after a DB round-trip (JSONB key order).
+ */
+export function sortKeys(value: unknown): unknown {
+  if (value === null || value === undefined || typeof value !== "object") {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map(sortKeys);
+  }
+  const sorted: Record<string, unknown> = {};
+  for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+    sorted[key] = sortKeys((value as Record<string, unknown>)[key]);
+  }
+  return sorted;
+}
+
 export function computeRowHmac(secret: Buffer, fields: HmacFields): string {
   const payload = JSON.stringify([
     fields.timestamp.toISOString(),
@@ -34,7 +54,7 @@ export function computeRowHmac(secret: Buffer, fields: HmacFields): string {
     fields.actorType,
     fields.actorId,
     fields.resource,
-    fields.detail,
+    sortKeys(fields.detail),
   ]);
   return createHmac("sha256", secret).update(payload).digest("hex");
 }
