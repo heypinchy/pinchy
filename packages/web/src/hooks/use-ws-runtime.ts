@@ -301,6 +301,11 @@ export function useWsRuntime(agentId: string): {
       // Implicit abort: if a stream is running, abort it first
       if (isRunningRef.current) {
         pendingNewStreamRef.current = true;
+        // Clear old stream's debounce timer to prevent it from resetting isRunning
+        if (debounceTimerRef.current) {
+          clearTimeout(debounceTimerRef.current);
+          debounceTimerRef.current = null;
+        }
         wsRef.current?.send(JSON.stringify({ type: "abort", agentId }));
       }
 
