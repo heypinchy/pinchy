@@ -73,7 +73,9 @@ export class ClientRouter {
 
     if (message.type === "abort") {
       const sessionKey = this.computeSessionKey(message.agentId);
+      console.log("[DEBUG] abort: calling chatAbort");
       await this.openclawClient.chatAbort(sessionKey);
+      console.log("[DEBUG] abort: chatAbort resolved, sending aborted");
       this.sendToClient(clientWs, { type: "aborted" });
       return;
     }
@@ -81,6 +83,7 @@ export class ClientRouter {
     const sessionKey = this.computeSessionKey(message.agentId);
 
     const messageId = crypto.randomUUID();
+    console.log("[DEBUG] message: start, messageId=", messageId);
 
     try {
       await this.waitForConnection();
@@ -136,7 +139,9 @@ export class ClientRouter {
         chatOptions.extraSystemPrompt = extraPromptParts.join("\n\n");
       }
 
+      console.log("[DEBUG] message: calling chat(), messageId=", messageId);
       const stream = this.openclawClient.chat(text, chatOptions);
+      console.log("[DEBUG] message: chat() returned stream, entering for-await");
 
       for await (const chunk of stream) {
         // Stop consuming the stream if the browser disconnected — frees
@@ -144,6 +149,8 @@ export class ClientRouter {
         if (clientWs.readyState !== WS_OPEN) {
           break;
         }
+
+        console.log("[DEBUG] chunk type=", chunk.type, "messageId=", messageId);
 
         if (chunk.type === "text") {
           this.sendToClient(clientWs, {
@@ -171,7 +178,9 @@ export class ClientRouter {
           });
         }
       }
+      console.log("[DEBUG] message: for-await exited, messageId=", messageId);
     } catch (err) {
+      console.log("[DEBUG] message: CAUGHT ERROR, messageId=", messageId, err);
       this.sendToClient(clientWs, {
         type: "error",
         message: this.sanitizeError(err),
