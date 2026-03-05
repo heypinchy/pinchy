@@ -77,11 +77,10 @@ export function useWsRuntime(agentId: string): {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
-  // Generation counter — incremented on each new message send.
-  // runGenRef captures which generation started the current run.
-  // done/aborted from an older generation are stale and ignored.
-  const sendGenRef = useRef(0);
-  const runGenRef = useRef(0);
+  // Set when onNew sends an implicit abort before a new message.
+  // While true, done/aborted from the old stream are ignored.
+  // Cleared when the first chunk of the new stream arrives.
+  const pendingNewStreamRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldRecoverFromHistoryRef = useRef(false);
@@ -169,6 +168,10 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "chunk") {
+            // New stream started — clear the pending flag so done/aborted
+            // for this stream are processed normally.
+            pendingNewStreamRef.current = false;
+
             if (delayTimerRef.current) {
               clearTimeout(delayTimerRef.current);
               delayTimerRef.current = null;
@@ -195,9 +198,7 @@ export function useWsRuntime(agentId: string): {
             if (debounceTimerRef.current) {
               clearTimeout(debounceTimerRef.current);
             }
-            const genAtChunk = sendGenRef.current;
             debounceTimerRef.current = setTimeout(() => {
-              if (sendGenRef.current !== genAtChunk) return;
               setIsRunning(false);
             }, STREAM_DONE_DEBOUNCE_MS);
           }
@@ -214,9 +215,9 @@ export function useWsRuntime(agentId: string): {
               ]);
             }
 
-            // If a newer message was sent (sendGenRef was incremented past runGenRef),
-            // this done/aborted belongs to an old stream — ignore it.
-            if (runGenRef.current !== sendGenRef.current) return;
+            // If we sent a new message and are waiting for its stream,
+            // this done/aborted is from the old stream — ignore it.
+            if (pendingNewStreamRef.current) return;
 
             if (debounceTimerRef.current) {
               clearTimeout(debounceTimerRef.current);
@@ -299,12 +300,9 @@ export function useWsRuntime(agentId: string): {
 
       // Implicit abort: if a stream is running, abort it first
       if (isRunningRef.current) {
+        pendingNewStreamRef.current = true;
         wsRef.current?.send(JSON.stringify({ type: "abort", agentId }));
       }
-
-      // Increment generation so stale done/aborted from old streams are ignored
-      sendGenRef.current++;
-      runGenRef.current = sendGenRef.current;
 
       const userMessage: WsMessage = {
         id: crypto.randomUUID(),
