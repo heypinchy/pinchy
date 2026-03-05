@@ -11,12 +11,16 @@ export async function isProviderConfigured(): Promise<boolean> {
 }
 
 export async function isSetupComplete(): Promise<boolean> {
-  const firstUser = await db.query.users.findFirst();
-  return firstUser !== undefined;
+  const adminUser = await db.query.users.findFirst({
+    where: eq(users.role, "admin"),
+  });
+  return adminUser !== undefined;
 }
 
 export async function createAdmin(name: string, email: string, password: string) {
-  const existing = await db.query.users.findFirst();
+  const existing = await db.query.users.findFirst({
+    where: eq(users.role, "admin"),
+  });
   if (existing) {
     throw new Error("Setup already complete");
   }
@@ -30,10 +34,20 @@ export async function createAdmin(name: string, email: string, password: string)
     throw new Error("Failed to create admin user");
   }
 
-  // Set admin role directly in DB
-  await db.update(users).set({ role: "admin" }).where(eq(users.id, result.user.id));
+  try {
+    // Set admin role directly in DB
+    await db.update(users).set({ role: "admin" }).where(eq(users.id, result.user.id));
 
-  await seedDefaultAgent(result.user.id);
+    await seedDefaultAgent(result.user.id);
+  } catch (error) {
+    // Clean up the orphaned user if post-signup steps fail
+    try {
+      await db.delete(users).where(eq(users.id, result.user.id));
+    } catch {
+      // Best effort cleanup
+    }
+    throw error;
+  }
 
   return { id: result.user.id, email: result.user.email };
 }

@@ -35,6 +35,8 @@ vi.mock("@/db", () => ({
 
 vi.mock("@/db/schema", () => ({
   users: {},
+  sessions: {},
+  accounts: {},
 }));
 
 vi.mock("@/lib/audit", () => ({

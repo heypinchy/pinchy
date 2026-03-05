@@ -26,18 +26,28 @@ describe("setup status", () => {
     expect(result).toBe(false);
   });
 
-  it("should return true when at least one user exists", async () => {
+  it("should return true when an admin user exists", async () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValue({
       id: "1",
       email: "admin@test.com",
       name: "Admin",
-      emailVerified: null,
-      image: null,
-      passwordHash: "hashed",
       role: "admin",
     });
     const result = await isSetupComplete();
     expect(result).toBe(true);
+  });
+
+  it("should return false when only non-admin users exist (orphaned setup)", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+    const result = await isSetupComplete();
+    expect(result).toBe(false);
+  });
+
+  it("should query for admin role specifically", async () => {
+    await isSetupComplete();
+    expect(db.query.users.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: expect.anything() })
+    );
   });
 
   it("GET route should return setupComplete status", async () => {
