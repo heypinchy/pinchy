@@ -30,7 +30,7 @@ import {
 } from "lucide-react";
 import { type FC, useState, useEffect, useRef, useContext } from "react";
 import { AgentAvatarContext, AgentIdContext } from "@/components/chat";
-import { useComposerRuntime } from "@assistant-ui/react";
+import { useComposerRuntime, useComposer } from "@assistant-ui/react";
 import { getDraft, saveDraft } from "@/lib/draft-store";
 
 function formatTimestamp(iso: string): string {
@@ -211,8 +211,18 @@ const DraftPersistence: FC = () => {
 };
 
 const Composer: FC = () => {
+  const composerRuntime = useComposerRuntime();
+
   return (
-    <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
+    <form
+      className="aui-composer-root relative flex w-full flex-col"
+      onSubmit={(e) => {
+        e.preventDefault();
+        if (!composerRuntime.getState().isEmpty) {
+          composerRuntime.send();
+        }
+      }}
+    >
       <DraftPersistence />
       <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-accent/50">
         <ComposerAttachments />
@@ -225,27 +235,30 @@ const Composer: FC = () => {
         />
         <ComposerAction />
       </ComposerPrimitive.AttachmentDropzone>
-    </ComposerPrimitive.Root>
+    </form>
   );
 };
 
 const ComposerAction: FC = () => {
+  const composerRuntime = useComposerRuntime();
+  const isEmpty = useComposer((s) => s.isEmpty);
+
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
       <ComposerAddAttachment />
-      <ComposerPrimitive.Send asChild>
-        <TooltipIconButton
-          tooltip="Send message"
-          side="bottom"
-          type="submit"
-          variant="default"
-          size="icon"
-          className="aui-composer-send size-8 rounded-full"
-          aria-label="Send message"
-        >
-          <ArrowUpIcon className="aui-composer-send-icon size-4" />
-        </TooltipIconButton>
-      </ComposerPrimitive.Send>
+      <TooltipIconButton
+        tooltip="Send message"
+        side="bottom"
+        type="button"
+        variant="default"
+        size="icon"
+        className="aui-composer-send size-8 rounded-full disabled:opacity-30"
+        aria-label="Send message"
+        disabled={isEmpty}
+        onClick={() => composerRuntime.send()}
+      >
+        <ArrowUpIcon className="aui-composer-send-icon size-4" />
+      </TooltipIconButton>
     </div>
   );
 };

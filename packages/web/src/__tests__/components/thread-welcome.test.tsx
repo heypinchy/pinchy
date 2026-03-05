@@ -45,7 +45,14 @@ vi.mock("@assistant-ui/react", () => ({
     Error: ({ children }: any) => <div>{children}</div>,
   },
   useMessage: () => ({}),
-  useComposerRuntime: () => null,
+  useComposerRuntime: () => ({
+    getState: () => ({ isEmpty: true }),
+    send: () => {},
+    setText: () => {},
+    addAttachment: () => {},
+  }),
+  useComposer: (selector: any) => selector({ isEmpty: true }),
+  useThreadRuntime: () => ({ cancelRun: () => {} }),
 }));
 
 vi.mock("@/components/assistant-ui/attachment", () => ({
