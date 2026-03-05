@@ -7,7 +7,6 @@ import { ChatImage } from "@/components/assistant-ui/chat-image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
-import { Button } from "@/components/ui/button";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -284,19 +283,16 @@ const StopButton: FC = () => {
 
   return (
     <AuiIf condition={(s) => s.thread.isRunning && s.message.isLast}>
-      <div className="flex justify-center mt-2">
-        <Button
-          type="button"
-          variant="outline"
-          size="sm"
-          className="gap-1.5 rounded-full px-3 text-xs"
-          aria-label="Stop generating"
-          onClick={() => threadRuntime.cancelRun()}
-        >
-          <SquareIcon className="size-3 fill-current" />
-          Stop
-        </Button>
-      </div>
+      <TooltipIconButton
+        tooltip="Stop generating"
+        variant="ghost"
+        size="icon"
+        className="size-6 text-muted-foreground/60 hover:text-foreground"
+        aria-label="Stop generating"
+        onClick={() => threadRuntime.cancelRun()}
+      >
+        <SquareIcon className="size-3" />
+      </TooltipIconButton>
     </AuiIf>
   );
 };
@@ -318,11 +314,10 @@ const AssistantMessage: FC = () => {
       </div>
 
       <div className="aui-assistant-message-footer mt-1 ml-2 flex items-center gap-2">
+        <StopButton />
         <MessageTimestamp />
         <AssistantActionBar />
       </div>
-
-      <StopButton />
     </MessagePrimitive.Root>
   );
 };
