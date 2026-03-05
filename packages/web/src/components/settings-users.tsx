@@ -107,64 +107,114 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
             </div>
           )}
 
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Email</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {users.map((user) => (
-                <TableRow key={user.id} className={user.deletedAt ? "opacity-50" : ""}>
-                  <TableCell>
-                    {user.name}
+          {/* Mobile card view */}
+          <div className="block lg:hidden space-y-3">
+            {users.map((user) => (
+              <div
+                key={user.id}
+                className={`rounded border p-3 space-y-2 ${user.deletedAt ? "opacity-50" : ""}`}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{user.name}</span>
+                    <Badge variant="outline" className="text-xs">
+                      {user.role}
+                    </Badge>
                     {user.deletedAt && (
-                      <Badge variant="outline" className="ml-2 text-xs">
+                      <Badge variant="outline" className="text-xs">
                         deactivated
                       </Badge>
                     )}
-                  </TableCell>
-                  <TableCell>{user.email}</TableCell>
-                  <TableCell>{user.role}</TableCell>
-                  <TableCell className="space-x-2">
-                    {user.id !== currentUserId && (
+                  </div>
+                </div>
+                <div className="text-sm text-muted-foreground">{user.email}</div>
+                {user.id !== currentUserId && (
+                  <div className="flex gap-2">
+                    {!user.deletedAt ? (
                       <>
-                        {!user.deletedAt ? (
-                          <>
+                        <Button variant="outline" size="sm" onClick={() => handleReset(user.id)}>
+                          Reset
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => setDeactivateUserId(user.id)}
+                        >
+                          Deactivate
+                        </Button>
+                      </>
+                    ) : (
+                      <Button variant="outline" size="sm" onClick={() => handleReactivate(user.id)}>
+                        Reactivate
+                      </Button>
+                    )}
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+
+          {/* Desktop table */}
+          <div className="hidden lg:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Role</TableHead>
+                  <TableHead>Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {users.map((user) => (
+                  <TableRow key={user.id} className={user.deletedAt ? "opacity-50" : ""}>
+                    <TableCell>
+                      {user.name}
+                      {user.deletedAt && (
+                        <Badge variant="outline" className="ml-2 text-xs">
+                          deactivated
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell>{user.email}</TableCell>
+                    <TableCell>{user.role}</TableCell>
+                    <TableCell className="space-x-2">
+                      {user.id !== currentUserId && (
+                        <>
+                          {!user.deletedAt ? (
+                            <>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => handleReset(user.id)}
+                              >
+                                Reset
+                              </Button>
+                              <Button
+                                variant="destructive"
+                                size="sm"
+                                onClick={() => setDeactivateUserId(user.id)}
+                              >
+                                Deactivate
+                              </Button>
+                            </>
+                          ) : (
                             <Button
                               variant="outline"
                               size="sm"
-                              onClick={() => handleReset(user.id)}
+                              onClick={() => handleReactivate(user.id)}
                             >
-                              Reset
+                              Reactivate
                             </Button>
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              onClick={() => setDeactivateUserId(user.id)}
-                            >
-                              Deactivate
-                            </Button>
-                          </>
-                        ) : (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => handleReactivate(user.id)}
-                          >
-                            Reactivate
-                          </Button>
-                        )}
-                      </>
-                    )}
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+                          )}
+                        </>
+                      )}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
 

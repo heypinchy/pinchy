@@ -47,13 +47,17 @@ describe("SettingsUsers", () => {
     renderWithUsersLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("Alice Admin")).toBeInTheDocument();
+      expect(screen.getAllByText("Alice Admin").length).toBeGreaterThanOrEqual(1);
     });
 
-    expect(screen.getByText("bob@example.com")).toBeInTheDocument();
-    expect(screen.getByText("carol@example.com")).toBeInTheDocument();
-    expect(screen.getByText("admin")).toBeInTheDocument();
-    expect(screen.getAllByText("user").length).toBeGreaterThanOrEqual(2);
+    // Scope to the desktop table view
+    const table = screen.getByRole("table");
+    const tableView = within(table);
+    expect(tableView.getByText("Alice Admin")).toBeInTheDocument();
+    expect(tableView.getByText("bob@example.com")).toBeInTheDocument();
+    expect(tableView.getByText("carol@example.com")).toBeInTheDocument();
+    expect(tableView.getByText("admin")).toBeInTheDocument();
+    expect(tableView.getAllByText("user").length).toBeGreaterThanOrEqual(2);
   });
 
   it("should render Invite User button", async () => {
@@ -100,15 +104,18 @@ describe("SettingsUsers", () => {
     renderWithUsersLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("Alice Admin")).toBeInTheDocument();
+      expect(screen.getAllByText("Alice Admin").length).toBeGreaterThanOrEqual(1);
     });
 
+    const table = screen.getByRole("table");
+    const tableView = within(table);
+
     // Find the row for Alice (current user) - should not have a Deactivate button
-    const aliceRow = screen.getByText("Alice Admin").closest("tr")!;
+    const aliceRow = tableView.getByText("Alice Admin").closest("tr")!;
     expect(within(aliceRow).queryByRole("button", { name: "Deactivate" })).not.toBeInTheDocument();
 
     // Other users should have Deactivate buttons
-    const bobRow = screen.getByText("Bob User").closest("tr")!;
+    const bobRow = tableView.getByText("Bob User").closest("tr")!;
     expect(within(bobRow).getByRole("button", { name: "Deactivate" })).toBeInTheDocument();
   });
 
@@ -116,13 +123,16 @@ describe("SettingsUsers", () => {
     renderWithUsersLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("Alice Admin")).toBeInTheDocument();
+      expect(screen.getAllByText("Alice Admin").length).toBeGreaterThanOrEqual(1);
     });
 
-    const aliceRow = screen.getByText("Alice Admin").closest("tr")!;
+    const table = screen.getByRole("table");
+    const tableView = within(table);
+
+    const aliceRow = tableView.getByText("Alice Admin").closest("tr")!;
     expect(within(aliceRow).queryByRole("button", { name: "Reset" })).not.toBeInTheDocument();
 
-    const bobRow = screen.getByText("Bob User").closest("tr")!;
+    const bobRow = tableView.getByText("Bob User").closest("tr")!;
     expect(within(bobRow).getByRole("button", { name: "Reset" })).toBeInTheDocument();
   });
 
@@ -131,10 +141,11 @@ describe("SettingsUsers", () => {
     renderWithUsersLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("Bob User")).toBeInTheDocument();
+      expect(screen.getAllByText("Bob User").length).toBeGreaterThanOrEqual(1);
     });
 
-    const bobRow = screen.getByText("Bob User").closest("tr")!;
+    const table = screen.getByRole("table");
+    const bobRow = within(table).getByText("Bob User").closest("tr")!;
     await user.click(within(bobRow).getByRole("button", { name: "Deactivate" }));
 
     // Confirmation dialog should appear
@@ -167,10 +178,11 @@ describe("SettingsUsers", () => {
     renderWithUsersLoaded();
 
     await waitFor(() => {
-      expect(screen.getByText("Bob User")).toBeInTheDocument();
+      expect(screen.getAllByText("Bob User").length).toBeGreaterThanOrEqual(1);
     });
 
-    const bobRow = screen.getByText("Bob User").closest("tr")!;
+    const table = screen.getByRole("table");
+    const bobRow = within(table).getByText("Bob User").closest("tr")!;
 
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
@@ -256,10 +268,11 @@ describe("SettingsUsers", () => {
       renderWithDeactivatedUser();
 
       await waitFor(() => {
-        expect(screen.getByText("Dave Deactivated")).toBeInTheDocument();
+        expect(screen.getAllByText("Dave Deactivated").length).toBeGreaterThanOrEqual(1);
       });
 
-      const daveRow = screen.getByText("Dave Deactivated").closest("tr")!;
+      const table = screen.getByRole("table");
+      const daveRow = within(table).getByText("Dave Deactivated").closest("tr")!;
       expect(within(daveRow).getByRole("button", { name: "Reactivate" })).toBeInTheDocument();
       expect(within(daveRow).queryByRole("button", { name: "Deactivate" })).not.toBeInTheDocument();
     });
@@ -268,10 +281,11 @@ describe("SettingsUsers", () => {
       renderWithDeactivatedUser();
 
       await waitFor(() => {
-        expect(screen.getByText("Dave Deactivated")).toBeInTheDocument();
+        expect(screen.getAllByText("Dave Deactivated").length).toBeGreaterThanOrEqual(1);
       });
 
-      const daveRow = screen.getByText("Dave Deactivated").closest("tr")!;
+      const table = screen.getByRole("table");
+      const daveRow = within(table).getByText("Dave Deactivated").closest("tr")!;
       expect(daveRow).toHaveClass("opacity-50");
     });
 
@@ -279,10 +293,11 @@ describe("SettingsUsers", () => {
       renderWithDeactivatedUser();
 
       await waitFor(() => {
-        expect(screen.getByText("Dave Deactivated")).toBeInTheDocument();
+        expect(screen.getAllByText("Dave Deactivated").length).toBeGreaterThanOrEqual(1);
       });
 
-      const daveRow = screen.getByText("Dave Deactivated").closest("tr")!;
+      const table = screen.getByRole("table");
+      const daveRow = within(table).getByText("Dave Deactivated").closest("tr")!;
       expect(within(daveRow).getByText("deactivated")).toBeInTheDocument();
     });
 
@@ -291,7 +306,7 @@ describe("SettingsUsers", () => {
       renderWithDeactivatedUser();
 
       await waitFor(() => {
-        expect(screen.getByText("Dave Deactivated")).toBeInTheDocument();
+        expect(screen.getAllByText("Dave Deactivated").length).toBeGreaterThanOrEqual(1);
       });
 
       vi.mocked(global.fetch).mockResolvedValueOnce({
@@ -305,7 +320,8 @@ describe("SettingsUsers", () => {
         json: async () => ({ users: [...mockUsers, { ...deactivatedUser, deletedAt: null }] }),
       } as Response);
 
-      const daveRow = screen.getByText("Dave Deactivated").closest("tr")!;
+      const table = screen.getByRole("table");
+      const daveRow = within(table).getByText("Dave Deactivated").closest("tr")!;
       await user.click(within(daveRow).getByRole("button", { name: "Reactivate" }));
 
       await waitFor(() => {
