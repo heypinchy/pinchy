@@ -1,9 +1,21 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest } from "next/server";
 
-vi.mock("@/lib/auth", () => ({
-  auth: vi.fn(),
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
 }));
+
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi.fn();
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+      },
+    },
+  };
+});
 
 vi.mock("@/lib/settings", () => ({
   getAllSettings: vi.fn().mockResolvedValue([]),
@@ -23,7 +35,7 @@ describe("GET /api/settings", () => {
   });
 
   it("returns 401 when not authenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const response = await GET();
     expect(response.status).toBe(401);
@@ -33,7 +45,7 @@ describe("GET /api/settings", () => {
   });
 
   it("returns 403 when user is not admin", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
     } as any);
@@ -46,7 +58,7 @@ describe("GET /api/settings", () => {
   });
 
   it("returns settings when user is admin", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
     } as any);
@@ -62,7 +74,7 @@ describe("GET /api/settings", () => {
   });
 
   it("masks encrypted values", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
     } as any);
@@ -88,7 +100,7 @@ describe("POST /api/settings", () => {
   });
 
   it("returns 401 when not authenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const request = new NextRequest("http://localhost/api/settings", {
       method: "POST",
@@ -103,7 +115,7 @@ describe("POST /api/settings", () => {
   });
 
   it("returns 403 when user is not admin", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
     } as any);
@@ -121,7 +133,7 @@ describe("POST /api/settings", () => {
   });
 
   it("saves setting when user is admin", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
     } as any);

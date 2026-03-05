@@ -48,10 +48,13 @@ vi.mock("next/navigation", () => ({
   useRouter: vi.fn().mockReturnValue({ refresh: vi.fn(), push: vi.fn() }),
 }));
 
-vi.mock("next-auth/react", () => ({
-  useSession: vi.fn().mockReturnValue({
-    data: { user: { id: "1", email: "admin@test.com", role: "admin" } },
-  }),
+vi.mock("@/lib/auth-client", () => ({
+  authClient: {
+    useSession: vi.fn().mockReturnValue({
+      data: { user: { id: "1", email: "admin@test.com", role: "admin" } },
+      isPending: false,
+    }),
+  },
 }));
 
 vi.mock("sonner", () => ({

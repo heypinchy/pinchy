@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { sql } from "drizzle-orm";
 import { logCapture } from "@/lib/log-capture";
-import { auth } from "@/lib/auth";
+import { getSession } from "@/lib/auth";
+import { headers } from "next/headers";
 
 async function checkDatabase(): Promise<"connected" | "unreachable"> {
   try {
@@ -36,7 +37,7 @@ export async function GET() {
   const [database, openclaw, session] = await Promise.all([
     checkDatabase(),
     checkOpenClaw(),
-    auth(),
+    getSession({ headers: await headers() }),
   ]);
 
   const response: Record<string, unknown> = {

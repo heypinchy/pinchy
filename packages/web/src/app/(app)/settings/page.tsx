@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useSession } from "next-auth/react";
+import { authClient } from "@/lib/auth-client";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProviderKeyForm } from "@/components/provider-key-form";
@@ -24,7 +24,7 @@ function DirtyDot() {
 }
 
 export default function SettingsPage() {
-  const { data: session } = useSession();
+  const { data: session } = authClient.useSession();
   const isAdmin = session?.user?.role === "admin";
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);

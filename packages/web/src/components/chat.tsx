@@ -18,6 +18,7 @@ interface ChatProps {
   configuring?: boolean;
   isPersonal?: boolean;
   avatarUrl?: string;
+  canEdit?: boolean;
 }
 
 export function Chat({
@@ -26,6 +27,7 @@ export function Chat({
   configuring = false,
   isPersonal = false,
   avatarUrl,
+  canEdit = false,
 }: ChatProps) {
   const { runtime, isConnected, isDelayed, isHistoryLoaded } = useWsRuntime(agentId);
 
@@ -76,13 +78,15 @@ export function Chat({
                 >
                   <MessageSquarePlus className="h-5 w-5" />
                 </button>
-                <Link
-                  href={`/chat/${agentId}/settings`}
-                  aria-label="Settings"
-                  className="text-muted-foreground hover:text-foreground transition-colors"
-                >
-                  <Settings className="h-5 w-5" />
-                </Link>
+                {canEdit && (
+                  <Link
+                    href={`/chat/${agentId}/settings`}
+                    aria-label="Settings"
+                    className="text-muted-foreground hover:text-foreground transition-colors"
+                  >
+                    <Settings className="h-5 w-5" />
+                  </Link>
+                )}
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>

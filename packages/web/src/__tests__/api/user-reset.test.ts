@@ -3,9 +3,21 @@ import { NextRequest } from "next/server";
 
 // ── Mocks ────────────────────────────────────────────────────────────────
 
-vi.mock("@/lib/auth", () => ({
-  auth: vi.fn(),
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
 }));
+
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi.fn();
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+      },
+    },
+  };
+});
 
 vi.mock("@/lib/invites", () => ({
   createInvite: vi.fn(),
@@ -37,7 +49,7 @@ describe("POST /api/users/[userId]/reset", () => {
   });
 
   it("returns 401 when not authenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const request = new NextRequest("http://localhost:7777/api/users/user-1/reset", {
       method: "POST",
@@ -53,10 +65,10 @@ describe("POST /api/users/[userId]/reset", () => {
   });
 
   it("returns 403 when user is not admin", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "user" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     const request = new NextRequest("http://localhost:7777/api/users/user-2/reset", {
       method: "POST",
@@ -72,10 +84,10 @@ describe("POST /api/users/[userId]/reset", () => {
   });
 
   it("returns 404 when user not found", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     vi.mocked(db.query.users.findFirst).mockResolvedValueOnce(undefined);
 
@@ -93,10 +105,10 @@ describe("POST /api/users/[userId]/reset", () => {
   });
 
   it("returns 201 with token on success", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     vi.mocked(db.query.users.findFirst).mockResolvedValueOnce({
       id: "user-1",
@@ -130,10 +142,10 @@ describe("POST /api/users/[userId]/reset", () => {
   });
 
   it("creates an invite with type 'reset' and the user's email", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     vi.mocked(db.query.users.findFirst).mockResolvedValueOnce({
       id: "user-1",
@@ -170,10 +182,10 @@ describe("POST /api/users/[userId]/reset", () => {
   });
 
   it("handles user with no email (passes undefined)", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     vi.mocked(db.query.users.findFirst).mockResolvedValueOnce({
       id: "user-1",

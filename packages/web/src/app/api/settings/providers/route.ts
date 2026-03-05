@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { auth } from "@/lib/auth";
+import { headers } from "next/headers";
+import { getSession } from "@/lib/auth";
 import { requireAdmin } from "@/lib/api-auth";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
@@ -12,7 +13,7 @@ import { eq } from "drizzle-orm";
 const VALID_PROVIDERS = Object.keys(PROVIDERS) as ProviderName[];
 
 export async function GET() {
-  const session = await auth();
+  const session = await getSession({ headers: await headers() });
   if (!session?.user) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

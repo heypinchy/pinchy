@@ -1,23 +1,33 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextResponse } from "next/server";
 
-vi.mock("@/lib/auth", () => ({
-  auth: vi.fn(),
+const { mockGetSession, mockHeaders } = vi.hoisted(() => ({
+  mockGetSession: vi.fn(),
+  mockHeaders: vi.fn().mockResolvedValue(new Headers()),
 }));
 
-import { auth } from "@/lib/auth";
+vi.mock("@/lib/auth", () => ({
+  getSession: mockGetSession,
+  auth: {
+    api: {
+      getSession: mockGetSession,
+    },
+  },
+}));
 
-describe("requireAdmin", () => {
-  let requireAdmin: typeof import("@/lib/api-auth").requireAdmin;
+vi.mock("next/headers", () => ({
+  headers: mockHeaders,
+}));
 
-  beforeEach(async () => {
+import { requireAdmin } from "@/lib/api-auth";
+
+describe("requireAdmin (api-auth)", () => {
+  beforeEach(() => {
     vi.clearAllMocks();
-    const mod = await import("@/lib/api-auth");
-    requireAdmin = mod.requireAdmin;
   });
 
   it("returns 401 response when session is null", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    mockGetSession.mockResolvedValue(null);
 
     const result = await requireAdmin();
     expect(result).toBeInstanceOf(NextResponse);
@@ -25,10 +35,10 @@ describe("requireAdmin", () => {
   });
 
   it("returns 403 response when user is not admin", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    mockGetSession.mockResolvedValue({
       user: { id: "user-1", role: "user" },
-      expires: "",
-    } as any);
+      session: { expiresAt: "" },
+    });
 
     const result = await requireAdmin();
     expect(result).toBeInstanceOf(NextResponse);
@@ -38,9 +48,9 @@ describe("requireAdmin", () => {
   it("returns session when user is admin", async () => {
     const session = {
       user: { id: "admin-1", role: "admin" },
-      expires: "",
+      session: { expiresAt: "" },
     };
-    vi.mocked(auth).mockResolvedValueOnce(session as any);
+    mockGetSession.mockResolvedValue(session);
 
     const result = await requireAdmin();
     expect(result).not.toBeInstanceOf(NextResponse);

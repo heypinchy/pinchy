@@ -1,19 +1,25 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AppSidebar } from "@/components/sidebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 
-const mockSignOut = vi.fn();
-const mockUsePathname = vi.fn().mockReturnValue("/chat/1");
+const { mockSignOut, mockRouterPush, mockUsePathname } = vi.hoisted(() => ({
+  mockSignOut: vi.fn().mockResolvedValue(undefined),
+  mockRouterPush: vi.fn(),
+  mockUsePathname: vi.fn().mockReturnValue("/chat/1"),
+}));
 
-vi.mock("next-auth/react", () => ({
-  signOut: (...args: unknown[]) => mockSignOut(...args),
+vi.mock("@/lib/auth-client", () => ({
+  authClient: {
+    signOut: (...args: unknown[]) => mockSignOut(...args),
+  },
 }));
 
 vi.mock("next/navigation", () => ({
   usePathname: () => mockUsePathname(),
+  useRouter: vi.fn().mockReturnValue({ push: mockRouterPush }),
 }));
 
 vi.mock("next/image", () => ({
@@ -239,7 +245,7 @@ describe("AppSidebar", () => {
       expect(screen.getByRole("button", { name: /log out/i })).toBeInTheDocument();
     });
 
-    it("should call signOut when clicked", async () => {
+    it("should call signOut and redirect when clicked", async () => {
       const user = userEvent.setup();
       render(
         <SidebarProvider>
@@ -247,7 +253,10 @@ describe("AppSidebar", () => {
         </SidebarProvider>
       );
       await user.click(screen.getByRole("button", { name: /log out/i }));
-      expect(mockSignOut).toHaveBeenCalledWith({ callbackUrl: "/login" });
+      expect(mockSignOut).toHaveBeenCalled();
+      await waitFor(() => {
+        expect(mockRouterPush).toHaveBeenCalledWith("/login");
+      });
     });
   });
 

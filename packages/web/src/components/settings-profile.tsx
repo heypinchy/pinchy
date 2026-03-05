@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { signOut } from "next-auth/react";
+import { useRouter } from "next/navigation";
 import { useForm, useFormState } from "react-hook-form";
 import { z } from "zod";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -17,6 +17,7 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
+import { authClient } from "@/lib/auth-client";
 
 const nameSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -42,6 +43,8 @@ interface SettingsProfileProps {
 }
 
 export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProps) {
+  const router = useRouter();
+
   const nameForm = useForm<NameFormValues>({
     resolver: zodResolver(nameSchema),
     defaultValues: { name: userName },
@@ -189,7 +192,13 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
           <CardTitle>Session</CardTitle>
         </CardHeader>
         <CardContent>
-          <Button variant="outline" onClick={() => signOut({ callbackUrl: "/login" })}>
+          <Button
+            variant="outline"
+            onClick={async () => {
+              await authClient.signOut();
+              router.push("/login");
+            }}
+          >
             Log out
           </Button>
         </CardContent>

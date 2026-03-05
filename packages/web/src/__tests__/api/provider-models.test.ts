@@ -1,8 +1,20 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-vi.mock("@/lib/auth", () => ({
-  auth: vi.fn().mockResolvedValue({ user: { id: "1", email: "admin@test.com" } }),
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
 }));
+
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi.fn().mockResolvedValue({ user: { id: "1", email: "admin@test.com" } });
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+      },
+    },
+  };
+});
 
 vi.mock("@/lib/provider-models", () => ({
   fetchProviderModels: vi.fn().mockResolvedValue([]),
@@ -15,7 +27,7 @@ import { fetchProviderModels } from "@/lib/provider-models";
 describe("GET /api/providers/models", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    vi.mocked(auth).mockResolvedValue({
+    vi.mocked(auth.api.getSession).mockResolvedValue({
       user: { id: "1", email: "admin@test.com" },
       expires: "",
     });
@@ -23,7 +35,7 @@ describe("GET /api/providers/models", () => {
   });
 
   it("returns 401 when not authenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const response = await GET();
 

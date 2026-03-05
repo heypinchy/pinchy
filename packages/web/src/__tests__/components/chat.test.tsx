@@ -122,11 +122,16 @@ describe("Chat", () => {
     expect(screen.getByLabelText(/applying your changes/i)).toBeInTheDocument();
   });
 
-  it("should render a settings link with correct href", () => {
-    render(<Chat agentId="agent-1" agentName="Smithers" />);
+  it("should render a settings link with correct href when canEdit is true", () => {
+    render(<Chat agentId="agent-1" agentName="Smithers" canEdit={true} />);
     const settingsLink = screen.getByRole("link", { name: /settings/i });
     expect(settingsLink).toBeInTheDocument();
     expect(settingsLink).toHaveAttribute("href", "/chat/agent-1/settings");
+  });
+
+  it("should not render a settings link when canEdit is false", () => {
+    render(<Chat agentId="agent-1" agentName="Smithers" canEdit={false} />);
+    expect(screen.queryByRole("link", { name: /settings/i })).not.toBeInTheDocument();
   });
 
   it("should render a New Chat button", () => {
@@ -150,7 +155,7 @@ describe("Chat", () => {
   });
 
   it("should render the settings link with the correct agent-specific href", () => {
-    render(<Chat agentId="my-special-agent" agentName="Test Agent" />);
+    render(<Chat agentId="my-special-agent" agentName="Test Agent" canEdit={true} />);
     const settingsLink = screen.getByRole("link", { name: /settings/i });
     expect(settingsLink).toHaveAttribute("href", "/chat/my-special-agent/settings");
   });

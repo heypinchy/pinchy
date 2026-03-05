@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { NextResponse } from "next/server";
-import { assertAgentAccess, getAgentWithAccess } from "@/lib/agent-access";
+import { assertAgentAccess, assertAgentWriteAccess, getAgentWithAccess } from "@/lib/agent-access";
 
 vi.mock("@/db", () => ({
   db: {
@@ -50,6 +50,33 @@ describe("assertAgentAccess", () => {
   it("allows admin access to personal agent of another user", () => {
     const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
     expect(() => assertAgentAccess(agent, "admin-user", "admin")).not.toThrow();
+  });
+});
+
+describe("assertAgentWriteAccess", () => {
+  it("allows admin to modify any agent", () => {
+    const agent = { id: "a1", ownerId: null, isPersonal: false };
+    expect(() => assertAgentWriteAccess(agent, "admin-user", "admin")).not.toThrow();
+  });
+
+  it("allows admin to modify personal agent of another user", () => {
+    const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
+    expect(() => assertAgentWriteAccess(agent, "admin-user", "admin")).not.toThrow();
+  });
+
+  it("allows owner to modify their personal agent", () => {
+    const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
+    expect(() => assertAgentWriteAccess(agent, "user-1", "user")).not.toThrow();
+  });
+
+  it("denies non-admin user from modifying shared agent", () => {
+    const agent = { id: "a1", ownerId: null, isPersonal: false };
+    expect(() => assertAgentWriteAccess(agent, "user-1", "user")).toThrow("Access denied");
+  });
+
+  it("denies non-owner from modifying personal agent", () => {
+    const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
+    expect(() => assertAgentWriteAccess(agent, "other-user", "user")).toThrow("Access denied");
   });
 });
 

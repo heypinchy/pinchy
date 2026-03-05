@@ -3,8 +3,6 @@ import {
   text,
   timestamp,
   boolean,
-  integer,
-  primaryKey,
   jsonb,
   index,
   serial,
@@ -12,69 +10,71 @@ import {
   pgView,
 } from "drizzle-orm/pg-core";
 import { isNull } from "drizzle-orm";
-import type { AdapterAccountType } from "next-auth/adapters";
 
-// ── Auth.js tables ─────────────────────────────────────────────────────
+// ── Better Auth tables ──────────────────────────────────────────────────
 
 export const users = pgTable("user", {
   id: text("id")
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
-  name: text("name"),
-  email: text("email").unique(),
-  emailVerified: timestamp("emailVerified", { mode: "date" }),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: boolean("email_verified").notNull().default(false),
   image: text("image"),
-  passwordHash: text("password_hash"),
   role: text("role").notNull().default("user"),
+  banned: boolean("banned").default(false),
+  banReason: text("ban_reason"),
+  banExpires: timestamp("ban_expires"),
   context: text("context"),
-  deletedAt: timestamp("deleted_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
-
-export const accounts = pgTable(
-  "account",
-  {
-    userId: text("userId")
-      .notNull()
-      .references(() => users.id, { onDelete: "cascade" }),
-    type: text("type").$type<AdapterAccountType>().notNull(),
-    provider: text("provider").notNull(),
-    providerAccountId: text("providerAccountId").notNull(),
-    refresh_token: text("refresh_token"),
-    access_token: text("access_token"),
-    expires_at: integer("expires_at"),
-    token_type: text("token_type"),
-    scope: text("scope"),
-    id_token: text("id_token"),
-    session_state: text("session_state"),
-  },
-  (account) => [
-    primaryKey({
-      columns: [account.provider, account.providerAccountId],
-    }),
-  ]
-);
 
 export const sessions = pgTable("session", {
-  sessionToken: text("sessionToken").primaryKey(),
-  userId: text("userId")
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  userId: text("user_id")
     .notNull()
     .references(() => users.id, { onDelete: "cascade" }),
-  expires: timestamp("expires", { mode: "date" }).notNull(),
+  token: text("token").notNull().unique(),
+  expiresAt: timestamp("expires_at").notNull(),
+  ipAddress: text("ip_address"),
+  userAgent: text("user_agent"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
-export const verificationTokens = pgTable(
-  "verificationToken",
-  {
-    identifier: text("identifier").notNull(),
-    token: text("token").notNull(),
-    expires: timestamp("expires", { mode: "date" }).notNull(),
-  },
-  (verificationToken) => [
-    primaryKey({
-      columns: [verificationToken.identifier, verificationToken.token],
-    }),
-  ]
-);
+export const accounts = pgTable("account", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  userId: text("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  accountId: text("account_id").notNull(),
+  providerId: text("provider_id").notNull(),
+  accessToken: text("access_token"),
+  refreshToken: text("refresh_token"),
+  accessTokenExpiresAt: timestamp("access_token_expires_at"),
+  refreshTokenExpiresAt: timestamp("refresh_token_expires_at"),
+  scope: text("scope"),
+  idToken: text("id_token"),
+  password: text("password"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const verification = pgTable("verification", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  identifier: text("identifier").notNull(),
+  value: text("value").notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
 
 // ── Application tables ─────────────────────────────────────────────────
 
@@ -147,12 +147,8 @@ export const auditLog = pgTable(
   ]
 );
 
-// ── Soft-delete views ─────────────────────────────────────────────────
+// ── Views ────────────────────────────────────────────────────────────
 
 export const activeAgents = pgView("active_agents").as((qb) =>
   qb.select().from(agents).where(isNull(agents.deletedAt))
-);
-
-export const activeUsers = pgView("active_users").as((qb) =>
-  qb.select().from(users).where(isNull(users.deletedAt))
 );

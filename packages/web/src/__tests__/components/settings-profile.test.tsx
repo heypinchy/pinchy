@@ -5,8 +5,17 @@ import "@testing-library/jest-dom";
 import { SettingsProfile } from "@/components/settings-profile";
 import { toast } from "sonner";
 
-vi.mock("next-auth/react", () => ({
-  signOut: vi.fn(),
+const { mockRouterPush } = vi.hoisted(() => ({
+  mockRouterPush: vi.fn(),
+}));
+vi.mock("next/navigation", () => ({
+  useRouter: vi.fn().mockReturnValue({ push: mockRouterPush }),
+}));
+
+vi.mock("@/lib/auth-client", () => ({
+  authClient: {
+    signOut: vi.fn().mockResolvedValue(undefined),
+  },
 }));
 
 vi.mock("sonner", () => ({
@@ -303,14 +312,17 @@ describe("SettingsProfile", () => {
     expect(screen.getByRole("button", { name: "Log out" })).toBeInTheDocument();
   });
 
-  it("should call signOut when Log out is clicked", async () => {
+  it("should call signOut and redirect when Log out is clicked", async () => {
     const user = userEvent.setup();
-    const { signOut } = await import("next-auth/react");
+    const { authClient } = await import("@/lib/auth-client");
 
     render(<SettingsProfile userName="Alice" />);
 
     await user.click(screen.getByRole("button", { name: "Log out" }));
 
-    expect(signOut).toHaveBeenCalledWith({ callbackUrl: "/login" });
+    expect(authClient.signOut).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(mockRouterPush).toHaveBeenCalledWith("/login");
+    });
   });
 });

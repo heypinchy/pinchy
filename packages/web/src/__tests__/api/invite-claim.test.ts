@@ -16,26 +16,20 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("bcryptjs", () => ({
-  default: {
-    hash: vi.fn().mockResolvedValue("hashed_password_123"),
+vi.mock("@/lib/auth", () => ({
+  getSession: vi.fn(),
+  auth: {
+    api: {
+      signUpEmail: vi.fn().mockResolvedValue({
+        user: { id: "new-user-id", email: "invited@test.com" },
+      }),
+      setUserPassword: vi.fn().mockResolvedValue(undefined),
+    },
   },
 }));
 
 vi.mock("@/db", () => ({
   db: {
-    insert: vi.fn().mockReturnValue({
-      values: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([
-          {
-            id: "new-user-id",
-            email: "invited@test.com",
-            name: "New User",
-            role: "user",
-          },
-        ]),
-      }),
-    }),
     update: vi.fn().mockReturnValue({
       set: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue(undefined),
@@ -53,7 +47,7 @@ import { validateInviteToken, claimInvite } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
-import bcrypt from "bcryptjs";
+import { auth } from "@/lib/auth";
 
 // ── POST /api/invite/claim ───────────────────────────────────────────────
 
@@ -168,17 +162,9 @@ describe("POST /api/invite/claim", () => {
     const body = await response.json();
     expect(body.success).toBe(true);
 
-    // Verify bcrypt was called with 12 salt rounds
-    expect(bcrypt.hash).toHaveBeenCalledWith("password123", 12);
-
-    // Verify user was inserted with correct data
-    expect(db.insert).toHaveBeenCalled();
-    const valuesFn = vi.mocked(db.insert("" as never).values);
-    expect(valuesFn).toHaveBeenCalledWith({
-      email: "invited@test.com",
-      name: "New User",
-      passwordHash: "hashed_password_123",
-      role: "user",
+    // Verify user was created via Better Auth signUpEmail
+    expect(auth.api.signUpEmail).toHaveBeenCalledWith({
+      body: { name: "New User", email: "invited@test.com", password: "password123" },
     });
   });
 
@@ -277,9 +263,6 @@ describe("POST /api/invite/claim", () => {
       id: "existing-user-id",
       email: "existing@test.com",
       name: "Existing User",
-      emailVerified: null,
-      image: null,
-      passwordHash: "old_hash",
       role: "user",
     });
 
@@ -294,8 +277,10 @@ describe("POST /api/invite/claim", () => {
     const body = await response.json();
     expect(body.success).toBe(true);
 
-    // Verify password was updated
-    expect(db.update).toHaveBeenCalled();
+    // Verify password was updated via Better Auth
+    expect(auth.api.setUserPassword).toHaveBeenCalledWith({
+      body: { userId: "existing-user-id", newPassword: "newpassword123" },
+    });
     expect(claimInvite).toHaveBeenCalledWith("reset-hash", "existing-user-id");
   });
 
@@ -317,9 +302,6 @@ describe("POST /api/invite/claim", () => {
       id: "existing-user-id",
       email: "existing@test.com",
       name: "Existing User",
-      emailVerified: null,
-      image: null,
-      passwordHash: "old_hash",
       role: "user",
     });
 

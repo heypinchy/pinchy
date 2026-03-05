@@ -30,17 +30,17 @@ All inter-service communication occurs over **localhost**. No service is require
 
 ### 3.1 Authentication Provider
 
-Pinchy uses **Auth.js v5** (NextAuth) with the **Credentials Provider** for password-based authentication.
+Pinchy uses **Better Auth** with the **email/password** method for password-based authentication.
 
 ### 3.2 Password Storage
 
-Passwords are hashed using **bcrypt** before storage. Bcrypt is an adaptive hashing algorithm that incorporates a salt and a configurable work factor, providing resistance against brute-force and rainbow table attacks. Plain-text passwords are never stored.
+Passwords are hashed using **scrypt** before storage (with a **bcrypt** legacy fallback for migrated accounts). Scrypt is a memory-hard hashing algorithm that incorporates a salt and configurable cost parameters, providing resistance against brute-force and hardware-accelerated attacks. Plain-text passwords are never stored.
 
 ### 3.3 Session Management
 
-- Sessions are managed via **JSON Web Tokens (JWT)**
-- JWTs are signed and validated server-side
+- Sessions are managed via **database-backed sessions** stored in PostgreSQL
 - Session tokens are transmitted via secure cookies
+- Sessions are validated server-side against the database on each request
 
 ### 3.4 User Provisioning
 
@@ -76,7 +76,7 @@ Pinchy implements two roles:
 | Data | Method |
 |---|---|
 | LLM provider API keys | **AES-256-GCM** — authenticated encryption with associated data. Keys are encrypted before database storage and decrypted only when needed for LLM API calls. |
-| User passwords | **bcrypt** hash (one-way; not reversible) |
+| User passwords | **scrypt** hash (one-way; not reversible), with **bcrypt** legacy fallback for migrated accounts |
 | Other database contents | Stored in PostgreSQL on local disk. Disk-level encryption (e.g., LUKS, FileVault) is the customer's responsibility. |
 
 ### 5.2 Encryption in Transit
@@ -206,7 +206,7 @@ Since Pinchy is self-hosted, most security incidents will occur at the infrastru
 
 - Source code is maintained in a version-controlled repository
 - Changes are reviewed before merging
-- The application follows established security patterns from the Next.js and Auth.js ecosystems
+- The application follows established security patterns from the Next.js and Better Auth ecosystems
 
 ---
 

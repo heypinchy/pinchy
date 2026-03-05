@@ -62,7 +62,7 @@ Companies want AI agents but face a trilemma:
 
 - **Frontend**: Next.js 16, React 19, Tailwind CSS v4, shadcn/ui, assistant-ui
 - **State Management**: zustand
-- **Auth**: Auth.js v5 (credentials provider, JWT sessions)
+- **Auth**: Better Auth (email/password, DB sessions, Admin Plugin)
 - **Database**: PostgreSQL 17, Drizzle ORM
 - **Agent Runtime**: OpenClaw Gateway (WebSocket), openclaw-node client
 - **Testing**: Vitest, React Testing Library, Playwright (E2E)

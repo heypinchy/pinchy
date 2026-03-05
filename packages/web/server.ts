@@ -113,17 +113,15 @@ app.prepare().then(async () => {
   server.on("upgrade", async (request, socket, head) => {
     const { pathname } = parse(request.url!, true);
     if (pathname === "/api/ws") {
-      const session = await validateWsSession(request.headers.cookie);
-      if (!session) {
+      const sessionInfo = await validateWsSession(request.headers.cookie);
+      if (!sessionInfo) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
       }
+      const { userId, userRole } = sessionInfo;
       wss.handleUpgrade(request, socket, head, (ws) => {
-        sessionMap.set(ws, {
-          userId: (session.sub as string) || (session.id as string),
-          userRole: (session.role as string) || "user",
-        });
+        sessionMap.set(ws, { userId, userRole });
         wss.emit("connection", ws, request);
       });
     }

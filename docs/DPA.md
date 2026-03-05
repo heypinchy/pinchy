@@ -154,9 +154,9 @@ Liability is governed by the underlying agreement between the Parties and applic
 
 ### Access Control (Authentication)
 
-- **Password-based authentication** via Auth.js v5 with Credentials Provider
-- **Password hashing** using bcrypt (industry-standard adaptive hashing)
-- **Session management** via signed JWT tokens
+- **Password-based authentication** via Better Auth with email/password
+- **Password hashing** using scrypt (with bcrypt legacy fallback for migrated accounts)
+- **Session management** via database-backed sessions stored in PostgreSQL
 - **User invite system** — only administrators can create new user accounts
 
 ### Access Control (Authorization)
@@ -168,7 +168,7 @@ Liability is governed by the underlying agreement between the Parties and applic
 ### Encryption
 
 - **API keys at rest:** Encrypted using AES-256-GCM before storage in the database
-- **Passwords:** Stored as bcrypt hashes (not reversible)
+- **Passwords:** Stored as scrypt hashes (not reversible)
 - **Transport encryption:** HTTPS and WSS configurable by the Controller at the infrastructure level
 
 ### Data Isolation

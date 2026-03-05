@@ -1,16 +1,19 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
-const { mockDb, mockSql, mockLogCapture, mockAuth } = vi.hoisted(() => ({
+const { mockDb, mockSql, mockLogCapture, mockGetSession } = vi.hoisted(() => ({
   mockDb: { execute: vi.fn() },
   mockSql: vi.fn(),
   mockLogCapture: { formatAsText: vi.fn().mockReturnValue("") },
-  mockAuth: vi.fn(),
+  mockGetSession: vi.fn(),
 }));
 
 vi.mock("@/db", () => ({ db: mockDb }));
 vi.mock("drizzle-orm", () => ({ sql: mockSql }));
 vi.mock("@/lib/log-capture", () => ({ logCapture: mockLogCapture }));
-vi.mock("@/lib/auth", () => ({ auth: () => mockAuth() }));
+vi.mock("@/lib/auth", () => ({ getSession: mockGetSession }));
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
+}));
 
 import { GET } from "@/app/api/diagnostics/route";
 
@@ -82,7 +85,7 @@ describe("GET /api/diagnostics", () => {
   });
 
   it("should include captured logs when user is authenticated", async () => {
-    mockAuth.mockResolvedValueOnce({ user: { id: "1" } });
+    mockGetSession.mockResolvedValueOnce({ user: { id: "1" } });
     mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
     vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
     mockLogCapture.formatAsText.mockReturnValueOnce(
@@ -96,7 +99,7 @@ describe("GET /api/diagnostics", () => {
   });
 
   it("should omit logs when user is not authenticated", async () => {
-    mockAuth.mockResolvedValueOnce(null);
+    mockGetSession.mockResolvedValueOnce(null);
     mockDb.execute.mockResolvedValueOnce([{ "?column?": 1 }]);
     vi.spyOn(global, "fetch").mockResolvedValueOnce({ ok: true } as Response);
     mockLogCapture.formatAsText.mockReturnValueOnce(

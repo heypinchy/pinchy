@@ -55,7 +55,7 @@ docker compose up --build
 
 Then open [http://localhost:7777](http://localhost:7777) — the setup wizard will guide you through creating your admin account.
 
-> **Production:** Copy `.env.example` to `.env` and set secure values for `DB_PASSWORD` and `NEXTAUTH_SECRET`. The defaults are for local evaluation only.
+> **Production:** Copy `.env.example` to `.env` and set secure values for `DB_PASSWORD` and `BETTER_AUTH_SECRET`. The defaults are for local evaluation only.
 
 ### Prerequisites
 
@@ -69,7 +69,7 @@ Then open [http://localhost:7777](http://localhost:7777) — the setup wizard wi
 ### What works today
 
 - **Setup wizard** — Create your admin account on first run
-- **Authentication** — Credentials-based login with JWT sessions
+- **Authentication** — Credentials-based login with database sessions
 - **Multi-user** — Invite users, admin and user roles, personal and shared agents
 - **Agent chat** — Real-time WebSocket chat with OpenClaw agents, conversation history
 - **Agent permissions** — Allow-list model for agent tools (safe and powerful categories)
@@ -96,7 +96,7 @@ Follow our progress on [the blog](https://heypinchy.com/blog/building-pinchy-in-
 | Layer | Technology |
 |-------|-----------|
 | Frontend | Next.js 16, React 19, TailwindCSS v4, shadcn/ui |
-| Auth | Auth.js v5 (credentials provider) |
+| Auth | Better Auth (email/password, DB sessions) |
 | Database | PostgreSQL 17, Drizzle ORM |
 | Agent Runtime | OpenClaw Gateway (WebSocket) |
 | Testing | Vitest, React Testing Library |

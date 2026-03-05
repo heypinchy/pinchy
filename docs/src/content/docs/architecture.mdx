@@ -31,7 +31,7 @@ graph TD
 
     subgraph Pinchy["Pinchy (Node.js)"]
         Pages["Next.js Pages<br/>(HTTPS)"]
-        Auth["Auth (Auth.js)"]
+        Auth["Auth (Better Auth)"]
         WS["WS Bridge<br/>(/api/ws)"]
         ORM["Drizzle ORM"]
         Pages --- ORM
@@ -96,11 +96,11 @@ Sessions track a `compactionCount` to record how many compactions have occurred.
 
 ## Authentication
 
-Pinchy uses [Auth.js v5](https://authjs.dev/) with a credentials provider:
+Pinchy uses [Better Auth](https://www.better-auth.com/) with email/password authentication:
 
-- Passwords are hashed with **bcrypt** before storage
-- Sessions use **JWT** strategy (stateless, no server-side session store)
-- JWTs carry the user's **role** (`admin` or `user`) for authorization checks
+- Passwords are hashed with **scrypt** before storage (with **bcrypt** legacy fallback for migrated accounts)
+- Sessions are stored in the **database** (server-side session store in PostgreSQL)
+- The user's **role** (`admin` or `user`) is managed by the Better Auth Admin Plugin
 - The first user created via the setup wizard becomes the admin
 - All app routes require authentication — unauthenticated requests redirect to `/login`
 
@@ -150,7 +150,7 @@ For the full details, see [Agent Permissions](/concepts/agent-permissions/).
 
 PostgreSQL 16, accessed via [Drizzle ORM](https://orm.drizzle.team/). The schema includes:
 
-- **Auth tables** — `user`, `account`, `session`, `verificationToken` (managed by Auth.js adapter)
+- **Auth tables** — `user`, `account`, `session`, `verification` (managed by Better Auth)
 - **`agents`** — Agent configuration (name, model, template, allowed tools, plugin config, owner)
 - **`invites`** — Invite tokens (SHA-256 hashed token, email, expiry, status)
 - **`settings`** — Key-value store for app configuration (provider keys, onboarding state)
@@ -216,7 +216,7 @@ Pinchy authenticates to OpenClaw Gateway using a bearer token. The token is auto
 | ------------- | ------------------------------------------------ |
 | Frontend      | Next.js 16, React 19, Tailwind CSS v4, shadcn/ui |
 | Chat UI       | assistant-ui (React)                             |
-| Auth          | Auth.js v5 (credentials provider, JWT sessions)  |
+| Auth          | Better Auth (email/password, DB sessions)        |
 | Database      | PostgreSQL 16, Drizzle ORM                       |
 | Agent runtime | OpenClaw Gateway (WebSocket)                     |
 | Encryption    | AES-256-GCM (Node.js crypto)                     |

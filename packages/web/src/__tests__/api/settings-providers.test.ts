@@ -1,11 +1,23 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { GET, DELETE } from "@/app/api/settings/providers/route";
 
-vi.mock("@/lib/auth", () => ({
-  auth: vi.fn().mockResolvedValue({
-    user: { id: "1", email: "admin@test.com", role: "admin" },
-  }),
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
 }));
+
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi.fn().mockResolvedValue({
+    user: { id: "1", email: "admin@test.com", role: "admin" },
+  });
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+      },
+    },
+  };
+});
 
 vi.mock("@/lib/providers", () => ({
   PROVIDERS: {
@@ -81,7 +93,7 @@ describe("GET /api/settings/providers", () => {
   });
 
   it("should return 401 when not authenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const response = await GET();
 
@@ -135,7 +147,7 @@ describe("GET /api/settings/providers", () => {
   });
 
   it("should not return hints for non-admin users", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "2", email: "user@test.com", role: "user" },
     } as any);
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
@@ -181,7 +193,7 @@ describe("DELETE /api/settings/providers", () => {
   }
 
   it("should return 401 when not authenticated", async () => {
-    vi.mocked(auth).mockResolvedValueOnce(null);
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const response = await DELETE(makeRequest({ provider: "anthropic" }));
 
@@ -189,7 +201,7 @@ describe("DELETE /api/settings/providers", () => {
   });
 
   it("should return 403 when non-admin user tries to delete", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "2", email: "user@test.com", role: "user" },
     } as any);
 

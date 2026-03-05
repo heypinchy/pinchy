@@ -74,8 +74,10 @@ vi.mock("@/components/settings-profile", () => ({
 }));
 
 const mockUseSession = vi.fn();
-vi.mock("next-auth/react", () => ({
-  useSession: () => mockUseSession(),
+vi.mock("@/lib/auth-client", () => ({
+  authClient: {
+    useSession: () => mockUseSession(),
+  },
 }));
 
 describe("Settings Page", () => {
@@ -85,14 +87,14 @@ describe("Settings Page", () => {
     data: {
       user: { id: "admin-1", name: "Admin Alice", role: "admin" },
     },
-    status: "authenticated",
+    isPending: false,
   };
 
   const userSession = {
     data: {
       user: { id: "user-1", name: "Regular Bob", role: "user" },
     },
-    status: "authenticated",
+    isPending: false,
   };
 
   function mockContextFetches() {

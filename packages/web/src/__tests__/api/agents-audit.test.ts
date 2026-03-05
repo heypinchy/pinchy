@@ -7,13 +7,25 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
+}));
+
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/auth", () => ({
-  auth: vi.fn(),
-}));
+vi.mock("@/lib/auth", () => {
+  const mockGetSession = vi.fn();
+  return {
+    getSession: mockGetSession,
+    auth: {
+      api: {
+        getSession: mockGetSession,
+      },
+    },
+  };
+});
 
 vi.mock("@/lib/agents", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/agents")>();
@@ -99,10 +111,10 @@ describe("POST /api/agents audit logging", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
-    vi.mocked(auth).mockResolvedValue({
+    vi.mocked(auth.api.getSession).mockResolvedValue({
       user: { id: "user-1", email: "admin@test.com", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
     const mod = await import("@/app/api/agents/route");
     POST = mod.POST;
   });
@@ -145,10 +157,10 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
   });
 
   it("calls appendAuditLog with agent.updated after updating an agent", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     mockAgent({
       id: "agent-1",
@@ -196,10 +208,10 @@ describe("DELETE /api/agents/[agentId] audit logging", () => {
   });
 
   it("calls appendAuditLog with agent.deleted after deleting an agent", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     mockAgent({
       id: "agent-1",
@@ -243,10 +255,10 @@ describe("PATCH /api/agents/[agentId] IDENTITY.md regeneration", () => {
   });
 
   it("calls writeIdentityFile when PATCH includes name", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     mockAgent({
       id: "agent-1",
@@ -279,10 +291,10 @@ describe("PATCH /api/agents/[agentId] IDENTITY.md regeneration", () => {
   });
 
   it("calls writeIdentityFile when PATCH includes tagline", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     mockAgent({
       id: "agent-1",
@@ -315,10 +327,10 @@ describe("PATCH /api/agents/[agentId] IDENTITY.md regeneration", () => {
   });
 
   it("does not call writeIdentityFile when PATCH only includes model", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     mockAgent({
       id: "agent-1",
@@ -360,10 +372,10 @@ describe("PATCH /api/agents/[agentId] name length validation", () => {
   });
 
   it("should reject name longer than 30 characters", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     mockAgent({
       id: "agent-1",
@@ -387,10 +399,10 @@ describe("PATCH /api/agents/[agentId] name length validation", () => {
   });
 
   it("should accept name with exactly 30 characters", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     mockAgent({
       id: "agent-1",
@@ -417,6 +429,106 @@ describe("PATCH /api/agents/[agentId] name length validation", () => {
   });
 });
 
+// ── PATCH /api/agents/[agentId] — write access control ────────────────
+
+describe("PATCH /api/agents/[agentId] write access control", () => {
+  let PATCH: typeof import("@/app/api/agents/[agentId]/route").PATCH;
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    const mod = await import("@/app/api/agents/[agentId]/route");
+    PATCH = mod.PATCH;
+  });
+
+  it("should deny non-admin user from modifying shared agent", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "user" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Shared Agent",
+      isPersonal: false,
+      ownerId: null,
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "Hacked Agent" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(403);
+    expect(updateAgent).not.toHaveBeenCalled();
+  });
+
+  it("should allow personal agent owner to modify their agent", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "user" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "My Agent",
+      isPersonal: true,
+      ownerId: "user-1",
+    });
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Renamed Agent",
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "Renamed Agent" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+    expect(updateAgent).toHaveBeenCalled();
+  });
+
+  it("should allow admin to modify shared agent", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Shared Agent",
+      isPersonal: false,
+      ownerId: null,
+    });
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Updated Shared Agent",
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "Updated Shared Agent" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+    expect(updateAgent).toHaveBeenCalled();
+  });
+});
+
 // ── PATCH /api/agents/[agentId] — config regeneration ─────────────────
 
 describe("PATCH /api/agents/[agentId] config regeneration", () => {
@@ -429,10 +541,10 @@ describe("PATCH /api/agents/[agentId] config regeneration", () => {
   });
 
   it("should not call regenerateOpenClawConfig directly when allowedTools change (updateAgent handles it)", async () => {
-    vi.mocked(auth).mockResolvedValueOnce({
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
       expires: "",
-    } as ReturnType<typeof auth> extends Promise<infer T> ? T : never);
+    } as any);
 
     mockAgent({
       id: "agent-1",

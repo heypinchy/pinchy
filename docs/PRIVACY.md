@@ -22,7 +22,7 @@ Pinchy does **not** collect telemetry, does **not** phone home, and does **not**
 | Data Field | Purpose | Storage |
 |---|---|---|
 | Email address | Authentication, user identification | PostgreSQL (customer's server) |
-| Hashed password | Authentication | PostgreSQL (bcrypt hash) |
+| Hashed password | Authentication | PostgreSQL (scrypt hash) |
 | Display name | UI display | PostgreSQL |
 | Role (admin/user) | Authorization | PostgreSQL |
 
@@ -128,8 +128,8 @@ As the data controller, the customer is responsible for fulfilling data subject 
 See [SECURITY-POLICY.md](SECURITY-POLICY.md) for detailed technical and organizational security measures. Key highlights:
 
 - **Encryption at rest:** API keys encrypted with AES-256-GCM
-- **Password hashing:** bcrypt
-- **Authentication:** Auth.js v5 with JWT sessions
+- **Password hashing:** scrypt (with bcrypt legacy fallback)
+- **Authentication:** Better Auth with database sessions
 - **Role-based access:** Admin and user roles
 - **Network isolation:** All services communicate on localhost; no inbound connections required
 - **File access controls:** Mount point validation with directory traversal prevention

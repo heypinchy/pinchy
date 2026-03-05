@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useSession } from "next-auth/react";
+import { authClient } from "@/lib/auth-client";
 import { toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
@@ -78,7 +78,7 @@ export default function AgentSettingsPage() {
   const params = useParams();
   const router = useRouter();
   const agentId = params.agentId as string;
-  const { data: session } = useSession();
+  const { data: session } = authClient.useSession();
   const { triggerRestart } = useRestart();
 
   const [agent, setAgent] = useState<Agent | null>(null);
@@ -283,8 +283,15 @@ export default function AgentSettingsPage() {
   }
 
   const isAdmin = session?.user?.role === "admin";
+  const canEdit = isAdmin || agent.isPersonal;
   const canDelete = isAdmin && !agent.isPersonal;
   const showPermissions = isAdmin && !agent.isPersonal;
+
+  // Non-admins cannot edit shared agents — redirect to chat
+  if (!canEdit) {
+    router.replace(`/chat/${agentId}`);
+    return <div className="p-8 text-muted-foreground">Redirecting...</div>;
+  }
 
   return (
     <div className="overflow-y-auto p-8 pb-24 max-w-2xl">
