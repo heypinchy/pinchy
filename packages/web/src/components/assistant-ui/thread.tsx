@@ -17,6 +17,7 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
   useMessage,
+  useThreadRuntime,
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
@@ -232,34 +233,19 @@ const ComposerAction: FC = () => {
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-2 flex items-center justify-between">
       <ComposerAddAttachment />
-      <AuiIf condition={(s) => !s.thread.isRunning}>
-        <ComposerPrimitive.Send asChild>
-          <TooltipIconButton
-            tooltip="Send message"
-            side="bottom"
-            type="submit"
-            variant="default"
-            size="icon"
-            className="aui-composer-send size-8 rounded-full"
-            aria-label="Send message"
-          >
-            <ArrowUpIcon className="aui-composer-send-icon size-4" />
-          </TooltipIconButton>
-        </ComposerPrimitive.Send>
-      </AuiIf>
-      <AuiIf condition={(s) => s.thread.isRunning}>
-        <ComposerPrimitive.Cancel asChild>
-          <Button
-            type="button"
-            variant="default"
-            size="icon"
-            className="aui-composer-cancel size-8 rounded-full"
-            aria-label="Stop generating"
-          >
-            <SquareIcon className="aui-composer-cancel-icon size-3 fill-current" />
-          </Button>
-        </ComposerPrimitive.Cancel>
-      </AuiIf>
+      <ComposerPrimitive.Send asChild>
+        <TooltipIconButton
+          tooltip="Send message"
+          side="bottom"
+          type="submit"
+          variant="default"
+          size="icon"
+          className="aui-composer-send size-8 rounded-full"
+          aria-label="Send message"
+        >
+          <ArrowUpIcon className="aui-composer-send-icon size-4" />
+        </TooltipIconButton>
+      </ComposerPrimitive.Send>
     </div>
   );
 };
@@ -271,6 +257,28 @@ const MessageError: FC = () => {
         <ErrorPrimitive.Message className="aui-message-error-message line-clamp-2" />
       </ErrorPrimitive.Root>
     </MessagePrimitive.Error>
+  );
+};
+
+const StopButton: FC = () => {
+  const threadRuntime = useThreadRuntime();
+
+  return (
+    <AuiIf condition={(s) => s.thread.isRunning && s.message.isLast}>
+      <div className="flex justify-center mt-2">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="gap-1.5 rounded-full px-3 text-xs"
+          aria-label="Stop generating"
+          onClick={() => threadRuntime.cancelRun()}
+        >
+          <SquareIcon className="size-3 fill-current" />
+          Stop
+        </Button>
+      </div>
+    </AuiIf>
   );
 };
 
@@ -294,6 +302,8 @@ const AssistantMessage: FC = () => {
         <MessageTimestamp />
         <AssistantActionBar />
       </div>
+
+      <StopButton />
     </MessagePrimitive.Root>
   );
 };
