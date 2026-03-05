@@ -1141,6 +1141,116 @@ describe("useWsRuntime", () => {
     });
   });
 
+  describe("abort", () => {
+    it("should send abort message when onCancel is called", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      // Send a message to set isRunning=true
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      // Call onCancel
+      act(() => {
+        result.current.runtime.onCancel();
+      });
+
+      // Should have sent: history, message, abort
+      const abortMessage = JSON.parse(ws.send.mock.calls[2][0]);
+      expect(abortMessage.type).toBe("abort");
+      expect(abortMessage.agentId).toBe("agent-1");
+    });
+
+    it("should set isRunning to false when onCancel is called", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      act(() => {
+        result.current.runtime.onCancel();
+      });
+
+      expect(result.current.runtime.isRunning).toBe(false);
+    });
+
+    it("should clean up delay timer when onCancel is called", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      // Cancel before delay fires
+      act(() => {
+        result.current.runtime.onCancel();
+      });
+
+      // Advance past delay time — should NOT become delayed
+      act(() => {
+        vi.advanceTimersByTime(20000);
+      });
+
+      expect(result.current.isDelayed).toBe(false);
+    });
+
+    it("should handle aborted message from server", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "aborted" }),
+        });
+      });
+
+      expect(result.current.runtime.isRunning).toBe(false);
+      expect(result.current.isDelayed).toBe(false);
+    });
+  });
+
   describe("openclaw restart messages", () => {
     it("should call triggerRestart when openclaw:restarting message is received", () => {
       renderHook(() => useWsRuntime("agent-1"));

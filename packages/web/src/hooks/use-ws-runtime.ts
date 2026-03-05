@@ -220,6 +220,19 @@ export function useWsRuntime(agentId: string): {
             ]);
             setIsRunning(false);
           }
+
+          if (data.type === "aborted") {
+            if (debounceTimerRef.current) {
+              clearTimeout(debounceTimerRef.current);
+              debounceTimerRef.current = null;
+            }
+            if (delayTimerRef.current) {
+              clearTimeout(delayTimerRef.current);
+              delayTimerRef.current = null;
+            }
+            setIsDelayed(false);
+            setIsRunning(false);
+          }
         } catch {
           // Ignore unparseable messages
         }
@@ -333,6 +346,20 @@ export function useWsRuntime(agentId: string): {
     [agentId]
   );
 
+  const onCancel = useCallback(() => {
+    wsRef.current?.send(JSON.stringify({ type: "abort", agentId }));
+    setIsRunning(false);
+    setIsDelayed(false);
+    if (debounceTimerRef.current) {
+      clearTimeout(debounceTimerRef.current);
+      debounceTimerRef.current = null;
+    }
+    if (delayTimerRef.current) {
+      clearTimeout(delayTimerRef.current);
+      delayTimerRef.current = null;
+    }
+  }, [agentId]);
+
   const convertedMessages = useMemo(() => messages.map(convertMessage), [messages]);
 
   const runtime = useExternalStoreRuntime({
@@ -340,6 +367,7 @@ export function useWsRuntime(agentId: string): {
     isRunning,
     convertMessage: (msg: ThreadMessageLike) => msg,
     onNew,
+    onCancel,
     adapters: {
       attachments: attachmentAdapter,
     },
