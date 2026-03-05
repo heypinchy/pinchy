@@ -357,7 +357,7 @@ export function useWsRuntime(agentId: string): {
     [agentId]
   );
 
-  const onCancel = useCallback(() => {
+  const onCancel = useCallback(async () => {
     wsRef.current?.send(JSON.stringify({ type: "abort", agentId }));
     setIsRunning(false);
     isRunningRef.current = false;
