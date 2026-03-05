@@ -56,10 +56,10 @@ test.describe("Provider configuration", () => {
     await page.getByLabel(/password/i).fill("test-password-123");
     await page.getByRole("button", { name: /sign in/i }).click();
 
-    // Should go straight to app (chat page), not provider setup
-    await expect(page).toHaveURL(/\/chat\//, { timeout: 10000 });
+    // Should go straight to app (agents page), not provider setup
+    await expect(page).toHaveURL(/\/agents/, { timeout: 10000 });
 
-    // Verify Smithers agent is visible in sidebar
+    // Verify Smithers agent is visible
     await expect(page.getByRole("link", { name: /smithers/i })).toBeVisible();
   });
 });
