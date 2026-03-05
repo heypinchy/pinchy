@@ -232,6 +232,12 @@ const Composer: FC = () => {
           rows={1}
           autoFocus
           aria-label="Message input"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              e.currentTarget.closest("form")?.requestSubmit();
+            }
+          }}
         />
         <ComposerAction />
       </ComposerPrimitive.AttachmentDropzone>
