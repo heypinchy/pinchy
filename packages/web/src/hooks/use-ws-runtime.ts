@@ -77,6 +77,7 @@ export function useWsRuntime(agentId: string): {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
+  const implicitAbortRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldRecoverFromHistoryRef = useRef(false);
@@ -228,6 +229,12 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "aborted") {
+            // If this abort was triggered implicitly by sending a new message,
+            // don't reset isRunning — the new message is already in flight.
+            if (implicitAbortRef.current) {
+              implicitAbortRef.current = false;
+              return;
+            }
             if (debounceTimerRef.current) {
               clearTimeout(debounceTimerRef.current);
               debounceTimerRef.current = null;
@@ -309,6 +316,7 @@ export function useWsRuntime(agentId: string): {
 
       // Implicit abort: if a stream is running, abort it first
       if (isRunningRef.current) {
+        implicitAbortRef.current = true;
         wsRef.current?.send(JSON.stringify({ type: "abort", agentId }));
       }
 
