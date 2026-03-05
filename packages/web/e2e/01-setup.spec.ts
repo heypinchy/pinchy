@@ -13,8 +13,8 @@ test.describe("Setup wizard", () => {
     await page.getByLabel(/password/i).fill("test-password-123");
     await page.getByRole("button", { name: /create account/i }).click();
 
-    // Verify success state
-    await expect(page.getByText(/account created successfully/i)).toBeVisible();
+    // Verify success state (scrypt password hashing can take several seconds)
+    await expect(page.getByText(/account created successfully/i)).toBeVisible({ timeout: 15000 });
 
     // Click continue and verify redirect to login
     await page.getByRole("button", { name: /continue to sign in/i }).click();
