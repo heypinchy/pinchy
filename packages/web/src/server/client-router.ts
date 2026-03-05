@@ -78,8 +78,8 @@ export class ClientRouter {
     if (message.type === "abort") {
       const sessionKey = this.computeSessionKey(message.agentId);
       await this.openclawClient.chatAbort(sessionKey);
-      // Wait for the active stream to finish before confirming
-      await this.activeStreams.get(sessionKey)?.catch(() => {});
+      const timeout = new Promise<void>((resolve) => setTimeout(resolve, 2000));
+      await Promise.race([this.activeStreams.get(sessionKey)?.catch(() => {}), timeout]);
       this.sendToClient(clientWs, { type: "aborted" });
       return;
     }
@@ -88,10 +88,11 @@ export class ClientRouter {
 
     const messageId = crypto.randomUUID();
 
-    // If there's an active stream for this session, abort it and wait
+    // If there's an active stream for this session, abort it and wait briefly
     if (this.activeStreams.has(sessionKey)) {
       await this.openclawClient.chatAbort(sessionKey);
-      await this.activeStreams.get(sessionKey)?.catch(() => {});
+      const timeout = new Promise<void>((resolve) => setTimeout(resolve, 2000));
+      await Promise.race([this.activeStreams.get(sessionKey)?.catch(() => {}), timeout]);
     }
 
     try {
