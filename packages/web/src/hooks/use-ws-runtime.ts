@@ -77,7 +77,11 @@ export function useWsRuntime(agentId: string): {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
-  const implicitAbortRef = useRef(false);
+  // Generation counter — incremented on each new message send.
+  // runGenRef captures which generation started the current run.
+  // done/aborted from an older generation are stale and ignored.
+  const sendGenRef = useRef(0);
+  const runGenRef = useRef(0);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldRecoverFromHistoryRef = useRef(false);
@@ -191,50 +195,29 @@ export function useWsRuntime(agentId: string): {
             if (debounceTimerRef.current) {
               clearTimeout(debounceTimerRef.current);
             }
+            const genAtChunk = sendGenRef.current;
             debounceTimerRef.current = setTimeout(() => {
+              if (sendGenRef.current !== genAtChunk) return;
               setIsRunning(false);
             }, STREAM_DONE_DEBOUNCE_MS);
           }
 
-          if (data.type === "done") {
-            if (debounceTimerRef.current) {
-              clearTimeout(debounceTimerRef.current);
+          if (data.type === "done" || data.type === "error" || data.type === "aborted") {
+            if (data.type === "error") {
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: crypto.randomUUID(),
+                  role: "assistant",
+                  content: data.message || "An unknown error occurred.",
+                },
+              ]);
             }
-            if (delayTimerRef.current) {
-              clearTimeout(delayTimerRef.current);
-              delayTimerRef.current = null;
-            }
-            setIsDelayed(false);
-            setIsRunning(false);
-          }
 
-          if (data.type === "error") {
-            if (debounceTimerRef.current) {
-              clearTimeout(debounceTimerRef.current);
-            }
-            if (delayTimerRef.current) {
-              clearTimeout(delayTimerRef.current);
-              delayTimerRef.current = null;
-            }
-            setIsDelayed(false);
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: crypto.randomUUID(),
-                role: "assistant",
-                content: data.message || "An unknown error occurred.",
-              },
-            ]);
-            setIsRunning(false);
-          }
+            // If a newer message was sent (sendGenRef was incremented past runGenRef),
+            // this done/aborted belongs to an old stream — ignore it.
+            if (runGenRef.current !== sendGenRef.current) return;
 
-          if (data.type === "aborted") {
-            // If this abort was triggered implicitly by sending a new message,
-            // don't reset isRunning — the new message is already in flight.
-            if (implicitAbortRef.current) {
-              implicitAbortRef.current = false;
-              return;
-            }
             if (debounceTimerRef.current) {
               clearTimeout(debounceTimerRef.current);
               debounceTimerRef.current = null;
@@ -316,9 +299,12 @@ export function useWsRuntime(agentId: string): {
 
       // Implicit abort: if a stream is running, abort it first
       if (isRunningRef.current) {
-        implicitAbortRef.current = true;
         wsRef.current?.send(JSON.stringify({ type: "abort", agentId }));
       }
+
+      // Increment generation so stale done/aborted from old streams are ignored
+      sendGenRef.current++;
+      runGenRef.current = sendGenRef.current;
 
       const userMessage: WsMessage = {
         id: crypto.randomUUID(),
