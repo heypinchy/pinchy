@@ -343,19 +343,23 @@ export function useWsRuntime(agentId: string): {
         wsContent = text;
       }
 
-      wsRef.current?.send(
-        JSON.stringify({
-          type: "message",
-          content: wsContent,
-          agentId,
-        })
-      );
+      if (wsRef.current?.readyState === 1) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: "message",
+            content: wsContent,
+            agentId,
+          })
+        );
+      }
     },
     [agentId]
   );
 
   const onCancel = useCallback(async () => {
-    wsRef.current?.send(JSON.stringify({ type: "abort", agentId }));
+    if (wsRef.current?.readyState === 1) {
+      wsRef.current.send(JSON.stringify({ type: "abort", agentId }));
+    }
     setIsRunning(false);
     isRunningRef.current = false;
     setIsDelayed(false);
