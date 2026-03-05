@@ -312,7 +312,7 @@ export default function AgentSettingsPage() {
       </div>
 
       <Tabs defaultValue="general">
-        <TabsList className="overflow-x-auto">
+        <TabsList>
           <TabsTrigger value="general">
             General {dirtyTabs.has("general") && <DirtyDot />}
           </TabsTrigger>

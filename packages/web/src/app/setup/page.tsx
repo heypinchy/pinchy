@@ -13,7 +13,7 @@ export default async function SetupPage() {
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center">
+    <div className="min-h-screen flex items-center justify-center px-4">
       <div className="w-full max-w-md flex flex-col items-center gap-6">
         <Image src="/pinchy-logo.png" alt="Pinchy" width={80} height={85} priority />
         <SetupForm />
