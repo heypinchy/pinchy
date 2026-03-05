@@ -71,6 +71,13 @@ export class ClientRouter {
       return this.handleHistory(clientWs, agent);
     }
 
+    if (message.type === "abort") {
+      const sessionKey = this.computeSessionKey(message.agentId);
+      await this.openclawClient.chatAbort(sessionKey);
+      this.sendToClient(clientWs, { type: "aborted" });
+      return;
+    }
+
     const sessionKey = this.computeSessionKey(message.agentId);
 
     const messageId = crypto.randomUUID();

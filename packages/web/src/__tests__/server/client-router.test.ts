@@ -3,6 +3,7 @@ import { EventEmitter } from "events";
 
 const {
   mockChat,
+  mockChatAbort,
   mockSessionsHistory,
   mockSessionsList,
   mockFindFirst,
@@ -10,6 +11,7 @@ const {
   mockAppendAuditLog,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
+  mockChatAbort: vi.fn().mockResolvedValue(undefined),
   mockSessionsHistory: vi.fn(),
   mockSessionsList: vi.fn(),
   mockFindFirst: vi.fn(),
@@ -77,6 +79,7 @@ function createMockOpenClawClient(connected = true) {
   const emitter = new EventEmitter();
   const client = Object.assign(emitter, {
     chat: mockChat,
+    chatAbort: mockChatAbort,
     sessions: { history: mockSessionsHistory, list: mockSessionsList },
     isConnected: connected,
   });
@@ -1345,6 +1348,58 @@ describe("ClientRouter", () => {
       const greeting = sent[0].messages[0].content;
       expect(greeting).not.toContain("{user}");
       expect(greeting).toContain("I'm Smithers");
+    });
+  });
+
+  describe("abort", () => {
+    it("should call chatAbort on the OpenClaw client and send aborted response", async () => {
+      const ws = createMockClientWs();
+      await router.handleMessage(ws as any, {
+        type: "abort",
+        agentId: "agent-1",
+        content: "",
+      });
+
+      expect(mockChatAbort).toHaveBeenCalledWith("agent:agent-1:user-user-1");
+      const response = JSON.parse(ws.sent[0]);
+      expect(response.type).toBe("aborted");
+    });
+
+    it("should check agent access before aborting", async () => {
+      const personalAgent = {
+        ...defaultAgent,
+        isPersonal: true,
+        ownerId: "other-user",
+      };
+      mockFindFirst.mockResolvedValue(personalAgent);
+
+      const ws = createMockClientWs();
+      await router.handleMessage(ws as any, {
+        type: "abort",
+        agentId: "agent-1",
+        content: "",
+      });
+
+      expect(mockChatAbort).not.toHaveBeenCalled();
+      const response = JSON.parse(ws.sent[0]);
+      expect(response.type).toBe("error");
+      expect(response.message).toBe("Access denied");
+    });
+
+    it("should send error if agent not found during abort", async () => {
+      mockFindFirst.mockResolvedValue(undefined);
+
+      const ws = createMockClientWs();
+      await router.handleMessage(ws as any, {
+        type: "abort",
+        agentId: "nonexistent",
+        content: "",
+      });
+
+      expect(mockChatAbort).not.toHaveBeenCalled();
+      const response = JSON.parse(ws.sent[0]);
+      expect(response.type).toBe("error");
+      expect(response.message).toBe("Agent not found");
     });
   });
 });
