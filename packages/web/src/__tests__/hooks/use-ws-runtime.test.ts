@@ -77,13 +77,16 @@ describe("useWsRuntime", () => {
       });
     });
 
+    const sentMsg = JSON.parse(ws.send.mock.calls[1][0]);
+    const messageId = sentMsg.messageId;
+
     // Receive a chunk (isRunning should still be true)
     act(() => {
       ws.onmessage?.({
         data: JSON.stringify({
           type: "chunk",
           content: "Hi there",
-          messageId: "msg-1",
+          messageId,
         }),
       });
     });
@@ -93,7 +96,7 @@ describe("useWsRuntime", () => {
     // Receive done message - should immediately stop running
     act(() => {
       ws.onmessage?.({
-        data: JSON.stringify({ type: "done", messageId: "msg-1" }),
+        data: JSON.stringify({ type: "done", messageId }),
       });
     });
 
@@ -115,6 +118,9 @@ describe("useWsRuntime", () => {
       });
     });
 
+    const sentMsg = JSON.parse(ws.send.mock.calls[1][0]);
+    const messageId = sentMsg.messageId;
+
     expect(result.current.runtime.isRunning).toBe(true);
 
     // Receive error message - should immediately stop running
@@ -123,7 +129,7 @@ describe("useWsRuntime", () => {
         data: JSON.stringify({
           type: "error",
           message: "Something went wrong",
-          messageId: "msg-1",
+          messageId,
         }),
       });
     });
@@ -153,13 +159,16 @@ describe("useWsRuntime", () => {
       });
     });
 
+    const sentMsg = JSON.parse(ws.send.mock.calls[1][0]);
+    const messageId = sentMsg.messageId;
+
     // Receive a chunk (starts debounce timer)
     act(() => {
       ws.onmessage?.({
         data: JSON.stringify({
           type: "chunk",
           content: "Hi",
-          messageId: "msg-1",
+          messageId,
         }),
       });
     });
@@ -167,7 +176,7 @@ describe("useWsRuntime", () => {
     // Receive done immediately
     act(() => {
       ws.onmessage?.({
-        data: JSON.stringify({ type: "done", messageId: "msg-1" }),
+        data: JSON.stringify({ type: "done", messageId }),
       });
     });
 
@@ -182,7 +191,7 @@ describe("useWsRuntime", () => {
     expect(result.current.runtime.isRunning).toBe(false);
   });
 
-  it("should send message without sessionKey", () => {
+  it("should send message with messageId and without sessionKey", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -202,6 +211,7 @@ describe("useWsRuntime", () => {
     expect(sentMessage.type).toBe("message");
     expect(sentMessage.content).toBe("Hello");
     expect(sentMessage.agentId).toBe("agent-1");
+    expect(sentMessage.messageId).toBeDefined();
     expect(sentMessage.sessionKey).toBeUndefined();
   });
 
@@ -778,6 +788,9 @@ describe("useWsRuntime", () => {
         });
       });
 
+      const sentMsg = JSON.parse(ws.send.mock.calls[1][0]);
+      const messageId = sentMsg.messageId;
+
       act(() => {
         vi.advanceTimersByTime(15000);
       });
@@ -788,7 +801,7 @@ describe("useWsRuntime", () => {
           data: JSON.stringify({
             type: "error",
             message: "Something went wrong",
-            messageId: "msg-1",
+            messageId,
           }),
         });
       });
@@ -1223,7 +1236,7 @@ describe("useWsRuntime", () => {
       expect(result.current.isDelayed).toBe(false);
     });
 
-    it("should send new message without client-side abort when isRunning is true", () => {
+    it("should send new message with messageId and without client-side abort when isRunning is true", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws = wsInstances[0];
 
@@ -1261,7 +1274,6 @@ describe("useWsRuntime", () => {
       });
 
       // Should have sent: history, message1, message2 (no client-side abort)
-      // Server handles abort internally when it receives the new message
       const calls = ws.send.mock.calls.map((c: any) => JSON.parse(c[0]));
       const abortCalls = calls.filter((c: any) => c.type === "abort");
       const msg2 = calls.find(
@@ -1270,6 +1282,67 @@ describe("useWsRuntime", () => {
 
       expect(abortCalls).toHaveLength(0);
       expect(msg2).toBeDefined();
+      // Client should include messageId in the message
+      expect(msg2.messageId).toBeDefined();
+    });
+
+    it("should ignore done from old stream when a new message was sent", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      // First message
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "First question" }],
+          parentId: "root",
+        });
+      });
+
+      // Get the first messageId
+      const msg1 = JSON.parse(ws.send.mock.calls[1][0]);
+      const firstMessageId = msg1.messageId;
+
+      // Receive a chunk so we're mid-stream
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "chunk",
+            content: "Let me explain...",
+            messageId: firstMessageId,
+          }),
+        });
+      });
+
+      // Send second message while streaming
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "New question" }],
+          parentId: "root",
+        });
+      });
+
+      // Old stream sends done — should NOT reset isRunning
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "done", messageId: firstMessageId }),
+        });
+      });
+
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      // New stream's done should reset isRunning
+      const msg2 = JSON.parse(ws.send.mock.calls[2][0]);
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "done", messageId: msg2.messageId }),
+        });
+      });
+
+      expect(result.current.runtime.isRunning).toBe(false);
     });
 
     it("should not send abort before new message when not streaming", () => {

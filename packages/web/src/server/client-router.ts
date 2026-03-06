@@ -29,10 +29,6 @@ interface HistoryMessage {
 }
 
 export class ClientRouter {
-  // Tracks active streams per session key. When a new message comes in
-  // for a session that's already streaming, we abort the old stream first.
-  private activeStreams = new Map<string, Promise<void>>();
-
   constructor(
     private openclawClient: OpenClawClient,
     private userId: string,
@@ -78,22 +74,16 @@ export class ClientRouter {
     if (message.type === "abort") {
       const sessionKey = this.computeSessionKey(message.agentId);
       await this.openclawClient.chatAbort(sessionKey);
-      const timeout = new Promise<void>((resolve) => setTimeout(resolve, 2000));
-      await Promise.race([this.activeStreams.get(sessionKey)?.catch(() => {}), timeout]);
       this.sendToClient(clientWs, { type: "aborted" });
       return;
     }
 
     const sessionKey = this.computeSessionKey(message.agentId);
 
-    const messageId = crypto.randomUUID();
-
-    // If there's an active stream for this session, abort it and wait briefly
-    if (this.activeStreams.has(sessionKey)) {
-      await this.openclawClient.chatAbort(sessionKey);
-      const timeout = new Promise<void>((resolve) => setTimeout(resolve, 2000));
-      await Promise.race([this.activeStreams.get(sessionKey)?.catch(() => {}), timeout]);
-    }
+    // Use client-provided messageId if available, otherwise generate one.
+    // Client-generated IDs enable the client to filter stale done/error
+    // events when sending a new message while a previous stream is active.
+    const messageId = (message as { messageId?: string }).messageId ?? crypto.randomUUID();
 
     try {
       await this.waitForConnection();
@@ -151,47 +141,35 @@ export class ClientRouter {
 
       const stream = this.openclawClient.chat(text, chatOptions);
 
-      const streamPromise = (async () => {
-        for await (const chunk of stream) {
-          if (clientWs.readyState !== WS_OPEN) {
-            break;
-          }
-
-          if (chunk.type === "text") {
-            this.sendToClient(clientWs, {
-              type: "chunk",
-              content: chunk.text,
-              messageId,
-            });
-          }
-
-          if (chunk.type === "error") {
-            console.error("OpenClaw error chunk:", chunk.text);
-            this.sendToClient(clientWs, {
-              type: "error",
-              message:
-                "Something went wrong connecting to the agent. Try refreshing — if it persists, check the logs.",
-              messageId,
-            });
-          }
-
-          if (chunk.type === "done") {
-            this.sessionCache.add(sessionKey);
-            this.sendToClient(clientWs, {
-              type: "done",
-              messageId,
-            });
-          }
+      for await (const chunk of stream) {
+        if (clientWs.readyState !== WS_OPEN) {
+          break;
         }
-      })();
 
-      this.activeStreams.set(sessionKey, streamPromise);
-      try {
-        await streamPromise;
-      } finally {
-        // Only delete if this is still the active stream (not replaced by a newer one)
-        if (this.activeStreams.get(sessionKey) === streamPromise) {
-          this.activeStreams.delete(sessionKey);
+        if (chunk.type === "text") {
+          this.sendToClient(clientWs, {
+            type: "chunk",
+            content: chunk.text,
+            messageId,
+          });
+        }
+
+        if (chunk.type === "error") {
+          console.error("OpenClaw error chunk:", chunk.text);
+          this.sendToClient(clientWs, {
+            type: "error",
+            message:
+              "Something went wrong connecting to the agent. Try refreshing — if it persists, check the logs.",
+            messageId,
+          });
+        }
+
+        if (chunk.type === "done") {
+          this.sessionCache.add(sessionKey);
+          this.sendToClient(clientWs, {
+            type: "done",
+            messageId,
+          });
         }
       }
     } catch (err) {

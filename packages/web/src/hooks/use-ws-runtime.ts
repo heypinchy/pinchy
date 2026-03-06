@@ -77,10 +77,9 @@ export function useWsRuntime(agentId: string): {
   const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
-  // Set when onNew sends an implicit abort before a new message.
-  // While true, done/aborted from the old stream are ignored.
-  // Cleared when the first chunk of the new stream arrives.
-  const pendingNewStreamRef = useRef(false);
+  // Tracks the messageId of the most recently sent message.
+  // Used to filter stale done/error events from old streams.
+  const activeMessageIdRef = useRef<string | null>(null);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldRecoverFromHistoryRef = useRef(false);
@@ -168,10 +167,6 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "chunk") {
-            // New stream started — clear the pending flag so done/aborted
-            // for this stream are processed normally.
-            pendingNewStreamRef.current = false;
-
             if (delayTimerRef.current) {
               clearTimeout(delayTimerRef.current);
               delayTimerRef.current = null;
@@ -215,9 +210,9 @@ export function useWsRuntime(agentId: string): {
               ]);
             }
 
-            // If we sent a new message and are waiting for its stream,
-            // this done/aborted is from the old stream — ignore it.
-            if (pendingNewStreamRef.current) return;
+            // Only reset isRunning if this event is for the active stream.
+            // Stale done/error from old streams are ignored.
+            if (data.messageId && data.messageId !== activeMessageIdRef.current) return;
 
             if (debounceTimerRef.current) {
               clearTimeout(debounceTimerRef.current);
@@ -298,16 +293,19 @@ export function useWsRuntime(agentId: string): {
 
       if (!text.trim() && images.length === 0) return;
 
-      // If a stream is running, clean up client-side state.
-      // Don't send an explicit abort — just send the new message and let
-      // the server handle it. OpenClaw can hang if abort + chat overlap.
+      // If a stream is running, clean up client-side debounce timer.
+      // The new message is sent directly — the server starts a new stream
+      // and old stream events are filtered out by messageId.
       if (isRunningRef.current) {
-        pendingNewStreamRef.current = true;
         if (debounceTimerRef.current) {
           clearTimeout(debounceTimerRef.current);
           debounceTimerRef.current = null;
         }
       }
+
+      // Generate messageId so we can filter stale done/error events
+      const messageId = crypto.randomUUID();
+      activeMessageIdRef.current = messageId;
 
       const userMessage: WsMessage = {
         id: crypto.randomUUID(),
@@ -349,6 +347,7 @@ export function useWsRuntime(agentId: string): {
             type: "message",
             content: wsContent,
             agentId,
+            messageId,
           })
         );
       }
@@ -360,6 +359,7 @@ export function useWsRuntime(agentId: string): {
     if (wsRef.current?.readyState === 1) {
       wsRef.current.send(JSON.stringify({ type: "abort", agentId }));
     }
+    activeMessageIdRef.current = null;
     setIsRunning(false);
     isRunningRef.current = false;
     setIsDelayed(false);
