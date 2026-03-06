@@ -65,11 +65,6 @@ export function useWsRuntime(agentId: string): {
   const { triggerRestart } = useRestart();
   const [messages, setMessages] = useState<WsMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
-  const isRunningRef = useRef(false);
-  // Keep ref in sync with state so onNew can read it without stale closures
-  useEffect(() => {
-    isRunningRef.current = isRunning;
-  }, [isRunning]);
   const [isConnected, setIsConnected] = useState(false);
   const [isDelayed, setIsDelayed] = useState(false);
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
@@ -293,16 +288,6 @@ export function useWsRuntime(agentId: string): {
 
       if (!text.trim() && images.length === 0) return;
 
-      // If a stream is running, clean up client-side debounce timer.
-      // The new message is sent directly — the server starts a new stream
-      // and old stream events are filtered out by messageId.
-      if (isRunningRef.current) {
-        if (debounceTimerRef.current) {
-          clearTimeout(debounceTimerRef.current);
-          debounceTimerRef.current = null;
-        }
-      }
-
       // Generate messageId so we can filter stale done/error events
       const messageId = crypto.randomUUID();
       activeMessageIdRef.current = messageId;
@@ -361,7 +346,6 @@ export function useWsRuntime(agentId: string): {
     }
     activeMessageIdRef.current = null;
     setIsRunning(false);
-    isRunningRef.current = false;
     setIsDelayed(false);
     if (debounceTimerRef.current) {
       clearTimeout(debounceTimerRef.current);
