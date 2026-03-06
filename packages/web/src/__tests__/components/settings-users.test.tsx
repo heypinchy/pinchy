@@ -359,4 +359,202 @@ describe("SettingsUsers", () => {
       });
     });
   });
+
+  describe("invite rows", () => {
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const pastDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    const pendingInvite = {
+      id: "inv-1",
+      email: "pending@example.com",
+      role: "user",
+      type: "invite",
+      createdAt: new Date().toISOString(),
+      expiresAt: futureDate,
+      claimedAt: null,
+    };
+
+    const expiredInvite = {
+      id: "inv-2",
+      email: "expired@example.com",
+      role: "user",
+      type: "invite",
+      createdAt: new Date().toISOString(),
+      expiresAt: pastDate,
+      claimedAt: null,
+    };
+
+    it("should show Revoke button for a pending invite", async () => {
+      mockFetchForUsers(mockUsers, [pendingInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("pending@example.com").length).toBeGreaterThanOrEqual(1);
+      });
+
+      const table = screen.getByRole("table");
+      const inviteRow = within(table).getAllByText("pending@example.com")[0].closest("tr")!;
+      expect(within(inviteRow).getByRole("button", { name: "Revoke" })).toBeInTheDocument();
+    });
+
+    it("should show Resend button for an expired invite", async () => {
+      mockFetchForUsers(mockUsers, [expiredInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("expired@example.com").length).toBeGreaterThanOrEqual(1);
+      });
+
+      const table = screen.getByRole("table");
+      const inviteRow = within(table).getAllByText("expired@example.com")[0].closest("tr")!;
+      expect(within(inviteRow).getByRole("button", { name: "Resend" })).toBeInTheDocument();
+    });
+
+    it("should display email as the name for an invite row", async () => {
+      mockFetchForUsers(mockUsers, [pendingInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("pending@example.com").length).toBeGreaterThanOrEqual(1);
+      });
+
+      const table = screen.getByRole("table");
+      const rows = table.querySelectorAll("tbody tr");
+      // Find the invite row — the Name cell should show the email
+      const inviteRow = Array.from(rows).find((row) =>
+        within(row as HTMLElement).queryByRole("button", { name: "Revoke" })
+      )!;
+      const cells = inviteRow.querySelectorAll("td");
+      // First cell is the Name column
+      expect(cells[0].textContent).toBe("pending@example.com");
+    });
+
+    it("should show 'No email provided' for an invite without email", async () => {
+      const noEmailInvite = { ...pendingInvite, id: "inv-3", email: null };
+      mockFetchForUsers(mockUsers, [noEmailInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("No email provided").length).toBeGreaterThanOrEqual(1);
+      });
+
+      const table = screen.getByRole("table");
+      expect(within(table).getByText("No email provided")).toBeInTheDocument();
+    });
+
+    it("should call DELETE /api/users/invites/:id when Revoke is clicked", async () => {
+      const user = userEvent.setup();
+      mockFetchForUsers(mockUsers, [pendingInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("pending@example.com").length).toBeGreaterThanOrEqual(1);
+      });
+
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (String(url) === "/api/users/invites/inv-1" && init?.method === "DELETE") {
+          return { ok: true, json: async () => ({ success: true }) } as Response;
+        }
+        if (String(url) === "/api/users") {
+          return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+        }
+        if (String(url) === "/api/users/invites") {
+          return { ok: true, json: async () => ({ invites: [] }) } as Response;
+        }
+        return { ok: false } as Response;
+      });
+
+      const table = screen.getByRole("table");
+      const inviteRow = within(table).getAllByText("pending@example.com")[0].closest("tr")!;
+      await user.click(within(inviteRow).getByRole("button", { name: "Revoke" }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/users/invites/inv-1", {
+          method: "DELETE",
+        });
+      });
+    });
+
+    it("should call DELETE then POST when Resend is clicked and show invite link", async () => {
+      const user = userEvent.setup();
+      mockFetchForUsers(mockUsers, [expiredInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("expired@example.com").length).toBeGreaterThanOrEqual(1);
+      });
+
+      const fetchCalls: string[] = [];
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        const key = `${init?.method || "GET"} ${String(url)}`;
+        fetchCalls.push(key);
+        if (String(url) === "/api/users/invites/inv-2" && init?.method === "DELETE") {
+          return { ok: true, json: async () => ({ success: true }) } as Response;
+        }
+        if (String(url) === "/api/users/invite" && init?.method === "POST") {
+          return { ok: true, json: async () => ({ token: "resend-token-xyz" }) } as Response;
+        }
+        if (String(url) === "/api/users") {
+          return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+        }
+        if (String(url) === "/api/users/invites") {
+          return { ok: true, json: async () => ({ invites: [] }) } as Response;
+        }
+        return { ok: false } as Response;
+      });
+
+      const table = screen.getByRole("table");
+      const inviteRow = within(table).getAllByText("expired@example.com")[0].closest("tr")!;
+      await user.click(within(inviteRow).getByRole("button", { name: "Resend" }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/users/invites/inv-2", {
+          method: "DELETE",
+        });
+      });
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email: "expired@example.com", role: "user" }),
+        });
+      });
+
+      // DELETE should come before POST
+      const deleteIdx = fetchCalls.indexOf("DELETE /api/users/invites/inv-2");
+      const postIdx = fetchCalls.indexOf("POST /api/users/invite");
+      expect(deleteIdx).toBeLessThan(postIdx);
+
+      await waitFor(() => {
+        expect(
+          screen.getByText("http://localhost:7777/invite/resend-token-xyz")
+        ).toBeInTheDocument();
+      });
+    });
+
+    it("should render status badges for all statuses", async () => {
+      const deactivatedUser = {
+        id: "user-4",
+        name: "Dave Deactivated",
+        email: "dave@example.com",
+        role: "user",
+        banned: true,
+      };
+      mockFetchForUsers([...mockUsers, deactivatedUser], [pendingInvite, expiredInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Alice Admin").length).toBeGreaterThanOrEqual(1);
+      });
+
+      const table = screen.getByRole("table");
+      const tableView = within(table);
+
+      expect(tableView.getAllByText("active").length).toBeGreaterThanOrEqual(1);
+      expect(tableView.getByText("pending")).toBeInTheDocument();
+      expect(tableView.getByText("expired")).toBeInTheDocument();
+      expect(tableView.getByText("deactivated")).toBeInTheDocument();
+    });
+  });
 });
