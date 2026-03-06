@@ -34,7 +34,7 @@ interface ApiInvite {
   claimedAt: string | null;
 }
 
-const STATUS_ORDER: Record<string, number> = {
+const STATUS_ORDER: Record<UserListItem["status"], number> = {
   active: 0,
   pending: 1,
   expired: 2,

@@ -23,7 +23,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { InviteDialog } from "@/components/invite-dialog";
-import { mergeUserList, UserListItem } from "@/lib/user-list";
+import { mergeUserList, type UserListItem } from "@/lib/user-list";
 
 interface SettingsUsersProps {
   currentUserId: string;
@@ -90,11 +90,7 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
   }
 
   async function handleRevoke(inviteId: string) {
-    const res = await fetch(`/api/users/invites/${inviteId}`, { method: "DELETE" });
-    if (!res.ok) {
-      fetchUsers();
-      return;
-    }
+    await fetch(`/api/users/invites/${inviteId}`, { method: "DELETE" });
     fetchUsers();
   }
 
