@@ -1182,6 +1182,10 @@ describe("useWsRuntime", () => {
       const abortMessage = JSON.parse(ws.send.mock.calls[2][0]);
       expect(abortMessage.type).toBe("abort");
       expect(abortMessage.agentId).toBe("agent-1");
+
+      // Should close the WebSocket to force reconnect
+      // (works around OpenClaw Gateway session lock bug after abort)
+      expect(ws.close).toHaveBeenCalled();
     });
 
     it("should set isRunning to false when onCancel is called", () => {

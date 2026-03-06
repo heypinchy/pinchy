@@ -44,6 +44,8 @@ export class ClientRouter {
   }
 
   async handleMessage(clientWs: WebSocket, message: BrowserMessage): Promise<void> {
+    log.debug({ type: message.type, agentId: message.agentId }, "received message");
+
     // Look up agent and check access
     const agent = await db.query.agents.findFirst({
       where: eq(agents.id, message.agentId),

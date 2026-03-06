@@ -78,6 +78,9 @@ export function useWsRuntime(agentId: string): {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldRecoverFromHistoryRef = useRef(false);
+  // When true, the next reconnect keeps local messages instead of replacing
+  // them with server history. Used after abort to preserve partial responses.
+  const isAbortReconnectRef = useRef(false);
 
   // Reset state when switching agents — prevents stale messages from
   // one agent blocking history load for a different agent.
@@ -110,10 +113,16 @@ export function useWsRuntime(agentId: string): {
         setIsConnected(false);
         setIsRunning(false);
 
-        setIsHistoryLoaded(false);
-
         if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
-          shouldRecoverFromHistoryRef.current = true;
+          if (isAbortReconnectRef.current) {
+            // After abort: keep local messages (including partial response),
+            // just reconnect so the next message works.
+            isAbortReconnectRef.current = false;
+          } else {
+            // Connection drop: recover messages from server history.
+            shouldRecoverFromHistoryRef.current = true;
+            setIsHistoryLoaded(false);
+          }
           const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 5000);
           reconnectAttemptRef.current++;
           reconnectTimerRef.current = setTimeout(connect, delay);
@@ -355,6 +364,12 @@ export function useWsRuntime(agentId: string): {
       clearTimeout(delayTimerRef.current);
       delayTimerRef.current = null;
     }
+    // Close and reconnect the WebSocket after abort.
+    // OpenClaw Gateway has a known bug where the session lock is not released
+    // after abort, blocking all subsequent messages. Reconnecting forces a
+    // fresh connection that can chat on the session again.
+    isAbortReconnectRef.current = true;
+    wsRef.current?.close();
   }, [agentId]);
 
   const convertedMessages = useMemo(() => messages.map(convertMessage), [messages]);
