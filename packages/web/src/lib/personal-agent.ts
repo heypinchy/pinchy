@@ -62,6 +62,11 @@ export async function createSmithersAgent({
 }
 
 export async function seedPersonalAgent(userId: string, isAdmin = false) {
+  const existing = await db.query.agents.findFirst({
+    where: (a, { and, eq }) => and(eq(a.ownerId, userId), eq(a.isPersonal, true)),
+  });
+  if (existing) return existing;
+
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
   const model = defaultProvider
     ? PROVIDERS[defaultProvider].defaultModel

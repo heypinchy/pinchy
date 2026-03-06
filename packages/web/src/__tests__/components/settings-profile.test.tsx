@@ -306,6 +306,17 @@ describe("SettingsProfile", () => {
     });
   });
 
+  it("should populate name field when userName prop arrives after initial empty render", () => {
+    const { rerender } = render(<SettingsProfile userName="" />);
+
+    const nameInput = screen.getByLabelText("Name");
+    expect(nameInput).toHaveValue("");
+
+    rerender(<SettingsProfile userName="Alice" />);
+
+    expect(nameInput).toHaveValue("Alice");
+  });
+
   it("should render a Log out button", () => {
     render(<SettingsProfile userName="Alice" />);
 

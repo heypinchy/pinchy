@@ -294,85 +294,87 @@ export default function AgentSettingsPage() {
   }
 
   return (
-    <div className="overflow-y-auto p-4 md:p-8 pb-24 max-w-2xl">
-      <div className="flex items-center justify-between mb-6">
-        <button
-          onClick={() => {
-            if (hasDirtyTabs) {
-              setShowNavWarning(true);
-            } else {
-              router.push(`/chat/${agentId}`);
-            }
-          }}
-          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          &larr; Back to Chat
-        </button>
-        <h1 className="text-2xl font-bold">Agent Settings</h1>
-      </div>
-
-      <Tabs defaultValue="general">
-        <TabsList>
-          <TabsTrigger value="general">
-            General {dirtyTabs.has("general") && <DirtyDot />}
-          </TabsTrigger>
-          <TabsTrigger value="personality">
-            Personality {dirtyTabs.has("personality") && <DirtyDot />}
-          </TabsTrigger>
-          <TabsTrigger value="instructions">
-            Instructions {dirtyTabs.has("instructions") && <DirtyDot />}
-          </TabsTrigger>
-          {showPermissions && (
-            <TabsTrigger value="permissions">
-              Permissions {dirtyTabs.has("permissions") && <DirtyDot />}
-            </TabsTrigger>
-          )}
-        </TabsList>
-
-        <TabsContent value="general" keepMounted>
-          <AgentSettingsGeneral
-            agent={agent}
-            providers={providers}
-            canDelete={canDelete}
-            onChange={handleGeneralChange}
-          />
-        </TabsContent>
-
-        <TabsContent value="personality" keepMounted>
-          <AgentSettingsPersonality
-            agentId={agentId}
-            agent={{
-              avatarSeed: agent.avatarSeed,
-              name: agent.name,
-              personalityPresetId: agent.personalityPresetId,
+    <div className="h-full flex flex-col">
+      <div className="flex-1 overflow-y-auto p-4 md:p-8 max-w-2xl">
+        <div className="flex items-center justify-between mb-6">
+          <button
+            onClick={() => {
+              if (hasDirtyTabs) {
+                setShowNavWarning(true);
+              } else {
+                router.push(`/chat/${agentId}`);
+              }
             }}
-            soulContent={soulContent}
-            onChange={handlePersonalityChange}
-          />
-        </TabsContent>
+            className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+          >
+            &larr; Back to Chat
+          </button>
+          <h1 className="text-2xl font-bold">Agent Settings</h1>
+        </div>
 
-        <TabsContent value="instructions" keepMounted>
-          <AgentSettingsFile
-            agentId={agentId}
-            filename="AGENTS.md"
-            content={agentsContent}
-            onChange={handleInstructionsChange}
-          />
-        </TabsContent>
+        <Tabs defaultValue="general">
+          <TabsList>
+            <TabsTrigger value="general">
+              General {dirtyTabs.has("general") && <DirtyDot />}
+            </TabsTrigger>
+            <TabsTrigger value="personality">
+              Personality {dirtyTabs.has("personality") && <DirtyDot />}
+            </TabsTrigger>
+            <TabsTrigger value="instructions">
+              Instructions {dirtyTabs.has("instructions") && <DirtyDot />}
+            </TabsTrigger>
+            {showPermissions && (
+              <TabsTrigger value="permissions">
+                Permissions {dirtyTabs.has("permissions") && <DirtyDot />}
+              </TabsTrigger>
+            )}
+          </TabsList>
 
-        {showPermissions && (
-          <TabsContent value="permissions" keepMounted>
-            <AgentSettingsPermissions
+          <TabsContent value="general" keepMounted>
+            <AgentSettingsGeneral
               agent={agent}
-              directories={directories}
-              onChange={handlePermissionsChange}
+              providers={providers}
+              canDelete={canDelete}
+              onChange={handleGeneralChange}
             />
           </TabsContent>
-        )}
-      </Tabs>
 
-      {/* Sticky save bar — always visible, right of sidebar */}
-      <div className="fixed bottom-0 left-0 md:left-[var(--sidebar-width)] right-0 z-50 border-t bg-background px-4 md:px-6 py-3 flex items-center justify-between">
+          <TabsContent value="personality" keepMounted>
+            <AgentSettingsPersonality
+              agentId={agentId}
+              agent={{
+                avatarSeed: agent.avatarSeed,
+                name: agent.name,
+                personalityPresetId: agent.personalityPresetId,
+              }}
+              soulContent={soulContent}
+              onChange={handlePersonalityChange}
+            />
+          </TabsContent>
+
+          <TabsContent value="instructions" keepMounted>
+            <AgentSettingsFile
+              agentId={agentId}
+              filename="AGENTS.md"
+              content={agentsContent}
+              onChange={handleInstructionsChange}
+            />
+          </TabsContent>
+
+          {showPermissions && (
+            <TabsContent value="permissions" keepMounted>
+              <AgentSettingsPermissions
+                agent={agent}
+                directories={directories}
+                onChange={handlePermissionsChange}
+              />
+            </TabsContent>
+          )}
+        </Tabs>
+      </div>
+
+      {/* Save bar — pinned at bottom, outside scroll area */}
+      <div className="shrink-0 border-t bg-background px-4 md:px-6 py-3 flex items-center justify-between">
         <span className="text-sm text-muted-foreground">
           {hasDirtyTabs ? "Unsaved changes" : "All changes saved"}
         </span>

@@ -50,6 +50,13 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
     defaultValues: { name: userName },
   });
 
+  // Sync form when userName prop arrives asynchronously (session loading)
+  useEffect(() => {
+    if (userName) {
+      nameForm.reset({ name: userName });
+    }
+  }, [userName, nameForm]);
+
   const passwordForm = useForm<PasswordFormValues>({
     resolver: zodResolver(passwordSchema),
     defaultValues: { currentPassword: "", newPassword: "", confirmPassword: "" },
