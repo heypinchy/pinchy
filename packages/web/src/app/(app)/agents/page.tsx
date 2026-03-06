@@ -7,15 +7,12 @@ import { AgentsPageContent } from "./agents-page-content";
 export default async function AgentsPage() {
   const session = await requireAuth();
 
-  const isAdmin = session?.user?.role === "admin";
   const userId = session?.user?.id;
 
-  const visibleAgents = isAdmin
-    ? await db.select().from(activeAgents)
-    : await db
-        .select()
-        .from(activeAgents)
-        .where(or(eq(activeAgents.isPersonal, false), eq(activeAgents.ownerId, userId!)));
+  const visibleAgents = await db
+    .select()
+    .from(activeAgents)
+    .where(or(eq(activeAgents.isPersonal, false), eq(activeAgents.ownerId, userId!)));
 
   return <AgentsPageContent agents={visibleAgents} />;
 }

@@ -4,10 +4,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const returningMock = vi.fn();
 const valuesMock = vi.fn().mockReturnValue({ returning: returningMock });
 const insertMock = vi.fn().mockReturnValue({ values: valuesMock });
+const findFirstMock = vi.fn();
 
 vi.mock("@/db", () => ({
   db: {
     insert: (...args: unknown[]) => insertMock(...args),
+    query: {
+      agents: {
+        findFirst: (...args: unknown[]) => findFirstMock(...args),
+      },
+    },
   },
 }));
 
@@ -543,5 +549,24 @@ describe("seedPersonalAgent", () => {
     const agent = await seedPersonalAgent("user-1");
 
     expect(agent).toEqual(fakeAgent);
+  });
+
+  it("returns existing agent without inserting when user already has a personal agent", async () => {
+    const existingAgent = {
+      id: "agent-existing",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-20250514",
+      ownerId: "user-1",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    findFirstMock.mockResolvedValue(existingAgent);
+    getSettingMock.mockResolvedValue(null);
+
+    const { seedPersonalAgent } = await import("@/lib/personal-agent");
+    const agent = await seedPersonalAgent("user-1");
+
+    expect(agent).toEqual(existingAgent);
+    expect(insertMock).not.toHaveBeenCalled();
   });
 });
