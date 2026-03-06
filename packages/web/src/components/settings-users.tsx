@@ -154,7 +154,7 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
               >
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="font-medium">
+                    <span className="font-medium truncate max-w-[180px]">
                       {item.kind === "user" ? item.name : item.email || "No email provided"}
                     </span>
                     <Badge variant="outline" className="text-xs">
@@ -163,7 +163,7 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
                     <StatusBadge status={item.status} />
                   </div>
                 </div>
-                <div className="text-sm text-muted-foreground">
+                <div className="text-sm text-muted-foreground truncate">
                   {item.kind === "user" ? item.email : item.email || "\u2014"}
                 </div>
                 <div className="flex gap-2">
@@ -221,10 +221,10 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
                     key={`${item.kind}-${item.id}`}
                     className={item.status === "deactivated" ? "opacity-50" : ""}
                   >
-                    <TableCell>
+                    <TableCell className="max-w-[150px] truncate">
                       {item.kind === "user" ? item.name : item.email || "No email provided"}
                     </TableCell>
-                    <TableCell>
+                    <TableCell className="max-w-[200px] truncate">
                       {item.kind === "user" ? item.email : item.email || "\u2014"}
                     </TableCell>
                     <TableCell>{item.role}</TableCell>
@@ -280,7 +280,13 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
         </CardContent>
       </Card>
 
-      <InviteDialog open={inviteOpen} onOpenChange={setInviteOpen} />
+      <InviteDialog
+        open={inviteOpen}
+        onOpenChange={(open) => {
+          setInviteOpen(open);
+          if (!open) fetchUsers();
+        }}
+      />
 
       <AlertDialog
         open={!!deactivateUserId}

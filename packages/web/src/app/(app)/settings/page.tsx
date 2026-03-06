@@ -86,7 +86,7 @@ export default function SettingsPage() {
 
   return (
     <div className="overflow-y-auto">
-      <div className="p-4 md:p-8 max-w-lg">
+      <div className="p-4 md:p-8 max-w-3xl">
         <h1 className="text-2xl font-bold mb-6">Settings</h1>
 
         <Tabs defaultValue="context">
