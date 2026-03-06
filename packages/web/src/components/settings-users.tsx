@@ -56,9 +56,9 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
         fetch("/api/users"),
         fetch("/api/users/invites"),
       ]);
-      if (usersRes.ok && invitesRes.ok) {
+      if (usersRes.ok) {
         const usersData = await usersRes.json();
-        const invitesData = await invitesRes.json();
+        const invitesData = invitesRes.ok ? await invitesRes.json() : { invites: [] };
         setItems(mergeUserList(usersData.users, invitesData.invites));
       }
     } finally {
@@ -90,12 +90,20 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
   }
 
   async function handleRevoke(inviteId: string) {
-    await fetch(`/api/users/invites/${inviteId}`, { method: "DELETE" });
+    const res = await fetch(`/api/users/invites/${inviteId}`, { method: "DELETE" });
+    if (!res.ok) {
+      fetchUsers();
+      return;
+    }
     fetchUsers();
   }
 
   async function handleResend(item: UserListItem & { kind: "invite" }) {
-    await fetch(`/api/users/invites/${item.id}`, { method: "DELETE" });
+    const deleteRes = await fetch(`/api/users/invites/${item.id}`, { method: "DELETE" });
+    if (!deleteRes.ok) {
+      fetchUsers();
+      return;
+    }
     const res = await fetch("/api/users/invite", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
