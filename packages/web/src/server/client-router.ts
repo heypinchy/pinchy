@@ -2,10 +2,13 @@ import type { OpenClawClient, ChatAttachment } from "openclaw-node";
 import type { WebSocket } from "ws";
 import { assertAgentAccess } from "@/lib/agent-access";
 import { appendAuditLog } from "@/lib/audit";
+import { logger } from "@/lib/logger";
 import { SessionCache } from "@/server/session-cache";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
+
+const log = logger.child({ module: "client-router" });
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
@@ -61,7 +64,7 @@ export class ClientRouter {
         resource: `agent:${message.agentId}`,
         detail: { reason: "access_denied" },
       }).catch((err) => {
-        console.error("Failed to write audit log for tool.denied:", err);
+        log.error({ err }, "Failed to write audit log for tool.denied");
       });
       this.sendToClient(clientWs, { type: "error", message: "Access denied" });
       return;
@@ -73,6 +76,7 @@ export class ClientRouter {
 
     if (message.type === "abort") {
       const sessionKey = this.computeSessionKey(message.agentId);
+      log.debug({ sessionKey }, "abort requested");
       await this.openclawClient.chatAbort(sessionKey);
       this.sendToClient(clientWs, { type: "aborted" });
       return;
@@ -139,6 +143,7 @@ export class ClientRouter {
         chatOptions.extraSystemPrompt = extraPromptParts.join("\n\n");
       }
 
+      log.debug({ sessionKey, messageId }, "starting chat stream");
       const stream = this.openclawClient.chat(text, chatOptions);
 
       for await (const chunk of stream) {
@@ -155,7 +160,7 @@ export class ClientRouter {
         }
 
         if (chunk.type === "error") {
-          console.error("OpenClaw error chunk:", chunk.text);
+          log.error({ sessionKey, messageId, text: chunk.text }, "OpenClaw error chunk");
           this.sendToClient(clientWs, {
             type: "error",
             message:
@@ -165,6 +170,7 @@ export class ClientRouter {
         }
 
         if (chunk.type === "done") {
+          log.debug({ sessionKey, messageId }, "stream done");
           this.sessionCache.add(sessionKey);
           this.sendToClient(clientWs, {
             type: "done",
@@ -295,10 +301,7 @@ export class ClientRouter {
     if (message.includes("not available")) {
       return message;
     }
-    console.error("ClientRouter error:", message);
-    if (err instanceof Error && err.stack) {
-      console.error(err.stack);
-    }
+    log.error({ err }, "ClientRouter error");
     return "Something went wrong. Please try again.";
   }
 

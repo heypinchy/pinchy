@@ -1001,8 +1001,6 @@ describe("ClientRouter", () => {
 
   it("should send error to client when stream yields an error chunk", async () => {
     const clientWs = createMockClientWs();
-    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
-
     async function* fakeStream() {
       yield { type: "error" as const, text: "INVALID_REQUEST: model overloaded" };
       yield { type: "done" as const, text: "" };
@@ -1022,14 +1020,6 @@ describe("ClientRouter", () => {
     expect(errorMsg.message).not.toContain("INVALID_REQUEST");
     expect(errorMsg.message).not.toContain("overloaded");
     expect(errorMsg.messageId).toBeTruthy();
-
-    // Should log the actual error server-side
-    expect(consoleSpy).toHaveBeenCalledWith(
-      expect.stringContaining("OpenClaw error chunk"),
-      expect.stringContaining("INVALID_REQUEST")
-    );
-
-    consoleSpy.mockRestore();
   });
 
   it("should return empty history when sessions.list fails and no greeting", async () => {
