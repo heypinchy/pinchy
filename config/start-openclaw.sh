@@ -7,6 +7,9 @@ echo "OpenClaw Gateway starting..."
 # when no token is configured yet, e.g. on first startup before setup wizard)
 node /ensure-gateway-token.js
 
+# Ensure config is world-readable so Pinchy (non-root) can read the gateway token
+chmod 644 /root/.openclaw/openclaw.json
+
 # Scan /data/ for available directories and write to shared config
 # so Pinchy can read them without needing a /data mount
 scan_data_directories() {

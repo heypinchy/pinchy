@@ -30,39 +30,9 @@ function readGatewayToken(): string {
 
 async function waitForGatewayToken(maxWaitMs = 30000): Promise<string> {
   const start = Date.now();
-  let attempt = 0;
   while (Date.now() - start < maxWaitMs) {
     const token = readGatewayToken();
-    if (token) {
-      console.log(`[pinchy] Gateway token found after ${attempt} attempts`);
-      return token;
-    }
-    if (attempt === 0) {
-      // Log diagnostics on first attempt to help debug volume/permission issues
-      try {
-        const { existsSync, statSync } = await import("fs");
-        const exists = existsSync(OPENCLAW_CONFIG_PATH);
-        console.log(
-          `[pinchy] Waiting for gateway token at ${OPENCLAW_CONFIG_PATH} (exists=${exists})`
-        );
-        if (exists) {
-          const stat = statSync(OPENCLAW_CONFIG_PATH);
-          console.log(
-            `[pinchy] Config file: uid=${stat.uid} gid=${stat.gid} mode=${stat.mode.toString(8)} size=${stat.size}`
-          );
-          const content = readFileSync(OPENCLAW_CONFIG_PATH, "utf-8");
-          const parsed = JSON.parse(content);
-          console.log(
-            `[pinchy] Config keys: ${Object.keys(parsed).join(", ")}, has gateway.auth.token: ${!!parsed?.gateway?.auth?.token}`
-          );
-        }
-      } catch (diagErr) {
-        console.log(
-          `[pinchy] Diagnostic error: ${diagErr instanceof Error ? diagErr.message : diagErr}`
-        );
-      }
-    }
-    attempt++;
+    if (token) return token;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
   console.warn("[pinchy] Gateway token not available after waiting, connecting without token");
