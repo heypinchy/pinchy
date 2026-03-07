@@ -56,8 +56,11 @@ test.describe("Provider configuration", () => {
     await page.getByLabel(/password/i).fill("test-password-123");
     await page.getByRole("button", { name: /sign in/i }).click();
 
+    // Wait for login to complete (scrypt hashing can be slow on CI)
+    await expect(page).not.toHaveURL(/\/login/, { timeout: 15000 });
+
     // Should go straight to app (chat page on desktop), not provider setup
-    await expect(page).toHaveURL(/\/chat\//, { timeout: 10000 });
+    await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
 
     // Verify Smithers agent is visible in the sidebar
     await expect(page.getByRole("link", { name: /smithers/i })).toBeVisible();

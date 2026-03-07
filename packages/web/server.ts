@@ -167,23 +167,38 @@ app.prepare().then(async () => {
       maxReconnectAttempts: Infinity,
     });
 
+    let hasConnected = false;
+    let errorLogged = false;
+
     openclawClient.connect().catch((err) => {
-      console.error("OpenClaw initial connection failed, will retry:", err.message);
+      console.log("Waiting for OpenClaw Gateway...");
+      errorLogged = true;
     });
 
     openclawClient.on("connected", () => {
       console.log("Connected to OpenClaw Gateway");
+      hasConnected = true;
+      errorLogged = false;
       if (restartState.isRestarting) {
         restartState.notifyReady();
       }
     });
 
     openclawClient.on("disconnected", () => {
-      console.log("Disconnected from OpenClaw Gateway, reconnecting...");
+      if (hasConnected) {
+        console.log("Disconnected from OpenClaw Gateway, reconnecting...");
+      }
     });
 
     openclawClient.on("error", (err) => {
-      console.error("OpenClaw client error:", err.message);
+      if (hasConnected) {
+        // Log errors after a successful connection (unexpected disconnects)
+        console.error("OpenClaw client error:", err.message);
+      } else if (!errorLogged) {
+        // During initial connection, log only once
+        console.log("Waiting for OpenClaw Gateway...");
+        errorLogged = true;
+      }
     });
   } else {
     console.log("OPENCLAW_WS_URL not set — skipping OpenClaw connection");

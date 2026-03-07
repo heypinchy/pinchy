@@ -165,6 +165,23 @@ jobs:
             exit 1
           fi
 
+      - name: Verify clean startup (production)
+        run: |
+          LOGS=$(docker compose logs 2>&1)
+          # OpenClaw should not restart during normal startup
+          RESTART_COUNT=$(echo "$LOGS" | grep -c "Restarting OpenClaw Gateway" || true)
+          if [ "$RESTART_COUNT" -gt 0 ]; then
+            echo "::error::OpenClaw restarted $RESTART_COUNT time(s) during startup (expected 0)"
+            docker compose logs openclaw
+            exit 1
+          fi
+          # Pinchy should not spam connection errors
+          ERROR_COUNT=$(echo "$LOGS" | grep -c "OpenClaw client error" || true)
+          if [ "$ERROR_COUNT" -gt 1 ]; then
+            echo "::warning::Pinchy logged $ERROR_COUNT OpenClaw connection errors (expected at most 1)"
+          fi
+          echo "Clean startup verified (restarts=$RESTART_COUNT, connection_errors=$ERROR_COUNT)"
+
       - name: Tear down production
         if: always()
         run: docker compose down -v
