@@ -28,6 +28,17 @@ function readGatewayToken(): string {
   }
 }
 
+async function waitForGatewayToken(maxWaitMs = 30000): Promise<string> {
+  const start = Date.now();
+  while (Date.now() - start < maxWaitMs) {
+    const token = readGatewayToken();
+    if (token) return token;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  console.warn("[pinchy] Gateway token not available after waiting, connecting without token");
+  return "";
+}
+
 if (process.env.NODE_ENV === "production") {
   const dbUrl = process.env.DATABASE_URL || "";
   if (dbUrl.includes(":pinchy_dev@")) {
@@ -61,9 +72,10 @@ app.prepare().then(async () => {
   let openclawClient: OpenClawClient | null = null;
 
   if (OPENCLAW_WS_URL) {
+    const gatewayToken = await waitForGatewayToken();
     openclawClient = new OpenClawClient({
       url: OPENCLAW_WS_URL,
-      token: readGatewayToken(),
+      token: gatewayToken,
       clientId: "gateway-client",
       clientVersion: "0.1.0",
       scopes: ["operator.admin"],
