@@ -28,9 +28,11 @@ COPY packages/plugins/pinchy-audit /openclaw-extensions/pinchy-audit
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://localhost:7777/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
-# Run as non-root user
+# Create non-root user (entrypoint drops privileges after fixing volume permissions)
 RUN groupadd -r pinchy && useradd -r -g pinchy -d /app pinchy
 RUN mkdir -p /app/secrets /openclaw-config/workspaces && chown -R pinchy:pinchy /app /app/secrets /openclaw-config/workspaces
-USER pinchy
 
-CMD ["sh", "-c", "echo '[pinchy] Running database migrations...' && pnpm db:migrate && echo '[pinchy] Starting server...' && exec pnpm start"]
+COPY entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]

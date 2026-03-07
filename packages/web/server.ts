@@ -170,9 +170,8 @@ app.prepare().then(async () => {
     let hasConnected = false;
     let errorLogged = false;
 
-    openclawClient.connect().catch((err) => {
-      console.log("Waiting for OpenClaw Gateway...");
-      errorLogged = true;
+    openclawClient.connect().catch(() => {
+      // Swallow rejection — the error event handler logs once
     });
 
     openclawClient.on("connected", () => {

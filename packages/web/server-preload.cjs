@@ -24,6 +24,16 @@ if (!process.env.BETTER_AUTH_SECRET) {
   }
 }
 
+// Suppress InsecureTransportWarning for internal OpenClaw ws:// connection.
+// OpenClaw Gateway is never exposed publicly — ws:// is correct for container-internal traffic.
+{
+  const originalEmit = process.emit;
+  process.emit = function (event, ...args) {
+    if (event === "warning" && args[0]?.name === "InsecureTransportWarning") return false;
+    return originalEmit.call(this, event, ...args);
+  };
+}
+
 // Preload: set globalThis.AsyncLocalStorage before Next.js modules initialize.
 // Next.js 16 expects this global but tsx's module loader can cause
 // async-local-storage.js to run before Next.js's own require-hook sets it.
