@@ -16,10 +16,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 vi.mock("next/image", () => ({
-  default: ({
-    priority,
-    ...props
-  }: React.ImgHTMLAttributes<HTMLImageElement> & { priority?: boolean }) => {
+  default: ({ ...props }: React.ImgHTMLAttributes<HTMLImageElement> & { priority?: boolean }) => {
     // eslint-disable-next-line @next/next/no-img-element, jsx-a11y/alt-text
     return <img {...props} />;
   },
@@ -31,6 +28,7 @@ vi.mock("@/lib/setup", () => ({
 
 vi.mock("@/lib/github-issue", () => ({
   buildGitHubIssueUrl: vi.fn().mockReturnValue("https://github.com/test"),
+  buildIssueBody: vi.fn().mockReturnValue("issue body"),
   fetchDiagnostics: vi.fn().mockResolvedValue(null),
 }));
 
@@ -39,32 +37,57 @@ import SetupPage, * as SetupPageModule from "@/app/setup/page";
 
 global.fetch = vi.fn();
 
+function mockFetchSetupStatus(infrastructure?: { database: string; openclaw: string }) {
+  (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+    if (url === "/api/setup/status") {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          setupComplete: false,
+          infrastructure: infrastructure ?? { database: "connected", openclaw: "connected" },
+        }),
+      });
+    }
+    return Promise.resolve({ ok: true, json: async () => ({}) });
+  });
+}
+
 describe("Setup Form", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockFetchSetupStatus();
   });
 
-  it("should display 'Welcome to Pinchy' as title", () => {
+  it("should display 'Welcome to Pinchy' as title", async () => {
     render(<SetupForm />);
-    expect(screen.getByText("Welcome to Pinchy")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("Welcome to Pinchy")).toBeInTheDocument();
+    });
   });
 
-  it("should display setup description", () => {
+  it("should display setup description", async () => {
     render(<SetupForm />);
-    expect(
-      screen.getByText("Create your admin account. You'll use these credentials to sign in.")
-    ).toBeInTheDocument();
+    await waitFor(() => {
+      expect(
+        screen.getByText("Create your admin account. You'll use these credentials to sign in.")
+      ).toBeInTheDocument();
+    });
   });
 
-  it("should render name, email, and password fields", () => {
+  it("should render name, email, and password fields", async () => {
     render(<SetupForm />);
-    expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
     expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
   });
 
-  it("should render name field before email field", () => {
+  it("should render name field before email field", async () => {
     render(<SetupForm />);
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
     const nameInput = screen.getByLabelText(/name/i);
     const emailInput = screen.getByLabelText(/email/i);
     expect(
@@ -72,15 +95,20 @@ describe("Setup Form", () => {
     ).toBeTruthy();
   });
 
-  it("should have a 'Create account' button", () => {
+  it("should have a 'Create account' button", async () => {
     render(<SetupForm />);
-    expect(screen.getByRole("button", { name: /create account/i })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /create account/i })).toBeInTheDocument();
+    });
   });
 
   it("should show validation error when name is empty", async () => {
     const user = userEvent.setup();
     render(<SetupForm />);
 
+    await waitFor(() => {
+      expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
+    });
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
     await user.type(screen.getByLabelText(/password/i), "password123");
     await user.click(screen.getByRole("button", { name: /create account/i }));
@@ -88,13 +116,15 @@ describe("Setup Form", () => {
     await waitFor(() => {
       expect(screen.getByText("Name is required")).toBeInTheDocument();
     });
-    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("should show validation error for invalid email", async () => {
     const user = userEvent.setup();
     render(<SetupForm />);
 
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "not-an-email");
     await user.type(screen.getByLabelText(/password/i), "password123");
@@ -103,13 +133,15 @@ describe("Setup Form", () => {
     await waitFor(() => {
       expect(screen.getByText("Invalid email address")).toBeInTheDocument();
     });
-    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("should show validation error when password is too short", async () => {
     const user = userEvent.setup();
     render(<SetupForm />);
 
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
     await user.type(screen.getByLabelText(/password/i), "short");
@@ -118,18 +150,15 @@ describe("Setup Form", () => {
     await waitFor(() => {
       expect(screen.getByText("Password must be at least 8 characters")).toBeInTheDocument();
     });
-    expect(global.fetch).not.toHaveBeenCalled();
   });
 
   it("should submit name along with email and password", async () => {
     const user = userEvent.setup();
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({}),
-    });
-
     render(<SetupForm />);
 
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
     await user.type(screen.getByLabelText(/password/i), "password123");
@@ -150,13 +179,11 @@ describe("Setup Form", () => {
 
   it("should show success state after successful setup", async () => {
     const user = userEvent.setup();
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({}),
-    });
-
     render(<SetupForm />);
 
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
     await user.type(screen.getByLabelText(/password/i), "password123");
@@ -170,13 +197,11 @@ describe("Setup Form", () => {
 
   it("should navigate to /login when clicking 'Continue to sign in'", async () => {
     const user = userEvent.setup();
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({}),
-    });
-
     render(<SetupForm />);
 
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
     await user.type(screen.getByLabelText(/password/i), "password123");
@@ -192,13 +217,27 @@ describe("Setup Form", () => {
 
   it("should show error message on failed setup", async () => {
     const user = userEvent.setup();
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Setup already completed" }),
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === "/api/setup/status") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            setupComplete: false,
+            infrastructure: { database: "connected", openclaw: "connected" },
+          }),
+        });
+      }
+      return Promise.resolve({
+        ok: false,
+        json: async () => ({ error: "Setup already completed" }),
+      });
     });
 
     render(<SetupForm />);
 
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
     await user.type(screen.getByLabelText(/password/i), "password123");
@@ -211,13 +250,27 @@ describe("Setup Form", () => {
 
   it("should show report issue link when error occurs", async () => {
     const user = userEvent.setup();
-    (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Setup already completed" }),
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === "/api/setup/status") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            setupComplete: false,
+            infrastructure: { database: "connected", openclaw: "connected" },
+          }),
+        });
+      }
+      return Promise.resolve({
+        ok: false,
+        json: async () => ({ error: "Setup already completed" }),
+      });
     });
 
     render(<SetupForm />);
 
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
     await user.type(screen.getByLabelText(/password/i), "password123");
@@ -226,6 +279,71 @@ describe("Setup Form", () => {
     await waitFor(() => {
       expect(screen.getByText("Setup already completed")).toBeInTheDocument();
       expect(screen.getByRole("button", { name: /report this issue/i })).toBeInTheDocument();
+    });
+  });
+});
+
+describe("Setup Form pre-flight checks", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("should show loading state while checking infrastructure", () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockReturnValue(new Promise(() => {}));
+    render(<SetupForm />);
+    expect(screen.getByText(/checking/i)).toBeInTheDocument();
+  });
+
+  it("should show form when infrastructure is healthy", async () => {
+    mockFetchSetupStatus({ database: "connected", openclaw: "connected" });
+    render(<SetupForm />);
+    await waitFor(() => {
+      expect(screen.getByText("Welcome to Pinchy")).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+  });
+
+  it("should show error when database is unreachable", async () => {
+    mockFetchSetupStatus({ database: "unreachable", openclaw: "connected" });
+    render(<SetupForm />);
+    await waitFor(() => {
+      expect(screen.getByText(/database/i)).toBeInTheDocument();
+      expect(screen.getByText(/unreachable/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText(/name/i)).not.toBeInTheDocument();
+  });
+
+  it("should show error when OpenClaw is unreachable", async () => {
+    mockFetchSetupStatus({ database: "connected", openclaw: "unreachable" });
+    render(<SetupForm />);
+    await waitFor(() => {
+      expect(screen.getByText(/OpenClaw/i)).toBeInTheDocument();
+      expect(screen.getByText(/unreachable/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByLabelText(/name/i)).not.toBeInTheDocument();
+  });
+
+  it("should show report issue link when infrastructure check fails", async () => {
+    mockFetchSetupStatus({ database: "unreachable", openclaw: "connected" });
+    render(<SetupForm />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /report this issue/i })).toBeInTheDocument();
+    });
+  });
+
+  it("should show retry button when infrastructure check fails", async () => {
+    mockFetchSetupStatus({ database: "unreachable", openclaw: "connected" });
+    render(<SetupForm />);
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /try again/i })).toBeInTheDocument();
+    });
+  });
+
+  it("should show form when status fetch fails entirely (graceful fallback)", async () => {
+    (global.fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("Network error"));
+    render(<SetupForm />);
+    await waitFor(() => {
+      expect(screen.getByText("Welcome to Pinchy")).toBeInTheDocument();
     });
   });
 });

@@ -10,14 +10,26 @@ vi.mock("@/db", () => ({
         findFirst: vi.fn(),
       },
     },
+    execute: vi.fn(),
   },
 }));
 
+vi.mock("@/lib/infrastructure", () => ({
+  checkDatabase: vi.fn(),
+  checkOpenClaw: vi.fn(),
+}));
+
 import { db } from "@/db";
+import { checkDatabase, checkOpenClaw } from "@/lib/infrastructure";
+
+const mockedCheckDatabase = vi.mocked(checkDatabase);
+const mockedCheckOpenClaw = vi.mocked(checkOpenClaw);
 
 describe("setup status", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockedCheckDatabase.mockResolvedValue("connected");
+    mockedCheckOpenClaw.mockResolvedValue("connected");
   });
 
   it("should return false when no users exist", async () => {
@@ -55,6 +67,35 @@ describe("setup status", () => {
     const response = await GET();
     expect(response.status).toBe(200);
     const body = await response.json();
-    expect(body).toEqual({ setupComplete: false });
+    expect(body).toEqual({
+      setupComplete: false,
+      infrastructure: { database: "connected", openclaw: "connected" },
+    });
+  });
+
+  it("should include infrastructure status when database is unreachable", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+    mockedCheckDatabase.mockResolvedValue("unreachable");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(body.infrastructure).toEqual({
+      database: "unreachable",
+      openclaw: "connected",
+    });
+  });
+
+  it("should include infrastructure status when openclaw is unreachable", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+    mockedCheckOpenClaw.mockResolvedValue("unreachable");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(body.infrastructure).toEqual({
+      database: "connected",
+      openclaw: "unreachable",
+    });
   });
 });

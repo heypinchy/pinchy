@@ -110,6 +110,23 @@ jobs:
           docker compose logs pinchy
           exit 1
 
+      - name: Verify infrastructure ready (production)
+        run: |
+          for i in $(seq 1 15); do
+            BODY=$(curl -sf http://localhost:7777/api/setup/status 2>/dev/null || echo '{}')
+            DB=$(echo "$BODY" | jq -r '.infrastructure.database // "unknown"')
+            OC=$(echo "$BODY" | jq -r '.infrastructure.openclaw // "unknown"')
+            if [ "$DB" = "connected" ] && [ "$OC" = "connected" ]; then
+              echo "Infrastructure ready (database=$DB, openclaw=$OC)"
+              exit 0
+            fi
+            echo "Attempt $i: database=$DB, openclaw=$OC"
+            sleep 2
+          done
+          echo "::error::Infrastructure not ready: database=$DB, openclaw=$OC"
+          docker compose logs pinchy openclaw
+          exit 1
+
       - name: Run setup wizard (production)
         run: |
           STATUS=$(curl -s -o /tmp/setup-response.json -w "%{http_code}" \
@@ -178,6 +195,23 @@ jobs:
           echo "Dev health check failed"
           docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
           docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy
+          exit 1
+
+      - name: Verify infrastructure ready (dev)
+        run: |
+          for i in $(seq 1 15); do
+            BODY=$(curl -sf http://localhost:7777/api/setup/status 2>/dev/null || echo '{}')
+            DB=$(echo "$BODY" | jq -r '.infrastructure.database // "unknown"')
+            OC=$(echo "$BODY" | jq -r '.infrastructure.openclaw // "unknown"')
+            if [ "$DB" = "connected" ] && [ "$OC" = "connected" ]; then
+              echo "Infrastructure ready (database=$DB, openclaw=$OC)"
+              exit 0
+            fi
+            echo "Attempt $i: database=$DB, openclaw=$OC"
+            sleep 2
+          done
+          echo "::error::Infrastructure not ready: database=$DB, openclaw=$OC"
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy openclaw
           exit 1
 
       - name: Run setup wizard (dev)
