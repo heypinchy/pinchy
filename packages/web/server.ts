@@ -190,7 +190,9 @@ app.prepare().then(async () => {
     });
 
     openclawClient.on("error", (err) => {
-      if (hasConnected) {
+      if (restartState.isRestarting) {
+        // Suppress errors during planned restart (config change)
+      } else if (hasConnected) {
         // Log errors after a successful connection (unexpected disconnects)
         console.error("OpenClaw client error:", err.message);
       } else if (!errorLogged) {

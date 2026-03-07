@@ -183,21 +183,23 @@ export async function regenerateOpenClawConfig() {
     };
   }
 
-  // Always include pinchy-context config — OpenClaw auto-discovers installed
-  // plugins and validates their config even when no agents use them.
   const gatewayAuth = (gateway as Record<string, unknown>).auth as
     | Record<string, unknown>
     | undefined;
   const gatewayToken = (gatewayAuth?.token as string) || "";
 
-  entries["pinchy-context"] = {
-    enabled: contextPluginAgents ? true : false,
-    config: {
-      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || "http://pinchy:7777",
-      gatewayToken,
-      agents: contextPluginAgents ?? {},
-    },
-  };
+  // Only include pinchy-context when agents use it. Including disabled plugins
+  // with config causes OpenClaw to spam "disabled in config but config is present".
+  if (contextPluginAgents) {
+    entries["pinchy-context"] = {
+      enabled: true,
+      config: {
+        apiBaseUrl: process.env.PINCHY_INTERNAL_URL || "http://pinchy:7777",
+        gatewayToken,
+        agents: contextPluginAgents,
+      },
+    };
+  }
 
   // Always include pinchy-audit and keep it enabled. It logs tool usage from
   // OpenClaw hooks so built-in and custom tools are captured at source.
@@ -209,20 +211,15 @@ export async function regenerateOpenClawConfig() {
     },
   };
 
-  // Always include pinchy-files with valid config — OpenClaw auto-discovers
-  // plugins from the extensions directory and validates their config even when
-  // no agents use them. Without this, OpenClaw enters a restart loop.
-  if (!entries["pinchy-files"]) {
-    entries["pinchy-files"] = {
-      enabled: false,
-      config: {
-        agents: {},
-      },
-    };
-  }
+  // Note: pinchy-files is only included when agents use it (via pluginConfigs loop above).
+
+  // Set plugins.allow to only the enabled plugin IDs. This prevents OpenClaw from
+  // auto-discovering unused plugins from the extensions directory, which would cause
+  // either a restart loop (invalid config) or "disabled but config present" warning spam.
+  const allowedPlugins = Object.keys(entries);
 
   if (Object.keys(entries).length > 0) {
-    config.plugins = { entries };
+    config.plugins = { allow: allowedPlugins, entries };
   }
 
   const dir = dirname(CONFIG_PATH);

@@ -643,7 +643,7 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
-  it("should disable pinchy-context when no agents use context tools", async () => {
+  it("should omit pinchy-context and pinchy-files when no agents use them", async () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockResolvedValue([
         {
@@ -662,14 +662,15 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    // pinchy-context is always present (OpenClaw auto-discovers it) but disabled
-    expect(config.plugins.entries["pinchy-context"].enabled).toBe(false);
-    expect(config.plugins.entries["pinchy-context"].config.agents).toEqual({});
-    // pinchy-files is always present (OpenClaw auto-discovers it) but disabled
-    expect(config.plugins.entries["pinchy-files"].enabled).toBe(false);
-    expect(config.plugins.entries["pinchy-files"].config.agents).toEqual({});
+    // Unused plugins are omitted from entries AND allow list to prevent
+    // auto-discovery (restart loop) and "disabled but config present" spam
+    expect(config.plugins.entries["pinchy-context"]).toBeUndefined();
+    expect(config.plugins.entries["pinchy-files"]).toBeUndefined();
+    expect(config.plugins.allow).not.toContain("pinchy-context");
+    expect(config.plugins.allow).not.toContain("pinchy-files");
     // pinchy-audit is always enabled to capture tool usage at source
     expect(config.plugins.entries["pinchy-audit"].enabled).toBe(true);
+    expect(config.plugins.allow).toContain("pinchy-audit");
   });
 });
 
