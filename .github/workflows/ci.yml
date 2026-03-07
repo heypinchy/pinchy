@@ -110,6 +110,21 @@ jobs:
           docker compose logs pinchy
           exit 1
 
+      - name: Run setup wizard (production)
+        run: |
+          STATUS=$(curl -s -o /tmp/setup-response.json -w "%{http_code}" \
+            -X POST http://localhost:7777/api/setup \
+            -H "Content-Type: application/json" \
+            -d '{"name":"CI Admin","email":"ci@test.local","password":"CiTestPass123!"}')
+          echo "Setup response (HTTP $STATUS):"
+          cat /tmp/setup-response.json
+          if [ "$STATUS" -ne 201 ]; then
+            echo "Setup failed with status $STATUS"
+            docker compose logs pinchy
+            exit 1
+          fi
+          echo "Setup completed successfully"
+
       - name: Tear down production
         if: always()
         run: docker compose down -v
@@ -138,6 +153,21 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.dev.yml ps
           docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy
           exit 1
+
+      - name: Run setup wizard (dev)
+        run: |
+          STATUS=$(curl -s -o /tmp/setup-response.json -w "%{http_code}" \
+            -X POST http://localhost:7777/api/setup \
+            -H "Content-Type: application/json" \
+            -d '{"name":"CI Admin","email":"ci@test.local","password":"CiTestPass123!"}')
+          echo "Setup response (HTTP $STATUS):"
+          cat /tmp/setup-response.json
+          if [ "$STATUS" -ne 201 ]; then
+            echo "Setup failed with status $STATUS"
+            docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy
+            exit 1
+          fi
+          echo "Setup completed successfully"
 
       - name: Tear down
         if: always()

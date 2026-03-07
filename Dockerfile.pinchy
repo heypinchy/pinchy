@@ -30,7 +30,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 
 # Run as non-root user
 RUN groupadd -r pinchy && useradd -r -g pinchy -d /app pinchy
-RUN mkdir -p /app/secrets && chown -R pinchy:pinchy /app /app/secrets /openclaw-extensions
+RUN mkdir -p /app/secrets /openclaw-config/workspaces && chown -R pinchy:pinchy /app /app/secrets /openclaw-extensions /openclaw-config/workspaces
 USER pinchy
 
 CMD ["sh", "-c", "echo '[pinchy] Running database migrations...' && pnpm db:migrate && echo '[pinchy] Starting server...' && exec pnpm start"]

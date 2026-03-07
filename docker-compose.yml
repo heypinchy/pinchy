@@ -13,6 +13,7 @@ services:
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
     volumes:
       - openclaw-config:/openclaw-config
+      - pinchy-workspaces:/openclaw-config/workspaces
       - openclaw-extensions:/openclaw-extensions
       - pinchy-secrets:/app/secrets
     restart: unless-stopped
@@ -30,6 +31,7 @@ services:
       - "18789"
     volumes:
       - openclaw-config:/root/.openclaw
+      - pinchy-workspaces:/root/.openclaw/workspaces
       - openclaw-extensions:/root/.openclaw/extensions
       - pinchy-data:/data
     restart: unless-stopped
@@ -52,6 +54,7 @@ services:
 volumes:
   pgdata:
   openclaw-config:
+  pinchy-workspaces:
   pinchy-data:
   pinchy-secrets:
   openclaw-extensions:
