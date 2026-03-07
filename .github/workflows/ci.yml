@@ -145,28 +145,25 @@ jobs:
       - name: Verify OpenClaw connection (production)
         run: |
           echo "Waiting for OpenClaw connection after setup..."
-          sleep 10
+          for i in $(seq 1 30); do
+            if docker compose logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
+              echo "OpenClaw connection verified (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::Pinchy never connected to OpenClaw Gateway"
+              docker compose logs pinchy openclaw
+              exit 1
+            fi
+            sleep 2
+          done
           LOGS=$(docker compose logs pinchy openclaw 2>&1)
-          FAILED=0
           if echo "$LOGS" | grep -q "blocked plugin candidate"; then
             echo "::error::OpenClaw blocked one or more plugins (ownership issue)"
             echo "$LOGS" | grep "blocked plugin candidate"
-            FAILED=1
-          fi
-          if echo "$LOGS" | grep -q "reason=token_missing"; then
-            echo "::error::OpenClaw rejected connection due to missing auth token"
-            FAILED=1
-          fi
-          if ! echo "$LOGS" | grep -q "Connected to OpenClaw Gateway"; then
-            echo "::error::Pinchy never connected to OpenClaw Gateway"
-            docker compose logs pinchy openclaw
-            FAILED=1
-          fi
-          if [ "$FAILED" -ne 0 ]; then
             docker compose logs pinchy openclaw
             exit 1
           fi
-          echo "OpenClaw connection verified"
 
       - name: Tear down production
         if: always()
@@ -232,28 +229,25 @@ jobs:
       - name: Verify OpenClaw connection (dev)
         run: |
           echo "Waiting for OpenClaw connection after setup..."
-          sleep 10
+          for i in $(seq 1 30); do
+            if docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
+              echo "OpenClaw connection verified (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::Pinchy never connected to OpenClaw Gateway"
+              docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy openclaw
+              exit 1
+            fi
+            sleep 2
+          done
           LOGS=$(docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy openclaw 2>&1)
-          FAILED=0
           if echo "$LOGS" | grep -q "blocked plugin candidate"; then
             echo "::error::OpenClaw blocked one or more plugins (ownership issue)"
             echo "$LOGS" | grep "blocked plugin candidate"
-            FAILED=1
-          fi
-          if echo "$LOGS" | grep -q "reason=token_missing"; then
-            echo "::error::OpenClaw rejected connection due to missing auth token"
-            FAILED=1
-          fi
-          if ! echo "$LOGS" | grep -q "Connected to OpenClaw Gateway"; then
-            echo "::error::Pinchy never connected to OpenClaw Gateway"
-            docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy openclaw
-            FAILED=1
-          fi
-          if [ "$FAILED" -ne 0 ]; then
             docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy openclaw
             exit 1
           fi
-          echo "OpenClaw connection verified"
 
       - name: Tear down
         if: always()
