@@ -3,6 +3,13 @@ title: Installation
 description: Environment variables, Docker services, and development setup.
 ---
 
+import { Aside } from "@astrojs/starlight/components";
+
+<Aside type="note">
+  This guide covers Pinchy v0.1.0. Check the [Releases
+  page](https://github.com/heypinchy/pinchy/releases) for newer versions.
+</Aside>
+
 ## System requirements
 
 - Docker Engine 20.10+ and Docker Compose v2+
@@ -16,6 +23,7 @@ The simplest way to run Pinchy. One command starts the full stack.
 ```bash
 git clone https://github.com/heypinchy/pinchy.git
 cd pinchy
+git checkout v0.1.0
 docker compose up --build
 ```
 
