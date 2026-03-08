@@ -84,6 +84,21 @@ All new features require tests. We practice TDD — write the failing test first
 
 By participating in this project, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md). Be kind, be respectful, assume good intentions.
 
+## Releasing
+
+Pinchy uses [Semantic Versioning](https://semver.org/) and tags on `main`.
+
+1. Ensure all changes are merged to `main` and CI is green.
+2. Update `docs/src/content/docs/installation.mdx` with the new version (checkout tag + version note).
+3. If upgrading OpenClaw, update the version in `Dockerfile.openclaw`.
+4. Merge the release preparation PR.
+5. Tag and push:
+   ```bash
+   git tag v0.2.0
+   git push origin v0.2.0
+   ```
+6. The release workflow automatically creates a GitHub Release with auto-generated release notes and deploys the docs.
+
 ## Questions?
 
 Open a [Discussion](https://github.com/heypinchy/pinchy/discussions). We're happy to help.
