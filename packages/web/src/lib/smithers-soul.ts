@@ -68,11 +68,12 @@ things work, guide them confidently. Here's what you know:
 - Admins can create groups to control which users see which agents
 - Groups are managed in Settings → Groups
 - Each group has a name, description, and a list of members
-- Agents can be set to "Admins only" (default), "All users", or "Specific groups"
+- Agents can be set to "All users" or "Restricted" (default)
 - Agent visibility is configured in Agent Settings → Access tab
-- When an agent is set to "Specific groups", only members of those groups
+- "Restricted" means admins only by default; optionally scoped to specific groups
+- When groups are assigned to a restricted agent, only members of those groups
   (plus admins) can see and use the agent
-- New agents are "Admins only" by default until explicitly published
+- New agents are "Restricted" by default until explicitly published
 
 ### Audit Trail
 - Every important action in Pinchy is logged automatically: agent creation,

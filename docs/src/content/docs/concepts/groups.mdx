@@ -29,27 +29,24 @@ A user can belong to multiple groups. Admins always have access to all agents re
 
 Each agent has a **visibility** setting that controls who can see and use it. Configure this in **Agent Settings → Access** tab.
 
-There are three visibility modes:
+There are two visibility modes:
 
-| Mode                | Who can access                                        |
-| ------------------- | ----------------------------------------------------- |
-| **Admins only**     | Only admin users (this is the default for new agents) |
-| **All users**       | Every authenticated user                              |
-| **Specific groups** | Members of the selected groups, plus all admins       |
+| Mode           | Who can access                                               |
+| -------------- | ------------------------------------------------------------ |
+| **All users**  | Every authenticated user                                     |
+| **Restricted** | Admins only by default; optionally scoped to specific groups |
 
-### Admins only (default)
+### Restricted (default)
 
-New agents are created with **Admins only** visibility. This means the agent is invisible to regular users until an admin explicitly publishes it. This is a safe default — you can configure and test an agent before anyone else sees it.
+New agents are created with **Restricted** visibility. This means the agent is invisible to regular users until an admin explicitly publishes it. This is a safe default — you can configure and test an agent before anyone else sees it.
+
+When you select **Restricted**, a group picker appears. You can optionally choose one or more groups — only members of those groups (and admins) will see the agent. If no groups are selected, only admins have access.
+
+For example, you might create an "HR Team" group and assign your HR Knowledge Base agent to it. Only HR team members and admins can see and chat with that agent.
 
 ### All users
 
 Set an agent to **All users** when every user on the platform should have access. This is useful for general-purpose agents like a company-wide assistant.
-
-### Specific groups
-
-When you select **Specific groups**, a group picker appears. Choose one or more groups — only members of those groups (and admins) will see the agent. This is the most flexible option and lets you scope agents to specific teams or departments.
-
-For example, you might create an "HR Team" group and assign your HR Knowledge Base agent to it. Only HR team members and admins can see and chat with that agent.
 
 ## How it works with personal agents
 

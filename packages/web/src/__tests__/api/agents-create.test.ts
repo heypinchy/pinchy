@@ -499,7 +499,7 @@ describe("POST /api/agents", () => {
     expect(writeWorkspaceFileInternal).toHaveBeenCalledWith("new-agent-id", "USER.md", "");
   });
 
-  it("new agent defaults to admin_only visibility", async () => {
+  it("new agent defaults to restricted visibility", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
       body: JSON.stringify({
