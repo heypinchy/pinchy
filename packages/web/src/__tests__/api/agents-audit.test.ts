@@ -15,6 +15,11 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/groups", () => ({
+  getUserGroupIds: vi.fn().mockResolvedValue([]),
+  getAgentGroupIds: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/lib/auth", () => {
   const mockGetSession = vi.fn();
   return {

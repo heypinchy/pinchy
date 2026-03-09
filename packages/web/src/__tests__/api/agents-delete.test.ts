@@ -11,6 +11,11 @@ vi.mock("next/cache", () => ({
   revalidatePath: vi.fn(),
 }));
 
+vi.mock("@/lib/groups", () => ({
+  getUserGroupIds: vi.fn().mockResolvedValue([]),
+  getAgentGroupIds: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/lib/auth", () => {
   const mockGetSession = vi.fn();
   return {

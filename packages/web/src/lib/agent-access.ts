@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { activeAgents } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 
 interface AgentForAccess {
   id: string;
@@ -74,8 +75,16 @@ export async function getAgentWithAccess(agentId: string, userId: string, userRo
     return NextResponse.json({ error: "Agent not found" }, { status: 404 });
   }
 
+  // Load group data for visibility check (skip for admins — they always have access)
+  const [userGroupIds, agentGroupIds] = await Promise.all([
+    userRole !== "admin" ? getUserGroupIds(userId) : Promise.resolve([]),
+    userRole !== "admin" && agent.visibility === "groups"
+      ? getAgentGroupIds(agentId)
+      : Promise.resolve([]),
+  ]);
+
   try {
-    assertAgentAccess(agent, userId, userRole);
+    assertAgentAccess(agent, userId, userRole, userGroupIds, agentGroupIds);
   } catch {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }

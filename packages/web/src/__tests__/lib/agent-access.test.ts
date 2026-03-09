@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextResponse } from "next/server";
 import { assertAgentAccess, assertAgentWriteAccess, getAgentWithAccess } from "@/lib/agent-access";
 
@@ -16,7 +16,13 @@ vi.mock("@/db/schema", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/groups", () => ({
+  getUserGroupIds: vi.fn().mockResolvedValue([]),
+  getAgentGroupIds: vi.fn().mockResolvedValue([]),
+}));
+
 import { db } from "@/db";
+import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 
 function mockSelectChain(resolvedValue: unknown) {
   vi.mocked(db.select).mockReturnValueOnce({
@@ -127,6 +133,10 @@ describe("assertAgentAccess with visibility", () => {
 });
 
 describe("getAgentWithAccess", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("returns 404 when agent not found", async () => {
     mockSelectChain([]);
 
@@ -153,6 +163,52 @@ describe("getAgentWithAccess", () => {
 
     expect(result).not.toBeInstanceOf(NextResponse);
     expect(result).toEqual(sharedAgent);
+  });
+
+  it("returns agent when member is in matching group for 'groups' visibility", async () => {
+    const groupsAgent = { id: "a1", ownerId: null, isPersonal: false, visibility: "groups" };
+    mockSelectChain([groupsAgent]);
+    vi.mocked(getUserGroupIds).mockResolvedValueOnce(["g1", "g2"]);
+    vi.mocked(getAgentGroupIds).mockResolvedValueOnce(["g2", "g3"]);
+
+    const result = await getAgentWithAccess("a1", "user-1", "member");
+
+    expect(result).not.toBeInstanceOf(NextResponse);
+    expect(result).toEqual(groupsAgent);
+  });
+
+  it("returns 403 when member is NOT in matching group for 'groups' visibility", async () => {
+    const groupsAgent = { id: "a1", ownerId: null, isPersonal: false, visibility: "groups" };
+    mockSelectChain([groupsAgent]);
+    vi.mocked(getUserGroupIds).mockResolvedValueOnce(["g1"]);
+    vi.mocked(getAgentGroupIds).mockResolvedValueOnce(["g2"]);
+
+    const result = await getAgentWithAccess("a1", "user-1", "member");
+
+    expect(result).toBeInstanceOf(NextResponse);
+    expect((result as NextResponse).status).toBe(403);
+  });
+
+  it("returns 403 for member accessing admin_only agent", async () => {
+    const adminOnlyAgent = { id: "a1", ownerId: null, isPersonal: false, visibility: "admin_only" };
+    mockSelectChain([adminOnlyAgent]);
+
+    const result = await getAgentWithAccess("a1", "user-1", "member");
+
+    expect(result).toBeInstanceOf(NextResponse);
+    expect((result as NextResponse).status).toBe(403);
+  });
+
+  it("admin bypasses group checks for 'groups' visibility", async () => {
+    const groupsAgent = { id: "a1", ownerId: null, isPersonal: false, visibility: "groups" };
+    mockSelectChain([groupsAgent]);
+
+    const result = await getAgentWithAccess("a1", "admin-user", "admin");
+
+    expect(result).not.toBeInstanceOf(NextResponse);
+    expect(result).toEqual(groupsAgent);
+    expect(getUserGroupIds).not.toHaveBeenCalled();
+    expect(getAgentGroupIds).not.toHaveBeenCalled();
   });
 
   it("returns 404 for soft-deleted agent (not in active_agents view)", async () => {
