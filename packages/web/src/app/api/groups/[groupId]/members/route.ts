@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
+import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
 import { userGroups } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -11,6 +12,11 @@ export async function GET(
 ) {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
+
+  if (!(await isEnterprise())) {
+    return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
+  }
+
   const { groupId } = await params;
 
   const members = await db
@@ -28,6 +34,11 @@ export async function PUT(
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
   const session = sessionOrError;
+
+  if (!(await isEnterprise())) {
+    return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
+  }
+
   const { groupId } = await params;
   const { userIds } = await request.json();
 

@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
+import { EnterpriseFeatureCard } from "@/components/enterprise-feature-card";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -60,11 +61,19 @@ export function SettingsGroups() {
   const [createOpen, setCreateOpen] = useState(false);
   const [editGroup, setEditGroup] = useState<Group | null>(null);
   const [deleteGroupId, setDeleteGroupId] = useState<string | null>(null);
+  const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
 
   // Form state
   const [formName, setFormName] = useState("");
   const [formDescription, setFormDescription] = useState("");
   const [formMemberIds, setFormMemberIds] = useState<string[]>([]);
+
+  useEffect(() => {
+    fetch("/api/enterprise/status")
+      .then((res) => (res.ok ? res.json() : { enterprise: false }))
+      .then((data) => setIsEnterprise(data.enterprise))
+      .catch(() => setIsEnterprise(false));
+  }, []);
 
   const fetchData = useCallback(async () => {
     try {
@@ -82,8 +91,12 @@ export function SettingsGroups() {
   }, []);
 
   useEffect(() => {
-    fetchData();
-  }, [fetchData]);
+    if (isEnterprise) {
+      fetchData();
+    } else if (isEnterprise === false) {
+      setLoading(false);
+    }
+  }, [isEnterprise, fetchData]);
 
   function openCreateDialog() {
     setFormName("");
@@ -159,8 +172,17 @@ export function SettingsGroups() {
     );
   }
 
-  if (loading) {
+  if (loading || isEnterprise === null) {
     return <p>Loading...</p>;
+  }
+
+  if (!isEnterprise) {
+    return (
+      <EnterpriseFeatureCard
+        feature="Groups"
+        description="Create groups to control which users can access which agents. Organize your team into departments like Engineering, Marketing, or HR, and assign agent access per group."
+      />
+    );
   }
 
   const activeUsers = users.filter((u) => !u.banned);

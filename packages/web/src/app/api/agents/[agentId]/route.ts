@@ -6,6 +6,7 @@ import { updateAgent, deleteAgent, AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
 import { getSession } from "@/lib/auth";
 import { getAgentWithAccess, assertAgentWriteAccess } from "@/lib/agent-access";
 import { appendAuditLog } from "@/lib/audit";
+import { isEnterprise } from "@/lib/enterprise";
 import { writeIdentityFile } from "@/lib/workspace";
 import { db } from "@/db";
 import { agentGroups } from "@/db/schema";
@@ -82,10 +83,13 @@ export async function PATCH(
     }
   }
 
-  // Only admins can change visibility
+  // Only admins can change visibility (enterprise feature)
   if (body.visibility !== undefined) {
     if (session.user.role !== "admin") {
       return NextResponse.json({ error: "Only admins can change visibility" }, { status: 403 });
+    }
+    if (!(await isEnterprise())) {
+      return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
     }
     if (!["admin_only", "all", "groups"].includes(body.visibility)) {
       return NextResponse.json({ error: "Invalid visibility value" }, { status: 400 });

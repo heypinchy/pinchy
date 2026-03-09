@@ -26,8 +26,15 @@ describe("SettingsGroups", () => {
     fetchSpy.mockRestore();
   });
 
-  function mockFetch(groups: unknown[] = mockGroups, users: unknown[] = mockUsers) {
+  function mockFetch(
+    groups: unknown[] = mockGroups,
+    users: unknown[] = mockUsers,
+    enterprise = true
+  ) {
     vi.mocked(global.fetch).mockImplementation(async (url) => {
+      if (String(url) === "/api/enterprise/status") {
+        return { ok: true, json: async () => ({ enterprise }) } as Response;
+      }
       if (String(url) === "/api/groups") {
         return { ok: true, json: async () => groups } as Response;
       }
@@ -186,5 +193,19 @@ describe("SettingsGroups", () => {
     vi.mocked(global.fetch).mockImplementation(() => new Promise(() => {}));
     render(<SettingsGroups />);
     expect(screen.getByText("Loading...")).toBeInTheDocument();
+  });
+
+  it("should show enterprise feature card when enterprise is not active", async () => {
+    mockFetch(mockGroups, mockUsers, false);
+    render(<SettingsGroups />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Groups")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Enterprise")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Create groups to control which users can access which agents/)
+    ).toBeInTheDocument();
   });
 });

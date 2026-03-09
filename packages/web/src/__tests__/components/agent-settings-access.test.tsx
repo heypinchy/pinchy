@@ -17,6 +17,9 @@ describe("AgentSettingsAccess", () => {
     vi.clearAllMocks();
 
     vi.mocked(global.fetch).mockImplementation(async (url) => {
+      if (String(url) === "/api/enterprise/status") {
+        return { ok: true, json: async () => ({ enterprise: true }) } as Response;
+      }
       if (String(url) === "/api/groups") {
         return { ok: true, json: async () => mockGroups } as Response;
       }
@@ -103,5 +106,32 @@ describe("AgentSettingsAccess", () => {
     await waitFor(() => {
       expect(onChange).toHaveBeenCalledWith({ visibility: "groups", groupIds: ["g2"] }, true);
     });
+  });
+
+  it("should show enterprise feature card when enterprise is not active", async () => {
+    vi.mocked(global.fetch).mockImplementation(async (url) => {
+      if (String(url) === "/api/enterprise/status") {
+        return { ok: true, json: async () => ({ enterprise: false }) } as Response;
+      }
+      return { ok: false } as Response;
+    });
+
+    const onChange = vi.fn();
+    render(
+      <AgentSettingsAccess
+        agent={{ visibility: "admin_only" }}
+        currentGroupIds={[]}
+        onChange={onChange}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Access Control")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Enterprise")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Control which users and groups can access this agent/)
+    ).toBeInTheDocument();
   });
 });

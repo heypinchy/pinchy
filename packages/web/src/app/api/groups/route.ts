@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
+import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
 import { groups, userGroups } from "@/db/schema";
 import { eq, count } from "drizzle-orm";
@@ -8,6 +9,10 @@ import { appendAuditLog } from "@/lib/audit";
 export async function GET() {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
+
+  if (!(await isEnterprise())) {
+    return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
+  }
 
   const allGroups = await db
     .select({
@@ -29,6 +34,10 @@ export async function POST(request: NextRequest) {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
   const session = sessionOrError;
+
+  if (!(await isEnterprise())) {
+    return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
+  }
 
   const { name, description } = await request.json();
 

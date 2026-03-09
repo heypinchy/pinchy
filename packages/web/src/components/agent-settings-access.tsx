@@ -10,6 +10,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { EnterpriseFeatureCard } from "@/components/enterprise-feature-card";
 
 interface AccessValues {
   visibility: string;
@@ -35,16 +36,25 @@ export function AgentSettingsAccess({
   const [visibility, setVisibility] = useState(agent.visibility || "admin_only");
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>(currentGroupIds);
   const [groups, setGroups] = useState<Group[]>([]);
+  const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
 
   const initialVisibility = useRef(agent.visibility || "admin_only");
   const initialGroupIds = useRef(currentGroupIds);
 
   useEffect(() => {
+    fetch("/api/enterprise/status")
+      .then((res) => (res.ok ? res.json() : { enterprise: false }))
+      .then((data) => setIsEnterprise(data.enterprise))
+      .catch(() => setIsEnterprise(false));
+  }, []);
+
+  useEffect(() => {
+    if (!isEnterprise) return;
     fetch("/api/groups")
       .then((res) => (res.ok ? res.json() : []))
       .then((data) => setGroups(Array.isArray(data) ? data : []))
       .catch(() => {});
-  }, []);
+  }, [isEnterprise]);
 
   useEffect(() => {
     const isDirty =
@@ -64,6 +74,19 @@ export function AgentSettingsAccess({
   function toggleGroup(groupId: string) {
     setSelectedGroupIds((prev) =>
       prev.includes(groupId) ? prev.filter((id) => id !== groupId) : [...prev, groupId]
+    );
+  }
+
+  if (isEnterprise === null) {
+    return <p>Loading...</p>;
+  }
+
+  if (!isEnterprise) {
+    return (
+      <EnterpriseFeatureCard
+        feature="Access Control"
+        description="Control which users and groups can access this agent. Set visibility to specific groups or make agents available to everyone."
+      />
     );
   }
 

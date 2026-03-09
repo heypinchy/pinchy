@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
+import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
 import { groups } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -12,6 +13,11 @@ export async function PATCH(
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
   const session = sessionOrError;
+
+  if (!(await isEnterprise())) {
+    return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
+  }
+
   const { groupId } = await params;
   const { name, description } = await request.json();
 
@@ -45,6 +51,11 @@ export async function DELETE(
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
   const session = sessionOrError;
+
+  if (!(await isEnterprise())) {
+    return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
+  }
+
   const { groupId } = await params;
 
   const [deleted] = await db.delete(groups).where(eq(groups.id, groupId)).returning();
