@@ -33,6 +33,11 @@ vi.mock("drizzle-orm", () => ({
   or: vi.fn((...args: unknown[]) => ({ op: "or", args })),
 }));
 
+vi.mock("@/lib/groups", () => ({
+  getUserGroupIds: vi.fn().mockResolvedValue([]),
+  getAgentGroupIds: vi.fn().mockResolvedValue([]),
+}));
+
 import { requireAuth } from "@/lib/require-auth";
 import AgentsPage from "@/app/(app)/agents/page";
 
@@ -41,7 +46,12 @@ const mockRequireAuth = requireAuth as ReturnType<typeof vi.fn>;
 function setupAgentsQuery(agents: Array<{ id: string }>) {
   const whereMock = vi.fn().mockResolvedValue(agents);
   const limitMock = vi.fn().mockResolvedValue(agents.slice(0, 1));
-  const fromMock = vi.fn().mockReturnValue({ where: whereMock, limit: limitMock });
+  const fromResult = {
+    where: whereMock,
+    limit: limitMock,
+    then: (resolve: (v: unknown) => void) => resolve(agents),
+  };
+  const fromMock = vi.fn().mockReturnValue(fromResult);
   mockDbSelect.mockReturnValue({ from: fromMock });
 }
 

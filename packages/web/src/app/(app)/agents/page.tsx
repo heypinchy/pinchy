@@ -3,7 +3,7 @@ import { headers } from "next/headers";
 import { requireAuth } from "@/lib/require-auth";
 import { db } from "@/db";
 import { activeAgents } from "@/db/schema";
-import { eq, or } from "drizzle-orm";
+import { getVisibleAgents } from "@/lib/visible-agents";
 import { AgentsPageContent } from "./agents-page-content";
 
 const MOBILE_UA_PATTERN = /Mobile|Android|iPhone|iPad|iPod|webOS|BlackBerry|Opera Mini/i;
@@ -23,10 +23,7 @@ export default async function AgentsPage() {
     }
   }
 
-  const visibleAgents = await db
-    .select()
-    .from(activeAgents)
-    .where(or(eq(activeAgents.isPersonal, false), eq(activeAgents.ownerId, userId!)));
+  const visibleAgents = await getVisibleAgents(userId!, session?.user?.role ?? "member");
 
   return <AgentsPageContent agents={visibleAgents} />;
 }

@@ -3,8 +3,7 @@ import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
-import { agents, activeAgents } from "@/db/schema";
-import { eq, or, and } from "drizzle-orm";
+import { agents } from "@/db/schema";
 import { getTemplate, generateAgentsMd } from "@/lib/agent-templates";
 import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-presets";
 import { generateAvatarSeed } from "@/lib/avatar";
@@ -21,6 +20,7 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { getSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { appendAuditLog } from "@/lib/audit";
+import { getVisibleAgents } from "@/lib/visible-agents";
 
 export async function GET() {
   const session = await getSession({ headers: await headers() });
@@ -28,23 +28,7 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const isAdmin = session.user.role === "admin";
-
-  if (isAdmin) {
-    const allAgents = await db.select().from(activeAgents);
-    return NextResponse.json(allAgents);
-  }
-
-  // Non-admins see shared agents + their own personal agents
-  const visibleAgents = await db
-    .select()
-    .from(activeAgents)
-    .where(
-      or(
-        eq(activeAgents.isPersonal, false),
-        and(eq(activeAgents.isPersonal, true), eq(activeAgents.ownerId, session.user.id!))
-      )
-    );
+  const visibleAgents = await getVisibleAgents(session.user.id!, session.user.role ?? "member");
   return NextResponse.json(visibleAgents);
 }
 
