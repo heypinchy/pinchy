@@ -8,6 +8,7 @@ import {
   serial,
   pgEnum,
   pgView,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 import { isNull } from "drizzle-orm";
 
@@ -91,6 +92,7 @@ export const agents = pgTable(
     allowedTools: jsonb("allowed_tools").$type<string[]>().notNull().default([]),
     ownerId: text("owner_id").references(() => users.id, { onDelete: "cascade" }),
     isPersonal: boolean("is_personal").notNull().default(false),
+    visibility: text("visibility").notNull().default("admin_only"),
     greetingMessage: text("greeting_message"),
     tagline: text("tagline"),
     avatarSeed: text("avatar_seed"),
@@ -99,6 +101,42 @@ export const agents = pgTable(
     deletedAt: timestamp("deleted_at"),
   },
   (table) => [index("agents_owner_id_idx").on(table.ownerId)]
+);
+
+export const groups = pgTable("groups", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  name: text("name").notNull(),
+  description: text("description"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const userGroups = pgTable(
+  "user_groups",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.groupId] })]
+);
+
+export const agentGroups = pgTable(
+  "agent_groups",
+  {
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+  },
+  (table) => [primaryKey({ columns: [table.agentId, table.groupId] })]
 );
 
 export const invites = pgTable("invites", {
