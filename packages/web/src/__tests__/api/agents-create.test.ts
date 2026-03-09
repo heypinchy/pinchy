@@ -116,7 +116,7 @@ describe("POST /api/agents", () => {
 
   it("should return 403 for non-admin users", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "2", email: "user@test.com", role: "user" },
+      user: { id: "2", email: "user@test.com", role: "member" },
       expires: "",
     });
 

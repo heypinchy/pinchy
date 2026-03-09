@@ -34,17 +34,17 @@ describe("assertAgentAccess", () => {
 
   it("allows any user to access shared (non-personal) agents", () => {
     const agent = { id: "a1", ownerId: null, isPersonal: false };
-    expect(() => assertAgentAccess(agent, "any-user", "user")).not.toThrow();
+    expect(() => assertAgentAccess(agent, "any-user", "member")).not.toThrow();
   });
 
   it("allows owner to access their personal agent", () => {
     const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
-    expect(() => assertAgentAccess(agent, "user-1", "user")).not.toThrow();
+    expect(() => assertAgentAccess(agent, "user-1", "member")).not.toThrow();
   });
 
   it("denies non-owner access to personal agent", () => {
     const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
-    expect(() => assertAgentAccess(agent, "other-user", "user")).toThrow("Access denied");
+    expect(() => assertAgentAccess(agent, "other-user", "member")).toThrow("Access denied");
   });
 
   it("allows admin access to personal agent of another user", () => {
@@ -66,17 +66,17 @@ describe("assertAgentWriteAccess", () => {
 
   it("allows owner to modify their personal agent", () => {
     const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
-    expect(() => assertAgentWriteAccess(agent, "user-1", "user")).not.toThrow();
+    expect(() => assertAgentWriteAccess(agent, "user-1", "member")).not.toThrow();
   });
 
   it("denies non-admin user from modifying shared agent", () => {
     const agent = { id: "a1", ownerId: null, isPersonal: false };
-    expect(() => assertAgentWriteAccess(agent, "user-1", "user")).toThrow("Access denied");
+    expect(() => assertAgentWriteAccess(agent, "user-1", "member")).toThrow("Access denied");
   });
 
   it("denies non-owner from modifying personal agent", () => {
     const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
-    expect(() => assertAgentWriteAccess(agent, "other-user", "user")).toThrow("Access denied");
+    expect(() => assertAgentWriteAccess(agent, "other-user", "member")).toThrow("Access denied");
   });
 });
 
@@ -84,7 +84,7 @@ describe("getAgentWithAccess", () => {
   it("returns 404 when agent not found", async () => {
     mockSelectChain([]);
 
-    const result = await getAgentWithAccess("nonexistent-id", "user-1", "user");
+    const result = await getAgentWithAccess("nonexistent-id", "user-1", "member");
 
     expect(result).toBeInstanceOf(NextResponse);
     expect((result as NextResponse).status).toBe(404);
@@ -93,7 +93,7 @@ describe("getAgentWithAccess", () => {
   it("returns 403 when user has no access", async () => {
     mockSelectChain([{ id: "a1", ownerId: "other-user", isPersonal: true }]);
 
-    const result = await getAgentWithAccess("a1", "user-1", "user");
+    const result = await getAgentWithAccess("a1", "user-1", "member");
 
     expect(result).toBeInstanceOf(NextResponse);
     expect((result as NextResponse).status).toBe(403);
@@ -103,7 +103,7 @@ describe("getAgentWithAccess", () => {
     const sharedAgent = { id: "a1", ownerId: null, isPersonal: false };
     mockSelectChain([sharedAgent]);
 
-    const result = await getAgentWithAccess("a1", "user-1", "user");
+    const result = await getAgentWithAccess("a1", "user-1", "member");
 
     expect(result).not.toBeInstanceOf(NextResponse);
     expect(result).toEqual(sharedAgent);
@@ -117,7 +117,7 @@ describe("getAgentWithAccess", () => {
       }),
     } as never);
 
-    const result = await getAgentWithAccess("deleted-agent", "user-1", "user");
+    const result = await getAgentWithAccess("deleted-agent", "user-1", "member");
     expect(result).toBeInstanceOf(NextResponse);
     const res = result as NextResponse;
     expect(res.status).toBe(404);

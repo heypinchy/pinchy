@@ -90,7 +90,7 @@ describe("GET /api/agents/[agentId]", () => {
 
   it("returns agent when authenticated", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -114,7 +114,7 @@ describe("GET /api/agents/[agentId]", () => {
 
   it("returns 403 when non-owner user tries to access personal agent of another user", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-2", role: "user" },
+      user: { id: "user-2", role: "member" },
       expires: "",
     } as any);
 
@@ -198,7 +198,7 @@ describe("PATCH /api/agents/[agentId]", () => {
 
   it("returns 403 when non-owner user tries to update personal agent of another user", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-2", role: "user" },
+      user: { id: "user-2", role: "member" },
       expires: "",
     } as any);
 
@@ -225,7 +225,7 @@ describe("PATCH /api/agents/[agentId]", () => {
 
   it("returns 404 when agent not found for update", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -282,7 +282,7 @@ describe("PATCH /api/agents/[agentId]", () => {
 
   it("returns 403 when non-admin tries to modify shared agent", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -501,7 +501,7 @@ describe("DELETE /api/agents/[agentId]", () => {
 
   it("returns 403 when user is not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 

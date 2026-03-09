@@ -54,7 +54,7 @@ describe("Home page", () => {
     mockIsSetupComplete.mockResolvedValue(true);
     mockIsProviderConfigured.mockResolvedValue(true);
     mockRequireAuth.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
     mockHeadersGet.mockReturnValue(null);
     setupAgentsQuery([{ id: "agent-1" }]);

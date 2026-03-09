@@ -66,7 +66,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Failed to create user" }, { status: 500 });
   }
 
-  if (invite.role !== "user") {
+  if (invite.role !== "member") {
     await db.update(users).set({ role: invite.role }).where(eq(users.id, result.user.id));
   }
 

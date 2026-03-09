@@ -21,7 +21,7 @@ export const users = pgTable("user", {
   email: text("email").notNull().unique(),
   emailVerified: boolean("email_verified").notNull().default(false),
   image: text("image"),
-  role: text("role").notNull().default("user"),
+  role: text("role").notNull().default("member"),
   banned: boolean("banned").default(false),
   banReason: text("ban_reason"),
   banExpires: timestamp("ban_expires"),
@@ -107,7 +107,7 @@ export const invites = pgTable("invites", {
     .$defaultFn(() => crypto.randomUUID()),
   tokenHash: text("token_hash").notNull().unique(),
   email: text("email"),
-  role: text("role").notNull().default("user"),
+  role: text("role").notNull().default("member"),
   type: text("type").notNull().default("invite"),
   createdBy: text("created_by")
     .notNull()

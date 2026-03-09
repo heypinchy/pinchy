@@ -56,7 +56,7 @@ describe("POST /api/users/invite", () => {
 
     const request = new NextRequest("http://localhost:7777/api/users/invite", {
       method: "POST",
-      body: JSON.stringify({ role: "user" }),
+      body: JSON.stringify({ role: "member" }),
     });
 
     const response = await POST(request);
@@ -68,13 +68,13 @@ describe("POST /api/users/invite", () => {
 
   it("returns 403 when user role is not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
     const request = new NextRequest("http://localhost:7777/api/users/invite", {
       method: "POST",
-      body: JSON.stringify({ role: "user" }),
+      body: JSON.stringify({ role: "member" }),
     });
 
     const response = await POST(request);
@@ -99,7 +99,7 @@ describe("POST /api/users/invite", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("Role must be 'admin' or 'user'");
+    expect(body.error).toBe("Role must be 'admin' or 'member'");
   });
 
   it("returns 400 when role is invalid", async () => {
@@ -117,7 +117,7 @@ describe("POST /api/users/invite", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("Role must be 'admin' or 'user'");
+    expect(body.error).toBe("Role must be 'admin' or 'member'");
   });
 
   it("returns 201 with invite data on success", async () => {
@@ -129,7 +129,7 @@ describe("POST /api/users/invite", () => {
     const fakeInvite = {
       id: "invite-1",
       email: "newuser@test.com",
-      role: "user",
+      role: "member",
       type: "invite",
       token: "abc123",
       createdAt: new Date(),
@@ -139,7 +139,7 @@ describe("POST /api/users/invite", () => {
 
     const request = new NextRequest("http://localhost:7777/api/users/invite", {
       method: "POST",
-      body: JSON.stringify({ email: "newuser@test.com", role: "user" }),
+      body: JSON.stringify({ email: "newuser@test.com", role: "member" }),
     });
 
     const response = await POST(request);
@@ -152,7 +152,7 @@ describe("POST /api/users/invite", () => {
 
     expect(createInvite).toHaveBeenCalledWith({
       email: "newuser@test.com",
-      role: "user",
+      role: "member",
       createdBy: "admin-1",
     });
   });
@@ -165,7 +165,7 @@ describe("POST /api/users/invite", () => {
 
     const fakeInvite = {
       id: "invite-2",
-      role: "user",
+      role: "member",
       type: "invite",
       token: "def456",
       createdAt: new Date(),
@@ -175,7 +175,7 @@ describe("POST /api/users/invite", () => {
 
     const request = new NextRequest("http://localhost:7777/api/users/invite", {
       method: "POST",
-      body: JSON.stringify({ role: "user" }),
+      body: JSON.stringify({ role: "member" }),
     });
 
     const response = await POST(request);
@@ -186,7 +186,7 @@ describe("POST /api/users/invite", () => {
 
     expect(createInvite).toHaveBeenCalledWith({
       email: undefined,
-      role: "user",
+      role: "member",
       createdBy: "admin-1",
     });
   });
@@ -215,7 +215,7 @@ describe("GET /api/users/invites", () => {
 
   it("returns 403 when user role is not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -236,7 +236,7 @@ describe("GET /api/users/invites", () => {
       {
         id: "invite-1",
         email: "user1@test.com",
-        role: "user",
+        role: "member",
         type: "invite",
         createdAt: new Date("2026-01-01"),
         expiresAt: new Date("2026-01-08"),
@@ -298,7 +298,7 @@ describe("DELETE /api/users/invites/[inviteId]", () => {
 
   it("returns 403 when user role is not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 

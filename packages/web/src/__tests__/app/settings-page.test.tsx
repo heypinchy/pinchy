@@ -92,7 +92,7 @@ describe("Settings Page", () => {
 
   const userSession = {
     data: {
-      user: { id: "user-1", name: "Regular Bob", role: "user" },
+      user: { id: "user-1", name: "Regular Bob", role: "member" },
     },
     isPending: false,
   };

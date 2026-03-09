@@ -71,7 +71,7 @@ describe("createInvite", () => {
       id: "inv-1",
       tokenHash: "somehash",
       email: "user@example.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(),
@@ -84,7 +84,7 @@ describe("createInvite", () => {
     const { createInvite } = await import("@/lib/invites");
     const result = await createInvite({
       email: "user@example.com",
-      role: "user",
+      role: "member",
       createdBy: "admin-1",
     });
 
@@ -135,7 +135,7 @@ describe("createInvite", () => {
       id: "inv-3",
       tokenHash: "hash",
       email: null,
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(),
@@ -147,7 +147,7 @@ describe("createInvite", () => {
 
     const { createInvite } = await import("@/lib/invites");
     await createInvite({
-      role: "user",
+      role: "member",
       createdBy: "admin-1",
     });
 
@@ -166,7 +166,7 @@ describe("createInvite", () => {
       id: "inv-4",
       tokenHash: "hash",
       email: null,
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(),
@@ -177,7 +177,7 @@ describe("createInvite", () => {
     returningMock.mockResolvedValue([fakeInvite]);
 
     const { createInvite } = await import("@/lib/invites");
-    await createInvite({ role: "user", createdBy: "admin-1" });
+    await createInvite({ role: "member", createdBy: "admin-1" });
 
     const passedValues = valuesMock.mock.calls[0][0];
     expect(passedValues.type).toBe("invite");
@@ -188,7 +188,7 @@ describe("createInvite", () => {
       id: "inv-5",
       tokenHash: "hash",
       email: null,
-      role: "user",
+      role: "member",
       type: "reset",
       createdBy: "admin-1",
       expiresAt: new Date(),
@@ -199,7 +199,7 @@ describe("createInvite", () => {
     returningMock.mockResolvedValue([fakeInvite]);
 
     const { createInvite } = await import("@/lib/invites");
-    await createInvite({ role: "user", type: "reset", createdBy: "admin-1" });
+    await createInvite({ role: "member", type: "reset", createdBy: "admin-1" });
 
     const passedValues = valuesMock.mock.calls[0][0];
     expect(passedValues.type).toBe("reset");
@@ -218,7 +218,7 @@ describe("validateInviteToken", () => {
       id: "inv-1",
       tokenHash: "somehash",
       email: "user@example.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(Date.now() + 86400000),
@@ -277,7 +277,7 @@ describe("claimInvite", () => {
       id: "inv-1",
       tokenHash: "somehash",
       email: "user@example.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(Date.now() + 86400000),
@@ -305,7 +305,7 @@ describe("claimInvite", () => {
       id: "inv-2",
       tokenHash: "hash2",
       email: null,
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(),

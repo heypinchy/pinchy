@@ -82,7 +82,7 @@ describe("GET /api/users", () => {
 
   it("returns 403 when user is not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -100,7 +100,7 @@ describe("GET /api/users", () => {
     } as any);
 
     const fakeUsers = [
-      { id: "user-1", name: "Alice", email: "alice@test.com", role: "user" },
+      { id: "user-1", name: "Alice", email: "alice@test.com", role: "member" },
       { id: "admin-1", name: "Bob", email: "bob@test.com", role: "admin" },
     ];
 
@@ -116,7 +116,7 @@ describe("GET /api/users", () => {
     expect(body.users[0].id).toBe("user-1");
     expect(body.users[0].name).toBe("Alice");
     expect(body.users[0].email).toBe("alice@test.com");
-    expect(body.users[0].role).toBe("user");
+    expect(body.users[0].role).toBe("member");
     // Ensure only selected fields are returned (no sensitive data leaks)
     expect(Object.keys(body.users[0]).sort()).toEqual(["email", "id", "name", "role"]);
   });
@@ -128,7 +128,7 @@ describe("GET /api/users", () => {
     } as any);
 
     const fakeUsers = [
-      { id: "user-1", name: "Alice", email: "alice@test.com", role: "user", banned: false },
+      { id: "user-1", name: "Alice", email: "alice@test.com", role: "member", banned: false },
       {
         id: "user-2",
         name: "Bob",
@@ -180,7 +180,7 @@ describe("DELETE /api/users/[userId]", () => {
 
   it("returns 403 when user is not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 

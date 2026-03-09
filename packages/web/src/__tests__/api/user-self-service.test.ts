@@ -70,7 +70,7 @@ describe("PATCH /api/users/me", () => {
 
   it("returns 400 when name is empty", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -85,7 +85,7 @@ describe("PATCH /api/users/me", () => {
 
   it("returns 400 when name is whitespace only", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -100,7 +100,7 @@ describe("PATCH /api/users/me", () => {
 
   it("returns 200 and updates user name on success", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -118,7 +118,7 @@ describe("PATCH /api/users/me", () => {
 
   it("trims the name before saving", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -168,7 +168,7 @@ describe("POST /api/users/me/password", () => {
 
   it("returns 400 when currentPassword is missing", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -183,7 +183,7 @@ describe("POST /api/users/me/password", () => {
 
   it("returns 400 when newPassword is too short (< 8)", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -201,7 +201,7 @@ describe("POST /api/users/me/password", () => {
 
   it("returns 403 when currentPassword is incorrect", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -223,7 +223,7 @@ describe("POST /api/users/me/password", () => {
 
   it("returns 200 and updates password on success", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -254,7 +254,7 @@ describe("POST /api/users/me/password", () => {
 
   it("returns 403 when changePassword throws (e.g., no password set)", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 

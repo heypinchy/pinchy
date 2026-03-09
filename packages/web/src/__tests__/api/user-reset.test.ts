@@ -66,7 +66,7 @@ describe("POST /api/users/[userId]/reset", () => {
 
   it("returns 403 when user is not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -114,13 +114,13 @@ describe("POST /api/users/[userId]/reset", () => {
       id: "user-1",
       name: "Alice",
       email: "alice@test.com",
-      role: "user",
+      role: "member",
     });
 
     const fakeInvite = {
       id: "invite-1",
       email: "alice@test.com",
-      role: "user",
+      role: "member",
       type: "reset",
       token: "reset-token-abc123",
       createdAt: new Date(),
@@ -151,13 +151,13 @@ describe("POST /api/users/[userId]/reset", () => {
       id: "user-1",
       name: "Alice",
       email: "alice@test.com",
-      role: "user",
+      role: "member",
     });
 
     const fakeInvite = {
       id: "invite-1",
       email: "alice@test.com",
-      role: "user",
+      role: "member",
       type: "reset",
       token: "reset-token-abc123",
       createdAt: new Date(),
@@ -175,7 +175,7 @@ describe("POST /api/users/[userId]/reset", () => {
 
     expect(createInvite).toHaveBeenCalledWith({
       email: "alice@test.com",
-      role: "user",
+      role: "member",
       type: "reset",
       createdBy: "admin-1",
     });
@@ -191,13 +191,13 @@ describe("POST /api/users/[userId]/reset", () => {
       id: "user-1",
       name: "Alice",
       email: null,
-      role: "user",
+      role: "member",
     });
 
     const fakeInvite = {
       id: "invite-1",
       email: undefined,
-      role: "user",
+      role: "member",
       type: "reset",
       token: "reset-token-abc123",
       createdAt: new Date(),
@@ -215,7 +215,7 @@ describe("POST /api/users/[userId]/reset", () => {
 
     expect(createInvite).toHaveBeenCalledWith({
       email: undefined,
-      role: "user",
+      role: "member",
       type: "reset",
       createdBy: "admin-1",
     });

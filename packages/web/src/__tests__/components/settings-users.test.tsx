@@ -21,8 +21,8 @@ describe("SettingsUsers", () => {
       role: "admin",
       banned: false,
     },
-    { id: "user-2", name: "Bob User", email: "bob@example.com", role: "user", banned: false },
-    { id: "user-3", name: "Carol User", email: "carol@example.com", role: "user", banned: false },
+    { id: "user-2", name: "Bob User", email: "bob@example.com", role: "member", banned: false },
+    { id: "user-3", name: "Carol User", email: "carol@example.com", role: "member", banned: false },
   ];
 
   const mockInvites: unknown[] = [];
@@ -67,7 +67,7 @@ describe("SettingsUsers", () => {
     expect(tableView.getByText("bob@example.com")).toBeInTheDocument();
     expect(tableView.getByText("carol@example.com")).toBeInTheDocument();
     expect(tableView.getByText("admin")).toBeInTheDocument();
-    expect(tableView.getAllByText("user").length).toBeGreaterThanOrEqual(2);
+    expect(tableView.getAllByText("member").length).toBeGreaterThanOrEqual(2);
   });
 
   it("should render Invite User button", async () => {
@@ -253,7 +253,7 @@ describe("SettingsUsers", () => {
       expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: "", role: "user" }),
+        body: JSON.stringify({ email: "", role: "member" }),
       });
     });
 
@@ -277,7 +277,7 @@ describe("SettingsUsers", () => {
       id: "user-4",
       name: "Dave Deactivated",
       email: "dave@example.com",
-      role: "user",
+      role: "member",
       banned: true,
     };
 
@@ -367,7 +367,7 @@ describe("SettingsUsers", () => {
     const pendingInvite = {
       id: "inv-1",
       email: "pending@example.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdAt: new Date().toISOString(),
       expiresAt: futureDate,
@@ -377,7 +377,7 @@ describe("SettingsUsers", () => {
     const expiredInvite = {
       id: "inv-2",
       email: "expired@example.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdAt: new Date().toISOString(),
       expiresAt: pastDate,
@@ -521,7 +521,7 @@ describe("SettingsUsers", () => {
         expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email: "expired@example.com", role: "user" }),
+          body: JSON.stringify({ email: "expired@example.com", role: "member" }),
         });
       });
 
@@ -542,7 +542,7 @@ describe("SettingsUsers", () => {
         id: "user-4",
         name: "Dave Deactivated",
         email: "dave@example.com",
-        role: "user",
+        role: "member",
         banned: true,
       };
       mockFetchForUsers([...mockUsers, deactivatedUser], [pendingInvite, expiredInvite]);

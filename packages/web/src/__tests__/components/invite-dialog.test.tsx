@@ -33,10 +33,10 @@ describe("InviteDialog", () => {
     expect(screen.getByRole("button", { name: "Create Invite" })).toBeInTheDocument();
   });
 
-  it("should show User as default role", () => {
+  it("should show Member as default role", () => {
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
-    const selectValue = screen.getByText("User", { selector: "[data-slot='select-value']" });
+    const selectValue = screen.getByText("Member", { selector: "[data-slot='select-value']" });
     expect(selectValue).toBeInTheDocument();
   });
 
@@ -56,7 +56,7 @@ describe("InviteDialog", () => {
       expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: "", role: "user" }),
+        body: JSON.stringify({ email: "", role: "member" }),
       });
     });
   });
@@ -78,7 +78,7 @@ describe("InviteDialog", () => {
       expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: "test@example.com", role: "user" }),
+        body: JSON.stringify({ email: "test@example.com", role: "member" }),
       });
     });
   });

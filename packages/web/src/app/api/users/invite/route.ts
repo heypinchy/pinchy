@@ -10,8 +10,8 @@ export async function POST(request: NextRequest) {
 
   const { email, role } = await request.json();
 
-  if (!role || !["admin", "user"].includes(role)) {
-    return NextResponse.json({ error: "Role must be 'admin' or 'user'" }, { status: 400 });
+  if (!role || !["admin", "member"].includes(role)) {
+    return NextResponse.json({ error: "Role must be 'admin' or 'member'" }, { status: 400 });
   }
 
   const invite = await createInvite({ email, role, createdBy: session.user.id });

@@ -31,7 +31,7 @@ import {
 
 const inviteSchema = z.object({
   email: z.string().email("Invalid email").optional().or(z.literal("")),
-  role: z.enum(["user", "admin"]),
+  role: z.enum(["member", "admin"]),
 });
 
 type InviteFormValues = z.infer<typeof inviteSchema>;
@@ -51,7 +51,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     resolver: zodResolver(inviteSchema),
     defaultValues: {
       email: "",
-      role: "user",
+      role: "member",
     },
   });
 
@@ -161,7 +161,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="user">User</SelectItem>
+                        <SelectItem value="member">Member</SelectItem>
                         <SelectItem value="admin">Admin</SelectItem>
                       </SelectContent>
                     </Select>

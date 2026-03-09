@@ -94,7 +94,7 @@ describe("ClientRouter", () => {
     // Default: session exists and cache is fresh (equivalent to runtimeActivated: true)
     sessionCache.refresh([{ key: "agent:agent-1:user-user-1" }]);
     mockOpenClawClient = createMockOpenClawClient(true);
-    router = new ClientRouter(mockOpenClawClient as any, "user-1", "user", sessionCache);
+    router = new ClientRouter(mockOpenClawClient as any, "user-1", "member", sessionCache);
 
     // Default: agent exists and is accessible
     mockFindFirst.mockResolvedValue(defaultAgent);
@@ -504,7 +504,7 @@ describe("ClientRouter", () => {
 
   it("should fetch history from OpenClaw even when session not in cache", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     const clientWs = createMockClientWs();
 
     // Cache is stale and sessions.list returns no matching session
@@ -534,7 +534,7 @@ describe("ClientRouter", () => {
 
   it("should return greeting when OpenClaw has no history for session", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     const clientWs = createMockClientWs();
     mockFindFirst.mockResolvedValue({
       ...defaultAgent,
@@ -564,7 +564,7 @@ describe("ClientRouter", () => {
 
   it("should return empty history when no history and agent has no greeting", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     const clientWs = createMockClientWs();
     mockFindFirst.mockResolvedValue({
       ...defaultAgent,
@@ -589,7 +589,7 @@ describe("ClientRouter", () => {
 
   it("should include extraSystemPrompt with greeting context on first message", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     mockFindFirst.mockResolvedValue({
       ...defaultAgent,
       greetingMessage: "Hello! I'm Smithers.",
@@ -634,7 +634,7 @@ describe("ClientRouter", () => {
 
   it("should NOT include extraSystemPrompt when agent has no greeting", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     mockFindFirst.mockResolvedValue({
       ...defaultAgent,
       greetingMessage: null,
@@ -659,7 +659,7 @@ describe("ClientRouter", () => {
 
   it("should add session key to cache after successful chat", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     async function* fakeStream() {
       yield { type: "text" as const, text: "Hello!" };
       yield { type: "done" as const, text: "" };
@@ -743,7 +743,7 @@ describe("ClientRouter", () => {
     const disconnectedRouter = new ClientRouter(
       disconnectedClient as any,
       "user-1",
-      "user",
+      "member",
       sessionCache
     );
 
@@ -774,7 +774,7 @@ describe("ClientRouter", () => {
     const disconnectedRouter = new ClientRouter(
       disconnectedClient as any,
       "user-1",
-      "user",
+      "member",
       sessionCache
     );
     mockFindFirst.mockResolvedValue({
@@ -921,7 +921,7 @@ describe("ClientRouter", () => {
 
   it("should fetch history directly without calling sessions.list", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     mockSessionsHistory.mockResolvedValue({
       messages: [{ role: "user", content: "Hi", timestamp: "2025-01-01T00:00:00Z" }],
     });
@@ -962,7 +962,7 @@ describe("ClientRouter", () => {
     // Sessions in OpenClaw use the format agent:<id>:user-<userId>.
     // The router must generate keys in the same format to find existing sessions.
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
 
     // OpenClaw returns sessions with its native key format
     mockSessionsList.mockResolvedValue({
@@ -1023,7 +1023,7 @@ describe("ClientRouter", () => {
 
   it("should return empty history when history fetch fails and no greeting", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
 
     mockFindFirst.mockResolvedValue({
       ...defaultAgent,
@@ -1126,7 +1126,12 @@ describe("ClientRouter", () => {
 
     it("should combine user context and greeting on first message to shared agent", async () => {
       const freshCache = new SessionCache();
-      const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+      const freshRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        freshCache
+      );
       mockUserFindFirst.mockResolvedValue({
         id: "user-1",
         context: "I'm a backend engineer.",
@@ -1272,7 +1277,12 @@ describe("ClientRouter", () => {
   describe("{user} placeholder in greeting messages", () => {
     it("should resolve {user} in greeting with user's name when showing history", async () => {
       const freshCache = new SessionCache();
-      const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+      const freshRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        freshCache
+      );
       mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Clemens", context: null });
       mockFindFirst.mockResolvedValue({
         ...defaultAgent,
@@ -1293,7 +1303,12 @@ describe("ClientRouter", () => {
 
     it("should resolve {user} in extraSystemPrompt greeting context on first message", async () => {
       const freshCache = new SessionCache();
-      const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+      const freshRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        freshCache
+      );
       mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Clemens", context: null });
       mockFindFirst.mockResolvedValue({
         ...defaultAgent,
@@ -1318,7 +1333,12 @@ describe("ClientRouter", () => {
 
     it("should gracefully remove {user} from greeting when user has no name", async () => {
       const freshCache = new SessionCache();
-      const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+      const freshRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        freshCache
+      );
       mockUserFindFirst.mockResolvedValue({ id: "user-1", name: null, context: null });
       mockFindFirst.mockResolvedValue({
         ...defaultAgent,

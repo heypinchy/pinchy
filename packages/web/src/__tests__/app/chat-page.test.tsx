@@ -82,7 +82,7 @@ describe("ChatPage", () => {
     };
 
     mockRequireAuth.mockResolvedValue({
-      user: { id: "other-user", role: "user" },
+      user: { id: "other-user", role: "member" },
     });
 
     dbSelectMock.where.mockResolvedValue([personalAgent]);
@@ -95,7 +95,7 @@ describe("ChatPage", () => {
       "NOT_FOUND"
     );
 
-    expect(mockAssertAgentAccess).toHaveBeenCalledWith(personalAgent, "other-user", "user");
+    expect(mockAssertAgentAccess).toHaveBeenCalledWith(personalAgent, "other-user", "member");
     expect(mockNotFound).toHaveBeenCalled();
   });
 
@@ -108,7 +108,7 @@ describe("ChatPage", () => {
     };
 
     mockRequireAuth.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
 
     dbSelectMock.where.mockResolvedValue([sharedAgent]);
@@ -124,7 +124,7 @@ describe("ChatPage", () => {
     expect(screen.getByTestId("mock-chat")).toBeInTheDocument();
     expect(screen.getByText("Shared Agent (agent-2)")).toBeInTheDocument();
     expect(mockNotFound).not.toHaveBeenCalled();
-    expect(mockAssertAgentAccess).toHaveBeenCalledWith(sharedAgent, "user-1", "user");
+    expect(mockAssertAgentAccess).toHaveBeenCalledWith(sharedAgent, "user-1", "member");
   });
 
   it("renders the chat when an admin accesses another user's personal agent", async () => {
@@ -164,7 +164,7 @@ describe("ChatPage", () => {
     };
 
     mockRequireAuth.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
 
     dbSelectMock.where.mockResolvedValue([sharedAgent]);
@@ -185,7 +185,7 @@ describe("ChatPage", () => {
     };
 
     mockRequireAuth.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
 
     dbSelectMock.where.mockResolvedValue([personalAgent]);
@@ -207,7 +207,7 @@ describe("ChatPage", () => {
     };
 
     mockRequireAuth.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
 
     dbSelectMock.where.mockResolvedValue([agentWithAvatar]);

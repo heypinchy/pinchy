@@ -46,7 +46,7 @@ describe("POST /api/users/[userId]/reactivate", () => {
 
   it("returns 403 when not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as never);
     const req = new NextRequest("http://localhost/api/users/u1/reactivate", { method: "POST" });

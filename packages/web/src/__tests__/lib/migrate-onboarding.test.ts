@@ -40,7 +40,7 @@ describe("migrateExistingSmithers", () => {
     ] as any);
     vi.mocked(db.query.users.findFirst).mockResolvedValue({
       id: "user-1",
-      role: "user",
+      role: "member",
       context: null,
     } as any);
 
@@ -61,7 +61,7 @@ describe("migrateExistingSmithers", () => {
     ] as any);
     vi.mocked(db.query.users.findFirst).mockResolvedValue({
       id: "user-2",
-      role: "user",
+      role: "member",
       context: "I am a developer",
     } as any);
 

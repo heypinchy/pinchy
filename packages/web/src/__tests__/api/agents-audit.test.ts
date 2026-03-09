@@ -442,7 +442,7 @@ describe("PATCH /api/agents/[agentId] write access control", () => {
 
   it("should deny non-admin user from modifying shared agent", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -468,7 +468,7 @@ describe("PATCH /api/agents/[agentId] write access control", () => {
 
   it("should allow personal agent owner to modify their agent", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 

@@ -6,7 +6,7 @@ describe("mergeUserList", () => {
 
   it("maps registered users to active status", () => {
     const result = mergeUserList(
-      [{ id: "u1", name: "Alice", email: "alice@test.com", role: "user", banned: false }],
+      [{ id: "u1", name: "Alice", email: "alice@test.com", role: "member", banned: false }],
       [],
       now
     );
@@ -16,7 +16,7 @@ describe("mergeUserList", () => {
         id: "u1",
         name: "Alice",
         email: "alice@test.com",
-        role: "user",
+        role: "member",
         status: "active",
       },
     ]);
@@ -24,7 +24,7 @@ describe("mergeUserList", () => {
 
   it("maps banned users to deactivated status", () => {
     const result = mergeUserList(
-      [{ id: "u1", name: "Alice", email: "alice@test.com", role: "user", banned: true }],
+      [{ id: "u1", name: "Alice", email: "alice@test.com", role: "member", banned: true }],
       [],
       now
     );
@@ -38,7 +38,7 @@ describe("mergeUserList", () => {
         {
           id: "inv1",
           email: "bob@test.com",
-          role: "user",
+          role: "member",
           type: "invite",
           createdAt: "2026-03-05T00:00:00Z",
           expiresAt: "2026-03-12T00:00:00Z",
@@ -52,7 +52,7 @@ describe("mergeUserList", () => {
         kind: "invite",
         id: "inv1",
         email: "bob@test.com",
-        role: "user",
+        role: "member",
         status: "pending",
         createdAt: "2026-03-05T00:00:00Z",
       },
@@ -66,7 +66,7 @@ describe("mergeUserList", () => {
         {
           id: "inv1",
           email: "bob@test.com",
-          role: "user",
+          role: "member",
           type: "invite",
           createdAt: "2026-02-01T00:00:00Z",
           expiresAt: "2026-02-08T00:00:00Z",
@@ -85,7 +85,7 @@ describe("mergeUserList", () => {
         {
           id: "inv1",
           email: "bob@test.com",
-          role: "user",
+          role: "member",
           type: "invite",
           createdAt: "2026-03-01T00:00:00Z",
           expiresAt: "2026-03-08T00:00:00Z",
@@ -104,7 +104,7 @@ describe("mergeUserList", () => {
         {
           id: "inv1",
           email: "bob@test.com",
-          role: "user",
+          role: "member",
           type: "reset",
           createdAt: "2026-03-01T00:00:00Z",
           expiresAt: "2026-03-08T00:00:00Z",
@@ -119,14 +119,14 @@ describe("mergeUserList", () => {
   it("sorts: active > pending > expired > deactivated", () => {
     const result = mergeUserList(
       [
-        { id: "u1", name: "Active", email: "a@t.com", role: "user", banned: false },
-        { id: "u2", name: "Banned", email: "b@t.com", role: "user", banned: true },
+        { id: "u1", name: "Active", email: "a@t.com", role: "member", banned: false },
+        { id: "u2", name: "Banned", email: "b@t.com", role: "member", banned: true },
       ],
       [
         {
           id: "inv1",
           email: "p@t.com",
-          role: "user",
+          role: "member",
           type: "invite",
           createdAt: "2026-03-05T00:00:00Z",
           expiresAt: "2026-03-12T00:00:00Z",
@@ -135,7 +135,7 @@ describe("mergeUserList", () => {
         {
           id: "inv2",
           email: "e@t.com",
-          role: "user",
+          role: "member",
           type: "invite",
           createdAt: "2026-02-01T00:00:00Z",
           expiresAt: "2026-02-08T00:00:00Z",
@@ -154,7 +154,7 @@ describe("mergeUserList", () => {
         {
           id: "inv1",
           email: null,
-          role: "user",
+          role: "member",
           type: "invite",
           createdAt: "2026-03-05T00:00:00Z",
           expiresAt: "2026-03-12T00:00:00Z",

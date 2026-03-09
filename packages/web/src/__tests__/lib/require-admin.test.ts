@@ -62,7 +62,7 @@ describe("requireAdmin", () => {
 
   it("redirects to / when user role is not admin", async () => {
     mockGetSession.mockResolvedValue({
-      user: { id: "user-1", email: "a@b.com", role: "user" },
+      user: { id: "user-1", email: "a@b.com", role: "member" },
       session: { expiresAt: "2026-03-01T00:00:00.000Z" },
     });
 

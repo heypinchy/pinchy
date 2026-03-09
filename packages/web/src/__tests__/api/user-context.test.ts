@@ -7,7 +7,7 @@ vi.mock("next/headers", () => ({
 vi.mock("@/lib/auth", () => {
   const mockGetSession = vi
     .fn()
-    .mockResolvedValue({ user: { id: "user-1", email: "user@test.com", role: "user" } });
+    .mockResolvedValue({ user: { id: "user-1", email: "user@test.com", role: "member" } });
   return {
     getSession: mockGetSession,
     auth: {
@@ -67,7 +67,7 @@ describe("GET /api/users/me/context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(auth.api.getSession).mockResolvedValue({
-      user: { id: "user-1", email: "user@test.com", role: "user" },
+      user: { id: "user-1", email: "user@test.com", role: "member" },
       expires: "",
     });
   });
@@ -102,7 +102,7 @@ describe("PUT /api/users/me/context", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(auth.api.getSession).mockResolvedValue({
-      user: { id: "user-1", email: "user@test.com", role: "user" },
+      user: { id: "user-1", email: "user@test.com", role: "member" },
       expires: "",
     });
     mockUpdate.mockReturnValue({ set: mockSet });

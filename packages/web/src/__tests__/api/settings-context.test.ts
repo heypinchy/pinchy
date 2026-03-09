@@ -64,7 +64,7 @@ describe("GET /api/settings/context", () => {
 
   it("should return 403 for non-admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", email: "user@test.com", role: "user" },
+      user: { id: "user-1", email: "user@test.com", role: "member" },
       expires: "",
     });
 
@@ -110,7 +110,7 @@ describe("PUT /api/settings/context", () => {
 
   it("should return 403 for non-admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", email: "user@test.com", role: "user" },
+      user: { id: "user-1", email: "user@test.com", role: "member" },
       expires: "",
     });
 

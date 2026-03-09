@@ -49,7 +49,7 @@ describe("AgentsPage (server component)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRequireAuth.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
     setupAgentsQuery([{ id: "agent-1" }]);
   });
