@@ -120,6 +120,13 @@
       "when": 1773063250433,
       "tag": "0016_abnormal_wasp",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1773071968874,
+      "tag": "0017_wet_hellfire_club",
+      "breakpoints": true
     }
   ]
 }

@@ -10,12 +10,42 @@ Object.defineProperty(window, "location", {
   writable: true,
 });
 
+function resolveUrl(url: string | URL | Request): string {
+  return typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+}
+
+function mockFetchForInvite(
+  inviteResponse: { ok: boolean; json: () => Promise<unknown> },
+  options?: { enterprise?: boolean; groups?: { id: string; name: string }[] }
+) {
+  const enterprise = options?.enterprise ?? false;
+  const groups = options?.groups ?? [];
+  return (url: string | URL | Request) => {
+    const urlStr = resolveUrl(url);
+    if (urlStr.includes("/api/enterprise/status")) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ enterprise }),
+      } as Response);
+    }
+    if (urlStr.includes("/api/groups")) {
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ groups }),
+      } as Response);
+    }
+    return Promise.resolve(inviteResponse as Response);
+  };
+}
+
 describe("InviteDialog", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
-    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
     vi.clearAllMocks();
+    fetchSpy = vi
+      .spyOn(global, "fetch")
+      .mockImplementation(mockFetchForInvite({ ok: true, json: async () => ({}) }));
   });
 
   afterEach(() => {
@@ -43,10 +73,9 @@ describe("InviteDialog", () => {
   it("should submit form with default values when Create Invite is clicked", async () => {
     const user = userEvent.setup();
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: "test-token" }),
-    } as Response);
+    fetchSpy.mockImplementation(
+      mockFetchForInvite({ ok: true, json: async () => ({ token: "test-token" }) })
+    );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -64,10 +93,9 @@ describe("InviteDialog", () => {
   it("should submit form with entered email", async () => {
     const user = userEvent.setup();
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: "test-token" }),
-    } as Response);
+    fetchSpy.mockImplementation(
+      mockFetchForInvite({ ok: true, json: async () => ({ token: "test-token" }) })
+    );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -86,10 +114,9 @@ describe("InviteDialog", () => {
   it("should show invite link after successful creation", async () => {
     const user = userEvent.setup();
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: "invite-token-abc" }),
-    } as Response);
+    fetchSpy.mockImplementation(
+      mockFetchForInvite({ ok: true, json: async () => ({ token: "invite-token-abc" }) })
+    );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -105,10 +132,9 @@ describe("InviteDialog", () => {
   it("should show error message on API failure", async () => {
     const user = userEvent.setup();
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: false,
-      json: async () => ({ error: "Invite limit reached" }),
-    } as Response);
+    fetchSpy.mockImplementation(
+      mockFetchForInvite({ ok: false, json: async () => ({ error: "Invite limit reached" }) })
+    );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -122,7 +148,16 @@ describe("InviteDialog", () => {
   it("should show generic error on network failure", async () => {
     const user = userEvent.setup();
 
-    vi.mocked(global.fetch).mockRejectedValueOnce(new Error("Network error"));
+    fetchSpy.mockImplementation((url: string | URL | Request) => {
+      const urlStr = resolveUrl(url);
+      if (urlStr.includes("/api/enterprise/status")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ enterprise: false }),
+        } as Response);
+      }
+      return Promise.reject(new Error("Network error"));
+    });
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -145,7 +180,7 @@ describe("InviteDialog", () => {
       expect(screen.getByText("Invalid email")).toBeInTheDocument();
     });
 
-    expect(global.fetch).not.toHaveBeenCalled();
+    expect(global.fetch).not.toHaveBeenCalledWith("/api/users/invite", expect.anything());
   });
 
   it("should show Share button when Web Share API is available", async () => {
@@ -164,10 +199,9 @@ describe("InviteDialog", () => {
       configurable: true,
     });
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: "share-token" }),
-    } as Response);
+    fetchSpy.mockImplementation(
+      mockFetchForInvite({ ok: true, json: async () => ({ token: "share-token" }) })
+    );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -201,10 +235,9 @@ describe("InviteDialog", () => {
     // @ts-expect-error removing for test
     delete navigator.share;
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: "copy-token" }),
-    } as Response);
+    fetchSpy.mockImplementation(
+      mockFetchForInvite({ ok: true, json: async () => ({ token: "copy-token" }) })
+    );
 
     render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
 
@@ -221,14 +254,127 @@ describe("InviteDialog", () => {
     if (originalShare) navigator.share = originalShare;
   });
 
+  it("shows group checkboxes when enterprise is enabled", async () => {
+    fetchSpy.mockImplementation((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("/api/enterprise/status")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ enterprise: true }),
+        } as Response);
+      }
+      if (urlStr.includes("/api/groups")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            groups: [
+              { id: "g1", name: "HR" },
+              { id: "g2", name: "Engineering" },
+            ],
+          }),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ token: "test" }),
+      } as Response);
+    });
+
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Groups")).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText("HR")).toBeInTheDocument();
+    expect(screen.getByLabelText("Engineering")).toBeInTheDocument();
+  });
+
+  it("does not show group checkboxes when enterprise is disabled", async () => {
+    fetchSpy.mockImplementation((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("/api/enterprise/status")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ enterprise: false }),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ token: "test" }),
+      } as Response);
+    });
+
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+
+    // Wait a tick to let effects run
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Create Invite" })).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("Groups")).not.toBeInTheDocument();
+  });
+
+  it("includes selected groupIds in invite request", async () => {
+    const user = userEvent.setup();
+
+    fetchSpy.mockImplementation((url: string | URL | Request) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      if (urlStr.includes("/api/enterprise/status")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ enterprise: true }),
+        } as Response);
+      }
+      if (urlStr.includes("/api/groups")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            groups: [
+              { id: "g1", name: "HR" },
+              { id: "g2", name: "Engineering" },
+            ],
+          }),
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ token: "test-token" }),
+      } as Response);
+    });
+
+    render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+
+    // Wait for groups to load
+    await waitFor(() => {
+      expect(screen.getByLabelText("HR")).toBeInTheDocument();
+    });
+
+    // Check the HR checkbox
+    await user.click(screen.getByLabelText("HR"));
+
+    // Submit the form
+    await user.click(screen.getByRole("button", { name: "Create Invite" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/users/invite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: "",
+          role: "member",
+          groupIds: ["g1"],
+        }),
+      });
+    });
+  });
+
   it("should reset form when dialog closes and reopens", async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();
 
-    vi.mocked(global.fetch).mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({ token: "test-token" }),
-    } as Response);
+    fetchSpy.mockImplementation(
+      mockFetchForInvite({ ok: true, json: async () => ({ token: "test-token" }) })
+    );
 
     const { rerender } = render(<InviteDialog open={true} onOpenChange={onOpenChange} />);
 

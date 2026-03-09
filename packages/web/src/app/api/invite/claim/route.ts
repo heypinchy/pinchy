@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
-import { users } from "@/db/schema";
+import { users, userGroups } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { validateInviteToken, claimInvite } from "@/lib/invites";
+import { validateInviteToken, claimInvite, getInviteGroupIds } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { validatePassword } from "@/lib/validate-password";
@@ -68,6 +68,14 @@ export async function POST(request: NextRequest) {
 
   if (invite.role !== "member") {
     await db.update(users).set({ role: invite.role }).where(eq(users.id, result.user.id));
+  }
+
+  // Assign invite groups to new user
+  const groupIds = await getInviteGroupIds(invite.id);
+  if (groupIds.length > 0) {
+    await db
+      .insert(userGroups)
+      .values(groupIds.map((groupId) => ({ userId: result.user.id, groupId })));
   }
 
   await seedPersonalAgent(result.user.id, invite.role === "admin");

@@ -156,6 +156,19 @@ export const invites = pgTable("invites", {
   claimedByUserId: text("claimed_by_user_id").references(() => users.id),
 });
 
+export const inviteGroups = pgTable(
+  "invite_groups",
+  {
+    inviteId: text("invite_id")
+      .notNull()
+      .references(() => invites.id, { onDelete: "cascade" }),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+  },
+  (table) => [primaryKey({ columns: [table.inviteId, table.groupId] })]
+);
+
 export const settings = pgTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),

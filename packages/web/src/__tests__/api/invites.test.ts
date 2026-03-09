@@ -190,6 +190,43 @@ describe("POST /api/users/invite", () => {
       createdBy: "admin-1",
     });
   });
+
+  it("passes groupIds to createInvite when provided", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const fakeInvite = {
+      id: "invite-3",
+      email: "grouped@test.com",
+      role: "member",
+      type: "invite",
+      token: "group-token",
+      createdAt: new Date(),
+      expiresAt: new Date(),
+    };
+    vi.mocked(createInvite).mockResolvedValueOnce(fakeInvite as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/invite", {
+      method: "POST",
+      body: JSON.stringify({
+        email: "grouped@test.com",
+        role: "member",
+        groupIds: ["group-1", "group-2"],
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    expect(createInvite).toHaveBeenCalledWith({
+      email: "grouped@test.com",
+      role: "member",
+      createdBy: "admin-1",
+      groupIds: ["group-1", "group-2"],
+    });
+  });
 });
 
 // ── GET /api/users/invites ───────────────────────────────────────────────

@@ -170,31 +170,28 @@ Know these when making architectural decisions:
 ## Useful Commands
 
 ```bash
+# Development (Docker — always use this, never run the app without Docker)
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+
+# With extra env vars (e.g. enterprise key)
+PINCHY_ENTERPRISE_KEY=dev-enterprise docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+
 # Production (Docker)
 docker compose up --build
 
-# Docker dev mode (hot reload)
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
-
-# Local development (without Docker for the app)
-pnpm install
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up db openclaw -d
-export DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5433/pinchy
-pnpm db:migrate
-pnpm dev                 # Start dev server (port 7777)
-
-# Common commands
+# Common commands (run on host, not in container)
 pnpm test                # Run test suite
 pnpm build               # Production build
 pnpm lint                # Run ESLint
 pnpm format              # Format with Prettier
 pnpm db:generate         # Generate migration from schema changes
-pnpm db:migrate          # Apply pending migrations
 
 # Documentation
 cd docs && pnpm install && pnpm dev   # Docs dev server (port 4321)
 cd docs && pnpm build                 # Build docs
 ```
+
+> **Important:** Always use Docker Compose for development. The app requires PostgreSQL, OpenClaw, and automatic migrations — all handled by Docker Compose. Running `pnpm dev` directly will lead to missing migrations and broken infrastructure checks.
 
 ## Context for AI Assistants
 

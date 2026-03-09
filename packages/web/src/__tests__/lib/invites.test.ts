@@ -9,11 +9,15 @@ const valuesMock = vi.fn().mockReturnValue({ returning: returningMock });
 const insertMock = vi.fn().mockReturnValue({ values: valuesMock });
 const updateMock = vi.fn().mockReturnValue({ set: setMock });
 const findFirstMock = vi.fn();
+const selectWhereMock = vi.fn();
+const selectFromMock = vi.fn().mockReturnValue({ where: selectWhereMock });
+const selectMock = vi.fn().mockReturnValue({ from: selectFromMock });
 
 vi.mock("@/db", () => ({
   db: {
     insert: (...args: unknown[]) => insertMock(...args),
     update: (...args: unknown[]) => updateMock(...args),
+    select: (...args: unknown[]) => selectMock(...args),
     query: {
       invites: {
         findFirst: (...args: unknown[]) => findFirstMock(...args),
@@ -330,5 +334,128 @@ describe("claimInvite", () => {
     const result = await claimInvite("already-claimed-hash", "user-3");
 
     expect(result).toBeNull();
+  });
+});
+
+// ── createInvite with groupIds ──────────────────────────────────────────────
+
+describe("createInvite with groupIds", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Reset the default insert mock chain for the invite insert
+    insertMock.mockReturnValue({ values: valuesMock });
+    valuesMock.mockReturnValue({ returning: returningMock });
+  });
+
+  it("inserts invite group associations when groupIds are provided", async () => {
+    const fakeInvite = {
+      id: "inv-grp-1",
+      tokenHash: "hash",
+      email: "user@example.com",
+      role: "member",
+      type: "invite",
+      createdBy: "admin-1",
+      expiresAt: new Date(),
+      claimedAt: null,
+      claimedByUserId: null,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeInvite]);
+
+    const groupValuesMock = vi.fn().mockResolvedValue(undefined);
+    // On the second call to insert (for inviteGroups), return a different chain
+    insertMock
+      .mockReturnValueOnce({ values: valuesMock }) // first call: invites table
+      .mockReturnValueOnce({ values: groupValuesMock }); // second call: inviteGroups table
+
+    const { createInvite } = await import("@/lib/invites");
+    await createInvite({
+      email: "user@example.com",
+      role: "member",
+      createdBy: "admin-1",
+      groupIds: ["g1", "g2"],
+    });
+
+    expect(insertMock).toHaveBeenCalledTimes(2);
+    expect(groupValuesMock).toHaveBeenCalledWith([
+      { inviteId: "inv-grp-1", groupId: "g1" },
+      { inviteId: "inv-grp-1", groupId: "g2" },
+    ]);
+  });
+
+  it("does not insert invite groups when groupIds is empty", async () => {
+    const fakeInvite = {
+      id: "inv-grp-2",
+      tokenHash: "hash",
+      email: null,
+      role: "member",
+      type: "invite",
+      createdBy: "admin-1",
+      expiresAt: new Date(),
+      claimedAt: null,
+      claimedByUserId: null,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeInvite]);
+
+    const { createInvite } = await import("@/lib/invites");
+    await createInvite({
+      role: "member",
+      createdBy: "admin-1",
+      groupIds: [],
+    });
+
+    expect(insertMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not insert invite groups when groupIds is not provided", async () => {
+    const fakeInvite = {
+      id: "inv-grp-3",
+      tokenHash: "hash",
+      email: null,
+      role: "member",
+      type: "invite",
+      createdBy: "admin-1",
+      expiresAt: new Date(),
+      claimedAt: null,
+      claimedByUserId: null,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeInvite]);
+
+    const { createInvite } = await import("@/lib/invites");
+    await createInvite({
+      role: "member",
+      createdBy: "admin-1",
+    });
+
+    expect(insertMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── getInviteGroupIds ───────────────────────────────────────────────────────
+
+describe("getInviteGroupIds", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns group IDs for an invite", async () => {
+    selectWhereMock.mockResolvedValue([{ groupId: "g1" }, { groupId: "g2" }]);
+
+    const { getInviteGroupIds } = await import("@/lib/invites");
+    const result = await getInviteGroupIds("inv-1");
+
+    expect(result).toEqual(["g1", "g2"]);
+    expect(selectMock).toHaveBeenCalled();
+  });
+
+  it("returns empty array when invite has no groups", async () => {
+    selectWhereMock.mockResolvedValue([]);
+
+    const { getInviteGroupIds } = await import("@/lib/invites");
+    const result = await getInviteGroupIds("inv-2");
+
+    expect(result).toEqual([]);
   });
 });

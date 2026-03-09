@@ -46,6 +46,9 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
+  const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
 
   const form = useForm<InviteFormValues>({
     resolver: zodResolver(inviteSchema),
@@ -61,8 +64,24 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
       setInviteLink(null);
       setError(null);
       setCopied(false);
+      setSelectedGroupIds([]);
     }
   }, [open, form]);
+
+  useEffect(() => {
+    if (!open) return;
+    fetch("/api/enterprise/status")
+      .then((r) => r.json())
+      .then((d) => setIsEnterprise(d.enterprise))
+      .catch(() => setIsEnterprise(false));
+  }, [open]);
+
+  useEffect(() => {
+    if (!isEnterprise) return;
+    fetch("/api/groups")
+      .then((r) => r.json())
+      .then((d) => setGroups(d.groups));
+  }, [isEnterprise]);
 
   async function onSubmit(values: InviteFormValues) {
     setError(null);
@@ -71,7 +90,11 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
       const res = await fetch("/api/users/invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: values.email, role: values.role }),
+        body: JSON.stringify({
+          email: values.email,
+          role: values.role,
+          ...(selectedGroupIds.length > 0 ? { groupIds: selectedGroupIds } : {}),
+        }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -169,6 +192,27 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
                   </FormItem>
                 )}
               />
+              {isEnterprise && groups.length > 0 && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium">Groups</label>
+                  {groups.map((group) => (
+                    <label key={group.id} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={selectedGroupIds.includes(group.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedGroupIds([...selectedGroupIds, group.id]);
+                          } else {
+                            setSelectedGroupIds(selectedGroupIds.filter((id) => id !== group.id));
+                          }
+                        }}
+                      />
+                      {group.name}
+                    </label>
+                  ))}
+                </div>
+              )}
               {error && <p className="text-destructive text-sm">{error}</p>}
               <Button type="submit" disabled={creating}>
                 Create Invite
