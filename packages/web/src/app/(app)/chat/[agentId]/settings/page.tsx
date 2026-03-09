@@ -21,6 +21,7 @@ import { AgentSettingsGeneral } from "@/components/agent-settings-general";
 import { AgentSettingsFile } from "@/components/agent-settings-file";
 import { AgentSettingsPersonality } from "@/components/agent-settings-personality";
 import { AgentSettingsPermissions } from "@/components/agent-settings-permissions";
+import { AgentSettingsAccess } from "@/components/agent-settings-access";
 import { useRestart } from "@/components/restart-provider";
 
 interface Agent {
@@ -33,6 +34,8 @@ interface Agent {
   tagline: string | null;
   avatarSeed: string | null;
   personalityPresetId: string | null;
+  visibility: string;
+  groupIds: string[];
 }
 
 interface Directory {
@@ -63,7 +66,12 @@ interface PermissionsValues {
   allowedPaths: string[];
 }
 
-type DirtyTabs = Set<"general" | "personality" | "instructions" | "permissions">;
+interface AccessValues {
+  visibility: string;
+  groupIds: string[];
+}
+
+type DirtyTabs = Set<"general" | "personality" | "instructions" | "permissions" | "access">;
 
 function DirtyDot() {
   return (
@@ -93,6 +101,7 @@ export default function AgentSettingsPage() {
   const personalityDraft = useRef<PersonalityValues | null>(null);
   const instructionsDraft = useRef<string | null>(null);
   const permissionsDraft = useRef<PermissionsValues | null>(null);
+  const accessDraft = useRef<AccessValues | null>(null);
 
   const [dirtyTabs, setDirtyTabs] = useState<DirtyTabs>(new Set());
   const [showConfirmDialog, setShowConfirmDialog] = useState(false);
@@ -175,6 +184,16 @@ export default function AgentSettingsPage() {
     });
   }, []);
 
+  const handleAccessChange = useCallback((values: AccessValues, isDirty: boolean) => {
+    accessDraft.current = values;
+    setDirtyTabs((prev) => {
+      const next = new Set(prev);
+      if (isDirty) next.add("access");
+      else next.delete("access");
+      return next;
+    });
+  }, []);
+
   const needsRestart = dirtyTabs.has("general") || dirtyTabs.has("permissions");
   const hasDirtyTabs = dirtyTabs.size > 0;
 
@@ -211,6 +230,10 @@ export default function AgentSettingsPage() {
       if (dirtyTabs.has("permissions") && permissionsDraft.current) {
         agentPatch.allowedTools = permissionsDraft.current.allowedTools;
         agentPatch.pluginConfig = { allowed_paths: permissionsDraft.current.allowedPaths };
+      }
+      if (dirtyTabs.has("access") && accessDraft.current) {
+        agentPatch.visibility = accessDraft.current.visibility;
+        agentPatch.groupIds = accessDraft.current.groupIds;
       }
 
       if (Object.keys(agentPatch).length > 0) {
@@ -328,6 +351,11 @@ export default function AgentSettingsPage() {
                 Permissions {dirtyTabs.has("permissions") && <DirtyDot />}
               </TabsTrigger>
             )}
+            {showPermissions && (
+              <TabsTrigger value="access">
+                Access {dirtyTabs.has("access") && <DirtyDot />}
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="general" keepMounted>
@@ -370,6 +398,16 @@ export default function AgentSettingsPage() {
               />
             </TabsContent>
           )}
+
+          {showPermissions && (
+            <TabsContent value="access" keepMounted>
+              <AgentSettingsAccess
+                agent={{ visibility: agent.visibility }}
+                currentGroupIds={agent.groupIds || []}
+                onChange={handleAccessChange}
+              />
+            </TabsContent>
+          )}
         </Tabs>
       </div>
 
@@ -405,6 +443,7 @@ export default function AgentSettingsPage() {
                   {dirtyTabs.has("personality") && <li>Personality (avatar, soul)</li>}
                   {dirtyTabs.has("instructions") && <li>Instructions</li>}
                   {dirtyTabs.has("permissions") && <li>Permissions</li>}
+                  {dirtyTabs.has("access") && <li>Access</li>}
                 </ul>
                 <span className="block mt-3 text-muted-foreground">
                   Active chats will be briefly disconnected.

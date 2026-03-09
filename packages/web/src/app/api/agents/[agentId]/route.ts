@@ -9,6 +9,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { writeIdentityFile } from "@/lib/workspace";
 import { db } from "@/db";
 import { agentGroups } from "@/db/schema";
+import { getAgentGroupIds } from "@/lib/groups";
 
 export async function GET(
   request: NextRequest,
@@ -25,7 +26,8 @@ export async function GET(
   if (agentOrError instanceof NextResponse) return agentOrError;
   const agent = agentOrError;
 
-  return NextResponse.json(agent);
+  const groupIds = await getAgentGroupIds(agentId);
+  return NextResponse.json({ ...agent, groupIds });
 }
 
 export async function PATCH(
