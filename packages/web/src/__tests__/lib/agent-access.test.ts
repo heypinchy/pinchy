@@ -80,6 +80,52 @@ describe("assertAgentWriteAccess", () => {
   });
 });
 
+describe("assertAgentAccess with visibility", () => {
+  it("allows admin access regardless of visibility", () => {
+    const agent = { id: "a1", ownerId: "other", isPersonal: false, visibility: "admin_only" };
+    expect(() => assertAgentAccess(agent, "admin-user", "admin")).not.toThrow();
+  });
+
+  it("denies member access to admin_only agents", () => {
+    const agent = { id: "a1", ownerId: "other", isPersonal: false, visibility: "admin_only" };
+    expect(() => assertAgentAccess(agent, "user-1", "member", [], [])).toThrow("Access denied");
+  });
+
+  it("allows member access to 'all' visibility agents", () => {
+    const agent = { id: "a1", ownerId: "other", isPersonal: false, visibility: "all" };
+    expect(() => assertAgentAccess(agent, "user-1", "member", [], [])).not.toThrow();
+  });
+
+  it("allows member access to 'groups' agent when in matching group", () => {
+    const agent = { id: "a1", ownerId: "other", isPersonal: false, visibility: "groups" };
+    expect(() =>
+      assertAgentAccess(agent, "user-1", "member", ["g1", "g2"], ["g2", "g3"])
+    ).not.toThrow();
+  });
+
+  it("denies member access to 'groups' agent when NOT in matching group", () => {
+    const agent = { id: "a1", ownerId: "other", isPersonal: false, visibility: "groups" };
+    expect(() => assertAgentAccess(agent, "user-1", "member", ["g1"], ["g2"])).toThrow(
+      "Access denied"
+    );
+  });
+
+  it("personal agent access is unchanged — owner can access", () => {
+    const agent = { id: "a1", ownerId: "user-1", isPersonal: true, visibility: "admin_only" };
+    expect(() => assertAgentAccess(agent, "user-1", "member", [], [])).not.toThrow();
+  });
+
+  it("personal agent access is unchanged — non-owner denied", () => {
+    const agent = { id: "a1", ownerId: "other", isPersonal: true, visibility: "admin_only" };
+    expect(() => assertAgentAccess(agent, "user-1", "member", [], [])).toThrow("Access denied");
+  });
+
+  it("defaults to 'all' visibility when undefined (backward compat)", () => {
+    const agent = { id: "a1", ownerId: "other", isPersonal: false };
+    expect(() => assertAgentAccess(agent, "user-1", "member", [], [])).not.toThrow();
+  });
+});
+
 describe("getAgentWithAccess", () => {
   it("returns 404 when agent not found", async () => {
     mockSelectChain([]);

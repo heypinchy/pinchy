@@ -7,6 +7,7 @@ interface AgentForAccess {
   id: string;
   ownerId: string | null;
   isPersonal: boolean;
+  visibility?: string;
 }
 
 /**
@@ -14,15 +15,36 @@ interface AgentForAccess {
  *
  * Rules:
  * - Admin can access everything
- * - Shared agents (isPersonal=false) are readable by all authenticated users
  * - Personal agents are only accessible to their owner
+ * - Shared agents check visibility: "all" (everyone), "admin_only" (admins only),
+ *   "groups" (only users who share a group with the agent)
  */
-export function assertAgentAccess(agent: AgentForAccess, userId: string, userRole: string): void {
+export function assertAgentAccess(
+  agent: AgentForAccess,
+  userId: string,
+  userRole: string,
+  userGroupIds: string[] = [],
+  agentGroupIds: string[] = []
+): void {
   if (userRole === "admin") return;
-  if (!agent.isPersonal) return;
-  if (agent.ownerId === userId) return;
+  if (agent.isPersonal) {
+    if (agent.ownerId === userId) return;
+    throw new Error("Access denied");
+  }
 
-  throw new Error("Access denied");
+  // Shared agent — check visibility
+  const visibility = agent.visibility ?? "all";
+  switch (visibility) {
+    case "all":
+      return;
+    case "admin_only":
+      throw new Error("Access denied");
+    case "groups":
+      if (userGroupIds.some((gId) => agentGroupIds.includes(gId))) return;
+      throw new Error("Access denied");
+    default:
+      throw new Error("Access denied");
+  }
 }
 
 /**
