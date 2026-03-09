@@ -15,6 +15,7 @@ export interface UpdateAgentInput {
   tagline?: string | null;
   avatarSeed?: string | null;
   personalityPresetId?: string | null;
+  visibility?: string;
 }
 
 export async function deleteAgent(id: string) {
@@ -32,10 +33,20 @@ export async function deleteAgent(id: string) {
   return updated;
 }
 
+const OPENCLAW_CONFIG_FIELDS: (keyof UpdateAgentInput)[] = [
+  "name",
+  "model",
+  "allowedTools",
+  "pluginConfig",
+];
+
 export async function updateAgent(id: string, data: UpdateAgentInput) {
   const [updated] = await db.update(agents).set(data).where(eq(agents.id, id)).returning();
 
-  await regenerateOpenClawConfig();
+  const touchesOpenClawConfig = OPENCLAW_CONFIG_FIELDS.some((field) => field in data);
+  if (touchesOpenClawConfig) {
+    await regenerateOpenClawConfig();
+  }
 
   return updated;
 }

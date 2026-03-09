@@ -124,7 +124,7 @@ export async function PATCH(
   if (body.personalityPresetId !== undefined) data.personalityPresetId = body.personalityPresetId;
   if (body.visibility !== undefined) data.visibility = body.visibility;
 
-  const agent = await updateAgent(agentId, data);
+  const agent = Object.keys(data).length > 0 ? await updateAgent(agentId, data) : existingAgent;
 
   // Update group assignments if provided
   if (body.groupIds !== undefined && session.user.role === "admin") {
