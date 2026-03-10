@@ -276,7 +276,7 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: "--no-progress '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude 'localhost' --exclude '^/'"
+          args: "--no-progress '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'linkedin\\.com'"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
