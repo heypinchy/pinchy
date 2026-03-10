@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect } from "react";
+import { useState, useEffect } from "react";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -28,6 +28,10 @@ interface AgentSettingsAccessProps {
   onChange: (values: AccessValues, isDirty: boolean) => void;
 }
 
+function sortedJson(arr: string[]) {
+  return JSON.stringify([...arr].sort());
+}
+
 export function AgentSettingsAccess({
   agent,
   currentGroupIds,
@@ -38,8 +42,24 @@ export function AgentSettingsAccess({
   const [groups, setGroups] = useState<Group[]>([]);
   const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
 
-  const initialVisibility = useRef(agent.visibility || "restricted");
-  const initialGroupIds = useRef(currentGroupIds);
+  // Baseline tracks the last saved server state (updates when props change after save + refetch)
+  const [baselineVisibility, setBaselineVisibility] = useState(agent.visibility || "restricted");
+  const [baselineGroupIds, setBaselineGroupIds] = useState(currentGroupIds);
+
+  // Sync baseline and editing state when parent provides new data (after save + refetch)
+  const [prevPropsVisibility, setPrevPropsVisibility] = useState(agent.visibility);
+  const [prevPropsGroupIds, setPrevPropsGroupIds] = useState(currentGroupIds);
+  if (
+    agent.visibility !== prevPropsVisibility ||
+    sortedJson(currentGroupIds) !== sortedJson(prevPropsGroupIds)
+  ) {
+    setPrevPropsVisibility(agent.visibility);
+    setPrevPropsGroupIds(currentGroupIds);
+    setBaselineVisibility(agent.visibility || "restricted");
+    setBaselineGroupIds(currentGroupIds);
+    setVisibility(agent.visibility || "restricted");
+    setSelectedGroupIds(currentGroupIds);
+  }
 
   useEffect(() => {
     fetch("/api/enterprise/status")
@@ -58,11 +78,10 @@ export function AgentSettingsAccess({
 
   useEffect(() => {
     const isDirty =
-      visibility !== initialVisibility.current ||
-      JSON.stringify([...selectedGroupIds].sort()) !==
-        JSON.stringify([...initialGroupIds.current].sort());
+      visibility !== baselineVisibility ||
+      sortedJson(selectedGroupIds) !== sortedJson(baselineGroupIds);
     onChange({ visibility, groupIds: selectedGroupIds }, isDirty);
-  }, [visibility, selectedGroupIds, onChange]);
+  }, [visibility, selectedGroupIds, baselineVisibility, baselineGroupIds, onChange]);
 
   function handleVisibilityChange(value: string) {
     setVisibility(value);

@@ -43,7 +43,6 @@ describe("AgentSettingsAccess", () => {
   });
 
   it("should show group checkboxes when 'Restricted' is selected", async () => {
-    const user = userEvent.setup();
     const onChange = vi.fn();
     render(
       <AgentSettingsAccess
@@ -105,6 +104,55 @@ describe("AgentSettingsAccess", () => {
 
     await waitFor(() => {
       expect(onChange).toHaveBeenCalledWith({ visibility: "restricted", groupIds: ["g2"] }, true);
+    });
+  });
+
+  it("should detect dirty state after props update from parent refetch", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+
+    // Initial render: agent has no groups assigned
+    const { rerender } = render(
+      <AgentSettingsAccess
+        agent={{ visibility: "restricted" }}
+        currentGroupIds={[]}
+        onChange={onChange}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Engineering")).toBeInTheDocument();
+    });
+
+    // User adds Engineering group
+    await user.click(screen.getByRole("checkbox", { name: "Engineering" }));
+
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith({ visibility: "restricted", groupIds: ["g1"] }, true);
+    });
+
+    // Simulate save + parent refetch: parent re-renders with updated groupIds
+    onChange.mockClear();
+    rerender(
+      <AgentSettingsAccess
+        agent={{ visibility: "restricted" }}
+        currentGroupIds={["g1"]}
+        onChange={onChange}
+      />
+    );
+
+    // After props update, component should recognize the new baseline
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith({ visibility: "restricted", groupIds: ["g1"] }, false);
+    });
+
+    // Now user removes Engineering group
+    onChange.mockClear();
+    await user.click(screen.getByRole("checkbox", { name: "Engineering" }));
+
+    // Should be dirty because we changed from the new baseline
+    await waitFor(() => {
+      expect(onChange).toHaveBeenCalledWith({ visibility: "restricted", groupIds: [] }, true);
     });
   });
 
