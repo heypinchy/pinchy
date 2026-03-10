@@ -1,6 +1,7 @@
 import type { OpenClawClient, ChatAttachment } from "openclaw-node";
 import type { WebSocket } from "ws";
 import { assertAgentAccess } from "@/lib/agent-access";
+import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { appendAuditLog } from "@/lib/audit";
 import { SessionCache } from "@/server/session-cache";
 import { db } from "@/db";
@@ -51,8 +52,15 @@ export class ClientRouter {
       return;
     }
 
+    const [userGroupIds, agentGroupIds] = await Promise.all([
+      this.userRole !== "admin" ? getUserGroupIds(this.userId) : Promise.resolve([]),
+      this.userRole !== "admin" && agent.visibility === "restricted"
+        ? getAgentGroupIds(message.agentId)
+        : Promise.resolve([]),
+    ]);
+
     try {
-      assertAgentAccess(agent, this.userId, this.userRole);
+      assertAgentAccess(agent, this.userId, this.userRole, userGroupIds, agentGroupIds);
     } catch {
       appendAuditLog({
         actorType: "user",

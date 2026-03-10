@@ -8,6 +8,8 @@ const {
   mockFindFirst,
   mockUserFindFirst,
   mockAppendAuditLog,
+  mockGetUserGroupIds,
+  mockGetAgentGroupIds,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
@@ -15,15 +17,24 @@ const {
   mockFindFirst: vi.fn(),
   mockUserFindFirst: vi.fn(),
   mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
+  mockGetUserGroupIds: vi.fn().mockResolvedValue([]),
+  mockGetAgentGroupIds: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/lib/agent-access", () => ({
-  assertAgentAccess: vi.fn((agent, userId, userRole) => {
-    if (userRole === "admin") return;
-    if (!agent.isPersonal) return;
-    if (agent.ownerId === userId) return;
-    throw new Error("Access denied");
-  }),
+  assertAgentAccess: vi.fn(
+    (agent, userId, userRole, userGroupIds: string[] = [], agentGroupIds: string[] = []) => {
+      if (userRole === "admin") return;
+      if (agent.isPersonal) {
+        if (agent.ownerId === userId) return;
+        throw new Error("Access denied");
+      }
+      if (agent.visibility === "restricted") {
+        if (userGroupIds.some((gId: string) => agentGroupIds.includes(gId))) return;
+        throw new Error("Access denied");
+      }
+    }
+  ),
 }));
 
 vi.mock("@/db", () => ({
@@ -50,6 +61,11 @@ vi.mock("drizzle-orm", () => ({
 
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: mockAppendAuditLog,
+}));
+
+vi.mock("@/lib/groups", () => ({
+  getUserGroupIds: (...args: unknown[]) => mockGetUserGroupIds(...args),
+  getAgentGroupIds: (...args: unknown[]) => mockGetAgentGroupIds(...args),
 }));
 
 import { ClientRouter } from "@/server/client-router";
@@ -139,6 +155,37 @@ describe("ClientRouter", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0].type).toBe("error");
     expect(messages[0].message).toBe("Access denied");
+  });
+
+  it("should allow access to restricted agent when user is in matching group", async () => {
+    const restrictedAgent = {
+      id: "agent-restricted",
+      name: "Restricted Agent",
+      ownerId: null,
+      isPersonal: false,
+      visibility: "restricted",
+      greetingMessage: null,
+    };
+    mockFindFirst.mockResolvedValue(restrictedAgent);
+    mockGetUserGroupIds.mockResolvedValue(["g1", "g2"]);
+    mockGetAgentGroupIds.mockResolvedValue(["g2", "g3"]);
+
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "Hello!" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    const clientWs = createMockClientWs();
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-restricted",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    expect(messages.some((m) => m.type === "chunk")).toBe(true);
+    expect(messages.some((m) => m.type === "error")).toBe(false);
   });
 
   it("should pass agentId and sessionKey to OpenClaw chat", async () => {
