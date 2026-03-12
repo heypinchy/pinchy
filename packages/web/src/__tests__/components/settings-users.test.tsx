@@ -68,7 +68,11 @@ describe("SettingsUsers", () => {
     fetchSpy.mockRestore();
   });
 
-  function mockFetchForUsers(users: unknown[], invites: unknown[] = mockInvites) {
+  function mockFetchForUsers(
+    users: unknown[],
+    invites: unknown[] = mockInvites,
+    { enterprise = false }: { enterprise?: boolean } = {}
+  ) {
     vi.mocked(global.fetch).mockImplementation(async (url) => {
       if (String(url) === "/api/users") {
         return { ok: true, json: async () => ({ users }) } as Response;
@@ -80,7 +84,7 @@ describe("SettingsUsers", () => {
         return { ok: true, json: async () => [] } as Response;
       }
       if (String(url) === "/api/enterprise/status") {
-        return { ok: true, json: async () => ({ enterprise: false }) } as Response;
+        return { ok: true, json: async () => ({ enterprise }) } as Response;
       }
       return { ok: false } as Response;
     });
@@ -206,7 +210,7 @@ describe("SettingsUsers", () => {
         ],
       },
     ];
-    mockFetchForUsers(usersWithManyGroups);
+    mockFetchForUsers(usersWithManyGroups, [], { enterprise: true });
     render(<SettingsUsers currentUserId="admin-1" />);
 
     await waitFor(() => {
@@ -255,7 +259,8 @@ describe("SettingsUsers", () => {
   });
 
   it("should render group badges for users", async () => {
-    renderWithUsersLoaded();
+    mockFetchForUsers(mockUsers, mockInvites, { enterprise: true });
+    render(<SettingsUsers currentUserId="user-1" />);
 
     await waitFor(() => {
       expect(screen.getAllByText("Alice Admin").length).toBeGreaterThanOrEqual(1);

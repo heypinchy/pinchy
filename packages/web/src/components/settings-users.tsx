@@ -160,7 +160,7 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
                       {item.role}
                     </Badge>
                     <StatusBadge status={item.status} />
-                    <GroupBadges groups={item.groups || []} />
+                    {isEnterprise && <GroupBadges groups={item.groups || []} />}
                   </div>
                 </div>
                 <div
@@ -193,7 +193,7 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
                   <TableHead>Name</TableHead>
                   <TableHead>Email</TableHead>
                   <TableHead>Role</TableHead>
-                  <TableHead>Groups</TableHead>
+                  {isEnterprise && <TableHead>Groups</TableHead>}
                   <TableHead>Status</TableHead>
                   <TableHead></TableHead>
                 </TableRow>
@@ -218,9 +218,11 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
                       {item.kind === "user" ? item.email : item.email || "\u2014"}
                     </TableCell>
                     <TableCell>{item.role}</TableCell>
-                    <TableCell>
-                      <GroupBadges groups={item.groups || []} />
-                    </TableCell>
+                    {isEnterprise && (
+                      <TableCell>
+                        <GroupBadges groups={item.groups || []} />
+                      </TableCell>
+                    )}
                     <TableCell>
                       <StatusBadge status={item.status} />
                     </TableCell>
