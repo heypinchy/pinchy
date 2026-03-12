@@ -2,10 +2,67 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users, agents } from "@/db/schema";
-import { eq, and } from "drizzle-orm";
+import { eq, and, count } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
 import { appendAuditLog } from "@/lib/audit";
+
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ userId: string }> }
+) {
+  const sessionOrError = await requireAdmin();
+  if (sessionOrError instanceof NextResponse) return sessionOrError;
+  const session = sessionOrError;
+
+  const { userId } = await params;
+  const { role } = await request.json();
+
+  // Validate role value
+  if (role !== "admin" && role !== "member") {
+    return NextResponse.json({ error: "Role must be 'admin' or 'member'" }, { status: 400 });
+  }
+
+  // Cannot change own role
+  if (userId === session.user.id) {
+    return NextResponse.json({ error: "Cannot change your own role" }, { status: 400 });
+  }
+
+  // Fetch user to verify existence and get current role
+  const [user] = await db
+    .select({ id: users.id, name: users.name, role: users.role })
+    .from(users)
+    .where(eq(users.id, userId));
+
+  if (!user) {
+    return NextResponse.json({ error: "User not found" }, { status: 404 });
+  }
+
+  // If demoting an admin, check they're not the last one
+  if (user.role === "admin" && role === "member") {
+    const [{ count: adminCount }] = await db
+      .select({ count: count() })
+      .from(users)
+      .where(and(eq(users.role, "admin"), eq(users.banned, false)));
+
+    if (adminCount <= 1) {
+      return NextResponse.json({ error: "Cannot demote the last admin" }, { status: 400 });
+    }
+  }
+
+  // Update role
+  const [updated] = await db.update(users).set({ role }).where(eq(users.id, userId)).returning();
+
+  appendAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "user.role_updated",
+    resource: `user:${userId}`,
+    detail: { userName: user.name, from: user.role, to: role },
+  }).catch(() => {});
+
+  return NextResponse.json({ success: true });
+}
 
 export async function DELETE(
   request: NextRequest,
