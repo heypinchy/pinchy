@@ -46,7 +46,7 @@ describe("GET /api/settings", () => {
 
   it("returns 403 when user is not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -116,7 +116,7 @@ describe("POST /api/settings", () => {
 
   it("returns 403 when user is not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 

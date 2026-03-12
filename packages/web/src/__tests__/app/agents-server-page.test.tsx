@@ -33,33 +33,39 @@ vi.mock("drizzle-orm", () => ({
   or: vi.fn((...args: unknown[]) => ({ op: "or", args })),
 }));
 
+const mockGetVisibleAgents = vi.fn();
+vi.mock("@/lib/visible-agents", () => ({
+  getVisibleAgents: (...args: unknown[]) => mockGetVisibleAgents(...args),
+}));
+
+vi.mock("@/lib/groups", () => ({
+  getUserGroupIds: vi.fn().mockResolvedValue([]),
+  getAgentGroupIds: vi.fn().mockResolvedValue([]),
+  getAllAgentGroupIds: vi.fn().mockResolvedValue(new Map()),
+}));
+
 import { requireAuth } from "@/lib/require-auth";
 import AgentsPage from "@/app/(app)/agents/page";
 
 const mockRequireAuth = requireAuth as ReturnType<typeof vi.fn>;
 
-function setupAgentsQuery(agents: Array<{ id: string }>) {
-  const whereMock = vi.fn().mockResolvedValue(agents);
-  const limitMock = vi.fn().mockResolvedValue(agents.slice(0, 1));
-  const fromMock = vi.fn().mockReturnValue({ where: whereMock, limit: limitMock });
-  mockDbSelect.mockReturnValue({ from: fromMock });
-}
-
 describe("AgentsPage (server component)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRequireAuth.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
-    setupAgentsQuery([{ id: "agent-1" }]);
+    mockGetVisibleAgents.mockResolvedValue([
+      { id: "visible-agent", isPersonal: true, ownerId: "user-1", visibility: "all" },
+    ]);
   });
 
-  it("redirects to first agent chat on desktop", async () => {
+  it("redirects to first visible agent on desktop", async () => {
     mockHeadersGet.mockReturnValue(
       "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
     );
 
-    await expect(AgentsPage()).rejects.toThrow("REDIRECT:/chat/agent-1");
+    await expect(AgentsPage()).rejects.toThrow("REDIRECT:/chat/visible-agent");
   });
 
   it("does not redirect on mobile (renders page)", async () => {
@@ -67,8 +73,18 @@ describe("AgentsPage (server component)", () => {
       "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15"
     );
 
-    // Should NOT throw a redirect — it renders the page
     const result = await AgentsPage();
     expect(result).toBeDefined();
+  });
+
+  it("redirects to first visible agent, not first DB agent", async () => {
+    mockGetVisibleAgents.mockResolvedValue([
+      { id: "my-smithers", isPersonal: true, ownerId: "user-1", visibility: "all" },
+    ]);
+    mockHeadersGet.mockReturnValue(
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+    );
+
+    await expect(AgentsPage()).rejects.toThrow("REDIRECT:/chat/my-smithers");
   });
 });

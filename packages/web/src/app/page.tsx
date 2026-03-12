@@ -2,8 +2,7 @@ import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { isSetupComplete, isProviderConfigured } from "@/lib/setup";
 import { requireAuth } from "@/lib/require-auth";
-import { db } from "@/db";
-import { activeAgents } from "@/db/schema";
+import { getVisibleAgents } from "@/lib/visible-agents";
 
 export const dynamic = "force-dynamic";
 
@@ -16,7 +15,7 @@ export default async function Home() {
     redirect("/setup");
   }
 
-  await requireAuth();
+  const session = await requireAuth();
 
   const providerConfigured = await isProviderConfigured();
   if (!providerConfigured) {
@@ -28,9 +27,11 @@ export default async function Home() {
   const isMobile = MOBILE_UA_PATTERN.test(userAgent);
 
   if (!isMobile) {
-    const [firstAgent] = await db.select({ id: activeAgents.id }).from(activeAgents).limit(1);
-    if (firstAgent) {
-      redirect(`/chat/${firstAgent.id}`);
+    const userId = session?.user?.id;
+    const userRole = session?.user?.role ?? "member";
+    const visibleAgents = await getVisibleAgents(userId!, userRole);
+    if (visibleAgents.length > 0) {
+      redirect(`/chat/${visibleAgents[0].id}`);
     }
   }
 

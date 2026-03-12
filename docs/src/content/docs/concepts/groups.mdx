@@ -1,0 +1,57 @@
+---
+title: Groups
+description: How to use groups to control which users can access which agents.
+---
+
+:::note[Enterprise Feature]
+Groups and agent access control are enterprise features. Set the `PINCHY_ENTERPRISE_KEY` environment variable to enable them. [Learn more about Pinchy Enterprise](https://heypinchy.com/enterprise).
+:::
+
+## What are groups?
+
+Groups let admins organize users into teams and control which agents each team can access. Instead of making every agent visible to everyone, you can scope agent access to specific groups — so only the right people see the right agents.
+
+## Creating a group
+
+1. Go to **Settings → Groups**.
+2. Click **Create Group**.
+3. Enter a name and optional description, then save.
+
+## Managing members
+
+1. In **Settings → Groups**, click a group to edit it.
+2. Use the member picker to add or remove users.
+3. Save your changes.
+
+A user can belong to multiple groups. Admins always have access to all agents regardless of group membership.
+
+## Agent visibility modes
+
+Each agent has a **visibility** setting that controls who can see and use it. Configure this in **Agent Settings → Access** tab.
+
+There are two visibility modes:
+
+| Mode           | Who can access                                               |
+| -------------- | ------------------------------------------------------------ |
+| **All users**  | Every authenticated user                                     |
+| **Restricted** | Admins only by default; optionally scoped to specific groups |
+
+### Restricted (default)
+
+New agents are created with **Restricted** visibility. This means the agent is invisible to regular users until an admin explicitly publishes it. This is a safe default — you can configure and test an agent before anyone else sees it.
+
+When you select **Restricted**, a group picker appears. You can optionally choose one or more groups — only members of those groups (and admins) will see the agent. If no groups are selected, only admins have access.
+
+For example, you might create an "HR Team" group and assign your HR Knowledge Base agent to it. Only HR team members and admins can see and chat with that agent.
+
+### All users
+
+Set an agent to **All users** when every user on the platform should have access. This is useful for general-purpose agents like a company-wide assistant.
+
+## How it works with personal agents
+
+Personal agents (the auto-created Smithers agent each user gets) are not affected by group visibility settings. Every user always has access to their own personal agent.
+
+## Audit trail
+
+All group management actions are logged in the [audit trail](/concepts/audit-trail/): group creation, updates, deletion, and member changes.

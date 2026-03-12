@@ -34,8 +34,21 @@ vi.mock("@/lib/require-auth", () => ({
   requireAuth: vi.fn(),
 }));
 
-vi.mock("@/lib/agent-access", () => ({
-  assertAgentAccess: vi.fn(),
+vi.mock("@/lib/agent-access", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/agent-access")>();
+  return {
+    ...actual,
+    assertAgentAccess: vi.fn(),
+  };
+});
+
+vi.mock("@/lib/groups", () => ({
+  getUserGroupIds: vi.fn().mockResolvedValue([]),
+  getAgentGroupIds: vi.fn().mockResolvedValue([]),
+}));
+
+vi.mock("@/lib/enterprise", () => ({
+  isEnterprise: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("@/lib/avatar", () => ({
@@ -60,17 +73,22 @@ vi.mock("@/components/chat", () => ({
 
 import { requireAuth } from "@/lib/require-auth";
 import { assertAgentAccess } from "@/lib/agent-access";
+import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import ChatPage from "@/app/(app)/chat/[agentId]/page";
 import { render, screen } from "@testing-library/react";
 
 const mockRequireAuth = requireAuth as ReturnType<typeof vi.fn>;
 const mockAssertAgentAccess = assertAgentAccess as ReturnType<typeof vi.fn>;
+const mockGetUserGroupIds = getUserGroupIds as ReturnType<typeof vi.fn>;
+const mockGetAgentGroupIds = getAgentGroupIds as ReturnType<typeof vi.fn>;
 
 describe("ChatPage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     capturedChatProps = {};
     dbSelectMock.from.mockReturnValue({ where: dbSelectMock.where });
+    mockGetUserGroupIds.mockResolvedValue([]);
+    mockGetAgentGroupIds.mockResolvedValue([]);
   });
 
   it("calls notFound when a non-admin user tries to access another user's personal agent", async () => {
@@ -82,7 +100,7 @@ describe("ChatPage", () => {
     };
 
     mockRequireAuth.mockResolvedValue({
-      user: { id: "other-user", role: "user" },
+      user: { id: "other-user", role: "member" },
     });
 
     dbSelectMock.where.mockResolvedValue([personalAgent]);
@@ -95,8 +113,46 @@ describe("ChatPage", () => {
       "NOT_FOUND"
     );
 
-    expect(mockAssertAgentAccess).toHaveBeenCalledWith(personalAgent, "other-user", "user");
+    expect(mockAssertAgentAccess).toHaveBeenCalledWith(
+      personalAgent,
+      "other-user",
+      "member",
+      [],
+      [],
+      true
+    );
     expect(mockNotFound).toHaveBeenCalled();
+  });
+
+  it("passes user and agent group IDs to assertAgentAccess for restricted agents", async () => {
+    const restrictedAgent = {
+      id: "agent-restricted",
+      name: "Restricted Agent",
+      ownerId: null,
+      isPersonal: false,
+      visibility: "restricted",
+    };
+
+    mockRequireAuth.mockResolvedValue({
+      user: { id: "user-1", role: "member" },
+    });
+
+    dbSelectMock.where.mockResolvedValue([restrictedAgent]);
+    mockGetUserGroupIds.mockResolvedValue(["g1", "g2"]);
+    mockGetAgentGroupIds.mockResolvedValue(["g2", "g3"]);
+    mockAssertAgentAccess.mockImplementation(() => {});
+
+    const result = await ChatPage({ params: Promise.resolve({ agentId: "agent-restricted" }) });
+    render(result);
+
+    expect(mockAssertAgentAccess).toHaveBeenCalledWith(
+      restrictedAgent,
+      "user-1",
+      "member",
+      ["g1", "g2"],
+      ["g2", "g3"],
+      true
+    );
   });
 
   it("renders the chat when a non-admin user accesses a shared agent", async () => {
@@ -108,7 +164,7 @@ describe("ChatPage", () => {
     };
 
     mockRequireAuth.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
 
     dbSelectMock.where.mockResolvedValue([sharedAgent]);
@@ -124,7 +180,14 @@ describe("ChatPage", () => {
     expect(screen.getByTestId("mock-chat")).toBeInTheDocument();
     expect(screen.getByText("Shared Agent (agent-2)")).toBeInTheDocument();
     expect(mockNotFound).not.toHaveBeenCalled();
-    expect(mockAssertAgentAccess).toHaveBeenCalledWith(sharedAgent, "user-1", "user");
+    expect(mockAssertAgentAccess).toHaveBeenCalledWith(
+      sharedAgent,
+      "user-1",
+      "member",
+      [],
+      [],
+      true
+    );
   });
 
   it("renders the chat when an admin accesses another user's personal agent", async () => {
@@ -152,7 +215,14 @@ describe("ChatPage", () => {
     expect(screen.getByTestId("mock-chat")).toBeInTheDocument();
     expect(screen.getByText("Someone's Agent (agent-3)")).toBeInTheDocument();
     expect(mockNotFound).not.toHaveBeenCalled();
-    expect(mockAssertAgentAccess).toHaveBeenCalledWith(personalAgent, "admin-user", "admin");
+    expect(mockAssertAgentAccess).toHaveBeenCalledWith(
+      personalAgent,
+      "admin-user",
+      "admin",
+      [],
+      [],
+      true
+    );
   });
 
   it("passes isPersonal=false to Chat for a shared agent", async () => {
@@ -164,7 +234,7 @@ describe("ChatPage", () => {
     };
 
     mockRequireAuth.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
 
     dbSelectMock.where.mockResolvedValue([sharedAgent]);
@@ -185,7 +255,7 @@ describe("ChatPage", () => {
     };
 
     mockRequireAuth.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
 
     dbSelectMock.where.mockResolvedValue([personalAgent]);
@@ -207,7 +277,7 @@ describe("ChatPage", () => {
     };
 
     mockRequireAuth.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
 
     dbSelectMock.where.mockResolvedValue([agentWithAvatar]);

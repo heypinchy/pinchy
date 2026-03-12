@@ -4,16 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Table,
   TableBody,
@@ -23,23 +14,39 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { InviteDialog } from "@/components/invite-dialog";
-import { mergeUserList, type UserListItem } from "@/lib/user-list";
+import { UserDetailSheet } from "@/components/user-detail-sheet";
+import { StatusBadge } from "@/components/status-badge";
+import { toast } from "sonner";
+import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
 
 interface SettingsUsersProps {
   currentUserId: string;
 }
 
-function StatusBadge({ status }: { status: UserListItem["status"] }) {
-  const variants: Record<string, string> = {
-    active: "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200",
-    pending: "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200",
-    expired: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200",
-    deactivated: "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200",
-  };
+function GroupBadges({ groups }: { groups: UserGroup[] }) {
+  const MAX_VISIBLE = 2;
+  const visible = groups.slice(0, MAX_VISIBLE);
+  const remaining = groups.slice(MAX_VISIBLE);
   return (
-    <Badge variant="outline" className={`text-xs ${variants[status]}`}>
-      {status}
-    </Badge>
+    <div className="flex flex-wrap gap-1">
+      {visible.map((g) => (
+        <Badge key={g.id} variant="secondary" className="text-xs">
+          {g.name}
+        </Badge>
+      ))}
+      {remaining.length > 0 && (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Badge variant="outline" className="text-xs">
+                +{remaining.length} more
+              </Badge>
+            </TooltipTrigger>
+            <TooltipContent>{remaining.map((g) => g.name).join(", ")}</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      )}
+    </div>
   );
 }
 
@@ -47,20 +54,30 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
   const [items, setItems] = useState<UserListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [deactivateUserId, setDeactivateUserId] = useState<string | null>(null);
   const [resetLink, setResetLink] = useState<string | null>(null);
+  const [selectedUser, setSelectedUser] = useState<(UserListItem & { kind: "user" }) | null>(null);
+  const [allGroups, setAllGroups] = useState<{ id: string; name: string }[]>([]);
+  const [isEnterprise, setIsEnterprise] = useState(false);
 
   const fetchUsers = useCallback(async () => {
     try {
-      const [usersRes, invitesRes] = await Promise.all([
+      const [usersRes, invitesRes, groupsData, enterpriseData] = await Promise.all([
         fetch("/api/users"),
         fetch("/api/users/invites"),
+        fetch("/api/groups")
+          .then((r) => (r.ok ? r.json() : []))
+          .catch(() => []),
+        fetch("/api/enterprise/status")
+          .then((r) => (r.ok ? r.json() : { enterprise: false }))
+          .catch(() => ({ enterprise: false })),
       ]);
       if (usersRes.ok) {
         const usersData = await usersRes.json();
         const invitesData = invitesRes.ok ? await invitesRes.json() : { invites: [] };
         setItems(mergeUserList(usersData.users, invitesData.invites));
       }
+      setAllGroups(Array.isArray(groupsData) ? groupsData : []);
+      setIsEnterprise(enterpriseData?.enterprise ?? false);
     } finally {
       setLoading(false);
     }
@@ -69,25 +86,6 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
   useEffect(() => {
     fetchUsers();
   }, [fetchUsers]);
-
-  async function handleDeactivate(userId: string) {
-    await fetch(`/api/users/${userId}`, { method: "DELETE" });
-    setDeactivateUserId(null);
-    fetchUsers();
-  }
-
-  async function handleReactivate(userId: string) {
-    await fetch(`/api/users/${userId}/reactivate`, { method: "POST" });
-    fetchUsers();
-  }
-
-  async function handleReset(userId: string) {
-    const res = await fetch(`/api/users/${userId}/reset`, { method: "POST" });
-    if (res.ok) {
-      const data = await res.json();
-      setResetLink(`${window.location.origin}/invite/${data.token}`);
-    }
-  }
 
   async function handleRevoke(inviteId: string) {
     await fetch(`/api/users/invites/${inviteId}`, { method: "DELETE" });
@@ -134,6 +132,7 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
                 className="mt-2"
                 onClick={() => {
                   navigator.clipboard.writeText(resetLink);
+                  toast("Link copied to clipboard");
                 }}
               >
                 Copy
@@ -146,10 +145,11 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
             {items.map((item) => (
               <div
                 key={`${item.kind}-${item.id}`}
-                className={`rounded border p-3 space-y-2 ${item.status === "deactivated" ? "opacity-50" : ""}`}
+                className={`rounded border p-3 space-y-2 ${item.status === "deactivated" ? "opacity-50" : ""} ${item.kind === "user" ? "cursor-pointer hover:bg-muted/50" : ""}`}
+                onClick={() => item.kind === "user" && setSelectedUser(item)}
               >
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span
                       className="font-medium truncate max-w-[180px]"
                       title={item.kind === "user" ? item.name : undefined}
@@ -160,6 +160,7 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
                       {item.role}
                     </Badge>
                     <StatusBadge status={item.status} />
+                    {isEnterprise && <GroupBadges groups={item.groups || []} />}
                   </div>
                 </div>
                 <div
@@ -169,27 +170,6 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
                   {item.kind === "user" ? item.email : item.email || "\u2014"}
                 </div>
                 <div className="flex gap-2">
-                  {item.kind === "user" &&
-                    item.status === "active" &&
-                    item.id !== currentUserId && (
-                      <>
-                        <Button variant="outline" size="sm" onClick={() => handleReset(item.id)}>
-                          Reset Password
-                        </Button>
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          onClick={() => setDeactivateUserId(item.id)}
-                        >
-                          Deactivate
-                        </Button>
-                      </>
-                    )}
-                  {item.kind === "user" && item.status === "deactivated" && (
-                    <Button variant="outline" size="sm" onClick={() => handleReactivate(item.id)}>
-                      Reactivate
-                    </Button>
-                  )}
                   {item.kind === "invite" && item.status === "pending" && (
                     <Button variant="outline" size="sm" onClick={() => handleRevoke(item.id)}>
                       Revoke
@@ -213,15 +193,17 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
                   <TableHead>Name</TableHead>
                   <TableHead>Email</TableHead>
                   <TableHead>Role</TableHead>
+                  {isEnterprise && <TableHead>Groups</TableHead>}
                   <TableHead>Status</TableHead>
-                  <TableHead>Actions</TableHead>
+                  <TableHead></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {items.map((item) => (
                   <TableRow
                     key={`${item.kind}-${item.id}`}
-                    className={item.status === "deactivated" ? "opacity-50" : ""}
+                    className={`${item.status === "deactivated" ? "opacity-50" : ""} ${item.kind === "user" ? "cursor-pointer hover:bg-muted/50" : ""}`}
+                    onClick={() => item.kind === "user" && setSelectedUser(item)}
                   >
                     <TableCell
                       className="max-w-[150px] truncate"
@@ -236,39 +218,15 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
                       {item.kind === "user" ? item.email : item.email || "\u2014"}
                     </TableCell>
                     <TableCell>{item.role}</TableCell>
+                    {isEnterprise && (
+                      <TableCell>
+                        <GroupBadges groups={item.groups || []} />
+                      </TableCell>
+                    )}
                     <TableCell>
                       <StatusBadge status={item.status} />
                     </TableCell>
                     <TableCell className="space-x-2">
-                      {item.kind === "user" &&
-                        item.status === "active" &&
-                        item.id !== currentUserId && (
-                          <>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              onClick={() => handleReset(item.id)}
-                            >
-                              Reset Password
-                            </Button>
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              onClick={() => setDeactivateUserId(item.id)}
-                            >
-                              Deactivate
-                            </Button>
-                          </>
-                        )}
-                      {item.kind === "user" && item.status === "deactivated" && (
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => handleReactivate(item.id)}
-                        >
-                          Reactivate
-                        </Button>
-                      )}
                       {item.kind === "invite" && item.status === "pending" && (
                         <Button variant="outline" size="sm" onClick={() => handleRevoke(item.id)}>
                           Revoke
@@ -296,28 +254,21 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
         }}
       />
 
-      <AlertDialog
-        open={!!deactivateUserId}
-        onOpenChange={(open) => !open && setDeactivateUserId(null)}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Deactivate User</AlertDialogTitle>
-            <AlertDialogDescription>
-              This user will no longer be able to log in. You can reactivate them later.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              variant="destructive"
-              onClick={() => deactivateUserId && handleDeactivate(deactivateUserId)}
-            >
-              Confirm Deactivate
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      {selectedUser && (
+        <UserDetailSheet
+          key={selectedUser.id}
+          user={selectedUser}
+          allGroups={allGroups}
+          isEnterprise={isEnterprise}
+          currentUserId={currentUserId}
+          open={!!selectedUser}
+          onOpenChange={(open) => !open && setSelectedUser(null)}
+          onSaved={() => {
+            setSelectedUser(null);
+            fetchUsers();
+          }}
+        />
+      )}
     </div>
   );
 }

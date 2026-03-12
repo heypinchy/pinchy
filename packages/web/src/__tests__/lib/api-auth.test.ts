@@ -36,7 +36,7 @@ describe("requireAdmin (api-auth)", () => {
 
   it("returns 403 response when user is not admin", async () => {
     mockGetSession.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       session: { expiresAt: "" },
     });
 

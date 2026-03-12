@@ -11,6 +11,7 @@ services:
       - BETTER_AUTH_URL=${BETTER_AUTH_URL:-http://localhost:7777}
       - OPENCLAW_WS_URL=ws://openclaw:18789
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
+      - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY:-}
     volumes:
       - openclaw-config:/openclaw-config
       - pinchy-workspaces:/openclaw-config/workspaces

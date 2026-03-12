@@ -9,11 +9,17 @@ const valuesMock = vi.fn().mockReturnValue({ returning: returningMock });
 const insertMock = vi.fn().mockReturnValue({ values: valuesMock });
 const updateMock = vi.fn().mockReturnValue({ set: setMock });
 const findFirstMock = vi.fn();
+const selectWhereMock = vi.fn();
+const selectFromMock = vi.fn().mockReturnValue({ where: selectWhereMock });
+const selectMock = vi.fn().mockReturnValue({ from: selectFromMock });
+const transactionMock = vi.fn();
 
 vi.mock("@/db", () => ({
   db: {
     insert: (...args: unknown[]) => insertMock(...args),
     update: (...args: unknown[]) => updateMock(...args),
+    select: (...args: unknown[]) => selectMock(...args),
+    transaction: (...args: unknown[]) => transactionMock(...args),
     query: {
       invites: {
         findFirst: (...args: unknown[]) => findFirstMock(...args),
@@ -64,6 +70,11 @@ describe("generateInviteToken", () => {
 describe("createInvite", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // Set up transaction mock to call the callback with a tx that has the same API
+    transactionMock.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
+      const txInsertMock = vi.fn().mockReturnValue({ values: valuesMock });
+      return cb({ insert: txInsertMock });
+    });
   });
 
   it("inserts an invite and returns it with the plaintext token", async () => {
@@ -71,7 +82,7 @@ describe("createInvite", () => {
       id: "inv-1",
       tokenHash: "somehash",
       email: "user@example.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(),
@@ -84,7 +95,7 @@ describe("createInvite", () => {
     const { createInvite } = await import("@/lib/invites");
     const result = await createInvite({
       email: "user@example.com",
-      role: "user",
+      role: "member",
       createdBy: "admin-1",
     });
 
@@ -93,6 +104,27 @@ describe("createInvite", () => {
     expect(result.token.length).toBe(64);
     expect(result.id).toBe("inv-1");
     expect(result.email).toBe("user@example.com");
+  });
+
+  it("uses a transaction for invite creation", async () => {
+    const fakeInvite = {
+      id: "inv-tx",
+      tokenHash: "hash",
+      email: null,
+      role: "member",
+      type: "invite",
+      createdBy: "admin-1",
+      expiresAt: new Date(),
+      claimedAt: null,
+      claimedByUserId: null,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeInvite]);
+
+    const { createInvite } = await import("@/lib/invites");
+    await createInvite({ role: "member", createdBy: "admin-1" });
+
+    expect(transactionMock).toHaveBeenCalledTimes(1);
   });
 
   it("passes correct values to db.insert", async () => {
@@ -117,7 +149,6 @@ describe("createInvite", () => {
       createdBy: "admin-1",
     });
 
-    expect(insertMock).toHaveBeenCalled();
     expect(valuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
         email: "user@test.com",
@@ -135,7 +166,7 @@ describe("createInvite", () => {
       id: "inv-3",
       tokenHash: "hash",
       email: null,
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(),
@@ -147,7 +178,7 @@ describe("createInvite", () => {
 
     const { createInvite } = await import("@/lib/invites");
     await createInvite({
-      role: "user",
+      role: "member",
       createdBy: "admin-1",
     });
 
@@ -166,7 +197,7 @@ describe("createInvite", () => {
       id: "inv-4",
       tokenHash: "hash",
       email: null,
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(),
@@ -177,7 +208,7 @@ describe("createInvite", () => {
     returningMock.mockResolvedValue([fakeInvite]);
 
     const { createInvite } = await import("@/lib/invites");
-    await createInvite({ role: "user", createdBy: "admin-1" });
+    await createInvite({ role: "member", createdBy: "admin-1" });
 
     const passedValues = valuesMock.mock.calls[0][0];
     expect(passedValues.type).toBe("invite");
@@ -188,7 +219,7 @@ describe("createInvite", () => {
       id: "inv-5",
       tokenHash: "hash",
       email: null,
-      role: "user",
+      role: "member",
       type: "reset",
       createdBy: "admin-1",
       expiresAt: new Date(),
@@ -199,7 +230,7 @@ describe("createInvite", () => {
     returningMock.mockResolvedValue([fakeInvite]);
 
     const { createInvite } = await import("@/lib/invites");
-    await createInvite({ role: "user", type: "reset", createdBy: "admin-1" });
+    await createInvite({ role: "member", type: "reset", createdBy: "admin-1" });
 
     const passedValues = valuesMock.mock.calls[0][0];
     expect(passedValues.type).toBe("reset");
@@ -218,7 +249,7 @@ describe("validateInviteToken", () => {
       id: "inv-1",
       tokenHash: "somehash",
       email: "user@example.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(Date.now() + 86400000),
@@ -277,7 +308,7 @@ describe("claimInvite", () => {
       id: "inv-1",
       tokenHash: "somehash",
       email: "user@example.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(Date.now() + 86400000),
@@ -305,7 +336,7 @@ describe("claimInvite", () => {
       id: "inv-2",
       tokenHash: "hash2",
       email: null,
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       expiresAt: new Date(),
@@ -330,5 +361,131 @@ describe("claimInvite", () => {
     const result = await claimInvite("already-claimed-hash", "user-3");
 
     expect(result).toBeNull();
+  });
+});
+
+// ── createInvite with groupIds ──────────────────────────────────────────────
+
+describe("createInvite with groupIds", () => {
+  let txInsertMock: ReturnType<typeof vi.fn>;
+  const groupValuesMock = vi.fn().mockResolvedValue(undefined);
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    txInsertMock = vi.fn();
+    // Transaction mock: the callback receives a tx object with insert
+    transactionMock.mockImplementation(async (cb: (tx: unknown) => Promise<unknown>) => {
+      txInsertMock
+        .mockReturnValueOnce({ values: valuesMock }) // first call: invites table
+        .mockReturnValueOnce({ values: groupValuesMock }); // second call: inviteGroups table
+      valuesMock.mockReturnValue({ returning: returningMock });
+      return cb({ insert: txInsertMock });
+    });
+  });
+
+  it("inserts invite group associations when groupIds are provided", async () => {
+    const fakeInvite = {
+      id: "inv-grp-1",
+      tokenHash: "hash",
+      email: "user@example.com",
+      role: "member",
+      type: "invite",
+      createdBy: "admin-1",
+      expiresAt: new Date(),
+      claimedAt: null,
+      claimedByUserId: null,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeInvite]);
+
+    const { createInvite } = await import("@/lib/invites");
+    await createInvite({
+      email: "user@example.com",
+      role: "member",
+      createdBy: "admin-1",
+      groupIds: ["g1", "g2"],
+    });
+
+    expect(txInsertMock).toHaveBeenCalledTimes(2);
+    expect(groupValuesMock).toHaveBeenCalledWith([
+      { inviteId: "inv-grp-1", groupId: "g1" },
+      { inviteId: "inv-grp-1", groupId: "g2" },
+    ]);
+  });
+
+  it("does not insert invite groups when groupIds is empty", async () => {
+    const fakeInvite = {
+      id: "inv-grp-2",
+      tokenHash: "hash",
+      email: null,
+      role: "member",
+      type: "invite",
+      createdBy: "admin-1",
+      expiresAt: new Date(),
+      claimedAt: null,
+      claimedByUserId: null,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeInvite]);
+
+    const { createInvite } = await import("@/lib/invites");
+    await createInvite({
+      role: "member",
+      createdBy: "admin-1",
+      groupIds: [],
+    });
+
+    expect(txInsertMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not insert invite groups when groupIds is not provided", async () => {
+    const fakeInvite = {
+      id: "inv-grp-3",
+      tokenHash: "hash",
+      email: null,
+      role: "member",
+      type: "invite",
+      createdBy: "admin-1",
+      expiresAt: new Date(),
+      claimedAt: null,
+      claimedByUserId: null,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeInvite]);
+
+    const { createInvite } = await import("@/lib/invites");
+    await createInvite({
+      role: "member",
+      createdBy: "admin-1",
+    });
+
+    expect(txInsertMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── getInviteGroupIds ───────────────────────────────────────────────────────
+
+describe("getInviteGroupIds", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns group IDs for an invite", async () => {
+    selectWhereMock.mockResolvedValue([{ groupId: "g1" }, { groupId: "g2" }]);
+
+    const { getInviteGroupIds } = await import("@/lib/invites");
+    const result = await getInviteGroupIds("inv-1");
+
+    expect(result).toEqual(["g1", "g2"]);
+    expect(selectMock).toHaveBeenCalled();
+  });
+
+  it("returns empty array when invite has no groups", async () => {
+    selectWhereMock.mockResolvedValue([]);
+
+    const { getInviteGroupIds } = await import("@/lib/invites");
+    const result = await getInviteGroupIds("inv-2");
+
+    expect(result).toEqual([]);
   });
 });

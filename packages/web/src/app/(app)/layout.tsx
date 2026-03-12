@@ -2,11 +2,10 @@ import { redirect } from "next/navigation";
 import { cookies } from "next/headers";
 import { requireAuth } from "@/lib/require-auth";
 import { isSetupComplete, isProviderConfigured } from "@/lib/setup";
-import { db } from "@/db";
-import { activeAgents } from "@/db/schema";
-import { eq, or } from "drizzle-orm";
+import { getVisibleAgents } from "@/lib/visible-agents";
 import { AppSidebar } from "@/components/sidebar";
 import { AppShell } from "@/components/app-shell";
+import { AgentsProvider } from "@/components/agents-provider";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -21,18 +20,17 @@ export default async function AppLayout({ children }: { children: React.ReactNod
   if (!providerConfigured) redirect("/setup/provider");
 
   const userId = session?.user?.id;
-  const visibleAgents = await db
-    .select()
-    .from(activeAgents)
-    .where(or(eq(activeAgents.isPersonal, false), eq(activeAgents.ownerId, userId!)));
+  const visibleAgents = await getVisibleAgents(userId!, session?.user?.role ?? "member");
   const isAdmin = session?.user?.role === "admin";
 
   return (
-    <SidebarProvider>
-      <AppSidebar agents={visibleAgents} isAdmin={isAdmin} />
-      <SidebarInset className="h-dvh overflow-hidden">
-        <AppShell isAdmin={isAdmin}>{children}</AppShell>
-      </SidebarInset>
-    </SidebarProvider>
+    <AgentsProvider initialAgents={visibleAgents}>
+      <SidebarProvider>
+        <AppSidebar isAdmin={isAdmin} />
+        <SidebarInset className="h-dvh overflow-hidden">
+          <AppShell isAdmin={isAdmin}>{children}</AppShell>
+        </SidebarInset>
+      </SidebarProvider>
+    </AgentsProvider>
   );
 }

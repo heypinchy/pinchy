@@ -148,7 +148,7 @@ describe("GET /api/settings/providers", () => {
 
   it("should not return hints for non-admin users", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "2", email: "user@test.com", role: "user" },
+      user: { id: "2", email: "user@test.com", role: "member" },
     } as any);
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-secret-key-xY9z";
@@ -202,7 +202,7 @@ describe("DELETE /api/settings/providers", () => {
 
   it("should return 403 when non-admin user tries to delete", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "2", email: "user@test.com", role: "user" },
+      user: { id: "2", email: "user@test.com", role: "member" },
     } as any);
 
     const response = await DELETE(makeRequest({ provider: "anthropic" }));

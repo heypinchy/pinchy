@@ -4,6 +4,8 @@ import { createContext } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/thread";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
+import { useAgentsContext } from "@/components/agents-provider";
+import { getAgentAvatarSvg } from "@/lib/avatar";
 import Link from "next/link";
 import { Settings } from "lucide-react";
 import { MobileChatHeader } from "@/components/mobile-chat-header";
@@ -30,6 +32,14 @@ export function Chat({
   avatarUrl,
   canEdit = false,
 }: ChatProps) {
+  const { getAgent } = useAgentsContext();
+  const liveAgent = getAgent(agentId);
+  const displayName = liveAgent?.name ?? agentName;
+  const displayAvatar = liveAgent
+    ? getAgentAvatarSvg({ avatarSeed: liveAgent.avatarSeed, name: liveAgent.name })
+    : avatarUrl;
+  const displayIsPersonal = liveAgent?.isPersonal ?? isPersonal;
+
   const { runtime, isConnected, isDelayed, isHistoryLoaded } = useWsRuntime(agentId);
 
   const statusMessage = !isConnected
@@ -43,30 +53,30 @@ export function Chat({
   return (
     <AgentIdContext.Provider value={agentId}>
       <AssistantRuntimeProvider runtime={runtime}>
-        <AgentAvatarContext.Provider value={avatarUrl ?? null}>
+        <AgentAvatarContext.Provider value={displayAvatar ?? null}>
           <div className="flex flex-col h-full min-h-0">
             <MobileChatHeader
               agentId={agentId}
-              agentName={agentName}
-              avatarUrl={avatarUrl}
+              agentName={displayName}
+              avatarUrl={displayAvatar}
               canEdit={canEdit}
             />
             <header className="hidden md:flex p-4 border-b items-center justify-between shrink-0">
               <div className="flex items-center gap-2 animate-in fade-in duration-300">
-                {avatarUrl && (
+                {displayAvatar && (
                   // eslint-disable-next-line @next/next/no-img-element
-                  <img src={avatarUrl} alt="" className="size-7 rounded-full" />
+                  <img src={displayAvatar} alt="" className="size-7 rounded-full" />
                 )}
-                <h1 className="font-bold">{agentName}</h1>
+                <h1 className="font-bold">{displayName}</h1>
                 <TooltipProvider>
                   <Tooltip>
                     <TooltipTrigger asChild>
                       <Badge variant="outline" className="text-xs font-normal">
-                        {isPersonal ? "Private" : "Shared"}
+                        {displayIsPersonal ? "Private" : "Shared"}
                       </Badge>
                     </TooltipTrigger>
                     <TooltipContent>
-                      {isPersonal
+                      {displayIsPersonal
                         ? "Your conversations are private and not shared with anyone."
                         : "Your conversations help build team knowledge that's available to all team members."}
                     </TooltipContent>

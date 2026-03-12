@@ -1,6 +1,6 @@
 import { randomBytes, createHash } from "crypto";
 import { db } from "@/db";
-import { invites } from "@/db/schema";
+import { invites, inviteGroups } from "@/db/schema";
 import { eq, and, isNull, gt } from "drizzle-orm";
 
 const TOKEN_BYTES = 32;
@@ -17,19 +17,31 @@ export async function createInvite({
   role,
   type = "invite",
   createdBy,
+  groupIds,
 }: {
   email?: string;
   role: string;
   type?: "invite" | "reset";
   createdBy: string;
+  groupIds?: string[];
 }) {
   const { token, tokenHash } = generateInviteToken();
   const expiresAt = new Date(Date.now() + EXPIRY_DAYS * 24 * 60 * 60 * 1000);
 
-  const [invite] = await db
-    .insert(invites)
-    .values({ tokenHash, email, role, type, createdBy, expiresAt })
-    .returning();
+  const invite = await db.transaction(async (tx) => {
+    const [created] = await tx
+      .insert(invites)
+      .values({ tokenHash, email, role, type, createdBy, expiresAt })
+      .returning();
+
+    if (groupIds && groupIds.length > 0) {
+      await tx
+        .insert(inviteGroups)
+        .values(groupIds.map((groupId) => ({ inviteId: created.id, groupId })));
+    }
+
+    return created;
+  });
 
   return { ...invite, token };
 }
@@ -56,4 +68,12 @@ export async function claimInvite(tokenHash: string, userId: string) {
     .returning();
 
   return updated ?? null;
+}
+
+export async function getInviteGroupIds(inviteId: string): Promise<string[]> {
+  const rows = await db
+    .select({ groupId: inviteGroups.groupId })
+    .from(inviteGroups)
+    .where(eq(inviteGroups.inviteId, inviteId));
+  return rows.map((r) => r.groupId);
 }

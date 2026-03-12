@@ -114,7 +114,7 @@ describe("audit: POST /api/users/invite", () => {
     vi.mocked(createInvite).mockResolvedValue({
       id: "invite-1",
       email: "newuser@test.com",
-      role: "user",
+      role: "member",
       type: "invite",
       token: "abc123",
       createdAt: new Date(),
@@ -128,7 +128,7 @@ describe("audit: POST /api/users/invite", () => {
   it("logs user.invited audit event on successful invite", async () => {
     const request = new NextRequest("http://localhost:7777/api/users/invite", {
       method: "POST",
-      body: JSON.stringify({ email: "newuser@test.com", role: "user" }),
+      body: JSON.stringify({ email: "newuser@test.com", role: "member" }),
     });
 
     const response = await POST(request);
@@ -138,7 +138,7 @@ describe("audit: POST /api/users/invite", () => {
       actorType: "user",
       actorId: "admin-1",
       eventType: "user.invited",
-      detail: { email: "newuser@test.com", role: "user" },
+      detail: { email: "newuser@test.com", role: "member" },
     });
   });
 

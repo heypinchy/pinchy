@@ -28,10 +28,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Label } from "@/components/ui/label";
 
 const inviteSchema = z.object({
   email: z.string().email("Invalid email").optional().or(z.literal("")),
-  role: z.enum(["user", "admin"]),
+  role: z.enum(["member", "admin"]),
 });
 
 type InviteFormValues = z.infer<typeof inviteSchema>;
@@ -46,12 +48,15 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
+  const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
+  const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
 
   const form = useForm<InviteFormValues>({
     resolver: zodResolver(inviteSchema),
     defaultValues: {
       email: "",
-      role: "user",
+      role: "member",
     },
   });
 
@@ -61,8 +66,24 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
       setInviteLink(null);
       setError(null);
       setCopied(false);
+      setSelectedGroupIds([]);
     }
   }, [open, form]);
+
+  useEffect(() => {
+    if (!open) return;
+    fetch("/api/enterprise/status")
+      .then((r) => r.json())
+      .then((d) => setIsEnterprise(d.enterprise))
+      .catch(() => setIsEnterprise(false));
+  }, [open]);
+
+  useEffect(() => {
+    if (!isEnterprise) return;
+    fetch("/api/groups")
+      .then((r) => r.json())
+      .then((data) => setGroups(Array.isArray(data) ? data : []));
+  }, [isEnterprise]);
 
   async function onSubmit(values: InviteFormValues) {
     setError(null);
@@ -71,7 +92,11 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
       const res = await fetch("/api/users/invite", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: values.email, role: values.role }),
+        body: JSON.stringify({
+          email: values.email,
+          role: values.role,
+          ...(selectedGroupIds.length > 0 ? { groupIds: selectedGroupIds } : {}),
+        }),
       });
       if (res.ok) {
         const data = await res.json();
@@ -161,7 +186,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
                         </SelectTrigger>
                       </FormControl>
                       <SelectContent>
-                        <SelectItem value="user">User</SelectItem>
+                        <SelectItem value="member">Member</SelectItem>
                         <SelectItem value="admin">Admin</SelectItem>
                       </SelectContent>
                     </Select>
@@ -169,6 +194,29 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
                   </FormItem>
                 )}
               />
+              {isEnterprise && groups.length > 0 && (
+                <div className="space-y-2">
+                  <Label className="text-sm font-medium">Groups</Label>
+                  {groups.map((group) => (
+                    <div key={group.id} className="flex items-center gap-2">
+                      <Checkbox
+                        id={`group-${group.id}`}
+                        checked={selectedGroupIds.includes(group.id)}
+                        onCheckedChange={(checked) => {
+                          if (checked) {
+                            setSelectedGroupIds([...selectedGroupIds, group.id]);
+                          } else {
+                            setSelectedGroupIds(selectedGroupIds.filter((id) => id !== group.id));
+                          }
+                        }}
+                      />
+                      <Label htmlFor={`group-${group.id}`} className="text-sm font-normal">
+                        {group.name}
+                      </Label>
+                    </div>
+                  ))}
+                </div>
+              )}
               {error && <p className="text-destructive text-sm">{error}</p>}
               <Button type="submit" disabled={creating}>
                 Create Invite

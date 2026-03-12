@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
+import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { invites } from "@/db/schema";
+import { invites, inviteGroups, groups } from "@/db/schema";
 
 export async function GET() {
   const sessionOrError = await requireAdmin();
@@ -19,5 +20,21 @@ export async function GET() {
     })
     .from(invites);
 
-  return NextResponse.json({ invites: allInvites });
+  const allInviteGroups = await db
+    .select({
+      inviteId: inviteGroups.inviteId,
+      groupId: inviteGroups.groupId,
+      groupName: groups.name,
+    })
+    .from(inviteGroups)
+    .innerJoin(groups, eq(inviteGroups.groupId, groups.id));
+
+  const invitesWithGroups = allInvites.map((invite) => ({
+    ...invite,
+    groups: allInviteGroups
+      .filter((ig) => ig.inviteId === invite.id)
+      .map((ig) => ({ id: ig.groupId, name: ig.groupName })),
+  }));
+
+  return NextResponse.json({ invites: invitesWithGroups });
 }

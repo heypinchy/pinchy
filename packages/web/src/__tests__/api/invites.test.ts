@@ -23,18 +23,25 @@ vi.mock("@/lib/invites", () => ({
   createInvite: vi.fn(),
 }));
 
-vi.mock("@/db", () => ({
-  db: {
-    select: vi.fn().mockReturnValue({
-      from: vi.fn().mockResolvedValue([]),
-    }),
-    delete: vi.fn().mockReturnValue({
-      where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([]),
+vi.mock("@/db", () => {
+  const mockFrom = vi.fn().mockImplementation(() => {
+    const result = Promise.resolve([]);
+    (result as any).innerJoin = vi.fn().mockResolvedValue([]);
+    return result;
+  });
+  return {
+    db: {
+      select: vi.fn().mockReturnValue({
+        from: mockFrom,
       }),
-    }),
-  },
-}));
+      delete: vi.fn().mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([]),
+        }),
+      }),
+    },
+  };
+});
 
 import { auth } from "@/lib/auth";
 import { createInvite } from "@/lib/invites";
@@ -56,7 +63,7 @@ describe("POST /api/users/invite", () => {
 
     const request = new NextRequest("http://localhost:7777/api/users/invite", {
       method: "POST",
-      body: JSON.stringify({ role: "user" }),
+      body: JSON.stringify({ role: "member" }),
     });
 
     const response = await POST(request);
@@ -68,13 +75,13 @@ describe("POST /api/users/invite", () => {
 
   it("returns 403 when user role is not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
     const request = new NextRequest("http://localhost:7777/api/users/invite", {
       method: "POST",
-      body: JSON.stringify({ role: "user" }),
+      body: JSON.stringify({ role: "member" }),
     });
 
     const response = await POST(request);
@@ -99,7 +106,7 @@ describe("POST /api/users/invite", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("Role must be 'admin' or 'user'");
+    expect(body.error).toBe("Role must be 'admin' or 'member'");
   });
 
   it("returns 400 when role is invalid", async () => {
@@ -117,7 +124,7 @@ describe("POST /api/users/invite", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("Role must be 'admin' or 'user'");
+    expect(body.error).toBe("Role must be 'admin' or 'member'");
   });
 
   it("returns 201 with invite data on success", async () => {
@@ -129,7 +136,7 @@ describe("POST /api/users/invite", () => {
     const fakeInvite = {
       id: "invite-1",
       email: "newuser@test.com",
-      role: "user",
+      role: "member",
       type: "invite",
       token: "abc123",
       createdAt: new Date(),
@@ -139,7 +146,7 @@ describe("POST /api/users/invite", () => {
 
     const request = new NextRequest("http://localhost:7777/api/users/invite", {
       method: "POST",
-      body: JSON.stringify({ email: "newuser@test.com", role: "user" }),
+      body: JSON.stringify({ email: "newuser@test.com", role: "member" }),
     });
 
     const response = await POST(request);
@@ -152,7 +159,7 @@ describe("POST /api/users/invite", () => {
 
     expect(createInvite).toHaveBeenCalledWith({
       email: "newuser@test.com",
-      role: "user",
+      role: "member",
       createdBy: "admin-1",
     });
   });
@@ -165,7 +172,7 @@ describe("POST /api/users/invite", () => {
 
     const fakeInvite = {
       id: "invite-2",
-      role: "user",
+      role: "member",
       type: "invite",
       token: "def456",
       createdAt: new Date(),
@@ -175,7 +182,7 @@ describe("POST /api/users/invite", () => {
 
     const request = new NextRequest("http://localhost:7777/api/users/invite", {
       method: "POST",
-      body: JSON.stringify({ role: "user" }),
+      body: JSON.stringify({ role: "member" }),
     });
 
     const response = await POST(request);
@@ -186,8 +193,45 @@ describe("POST /api/users/invite", () => {
 
     expect(createInvite).toHaveBeenCalledWith({
       email: undefined,
-      role: "user",
+      role: "member",
       createdBy: "admin-1",
+    });
+  });
+
+  it("passes groupIds to createInvite when provided", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const fakeInvite = {
+      id: "invite-3",
+      email: "grouped@test.com",
+      role: "member",
+      type: "invite",
+      token: "group-token",
+      createdAt: new Date(),
+      expiresAt: new Date(),
+    };
+    vi.mocked(createInvite).mockResolvedValueOnce(fakeInvite as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/invite", {
+      method: "POST",
+      body: JSON.stringify({
+        email: "grouped@test.com",
+        role: "member",
+        groupIds: ["group-1", "group-2"],
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    expect(createInvite).toHaveBeenCalledWith({
+      email: "grouped@test.com",
+      role: "member",
+      createdBy: "admin-1",
+      groupIds: ["group-1", "group-2"],
     });
   });
 });
@@ -215,7 +259,7 @@ describe("GET /api/users/invites", () => {
 
   it("returns 403 when user role is not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
@@ -236,7 +280,7 @@ describe("GET /api/users/invites", () => {
       {
         id: "invite-1",
         email: "user1@test.com",
-        role: "user",
+        role: "member",
         type: "invite",
         createdAt: new Date("2026-01-01"),
         expiresAt: new Date("2026-01-08"),
@@ -253,9 +297,15 @@ describe("GET /api/users/invites", () => {
       },
     ];
 
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockResolvedValueOnce(fakeInvites),
-    } as never);
+    vi.mocked(db.select)
+      .mockReturnValueOnce({
+        from: vi.fn().mockResolvedValueOnce(fakeInvites),
+      } as never)
+      .mockReturnValueOnce({
+        from: vi.fn().mockReturnValue({
+          innerJoin: vi.fn().mockResolvedValue([]),
+        }),
+      } as never);
 
     const response = await GET();
     expect(response.status).toBe(200);
@@ -298,7 +348,7 @@ describe("DELETE /api/users/invites/[inviteId]", () => {
 
   it("returns 403 when user role is not admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 

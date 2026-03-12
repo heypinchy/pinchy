@@ -14,7 +14,7 @@ export async function validateWsSession(
 
     return {
       userId: session.user.id,
-      userRole: session.user.role ?? "user",
+      userRole: session.user.role ?? "member",
     };
   } catch {
     return null;

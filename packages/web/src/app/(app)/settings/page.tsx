@@ -8,6 +8,7 @@ import { ProviderKeyForm } from "@/components/provider-key-form";
 import { SettingsUsers } from "@/components/settings-users";
 import { SettingsContext } from "@/components/settings-context";
 import { SettingsProfile } from "@/components/settings-profile";
+import { SettingsGroups } from "@/components/settings-groups";
 
 interface ProviderStatus {
   defaultProvider: string | null;
@@ -97,6 +98,7 @@ export default function SettingsPage() {
               <TabsTrigger value="provider">Provider {providerDirty && <DirtyDot />}</TabsTrigger>
             )}
             {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
+            {isAdmin && <TabsTrigger value="groups">Groups</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="context" keepMounted>
@@ -141,6 +143,12 @@ export default function SettingsPage() {
           {isAdmin && (
             <TabsContent value="users" keepMounted>
               <SettingsUsers currentUserId={session?.user?.id ?? ""} />
+            </TabsContent>
+          )}
+
+          {isAdmin && (
+            <TabsContent value="groups" keepMounted>
+              <SettingsGroups />
             </TabsContent>
           )}
         </Tabs>

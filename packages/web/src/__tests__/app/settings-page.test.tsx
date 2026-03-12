@@ -39,6 +39,10 @@ vi.mock("@/components/settings-users", () => ({
   ),
 }));
 
+vi.mock("@/components/settings-groups", () => ({
+  SettingsGroups: () => <div data-testid="mock-settings-groups">Groups</div>,
+}));
+
 vi.mock("@/components/settings-context", () => ({
   SettingsContext: ({
     userContext,
@@ -92,7 +96,7 @@ describe("Settings Page", () => {
 
   const userSession = {
     data: {
-      user: { id: "user-1", name: "Regular Bob", role: "user" },
+      user: { id: "user-1", name: "Regular Bob", role: "member" },
     },
     isPending: false,
   };

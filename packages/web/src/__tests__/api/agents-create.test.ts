@@ -116,7 +116,7 @@ describe("POST /api/agents", () => {
 
   it("should return 403 for non-admin users", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "2", email: "user@test.com", role: "user" },
+      user: { id: "2", email: "user@test.com", role: "member" },
       expires: "",
     });
 
@@ -497,6 +497,24 @@ describe("POST /api/agents", () => {
     await POST(request);
 
     expect(writeWorkspaceFileInternal).toHaveBeenCalledWith("new-agent-id", "USER.md", "");
+  });
+
+  it("new agent defaults to restricted visibility", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Dev Assistant",
+        templateId: "custom",
+      }),
+    });
+
+    await POST(request);
+
+    // The POST handler does not explicitly set visibility, so Drizzle uses the
+    // schema default ("restricted"). Verify the insert call does NOT include a
+    // visibility field — the DB default takes care of it.
+    const insertedValues = insertValuesMock.mock.calls[0][0];
+    expect(insertedValues).not.toHaveProperty("visibility");
   });
 
   it("should use template defaultTagline when tagline not provided", async () => {

@@ -34,6 +34,11 @@ vi.mock("@/db/schema", () => ({
   activeAgents: "active-agents-view",
 }));
 
+const mockGetVisibleAgents = vi.fn();
+vi.mock("@/lib/visible-agents", () => ({
+  getVisibleAgents: (...args: unknown[]) => mockGetVisibleAgents(...args),
+}));
+
 import { isSetupComplete, isProviderConfigured } from "@/lib/setup";
 import { requireAuth } from "@/lib/require-auth";
 import Home from "@/app/page";
@@ -42,22 +47,18 @@ const mockIsSetupComplete = isSetupComplete as ReturnType<typeof vi.fn>;
 const mockIsProviderConfigured = isProviderConfigured as ReturnType<typeof vi.fn>;
 const mockRequireAuth = requireAuth as ReturnType<typeof vi.fn>;
 
-function setupAgentsQuery(agents: Array<{ id: string }>) {
-  const limitMock = vi.fn().mockResolvedValue(agents);
-  const fromMock = vi.fn().mockReturnValue({ limit: limitMock });
-  mockDbSelect.mockReturnValue({ from: fromMock });
-}
-
 describe("Home page", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockIsSetupComplete.mockResolvedValue(true);
     mockIsProviderConfigured.mockResolvedValue(true);
     mockRequireAuth.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
     mockHeadersGet.mockReturnValue(null);
-    setupAgentsQuery([{ id: "agent-1" }]);
+    mockGetVisibleAgents.mockResolvedValue([
+      { id: "agent-1", isPersonal: false, visibility: "all" },
+    ]);
   });
 
   it("redirects to /setup when setup is incomplete", async () => {
@@ -88,10 +89,18 @@ describe("Home page", () => {
     await expect(Home()).rejects.toThrow("REDIRECT:/agents");
   });
 
-  it("redirects to /agents when no agents exist", async () => {
-    setupAgentsQuery([]);
+  it("redirects to /agents when no visible agents exist", async () => {
+    mockGetVisibleAgents.mockResolvedValue([]);
 
     await expect(Home()).rejects.toThrow("REDIRECT:/agents");
+  });
+
+  it("redirects to first visible agent, not first DB agent", async () => {
+    mockGetVisibleAgents.mockResolvedValue([
+      { id: "my-smithers", isPersonal: true, ownerId: "user-1", visibility: "all" },
+    ]);
+
+    await expect(Home()).rejects.toThrow("REDIRECT:/chat/my-smithers");
   });
 
   it("redirects to first agent chat when user-agent header is missing (desktop fallback)", async () => {

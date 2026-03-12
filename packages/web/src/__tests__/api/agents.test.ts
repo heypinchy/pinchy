@@ -103,6 +103,24 @@ describe("updateAgent", () => {
     expect(result.personalityPresetId).toBeNull();
   });
 
+  it("should not regenerate OpenClaw config when only non-config fields change", async () => {
+    const { regenerateOpenClawConfig } = await import("@/lib/openclaw-config");
+    vi.mocked(regenerateOpenClawConfig).mockClear();
+
+    await updateAgent("1", { visibility: "restricted" });
+
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
+  });
+
+  it("should regenerate OpenClaw config when config-relevant fields change", async () => {
+    const { regenerateOpenClawConfig } = await import("@/lib/openclaw-config");
+    vi.mocked(regenerateOpenClawConfig).mockClear();
+
+    await updateAgent("1", { visibility: "restricted", model: "anthropic/claude-sonnet-4-6" });
+
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
   it("should accept allowedTools and pluginConfig in update data", async () => {
     const { db } = await import("@/db");
     const setMock = vi.fn().mockReturnValue({

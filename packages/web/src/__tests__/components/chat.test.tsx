@@ -1,7 +1,27 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { Chat } from "@/components/chat";
+import type { Agent } from "@/components/agent-list";
+
+const { mockGetAgent } = vi.hoisted(() => ({
+  mockGetAgent: vi.fn() as ReturnType<typeof vi.fn>,
+}));
+
+vi.mock("@/components/agents-provider", () => ({
+  useAgentsContext: () => ({
+    agents: [],
+    sortedAgents: [],
+    getAgent: mockGetAgent,
+  }),
+}));
+
+vi.mock("@/lib/avatar", () => ({
+  getAgentAvatarSvg: vi.fn(
+    (agent: { avatarSeed: string | null; name: string }) =>
+      `data:image/svg+xml;utf8,mock-${agent.avatarSeed ?? agent.name}`
+  ),
+}));
 
 vi.mock("@/hooks/use-ws-runtime", () => ({
   useWsRuntime: vi.fn().mockReturnValue({
@@ -25,8 +45,8 @@ vi.mock("@/components/assistant-ui/thread", () => ({
 }));
 
 vi.mock("@/components/mobile-chat-header", () => ({
-  MobileChatHeader: ({ agentId, agentName }: any) => (
-    <div data-testid="mobile-chat-header" data-agent-id={agentId}>
+  MobileChatHeader: ({ agentId, agentName, avatarUrl }: any) => (
+    <div data-testid="mobile-chat-header" data-agent-id={agentId} data-avatar-url={avatarUrl}>
       {agentName}
     </div>
   ),
@@ -53,6 +73,7 @@ import { useWsRuntime } from "@/hooks/use-ws-runtime";
 describe("Chat", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetAgent.mockReturnValue(undefined);
     vi.mocked(useWsRuntime).mockReturnValue({
       runtime: {} as any,
       isConnected: true,
@@ -200,5 +221,71 @@ describe("Chat", () => {
     const { container } = render(<Chat agentId="agent-1" agentName="Smithers" />);
     const avatars = container.querySelectorAll("header img");
     expect(avatars.length).toBe(0);
+  });
+
+  describe("live agent data from context", () => {
+    const liveAgent: Agent = {
+      id: "agent-1",
+      name: "Renamed Agent",
+      model: "anthropic/claude-sonnet-4-20250514",
+      isPersonal: true,
+      tagline: "New tagline",
+      avatarSeed: "new-seed",
+    };
+
+    it("should use live agent name instead of SSR prop", () => {
+      mockGetAgent.mockReturnValue(liveAgent);
+      render(<Chat agentId="agent-1" agentName="Old Name" />);
+      const elements = screen.getAllByText("Renamed Agent");
+      expect(elements.length).toBeGreaterThanOrEqual(1);
+      expect(screen.queryByText("Old Name")).not.toBeInTheDocument();
+    });
+
+    it("should use live avatar from context instead of SSR avatarUrl", () => {
+      mockGetAgent.mockReturnValue(liveAgent);
+      const { container } = render(
+        <Chat agentId="agent-1" agentName="Old Name" avatarUrl="data:image/svg+xml;utf8,old" />
+      );
+      const avatar = container.querySelector('img[src="data:image/svg+xml;utf8,mock-new-seed"]');
+      expect(avatar).toBeInTheDocument();
+    });
+
+    it("should use live isPersonal from context instead of SSR prop", () => {
+      mockGetAgent.mockReturnValue(liveAgent);
+      render(<Chat agentId="agent-1" agentName="Old Name" isPersonal={false} />);
+      expect(screen.getByText("Private")).toBeInTheDocument();
+    });
+
+    it("should fall back to SSR props when agent not in context", () => {
+      mockGetAgent.mockReturnValue(undefined);
+      render(
+        <Chat
+          agentId="agent-1"
+          agentName="SSR Name"
+          isPersonal={false}
+          avatarUrl="data:image/svg+xml;utf8,ssr-avatar"
+        />
+      );
+      const nameElements = screen.getAllByText("SSR Name");
+      expect(nameElements.length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText("Shared").length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("should pass live agent name to MobileChatHeader", () => {
+      mockGetAgent.mockReturnValue(liveAgent);
+      render(<Chat agentId="agent-1" agentName="Old Name" />);
+      const mobileHeader = screen.getByTestId("mobile-chat-header");
+      expect(mobileHeader).toHaveTextContent("Renamed Agent");
+    });
+
+    it("should pass live avatar to MobileChatHeader", () => {
+      mockGetAgent.mockReturnValue(liveAgent);
+      render(<Chat agentId="agent-1" agentName="Old Name" />);
+      const mobileHeader = screen.getByTestId("mobile-chat-header");
+      expect(mobileHeader).toHaveAttribute(
+        "data-avatar-url",
+        "data:image/svg+xml;utf8,mock-new-seed"
+      );
+    });
   });
 });

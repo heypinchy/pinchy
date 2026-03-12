@@ -8,6 +8,7 @@ import {
   serial,
   pgEnum,
   pgView,
+  primaryKey,
 } from "drizzle-orm/pg-core";
 import { isNull } from "drizzle-orm";
 
@@ -21,7 +22,7 @@ export const users = pgTable("user", {
   email: text("email").notNull().unique(),
   emailVerified: boolean("email_verified").notNull().default(false),
   image: text("image"),
-  role: text("role").notNull().default("user"),
+  role: text("role").notNull().default("member"),
   banned: boolean("banned").default(false),
   banReason: text("ban_reason"),
   banExpires: timestamp("ban_expires"),
@@ -91,6 +92,7 @@ export const agents = pgTable(
     allowedTools: jsonb("allowed_tools").$type<string[]>().notNull().default([]),
     ownerId: text("owner_id").references(() => users.id, { onDelete: "cascade" }),
     isPersonal: boolean("is_personal").notNull().default(false),
+    visibility: text("visibility").notNull().default("restricted"),
     greetingMessage: text("greeting_message"),
     tagline: text("tagline"),
     avatarSeed: text("avatar_seed"),
@@ -101,13 +103,49 @@ export const agents = pgTable(
   (table) => [index("agents_owner_id_idx").on(table.ownerId)]
 );
 
+export const groups = pgTable("groups", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  name: text("name").notNull(),
+  description: text("description"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const userGroups = pgTable(
+  "user_groups",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.groupId] })]
+);
+
+export const agentGroups = pgTable(
+  "agent_groups",
+  {
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+  },
+  (table) => [primaryKey({ columns: [table.agentId, table.groupId] })]
+);
+
 export const invites = pgTable("invites", {
   id: text("id")
     .primaryKey()
     .$defaultFn(() => crypto.randomUUID()),
   tokenHash: text("token_hash").notNull().unique(),
   email: text("email"),
-  role: text("role").notNull().default("user"),
+  role: text("role").notNull().default("member"),
   type: text("type").notNull().default("invite"),
   createdBy: text("created_by")
     .notNull()
@@ -117,6 +155,19 @@ export const invites = pgTable("invites", {
   claimedAt: timestamp("claimed_at"),
   claimedByUserId: text("claimed_by_user_id").references(() => users.id),
 });
+
+export const inviteGroups = pgTable(
+  "invite_groups",
+  {
+    inviteId: text("invite_id")
+      .notNull()
+      .references(() => invites.id, { onDelete: "cascade" }),
+    groupId: text("group_id")
+      .notNull()
+      .references(() => groups.id, { onDelete: "cascade" }),
+  },
+  (table) => [primaryKey({ columns: [table.inviteId, table.groupId] })]
+);
 
 export const settings = pgTable("settings", {
   key: text("key").primaryKey(),

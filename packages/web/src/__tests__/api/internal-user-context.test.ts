@@ -14,7 +14,7 @@ vi.mock("@/db", () => ({
     }),
     query: {
       users: {
-        findFirst: vi.fn().mockResolvedValue({ id: "user-1", role: "user", context: null }),
+        findFirst: vi.fn().mockResolvedValue({ id: "user-1", role: "member", context: null }),
       },
     },
   },
@@ -54,7 +54,7 @@ describe("PUT /api/internal/users/:userId/context", () => {
     vi.mocked(validateGatewayToken).mockReturnValue(true);
     vi.mocked(db.query.users.findFirst).mockResolvedValue({
       id: "user-1",
-      role: "user",
+      role: "member",
       context: null,
     } as any);
   });

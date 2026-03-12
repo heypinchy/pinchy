@@ -113,6 +113,27 @@
       "when": 1772636450421,
       "tag": "0015_magenta_frog_thor",
       "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1773063250433,
+      "tag": "0016_abnormal_wasp",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1773071968874,
+      "tag": "0017_wet_hellfire_club",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1773086377479,
+      "tag": "0018_nasty_mysterio",
+      "breakpoints": true
     }
   ]
 }

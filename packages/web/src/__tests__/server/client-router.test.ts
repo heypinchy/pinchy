@@ -8,6 +8,8 @@ const {
   mockFindFirst,
   mockUserFindFirst,
   mockAppendAuditLog,
+  mockGetUserGroupIds,
+  mockGetAgentGroupIds,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
@@ -15,15 +17,40 @@ const {
   mockFindFirst: vi.fn(),
   mockUserFindFirst: vi.fn(),
   mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
+  mockGetUserGroupIds: vi.fn().mockResolvedValue([]),
+  mockGetAgentGroupIds: vi.fn().mockResolvedValue([]),
 }));
 
-vi.mock("@/lib/agent-access", () => ({
-  assertAgentAccess: vi.fn((agent, userId, userRole) => {
-    if (userRole === "admin") return;
-    if (!agent.isPersonal) return;
-    if (agent.ownerId === userId) return;
-    throw new Error("Access denied");
-  }),
+vi.mock("@/lib/agent-access", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/agent-access")>();
+  return {
+    ...actual,
+    assertAgentAccess: vi.fn(
+      (
+        agent: { isPersonal?: boolean; ownerId?: string; visibility?: string },
+        userId: string,
+        userRole: string,
+        userGroupIds: string[] = [],
+        agentGroupIds: string[] = [],
+        enterprise: boolean = true
+      ) => {
+        if (userRole === "admin") return;
+        if (agent.isPersonal) {
+          if (agent.ownerId === userId) return;
+          throw new Error("Access denied");
+        }
+        const vis = actual.effectiveVisibility(agent.visibility, enterprise);
+        if (vis === "restricted") {
+          if (userGroupIds.some((gId: string) => agentGroupIds.includes(gId))) return;
+          throw new Error("Access denied");
+        }
+      }
+    ),
+  };
+});
+
+vi.mock("@/lib/enterprise", () => ({
+  isEnterprise: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("@/db", () => ({
@@ -50,6 +77,11 @@ vi.mock("drizzle-orm", () => ({
 
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: mockAppendAuditLog,
+}));
+
+vi.mock("@/lib/groups", () => ({
+  getUserGroupIds: (...args: unknown[]) => mockGetUserGroupIds(...args),
+  getAgentGroupIds: (...args: unknown[]) => mockGetAgentGroupIds(...args),
 }));
 
 import { ClientRouter } from "@/server/client-router";
@@ -94,7 +126,7 @@ describe("ClientRouter", () => {
     // Default: session exists and cache is fresh (equivalent to runtimeActivated: true)
     sessionCache.refresh([{ key: "agent:agent-1:user-user-1" }]);
     mockOpenClawClient = createMockOpenClawClient(true);
-    router = new ClientRouter(mockOpenClawClient as any, "user-1", "user", sessionCache);
+    router = new ClientRouter(mockOpenClawClient as any, "user-1", "member", sessionCache);
 
     // Default: agent exists and is accessible
     mockFindFirst.mockResolvedValue(defaultAgent);
@@ -139,6 +171,37 @@ describe("ClientRouter", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0].type).toBe("error");
     expect(messages[0].message).toBe("Access denied");
+  });
+
+  it("should allow access to restricted agent when user is in matching group", async () => {
+    const restrictedAgent = {
+      id: "agent-restricted",
+      name: "Restricted Agent",
+      ownerId: null,
+      isPersonal: false,
+      visibility: "restricted",
+      greetingMessage: null,
+    };
+    mockFindFirst.mockResolvedValue(restrictedAgent);
+    mockGetUserGroupIds.mockResolvedValue(["g1", "g2"]);
+    mockGetAgentGroupIds.mockResolvedValue(["g2", "g3"]);
+
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "Hello!" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    const clientWs = createMockClientWs();
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-restricted",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    expect(messages.some((m) => m.type === "chunk")).toBe(true);
+    expect(messages.some((m) => m.type === "error")).toBe(false);
   });
 
   it("should pass agentId and sessionKey to OpenClaw chat", async () => {
@@ -504,7 +567,7 @@ describe("ClientRouter", () => {
 
   it("should fetch history from OpenClaw even when session not in cache", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     const clientWs = createMockClientWs();
 
     // Cache is stale and sessions.list returns no matching session
@@ -534,7 +597,7 @@ describe("ClientRouter", () => {
 
   it("should return greeting when OpenClaw has no history for session", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     const clientWs = createMockClientWs();
     mockFindFirst.mockResolvedValue({
       ...defaultAgent,
@@ -564,7 +627,7 @@ describe("ClientRouter", () => {
 
   it("should return empty history when no history and agent has no greeting", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     const clientWs = createMockClientWs();
     mockFindFirst.mockResolvedValue({
       ...defaultAgent,
@@ -589,7 +652,7 @@ describe("ClientRouter", () => {
 
   it("should include extraSystemPrompt with greeting context on first message", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     mockFindFirst.mockResolvedValue({
       ...defaultAgent,
       greetingMessage: "Hello! I'm Smithers.",
@@ -634,7 +697,7 @@ describe("ClientRouter", () => {
 
   it("should NOT include extraSystemPrompt when agent has no greeting", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     mockFindFirst.mockResolvedValue({
       ...defaultAgent,
       greetingMessage: null,
@@ -659,7 +722,7 @@ describe("ClientRouter", () => {
 
   it("should add session key to cache after successful chat", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     async function* fakeStream() {
       yield { type: "text" as const, text: "Hello!" };
       yield { type: "done" as const, text: "" };
@@ -743,7 +806,7 @@ describe("ClientRouter", () => {
     const disconnectedRouter = new ClientRouter(
       disconnectedClient as any,
       "user-1",
-      "user",
+      "member",
       sessionCache
     );
 
@@ -774,7 +837,7 @@ describe("ClientRouter", () => {
     const disconnectedRouter = new ClientRouter(
       disconnectedClient as any,
       "user-1",
-      "user",
+      "member",
       sessionCache
     );
     mockFindFirst.mockResolvedValue({
@@ -921,7 +984,7 @@ describe("ClientRouter", () => {
 
   it("should fetch history directly without calling sessions.list", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     mockSessionsHistory.mockResolvedValue({
       messages: [{ role: "user", content: "Hi", timestamp: "2025-01-01T00:00:00Z" }],
     });
@@ -962,7 +1025,7 @@ describe("ClientRouter", () => {
     // Sessions in OpenClaw use the format agent:<id>:user-<userId>.
     // The router must generate keys in the same format to find existing sessions.
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
 
     // OpenClaw returns sessions with its native key format
     mockSessionsList.mockResolvedValue({
@@ -1023,7 +1086,7 @@ describe("ClientRouter", () => {
 
   it("should return empty history when history fetch fails and no greeting", async () => {
     const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
 
     mockFindFirst.mockResolvedValue({
       ...defaultAgent,
@@ -1126,7 +1189,12 @@ describe("ClientRouter", () => {
 
     it("should combine user context and greeting on first message to shared agent", async () => {
       const freshCache = new SessionCache();
-      const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+      const freshRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        freshCache
+      );
       mockUserFindFirst.mockResolvedValue({
         id: "user-1",
         context: "I'm a backend engineer.",
@@ -1272,7 +1340,12 @@ describe("ClientRouter", () => {
   describe("{user} placeholder in greeting messages", () => {
     it("should resolve {user} in greeting with user's name when showing history", async () => {
       const freshCache = new SessionCache();
-      const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+      const freshRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        freshCache
+      );
       mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Clemens", context: null });
       mockFindFirst.mockResolvedValue({
         ...defaultAgent,
@@ -1293,7 +1366,12 @@ describe("ClientRouter", () => {
 
     it("should resolve {user} in extraSystemPrompt greeting context on first message", async () => {
       const freshCache = new SessionCache();
-      const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+      const freshRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        freshCache
+      );
       mockUserFindFirst.mockResolvedValue({ id: "user-1", name: "Clemens", context: null });
       mockFindFirst.mockResolvedValue({
         ...defaultAgent,
@@ -1318,7 +1396,12 @@ describe("ClientRouter", () => {
 
     it("should gracefully remove {user} from greeting when user has no name", async () => {
       const freshCache = new SessionCache();
-      const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "user", freshCache);
+      const freshRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        freshCache
+      );
       mockUserFindFirst.mockResolvedValue({ id: "user-1", name: null, context: null });
       mockFindFirst.mockResolvedValue({
         ...defaultAgent,

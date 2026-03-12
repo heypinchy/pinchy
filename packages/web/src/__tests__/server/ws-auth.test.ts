@@ -57,7 +57,7 @@ describe("validateWsSession", () => {
     });
   });
 
-  it("defaults userRole to 'user' when role is not set", async () => {
+  it("defaults userRole to 'member' when role is not set", async () => {
     mockGetSession.mockResolvedValue({
       user: { id: "user-456", email: "user@test.com" },
       session: { expiresAt: "2026-03-01" },
@@ -65,7 +65,7 @@ describe("validateWsSession", () => {
 
     const result = await validateWsSession("better-auth.session_token=valid-token");
 
-    expect(result).toEqual({ userId: "user-456", userRole: "user" });
+    expect(result).toEqual({ userId: "user-456", userRole: "member" });
   });
 
   it("returns null when getSession throws an error", async () => {

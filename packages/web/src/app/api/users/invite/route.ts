@@ -8,19 +8,19 @@ export async function POST(request: NextRequest) {
   if (sessionOrError instanceof NextResponse) return sessionOrError;
   const session = sessionOrError;
 
-  const { email, role } = await request.json();
+  const { email, role, groupIds } = await request.json();
 
-  if (!role || !["admin", "user"].includes(role)) {
-    return NextResponse.json({ error: "Role must be 'admin' or 'user'" }, { status: 400 });
+  if (!role || !["admin", "member"].includes(role)) {
+    return NextResponse.json({ error: "Role must be 'admin' or 'member'" }, { status: 400 });
   }
 
-  const invite = await createInvite({ email, role, createdBy: session.user.id });
+  const invite = await createInvite({ email, role, createdBy: session.user.id, groupIds });
 
   appendAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "user.invited",
-    detail: { email, role },
+    detail: { email, role, groupIds },
   }).catch(() => {});
 
   return NextResponse.json(invite, { status: 201 });

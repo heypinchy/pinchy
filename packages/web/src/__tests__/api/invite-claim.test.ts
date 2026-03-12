@@ -6,6 +6,7 @@ import { NextRequest } from "next/server";
 vi.mock("@/lib/invites", () => ({
   validateInviteToken: vi.fn(),
   claimInvite: vi.fn(),
+  getInviteGroupIds: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("@/lib/personal-agent", () => ({
@@ -35,6 +36,9 @@ vi.mock("@/db", () => ({
         where: vi.fn().mockResolvedValue(undefined),
       }),
     }),
+    insert: vi.fn().mockReturnValue({
+      values: vi.fn().mockResolvedValue(undefined),
+    }),
     query: {
       users: {
         findFirst: vi.fn(),
@@ -43,7 +47,7 @@ vi.mock("@/db", () => ({
   },
 }));
 
-import { validateInviteToken, claimInvite } from "@/lib/invites";
+import { validateInviteToken, claimInvite, getInviteGroupIds } from "@/lib/invites";
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
@@ -116,7 +120,7 @@ describe("POST /api/invite/claim", () => {
       id: "invite-1",
       tokenHash: "hash123",
       email: "invited@test.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       createdAt: new Date(),
@@ -141,7 +145,7 @@ describe("POST /api/invite/claim", () => {
       id: "invite-1",
       tokenHash: "hash123",
       email: "invited@test.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       createdAt: new Date(),
@@ -173,7 +177,7 @@ describe("POST /api/invite/claim", () => {
       id: "invite-1",
       tokenHash: "hash123",
       email: "invited@test.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       createdAt: new Date(),
@@ -198,7 +202,7 @@ describe("POST /api/invite/claim", () => {
       id: "invite-1",
       tokenHash: "hash123",
       email: "invited@test.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       createdAt: new Date(),
@@ -223,7 +227,7 @@ describe("POST /api/invite/claim", () => {
       id: "invite-1",
       tokenHash: "hash123",
       email: "invited@test.com",
-      role: "user",
+      role: "member",
       type: "invite",
       createdBy: "admin-1",
       createdAt: new Date(),
@@ -250,7 +254,7 @@ describe("POST /api/invite/claim", () => {
       id: "invite-2",
       tokenHash: "reset-hash",
       email: "existing@test.com",
-      role: "user",
+      role: "member",
       type: "reset",
       createdBy: "admin-1",
       createdAt: new Date(),
@@ -263,7 +267,7 @@ describe("POST /api/invite/claim", () => {
       id: "existing-user-id",
       email: "existing@test.com",
       name: "Existing User",
-      role: "user",
+      role: "member",
     });
 
     const request = makeRequest({
@@ -289,7 +293,7 @@ describe("POST /api/invite/claim", () => {
       id: "invite-2",
       tokenHash: "reset-hash",
       email: "existing@test.com",
-      role: "user",
+      role: "member",
       type: "reset",
       createdBy: "admin-1",
       createdAt: new Date(),
@@ -302,7 +306,7 @@ describe("POST /api/invite/claim", () => {
       id: "existing-user-id",
       email: "existing@test.com",
       name: "Existing User",
-      role: "user",
+      role: "member",
     });
 
     const request = makeRequest({
@@ -321,7 +325,7 @@ describe("POST /api/invite/claim", () => {
       id: "invite-2",
       tokenHash: "reset-hash",
       email: "nonexistent@test.com",
-      role: "user",
+      role: "member",
       type: "reset",
       createdBy: "admin-1",
       createdAt: new Date(),
@@ -361,5 +365,73 @@ describe("POST /api/invite/claim", () => {
     // We get 410 (token invalid), not 401 (unauthorized) — proving no auth check
     expect(response.status).toBe(410);
     expect(validateInviteToken).toHaveBeenCalledWith("some-token");
+  });
+
+  // ── Group assignment on claim ───────────────────────────────────────
+
+  it("assigns invite groups to new user after claiming", async () => {
+    vi.mocked(validateInviteToken).mockResolvedValueOnce({
+      id: "invite-with-groups",
+      tokenHash: "hash-groups",
+      email: "grouped@test.com",
+      role: "member",
+      type: "invite",
+      createdBy: "admin-1",
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 86400000),
+      claimedAt: null,
+      claimedByUserId: null,
+    });
+
+    vi.mocked(getInviteGroupIds).mockResolvedValueOnce(["group-1", "group-2"]);
+
+    const request = makeRequest({
+      token: "valid-token",
+      name: "Grouped User",
+      password: "password123",
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    expect(getInviteGroupIds).toHaveBeenCalledWith("invite-with-groups");
+    expect(db.insert).toHaveBeenCalled();
+    const insertMock = vi.mocked(db.insert);
+    const valuesMock = vi.mocked(insertMock.mock.results[0]?.value?.values);
+    expect(valuesMock).toHaveBeenCalledWith([
+      { userId: "new-user-id", groupId: "group-1" },
+      { userId: "new-user-id", groupId: "group-2" },
+    ]);
+  });
+
+  it("does not assign groups for password reset invites", async () => {
+    vi.mocked(validateInviteToken).mockResolvedValueOnce({
+      id: "invite-reset",
+      tokenHash: "reset-hash",
+      email: "existing@test.com",
+      role: "member",
+      type: "reset",
+      createdBy: "admin-1",
+      createdAt: new Date(),
+      expiresAt: new Date(Date.now() + 86400000),
+      claimedAt: null,
+      claimedByUserId: null,
+    });
+
+    vi.mocked(db.query.users.findFirst).mockResolvedValueOnce({
+      id: "existing-user-id",
+      email: "existing@test.com",
+      name: "Existing User",
+      role: "member",
+    });
+
+    const request = makeRequest({
+      token: "reset-token",
+      password: "newpassword123",
+    });
+
+    await POST(request);
+
+    expect(getInviteGroupIds).not.toHaveBeenCalled();
   });
 });

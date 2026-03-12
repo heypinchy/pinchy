@@ -126,6 +126,7 @@ export default defineConfig({
             { label: 'Philosophy', slug: 'concepts/philosophy' },
             { label: 'Agent Memory', slug: 'explanation/agent-memory' },
             { label: 'Agent Permissions', slug: 'concepts/agent-permissions' },
+            { label: 'Groups', slug: 'concepts/groups' },
             { label: 'Audit Trail', slug: 'concepts/audit-trail' },
           ],
         },

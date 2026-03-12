@@ -67,13 +67,13 @@ describe("computeRowHmac", () => {
     // Original JS insertion order
     const hmacOriginal = computeRowHmac(secret, {
       ...base,
-      detail: { email: "test@example.com", role: "user" },
+      detail: { email: "test@example.com", role: "member" },
     });
 
     // After PostgreSQL JSONB roundtrip (keys sorted by length, then alphabetically)
     const hmacFromDb = computeRowHmac(secret, {
       ...base,
-      detail: { role: "user", email: "test@example.com" },
+      detail: { role: "member", email: "test@example.com" },
     });
 
     expect(hmacOriginal).toBe(hmacFromDb);

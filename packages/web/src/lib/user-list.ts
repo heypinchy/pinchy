@@ -1,3 +1,8 @@
+export interface UserGroup {
+  id: string;
+  name: string;
+}
+
 export type UserListItem =
   | {
       kind: "user";
@@ -6,6 +11,7 @@ export type UserListItem =
       email: string;
       role: string;
       status: "active" | "deactivated";
+      groups: UserGroup[];
     }
   | {
       kind: "invite";
@@ -14,6 +20,7 @@ export type UserListItem =
       role: string;
       status: "pending" | "expired";
       createdAt: string;
+      groups: UserGroup[];
     };
 
 interface ApiUser {
@@ -22,6 +29,7 @@ interface ApiUser {
   email: string;
   role: string;
   banned: boolean;
+  groups?: UserGroup[];
 }
 
 interface ApiInvite {
@@ -32,6 +40,7 @@ interface ApiInvite {
   createdAt: string;
   expiresAt: string;
   claimedAt: string | null;
+  groups?: UserGroup[];
 }
 
 const STATUS_ORDER: Record<UserListItem["status"], number> = {
@@ -53,6 +62,7 @@ export function mergeUserList(
     email: u.email,
     role: u.role,
     status: u.banned ? "deactivated" : "active",
+    groups: u.groups || [],
   }));
 
   const inviteItems: UserListItem[] = invites
@@ -64,6 +74,7 @@ export function mergeUserList(
       role: inv.role,
       status: new Date(inv.expiresAt) > now ? "pending" : "expired",
       createdAt: inv.createdAt,
+      groups: inv.groups || [],
     }));
 
   return [...userItems, ...inviteItems].sort(

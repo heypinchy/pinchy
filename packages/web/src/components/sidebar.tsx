@@ -5,6 +5,7 @@ import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { Bug, ClipboardList, Plus, Settings } from "lucide-react";
 import { LogoutButton } from "@/components/logout-button";
+import { useAgentsContext } from "@/components/agents-provider";
 import {
   Sidebar,
   SidebarContent,
@@ -18,18 +19,15 @@ import {
 } from "@/components/ui/sidebar";
 import { Button } from "@/components/ui/button";
 import { getAgentAvatarSvg } from "@/lib/avatar";
-import { sortAgents } from "@/components/agent-list";
-import type { Agent } from "@/components/agent-list";
 import { buildBugReportUrl } from "@/lib/github-issue";
 
 interface AppSidebarProps {
-  agents: Agent[];
   isAdmin: boolean;
 }
 
-export function AppSidebar({ agents, isAdmin }: AppSidebarProps) {
+export function AppSidebar({ isAdmin }: AppSidebarProps) {
   const pathname = usePathname();
-  const sortedAgents = sortAgents(agents);
+  const { sortedAgents } = useAgentsContext();
 
   return (
     <Sidebar>
