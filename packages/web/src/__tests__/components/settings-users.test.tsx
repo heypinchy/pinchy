@@ -10,6 +10,20 @@ Object.defineProperty(window, "location", {
   writable: true,
 });
 
+// Radix UI Select uses pointer capture and scrollIntoView which jsdom doesn't support
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+}
+if (!Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = () => {};
+}
+if (!Element.prototype.releasePointerCapture) {
+  Element.prototype.releasePointerCapture = () => {};
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 describe("SettingsUsers", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
@@ -61,6 +75,12 @@ describe("SettingsUsers", () => {
       }
       if (String(url) === "/api/users/invites") {
         return { ok: true, json: async () => ({ invites }) } as Response;
+      }
+      if (String(url) === "/api/groups") {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      if (String(url) === "/api/enterprise/status") {
+        return { ok: true, json: async () => ({ enterprise: false }) } as Response;
       }
       return { ok: false } as Response;
     });
@@ -128,7 +148,7 @@ describe("SettingsUsers", () => {
     });
   });
 
-  it("should not show Deactivate button for the current user", async () => {
+  it("should not render action buttons in user table rows", async () => {
     renderWithUsersLoaded();
 
     await waitFor(() => {
@@ -138,111 +158,63 @@ describe("SettingsUsers", () => {
     const table = screen.getByRole("table");
     const tableView = within(table);
 
-    // Find the row for Alice (current user) - should not have a Deactivate button
+    // No user rows should have action buttons — actions are now in the detail sheet
     const aliceRow = tableView.getByText("Alice Admin").closest("tr")!;
     expect(within(aliceRow).queryByRole("button", { name: "Deactivate" })).not.toBeInTheDocument();
-
-    // Other users should have Deactivate buttons
-    const bobRow = tableView.getByText("Bob User").closest("tr")!;
-    expect(within(bobRow).getByRole("button", { name: "Deactivate" })).toBeInTheDocument();
-  });
-
-  it("should show Reset Password button per user (not for current user)", async () => {
-    renderWithUsersLoaded();
-
-    await waitFor(() => {
-      expect(screen.getAllByText("Alice Admin").length).toBeGreaterThanOrEqual(1);
-    });
-
-    const table = screen.getByRole("table");
-    const tableView = within(table);
-
-    const aliceRow = tableView.getByText("Alice Admin").closest("tr")!;
     expect(
       within(aliceRow).queryByRole("button", { name: "Reset Password" })
     ).not.toBeInTheDocument();
 
     const bobRow = tableView.getByText("Bob User").closest("tr")!;
-    expect(within(bobRow).getByRole("button", { name: "Reset Password" })).toBeInTheDocument();
+    expect(within(bobRow).queryByRole("button", { name: "Deactivate" })).not.toBeInTheDocument();
+    expect(
+      within(bobRow).queryByRole("button", { name: "Reset Password" })
+    ).not.toBeInTheDocument();
   });
 
-  it("should call DELETE /api/users/:id when delete is confirmed", async () => {
+  it("should open user detail sheet when clicking a user row", async () => {
+    mockFetchForUsers(mockUsers);
     const user = userEvent.setup();
-    renderWithUsersLoaded();
+    render(<SettingsUsers currentUserId="user-1" />);
 
     await waitFor(() => {
-      expect(screen.getAllByText("Bob User").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getAllByText("Alice Admin").length).toBeGreaterThanOrEqual(1);
     });
 
-    const table = screen.getByRole("table");
-    const bobRow = within(table).getByText("Bob User").closest("tr")!;
-    await user.click(within(bobRow).getByRole("button", { name: "Deactivate" }));
+    await user.click(within(screen.getByRole("table")).getByText("Bob User"));
 
-    // Confirmation dialog should appear
+    // Sheet should open showing Bob's details
     await waitFor(() => {
-      expect(screen.getByText("Deactivate User")).toBeInTheDocument();
-    });
-
-    // Reset fetch mock: DELETE call + re-fetch of both endpoints
-    vi.mocked(global.fetch).mockImplementation(async (url, init) => {
-      if (String(url) === "/api/users/user-2" && init?.method === "DELETE") {
-        return { ok: true, json: async () => ({ success: true }) } as Response;
-      }
-      if (String(url) === "/api/users") {
-        return {
-          ok: true,
-          json: async () => ({ users: [mockUsers[0], mockUsers[2]] }),
-        } as Response;
-      }
-      if (String(url) === "/api/users/invites") {
-        return { ok: true, json: async () => ({ invites: [] }) } as Response;
-      }
-      return { ok: false } as Response;
-    });
-
-    await user.click(screen.getByRole("button", { name: "Confirm Deactivate" }));
-
-    await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith("/api/users/user-2", {
-        method: "DELETE",
-      });
+      // The sheet will show the role select combobox
+      expect(screen.getByRole("combobox")).toBeInTheDocument();
     });
   });
 
-  it("should call POST /api/users/:id/reset and show invite link", async () => {
-    const user = userEvent.setup();
-    renderWithUsersLoaded();
+  it("should show max 2 group badges with '+N more' for users with many groups", async () => {
+    const usersWithManyGroups = [
+      {
+        id: "u1",
+        name: "Max",
+        email: "max@test.com",
+        role: "member",
+        banned: false,
+        groups: [
+          { id: "g1", name: "Engineering" },
+          { id: "g2", name: "Marketing" },
+          { id: "g3", name: "Sales" },
+          { id: "g4", name: "DevOps" },
+        ],
+      },
+    ];
+    mockFetchForUsers(usersWithManyGroups);
+    render(<SettingsUsers currentUserId="admin-1" />);
 
     await waitFor(() => {
-      expect(screen.getAllByText("Bob User").length).toBeGreaterThanOrEqual(1);
-    });
-
-    const table = screen.getByRole("table");
-    const bobRow = within(table).getByText("Bob User").closest("tr")!;
-
-    vi.mocked(global.fetch).mockImplementation(async (url, init) => {
-      if (String(url) === "/api/users/user-2/reset" && init?.method === "POST") {
-        return { ok: true, json: async () => ({ token: "reset-token-123" }) } as Response;
-      }
-      if (String(url) === "/api/users") {
-        return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
-      }
-      if (String(url) === "/api/users/invites") {
-        return { ok: true, json: async () => ({ invites: [] }) } as Response;
-      }
-      return { ok: false } as Response;
-    });
-
-    await user.click(within(bobRow).getByRole("button", { name: "Reset Password" }));
-
-    await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith("/api/users/user-2/reset", {
-        method: "POST",
-      });
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText("http://localhost:7777/invite/reset-token-123")).toBeInTheDocument();
+      const tableView = within(screen.getByRole("table"));
+      expect(tableView.getByText("Engineering")).toBeInTheDocument();
+      expect(tableView.getByText("Marketing")).toBeInTheDocument();
+      expect(tableView.getByText("+2 more")).toBeInTheDocument();
+      expect(tableView.queryByText("Sales")).not.toBeInTheDocument();
     });
   });
 
@@ -292,7 +264,7 @@ describe("SettingsUsers", () => {
     const table = screen.getByRole("table");
     const tableView = within(table);
 
-    // Bob has two groups
+    // Bob has two groups (both visible since cap is 2)
     const bobRow = tableView.getByText("Bob User").closest("tr")!;
     expect(within(bobRow).getByText("Engineering")).toBeInTheDocument();
     expect(within(bobRow).getByText("Design")).toBeInTheDocument();
@@ -325,7 +297,7 @@ describe("SettingsUsers", () => {
       render(<SettingsUsers currentUserId="user-1" />);
     }
 
-    it("should show Reactivate button instead of Deactivate for a deactivated user", async () => {
+    it("should not show action buttons in deactivated user row", async () => {
       renderWithDeactivatedUser();
 
       await waitFor(() => {
@@ -334,7 +306,7 @@ describe("SettingsUsers", () => {
 
       const table = screen.getByRole("table");
       const daveRow = within(table).getByText("Dave Deactivated").closest("tr")!;
-      expect(within(daveRow).getByRole("button", { name: "Reactivate" })).toBeInTheDocument();
+      expect(within(daveRow).queryByRole("button", { name: "Reactivate" })).not.toBeInTheDocument();
       expect(within(daveRow).queryByRole("button", { name: "Deactivate" })).not.toBeInTheDocument();
     });
 
@@ -362,7 +334,7 @@ describe("SettingsUsers", () => {
       expect(within(daveRow).getByText("deactivated")).toBeInTheDocument();
     });
 
-    it("should call POST /api/users/:id/reactivate when Reactivate is clicked", async () => {
+    it("should open sheet with Reactivate button when clicking deactivated user row", async () => {
       const user = userEvent.setup();
       renderWithDeactivatedUser();
 
@@ -370,31 +342,12 @@ describe("SettingsUsers", () => {
         expect(screen.getAllByText("Dave Deactivated").length).toBeGreaterThanOrEqual(1);
       });
 
-      // Reset fetch mock: reactivate call + re-fetch of both endpoints
-      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
-        if (String(url) === "/api/users/user-4/reactivate" && init?.method === "POST") {
-          return { ok: true, json: async () => ({ success: true }) } as Response;
-        }
-        if (String(url) === "/api/users") {
-          return {
-            ok: true,
-            json: async () => ({ users: [...mockUsers, { ...deactivatedUser, banned: false }] }),
-          } as Response;
-        }
-        if (String(url) === "/api/users/invites") {
-          return { ok: true, json: async () => ({ invites: [] }) } as Response;
-        }
-        return { ok: false } as Response;
-      });
-
       const table = screen.getByRole("table");
-      const daveRow = within(table).getByText("Dave Deactivated").closest("tr")!;
-      await user.click(within(daveRow).getByRole("button", { name: "Reactivate" }));
+      await user.click(within(table).getByText("Dave Deactivated"));
 
+      // Sheet should open showing Reactivate button
       await waitFor(() => {
-        expect(global.fetch).toHaveBeenCalledWith("/api/users/user-4/reactivate", {
-          method: "POST",
-        });
+        expect(screen.getByRole("button", { name: /reactivate/i })).toBeInTheDocument();
       });
     });
   });
@@ -504,6 +457,12 @@ describe("SettingsUsers", () => {
         if (String(url) === "/api/users/invites") {
           return { ok: true, json: async () => ({ invites: [] }) } as Response;
         }
+        if (String(url) === "/api/groups") {
+          return { ok: true, json: async () => [] } as Response;
+        }
+        if (String(url) === "/api/enterprise/status") {
+          return { ok: true, json: async () => ({ enterprise: false }) } as Response;
+        }
         return { ok: false } as Response;
       });
 
@@ -542,6 +501,12 @@ describe("SettingsUsers", () => {
         }
         if (String(url) === "/api/users/invites") {
           return { ok: true, json: async () => ({ invites: [] }) } as Response;
+        }
+        if (String(url) === "/api/groups") {
+          return { ok: true, json: async () => [] } as Response;
+        }
+        if (String(url) === "/api/enterprise/status") {
+          return { ok: true, json: async () => ({ enterprise: false }) } as Response;
         }
         return { ok: false } as Response;
       });
