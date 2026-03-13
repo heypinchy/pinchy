@@ -227,11 +227,21 @@ describe("PATCH /api/groups/[groupId]", () => {
     PATCH = mod.PATCH;
   });
 
-  it("updates group for admin", async () => {
+  it("updates group name for admin with from/to audit detail", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },
       expires: "",
     } as any);
+
+    const existingGroup = {
+      id: "group-1",
+      name: "Old Name",
+      description: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    // First call: select existing group
+    mockSelectWhere.mockResolvedValueOnce([existingGroup]);
 
     const updatedGroup = {
       id: "group-1",
@@ -259,8 +269,91 @@ describe("PATCH /api/groups/[groupId]", () => {
       expect.objectContaining({
         eventType: "group.updated",
         resource: "group:group-1",
+        detail: {
+          changes: {
+            name: { from: "Old Name", to: "New Name" },
+          },
+        },
       })
     );
+  });
+
+  it("updates group description with from/to audit detail", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const existingGroup = {
+      id: "group-1",
+      name: "Engineering",
+      description: "Old description",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    mockSelectWhere.mockResolvedValueOnce([existingGroup]);
+
+    const updatedGroup = {
+      id: "group-1",
+      name: "Engineering",
+      description: "New description",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    mockUpdateReturning.mockResolvedValueOnce([updatedGroup]);
+
+    const request = new NextRequest("http://localhost:7777/api/groups/group-1", {
+      method: "PATCH",
+      body: JSON.stringify({ description: "New description" }),
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ groupId: "group-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "group.updated",
+        resource: "group:group-1",
+        detail: {
+          changes: {
+            description: { from: "Old description", to: "New description" },
+          },
+        },
+      })
+    );
+  });
+
+  it("does not log audit when no fields actually changed", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const existingGroup = {
+      id: "group-1",
+      name: "Same Name",
+      description: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    mockSelectWhere.mockResolvedValueOnce([existingGroup]);
+
+    const updatedGroup = { ...existingGroup };
+    mockUpdateReturning.mockResolvedValueOnce([updatedGroup]);
+
+    const request = new NextRequest("http://localhost:7777/api/groups/group-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "Same Name" }),
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ groupId: "group-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
   it("rejects empty name", async () => {
@@ -288,7 +381,8 @@ describe("PATCH /api/groups/[groupId]", () => {
       expires: "",
     } as any);
 
-    mockUpdateReturning.mockResolvedValueOnce([]);
+    // Select returns empty — group not found
+    mockSelectWhere.mockResolvedValueOnce([]);
 
     const request = new NextRequest("http://localhost:7777/api/groups/nonexistent", {
       method: "PATCH",
