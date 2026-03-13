@@ -7,6 +7,7 @@ import { OpenClawClient } from "openclaw-node";
 import { ClientRouter } from "./src/server/client-router";
 import { SessionCache } from "./src/server/session-cache";
 import { validateWsSession } from "./src/server/ws-auth";
+import { connectionLimiter, messageLimiter, getClientIp } from "./src/server/rate-limit";
 import { restartState } from "./src/server/restart-state";
 import { logCapture } from "./src/lib/log-capture";
 
@@ -98,6 +99,14 @@ app.prepare().then(async () => {
   server.on("upgrade", async (request, socket, head) => {
     const { pathname } = parse(request.url!, true);
     if (pathname === "/api/ws") {
+      // Rate limit connection attempts per IP
+      const clientIp = getClientIp(request);
+      if (!connectionLimiter.allow(clientIp)) {
+        socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
       const sessionInfo = await validateWsSession(request.headers.cookie);
       if (!sessionInfo) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
@@ -122,6 +131,12 @@ app.prepare().then(async () => {
       : null;
 
     clientWs.on("message", (data) => {
+      // Rate limit messages per user
+      if (!messageLimiter.allow(sessionInfo.userId)) {
+        clientWs.send(JSON.stringify({ type: "error", message: "Rate limit exceeded. Please slow down." }));
+        return;
+      }
+
       try {
         const parsed = JSON.parse(data.toString());
         if (!router) {
