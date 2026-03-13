@@ -198,6 +198,40 @@ export const auditLog = pgTable(
   ]
 );
 
+// ── API Keys ─────────────────────────────────────────────────────────
+
+export const apiKeys = pgTable(
+  "api_keys",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    /** Display name for the key */
+    name: text("name").notNull(),
+    /** SHA-256 hash of the actual key (never store plaintext) */
+    keyHash: text("key_hash").notNull().unique(),
+    /** First 8 chars of key for display (e.g. "pnch_abc1...") */
+    keyPrefix: text("key_prefix").notNull(),
+    /** Owner user */
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    /** Scopes: what this key can do */
+    scopes: jsonb("scopes").$type<string[]>().notNull().default(["read"]),
+    /** Optional expiry */
+    expiresAt: timestamp("expires_at"),
+    /** Last used timestamp */
+    lastUsedAt: timestamp("last_used_at"),
+    /** Revoked flag */
+    revoked: boolean("revoked").notNull().default(false),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("idx_api_keys_user").on(table.userId),
+    index("idx_api_keys_hash").on(table.keyHash),
+  ]
+);
+
 // ── Views ────────────────────────────────────────────────────────────
 
 export const activeAgents = pgView("active_agents").as((qb) =>
