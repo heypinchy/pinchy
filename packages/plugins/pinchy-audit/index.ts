@@ -31,6 +31,7 @@ interface AfterToolCallEvent {
 
 interface PluginLogger {
   warn?: (message: string) => void;
+  error?: (message: string) => void;
 }
 
 interface PluginApi {
@@ -64,6 +65,15 @@ interface RecentToolStart {
   at: number;
 }
 
+/** Audit failure mode: "closed" blocks tool on failure, "open" warns and continues */
+type AuditFailMode = "closed" | "open";
+
+/** Maximum retry attempts for audit logging */
+const MAX_RETRIES = 2;
+
+/** Delay between retries in ms */
+const RETRY_DELAY_MS = 500;
+
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
@@ -85,34 +95,57 @@ function cleanupRecentToolStarts(recentStarts: Map<string, RecentToolStart>): vo
   }
 }
 
+function getAuditFailMode(): AuditFailMode {
+  const mode = process.env.AUDIT_FAIL_MODE?.toLowerCase();
+  if (mode === "open") return "open";
+  // Default to "closed" — fail-safe for compliance
+  return "closed";
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Post an audit event with retry logic.
+ * Returns true on success, false on failure.
+ */
 async function postToolAuditEvent(
   cfg: PluginConfig,
   logger: PluginLogger | undefined,
   payload: ToolAuditPayload
-): Promise<void> {
+): Promise<boolean> {
   const endpoint = `${normalizeBaseUrl(cfg.apiBaseUrl)}/api/internal/audit/tool-use`;
 
-  try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.gatewayToken}`,
-      },
-      body: JSON.stringify(payload),
-    });
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${cfg.gatewayToken}`,
+        },
+        body: JSON.stringify(payload),
+      });
 
-    if (!res.ok) {
+      if (res.ok) return true;
+
       logger?.warn?.(
-        `[pinchy-audit] audit endpoint returned ${res.status} for ${payload.phase} ${payload.toolName}`
+        `[pinchy-audit] audit endpoint returned ${res.status} for ${payload.phase} ${payload.toolName} (attempt ${attempt + 1}/${MAX_RETRIES + 1})`
+      );
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      logger?.warn?.(
+        `[pinchy-audit] failed to post ${payload.phase} event for ${payload.toolName}: ${message} (attempt ${attempt + 1}/${MAX_RETRIES + 1})`
       );
     }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger?.warn?.(
-      `[pinchy-audit] failed to post ${payload.phase} event for ${payload.toolName}: ${message}`
-    );
+
+    if (attempt < MAX_RETRIES) {
+      await sleep(RETRY_DELAY_MS);
+    }
   }
+
+  return false;
 }
 
 const plugin = {
@@ -141,6 +174,7 @@ const plugin = {
     }
 
     const recentStarts = new Map<string, RecentToolStart>();
+    const failMode = getAuditFailMode();
 
     api.on("before_tool_call", async (event, ctx) => {
       cleanupRecentToolStarts(recentStarts);
@@ -155,7 +189,7 @@ const plugin = {
         at: Date.now(),
       });
 
-      await postToolAuditEvent(cfg, api.logger, {
+      const success = await postToolAuditEvent(cfg, api.logger, {
         phase: "start",
         toolName: beforeEvent.toolName,
         params: beforeEvent.params,
@@ -165,6 +199,12 @@ const plugin = {
         sessionKey: ctx.sessionKey,
         sessionId: ctx.sessionId,
       });
+
+      if (!success && failMode === "closed") {
+        const msg = `[pinchy-audit] Blocking tool call "${beforeEvent.toolName}" — audit logging failed after ${MAX_RETRIES + 1} attempts (AUDIT_FAIL_MODE=closed)`;
+        api.logger?.error?.(msg);
+        throw new Error(msg);
+      }
     });
 
     api.on("after_tool_call", async (event, ctx) => {
@@ -179,7 +219,7 @@ const plugin = {
         extractAgentIdFromSessionKey(sessionKey) ??
         recent?.agentId;
 
-      await postToolAuditEvent(cfg, api.logger, {
+      const success = await postToolAuditEvent(cfg, api.logger, {
         phase: "end",
         toolName: afterEvent.toolName,
         params: afterEvent.params,
@@ -192,6 +232,13 @@ const plugin = {
         error: afterEvent.error,
         durationMs: afterEvent.durationMs,
       });
+
+      if (!success && failMode === "closed") {
+        api.logger?.error?.(
+          `[pinchy-audit] Failed to log "end" event for "${afterEvent.toolName}" after ${MAX_RETRIES + 1} attempts (AUDIT_FAIL_MODE=closed)`
+        );
+        // Don't throw on "end" — the tool already executed
+      }
     });
   },
 };

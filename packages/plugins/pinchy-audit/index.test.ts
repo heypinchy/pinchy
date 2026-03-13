@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockOn = vi.fn();
 
@@ -30,6 +30,11 @@ describe("pinchy-audit plugin", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true }));
+    delete process.env.AUDIT_FAIL_MODE;
+  });
+
+  afterEach(() => {
+    delete process.env.AUDIT_FAIL_MODE;
   });
 
   it("registers before_tool_call and after_tool_call hooks", async () => {
@@ -252,7 +257,8 @@ describe("pinchy-audit plugin", () => {
     });
   });
 
-  it("does not throw when audit endpoint fails", async () => {
+  it("does not throw when audit fails in AUDIT_FAIL_MODE=open", async () => {
+    process.env.AUDIT_FAIL_MODE = "open";
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
 
     const { default: plugin } = await import("./index");
@@ -270,5 +276,52 @@ describe("pinchy-audit plugin", () => {
         { toolName: "pinchy_read" }
       )
     ).resolves.toBeUndefined();
+  });
+
+  it("throws when audit fails in AUDIT_FAIL_MODE=closed (default)", async () => {
+    // closed is the default when env var is not set
+    delete process.env.AUDIT_FAIL_MODE;
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+
+    const { default: plugin } = await import("./index");
+    plugin.register?.(
+      createMockApi({
+        apiBaseUrl: "http://pinchy:7777",
+        gatewayToken: "gw-token",
+      }) as any
+    );
+
+    const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+    await expect(
+      beforeHook(
+        { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+        { toolName: "pinchy_read" }
+      )
+    ).rejects.toThrow("audit logging failed");
+  });
+
+  it("retries before failing", async () => {
+    delete process.env.AUDIT_FAIL_MODE;
+    const mockFetch = vi.fn().mockRejectedValue(new Error("network down"));
+    vi.stubGlobal("fetch", mockFetch);
+
+    const { default: plugin } = await import("./index");
+    plugin.register?.(
+      createMockApi({
+        apiBaseUrl: "http://pinchy:7777",
+        gatewayToken: "gw-token",
+      }) as any
+    );
+
+    const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+    await expect(
+      beforeHook(
+        { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+        { toolName: "pinchy_read" }
+      )
+    ).rejects.toThrow();
+
+    // Should have retried: 1 initial + 2 retries = 3 total calls
+    expect(mockFetch).toHaveBeenCalledTimes(3);
   });
 });
