@@ -58,7 +58,7 @@ export async function PATCH(
     actorId: session.user.id!,
     eventType: "user.role_updated",
     resource: `user:${userId}`,
-    detail: { userName: user.name, from: user.role, to: role },
+    detail: { changes: { role: { from: user.role, to: role } }, userName: user.name },
   }).catch(() => {});
 
   return NextResponse.json({ success: true });
@@ -99,7 +99,7 @@ export async function DELETE(
     actorId: session.user.id!,
     eventType: "user.deleted",
     resource: `user:${userId}`,
-    detail: { email: deactivated.email },
+    detail: { name: deactivated.name, email: deactivated.email },
   }).catch(() => {});
 
   // Soft-delete personal agents + cleanup workspaces

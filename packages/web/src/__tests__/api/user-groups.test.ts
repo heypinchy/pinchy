@@ -176,11 +176,12 @@ describe("PUT /api/users/[userId]/groups", () => {
     mockSelectWhere.mockReset();
     mockSelectWhere
       .mockResolvedValueOnce([{ id: "user-1", name: "Max Müller" }]) // user lookup
+      .mockResolvedValueOnce([{ groupId: "g3" }]) // previous memberships
       .mockResolvedValueOnce([
         { id: "g1", name: "Engineering" },
         { id: "g2", name: "Marketing" },
-      ]) // group names
-      .mockResolvedValueOnce([{ groupId: "g3" }]); // previous memberships
+        { id: "g3", name: "Design" },
+      ]); // all relevant group names (new + removed)
 
     const request = new NextRequest("http://localhost:7777/api/users/user-1/groups", {
       method: "PUT",
@@ -214,11 +215,12 @@ describe("PUT /api/users/[userId]/groups", () => {
     mockSelectWhere.mockReset();
     mockSelectWhere
       .mockResolvedValueOnce([{ id: "user-1", name: "Max Müller" }]) // user lookup
+      .mockResolvedValueOnce([{ groupId: "g2" }]) // previous memberships (g2 will be removed)
       .mockResolvedValueOnce([
         { id: "g1", name: "Engineering" },
+        { id: "g2", name: "Marketing" },
         { id: "g3", name: "Design" },
-      ]) // new group names
-      .mockResolvedValueOnce([{ groupId: "g2" }]); // previous memberships (g2 will be removed)
+      ]); // all relevant group names (new + removed)
 
     const request = new NextRequest("http://localhost:7777/api/users/user-1/groups", {
       method: "PUT",
@@ -240,8 +242,8 @@ describe("PUT /api/users/[userId]/groups", () => {
             { id: "g1", name: "Engineering" },
             { id: "g3", name: "Design" },
           ],
-          removed: [{ id: "g2" }],
-          groupCount: 2,
+          removed: [{ id: "g2", name: "Marketing" }],
+          memberCount: 2,
         },
       })
     );

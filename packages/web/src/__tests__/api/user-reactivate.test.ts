@@ -81,7 +81,7 @@ describe("POST /api/users/[userId]/reactivate", () => {
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "user.updated",
-        detail: expect.objectContaining({ action: "reactivated" }),
+        detail: { changes: { status: { from: "deactivated", to: "active" } } },
       })
     );
   });

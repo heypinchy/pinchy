@@ -19,6 +19,7 @@ export type MembershipDetail = {
   added: EntityRef[];
   removed: EntityRef[];
   memberCount: number;
+  [key: string]: unknown;
 };
 
 export type AuditResource = "agent" | "group" | "user" | "settings" | "config";
@@ -105,11 +106,7 @@ type AuditLogBase = {
 
 export type AuditLogEntry =
   | (AuditLogBase & {
-      eventType:
-        | `${AuditResource}.updated`
-        | "user.role_updated"
-        | "user.groups_updated"
-        | "config.changed";
+      eventType: `${AuditResource}.updated` | "user.role_updated";
       detail: UpdateDetail;
     })
   | (AuditLogBase & {
@@ -117,11 +114,11 @@ export type AuditLogEntry =
       detail: DeleteDetail;
     })
   | (AuditLogBase & {
-      eventType: `${AuditResource}.created` | "user.invited";
+      eventType: `${AuditResource}.created` | "user.invited" | "config.changed";
       detail: Record<string, unknown>;
     })
   | (AuditLogBase & {
-      eventType: `${AuditResource}.members_updated`;
+      eventType: `${AuditResource}.members_updated` | "user.groups_updated";
       detail: MembershipDetail;
     })
   | (AuditLogBase & {

@@ -30,7 +30,7 @@ export async function POST(
     actorId: session.user.id!,
     eventType: "user.updated",
     resource: `user:${userId}`,
-    detail: { action: "reactivated" },
+    detail: { changes: { status: { from: "deactivated", to: "active" } } },
   }).catch(() => {});
 
   return NextResponse.json({ success: true });
