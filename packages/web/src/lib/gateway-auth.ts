@@ -1,4 +1,5 @@
 import { readFileSync } from "fs";
+import { timingSafeEqual } from "crypto";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 
@@ -19,5 +20,8 @@ export function validateGatewayToken(headers: Headers): boolean {
   const gatewayToken = readGatewayToken();
   if (!gatewayToken) return false;
 
-  return token === gatewayToken;
+  const tokenBuf = Buffer.from(token);
+  const gatewayBuf = Buffer.from(gatewayToken);
+  if (tokenBuf.length !== gatewayBuf.length) return false;
+  return timingSafeEqual(tokenBuf, gatewayBuf);
 }
