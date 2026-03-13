@@ -1,3 +1,5 @@
+import { sanitize } from "./sanitize.js";
+
 interface PluginConfig {
   apiBaseUrl: string;
   gatewayToken: string;
@@ -158,7 +160,7 @@ const plugin = {
       await postToolAuditEvent(cfg, api.logger, {
         phase: "start",
         toolName: beforeEvent.toolName,
-        params: beforeEvent.params,
+        params: sanitize(beforeEvent.params) as Record<string, unknown>,
         runId: beforeEvent.runId ?? ctx.runId,
         toolCallId: beforeEvent.toolCallId ?? ctx.toolCallId,
         agentId,
@@ -182,13 +184,13 @@ const plugin = {
       await postToolAuditEvent(cfg, api.logger, {
         phase: "end",
         toolName: afterEvent.toolName,
-        params: afterEvent.params,
+        params: sanitize(afterEvent.params) as Record<string, unknown>,
         runId,
         toolCallId: afterEvent.toolCallId ?? ctx.toolCallId,
         agentId,
         sessionKey,
         sessionId,
-        result: afterEvent.result,
+        result: sanitize(afterEvent.result),
         error: afterEvent.error,
         durationMs: afterEvent.durationMs,
       });
