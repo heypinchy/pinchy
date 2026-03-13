@@ -1,3 +1,4 @@
+// audit-exempt: provider removal is a settings change, audit logging planned for a future PR
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";

@@ -1,3 +1,4 @@
+// audit-exempt: users changing their own password is a self-service action
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";

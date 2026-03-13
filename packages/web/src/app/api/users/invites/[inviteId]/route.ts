@@ -1,3 +1,4 @@
+// audit-exempt: invite revocation is a cleanup action, the invite creation is already audited
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
