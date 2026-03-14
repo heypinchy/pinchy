@@ -357,6 +357,61 @@ describe("SettingsUsers", () => {
     });
   });
 
+  it("should refetch groups when user detail sheet is opened", async () => {
+    const user = userEvent.setup();
+
+    // Initial load: enterprise enabled but no groups yet
+    vi.mocked(global.fetch).mockImplementation(async (url) => {
+      if (String(url) === "/api/users") {
+        return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+      }
+      if (String(url) === "/api/users/invites") {
+        return { ok: true, json: async () => ({ invites: [] }) } as Response;
+      }
+      if (String(url) === "/api/groups") {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      if (String(url) === "/api/enterprise/status") {
+        return { ok: true, json: async () => ({ enterprise: true }) } as Response;
+      }
+      return { ok: false } as Response;
+    });
+
+    render(<SettingsUsers currentUserId="user-1" />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Bob User").length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Now a group was created (e.g. in Groups tab) — update mock to return it
+    vi.mocked(global.fetch).mockImplementation(async (url) => {
+      if (String(url) === "/api/users") {
+        return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+      }
+      if (String(url) === "/api/users/invites") {
+        return { ok: true, json: async () => ({ invites: [] }) } as Response;
+      }
+      if (String(url) === "/api/groups") {
+        return {
+          ok: true,
+          json: async () => [{ id: "g-new", name: "Support" }],
+        } as Response;
+      }
+      if (String(url) === "/api/enterprise/status") {
+        return { ok: true, json: async () => ({ enterprise: true }) } as Response;
+      }
+      return { ok: false } as Response;
+    });
+
+    // Click on Bob to open the detail sheet
+    await user.click(within(screen.getByRole("table")).getByText("Bob User"));
+
+    // The new "Support" group should appear as a checkbox in the detail sheet
+    await waitFor(() => {
+      expect(screen.getByRole("checkbox", { name: /support/i })).toBeInTheDocument();
+    });
+  });
+
   describe("invite rows", () => {
     const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
     const pastDate = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
