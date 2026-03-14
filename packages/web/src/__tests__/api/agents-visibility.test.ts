@@ -91,6 +91,10 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue("anthropic"),
 }));
 
+vi.mock("@/lib/enterprise", () => ({
+  isEnterprise: vi.fn().mockResolvedValue(true),
+}));
+
 import { auth } from "@/lib/auth";
 import { updateAgent } from "@/lib/agents";
 import { db } from "@/db";
