@@ -6,7 +6,8 @@ export type { LicenseStatus, LicenseType } from "@/lib/license";
 // Production public key (ES256 / P-256)
 // Generated with: npx tsx scripts/generate-license.ts --generate-keypair
 const PRODUCTION_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
-REPLACE_WITH_ACTUAL_PUBLIC_KEY
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEaPYaiLnn7Z+EUywhGX4vOitboyzJ
+ce3W+NnSsTlbVzMRnXALwqra86Orhk9Sl4UWKEuebwltk+3OIuVy33oTWA==
 -----END PUBLIC KEY-----`;
 
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour

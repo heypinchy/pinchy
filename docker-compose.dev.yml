@@ -7,6 +7,7 @@ services:
       - DATABASE_URL=postgresql://pinchy:pinchy_dev@db:5432/pinchy
       - BETTER_AUTH_SECRET=dev-secret-do-not-use-in-production
       - BETTER_AUTH_URL=http://localhost:7777
+      - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY:-eyJhbGciOiJFUzI1NiJ9.eyJ0eXBlIjoicGFpZCIsImZlYXR1cmVzIjpbImVudGVycHJpc2UiXSwiaXNzIjoiaGV5cGluY2h5LmNvbSIsInN1YiI6InBpbmNoeS1kZXYiLCJpYXQiOjE3NzM0ODUyMzQsImV4cCI6MjA4ODg0NTIzNH0.h6stBWDrHP2LnXBv18RDk9_y71_b8FvFU6IodCBJkldlLoW6uxX6P7Hr_SL8OM-jhaNqUu7BIMaTYvbqW28buA}
     volumes:
       - ./packages/web:/app/packages/web
       - /app/packages/web/node_modules
