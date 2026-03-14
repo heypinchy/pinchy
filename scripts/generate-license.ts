@@ -63,7 +63,15 @@ async function generateLicense() {
     privateKeyPem = process.env.PINCHY_LICENSE_PRIVATE_KEY!;
   }
 
-  const privateKey = await jose.importPKCS8(privateKeyPem, "ES256");
+  let privateKey;
+  try {
+    privateKey = await jose.importPKCS8(privateKeyPem, "ES256");
+  } catch {
+    console.error(
+      "Error: could not parse private key. Ensure it is a valid PKCS8 PEM for ES256."
+    );
+    process.exit(1);
+  }
 
   const jwt = await new jose.SignJWT({
     type,
