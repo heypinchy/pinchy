@@ -4,7 +4,7 @@ import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
 import { groups } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type UpdateDetail } from "@/lib/audit";
 
 export async function PATCH(
   request: NextRequest,
@@ -33,19 +33,33 @@ export async function PATCH(
   }
   if (description !== undefined) data.description = description?.trim() || null;
 
-  const [updated] = await db.update(groups).set(data).where(eq(groups.id, groupId)).returning();
-
-  if (!updated) {
+  // Fetch existing group for 404 check and diff
+  const [existing] = await db.select().from(groups).where(eq(groups.id, groupId));
+  if (!existing) {
     return NextResponse.json({ error: "Group not found" }, { status: 404 });
   }
 
-  appendAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "group.updated",
-    resource: `group:${groupId}`,
-    detail: { changes: Object.keys(data) },
-  }).catch(() => {});
+  const [updated] = await db.update(groups).set(data).where(eq(groups.id, groupId)).returning();
+
+  // Build diff of actual changes
+  const changes: Record<string, { from: unknown; to: unknown }> = {};
+  if (data.name !== undefined && data.name !== existing.name) {
+    changes.name = { from: existing.name, to: data.name };
+  }
+  if (data.description !== undefined && data.description !== existing.description) {
+    changes.description = { from: existing.description, to: data.description };
+  }
+
+  if (Object.keys(changes).length > 0) {
+    const detail: UpdateDetail = { changes };
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "group.updated",
+      resource: `group:${groupId}`,
+      detail,
+    }).catch(() => {});
+  }
 
   return NextResponse.json(updated);
 }

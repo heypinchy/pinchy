@@ -23,10 +23,15 @@ vi.mock("@/lib/invites", () => ({
   createInvite: vi.fn(),
 }));
 
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/db", () => {
   const mockFrom = vi.fn().mockImplementation(() => {
     const result = Promise.resolve([]);
     (result as any).innerJoin = vi.fn().mockResolvedValue([]);
+    (result as any).where = vi.fn().mockResolvedValue([]);
     return result;
   });
   return {
@@ -45,6 +50,7 @@ vi.mock("@/db", () => {
 
 import { auth } from "@/lib/auth";
 import { createInvite } from "@/lib/invites";
+import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
 
 // ── POST /api/users/invite ───────────────────────────────────────────────
@@ -232,6 +238,97 @@ describe("POST /api/users/invite", () => {
       role: "member",
       createdBy: "admin-1",
       groupIds: ["group-1", "group-2"],
+    });
+  });
+
+  it("logs group names instead of IDs in audit detail", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const fakeInvite = {
+      id: "invite-4",
+      email: "grouped@test.com",
+      role: "member",
+      type: "invite",
+      token: "group-token",
+      createdAt: new Date(),
+      expiresAt: new Date(),
+    };
+    vi.mocked(createInvite).mockResolvedValueOnce(fakeInvite as never);
+
+    const mockWhere = vi.fn().mockResolvedValueOnce([
+      { id: "group-1", name: "Engineering" },
+      { id: "group-2", name: "Marketing" },
+    ]);
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({ where: mockWhere }),
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/invite", {
+      method: "POST",
+      body: JSON.stringify({
+        email: "grouped@test.com",
+        role: "member",
+        groupIds: ["group-1", "group-2"],
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "admin-1",
+      eventType: "user.invited",
+      detail: {
+        email: "grouped@test.com",
+        role: "member",
+        groups: [
+          { id: "group-1", name: "Engineering" },
+          { id: "group-2", name: "Marketing" },
+        ],
+      },
+    });
+  });
+
+  it("omits groups from audit detail when no groupIds provided", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const fakeInvite = {
+      id: "invite-5",
+      email: "solo@test.com",
+      role: "member",
+      type: "invite",
+      token: "solo-token",
+      createdAt: new Date(),
+      expiresAt: new Date(),
+    };
+    vi.mocked(createInvite).mockResolvedValueOnce(fakeInvite as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/invite", {
+      method: "POST",
+      body: JSON.stringify({
+        email: "solo@test.com",
+        role: "member",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "admin-1",
+      eventType: "user.invited",
+      detail: {
+        email: "solo@test.com",
+        role: "member",
+      },
     });
   });
 });

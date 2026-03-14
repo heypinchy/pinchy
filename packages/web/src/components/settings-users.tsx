@@ -87,6 +87,14 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
     fetchUsers();
   }, [fetchUsers]);
 
+  useEffect(() => {
+    if (!selectedUser || !isEnterprise) return;
+    fetch("/api/groups")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => setAllGroups(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, [selectedUser, isEnterprise]);
+
   async function handleRevoke(inviteId: string) {
     await fetch(`/api/users/invites/${inviteId}`, { method: "DELETE" });
     fetchUsers();

@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
-import { groups, userGroups } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { groups, userGroups, users } from "@/db/schema";
+import { eq, inArray } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
 
 async function groupExists(groupId: string): Promise<boolean> {
@@ -63,6 +63,28 @@ export async function PUT(
     return NextResponse.json({ error: "Group not found" }, { status: 404 });
   }
 
+  // Load existing members to compute diff
+  const existingMembers = await db
+    .select({ userId: userGroups.userId })
+    .from(userGroups)
+    .where(eq(userGroups.groupId, groupId));
+  const existingIds = new Set(existingMembers.map((m) => m.userId));
+  const newIds = new Set(userIds as string[]);
+
+  const addedIds = [...newIds].filter((id) => !existingIds.has(id));
+  const removedIds = [...existingIds].filter((id) => !newIds.has(id));
+
+  // Resolve names for changed users
+  const changedIds = [...addedIds, ...removedIds];
+  const userNames =
+    changedIds.length > 0
+      ? await db
+          .select({ id: users.id, name: users.name })
+          .from(users)
+          .where(inArray(users.id, changedIds))
+      : [];
+  const nameMap = new Map(userNames.map((u) => [u.id, u.name]));
+
   await db.delete(userGroups).where(eq(userGroups.groupId, groupId));
 
   if (userIds.length > 0) {
@@ -74,7 +96,11 @@ export async function PUT(
     actorId: session.user.id!,
     eventType: "group.members_updated",
     resource: `group:${groupId}`,
-    detail: { memberCount: userIds.length },
+    detail: {
+      added: addedIds.map((id) => ({ id, name: nameMap.get(id) ?? id })),
+      removed: removedIds.map((id) => ({ id, name: nameMap.get(id) ?? id })),
+      memberCount: userIds.length,
+    },
   }).catch(() => {});
 
   return NextResponse.json({ success: true });

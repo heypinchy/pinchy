@@ -364,6 +364,70 @@ describe("InviteDialog", () => {
     });
   });
 
+  it("refetches groups each time dialog opens", async () => {
+    // First open: no groups yet
+    fetchSpy.mockImplementation((url: string | URL | Request) => {
+      const urlStr = resolveUrl(url);
+      if (urlStr.includes("/api/enterprise/status")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ enterprise: true }),
+        } as Response);
+      }
+      if (urlStr.includes("/api/groups")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [],
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ token: "test" }),
+      } as Response);
+    });
+
+    const { rerender } = render(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+
+    // Wait for effects to settle
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Create Invite" })).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Groups")).not.toBeInTheDocument();
+
+    // Close dialog
+    rerender(<InviteDialog open={false} onOpenChange={vi.fn()} />);
+
+    // Now groups exist — update mock
+    fetchSpy.mockImplementation((url: string | URL | Request) => {
+      const urlStr = resolveUrl(url);
+      if (urlStr.includes("/api/enterprise/status")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ enterprise: true }),
+        } as Response);
+      }
+      if (urlStr.includes("/api/groups")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => [{ id: "g1", name: "Engineering" }],
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({ token: "test" }),
+      } as Response);
+    });
+
+    // Reopen dialog
+    rerender(<InviteDialog open={true} onOpenChange={vi.fn()} />);
+
+    // Groups should now be visible without a page reload
+    await waitFor(() => {
+      expect(screen.getByText("Groups")).toBeInTheDocument();
+    });
+    expect(screen.getByLabelText("Engineering")).toBeInTheDocument();
+  });
+
   it("should reset form when dialog closes and reopens", async () => {
     const user = userEvent.setup();
     const onOpenChange = vi.fn();

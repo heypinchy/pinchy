@@ -79,11 +79,11 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
   }, [open]);
 
   useEffect(() => {
-    if (!isEnterprise) return;
+    if (!open || !isEnterprise) return;
     fetch("/api/groups")
       .then((r) => r.json())
       .then((data) => setGroups(Array.isArray(data) ? data : []));
-  }, [isEnterprise]);
+  }, [open, isEnterprise]);
 
   async function onSubmit(values: InviteFormValues) {
     setError(null);

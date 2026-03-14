@@ -195,7 +195,7 @@ describe("PATCH /api/users/[userId]", () => {
       expect.objectContaining({
         eventType: "user.role_updated",
         resource: "user:user-1",
-        detail: { userName: "Max", from: "member", to: "admin" },
+        detail: { changes: { role: { from: "member", to: "admin" } }, userName: "Max" },
       })
     );
   });

@@ -41,16 +41,7 @@ export async function PUT(
 
   const userName = userRows[0].name;
 
-  // 2. Fetch new group names (for audit snapshot)
-  const newGroupNames =
-    groupIds.length > 0
-      ? await db
-          .select({ id: groups.id, name: groups.name })
-          .from(groups)
-          .where(inArray(groups.id, groupIds))
-      : [];
-
-  // 3. Fetch previous memberships (for diff)
+  // 2. Fetch previous memberships (for diff)
   const previousMemberships = await db
     .select({ groupId: userGroups.groupId })
     .from(userGroups)
@@ -59,14 +50,25 @@ export async function PUT(
   const previousGroupIds = new Set(previousMemberships.map((m) => m.groupId));
   const newGroupIdSet = new Set(groupIds);
 
+  // 3. Fetch all relevant group names (new + removed) for audit snapshot
+  const allRelevantIds = [...new Set([...groupIds, ...previousGroupIds])];
+  const groupRows =
+    allRelevantIds.length > 0
+      ? await db
+          .select({ id: groups.id, name: groups.name })
+          .from(groups)
+          .where(inArray(groups.id, allRelevantIds))
+      : [];
+  const nameMap = new Map(groupRows.map((g) => [g.id, g.name]));
+
   // 4. Compute added/removed diff
-  const added = newGroupNames
-    .filter((g) => !previousGroupIds.has(g.id))
-    .map((g) => ({ id: g.id, name: g.name }));
+  const added = groupIds
+    .filter((id: string) => !previousGroupIds.has(id))
+    .map((id: string) => ({ id, name: nameMap.get(id) ?? id }));
 
   const removed = [...previousGroupIds]
     .filter((id) => !newGroupIdSet.has(id))
-    .map((id) => ({ id }));
+    .map((id) => ({ id, name: nameMap.get(id) ?? id }));
 
   // 5. Delete all existing userGroups for this userId
   await db.delete(userGroups).where(eq(userGroups.userId, userId));
@@ -86,7 +88,7 @@ export async function PUT(
       userName,
       added,
       removed,
-      groupCount: groupIds.length,
+      memberCount: groupIds.length,
     },
   }).catch(() => {});
 

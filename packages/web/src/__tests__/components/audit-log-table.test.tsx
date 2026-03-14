@@ -249,7 +249,7 @@ describe("AuditLogTable", () => {
     });
   });
 
-  it("should show destructive badge for denied/failed events", async () => {
+  it("should show secondary badge for all event types including deleted/failed", async () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
@@ -257,8 +257,8 @@ describe("AuditLogTable", () => {
     });
 
     const failedBadges = screen.getAllByText("auth.failed");
-    // At least one badge should have the destructive variant
-    expect(failedBadges.some((el) => el.getAttribute("data-variant") === "destructive")).toBe(true);
+    // All event type badges should use secondary variant — no destructive styling
+    expect(failedBadges.every((el) => el.getAttribute("data-variant") === "secondary")).toBe(true);
   });
 
   it("should show secondary badge for normal events", async () => {

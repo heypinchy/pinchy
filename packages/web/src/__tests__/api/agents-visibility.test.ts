@@ -53,10 +53,17 @@ vi.mock("@/db", () => {
   const mockDeleteWhere = vi.fn().mockResolvedValue(undefined);
   const mockDelete = vi.fn().mockReturnValue({ where: mockDeleteWhere });
 
+  // Default chainable select (for group name lookups etc.)
+  const defaultSelect = () => ({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue([]),
+    }),
+  });
+
   return {
     db: {
       insert: mockInsert,
-      select: vi.fn(),
+      select: vi.fn().mockImplementation(defaultSelect),
       delete: mockDelete,
     },
   };

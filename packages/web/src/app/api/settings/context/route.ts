@@ -1,3 +1,4 @@
+// audit-exempt: org context editing is a content change, not a security-sensitive admin action
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";

@@ -1,3 +1,4 @@
+// audit-exempt: invite claim is a self-service action by the invited user, not an admin action
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";

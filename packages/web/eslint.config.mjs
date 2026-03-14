@@ -2,6 +2,7 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 import security from "eslint-plugin-security";
+import requireAuditLog from "./eslint-rules/require-audit-log.js";
 
 const eslintConfig = defineConfig([
   ...nextVitals,
@@ -22,6 +23,20 @@ const eslintConfig = defineConfig([
     files: ["src/__tests__/**"],
     rules: {
       "@typescript-eslint/no-explicit-any": "off",
+    },
+  },
+  // Require appendAuditLog() in API route mutation handlers
+  {
+    files: ["src/app/api/**/route.ts"],
+    plugins: {
+      pinchy: {
+        rules: {
+          "require-audit-log": requireAuditLog,
+        },
+      },
+    },
+    rules: {
+      "pinchy/require-audit-log": "error",
     },
   },
   // Override default ignores of eslint-config-next.

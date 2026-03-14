@@ -142,6 +142,14 @@ Example patterns:
 { "email": "max@example.com", "role": "member", "groups": [{ "id": "g1", "name": "Engineering" }] }
 ```
 
+### Checklist for API Routes with State Changes
+When creating or modifying any POST/PUT/PATCH/DELETE endpoint:
+1. `appendAuditLog()` call present? If not needed: add `// audit-exempt: <reason>` comment
+2. Event type uses a valid `AuditResource` prefix (agent, group, user, settings, config)?
+3. Detail payload uses the correct base type (`UpdateDetail` for `*.updated`, `DeleteDetail` for `*.deleted`, `MembershipDetail` for `*.members_updated`)?
+4. All referenced entities snapshotted as `{ id, name }` pairs (`EntityRef`)?
+5. Test exists that verifies the `appendAuditLog` call with correct payload?
+
 ### Documentation
 - **Docs site**: `docs/` directory, built with Astro Starlight. Deployed to [docs.heypinchy.com](https://docs.heypinchy.com).
 - **Docs-first process**: Every feature plan MUST include a documentation update task. When behavior changes, docs must be updated in the same PR.
