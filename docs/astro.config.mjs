@@ -116,6 +116,7 @@ export default defineConfig({
           items: [
             { label: 'Create a Knowledge Base Agent', slug: 'guides/create-knowledge-base-agent' },
             { label: 'Mount Data Directories', slug: 'guides/mount-data-directories' },
+            { label: 'Enterprise Setup', slug: 'guides/enterprise-setup' },
             { label: 'Hardening', slug: 'guides/hardening' },
           ],
         },

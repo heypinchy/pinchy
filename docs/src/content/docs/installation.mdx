@@ -55,6 +55,9 @@ ENCRYPTION_KEY=
 
 # HMAC secret for audit trail signing (auto-generated if not provided)
 AUDIT_HMAC_SECRET=
+
+# Enterprise license key (optional — enables Groups, RBAC, agent access control)
+PINCHY_ENTERPRISE_KEY=
 ```
 
 **`BETTER_AUTH_SECRET`** — Used by Better Auth for session security. Generate one with `openssl rand -hex 32`.
@@ -64,6 +67,8 @@ AUDIT_HMAC_SECRET=
 **`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. If omitted, Pinchy auto-generates a secret at startup. Set this explicitly if you need consistent signatures across restarts or deployments.
 
 **`DB_PASSWORD`** — Password for the PostgreSQL `pinchy` user.
+
+**`PINCHY_ENTERPRISE_KEY`** — License key for enterprise features (Groups, RBAC, agent access control). Optional — can also be entered via **Settings → License** in the UI. See [Enterprise Setup](/guides/enterprise-setup/) for details.
 
 ### Data persistence
 
