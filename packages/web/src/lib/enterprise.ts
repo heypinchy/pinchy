@@ -1,5 +1,5 @@
 import { getSetting } from "@/lib/settings";
-import { validateLicense } from "@/lib/license";
+import { validateLicense, type LicenseStatus } from "@/lib/license";
 
 export type { LicenseStatus, LicenseType } from "@/lib/license";
 
@@ -11,7 +11,7 @@ REPLACE_WITH_ACTUAL_PUBLIC_KEY
 
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
-let cachedStatus: import("@/lib/license").LicenseStatus | null = null;
+let cachedStatus: LicenseStatus | null = null;
 let cacheTimestamp = 0;
 
 /**
@@ -30,7 +30,7 @@ async function loadToken(): Promise<string> {
  */
 export async function getLicenseStatus(
   publicKeyPem: string = PRODUCTION_PUBLIC_KEY
-): Promise<import("@/lib/license").LicenseStatus> {
+): Promise<LicenseStatus> {
   const now = Date.now();
   if (cachedStatus && now - cacheTimestamp < CACHE_TTL_MS) {
     return cachedStatus;
