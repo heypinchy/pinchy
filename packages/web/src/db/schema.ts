@@ -169,6 +169,25 @@ export const inviteGroups = pgTable(
   (table) => [primaryKey({ columns: [table.inviteId, table.groupId] })]
 );
 
+export const channelLinks = pgTable(
+  "channel_links",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    channel: text("channel").notNull(),
+    channelUserId: text("channel_user_id").notNull(),
+    linkedAt: timestamp("linked_at").notNull().defaultNow(),
+  },
+  (table) => [
+    index("channel_links_user_id_idx").on(table.userId),
+    index("channel_links_channel_user_idx").on(table.channel, table.channelUserId),
+  ]
+);
+
 export const settings = pgTable("settings", {
   key: text("key").primaryKey(),
   value: text("value").notNull(),
