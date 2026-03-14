@@ -8,6 +8,7 @@ import { ClientRouter } from "./src/server/client-router";
 import { SessionCache } from "./src/server/session-cache";
 import { validateWsSession } from "./src/server/ws-auth";
 import { restartState } from "./src/server/restart-state";
+import { setOpenClawClient } from "./src/server/openclaw-client";
 import { logCapture } from "./src/lib/log-capture";
 
 logCapture.install();
@@ -166,6 +167,8 @@ app.prepare().then(async () => {
       reconnectIntervalMs: 1000,
       maxReconnectAttempts: Infinity,
     });
+
+    setOpenClawClient(openclawClient);
 
     let hasConnected = false;
     let errorLogged = false;
