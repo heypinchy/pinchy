@@ -22,6 +22,7 @@ import { AgentSettingsFile } from "@/components/agent-settings-file";
 import { AgentSettingsPersonality } from "@/components/agent-settings-personality";
 import { AgentSettingsPermissions } from "@/components/agent-settings-permissions";
 import { AgentSettingsAccess } from "@/components/agent-settings-access";
+import { AgentTelegramSettings } from "@/components/agent-telegram-settings";
 import { useRestart } from "@/components/restart-provider";
 
 interface Agent {
@@ -356,6 +357,7 @@ export default function AgentSettingsPage() {
                 Access {dirtyTabs.has("access") && <DirtyDot />}
               </TabsTrigger>
             )}
+            {showPermissions && <TabsTrigger value="channels">Channels</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="general" keepMounted>
@@ -406,6 +408,12 @@ export default function AgentSettingsPage() {
                 currentGroupIds={agent.groupIds || []}
                 onChange={handleAccessChange}
               />
+            </TabsContent>
+          )}
+
+          {showPermissions && (
+            <TabsContent value="channels">
+              <AgentTelegramSettings agentId={agentId} />
             </TabsContent>
           )}
         </Tabs>

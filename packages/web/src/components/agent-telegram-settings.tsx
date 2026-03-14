@@ -1,0 +1,244 @@
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
+import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
+import { CircleCheck, ChevronDown, Lock } from "lucide-react";
+
+interface TelegramConfig {
+  configured: boolean;
+  hint?: string;
+  botUsername?: string;
+}
+
+interface AgentTelegramSettingsProps {
+  agentId: string;
+}
+
+export function AgentTelegramSettings({ agentId }: AgentTelegramSettingsProps) {
+  const [config, setConfig] = useState<TelegramConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [botToken, setBotToken] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const [error, setError] = useState("");
+  const [guideOpen, setGuideOpen] = useState(false);
+  const [connectedUsername, setConnectedUsername] = useState<string | null>(null);
+
+  const fetchConfig = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/agents/${agentId}/channels/telegram`);
+      if (res.ok) {
+        const data = await res.json();
+        setConfig(data);
+      }
+    } catch {
+      // Silently fail — show unconfigured state
+      setConfig({ configured: false });
+    } finally {
+      setLoading(false);
+    }
+  }, [agentId]);
+
+  useEffect(() => {
+    fetchConfig();
+  }, [fetchConfig]);
+
+  async function handleConnect() {
+    if (!botToken.trim()) return;
+
+    setSaving(true);
+    setError("");
+
+    try {
+      const res = await fetch(`/api/agents/${agentId}/channels/telegram`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ botToken }),
+      });
+
+      if (!res.ok) {
+        let message = "Failed to connect bot";
+        try {
+          const data = await res.json();
+          if (data.error) message = data.error;
+        } catch {
+          // response body was not JSON
+        }
+        throw new Error(message);
+      }
+
+      const data = await res.json();
+      setConnectedUsername(data.botUsername || null);
+      setBotToken("");
+      toast.success("Telegram bot connected");
+      fetchConfig();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Failed to connect bot";
+      setError(message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDisconnect() {
+    setRemoving(true);
+    setError("");
+
+    try {
+      const res = await fetch(`/api/agents/${agentId}/channels/telegram`, {
+        method: "DELETE",
+      });
+
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || "Failed to disconnect bot");
+      }
+
+      setConnectedUsername(null);
+      toast.success("Telegram bot disconnected");
+      fetchConfig();
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to disconnect bot");
+    } finally {
+      setRemoving(false);
+    }
+  }
+
+  if (loading) {
+    return <div className="text-muted-foreground text-sm">Loading...</div>;
+  }
+
+  const isConfigured = config?.configured === true;
+
+  return (
+    <div className="space-y-6 pt-4">
+      <Card>
+        <CardHeader>
+          <CardTitle>Telegram</CardTitle>
+          <CardDescription>
+            Connect a Telegram bot so users can chat with this agent directly in Telegram.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {isConfigured ? (
+            <>
+              <div className="flex items-center gap-2">
+                <CircleCheck className="size-5 text-green-600 shrink-0" />
+                <span className="text-sm font-medium">Connected</span>
+                {connectedUsername && <Badge variant="secondary">@{connectedUsername}</Badge>}
+              </div>
+              {config?.hint && (
+                <p className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Lock className="size-3" />
+                  Token ending in ····{config.hint}
+                </p>
+              )}
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="text-destructive hover:text-destructive"
+                    disabled={removing}
+                  >
+                    {removing ? "Disconnecting..." : "Disconnect"}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Disconnect Telegram bot?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will remove the Telegram bot connection for this agent. Users will no
+                      longer be able to chat with the agent via Telegram.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction variant="destructive" onClick={handleDisconnect}>
+                      Disconnect
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            </>
+          ) : (
+            <>
+              <Collapsible open={guideOpen} onOpenChange={setGuideOpen}>
+                <CollapsibleTrigger className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
+                  <ChevronDown
+                    className={`size-4 transition-transform ${guideOpen ? "rotate-180" : ""}`}
+                  />
+                  How to create a Telegram bot
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="mt-3 space-y-3 rounded-md border p-3 text-sm">
+                    <ol className="space-y-1.5 list-decimal list-inside text-muted-foreground">
+                      <li>
+                        Open Telegram and search for{" "}
+                        <a
+                          href="https://t.me/BotFather"
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="text-primary hover:underline"
+                        >
+                          @BotFather
+                        </a>
+                      </li>
+                      <li>
+                        Send <code className="bg-muted px-1 rounded">/newbot</code> and follow the
+                        prompts
+                      </li>
+                      <li>Copy the bot token BotFather gives you</li>
+                      <li>Paste it below</li>
+                    </ol>
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+
+              <div className="space-y-2">
+                <Label htmlFor="telegram-bot-token">Bot Token</Label>
+                <Input
+                  id="telegram-bot-token"
+                  type="password"
+                  placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+                  value={botToken}
+                  onChange={(e) => {
+                    setBotToken(e.target.value);
+                    setError("");
+                  }}
+                />
+                <p className="text-xs text-muted-foreground flex items-center gap-1">
+                  <Lock className="size-3" />
+                  Your bot token is encrypted at rest and never leaves your server.
+                </p>
+              </div>
+
+              {error && <p className="text-sm text-destructive">{error}</p>}
+
+              <Button onClick={handleConnect} disabled={!botToken.trim() || saving}>
+                {saving ? "Connecting..." : "Connect"}
+              </Button>
+            </>
+          )}
+        </CardContent>
+      </Card>
+    </div>
+  );
+}

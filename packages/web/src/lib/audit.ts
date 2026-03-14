@@ -42,7 +42,9 @@ export type AuditEventType =
   | "group.deleted"
   | "group.members_updated"
   | "user.groups_updated"
-  | "user.role_updated";
+  | "user.role_updated"
+  | "channel.configured"
+  | "channel.removed";
 
 interface HmacFields {
   timestamp: Date;
