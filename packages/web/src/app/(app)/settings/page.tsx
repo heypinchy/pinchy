@@ -9,6 +9,7 @@ import { SettingsUsers } from "@/components/settings-users";
 import { SettingsContext } from "@/components/settings-context";
 import { SettingsProfile } from "@/components/settings-profile";
 import { SettingsGroups } from "@/components/settings-groups";
+import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 
 interface ProviderStatus {
   defaultProvider: string | null;
@@ -94,6 +95,7 @@ export default function SettingsPage() {
           <TabsList>
             <TabsTrigger value="context">Context {contextDirty && <DirtyDot />}</TabsTrigger>
             <TabsTrigger value="profile">Profile {profileDirty && <DirtyDot />}</TabsTrigger>
+            <TabsTrigger value="telegram">Telegram</TabsTrigger>
             {isAdmin && (
               <TabsTrigger value="provider">Provider {providerDirty && <DirtyDot />}</TabsTrigger>
             )}
@@ -115,6 +117,10 @@ export default function SettingsPage() {
               userName={session?.user?.name ?? ""}
               onDirtyChange={handleProfileDirtyChange}
             />
+          </TabsContent>
+
+          <TabsContent value="telegram">
+            <TelegramLinkSettings />
           </TabsContent>
 
           {isAdmin && (
