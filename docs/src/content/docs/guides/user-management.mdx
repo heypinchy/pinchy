@@ -1,0 +1,165 @@
+---
+title: User Management
+description: How to invite users, manage roles, reset passwords, and configure profile settings in Pinchy.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Pinchy uses an invite-only system for user onboarding. Admins create invite links, new users claim them by setting up their account, and then they are guided through an onboarding conversation with Smithers. This guide covers the full lifecycle: inviting, onboarding, managing, and deactivating users.
+
+## Prerequisites
+
+- Pinchy is running (see [Quick Start](/getting-started/))
+- You are logged in as an admin
+
+## Inviting users
+
+Only admins can invite new users. Here is how:
+
+1. Go to **Settings → Users**.
+2. Click the **Invite User** button in the top right.
+3. Fill out the invite form:
+   - **Email** (optional) — Pre-fills the email for the new user's account. If left empty, the invite link can be used by anyone.
+   - **Role** — Choose **Member** or **Admin**.
+   - **Groups** (enterprise only) — If you have an active enterprise license and have created groups, you can assign the new user to one or more groups during invitation. See [Groups](/concepts/groups/) for details.
+4. Click **Create Invite**.
+5. Copy the generated invite link and share it with the user.
+
+On devices that support it, a **Share** button appears instead of Copy, letting you send the link directly via your operating system's share sheet.
+
+<Aside type="tip">
+  The email field is optional. If you leave it empty, anyone with the link can
+  claim the invite. If you enter an email, the new account is created with that
+  address.
+</Aside>
+
+### Invite token details
+
+- Each invite token is **valid for 7 days** from creation.
+- Tokens are **single-use** — once claimed, the token cannot be reused.
+- Tokens are stored as SHA-256 hashes in the database. The plain token only appears once, in the invite link.
+- If a token expires before the user claims it, you can **resend** the invite from the user list (this creates a fresh token).
+- Pending invites can be **revoked** at any time by clicking the Revoke button next to the invite entry.
+
+## Accepting an invite
+
+When a new user opens the invite link, they see the account creation page:
+
+1. The page shows the heading "You've been invited to Pinchy".
+2. The user enters their **name** and chooses a **password** (minimum 8 characters).
+3. After clicking **Create account**, a success message confirms the account was created.
+4. The user clicks **Continue to sign in** and logs in with their email and password.
+5. After their first login, Smithers (the onboarding agent) greets them with a short interview to learn about the user and set up their personal context.
+
+<Aside type="note">
+  If the invite link is invalid or expired, the user sees an error message. Ask
+  an admin to resend the invite.
+</Aside>
+
+## Managing users
+
+The **Settings → Users** page shows all users and pending invites in a single list. Each entry displays:
+
+- **Name** — The user's display name (or a dash for pending invites).
+- **Email** — The user's email address.
+- **Role** — Admin or Member.
+- **Groups** — Group memberships (visible only with an active enterprise license).
+- **Status** — Active, Pending (invite not yet claimed), Expired (invite token expired), or Deactivated.
+
+### Viewing user details
+
+Click on any active user row to open the user detail panel. From here you can:
+
+- **Change their role** — Switch between Admin and Member using the Role dropdown. You cannot change your own role, and you cannot demote the last remaining admin.
+- **Manage group memberships** (enterprise only) — Check or uncheck groups to add or remove the user from groups.
+- **Reset their password** — Generate a password reset link (see below).
+- **Deactivate the user** — Prevent the user from logging in (see below).
+
+Click **Save** to apply any role or group changes.
+
+### Changing a user's role
+
+1. Click on the user in the user list.
+2. In the detail panel, change the **Role** dropdown from Member to Admin (or vice versa).
+3. Click **Save**.
+
+<Aside type="caution">
+  You cannot demote the last admin. Pinchy requires at least one active admin at
+  all times.
+</Aside>
+
+### Resetting a user's password
+
+If a user forgets their password, an admin can generate a reset link:
+
+1. Click on the user in the user list.
+2. In the detail panel, click **Reset Password**.
+3. A reset link appears. Copy it and share it with the user.
+4. The user opens the link, enters a new password, and regains access.
+
+Reset links follow the same rules as invite tokens: valid for 7 days, single-use.
+
+### Deactivating a user
+
+Deactivation prevents a user from logging in without permanently deleting their data.
+
+1. Click on the user in the user list.
+2. In the detail panel, click **Deactivate**.
+3. Confirm the action in the dialog.
+
+When a user is deactivated:
+
+- They can no longer log in.
+- Their personal agents are soft-deleted.
+- Their data remains in the database and can be restored.
+- The user appears as "Deactivated" in the user list with reduced opacity.
+
+You cannot deactivate your own account.
+
+### Reactivating a user
+
+To restore a deactivated user:
+
+1. Click on the deactivated user in the user list.
+2. In the detail panel, click **Reactivate**.
+
+The user can log in again immediately.
+
+### Managing pending invites
+
+Pending and expired invites appear in the user list alongside active users:
+
+- **Pending invites** show a Pending status badge and a **Revoke** button to cancel the invite.
+- **Expired invites** show an Expired status badge and a **Resend** button to generate a fresh invite link.
+
+## Profile settings
+
+Every user (not just admins) can manage their own profile at **Settings → Profile**. This page has three sections:
+
+### Changing your name
+
+1. Go to **Settings → Profile**.
+2. Update the **Name** field.
+3. Click **Save**.
+
+### Changing your password
+
+1. Go to **Settings → Profile**.
+2. In the Change Password section, enter your **current password**, then your **new password** (minimum 8 characters), and confirm it.
+3. Click **Change Password**.
+
+### Logging out
+
+Click the **Log out** button in the Session section to end your current session and return to the login page.
+
+## Audit trail
+
+All user management actions performed by admins are logged in the audit trail, including:
+
+- User invited
+- Role changed
+- User deactivated
+- User reactivated
+- Password reset initiated
+
+See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.

@@ -1,0 +1,150 @@
+---
+title: Agent Settings
+description: Reference for all agent configuration options — general settings, personality presets, instructions, permissions, and access control.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Every agent in Pinchy is configured through a settings page with up to five tabs. To open it, navigate to an agent's chat and click the **gear icon** in the top bar.
+
+| Tab              | What it controls                    | Who can see it                          |
+| ---------------- | ----------------------------------- | --------------------------------------- |
+| **General**      | Name, tagline, model, agent type    | Admins and personal agent owners        |
+| **Personality**  | Avatar, personality preset, SOUL.md | Admins and personal agent owners        |
+| **Instructions** | AGENTS.md operating instructions    | Admins and personal agent owners        |
+| **Permissions**  | Tool allow-list, directory access   | Admins only (shared agents)             |
+| **Access**       | Visibility mode, group assignment   | Admins only (shared agents, enterprise) |
+
+The Permissions and Access tabs are only visible for shared agents and only to admins. Personal agents (the auto-created agent each user gets) do not show these tabs.
+
+## General tab
+
+The General tab controls the agent's identity and the AI model it uses.
+
+| Field       | Description                                                                                   |
+| ----------- | --------------------------------------------------------------------------------------------- |
+| **Name**    | The agent's display name, shown in the sidebar and chat header. Maximum 50 characters.        |
+| **Tagline** | A short description shown below the agent name in the sidebar. Optional.                      |
+| **Model**   | The AI model the agent uses, grouped by configured provider (e.g. OpenAI, Anthropic, Ollama). |
+
+Below the form fields, the tab shows the **agent type** — either "Personal agent" or "Shared agent." Personal agents are private to their owner with isolated memory and conversations. Shared agents are accessible to all team members, and memory from all conversations is shared.
+
+The **Danger Zone** at the bottom of the General tab lets admins delete shared agents. Personal agents cannot be deleted.
+
+## Personality tab
+
+The Personality tab controls how the agent looks and communicates.
+
+### Avatar
+
+Each agent gets a randomly generated avatar. Click **Re-roll** to generate a new one. The built-in Smithers agent has a fixed avatar that cannot be changed.
+
+### Personality presets
+
+Presets define an agent's tone, communication style, and character. Selecting a preset fills in the SOUL.md file with a matching personality definition. Four presets are available:
+
+| Preset            | Suggested name | Style                                                                                               |
+| ----------------- | -------------- | --------------------------------------------------------------------------------------------------- |
+| **The Butler**    | Smithers       | Formal, competent, dry humor. Warm but professional — like an executive assistant at a top firm.    |
+| **The Professor** | Ada            | Patient, thorough, slightly academic. Loves explaining connections between concepts. Cites sources. |
+| **The Pilot**     | Jet            | Brief, decisive, calm under pressure. No wasted words. Uses structured formats.                     |
+| **The Coach**     | Maya           | Warm, encouraging, invested in your success. Asks reflective questions. Direct when needed.         |
+
+When you switch presets, a confirmation dialog appears if the current SOUL.md content has been modified, since switching replaces the existing text. If the SOUL.md content matches the target preset exactly, the switch happens without confirmation.
+
+A **"Customized"** badge appears next to the heading when the SOUL.md content no longer matches any preset — either because you edited it manually or started from scratch.
+
+### Custom personality via SOUL.md
+
+Click **Customize** below the preset picker to expand the SOUL.md editor. This is a Markdown file that defines the agent's personality and identity. The agent reads it at the start of every conversation.
+
+You can use a preset as a starting point and fine-tune the text, or write a completely custom personality from scratch. Editing the SOUL.md content after selecting a preset automatically marks the personality as "Customized."
+
+All presets include the instruction "Always respond in the same language the user writes in" — consider keeping this in custom personalities as well.
+
+## Instructions tab
+
+The Instructions tab provides an editor for the agent's **AGENTS.md** file. This is separate from SOUL.md (personality) and serves a different purpose:
+
+- **SOUL.md** (Personality tab) — _who_ the agent is: tone, style, character
+- **AGENTS.md** (Instructions tab) — _what_ the agent does: tasks, domain-specific rules, operating procedures
+
+Think of AGENTS.md as the agent's job description. Use it to define what the agent should do, how it should handle specific tasks, and any domain-specific rules it should follow.
+
+The agent reads both files at the start of every conversation. Separating personality from instructions makes it easy to change one without affecting the other — for example, switching an agent from "The Butler" to "The Pilot" personality without rewriting its task instructions.
+
+## Permissions tab
+
+<Aside>
+  The Permissions tab is only visible to admins and only for shared agents. See
+  [Agent Permissions](/concepts/agent-permissions/) for full details.
+</Aside>
+
+The Permissions tab controls which tools an agent can use. Pinchy uses an **allow-list** model: agents start with zero tools enabled, and admins grant specific capabilities.
+
+Tools are organized into two categories:
+
+**Safe Tools** — sandboxed access to admin-approved directories:
+
+| Tool                      | Description                                       |
+| ------------------------- | ------------------------------------------------- |
+| List approved directories | List files in directories the admin has selected  |
+| Read approved files       | Read file contents from approved directories only |
+
+When a safe tool is enabled, the **Allowed Directories** picker appears so you can select which directories under `/data/` the agent can access.
+
+**Powerful Tools** — direct server access:
+
+| Tool           | Description                                       |
+| -------------- | ------------------------------------------------- |
+| Run commands   | Execute shell commands on the server              |
+| Read any file  | Read any file on the system, without restrictions |
+| Write files    | Create and modify files on the system             |
+| Browse the web | Fetch web pages                                   |
+| Search the web | Perform web searches                              |
+
+For a deeper explanation of the permission model, defense in depth, and how permissions are translated to OpenClaw configuration, see [Agent Permissions](/concepts/agent-permissions/).
+
+## Access tab
+
+<Aside type="tip">
+  Access control is an enterprise feature. It requires an active enterprise
+  license key. See [Groups](/concepts/groups/) for details on creating and
+  managing groups.
+</Aside>
+
+The Access tab controls which users can see and use an agent. Without an enterprise license, this tab shows an upgrade prompt.
+
+### Visibility modes
+
+| Mode           | Behavior                                                          |
+| -------------- | ----------------------------------------------------------------- |
+| **All users**  | Every authenticated user can see and chat with this agent.        |
+| **Restricted** | Only admins and members of selected groups can access this agent. |
+
+New agents are created with **Restricted** visibility by default. This lets admins configure and test an agent before making it available.
+
+### Group assignment
+
+When visibility is set to **Restricted**, a group picker appears listing all groups configured in **Settings**. Check one or more groups to grant their members access. If no groups are selected, only admins can see the agent.
+
+## Creating agents
+
+Agents are created from the **Create New Agent** page. The flow is:
+
+1. **Choose a template** — select either **Knowledge Base** (pre-configured with safe file tools) or **Custom Agent** (starts with no tools).
+2. **Configure basics** — enter a name and optional tagline. Knowledge Base agents also require selecting at least one data directory.
+3. **Create** — the agent is created and the runtime restarts. You are redirected to the new agent's chat.
+
+After creation, all settings can be changed at any time through the settings page described above.
+
+## Save behavior
+
+Changes across all tabs are tracked independently. A small amber dot appears on any tab with unsaved changes, and the bottom bar shows "Unsaved changes."
+
+The save button behavior depends on what changed:
+
+- **Save** — appears when only personality, instructions, or access settings changed. Saves without disruption.
+- **Save & Restart** — appears when General (name, model) or Permissions settings changed. These changes require restarting the OpenClaw agent runtime to take effect. A confirmation dialog lists all pending changes and warns that active chats will be briefly disconnected.
+
+If you try to navigate away with unsaved changes, a warning dialog asks you to confirm before leaving.

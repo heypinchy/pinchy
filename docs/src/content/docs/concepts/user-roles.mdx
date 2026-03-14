@@ -1,0 +1,82 @@
+---
+title: User Roles and Permissions
+description: How Pinchy's two-role system controls what users can see and do across the platform.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Pinchy uses two roles — **Admin** and **Member** — to control access to platform features. Every user has exactly one role.
+
+## Roles
+
+### Admin
+
+Admins have full control over the Pinchy platform. They can manage users, configure providers, create and modify agents, and view the audit trail.
+
+The first user account created during initial setup is automatically an admin. Additional admins can be created by inviting users with the Admin role.
+
+### Member
+
+Members can chat with agents they have access to, manage their own profile and personal context, and use their personal Smithers agent. They cannot change platform-wide settings or manage other users.
+
+## How roles are assigned
+
+- **First user:** The setup wizard creates the first account as an admin. There is no way to complete setup without creating an admin.
+- **Invited users:** When an admin invites a new user (via **Settings → Users**), they choose the role — either Admin or Member. The invited user receives that role when they claim their invite and create their account.
+- **Role changes:** Admins can change any user's role after creation via **Settings → Users**. Pinchy prevents demoting the last remaining admin to ensure there is always at least one.
+
+## Permission matrix
+
+| Action                                | Admin | Member |
+| ------------------------------------- | :---: | :----: |
+| Chat with accessible agents           |  Yes  |  Yes   |
+| Edit personal context                 |  Yes  |  Yes   |
+| Edit profile (name, password)         |  Yes  |  Yes   |
+| Use personal Smithers agent           |  Yes  |  Yes   |
+| Create shared agents                  |  Yes  |   No   |
+| Edit / delete shared agents           |  Yes  |   No   |
+| Configure agent permissions (tools)   |  Yes  |   No   |
+| Configure agent visibility and groups |  Yes  |   No   |
+| Manage LLM provider keys              |  Yes  |   No   |
+| Edit organization context             |  Yes  |   No   |
+| Invite and manage users               |  Yes  |   No   |
+| Change user roles                     |  Yes  |   No   |
+| Create and manage groups              |  Yes  |   No   |
+| View and export audit trail           |  Yes  |   No   |
+| Manage enterprise license key         |  Yes  |   No   |
+
+## Agent visibility and roles
+
+Roles interact with agent visibility to determine which agents a user can see in the sidebar.
+
+- **Admins** see all agents — shared agents of any visibility, plus every user's personal agents.
+- **Members** see:
+  - Their own personal Smithers agent
+  - Shared agents with visibility set to **All users**
+  - Shared agents with **Restricted** visibility, if they belong to an assigned group (enterprise feature)
+
+Members cannot see other users' personal agents or restricted agents they are not grouped into.
+
+Only admins can change an agent's visibility setting or assign groups to it. For details on visibility modes, see [Agent Permissions](/concepts/agent-permissions/).
+
+## Settings access
+
+The Settings page shows different tabs depending on the user's role:
+
+| Settings tab | Admin | Member |
+| ------------ | :---: | :----: |
+| Context      |  Yes  |  Yes   |
+| Profile      |  Yes  |  Yes   |
+| Provider     |  Yes  |   No   |
+| Users        |  Yes  |   No   |
+| Groups       |  Yes  |   No   |
+| License      |  Yes  |   No   |
+
+Members see only the Context and Profile tabs. Admin-only tabs are completely hidden — not just disabled.
+
+<Aside type="tip" title="Groups for granular access">
+  Roles provide platform-wide access control. For more granular, per-agent
+  access control, use [Groups](/concepts/groups/) to scope agent visibility to
+  specific teams. Groups are an enterprise feature — activate them with a
+  license key.
+</Aside>

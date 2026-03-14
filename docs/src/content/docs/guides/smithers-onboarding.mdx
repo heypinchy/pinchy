@@ -1,0 +1,81 @@
+---
+title: Smithers Onboarding Interview
+description: How the Smithers onboarding interview works, what it asks, and how context is saved for each user.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+When a new user logs in to Pinchy for the first time, they are greeted by **Smithers** — their personal AI assistant. Smithers kicks off a short onboarding interview to learn about the user, so that every agent on the platform can give better, more relevant answers.
+
+## What is Smithers?
+
+Smithers is the personal assistant that every Pinchy user gets automatically. Each user has their own Smithers instance with its own conversation history and context. Think of Smithers as an executive assistant — warm, professional, and eager to help.
+
+Smithers is created the first time a user logs in, pre-configured with the "Butler" personality preset.
+
+## The onboarding interview
+
+The first time you open Smithers, he starts a short conversational interview. This is not a form — Smithers asks questions naturally, one or two at a time, and builds on your answers.
+
+### What Smithers asks
+
+Smithers gathers three key details:
+
+1. **Role and responsibilities** — What you do and what you work on, so agents can pitch answers at the right level.
+2. **Preferred language** — Smithers pays attention to the language you write in and remembers it.
+3. **Communication style** — Whether you prefer brief and direct answers or detailed explanations.
+
+The conversation is flexible. If you want to ask Smithers something else mid-interview, he will help you first and then steer back to the onboarding.
+
+### Admin vs. regular user onboarding
+
+Regular users go through the personal onboarding described above. **Admins** get an additional step: after saving the personal context, Smithers asks about the **organization**.
+
+The organization questions cover:
+
+- Company name and what the company does
+- Team structure
+- Domain-specific terminology and conventions
+
+This organization context is applied to all shared agents on the platform, so every team member benefits from it.
+
+<Aside type="tip">
+  Regular users only have `save_user_context` available. Admins also get
+  `save_org_context`, which is why only admins are asked about the organization.
+</Aside>
+
+## How context is saved
+
+Smithers uses the **pinchy-context** plugin to save context through two tools:
+
+- **`save_user_context`** — Saves a Markdown-formatted summary of the user's personal context (role, preferences, work style). Available to all users during onboarding.
+- **`save_org_context`** — Saves a Markdown-formatted summary of the organization context (company info, team structure, conventions). Available to admins only.
+
+When Smithers calls these tools, the context is stored in the database and written to the agent workspace. Once both the personal context (and organization context for admins) are saved, the onboarding instructions are removed from Smithers' prompt automatically, and future conversations proceed without the onboarding flow.
+
+<Aside>
+  The onboarding prompt is written to `USER.md` in the agent's workspace.
+  OpenClaw reads this file as part of the system prompt. Once onboarding
+  completes, the file is replaced with the saved context and the `ONBOARDING.md`
+  file is deleted.
+</Aside>
+
+## Editing context later
+
+After onboarding, you can review and edit your context at any time:
+
+1. Go to **Settings → Context**.
+2. **Personal context** is shown for all users — edit your role, preferences, or communication style.
+3. **Organization context** is shown for admins — edit company info, team structure, or terminology.
+
+Changes to context are picked up by agents on the next conversation.
+
+## Summary
+
+| Step                 | Who         | What happens                                                                                            |
+| -------------------- | ----------- | ------------------------------------------------------------------------------------------------------- |
+| First login          | All users   | Smithers greets you and starts the onboarding interview                                                 |
+| Personal context     | All users   | Smithers asks about your role, language, and communication style, then saves it via `save_user_context` |
+| Organization context | Admins only | Smithers asks about the company and saves it via `save_org_context`                                     |
+| Onboarding complete  | All users   | Onboarding instructions are removed; Smithers behaves as a regular assistant going forward              |
+| Edit later           | All users   | Go to **Settings → Context** to update your context at any time                                         |
