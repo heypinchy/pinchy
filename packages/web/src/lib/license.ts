@@ -11,10 +11,7 @@ export interface LicenseStatus {
   daysRemaining?: number;
 }
 
-const INACTIVE: LicenseStatus = Object.freeze({
-  active: false,
-  features: Object.freeze([] as string[]),
-});
+const INACTIVE: LicenseStatus = { active: false, features: [] };
 
 /**
  * Validate a JWT license token against a public key.
