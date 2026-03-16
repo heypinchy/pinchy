@@ -7,7 +7,7 @@ RUN npm install -g openclaw@2026.3.7
 COPY config/openclaw.json /root/.openclaw/openclaw.json
 COPY config/ensure-gateway-token.js /ensure-gateway-token.js
 COPY config/start-openclaw.sh /start-openclaw.sh
-RUN chmod +x /start-openclaw.sh
+RUN sed -i 's/\r$//' /start-openclaw.sh && chmod +x /start-openclaw.sh
 
 EXPOSE 18789
 
