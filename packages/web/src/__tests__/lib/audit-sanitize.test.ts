@@ -238,4 +238,45 @@ describe("sanitizeDetail", () => {
       expect(result.result).toBe("[REDACTED]");
     });
   });
+
+  describe("env-file line redaction", () => {
+    it("redacts values in SECRET_KEY=value lines", () => {
+      const input = { result: "SECRET_KEY=my-super-secret-value" };
+      const result = sanitizeDetail(input) as any;
+      expect(result.result).toContain("SECRET_KEY=");
+      expect(result.result).toContain("[REDACTED]");
+      expect(result.result).not.toContain("my-super-secret-value");
+    });
+
+    it("redacts values in multiline env file content", () => {
+      const input = {
+        result:
+          "APP_NAME=pinchy\nAPI_KEY=sk-shortkey\nDATABASE_URL=postgres://localhost\nSECRET_TOKEN=abc123\nDEBUG=true",
+      };
+      const result = sanitizeDetail(input) as any;
+      expect(result.result).toContain("APP_NAME=pinchy");
+      expect(result.result).toContain("API_KEY=[REDACTED]");
+      expect(result.result).toContain("DATABASE_URL=postgres://localhost");
+      expect(result.result).toContain("SECRET_TOKEN=[REDACTED]");
+      expect(result.result).toContain("DEBUG=true");
+    });
+
+    it("handles PASSWORD=value lines", () => {
+      const input = { result: "DB_PASSWORD=hunter2" };
+      const result = sanitizeDetail(input) as any;
+      expect(result.result).toBe("DB_PASSWORD=[REDACTED]");
+    });
+
+    it("handles CREDENTIAL=value lines", () => {
+      const input = { result: "AWS_CREDENTIAL=AKIA1234" };
+      const result = sanitizeDetail(input) as any;
+      expect(result.result).toContain("AWS_CREDENTIAL=[REDACTED]");
+    });
+
+    it("does not redact non-sensitive env lines", () => {
+      const input = { result: "APP_NAME=pinchy\nDEBUG=true\nPORT=3000" };
+      const result = sanitizeDetail(input) as any;
+      expect(result.result).toBe("APP_NAME=pinchy\nDEBUG=true\nPORT=3000");
+    });
+  });
 });

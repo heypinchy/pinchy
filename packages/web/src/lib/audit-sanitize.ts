@@ -36,14 +36,23 @@ const SECRET_PATTERNS: RegExp[] = [
   /EAA[a-zA-Z0-9]{20,}/g, // Meta/Facebook access token
 ];
 
+const ENV_SECRET_LINE = /^([A-Z_]*(SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL)[A-Z_]*)=(.+)$/gim;
+
 function redactPatterns(value: string): string {
   if (value === REDACTED) return value;
 
   let result = value;
+
+  // First: env-file lines (preserves key, redacts value)
+  ENV_SECRET_LINE.lastIndex = 0;
+  result = result.replace(ENV_SECRET_LINE, `$1=${REDACTED}`);
+
+  // Then: inline secret patterns
   for (const pattern of SECRET_PATTERNS) {
     pattern.lastIndex = 0;
     result = result.replace(pattern, REDACTED);
   }
+
   return result;
 }
 
