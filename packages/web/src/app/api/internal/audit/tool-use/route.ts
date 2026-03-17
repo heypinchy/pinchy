@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { appendAuditLog } from "@/lib/audit";
+import { sanitizeDetail } from "@/lib/audit-sanitize";
 
 interface ToolAuditPayload {
   phase: "start" | "end";
@@ -112,13 +113,15 @@ export async function POST(request: NextRequest) {
   const actorType = userId ? "user" : "agent";
   const actorId = userId ?? payload.agentId;
 
+  const sanitizedDetail = sanitizeDetail(detail);
+
   await appendAuditLog({
     actorType,
     actorId,
     // Change 2: eventType becomes tool.<toolName>
     eventType: `tool.${payload.toolName}`,
     resource: `agent:${payload.agentId}`,
-    detail,
+    detail: sanitizedDetail,
   });
 
   return NextResponse.json({ success: true });

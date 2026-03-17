@@ -64,6 +64,78 @@ interface RecentToolStart {
   at: number;
 }
 
+// ── Standalone sanitization (no imports from @pinchy/web) ───────────
+
+const REDACTED = "[REDACTED]";
+const MAX_DEPTH = 10;
+
+// SYNC: This sanitization logic is duplicated in packages/web/src/lib/audit-sanitize.ts
+// Keep both copies in sync when adding/removing patterns.
+const SENSITIVE_KEYS = [
+  "password", "secret", "token", "apikey", "api_key",
+  "authorization", "credential", "private_key", "privatekey",
+  "passphrase", "access_key", "accesskey", "client_secret", "clientsecret",
+];
+
+const SECRET_PATTERNS: RegExp[] = [
+  /sk-ant-[a-zA-Z0-9\-]{20,}/g,
+  /sk-[a-zA-Z0-9]{20,}/g,
+  /ghp_[a-zA-Z0-9]{36,}/g,
+  /gho_[a-zA-Z0-9]{36,}/g,
+  /github_pat_[a-zA-Z0-9_]{20,}/g,
+  /xoxb-[a-zA-Z0-9\-]+/g,
+  /xoxp-[a-zA-Z0-9\-]+/g,
+  /Bearer\s+[a-zA-Z0-9._\-]{20,}/g,
+  /[0-9]{8,10}:[a-zA-Z0-9_\-]{35}/g,
+  /EAA[a-zA-Z0-9]{20,}/g,
+];
+
+const ENV_SECRET_LINE = /^([A-Z_]*(SECRET|KEY|TOKEN|PASSWORD|CREDENTIAL)[A-Z_]*)=(.+)$/gmi;
+
+function isSensitiveKey(key: string): boolean {
+  const lower = key.toLowerCase();
+  return SENSITIVE_KEYS.some((pattern) => lower.includes(pattern));
+}
+
+function redactPatterns(value: string): string {
+  if (value === REDACTED) return value;
+  let result = value;
+  ENV_SECRET_LINE.lastIndex = 0;
+  result = result.replace(ENV_SECRET_LINE, `$1=${REDACTED}`);
+  for (const pattern of SECRET_PATTERNS) {
+    pattern.lastIndex = 0;
+    result = result.replace(pattern, REDACTED);
+  }
+  return result;
+}
+
+function sanitizeValue(value: unknown, depth: number): unknown {
+  if (value === null || value === undefined) return value;
+  if (depth >= MAX_DEPTH) return value;
+  if (Array.isArray(value)) return value.map((item) => sanitizeValue(item, depth + 1));
+  if (typeof value === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+      if (isSensitiveKey(key) && val !== null && val !== undefined) {
+        result[key] = REDACTED;
+      } else {
+        result[key] = sanitizeValue(val, depth + 1);
+      }
+    }
+    return result;
+  }
+  if (typeof value === "string") return redactPatterns(value);
+  return value;
+}
+
+function sanitizePayloadFields(payload: ToolAuditPayload): ToolAuditPayload {
+  return {
+    ...payload,
+    params: sanitizeValue(payload.params, 0) as Record<string, unknown>,
+    result: sanitizeValue(payload.result, 0),
+  };
+}
+
 function normalizeBaseUrl(url: string): string {
   return url.replace(/\/+$/, "");
 }
@@ -155,7 +227,7 @@ const plugin = {
         at: Date.now(),
       });
 
-      await postToolAuditEvent(cfg, api.logger, {
+      await postToolAuditEvent(cfg, api.logger, sanitizePayloadFields({
         phase: "start",
         toolName: beforeEvent.toolName,
         params: beforeEvent.params,
@@ -164,7 +236,7 @@ const plugin = {
         agentId,
         sessionKey: ctx.sessionKey,
         sessionId: ctx.sessionId,
-      });
+      }));
     });
 
     api.on("after_tool_call", async (event, ctx) => {
@@ -179,7 +251,7 @@ const plugin = {
         extractAgentIdFromSessionKey(sessionKey) ??
         recent?.agentId;
 
-      await postToolAuditEvent(cfg, api.logger, {
+      await postToolAuditEvent(cfg, api.logger, sanitizePayloadFields({
         phase: "end",
         toolName: afterEvent.toolName,
         params: afterEvent.params,
@@ -191,7 +263,7 @@ const plugin = {
         result: afterEvent.result,
         error: afterEvent.error,
         durationMs: afterEvent.durationMs,
-      });
+      }));
     });
   },
 };

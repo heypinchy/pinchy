@@ -61,6 +61,25 @@ This lets admins see not just which tools were used, but also what results they 
 
 **Chat messages are not logged in the audit trail.** The audit trail records actions and events, not conversation content. Chat messages are stored separately in the conversation history managed by OpenClaw.
 
+## Sensitive data redaction
+
+Tool parameters and results are automatically sanitized before being stored in the audit log. This prevents accidental exposure of secrets such as API keys, passwords, or tokens.
+
+### What gets redacted
+
+- **Sensitive field names** — Any JSON field whose name contains `password`, `secret`, `token`, `apiKey`, `credential`, or similar terms has its value replaced with `[REDACTED]`.
+- **Known secret patterns** — String values matching known formats (OpenAI keys `sk-…`, GitHub tokens `ghp_…`, Slack tokens `xoxb-…`, Bearer tokens, Telegram bot tokens, Meta access tokens, and others) are replaced with `[REDACTED]`.
+- **Environment file content** — When a tool reads a file containing lines like `SECRET_KEY=value`, the value portion is redacted while the key name is preserved.
+
+### Defense in Depth
+
+Sanitization runs at two layers:
+
+1. **Plugin layer** — The `pinchy-audit` OpenClaw plugin redacts sensitive data before sending it to Pinchy over HTTP. Secrets never leave the agent runtime.
+2. **API layer** — The tool-use endpoint redacts again before writing to the database. This catches anything the plugin layer might have missed.
+
+The redaction rules are built-in and require no configuration.
+
 ## How HMAC signing works
 
 Each audit log entry is signed with **HMAC-SHA256** to ensure integrity:
