@@ -33,10 +33,22 @@ vi.mock("@/components/provider-key-form", () => ({
   },
 }));
 
+let capturedUsersRefreshKey: number | undefined;
 vi.mock("@/components/settings-users", () => ({
-  SettingsUsers: ({ currentUserId }: { currentUserId: string }) => (
-    <div data-testid="mock-settings-users">Users (currentUserId: {currentUserId})</div>
-  ),
+  SettingsUsers: ({
+    currentUserId,
+    refreshKey,
+  }: {
+    currentUserId: string;
+    refreshKey?: number;
+  }) => {
+    capturedUsersRefreshKey = refreshKey;
+    return (
+      <div data-testid="mock-settings-users">
+        Users (currentUserId: {currentUserId}, refreshKey: {refreshKey})
+      </div>
+    );
+  },
 }));
 
 let capturedOnEnterpriseActivated: (() => void) | undefined;
@@ -156,6 +168,7 @@ describe("Settings Page", () => {
     capturedOnDirtyChangeProfile = undefined;
     capturedOnEnterpriseActivated = undefined;
     capturedGroupsRefreshKey = undefined;
+    capturedUsersRefreshKey = undefined;
     mockUseSession.mockReturnValue(adminSession);
   });
 
@@ -303,6 +316,24 @@ describe("Settings Page", () => {
 
       await waitFor(() => {
         expect(capturedGroupsRefreshKey).toBeGreaterThan(initialRefreshKey ?? -1);
+      });
+    });
+
+    it("should increment SettingsUsers refreshKey when license is activated", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage />);
+
+      await waitFor(() => screen.getByTestId("mock-settings-license"));
+
+      const initialRefreshKey = capturedUsersRefreshKey;
+
+      act(() => {
+        capturedOnEnterpriseActivated?.();
+      });
+
+      await waitFor(() => {
+        expect(capturedUsersRefreshKey).toBeGreaterThan(initialRefreshKey ?? -1);
       });
     });
   });

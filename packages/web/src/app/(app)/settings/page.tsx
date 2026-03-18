@@ -154,7 +154,10 @@ function SettingsPageInner() {
 
           {isAdmin && (
             <TabsContent value="users" keepMounted>
-              <SettingsUsers currentUserId={session?.user?.id ?? ""} />
+              <SettingsUsers
+                currentUserId={session?.user?.id ?? ""}
+                refreshKey={enterpriseRefreshKey}
+              />
             </TabsContent>
           )}
 
