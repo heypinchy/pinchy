@@ -96,6 +96,17 @@ export function SettingsPageContent({ initialTab }: { initialTab?: string }) {
     setProfileDirty(isDirty);
   }, []);
 
+  if (isPending) {
+    return (
+      <div className="overflow-y-auto">
+        <div className="p-4 md:p-8 max-w-3xl">
+          <h1 className="text-2xl font-bold mb-6">Settings</h1>
+          <div className="h-10 w-64 bg-muted animate-pulse rounded" />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="overflow-y-auto">
       <div className="p-4 md:p-8 max-w-3xl">
