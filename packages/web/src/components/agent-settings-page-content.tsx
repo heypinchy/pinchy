@@ -87,12 +87,11 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   const params = useParams();
   const router = useRouter();
   const agentId = params.agentId as string;
-  const { data: session } = authClient.useSession();
+  const { data: session, isPending } = authClient.useSession();
   const { triggerRestart } = useRestart();
   const isAdmin = session?.user?.role === "admin";
-  const visibleTabs: AgentSettingsTab[] = isAdmin
-    ? [...AGENT_SETTINGS_TABS]
-    : ["general", "personality", "instructions"];
+  const visibleTabs: AgentSettingsTab[] =
+    isPending || isAdmin ? [...AGENT_SETTINGS_TABS] : ["general", "personality", "instructions"];
   const [activeTab, setActiveTab] = useTabParam("general", visibleTabs, initialTab);
 
   const [agent, setAgent] = useState<Agent | null>(null);

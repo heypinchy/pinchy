@@ -27,9 +27,11 @@ function DirtyDot() {
 }
 
 export function SettingsPageContent({ initialTab }: { initialTab?: string }) {
-  const { data: session } = authClient.useSession();
+  const { data: session, isPending } = authClient.useSession();
   const isAdmin = session?.user?.role === "admin";
-  const visibleTabs: SettingsTab[] = isAdmin ? [...SETTINGS_TABS] : ["context", "profile"];
+  // Use all tabs until session loads to avoid flicker when initialTab is an admin tab
+  const visibleTabs: SettingsTab[] =
+    isPending || isAdmin ? [...SETTINGS_TABS] : ["context", "profile"];
   const [activeTab, setActiveTab] = useTabParam("context", visibleTabs, initialTab);
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);
