@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { useSearchParams, usePathname, useRouter } from "next/navigation";
 
 export const SETTINGS_TABS = [
@@ -28,6 +28,9 @@ export type AgentSettingsTab = (typeof AGENT_SETTINGS_TABS)[number];
  * Validates the URL param against the provided set of valid tabs.
  * Falls back to `defaultTab` when the param is missing or invalid.
  * Removes the param when switching back to the default tab (clean URLs).
+ *
+ * Derives the current tab directly from searchParams on every render
+ * (no useState) so it survives SSR → client hydration correctly.
  */
 export function useTabParam<T extends string>(
   defaultTab: T,
@@ -38,13 +41,11 @@ export function useTabParam<T extends string>(
   const router = useRouter();
 
   const urlTab = searchParams.get("tab") as T | null;
-  const initialTab = urlTab && validTabs.includes(urlTab) ? urlTab : defaultTab;
-  const [tab, setTabState] = useState<T>(initialTab);
+  const tab = urlTab && validTabs.includes(urlTab) ? urlTab : defaultTab;
 
   const setTab = useCallback(
     (newTab: string) => {
       if (!validTabs.includes(newTab as T)) return;
-      setTabState(newTab as T);
 
       const params = new URLSearchParams(searchParams.toString());
       if (newTab === defaultTab) {

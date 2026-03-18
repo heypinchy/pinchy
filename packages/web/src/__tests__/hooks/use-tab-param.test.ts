@@ -40,10 +40,14 @@ describe("useTabParam", () => {
       result.current[1]("license");
     });
 
-    expect(result.current[0]).toBe("license");
     expect(mockReplace).toHaveBeenCalledWith("/settings?tab=license", {
       scroll: false,
     });
+
+    // Simulate the URL update that router.replace triggers
+    mockSearchParams.set("tab", "license");
+    const { result: updated } = renderHook(() => useTabParam("context", SETTINGS_TABS));
+    expect(updated.current[0]).toBe("license");
   });
 
   it("removes the tab param when switching to the default tab", () => {
@@ -55,8 +59,12 @@ describe("useTabParam", () => {
       result.current[1]("context");
     });
 
-    expect(result.current[0]).toBe("context");
     expect(mockReplace).toHaveBeenCalledWith("/settings", { scroll: false });
+
+    // Simulate the URL update
+    mockSearchParams.delete("tab");
+    const { result: updated } = renderHook(() => useTabParam("context", SETTINGS_TABS));
+    expect(updated.current[0]).toBe("context");
   });
 
   it("falls back to default tab when URL param is not in valid set", () => {
@@ -65,6 +73,19 @@ describe("useTabParam", () => {
     const { result } = renderHook(() => useTabParam("context", SETTINGS_TABS));
 
     expect(result.current[0]).toBe("context");
+  });
+
+  it("syncs when search params change after initial render (hydration)", () => {
+    // Simulates: initial render has no params (SSR), then params arrive (client hydration)
+    const { result, rerender } = renderHook(() => useTabParam("context", SETTINGS_TABS));
+
+    expect(result.current[0]).toBe("context");
+
+    // Search params arrive after hydration
+    mockSearchParams.set("tab", "license");
+    rerender();
+
+    expect(result.current[0]).toBe("license");
   });
 
   it("falls back to default when member tab set excludes admin tabs", () => {
