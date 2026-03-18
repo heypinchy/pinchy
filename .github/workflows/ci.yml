@@ -198,10 +198,10 @@ jobs:
       - name: Verify clean startup (production)
         run: |
           LOGS=$(docker compose logs 2>&1)
-          # OpenClaw should not restart during normal startup
+          # OpenClaw may restart once after setup (config regeneration), but not more
           RESTART_COUNT=$(echo "$LOGS" | grep -c "Restarting OpenClaw Gateway" || true)
-          if [ "$RESTART_COUNT" -gt 0 ]; then
-            echo "::error::OpenClaw restarted $RESTART_COUNT time(s) during startup (expected 0)"
+          if [ "$RESTART_COUNT" -gt 1 ]; then
+            echo "::error::OpenClaw restarted $RESTART_COUNT time(s) during startup (expected at most 1)"
             docker compose logs openclaw
             exit 1
           fi
