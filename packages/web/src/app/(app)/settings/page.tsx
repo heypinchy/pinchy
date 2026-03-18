@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, Suspense } from "react";
 import { authClient } from "@/lib/auth-client";
+import { useTabParam } from "@/hooks/use-tab-param";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProviderKeyForm } from "@/components/provider-key-form";
@@ -25,9 +26,10 @@ function DirtyDot() {
   );
 }
 
-export default function SettingsPage() {
+function SettingsPageInner() {
   const { data: session } = authClient.useSession();
   const isAdmin = session?.user?.role === "admin";
+  const [activeTab, setActiveTab] = useTabParam("context");
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [loading, setLoading] = useState(true);
@@ -91,7 +93,7 @@ export default function SettingsPage() {
       <div className="p-4 md:p-8 max-w-3xl">
         <h1 className="text-2xl font-bold mb-6">Settings</h1>
 
-        <Tabs defaultValue="context">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
           <div className="overflow-x-auto">
             <TabsList>
               <TabsTrigger value="context">Context {contextDirty && <DirtyDot />}</TabsTrigger>
@@ -164,5 +166,13 @@ export default function SettingsPage() {
         </Tabs>
       </div>
     </div>
+  );
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense>
+      <SettingsPageInner />
+    </Suspense>
   );
 }

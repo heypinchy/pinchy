@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useParams, useRouter } from "next/navigation";
+import { useTabParam } from "@/hooks/use-tab-param";
 import { authClient } from "@/lib/auth-client";
 import { toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -82,12 +83,13 @@ function DirtyDot() {
   );
 }
 
-export default function AgentSettingsPage() {
+function AgentSettingsPageInner() {
   const params = useParams();
   const router = useRouter();
   const agentId = params.agentId as string;
   const { data: session } = authClient.useSession();
   const { triggerRestart } = useRestart();
+  const [activeTab, setActiveTab] = useTabParam("general");
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -335,7 +337,7 @@ export default function AgentSettingsPage() {
           <h1 className="text-2xl font-bold">Agent Settings</h1>
         </div>
 
-        <Tabs defaultValue="general">
+        <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList>
             <TabsTrigger value="general">
               General {dirtyTabs.has("general") && <DirtyDot />}
@@ -476,5 +478,13 @@ export default function AgentSettingsPage() {
         </AlertDialogContent>
       </AlertDialog>
     </div>
+  );
+}
+
+export default function AgentSettingsPage() {
+  return (
+    <Suspense>
+      <AgentSettingsPageInner />
+    </Suspense>
   );
 }

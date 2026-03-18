@@ -45,7 +45,9 @@ vi.mock("@/components/restart-provider", () => ({
 
 vi.mock("next/navigation", () => ({
   useParams: vi.fn().mockReturnValue({ agentId: "agent-1" }),
-  useRouter: vi.fn().mockReturnValue({ refresh: vi.fn(), push: vi.fn() }),
+  useRouter: vi.fn().mockReturnValue({ refresh: vi.fn(), push: vi.fn(), replace: vi.fn() }),
+  useSearchParams: vi.fn().mockReturnValue(new URLSearchParams()),
+  usePathname: vi.fn().mockReturnValue("/chat/agent-1/settings"),
 }));
 
 vi.mock("@/lib/auth-client", () => ({
