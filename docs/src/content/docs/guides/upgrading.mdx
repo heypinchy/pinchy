@@ -1,0 +1,102 @@
+---
+title: Upgrading Pinchy
+description: How to update Pinchy to a new version safely.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Pinchy handles most upgrade steps automatically — database migrations run on startup, and the OpenClaw configuration is regenerated from your current settings. A typical upgrade takes under a minute.
+
+## Standard upgrade
+
+<Steps>
+
+1. **Back up your database**
+
+   Before any upgrade, create a database backup. This lets you roll back if anything goes wrong.
+
+   ```bash
+   docker compose exec db pg_dump -U pinchy pinchy > backup-$(date +%Y%m%d).sql
+   ```
+
+2. **Pull the new version**
+
+   ```bash
+   cd pinchy
+   git fetch --tags
+   git checkout v0.2.0  # or the version you're upgrading to
+   ```
+
+3. **Rebuild and start**
+
+   ```bash
+   docker compose up --build
+   ```
+
+   This rebuilds the Docker images, applies any pending database migrations, regenerates the OpenClaw configuration, and restarts all services.
+
+4. **Verify**
+
+   Open [http://localhost:7777](http://localhost:7777) and confirm everything works. Check the logs for any warnings:
+
+   ```bash
+   docker compose logs pinchy --tail 50
+   ```
+
+</Steps>
+
+## What happens automatically
+
+You don't need to worry about these — Pinchy handles them on every startup:
+
+- **Database migrations** — Drizzle ORM tracks which migrations have been applied and only runs new ones. This is idempotent and safe to run repeatedly.
+- **OpenClaw configuration** — Rebuilt from your database state (agents, providers, permissions) every time Pinchy starts. Config format changes between versions are handled transparently.
+- **Plugins** — Copied from the source code into the OpenClaw extensions volume during the Docker build.
+
+## What you might need to check
+
+- **New environment variables** — Check the release notes for any new variables. Pinchy won't crash if they're missing (features may just be disabled), but review them in your `.env` file.
+- **Docker Compose changes** — If `docker-compose.yml` changed between versions (new volumes, new services), `git pull` picks those up automatically. New volumes are created on first start.
+
+## Restoring from backup
+
+If you need to roll back after an upgrade:
+
+<Steps>
+
+1. **Stop Pinchy**
+
+   ```bash
+   docker compose down
+   ```
+
+2. **Restore the database**
+
+   ```bash
+   docker compose up db -d
+   docker compose exec -T db psql -U pinchy pinchy < backup-YYYYMMDD.sql
+   ```
+
+3. **Check out the previous version**
+
+   ```bash
+   git checkout v0.1.0  # the version you were on before
+   ```
+
+4. **Rebuild and start**
+
+   ```bash
+   docker compose up --build
+   ```
+
+</Steps>
+
+<Aside type="caution">
+  Database migrations can't be reversed automatically. If you upgrade and then
+  need to go back, restore from the backup you made in step 1. This is why the
+  backup step matters.
+</Aside>
+
+## Version history
+
+Check the [Releases page](https://github.com/heypinchy/pinchy/releases) for detailed changelogs and any version-specific upgrade notes.

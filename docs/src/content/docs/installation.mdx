@@ -6,8 +6,9 @@ description: Environment variables, Docker services, and development setup.
 import { Aside } from "@astrojs/starlight/components";
 
 <Aside type="note">
-  This guide covers Pinchy v0.1.0. Check the [Releases
+  This guide covers Pinchy v0.2.0. Check the [Releases
   page](https://github.com/heypinchy/pinchy/releases) for newer versions.
+  Upgrading from v0.1.0? See the [Upgrade Guide](/guides/upgrading/).
 </Aside>
 
 ## System requirements
@@ -23,7 +24,7 @@ The simplest way to run Pinchy. One command starts the full stack.
 ```bash
 git clone https://github.com/heypinchy/pinchy.git
 cd pinchy
-git checkout v0.1.0
+git checkout v0.2.0
 docker compose up --build
 ```
 
@@ -35,7 +36,7 @@ The `docker-compose.yml` defines three services:
 | ---------- | ---------------- | ---------------- | ----------------------------- |
 | `pinchy`   | Custom (Next.js) | 7777 (exposed)   | Web UI, API, WebSocket bridge |
 | `openclaw` | Custom (Node.js) | 18789 (internal) | AI agent runtime              |
-| `db`       | `postgres:16`    | 5432 (internal)  | Database                      |
+| `db`       | `postgres:17`    | 5432 (internal)  | Database                      |
 
 Only port **7777** is exposed to the host. OpenClaw and PostgreSQL are only reachable within the Docker network.
 
