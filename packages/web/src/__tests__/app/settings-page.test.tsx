@@ -39,8 +39,20 @@ vi.mock("@/components/settings-users", () => ({
   ),
 }));
 
+let capturedOnEnterpriseActivated: (() => void) | undefined;
+vi.mock("@/components/settings-license", () => ({
+  SettingsLicense: ({ onEnterpriseActivated }: { onEnterpriseActivated?: () => void }) => {
+    capturedOnEnterpriseActivated = onEnterpriseActivated;
+    return <div data-testid="mock-settings-license">License</div>;
+  },
+}));
+
+let capturedGroupsRefreshKey: number | undefined;
 vi.mock("@/components/settings-groups", () => ({
-  SettingsGroups: () => <div data-testid="mock-settings-groups">Groups</div>,
+  SettingsGroups: ({ refreshKey }: { refreshKey?: number }) => {
+    capturedGroupsRefreshKey = refreshKey;
+    return <div data-testid="mock-settings-groups">Groups (refreshKey: {refreshKey})</div>;
+  },
 }));
 
 vi.mock("@/components/settings-context", () => ({
@@ -142,6 +154,8 @@ describe("Settings Page", () => {
     capturedOnDirtyChangeProvider = undefined;
     capturedOnDirtyChangeContext = undefined;
     capturedOnDirtyChangeProfile = undefined;
+    capturedOnEnterpriseActivated = undefined;
+    capturedGroupsRefreshKey = undefined;
     mockUseSession.mockReturnValue(adminSession);
   });
 
@@ -269,6 +283,26 @@ describe("Settings Page", () => {
 
       await waitFor(() => {
         expect(global.fetch).toHaveBeenCalledWith("/api/settings/providers");
+      });
+    });
+  });
+
+  describe("enterprise activation", () => {
+    it("should increment SettingsGroups refreshKey when license is activated", async () => {
+      setupAdminFetchMocks();
+
+      render(<SettingsPage />);
+
+      await waitFor(() => screen.getByTestId("mock-settings-license"));
+
+      const initialRefreshKey = capturedGroupsRefreshKey;
+
+      act(() => {
+        capturedOnEnterpriseActivated?.();
+      });
+
+      await waitFor(() => {
+        expect(capturedGroupsRefreshKey).toBeGreaterThan(initialRefreshKey ?? -1);
       });
     });
   });

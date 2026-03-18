@@ -40,6 +40,11 @@ function SettingsPageInner() {
   const [providerDirty, setProviderDirty] = useState(false);
   const [contextDirty, setContextDirty] = useState(false);
   const [profileDirty, setProfileDirty] = useState(false);
+  const [enterpriseRefreshKey, setEnterpriseRefreshKey] = useState(0);
+
+  const handleEnterpriseActivated = useCallback(() => {
+    setEnterpriseRefreshKey((k) => k + 1);
+  }, []);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -155,13 +160,13 @@ function SettingsPageInner() {
 
           {isAdmin && (
             <TabsContent value="groups" keepMounted>
-              <SettingsGroups />
+              <SettingsGroups refreshKey={enterpriseRefreshKey} />
             </TabsContent>
           )}
 
           {isAdmin && (
             <TabsContent value="license" keepMounted>
-              <SettingsLicense />
+              <SettingsLicense onEnterpriseActivated={handleEnterpriseActivated} />
             </TabsContent>
           )}
         </Tabs>

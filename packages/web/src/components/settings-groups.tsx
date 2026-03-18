@@ -54,7 +54,11 @@ interface GroupMember {
   groupId: string;
 }
 
-export function SettingsGroups() {
+interface SettingsGroupsProps {
+  refreshKey?: number;
+}
+
+export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
   const [groups, setGroups] = useState<Group[]>([]);
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
@@ -73,7 +77,7 @@ export function SettingsGroups() {
       .then((res) => (res.ok ? res.json() : { enterprise: false }))
       .then((data) => setIsEnterprise(data.enterprise))
       .catch(() => setIsEnterprise(false));
-  }, []);
+  }, [refreshKey]);
 
   const fetchData = useCallback(async () => {
     try {

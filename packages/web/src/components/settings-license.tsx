@@ -16,7 +16,11 @@ interface LicenseInfo {
   managedByEnv: boolean;
 }
 
-export function SettingsLicense() {
+interface SettingsLicenseProps {
+  onEnterpriseActivated?: () => void;
+}
+
+export function SettingsLicense({ onEnterpriseActivated }: SettingsLicenseProps) {
   const [license, setLicense] = useState<LicenseInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [keyInput, setKeyInput] = useState("");
@@ -54,6 +58,9 @@ export function SettingsLicense() {
         setLicense(data);
         setKeyInput("");
         setShowInput(false);
+        if (data.enterprise) {
+          onEnterpriseActivated?.();
+        }
       } else {
         const data = await res.json();
         setError(data.error ?? "Failed to save license key");
