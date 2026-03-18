@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, Suspense } from "react";
 import { authClient } from "@/lib/auth-client";
-import { useTabParam } from "@/hooks/use-tab-param";
+import { useTabParam, SETTINGS_TABS, type SettingsTab } from "@/hooks/use-tab-param";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ProviderKeyForm } from "@/components/provider-key-form";
@@ -29,7 +29,8 @@ function DirtyDot() {
 function SettingsPageInner() {
   const { data: session } = authClient.useSession();
   const isAdmin = session?.user?.role === "admin";
-  const [activeTab, setActiveTab] = useTabParam("context");
+  const visibleTabs: SettingsTab[] = isAdmin ? [...SETTINGS_TABS] : ["context", "profile"];
+  const [activeTab, setActiveTab] = useTabParam("context", visibleTabs);
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);
   const [loading, setLoading] = useState(true);

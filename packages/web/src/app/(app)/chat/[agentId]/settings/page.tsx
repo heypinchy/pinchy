@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useTabParam } from "@/hooks/use-tab-param";
+import { useTabParam, AGENT_SETTINGS_TABS, type AgentSettingsTab } from "@/hooks/use-tab-param";
 import { authClient } from "@/lib/auth-client";
 import { toast } from "sonner";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
@@ -89,7 +89,11 @@ function AgentSettingsPageInner() {
   const agentId = params.agentId as string;
   const { data: session } = authClient.useSession();
   const { triggerRestart } = useRestart();
-  const [activeTab, setActiveTab] = useTabParam("general");
+  const isAdmin = session?.user?.role === "admin";
+  const visibleTabs: AgentSettingsTab[] = isAdmin
+    ? [...AGENT_SETTINGS_TABS]
+    : ["general", "personality", "instructions"];
+  const [activeTab, setActiveTab] = useTabParam("general", visibleTabs);
 
   const [agent, setAgent] = useState<Agent | null>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
@@ -307,7 +311,6 @@ function AgentSettingsPageInner() {
     return <div className="p-8 text-muted-foreground">Agent not found.</div>;
   }
 
-  const isAdmin = session?.user?.role === "admin";
   const canEdit = isAdmin || agent.isPersonal;
   const canDelete = isAdmin && !agent.isPersonal;
   const showPermissions = isAdmin && !agent.isPersonal;
