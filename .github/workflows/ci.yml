@@ -38,6 +38,36 @@ jobs:
       - name: Build
         run: pnpm build
 
+  license-keypair:
+    name: Verify License Keypair
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify private key matches public key
+        env:
+          PINCHY_LICENSE_PRIVATE_KEY: ${{ secrets.PINCHY_LICENSE_PRIVATE_KEY }}
+        run: |
+          npm install jose
+          node -e "
+            const jose = require('jose');
+            const fs = require('fs');
+            const src = fs.readFileSync('packages/web/src/lib/enterprise.ts', 'utf8');
+            const pubMatch = src.match(/-----BEGIN PUBLIC KEY-----[\s\S]+?-----END PUBLIC KEY-----/);
+            if (!pubMatch) { console.error('❌ Public key not found in enterprise.ts'); process.exit(1); }
+            (async () => {
+              const priv = await jose.importPKCS8(process.env.PINCHY_LICENSE_PRIVATE_KEY, 'ES256');
+              const pub = await jose.importSPKI(pubMatch[0], 'ES256');
+              const jwt = await new jose.SignJWT({test: true}).setProtectedHeader({alg: 'ES256'}).sign(priv);
+              await jose.jwtVerify(jwt, pub);
+              console.log('✅ Keypair verified: private key matches public key in enterprise.ts');
+            })();
+          "
+
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
