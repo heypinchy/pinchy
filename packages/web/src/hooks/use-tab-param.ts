@@ -40,7 +40,12 @@ export function useTabParam<T extends string>(
   const pathname = usePathname();
   const router = useRouter();
 
-  const urlTab = searchParams.get("tab") as T | null;
+  // useSearchParams() can be empty on the first client render during hydration.
+  // Fall back to window.location.search to avoid a flash of the default tab.
+  let urlTab = searchParams.get("tab") as T | null;
+  if (!urlTab && typeof window !== "undefined") {
+    urlTab = new URLSearchParams(window.location.search).get("tab") as T | null;
+  }
   const tab = urlTab && validTabs.includes(urlTab) ? urlTab : defaultTab;
 
   const setTab = useCallback(
