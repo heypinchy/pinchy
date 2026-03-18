@@ -236,6 +236,26 @@ describe("Settings Page", () => {
       expect(capturedProviderProps.defaultProvider).toBe("anthropic");
     });
 
+    it("should only contain links to valid settings tabs", async () => {
+      setupAdminFetchMocks();
+
+      const { container } = render(<SettingsPage />);
+
+      await waitFor(() => screen.getByTestId("mock-provider-form"));
+
+      const allLinks = container.querySelectorAll("a[href*='tab=']");
+      const adminTabs = ["context", "profile", "provider", "users", "groups", "license"];
+
+      allLinks.forEach((link) => {
+        const href = link.getAttribute("href") ?? "";
+        const url = new URL(href, "http://localhost");
+        const tab = url.searchParams.get("tab");
+        expect(adminTabs.includes(tab ?? ""), `Found link to unknown tab "${tab}": ${href}`).toBe(
+          true
+        );
+      });
+    });
+
     it("should re-fetch provider status after onSuccess", async () => {
       setupAdminFetchMocks();
 
@@ -396,6 +416,25 @@ describe("Settings Page", () => {
       render(<SettingsPage />);
 
       expect(screen.getByTestId("mock-settings-context")).toBeInTheDocument();
+    });
+
+    it("should not render any links to admin-only tabs", () => {
+      vi.mocked(global.fetch).mockImplementation(async () => mockContextFetches());
+
+      const { container } = render(<SettingsPage />);
+
+      const allLinks = container.querySelectorAll("a[href*='tab=']");
+      const memberTabs = ["context", "profile"];
+
+      allLinks.forEach((link) => {
+        const href = link.getAttribute("href") ?? "";
+        const url = new URL(href, "http://localhost");
+        const tab = url.searchParams.get("tab");
+        expect(
+          memberTabs.includes(tab ?? ""),
+          `Found link to admin-only tab "${tab}": ${href}`
+        ).toBe(true);
+      });
     });
 
     it("should fetch user context but not provider status", async () => {
