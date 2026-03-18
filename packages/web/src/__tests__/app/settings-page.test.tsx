@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
-import SettingsPage from "@/app/(app)/settings/page";
+import { SettingsPageContent as SettingsPage } from "@/components/settings-page-content";
 
 let capturedProviderProps: {
   onSuccess?: () => void;

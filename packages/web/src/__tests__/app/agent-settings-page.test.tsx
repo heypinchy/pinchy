@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
-import AgentSettingsPage from "@/app/(app)/chat/[agentId]/settings/page";
+import { AgentSettingsPageContent as AgentSettingsPage } from "@/components/agent-settings-page-content";
 
 // Capture onChange callbacks from tab components
 let capturedOnChangeGeneral: ((v: unknown, isDirty: boolean) => void) | undefined;

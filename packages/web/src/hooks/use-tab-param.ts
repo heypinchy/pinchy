@@ -27,25 +27,21 @@ export type AgentSettingsTab = (typeof AGENT_SETTINGS_TABS)[number];
  * Syncs the active tab with the `?tab=` URL search parameter.
  * Validates the URL param against the provided set of valid tabs.
  * Falls back to `defaultTab` when the param is missing or invalid.
- * Removes the param when switching back to the default tab (clean URLs).
  *
- * Derives the current tab directly from searchParams on every render
- * (no useState) so it survives SSR → client hydration correctly.
+ * Accepts an optional `initialTab` from server-side searchParams to
+ * avoid SSR/hydration flicker. Falls back to useSearchParams() for
+ * client-side navigation.
  */
 export function useTabParam<T extends string>(
   defaultTab: T,
-  validTabs: readonly T[]
+  validTabs: readonly T[],
+  initialTab?: string | null
 ): [T, (tab: string) => void] {
   const searchParams = useSearchParams();
   const pathname = usePathname();
   const router = useRouter();
 
-  // useSearchParams() can be empty on the first client render during hydration.
-  // Fall back to window.location.search to avoid a flash of the default tab.
-  let urlTab = searchParams.get("tab") as T | null;
-  if (!urlTab && typeof window !== "undefined") {
-    urlTab = new URLSearchParams(window.location.search).get("tab") as T | null;
-  }
+  const urlTab = (searchParams.get("tab") ?? initialTab ?? null) as T | null;
   const tab = urlTab && validTabs.includes(urlTab) ? urlTab : defaultTab;
 
   const setTab = useCallback(
