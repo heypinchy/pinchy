@@ -125,7 +125,7 @@ export function SettingsLicense({ onEnterpriseActivated }: SettingsLicenseProps)
             </p>
             <p className="text-sm">
               <a
-                href="https://heypinchy.com/enterprise"
+                href="https://heypinchy.com/enterprise?utm_source=app&utm_medium=settings"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-primary underline"
