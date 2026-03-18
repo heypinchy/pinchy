@@ -484,9 +484,23 @@ function AgentSettingsPageInner() {
   );
 }
 
+function AgentSettingsPageFallback() {
+  return (
+    <div className="h-full flex flex-col">
+      <div className="flex-1 overflow-y-auto p-4 md:p-8 max-w-2xl">
+        <div className="flex items-center justify-between mb-6">
+          <div className="h-4 w-24 bg-muted animate-pulse rounded" />
+          <h1 className="text-2xl font-bold">Agent Settings</h1>
+        </div>
+        <div className="h-10 w-64 bg-muted animate-pulse rounded" />
+      </div>
+    </div>
+  );
+}
+
 export default function AgentSettingsPage() {
   return (
-    <Suspense>
+    <Suspense fallback={<AgentSettingsPageFallback />}>
       <AgentSettingsPageInner />
     </Suspense>
   );
