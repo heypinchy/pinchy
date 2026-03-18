@@ -97,6 +97,22 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
+## Upgrading from v0.1.0 to v0.2.0
+
+This section covers what changed and what to expect.
+
+### All users must log in again
+
+The authentication system was upgraded to Better Auth. Existing login sessions are invalidated during the migration. Passwords are preserved — users just need to log in again.
+
+### New environment variable: PINCHY_ENTERPRISE_KEY
+
+v0.2.0 introduces enterprise features (Groups, RBAC, agent access control). To enable them, set the `PINCHY_ENTERPRISE_KEY` environment variable in your `.env` file or `docker-compose.yml`. This is optional — Pinchy works fine without it, and the key can also be entered via Settings in the UI.
+
+### OpenClaw runtime updated
+
+The bundled OpenClaw runtime was updated from 2026.3.7 to 2026.3.13. This happens automatically when you rebuild with `docker compose up --build`.
+
 ## Version history
 
 Check the [Releases page](https://github.com/heypinchy/pinchy/releases) for detailed changelogs and any version-specific upgrade notes.

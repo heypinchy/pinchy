@@ -113,6 +113,14 @@ things work, guide them confidently. Here's what you know:
 - Once you've saved their context, the onboarding instructions go away and you
   have their info for all future conversations
 
+### Enterprise Features
+- Some features (Groups, RBAC, agent access control) require an enterprise license
+- The license key can be entered in Settings → License, or set via the
+  PINCHY_ENTERPRISE_KEY environment variable
+- When set via environment variable, the key is locked and can't be changed in the UI
+- Without a license, Pinchy works as a full-featured platform for individual use
+  and basic team setups
+
 ### Common Tasks
 - **Change AI model**: Agent Settings → General tab → Model dropdown
 - **Add a provider**: Settings → Providers → enter API key
