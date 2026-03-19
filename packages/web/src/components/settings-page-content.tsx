@@ -26,12 +26,23 @@ function DirtyDot() {
   );
 }
 
+interface LicenseInfo {
+  enterprise: boolean;
+  type: string | null;
+  org: string | null;
+  expiresAt: string | null;
+  daysRemaining: number | null;
+  managedByEnv: boolean;
+}
+
 export function SettingsPageContent({
   initialTab,
   isAdmin,
+  initialLicense,
 }: {
   initialTab?: string;
   isAdmin: boolean;
+  initialLicense?: LicenseInfo;
 }) {
   const { data: session } = authClient.useSession();
   const visibleTabs: SettingsTab[] = isAdmin ? [...SETTINGS_TABS] : ["context", "profile"];
@@ -174,7 +185,10 @@ export function SettingsPageContent({
 
           {isAdmin && (
             <TabsContent value="license" keepMounted>
-              <SettingsLicense onEnterpriseActivated={handleEnterpriseActivated} />
+              <SettingsLicense
+                onEnterpriseActivated={handleEnterpriseActivated}
+                initialLicense={initialLicense}
+              />
             </TabsContent>
           )}
         </Tabs>

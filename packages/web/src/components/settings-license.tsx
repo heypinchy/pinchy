@@ -18,11 +18,12 @@ interface LicenseInfo {
 
 interface SettingsLicenseProps {
   onEnterpriseActivated?: () => void;
+  initialLicense?: LicenseInfo | null;
 }
 
-export function SettingsLicense({ onEnterpriseActivated }: SettingsLicenseProps) {
-  const [license, setLicense] = useState<LicenseInfo | null>(null);
-  const [loading, setLoading] = useState(true);
+export function SettingsLicense({ onEnterpriseActivated, initialLicense }: SettingsLicenseProps) {
+  const [license, setLicense] = useState<LicenseInfo | null>(initialLicense ?? null);
+  const [loading, setLoading] = useState(!initialLicense);
   const [keyInput, setKeyInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
