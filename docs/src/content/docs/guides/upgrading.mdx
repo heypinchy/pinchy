@@ -97,6 +97,14 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
+## Upgrading from v0.2.0 to v0.2.1
+
+This is a docs-only release — no code changes, no database migrations, no breaking changes. Just pull the new tag and rebuild:
+
+```bash
+git checkout v0.2.1 && docker compose up --build
+```
+
 ## Upgrading from v0.1.0 to v0.2.0
 
 This section covers what changed and what to expect.

@@ -11,21 +11,16 @@ The audit trail is designed for **compliance and security**. It answers the ques
 
 ## What gets logged
 
-Pinchy logs 12 event types across five categories:
+Pinchy logs event types across six categories:
 
 ### Tool execution
 
-| Event Type     | Description                                                          |
-| -------------- | -------------------------------------------------------------------- |
-| `tool.execute` | An agent executed a tool (shell command, file read, web fetch, etc.) |
-| `tool.denied`  | An agent attempted to use a tool that was not in its allow-list      |
+| Event Type        | Description                                                                                                       |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `tool.<toolName>` | An agent executed a tool — event type is dynamic per tool (e.g. `tool.shell`, `tool.pinchy_read`, `tool.fs_read`) |
+| `tool.denied`     | An agent attempted to use a tool that was not in its allow-list                                                   |
 
-Each `tool.execute` event produces **two audit entries** per tool call:
-
-- **Start** — logged when the agent begins a tool call. Detail: `{ toolName, phase: "start" }`
-- **End** — logged when the tool returns a result. Detail: `{ toolName, phase: "end", result }`
-
-This lets admins see not just which tools were used, but also what results they produced.
+Each tool execution produces **one audit entry** — logged when the tool call completes (end phase only). The detail includes the tool name, parameters, and result. Start events are received but not persisted.
 
 ### Authentication
 
@@ -45,11 +40,22 @@ This lets admins see not just which tools were used, but also what results they 
 
 ### User management
 
-| Event Type     | Description                          |
-| -------------- | ------------------------------------ |
-| `user.invited` | An admin invited a new user          |
-| `user.updated` | A user's profile or role was changed |
-| `user.deleted` | A user account was deleted           |
+| Event Type            | Description                                     |
+| --------------------- | ----------------------------------------------- |
+| `user.invited`        | An admin invited a new user                     |
+| `user.updated`        | A user's profile was changed                    |
+| `user.role_updated`   | A user's role was changed (e.g. member → admin) |
+| `user.groups_updated` | A user's group memberships were changed         |
+| `user.deleted`        | A user account was deleted                      |
+
+### Group management
+
+| Event Type              | Description                                   |
+| ----------------------- | --------------------------------------------- |
+| `group.created`         | A new group was created                       |
+| `group.updated`         | A group's settings were changed               |
+| `group.deleted`         | A group was deleted                           |
+| `group.members_updated` | Members were added to or removed from a group |
 
 ### Configuration
 
@@ -113,13 +119,13 @@ The response indicates whether all entries are intact:
 
 ```json
 {
-  "verified": true,
-  "entriesChecked": 142,
-  "tamperedEntries": []
+  "valid": true,
+  "totalChecked": 142,
+  "invalidIds": []
 }
 ```
 
-If tampered entries are found, `verified` is `false` and `tamperedEntries` contains the IDs of the affected rows.
+If tampered entries are found, `valid` is `false` and `invalidIds` contains the IDs of the affected rows.
 
 ## CSV export for compliance
 
