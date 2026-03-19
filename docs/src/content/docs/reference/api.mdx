@@ -1,6 +1,6 @@
 ---
 title: API Reference
-description: REST API endpoints for managing agents, templates, and settings.
+description: REST API endpoints for managing agents, templates, settings, users, and groups.
 ---
 
 All API endpoints require authentication unless noted otherwise. Unauthenticated requests receive a `401 Unauthorized` response. Authenticate by including a valid session cookie (set during login via the web UI).
@@ -249,15 +249,18 @@ List all users.
 **Response:**
 
 ```json
-[
-  {
-    "id": "uuid",
-    "name": "Alice",
-    "email": "alice@example.com",
-    "role": "admin",
-    "createdAt": "2025-01-15T10:00:00.000Z"
-  }
-]
+{
+  "users": [
+    {
+      "id": "uuid",
+      "name": "Alice",
+      "email": "alice@example.com",
+      "role": "admin",
+      "banned": false,
+      "groups": [{ "id": "group-uuid", "name": "Engineering" }]
+    }
+  ]
+}
 ```
 
 ### `DELETE /api/users/:id`
@@ -278,6 +281,49 @@ Delete a user and cascade-delete their personal agents.
 - `401` — not authenticated
 - `403` — not an admin
 - `404` — user not found
+
+### `PATCH /api/users/:id`
+
+Update a user's role. **Admin only.**
+
+**Request body:**
+
+| Field  | Type   | Required | Description                    |
+| ------ | ------ | -------- | ------------------------------ |
+| `role` | string | Yes      | New role (`admin` or `member`) |
+
+**Response:**
+
+```json
+{
+  "success": true
+}
+```
+
+**Errors:**
+
+- `400` — invalid role, attempting to change your own role, or demoting the last admin
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — user not found
+
+### `POST /api/users/:id/reactivate`
+
+Reactivate a deactivated user. **Admin only.**
+
+**Response:**
+
+```json
+{
+  "success": true
+}
+```
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin
+- `404` — user not found or user is not deactivated
 
 ### `POST /api/users/:id/reset`
 
@@ -305,10 +351,11 @@ Create an invite for a new user. Returns the full invite object including a plai
 
 **Request body:**
 
-| Field   | Type   | Required | Description                                                 |
-| ------- | ------ | -------- | ----------------------------------------------------------- |
-| `role`  | string | Yes      | Role for the invited user (`admin` or `user`)               |
-| `email` | string | No       | Email address of the invited user (optional, for reference) |
+| Field      | Type     | Required | Description                                                 |
+| ---------- | -------- | -------- | ----------------------------------------------------------- |
+| `role`     | string   | Yes      | Role for the invited user (`admin` or `member`)             |
+| `email`    | string   | No       | Email address of the invited user (optional, for reference) |
+| `groupIds` | string[] | No       | Group IDs to assign the user to on account creation         |
 
 **Response:** `201 Created`
 
@@ -317,8 +364,9 @@ Create an invite for a new user. Returns the full invite object including a plai
   "id": "uuid",
   "token": "abc123...",
   "email": "bob@example.com",
-  "role": "user",
+  "role": "member",
   "type": "invite",
+  "groups": [{ "id": "group-uuid", "name": "Engineering" }],
   "expiresAt": "2025-01-22T10:00:00.000Z",
   "createdAt": "2025-01-15T10:00:00.000Z"
 }
@@ -343,7 +391,9 @@ List all invites and their status.
   {
     "id": "uuid",
     "email": "bob@example.com",
+    "role": "member",
     "status": "pending",
+    "groups": [{ "id": "group-uuid", "name": "Engineering" }],
     "expiresAt": "2025-01-22T10:00:00.000Z",
     "createdAt": "2025-01-15T10:00:00.000Z"
   }
@@ -394,6 +444,130 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 
 - `400` — missing fields, invalid token, or token expired
 
+## Groups (admin only, enterprise)
+
+All group endpoints require an enterprise license. Requests without a valid license receive a `403 Forbidden` response.
+
+### `GET /api/groups`
+
+List all groups with member counts. **Admin only.**
+
+**Response:**
+
+```json
+[
+  {
+    "id": "uuid",
+    "name": "Engineering",
+    "description": "Backend and frontend engineers",
+    "memberCount": 5
+  }
+]
+```
+
+### `POST /api/groups`
+
+Create a new group. **Admin only.**
+
+**Request body:**
+
+| Field         | Type   | Required | Description       |
+| ------------- | ------ | -------- | ----------------- |
+| `name`        | string | Yes      | Group name        |
+| `description` | string | No       | Group description |
+
+**Response:** `201 Created` with the created group object.
+
+**Errors:**
+
+- `400` — missing or invalid name
+- `401` — not authenticated
+- `403` — not an admin or no enterprise license
+
+### `PATCH /api/groups/:id`
+
+Update a group. **Admin only.**
+
+**Request body:**
+
+| Field         | Type   | Required | Description           |
+| ------------- | ------ | -------- | --------------------- |
+| `name`        | string | No       | New group name        |
+| `description` | string | No       | New group description |
+
+**Response:** The updated group object.
+
+**Errors:**
+
+- `400` — invalid fields
+- `401` — not authenticated
+- `403` — not an admin or no enterprise license
+- `404` — group not found
+
+### `DELETE /api/groups/:id`
+
+Delete a group. **Admin only.**
+
+**Response:**
+
+```json
+{
+  "success": true
+}
+```
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin or no enterprise license
+- `404` — group not found
+
+### `GET /api/groups/:id/members`
+
+List members of a group. **Admin only.**
+
+**Response:**
+
+```json
+[
+  {
+    "userId": "user-uuid",
+    "groupId": "group-uuid"
+  }
+]
+```
+
+**Errors:**
+
+- `401` — not authenticated
+- `403` — not an admin or no enterprise license
+- `404` — group not found
+
+### `PUT /api/groups/:id/members`
+
+Replace the members of a group. **Admin only.**
+
+**Request body:**
+
+| Field     | Type     | Required | Description                      |
+| --------- | -------- | -------- | -------------------------------- |
+| `userIds` | string[] | Yes      | User IDs to set as group members |
+
+**Response:**
+
+```json
+{
+  "success": true
+}
+```
+
+**Errors:**
+
+- `400` — invalid or missing userIds
+- `401` — not authenticated
+- `403` — not an admin or no enterprise license
+- `404` — group not found
+
 ## Audit Trail (admin only)
 
 ### `GET /api/audit`
@@ -402,14 +576,14 @@ Retrieve a paginated, filterable audit log. **Admin only.**
 
 **Query parameters:**
 
-| Parameter   | Type   | Default | Description                                               |
-| ----------- | ------ | ------- | --------------------------------------------------------- |
-| `page`      | number | 1       | Page number                                               |
-| `limit`     | number | 50      | Entries per page                                          |
-| `eventType` | string | —       | Filter by event type (e.g., `auth.login`, `tool.execute`) |
-| `actorId`   | string | —       | Filter by user ID                                         |
-| `from`      | string | —       | Start date (ISO 8601)                                     |
-| `to`        | string | —       | End date (ISO 8601)                                       |
+| Parameter   | Type   | Default | Description                                             |
+| ----------- | ------ | ------- | ------------------------------------------------------- |
+| `page`      | number | 1       | Page number                                             |
+| `limit`     | number | 50      | Entries per page                                        |
+| `eventType` | string | —       | Filter by event type (e.g., `auth.login`, `tool.shell`) |
+| `actorId`   | string | —       | Filter by user ID                                       |
+| `from`      | string | —       | Start date (ISO 8601)                                   |
+| `to`        | string | —       | End date (ISO 8601)                                     |
 
 **Response:**
 
@@ -417,13 +591,18 @@ Retrieve a paginated, filterable audit log. **Admin only.**
 {
   "entries": [
     {
-      "id": "uuid",
-      "eventType": "auth.login",
+      "id": 1,
+      "timestamp": "2026-02-21T10:00:00.000Z",
+      "actorType": "user",
       "actorId": "user-uuid",
-      "actorEmail": "alice@example.com",
-      "metadata": {},
-      "hmac": "sha256-hex-string",
-      "createdAt": "2026-02-21T10:00:00.000Z"
+      "actorName": "Alice",
+      "actorDeleted": false,
+      "eventType": "auth.login",
+      "resource": "user:user-uuid",
+      "resourceName": "Alice",
+      "resourceDeleted": false,
+      "detail": {},
+      "rowHmac": "sha256-hex-string"
     }
   ],
   "total": 142,
@@ -452,13 +631,13 @@ Verify the integrity of audit log entries by recomputing HMAC signatures. **Admi
 
 ```json
 {
-  "verified": true,
-  "entriesChecked": 142,
-  "tamperedEntries": []
+  "valid": true,
+  "totalChecked": 142,
+  "invalidIds": []
 }
 ```
 
-If tampered entries are found, `verified` is `false` and `tamperedEntries` contains the IDs of entries with mismatched signatures.
+If tampered entries are found, `valid` is `false` and `invalidIds` contains the IDs of entries with mismatched signatures.
 
 **Errors:**
 
