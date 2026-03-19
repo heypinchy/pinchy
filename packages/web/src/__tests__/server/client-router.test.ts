@@ -566,6 +566,27 @@ describe("ClientRouter", () => {
     ]);
   });
 
+  it("should strip <final> tags from history messages", async () => {
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "assistant",
+          content: "<final>Right away! How can I help?</final>",
+        },
+      ],
+    });
+
+    await router.handleMessage(clientWs as any, {
+      type: "history",
+      content: "",
+      agentId: "agent-1",
+    });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].messages[0].content).toBe("Right away! How can I help?");
+  });
+
   it("should strip timestamp prefix from user messages in history", async () => {
     const clientWs = createMockClientWs();
     mockSessionsHistory.mockResolvedValue({
