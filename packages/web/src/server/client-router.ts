@@ -150,11 +150,14 @@ export class ClientRouter {
         }
 
         if (chunk.type === "text") {
-          this.sendToClient(clientWs, {
-            type: "chunk",
-            content: chunk.text,
-            messageId,
-          });
+          const cleaned = chunk.text.replace(/<\/?final>/g, "");
+          if (cleaned) {
+            this.sendToClient(clientWs, {
+              type: "chunk",
+              content: cleaned,
+              messageId,
+            });
+          }
         }
 
         if (chunk.type === "error") {
@@ -212,6 +215,9 @@ export class ClientRouter {
           } else {
             content = typeof msg.content === "string" ? msg.content : "";
           }
+
+          // Strip protocol tags from assistant responses
+          content = content.replace(/<\/?final>/g, "");
 
           // Strip OpenClaw timestamp prefix from user messages
           if (msg.role === "user") {

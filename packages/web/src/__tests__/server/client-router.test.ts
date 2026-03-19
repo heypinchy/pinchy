@@ -276,6 +276,51 @@ describe("ClientRouter", () => {
     expect(textChunks[1].content).toBe("there!");
   });
 
+  it("should strip <final> tags from streamed chunks", async () => {
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "<final>" };
+      yield { type: "text" as const, text: "Hello there!" };
+      yield { type: "text" as const, text: "</final>" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      agentId: "agent-1",
+      content: "hi",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const textChunks = messages.filter((m: any) => m.type === "chunk");
+    const allText = textChunks.map((c: any) => c.content).join("");
+    expect(allText).not.toContain("<final>");
+    expect(allText).not.toContain("</final>");
+    expect(allText).toContain("Hello there!");
+  });
+
+  it("should strip <final> tags when they appear mid-chunk", async () => {
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "<final>Right away!" };
+      yield { type: "text" as const, text: " How can I help?</final>" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      agentId: "agent-1",
+      content: "hi",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const textChunks = messages.filter((m: any) => m.type === "chunk");
+    const allText = textChunks.map((c: any) => c.content).join("");
+    expect(allText).toBe("Right away! How can I help?");
+  });
+
   it("should include consistent messageId in all chunks", async () => {
     const clientWs = createMockClientWs();
     async function* fakeStream() {
