@@ -571,6 +571,48 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
+  it("should use PORT env var in plugin apiBaseUrl when set", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    // Simulate custom port
+    const originalPort = process.env.PORT;
+    process.env.PORT = "7778";
+
+    try {
+      mockedDb.select.mockReturnValue({
+        from: vi.fn().mockResolvedValue([
+          {
+            id: "smithers-1",
+            name: "Smithers",
+            model: "anthropic/claude-sonnet-4-20250514",
+            pluginConfig: null,
+            allowedTools: ["pinchy_save_user_context"],
+            ownerId: "user-1",
+            isPersonal: true,
+            createdAt: new Date(),
+          },
+        ]),
+      } as never);
+
+      await regenerateOpenClawConfig();
+
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written);
+
+      expect(config.plugins.entries["pinchy-audit"].config.apiBaseUrl).toBe("http://pinchy:7778");
+      expect(config.plugins.entries["pinchy-context"].config.apiBaseUrl).toBe("http://pinchy:7778");
+    } finally {
+      if (originalPort === undefined) {
+        delete process.env.PORT;
+      } else {
+        process.env.PORT = originalPort;
+      }
+    }
+  });
+
   it("should include both pinchy-files and pinchy-context when agents use both", async () => {
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "gw-token" } },
