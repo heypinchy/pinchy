@@ -20,11 +20,17 @@ import { CheckCircle2, Loader2, AlertTriangle } from "lucide-react";
 import { PasswordInput } from "@/components/password-input";
 import { ReportIssueLink } from "@/components/report-issue-link";
 
-const setupSchema = z.object({
-  name: z.string().min(1, "Name is required"),
-  email: z.string().email("Invalid email address"),
-  password: z.string().min(8, "Password must be at least 8 characters"),
-});
+const setupSchema = z
+  .object({
+    name: z.string().min(1, "Name is required"),
+    email: z.string().email("Invalid email address"),
+    password: z.string().min(8, "Password must be at least 8 characters"),
+    confirmPassword: z.string(),
+  })
+  .refine((data) => data.password === data.confirmPassword, {
+    message: "Passwords do not match",
+    path: ["confirmPassword"],
+  });
 
 type SetupFormValues = z.infer<typeof setupSchema>;
 
@@ -83,7 +89,7 @@ export function SetupForm() {
 
   const form = useForm<SetupFormValues>({
     resolver: zodResolver(setupSchema),
-    defaultValues: { name: "", email: "", password: "" },
+    defaultValues: { name: "", email: "", password: "", confirmPassword: "" },
   });
 
   async function onSubmit(values: SetupFormValues) {
@@ -246,6 +252,18 @@ export function SetupForm() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Password</FormLabel>
+                      <PasswordInput {...field} />
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                <FormField
+                  control={form.control}
+                  name="confirmPassword"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Confirm password</FormLabel>
                       <PasswordInput {...field} />
                       <FormMessage />
                     </FormItem>
