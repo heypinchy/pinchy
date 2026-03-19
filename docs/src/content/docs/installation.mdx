@@ -6,7 +6,7 @@ description: Environment variables, Docker services, and development setup.
 import { Aside } from "@astrojs/starlight/components";
 
 <Aside type="note">
-  This guide covers Pinchy v0.2.0. Check the [Releases
+  This guide covers Pinchy v0.2.1. Check the [Releases
   page](https://github.com/heypinchy/pinchy/releases) for newer versions.
   Upgrading from v0.1.0? See the [Upgrade Guide](/guides/upgrading/).
 </Aside>
@@ -24,7 +24,7 @@ The simplest way to run Pinchy. One command starts the full stack.
 ```bash
 git clone https://github.com/heypinchy/pinchy.git
 cd pinchy
-git checkout v0.2.0
+git checkout v0.2.1
 docker compose up --build
 ```
 
@@ -42,32 +42,41 @@ Only port **7777** is exposed to the host. OpenClaw and PostgreSQL are only reac
 
 ### Environment variables
 
-Create a `.env` file in the project root to override defaults:
+No configuration is needed to get started. All secrets (session key, encryption key, HMAC signing key) are auto-generated on first start and persisted in Docker volumes so they survive restarts.
+
+<Aside type="tip">
+  For a quick local trial, skip straight to the [Getting
+  Started](/getting-started/) guide — no `.env` file required.
+</Aside>
+
+#### Optional: production hardening
+
+For production deployments, create a `.env` file in the project root to pin your own secrets instead of relying on auto-generated ones:
 
 ```bash
 # Database password (default: pinchy_dev)
 DB_PASSWORD=your-secure-password
 
-# Better Auth session secret (default: dev-secret-change-in-production)
+# Better Auth session secret (auto-generated if omitted)
 BETTER_AUTH_SECRET=your-random-secret
 
 # Encryption key for API keys — 64 hex characters (auto-generated if omitted)
 ENCRYPTION_KEY=
 
-# HMAC secret for audit trail signing (auto-generated if not provided)
+# HMAC secret for audit trail signing (auto-generated if omitted)
 AUDIT_HMAC_SECRET=
 
 # Enterprise license key (optional — enables Groups, RBAC, agent access control)
 PINCHY_ENTERPRISE_KEY=
 ```
 
-**`BETTER_AUTH_SECRET`** — Used by Better Auth for session security. Generate one with `openssl rand -hex 32`.
+**`DB_PASSWORD`** — Password for the PostgreSQL `pinchy` user. Defaults to `pinchy_dev` in Docker Compose.
 
-**`ENCRYPTION_KEY`** — Used to encrypt provider API keys at rest (AES-256-GCM). If omitted, Pinchy auto-generates a key and persists it in the `pinchy-secrets` Docker volume. For production, we recommend setting this explicitly with `openssl rand -hex 32`.
+**`BETTER_AUTH_SECRET`** — Used by Better Auth for session security. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
 
-**`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. If omitted, Pinchy auto-generates a secret at startup. Set this explicitly if you need consistent signatures across restarts or deployments.
+**`ENCRYPTION_KEY`** — Used to encrypt provider API keys at rest (AES-256-GCM). Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
 
-**`DB_PASSWORD`** — Password for the PostgreSQL `pinchy` user.
+**`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. Set explicitly if you need consistent signatures across deployments.
 
 **`PINCHY_ENTERPRISE_KEY`** — License key for enterprise features (Groups, RBAC, agent access control). Optional — can also be entered via **Settings → License** in the UI. See [Enterprise Setup](/guides/enterprise-setup/) for details.
 
@@ -75,13 +84,14 @@ PINCHY_ENTERPRISE_KEY=
 
 Docker volumes ensure data survives container restarts:
 
-| Volume                | Mounted at                                                               | Purpose                                           |
-| --------------------- | ------------------------------------------------------------------------ | ------------------------------------------------- |
-| `pgdata`              | `/var/lib/postgresql/data`                                               | PostgreSQL data                                   |
-| `openclaw-config`     | `/root/.openclaw` (OpenClaw), `/openclaw-config` (Pinchy)                | Shared OpenClaw configuration                     |
-| `pinchy-data`         | `/data` (OpenClaw)                                                       | Agent-accessible files (Knowledge Base documents) |
-| `pinchy-secrets`      | `/app/secrets` (Pinchy)                                                  | Auto-generated encryption and HMAC keys           |
-| `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw) | Pinchy plugins for OpenClaw                       |
+| Volume                | Mounted at                                                                      | Purpose                                              |
+| --------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `pgdata`              | `/var/lib/postgresql/data`                                                      | PostgreSQL data                                      |
+| `openclaw-config`     | `/root/.openclaw` (OpenClaw), `/openclaw-config` (Pinchy)                       | Shared OpenClaw configuration                        |
+| `pinchy-data`         | `/data` (OpenClaw)                                                              | Agent-accessible files (Knowledge Base documents)    |
+| `pinchy-workspaces`   | `/root/.openclaw/workspaces` (OpenClaw), `/openclaw-config/workspaces` (Pinchy) | Agent workspaces (SOUL.md, AGENTS.md, context files) |
+| `pinchy-secrets`      | `/app/secrets` (Pinchy)                                                         | Auto-generated encryption and HMAC keys              |
+| `openclaw-extensions` | `/openclaw-extensions` (Pinchy), `/root/.openclaw/extensions` (OpenClaw)        | Pinchy plugins for OpenClaw                          |
 
 ### Port configuration
 
