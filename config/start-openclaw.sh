@@ -18,6 +18,14 @@ node -e "
   } catch {}
 "
 
+# Make OpenClaw config writable by Pinchy (non-root).
+# OpenClaw creates openclaw.json with 600 (root-only). Pinchy needs write access
+# to update provider keys and agent configuration via regenerateOpenClawConfig().
+fix_config_permissions() {
+    chmod 666 /root/.openclaw/openclaw.json 2>/dev/null || true
+}
+fix_config_permissions
+
 # Scan /data/ for available directories and write to shared config
 # so Pinchy can read them without needing a /data mount
 scan_data_directories() {
@@ -51,6 +59,10 @@ while true; do
     openclaw gateway --port 18789 &
     PID=$!
     echo "OpenClaw Gateway running (pid: $PID)"
+
+    # OpenClaw rewrites openclaw.json on startup with root-only permissions.
+    # Wait briefly, then fix permissions so Pinchy can write to it.
+    (sleep 3 && fix_config_permissions) &
 
     # Start auto-approver in the background
     auto_approve_devices &
