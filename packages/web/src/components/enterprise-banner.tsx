@@ -46,7 +46,7 @@ function shouldShowBanner(license: LicenseInfo): {
         variant: "destructive",
         message: `Your trial expires in ${daysRemaining} day${daysRemaining !== 1 ? "s" : ""}.`,
         linkText: "Upgrade \u2192",
-        linkHref: "https://heypinchy.com/enterprise",
+        linkHref: "https://heypinchy.com/enterprise?utm_source=app&utm_medium=banner",
       };
     }
     if (daysRemaining !== null && daysRemaining <= 7) {
@@ -55,7 +55,7 @@ function shouldShowBanner(license: LicenseInfo): {
         variant: "warning",
         message: `Your trial expires in ${daysRemaining} day${daysRemaining !== 1 ? "s" : ""}.`,
         linkText: "Upgrade \u2192",
-        linkHref: "https://heypinchy.com/enterprise",
+        linkHref: "https://heypinchy.com/enterprise?utm_source=app&utm_medium=banner",
       };
     }
   }
@@ -67,7 +67,7 @@ function shouldShowBanner(license: LicenseInfo): {
         variant: "destructive",
         message: `Your license expires in ${daysRemaining} day${daysRemaining !== 1 ? "s" : ""}.`,
         linkText: "Renew \u2192",
-        linkHref: "https://heypinchy.com/enterprise",
+        linkHref: "https://heypinchy.com/enterprise?utm_source=app&utm_medium=banner",
       };
     }
     if (daysRemaining !== null && daysRemaining <= 30) {
@@ -76,7 +76,7 @@ function shouldShowBanner(license: LicenseInfo): {
         variant: "warning",
         message: `Your license expires in ${daysRemaining} day${daysRemaining !== 1 ? "s" : ""}.`,
         linkText: "Renew \u2192",
-        linkHref: "https://heypinchy.com/enterprise",
+        linkHref: "https://heypinchy.com/enterprise?utm_source=app&utm_medium=banner",
       };
     }
   }

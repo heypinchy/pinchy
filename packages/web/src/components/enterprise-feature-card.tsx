@@ -32,7 +32,11 @@ export function EnterpriseFeatureCard({ feature, description }: EnterpriseFeatur
             <code className="bg-muted px-1 py-0.5 rounded text-xs">PINCHY_ENTERPRISE_KEY</code>{" "}
             environment variable.
           </p>
-          <a href="https://heypinchy.com/enterprise" target="_blank" rel="noopener noreferrer">
+          <a
+            href="https://heypinchy.com/enterprise?utm_source=app&utm_medium=feature-card"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
             <Button variant="outline" size="sm" className="mt-2">
               Learn more
             </Button>

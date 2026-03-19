@@ -119,6 +119,7 @@ export default defineConfig({
             { label: 'User Management', slug: 'guides/user-management' },
             { label: 'Smithers Onboarding', slug: 'guides/smithers-onboarding' },
             { label: 'Enterprise Setup', slug: 'guides/enterprise-setup' },
+            { label: 'Upgrading', slug: 'guides/upgrading' },
             { label: 'Hardening', slug: 'guides/hardening' },
           ],
         },

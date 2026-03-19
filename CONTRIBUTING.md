@@ -88,16 +88,42 @@ By participating in this project, you agree to our [Code of Conduct](CODE_OF_CON
 
 Pinchy uses [Semantic Versioning](https://semver.org/) and tags on `main`.
 
-1. Ensure all changes are merged to `main` and CI is green.
-2. Update `docs/src/content/docs/installation.mdx` with the new version (checkout tag + version note).
-3. If upgrading OpenClaw, update the version in `Dockerfile.openclaw`.
-4. Merge the release preparation PR.
-5. Tag and push:
+### Pre-release checklist
+
+Before tagging a release, verify every item:
+
+**Code & dependencies**
+- [ ] All feature/fix PRs for this release are merged to `main`
+- [ ] CI is green on `main` (tests, lint, build, security audit)
+- [ ] Dependencies are up to date (`pnpm outdated` — no critical/security updates pending)
+- [ ] If upgrading OpenClaw: version updated in `Dockerfile.openclaw`
+
+**Version bump**
+- [ ] `version` updated in root `package.json`
+- [ ] `version` updated in `packages/web/package.json`
+- [ ] `installation.mdx` references the new version (checkout tag + version note)
+
+**Testing**
+- [ ] Unit tests pass (`pnpm test`)
+- [ ] Production build succeeds (`pnpm build`)
+- [ ] Docker Compose smoke test: `docker compose up --build` — full stack starts, login works, agent chat works
+- [ ] Upgrade test: start from previous version, run `git checkout <new-version> && docker compose up --build`, verify migrations apply cleanly and existing data is intact
+
+**Documentation**
+- [ ] Docs build succeeds (`cd docs && pnpm build`)
+- [ ] Upgrade guide mentions any new environment variables or breaking changes
+- [ ] `smithers-soul.ts` updated if user-facing features changed (Smithers must know what's new)
+
+### Release steps
+
+1. Create a `release/x.y.z` branch, complete the checklist above, and merge to `main`.
+2. Tag and push:
    ```bash
    git tag v0.2.0
    git push origin v0.2.0
    ```
-6. The release workflow automatically creates a GitHub Release with auto-generated release notes and deploys the docs.
+3. The release workflow automatically creates a GitHub Release with auto-generated notes and deploys the docs.
+4. Review the auto-generated release notes on GitHub — edit if needed to highlight breaking changes or upgrade steps.
 
 ## Questions?
 

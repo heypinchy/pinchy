@@ -16,9 +16,14 @@ interface LicenseInfo {
   managedByEnv: boolean;
 }
 
-export function SettingsLicense() {
-  const [license, setLicense] = useState<LicenseInfo | null>(null);
-  const [loading, setLoading] = useState(true);
+interface SettingsLicenseProps {
+  onEnterpriseActivated?: () => void;
+  initialLicense?: LicenseInfo | null;
+}
+
+export function SettingsLicense({ onEnterpriseActivated, initialLicense }: SettingsLicenseProps) {
+  const [license, setLicense] = useState<LicenseInfo | null>(initialLicense ?? null);
+  const [loading, setLoading] = useState(!initialLicense);
   const [keyInput, setKeyInput] = useState("");
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -54,6 +59,9 @@ export function SettingsLicense() {
         setLicense(data);
         setKeyInput("");
         setShowInput(false);
+        if (data.enterprise) {
+          onEnterpriseActivated?.();
+        }
       } else {
         const data = await res.json();
         setError(data.error ?? "Failed to save license key");
@@ -118,7 +126,7 @@ export function SettingsLicense() {
             </p>
             <p className="text-sm">
               <a
-                href="https://heypinchy.com/enterprise"
+                href="https://heypinchy.com/enterprise?utm_source=app&utm_medium=settings"
                 target="_blank"
                 rel="noopener noreferrer"
                 className="text-primary underline"
