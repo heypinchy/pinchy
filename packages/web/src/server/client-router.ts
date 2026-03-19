@@ -84,7 +84,7 @@ export class ClientRouter {
 
     const sessionKey = this.computeSessionKey(message.agentId);
 
-    const messageId = crypto.randomUUID();
+    let messageId = crypto.randomUUID();
 
     try {
       await this.waitForConnection();
@@ -176,6 +176,10 @@ export class ClientRouter {
             type: "done",
             messageId,
           });
+          // Next agent turn gets a fresh messageId so the browser
+          // creates a separate assistant message — consistent with
+          // how OpenClaw stores them in history.
+          messageId = crypto.randomUUID();
         }
       }
     } catch (err) {

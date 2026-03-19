@@ -158,6 +158,11 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "chunk") {
+            // Ensure isRunning stays true when new chunks arrive —
+            // critical for multi-turn agent responses where a "done"
+            // event between turns briefly sets isRunning to false.
+            setIsRunning(true);
+
             if (delayTimerRef.current) {
               clearTimeout(delayTimerRef.current);
               delayTimerRef.current = null;
