@@ -18,6 +18,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { CheckCircle2 } from "lucide-react";
+import { PasswordInput } from "@/components/password-input";
 
 const inviteClaimSchema = z.object({
   name: z.string().min(1, "Name is required"),
@@ -115,9 +116,7 @@ export default function InviteClaimPage() {
                       render={({ field }) => (
                         <FormItem>
                           <FormLabel>Password</FormLabel>
-                          <FormControl>
-                            <Input type="password" {...field} />
-                          </FormControl>
+                          <PasswordInput {...field} />
                           <FormMessage />
                         </FormItem>
                       )}

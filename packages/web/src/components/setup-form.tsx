@@ -17,6 +17,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { CheckCircle2, Loader2, AlertTriangle } from "lucide-react";
+import { PasswordInput } from "@/components/password-input";
 import { ReportIssueLink } from "@/components/report-issue-link";
 
 const setupSchema = z.object({
@@ -245,9 +246,7 @@ export function SetupForm() {
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>Password</FormLabel>
-                      <FormControl>
-                        <Input type="password" {...field} />
-                      </FormControl>
+                      <PasswordInput {...field} />
                       <FormMessage />
                     </FormItem>
                   )}
