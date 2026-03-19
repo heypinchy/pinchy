@@ -26,12 +26,15 @@ function DirtyDot() {
   );
 }
 
-export function SettingsPageContent({ initialTab }: { initialTab?: string }) {
-  const { data: session, isPending } = authClient.useSession();
-  const isAdmin = session?.user?.role === "admin";
-  // Use all tabs until session loads to avoid flicker when initialTab is an admin tab
-  const visibleTabs: SettingsTab[] =
-    isPending || isAdmin ? [...SETTINGS_TABS] : ["context", "profile"];
+export function SettingsPageContent({
+  initialTab,
+  isAdmin,
+}: {
+  initialTab?: string;
+  isAdmin: boolean;
+}) {
+  const { data: session } = authClient.useSession();
+  const visibleTabs: SettingsTab[] = isAdmin ? [...SETTINGS_TABS] : ["context", "profile"];
   const [activeTab, setActiveTab] = useTabParam("context", visibleTabs, initialTab);
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);
@@ -96,8 +99,6 @@ export function SettingsPageContent({ initialTab }: { initialTab?: string }) {
     setProfileDirty(isDirty);
   }, []);
 
-  const showAdminTabs = isPending || isAdmin;
-
   return (
     <div className="overflow-y-auto">
       <div className="p-4 md:p-8 max-w-3xl">
@@ -108,12 +109,12 @@ export function SettingsPageContent({ initialTab }: { initialTab?: string }) {
             <TabsList>
               <TabsTrigger value="context">Context {contextDirty && <DirtyDot />}</TabsTrigger>
               <TabsTrigger value="profile">Profile {profileDirty && <DirtyDot />}</TabsTrigger>
-              {showAdminTabs && (
+              {isAdmin && (
                 <TabsTrigger value="provider">Provider {providerDirty && <DirtyDot />}</TabsTrigger>
               )}
-              {showAdminTabs && <TabsTrigger value="users">Users</TabsTrigger>}
-              {showAdminTabs && <TabsTrigger value="groups">Groups</TabsTrigger>}
-              {showAdminTabs && <TabsTrigger value="license">License</TabsTrigger>}
+              {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
+              {isAdmin && <TabsTrigger value="groups">Groups</TabsTrigger>}
+              {isAdmin && <TabsTrigger value="license">License</TabsTrigger>}
             </TabsList>
           </div>
 
@@ -133,7 +134,7 @@ export function SettingsPageContent({ initialTab }: { initialTab?: string }) {
             />
           </TabsContent>
 
-          {showAdminTabs && (
+          {isAdmin && (
             <TabsContent value="provider" keepMounted>
               <Card>
                 <CardHeader>
@@ -156,7 +157,7 @@ export function SettingsPageContent({ initialTab }: { initialTab?: string }) {
             </TabsContent>
           )}
 
-          {showAdminTabs && (
+          {isAdmin && (
             <TabsContent value="users" keepMounted>
               <SettingsUsers
                 currentUserId={session?.user?.id ?? ""}
@@ -165,13 +166,13 @@ export function SettingsPageContent({ initialTab }: { initialTab?: string }) {
             </TabsContent>
           )}
 
-          {showAdminTabs && (
+          {isAdmin && (
             <TabsContent value="groups" keepMounted>
               <SettingsGroups refreshKey={enterpriseRefreshKey} />
             </TabsContent>
           )}
 
-          {showAdminTabs && (
+          {isAdmin && (
             <TabsContent value="license" keepMounted>
               <SettingsLicense onEnterpriseActivated={handleEnterpriseActivated} />
             </TabsContent>

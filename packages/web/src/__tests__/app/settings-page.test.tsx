@@ -116,6 +116,7 @@ vi.mock("@/lib/auth-client", () => ({
 
 describe("Settings Page", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
+  let isCurrentTestAdmin = true;
 
   const adminSession = {
     data: {
@@ -169,6 +170,7 @@ describe("Settings Page", () => {
     capturedOnEnterpriseActivated = undefined;
     capturedGroupsRefreshKey = undefined;
     capturedUsersRefreshKey = undefined;
+    isCurrentTestAdmin = true;
     mockUseSession.mockReturnValue(adminSession);
   });
 
@@ -179,7 +181,7 @@ describe("Settings Page", () => {
   it("should render the page title", async () => {
     setupAdminFetchMocks();
 
-    render(<SettingsPage />);
+    render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
     await waitFor(() => {
       expect(screen.getByText("Settings")).toBeInTheDocument();
@@ -194,7 +196,7 @@ describe("Settings Page", () => {
     it("should render Provider, Users, Context, and Profile tabs", async () => {
       setupAdminFetchMocks();
 
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       await waitFor(() => {
         expect(screen.getByRole("tab", { name: "Provider" })).toBeInTheDocument();
@@ -207,7 +209,7 @@ describe("Settings Page", () => {
     it("should show Context tab content by default for admin", async () => {
       setupAdminFetchMocks();
 
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       await waitFor(() => {
         expect(screen.getByTestId("mock-settings-context")).toBeInTheDocument();
@@ -220,7 +222,7 @@ describe("Settings Page", () => {
     it("should render LLM Provider section with ProviderKeyForm", async () => {
       setupAdminFetchMocks();
 
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       await waitFor(() => {
         expect(screen.getByTestId("mock-provider-form")).toBeInTheDocument();
@@ -236,7 +238,7 @@ describe("Settings Page", () => {
         return mockContextFetches();
       });
 
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       expect(screen.getAllByText("Loading...").length).toBeGreaterThanOrEqual(1);
     });
@@ -253,7 +255,7 @@ describe("Settings Page", () => {
 
       setupAdminFetchMocks(providerData);
 
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       await waitFor(() => {
         expect(screen.getByTestId("mock-provider-form")).toBeInTheDocument();
@@ -266,7 +268,7 @@ describe("Settings Page", () => {
     it("should only contain links to valid settings tabs", async () => {
       setupAdminFetchMocks();
 
-      const { container } = render(<SettingsPage />);
+      const { container } = render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       await waitFor(() => screen.getByTestId("mock-provider-form"));
 
@@ -286,7 +288,7 @@ describe("Settings Page", () => {
     it("should re-fetch provider status after onSuccess", async () => {
       setupAdminFetchMocks();
 
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       await waitFor(() => {
         expect(screen.getByTestId("mock-provider-form")).toBeInTheDocument();
@@ -304,7 +306,7 @@ describe("Settings Page", () => {
     it("should increment SettingsGroups refreshKey when license is activated", async () => {
       setupAdminFetchMocks();
 
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       await waitFor(() => screen.getByTestId("mock-settings-license"));
 
@@ -322,7 +324,7 @@ describe("Settings Page", () => {
     it("should increment SettingsUsers refreshKey when license is activated", async () => {
       setupAdminFetchMocks();
 
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       await waitFor(() => screen.getByTestId("mock-settings-license"));
 
@@ -344,11 +346,11 @@ describe("Settings Page", () => {
     mockUseSession.mockReturnValue(pendingSession);
     setupAdminFetchMocks();
 
-    const { rerender } = render(<SettingsPage />);
+    const { rerender } = render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
     // Session loads → admin
     mockUseSession.mockReturnValue(adminSession);
-    rerender(<SettingsPage />);
+    rerender(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
     await waitFor(() => {
       expect(screen.getByRole("tab", { name: "Context" })).toBeInTheDocument();
@@ -367,7 +369,7 @@ describe("Settings Page", () => {
     it("should keep Context tab content mounted when switching away", async () => {
       setupAdminFetchMocks();
 
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       // Wait for the page to finish loading (tabs become available)
       await waitFor(() => screen.getByRole("tab", { name: "Context" }));
@@ -387,7 +389,7 @@ describe("Settings Page", () => {
   describe("dirty dot indicators", () => {
     it("should show dirty dot on Provider tab when ProviderKeyForm reports dirty", async () => {
       setupAdminFetchMocks();
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
       await waitFor(() => screen.getByTestId("mock-provider-form"));
 
       act(() => {
@@ -402,7 +404,7 @@ describe("Settings Page", () => {
 
     it("should show dirty dot on Context tab when SettingsContext reports dirty", async () => {
       setupAdminFetchMocks();
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
       await waitFor(() => screen.getByRole("tab", { name: "Context" }));
 
       act(() => {
@@ -417,7 +419,7 @@ describe("Settings Page", () => {
 
     it("should show dirty dot on Profile tab when SettingsProfile reports dirty", async () => {
       setupAdminFetchMocks();
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
       await waitFor(() => screen.getByRole("tab", { name: "Profile" }));
 
       act(() => {
@@ -432,7 +434,7 @@ describe("Settings Page", () => {
 
     it("should remove dirty dot when tab reports clean again", async () => {
       setupAdminFetchMocks();
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
       await waitFor(() => screen.getByTestId("mock-provider-form"));
 
       act(() => {
@@ -461,13 +463,14 @@ describe("Settings Page", () => {
 
   describe("Regular user", () => {
     beforeEach(() => {
+      isCurrentTestAdmin = false;
       mockUseSession.mockReturnValue(userSession);
     });
 
     it("should show Context and Profile tabs but not Provider or Users", () => {
       vi.mocked(global.fetch).mockImplementation(async () => mockContextFetches());
 
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       expect(screen.getByRole("tab", { name: "Context" })).toBeInTheDocument();
       expect(screen.getByRole("tab", { name: "Profile" })).toBeInTheDocument();
@@ -478,7 +481,7 @@ describe("Settings Page", () => {
     it("should show Context tab content by default", () => {
       vi.mocked(global.fetch).mockImplementation(async () => mockContextFetches());
 
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       expect(screen.getByTestId("mock-settings-context")).toBeInTheDocument();
     });
@@ -486,7 +489,7 @@ describe("Settings Page", () => {
     it("should not render any links to admin-only tabs", () => {
       vi.mocked(global.fetch).mockImplementation(async () => mockContextFetches());
 
-      const { container } = render(<SettingsPage />);
+      const { container } = render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       const allLinks = container.querySelectorAll("a[href*='tab=']");
       const memberTabs = ["context", "profile"];
@@ -505,7 +508,7 @@ describe("Settings Page", () => {
     it("should fetch user context but not provider status", async () => {
       vi.mocked(global.fetch).mockImplementation(async () => mockContextFetches());
 
-      render(<SettingsPage />);
+      render(<SettingsPage isAdmin={isCurrentTestAdmin} />);
 
       await waitFor(() => {
         expect(global.fetch).toHaveBeenCalledWith("/api/users/me/context");
