@@ -16,7 +16,7 @@
 
 import { PDFDocument, StandardFonts, rgb, PDFPage, PDFFont } from "pdf-lib";
 import { createCanvas } from "@napi-rs/canvas";
-import { writeFileSync, mkdirSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, readFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { execSync } from "node:child_process";
 
@@ -557,15 +557,12 @@ async function createPasswordProtected(): Promise<Uint8Array> {
       `qpdf --encrypt testpass123 testpass123 256 -- "${tmpIn}" "${tmpOut}"`,
       { stdio: "pipe" },
     );
-    // Clean up temp file
-    execSync(`rm "${tmpIn}"`, { stdio: "pipe" });
+    unlinkSync(tmpIn);
     return readFileSync(tmpOut) as unknown as Uint8Array;
   } catch {
-    console.log("qpdf not available, creating minimal encrypted PDF manually...");
-    // Without qpdf we'll write the unencrypted PDF and note it in the test
-    // The test should skip if the file isn't actually encrypted.
-    // For now, write a marker file so we know.
-    return pdfBytes;
+    throw new Error(
+      "qpdf is required to generate password-protected.pdf. Install it via: brew install qpdf (macOS) or apt-get install qpdf (Linux)"
+    );
   }
 }
 
