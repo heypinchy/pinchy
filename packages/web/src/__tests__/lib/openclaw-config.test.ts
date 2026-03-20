@@ -280,14 +280,14 @@ describe("regenerateOpenClawConfig", () => {
       name: "Smithers",
       model: "anthropic/claude-opus-4-6",
       workspace: "/root/.openclaw/workspaces/uuid-agent-1",
-      tools: { deny: ["group:runtime", "group:fs", "group:web"] },
+      tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
     });
     expect(config.agents.list[1]).toEqual({
       id: "uuid-agent-2",
       name: "Jeeves",
       model: "openai/gpt-4o",
       workspace: "/root/.openclaw/workspaces/uuid-agent-2",
-      tools: { deny: ["group:runtime", "group:fs", "group:web"] },
+      tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
     });
   });
 

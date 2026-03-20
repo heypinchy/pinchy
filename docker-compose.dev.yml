@@ -6,7 +6,6 @@ services:
     environment:
       - DATABASE_URL=postgresql://pinchy:pinchy_dev@db:5432/pinchy
       - BETTER_AUTH_SECRET=dev-secret-do-not-use-in-production
-      - BETTER_AUTH_URL=http://localhost:7777
       - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY-eyJhbGciOiJFUzI1NiJ9.eyJ0eXBlIjoicGFpZCIsImZlYXR1cmVzIjpbImVudGVycHJpc2UiXSwiaXNzIjoiaGV5cGluY2h5LmNvbSIsInN1YiI6InBpbmNoeS1kZXYiLCJpYXQiOjE3NzM0ODUyMzQsImV4cCI6MjA4ODg0NTIzNH0.h6stBWDrHP2LnXBv18RDk9_y71_b8FvFU6IodCBJkldlLoW6uxX6P7Hr_SL8OM-jhaNqUu7BIMaTYvbqW28buA}
     volumes:
       - ./packages/web:/app/packages/web
@@ -18,8 +17,9 @@ services:
       - ./packages/plugins/pinchy-context:/root/.openclaw/extensions/pinchy-context
       - ./packages/plugins/pinchy-audit:/root/.openclaw/extensions/pinchy-audit
       - ./sample-data:/data/sample-docs
+      - /Users/clemenshelm/Documents/Neukräftengasse 12:/data/neukraeftengasse
   db:
     environment:
       - POSTGRES_PASSWORD=pinchy_dev
     ports:
-      - "5433:5432"
+      - "5434:5432"

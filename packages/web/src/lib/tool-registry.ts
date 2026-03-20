@@ -64,6 +64,11 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
 
 const ALL_GROUPS = ["group:runtime", "group:fs", "group:web"] as const;
 
+// Standalone OpenClaw tools that bypass Pinchy's access control and must be
+// denied unless an admin explicitly enables them. These tools have global
+// file/media access without respecting allowed_paths.
+const STANDALONE_DENY = ["pdf", "image", "image_generate"] as const;
+
 export function getToolById(id: string): ToolDefinition | undefined {
   return TOOL_REGISTRY.find((t) => t.id === id);
 }
@@ -73,9 +78,12 @@ export function getToolsByCategory(category: "safe" | "powerful"): ToolDefinitio
 }
 
 /**
- * Given a list of allowed tool IDs, compute which OpenClaw tool groups to deny.
+ * Given a list of allowed tool IDs, compute which OpenClaw tool groups and
+ * standalone tools to deny.
  * Any group that has at least one allowed tool is NOT denied.
  * Safe tools (pinchy_*) are ignored — they're managed via the plugin system.
+ * Standalone tools (e.g. `pdf`) are always denied since Pinchy manages them
+ * through its own plugin system with proper access control.
  */
 export function computeDeniedGroups(allowedToolIds: string[]): string[] {
   const allowedGroups = new Set<string>();
@@ -87,5 +95,14 @@ export function computeDeniedGroups(allowedToolIds: string[]): string[] {
     }
   }
 
-  return ALL_GROUPS.filter((g) => !allowedGroups.has(g));
+  const denied: string[] = ALL_GROUPS.filter((g) => !allowedGroups.has(g));
+
+  // Always deny standalone tools that Pinchy replaces with its own implementation
+  for (const tool of STANDALONE_DENY) {
+    if (!allowedToolIds.includes(tool)) {
+      denied.push(tool);
+    }
+  }
+
+  return denied;
 }

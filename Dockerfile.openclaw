@@ -4,6 +4,13 @@ RUN apt-get update && apt-get install -y git inotify-tools && rm -rf /var/lib/ap
 
 RUN npm install -g openclaw@2026.3.13
 
+# Install pinchy-files plugin dependencies (native modules must be built in the container)
+COPY packages/plugins/pinchy-files/package.json /tmp/pinchy-files/package.json
+RUN cd /tmp/pinchy-files && npm install --omit=dev && \
+    mkdir -p /opt/pinchy-files-deps && \
+    cp -r /tmp/pinchy-files/node_modules /opt/pinchy-files-deps/ && \
+    rm -rf /tmp/pinchy-files
+
 COPY config/openclaw.json /root/.openclaw/openclaw.json
 COPY config/ensure-gateway-token.js /ensure-gateway-token.js
 COPY config/start-openclaw.sh /start-openclaw.sh
