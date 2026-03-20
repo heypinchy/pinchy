@@ -1,8 +1,13 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { readFileSync as realReadFileSync } from "fs";
+import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
+import { readFileSync as realReadFileSync, mkdtempSync, rmSync } from "fs";
 import { join } from "path";
+import { tmpdir } from "os";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
+
+// Set cache dir to a temp directory before any imports of index.ts
+const testCacheDir = mkdtempSync(join(tmpdir(), "pinchy-files-test-cache-"));
+process.env.PINCHY_PDF_CACHE_DIR = testCacheDir;
 
 // Mock validate module so integration tests can use real fixture paths
 // (which are not under /data/). The mock validateAccess simply returns the path.
@@ -215,6 +220,10 @@ describe("pinchy-files plugin", () => {
 describe("pinchy_read PDF integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterAll(() => {
+    rmSync(testCacheDir, { recursive: true, force: true });
   });
 
   async function getReadTool(api: ReturnType<typeof createMockApi>) {

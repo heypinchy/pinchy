@@ -1,6 +1,11 @@
 import { readFileSync, readdirSync, statSync, realpathSync } from "fs";
+import { createHash } from "crypto";
 import { join } from "path";
 import { validateAccess, MAX_FILE_SIZE, type AgentFileConfig } from "./validate";
+import { extractPdfText } from "./pdf-extract";
+import { processVisionPages, type DescribeImageFn } from "./pdf-vision";
+import { formatPdfResult } from "./pdf-format";
+import { PdfCache } from "./pdf-cache";
 
 interface PluginToolContext {
   agentId?: string;
@@ -9,6 +14,15 @@ interface PluginToolContext {
 interface PluginApi {
   pluginConfig?: {
     agents?: Record<string, AgentFileConfig>;
+  };
+  runtime?: {
+    mediaUnderstanding?: {
+      describeImageFile: (opts: {
+        filePath: string;
+        cfg: unknown;
+        agentDir: string;
+      }) => Promise<{ text: string }>;
+    };
   };
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
@@ -37,6 +51,38 @@ function getAgentPaths(
   return config.allowed_paths;
 }
 
+const CACHE_DIR = process.env.PINCHY_PDF_CACHE_DIR ?? "/var/cache/pinchy-files";
+let cache: PdfCache | null = null;
+
+function getCache(): PdfCache {
+  if (!cache) {
+    cache = new PdfCache(CACHE_DIR);
+  }
+  return cache;
+}
+
+async function readPdf(
+  realPath: string,
+  stats: { size: number; mtimeMs: number },
+  describeImage: DescribeImageFn | null
+): Promise<{ content: Array<{ type: string; text: string }> }> {
+  const fileBuffer = readFileSync(realPath);
+  const contentHash = createHash("sha256").update(fileBuffer).digest("hex");
+
+  const pdfCache = getCache();
+  const cached = pdfCache.get(realPath, stats.size, stats.mtimeMs, contentHash);
+  if (cached) {
+    return { content: [{ type: "text", text: cached }] };
+  }
+
+  const extraction = await extractPdfText(fileBuffer);
+  const pagesWithVision = await processVisionPages(extraction.pages, describeImage);
+  const formatted = formatPdfResult({ ...extraction, pages: pagesWithVision }, realPath);
+
+  pdfCache.set(realPath, stats.size, stats.mtimeMs, contentHash, formatted);
+  return { content: [{ type: "text", text: formatted }] };
+}
+
 const plugin = {
   id: "pinchy-files",
   name: "Pinchy Files",
@@ -52,6 +98,8 @@ const plugin = {
 
   register(api: PluginApi) {
     const agentConfigs = api.pluginConfig?.agents ?? {};
+    const describeImage: DescribeImageFn | null =
+      api.runtime?.mediaUnderstanding?.describeImageFile ?? null;
 
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -159,6 +207,12 @@ const plugin = {
                 };
               }
 
+              // PDF detection
+              if (realPath.toLowerCase().endsWith(".pdf")) {
+                return await readPdf(realPath, stats, describeImage);
+              }
+
+              // Non-PDF: existing behavior
               const content = readFileSync(realPath, "utf-8");
               return { content: [{ type: "text", text: content }] };
             } catch (error) {
