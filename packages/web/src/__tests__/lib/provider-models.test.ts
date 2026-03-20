@@ -278,3 +278,30 @@ describe("fetchProviderModels", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 });
+
+describe("vision capability detection", () => {
+  it("marks anthropic, openai, google as vision-capable providers", async () => {
+    const { VISION_CAPABLE_PROVIDERS } = await import("@/lib/provider-models");
+    expect(VISION_CAPABLE_PROVIDERS).toContain("anthropic");
+    expect(VISION_CAPABLE_PROVIDERS).toContain("openai");
+    expect(VISION_CAPABLE_PROVIDERS).toContain("google");
+  });
+
+  it("detects vision capability from model ID", async () => {
+    const { isModelVisionCapable } = await import("@/lib/provider-models");
+
+    // Cloud providers are vision-capable
+    expect(isModelVisionCapable("anthropic/claude-sonnet-4-6")).toBe(true);
+    expect(isModelVisionCapable("openai/gpt-4o")).toBe(true);
+    expect(isModelVisionCapable("google/gemini-2.5-flash")).toBe(true);
+
+    // Unknown provider → not vision-capable (conservative default)
+    expect(isModelVisionCapable("ollama/llama3.1:8b")).toBe(false);
+    expect(isModelVisionCapable("unknown/model")).toBe(false);
+
+    // Known vision-capable Ollama models
+    expect(isModelVisionCapable("ollama/llava")).toBe(true);
+    expect(isModelVisionCapable("ollama/llama3.2-vision")).toBe(true);
+    expect(isModelVisionCapable("ollama/qwen2.5-vl:7b")).toBe(true);
+  });
+});

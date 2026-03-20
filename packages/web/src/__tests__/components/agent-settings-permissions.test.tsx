@@ -113,6 +113,56 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
   });
 
+  describe("vision warning", () => {
+    it("shows vision warning when pinchy_read enabled and model lacks vision", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{
+            ...defaultAgent,
+            allowedTools: ["pinchy_read"],
+            pluginConfig: { allowed_paths: ["/data/docs"] },
+            model: "ollama/llama3.1:8b",
+          }}
+          directories={defaultDirectories}
+          onChange={vi.fn()}
+        />
+      );
+      expect(screen.getByText(/limited pdf support/i)).toBeInTheDocument();
+    });
+
+    it("does not show warning when model supports vision", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{
+            ...defaultAgent,
+            allowedTools: ["pinchy_read"],
+            pluginConfig: { allowed_paths: ["/data/docs"] },
+            model: "anthropic/claude-sonnet-4-6",
+          }}
+          directories={defaultDirectories}
+          onChange={vi.fn()}
+        />
+      );
+      expect(screen.queryByText(/limited pdf support/i)).not.toBeInTheDocument();
+    });
+
+    it("does not show warning when pinchy_read not enabled", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{
+            ...defaultAgent,
+            allowedTools: [],
+            pluginConfig: null,
+            model: "ollama/llama3.1:8b",
+          }}
+          directories={defaultDirectories}
+          onChange={vi.fn()}
+        />
+      );
+      expect(screen.queryByText(/limited pdf support/i)).not.toBeInTheDocument();
+    });
+  });
+
   describe("onChange behavior", () => {
     it("should NOT render a Save button", () => {
       const onChange = vi.fn();
