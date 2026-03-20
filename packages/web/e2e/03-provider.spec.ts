@@ -7,7 +7,7 @@ test.describe("Provider configuration", () => {
     // Login
     await page.goto("/login");
     await page.getByLabel(/email/i).fill("admin@test.local");
-    await page.getByLabel(/password/i).fill("test-password-123");
+    await page.getByLabel("Password", { exact: true }).fill("test-password-123");
     await page.getByRole("button", { name: /sign in/i }).click();
 
     // Lands on provider setup
@@ -22,7 +22,7 @@ test.describe("Provider configuration", () => {
   test("shows API key input after selecting provider", async ({ page }) => {
     await page.goto("/login");
     await page.getByLabel(/email/i).fill("admin@test.local");
-    await page.getByLabel(/password/i).fill("test-password-123");
+    await page.getByLabel("Password", { exact: true }).fill("test-password-123");
     await page.getByRole("button", { name: /sign in/i }).click();
 
     await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 10000 });
@@ -53,7 +53,7 @@ test.describe("Provider configuration", () => {
     // Login
     await page.goto("/login");
     await page.getByLabel(/email/i).fill("admin@test.local");
-    await page.getByLabel(/password/i).fill("test-password-123");
+    await page.getByLabel("Password", { exact: true }).fill("test-password-123");
     await page.getByRole("button", { name: /sign in/i }).click();
 
     // Wait for login to complete (scrypt hashing can be slow on CI)
