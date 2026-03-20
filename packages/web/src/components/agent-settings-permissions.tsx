@@ -7,7 +7,7 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle } from "lucide-react";
 import { DirectoryPicker } from "@/components/directory-picker";
 import { getToolsByCategory } from "@/lib/tool-registry";
-import { isModelVisionCapable } from "@/lib/provider-models";
+import { isModelVisionCapable } from "@/lib/model-vision";
 
 interface AgentSettingsPermissionsProps {
   agent: {
