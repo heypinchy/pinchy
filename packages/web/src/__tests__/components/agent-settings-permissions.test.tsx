@@ -43,10 +43,13 @@ describe("AgentSettingsPermissions", () => {
     );
 
     expect(screen.getByText("Powerful Tools")).toBeInTheDocument();
-    expect(screen.getByLabelText("Run commands")).toBeInTheDocument();
+    expect(screen.getByLabelText("Run shell commands")).toBeInTheDocument();
     expect(screen.getByLabelText("Read any file")).toBeInTheDocument();
-    expect(screen.getByLabelText("Write files")).toBeInTheDocument();
-    expect(screen.getByLabelText("Browse the web")).toBeInTheDocument();
+    expect(screen.getByLabelText("Write any file")).toBeInTheDocument();
+    expect(screen.getByLabelText("Read any PDF")).toBeInTheDocument();
+    expect(screen.getByLabelText("Analyze any image")).toBeInTheDocument();
+    expect(screen.getByLabelText("Generate images")).toBeInTheDocument();
+    expect(screen.getByLabelText("Fetch web pages")).toBeInTheDocument();
     expect(screen.getByLabelText("Search the web")).toBeInTheDocument();
   });
 

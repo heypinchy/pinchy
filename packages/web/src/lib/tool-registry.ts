@@ -8,77 +8,75 @@ export interface ToolDefinition {
 }
 
 export const TOOL_REGISTRY: readonly ToolDefinition[] = [
-  // Safe tools — sandboxed, admin-configured paths
+  // Safe tools — sandboxed, admin-configured paths only
   {
     id: "pinchy_ls",
     label: "List approved directories",
-    description: "List files in directories the admin has approved",
+    description: "List files in admin-approved directories only",
     category: "safe",
     requiresDirectories: true,
   },
   {
     id: "pinchy_read",
     label: "Read approved files",
-    description: "Read file contents from approved directories only",
+    description: "Read files (including PDFs) from approved directories only",
     category: "safe",
     requiresDirectories: true,
   },
 
-  // Powerful tools — direct server access
+  // Powerful tools — unrestricted access
   {
     id: "shell",
-    label: "Run commands",
-    description: "Execute shell commands on the server",
+    label: "Run shell commands",
+    description: "Execute any command on the server",
     category: "powerful",
     group: "group:runtime",
   },
   {
     id: "fs_read",
     label: "Read any file",
-    description: "Read any file on the system, without restrictions",
+    description: "Read any file on the server, ignoring directory restrictions",
     category: "powerful",
     group: "group:fs",
   },
   {
     id: "fs_write",
-    label: "Write files",
-    description: "Create and modify files on the system",
+    label: "Write any file",
+    description: "Create and modify any file on the server",
     category: "powerful",
     group: "group:fs",
   },
   {
+    id: "pdf",
+    label: "Read any PDF",
+    description: "Read and analyze any PDF on the server with built-in vision",
+    category: "powerful",
+  },
+  {
+    id: "image",
+    label: "Analyze any image",
+    description: "Analyze any image file on the server using vision",
+    category: "powerful",
+  },
+  {
+    id: "image_generate",
+    label: "Generate images",
+    description: "Create images using AI image generation",
+    category: "powerful",
+  },
+  {
     id: "web_fetch",
-    label: "Browse the web",
-    description: "Fetch web pages",
+    label: "Fetch web pages",
+    description: "Download and read content from URLs",
     category: "powerful",
     group: "group:web",
   },
   {
     id: "web_search",
     label: "Search the web",
-    description: "Perform web searches",
+    description: "Run web searches and read results",
     category: "powerful",
     group: "group:web",
-  },
-
-  // Standalone tools — global access, no sandboxing
-  {
-    id: "pdf",
-    label: "Read any PDF",
-    description: "Read and analyze any PDF on the system, without restrictions",
-    category: "powerful",
-  },
-  {
-    id: "image",
-    label: "Analyze any image",
-    description: "Analyze any image on the system using the AI model's vision",
-    category: "powerful",
-  },
-  {
-    id: "image_generate",
-    label: "Generate images",
-    description: "Generate images using AI image generation models",
-    category: "powerful",
   },
 ];
 
