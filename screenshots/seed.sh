@@ -53,6 +53,17 @@ else
   exit 1
 fi
 
+# --- Seed provider config directly in DB (skip API key validation) ---
+echo "🔌 Configuring demo provider..."
+docker compose exec -T db psql -U pinchy -d pinchy -c "
+  INSERT INTO settings (key, value, encrypted)
+  VALUES ('default_provider', 'anthropic', false)
+  ON CONFLICT (key) DO UPDATE SET value = 'anthropic';
+  INSERT INTO settings (key, value, encrypted)
+  VALUES ('anthropic_api_key', 'sk-ant-demo-key-for-screenshots', true)
+  ON CONFLICT (key) DO UPDATE SET value = 'sk-ant-demo-key-for-screenshots';
+" > /dev/null 2>&1 && echo "  ✅ Provider configured (Anthropic)" || echo "  ⚠️  Provider config failed"
+
 # --- Login to get session cookie ---
 echo "🔑 Logging in..."
 LOGIN_RESPONSE=$(curl -s -c /tmp/pinchy-cookies.txt \
