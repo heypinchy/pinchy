@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { formatPdfResult } from "./pdf-format";
-import type { PdfExtractionResult, VisionDescription } from "./pdf-extract";
+import type { PdfExtractionResult } from "./pdf-extract";
 
 // Helper to create a minimal page
 function makePage(
@@ -9,7 +9,6 @@ function makePage(
     text: string;
     isScanned: boolean;
     embeddedImages: { width: number; height: number; data: Buffer }[];
-    visionDescriptions: VisionDescription[];
   }> = {},
 ) {
   return {
@@ -17,7 +16,6 @@ function makePage(
     text: overrides.text ?? "",
     isScanned: overrides.isScanned ?? false,
     embeddedImages: overrides.embeddedImages ?? [],
-    visionDescriptions: overrides.visionDescriptions,
   };
 }
 
@@ -55,44 +53,7 @@ describe("formatPdfResult", () => {
     expect(output).toContain("Page two text");
   });
 
-  it("includes vision descriptions as [Figure: ...] blocks for embedded images", () => {
-    const result: PdfExtractionResult = {
-      pages: [
-        makePage({
-          text: "Some text",
-          visionDescriptions: [
-            { type: "embedded_image", description: "A bar chart showing Q3 revenue" },
-          ],
-        }),
-      ],
-      totalPages: 1,
-      truncated: false,
-    };
-    const output = formatPdfResult(result, "/data/docs/test.pdf");
-
-    expect(output).toContain("[Figure: A bar chart showing Q3 revenue]");
-  });
-
-  it("includes scanned page vision text inline without special markers", () => {
-    const result: PdfExtractionResult = {
-      pages: [
-        makePage({
-          isScanned: true,
-          visionDescriptions: [
-            { type: "scanned_page", description: "The company was founded in 2020..." },
-          ],
-        }),
-      ],
-      totalPages: 1,
-      truncated: false,
-    };
-    const output = formatPdfResult(result, "/data/docs/test.pdf");
-
-    expect(output).toContain("The company was founded in 2020...");
-    expect(output).not.toContain("[Figure:");
-  });
-
-  it("shows fallback message for scanned pages without vision", () => {
+  it("shows fallback message for scanned pages without text", () => {
     const result: PdfExtractionResult = {
       pages: [makePage({ isScanned: true })],
       totalPages: 1,

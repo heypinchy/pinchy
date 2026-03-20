@@ -21,29 +21,14 @@ vi.mock("./validate", async (importOriginal) => {
 
 const mockRegisterTool = vi.fn();
 
-interface MockApiOptions {
-  agentConfigs: Record<string, { allowed_paths: string[] }>;
-  describeImageFile?: (opts: {
-    filePath: string;
-    cfg: unknown;
-    agentDir: string;
-  }) => Promise<{ text: string }>;
-}
-
-function createMockApi(agentConfigsOrOpts: Record<string, { allowed_paths: string[] }> | MockApiOptions) {
-  const opts: MockApiOptions = "agentConfigs" in agentConfigsOrOpts
-    ? agentConfigsOrOpts as MockApiOptions
-    : { agentConfigs: agentConfigsOrOpts as Record<string, { allowed_paths: string[] }> };
-
+function createMockApi(agentConfigs: Record<string, { allowed_paths: string[] }>) {
   return {
     id: "pinchy-files",
     name: "Pinchy Files",
     source: "test",
     config: {},
-    pluginConfig: { agents: opts.agentConfigs },
-    runtime: opts.describeImageFile
-      ? { mediaUnderstanding: { describeImageFile: opts.describeImageFile } }
-      : {},
+    pluginConfig: { agents: agentConfigs },
+    runtime: {},
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     registerTool: mockRegisterTool,
     registerHook: vi.fn(),
@@ -58,17 +43,6 @@ function createMockApi(agentConfigsOrOpts: Record<string, { allowed_paths: strin
     resolvePath: vi.fn((p: string) => p),
     on: vi.fn(),
   };
-}
-
-function registerAndGetReadTool(api: ReturnType<typeof createMockApi>, agentId: string) {
-  // We use a fresh dynamic import each time but the module is cached,
-  // so register() can be called multiple times safely.
-  const plugin = require("./index").default;
-  plugin.register(api as any);
-  const readFactory = mockRegisterTool.mock.calls.find(
-    (call: any[]) => call[1]?.name === "pinchy_read"
-  )?.[0];
-  return readFactory({ agentId });
 }
 
 describe("pinchy-files plugin", () => {
@@ -261,21 +235,22 @@ describe("pinchy_read PDF integration", () => {
     expect(result.content[0].text).toBe(expectedContent);
   });
 
-  it("captures describeImage from api.runtime.mediaUnderstanding", async () => {
-    const mockDescribe = vi.fn().mockResolvedValue({ text: "A scanned document" });
+  it("returns image content blocks for scanned PDF pages", async () => {
     const fixturePath = join(FIXTURES, "scanned.pdf");
-
-    const api = createMockApi({
-      agentConfigs: { "agent-1": { allowed_paths: [FIXTURES + "/"] } },
-      describeImageFile: mockDescribe,
-    });
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
     const tool = await getReadTool(api);
 
     const result = await tool.execute("call-1", { path: fixturePath });
 
-    // describeImage should have been called for scanned pages
-    expect(mockDescribe).toHaveBeenCalled();
+    // First block should be XML-wrapped text
+    expect(result.content[0].type).toBe("text");
     expect(result.content[0].text).toContain("<document>");
+
+    // Should also include image content blocks for scanned pages
+    const imageBlocks = result.content.filter((b: { type: string }) => b.type === "image");
+    expect(imageBlocks.length).toBeGreaterThanOrEqual(1);
+    expect(imageBlocks[0].mimeType).toBe("image/png");
+    expect(imageBlocks[0].data).toBeTruthy();
   });
 
   it("returns a clear error message for password-protected PDFs", async () => {

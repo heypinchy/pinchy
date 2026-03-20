@@ -16,17 +16,11 @@ export interface ExtractedImage {
   data: Buffer;
 }
 
-export interface VisionDescription {
-  type: "scanned_page" | "embedded_image";
-  description: string;
-}
-
 export interface ExtractedPage {
   pageNumber: number;
   text: string;
   isScanned: boolean;
   embeddedImages: ExtractedImage[];
-  visionDescriptions?: VisionDescription[];
   renderedImage?: Buffer;
 }
 

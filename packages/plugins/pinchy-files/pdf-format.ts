@@ -24,23 +24,7 @@ export function formatPdfResult(
       lines.push("");
     }
 
-    if (page.visionDescriptions) {
-      for (const desc of page.visionDescriptions) {
-        if (desc.type === "scanned_page") {
-          lines.push(desc.description);
-          lines.push("");
-        } else if (desc.type === "embedded_image") {
-          lines.push(`[Figure: ${desc.description}]`);
-          lines.push("");
-        }
-      }
-    }
-
-    if (
-      page.isScanned &&
-      !page.text.trim() &&
-      (!page.visionDescriptions || page.visionDescriptions.length === 0)
-    ) {
+    if (page.isScanned && !page.text.trim()) {
       lines.push(
         "[Unable to extract content — this page appears to be a scanned image. A vision-capable model is required for full extraction.]",
       );

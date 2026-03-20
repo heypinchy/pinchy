@@ -3,7 +3,6 @@ import { createHash } from "crypto";
 import { join } from "path";
 import { validateAccess, MAX_FILE_SIZE, type AgentFileConfig } from "./validate";
 import { extractPdfText } from "./pdf-extract";
-import { processVisionPages, type DescribeImageFn } from "./pdf-vision";
 import { formatPdfResult } from "./pdf-format";
 import { PdfCache } from "./pdf-cache";
 
@@ -11,18 +10,16 @@ interface PluginToolContext {
   agentId?: string;
 }
 
+interface ContentBlock {
+  type: string;
+  text?: string;
+  data?: string;
+  mimeType?: string;
+}
+
 interface PluginApi {
   pluginConfig?: {
     agents?: Record<string, AgentFileConfig>;
-  };
-  runtime?: {
-    mediaUnderstanding?: {
-      describeImageFile: (opts: {
-        filePath: string;
-        cfg: unknown;
-        agentDir: string;
-      }) => Promise<{ text: string }>;
-    };
   };
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
@@ -39,7 +36,7 @@ interface AgentTool {
     toolCallId: string,
     params: Record<string, unknown>,
     signal?: AbortSignal
-  ) => Promise<{ content: Array<{ type: string; text: string }>; details?: unknown }>;
+  ) => Promise<{ content: ContentBlock[]; details?: unknown }>;
 }
 
 function getAgentPaths(
@@ -64,23 +61,44 @@ function getCache(): PdfCache {
 async function readPdf(
   realPath: string,
   stats: { size: number; mtimeMs: number },
-  describeImage: DescribeImageFn | null
-): Promise<{ content: Array<{ type: string; text: string }> }> {
+): Promise<{ content: ContentBlock[] }> {
   const fileBuffer = readFileSync(realPath);
   const contentHash = createHash("sha256").update(fileBuffer).digest("hex");
 
   const pdfCache = getCache();
   const cached = pdfCache.get(realPath, stats.size, stats.mtimeMs, contentHash);
   if (cached) {
+    // Cache only stores text — scanned page images are re-extracted if needed
     return { content: [{ type: "text", text: cached }] };
   }
 
   const extraction = await extractPdfText(fileBuffer);
-  const pagesWithVision = await processVisionPages(extraction.pages, describeImage);
-  const formatted = formatPdfResult({ ...extraction, pages: pagesWithVision }, realPath);
 
+  // Build mixed content: text for text pages, images for scanned pages.
+  // The LLM processes the images directly via its native vision capability.
+  const content: ContentBlock[] = [];
+  const hasScannedPages = extraction.pages.some((p) => p.isScanned);
+
+  // Add the formatted text content (includes text from all pages that have text)
+  const formatted = formatPdfResult(extraction, realPath);
+  content.push({ type: "text", text: formatted });
+
+  // For scanned pages, include rendered page images so the LLM can read them
+  if (hasScannedPages) {
+    for (const page of extraction.pages) {
+      if (page.isScanned && page.renderedImage) {
+        content.push({
+          type: "image",
+          data: page.renderedImage.toString("base64"),
+          mimeType: "image/png",
+        });
+      }
+    }
+  }
+
+  // Cache the text portion (images are cheap to re-render)
   pdfCache.set(realPath, stats.size, stats.mtimeMs, contentHash, formatted);
-  return { content: [{ type: "text", text: formatted }] };
+  return { content };
 }
 
 const plugin = {
@@ -98,8 +116,6 @@ const plugin = {
 
   register(api: PluginApi) {
     const agentConfigs = api.pluginConfig?.agents ?? {};
-    const describeImage: DescribeImageFn | null =
-      api.runtime?.mediaUnderstanding?.describeImageFile ?? null;
 
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -209,7 +225,7 @@ const plugin = {
 
               // PDF detection
               if (realPath.toLowerCase().endsWith(".pdf")) {
-                return await readPdf(realPath, stats, describeImage);
+                return await readPdf(realPath, stats);
               }
 
               // Non-PDF: existing behavior
