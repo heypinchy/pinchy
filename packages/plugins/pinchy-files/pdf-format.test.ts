@@ -53,7 +53,7 @@ describe("formatPdfResult", () => {
     expect(output).toContain("Page two text");
   });
 
-  it("shows fallback message for scanned pages without images attached", () => {
+  it("shows fallback message for scanned pages without text", () => {
     const result: PdfExtractionResult = {
       pages: [makePage({ isScanned: true })],
       totalPages: 1,
@@ -62,18 +62,6 @@ describe("formatPdfResult", () => {
     const output = formatPdfResult(result, "/data/docs/test.pdf");
 
     expect(output).toContain("Unable to extract text");
-  });
-
-  it("references attached images when imagesAttached is true", () => {
-    const result: PdfExtractionResult = {
-      pages: [makePage({ pageNumber: 3, isScanned: true })],
-      totalPages: 3,
-      truncated: false,
-    };
-    const output = formatPdfResult(result, "/data/docs/test.pdf", { imagesAttached: true });
-
-    expect(output).toContain("see attached page image");
-    expect(output).not.toContain("Unable to extract");
   });
 
   it("shows truncation notice when pages were limited", () => {

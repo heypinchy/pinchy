@@ -235,22 +235,17 @@ describe("pinchy_read PDF integration", () => {
     expect(result.content[0].text).toBe(expectedContent);
   });
 
-  it("returns image content blocks for scanned PDF pages", async () => {
+  it("returns text with fallback message for scanned PDFs without vision config", async () => {
     const fixturePath = join(FIXTURES, "scanned.pdf");
     const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
     const tool = await getReadTool(api);
 
     const result = await tool.execute("call-1", { path: fixturePath });
 
-    // First block should be XML-wrapped text
+    // Without vision config (no modelAuth in mock API), scanned pages show fallback
     expect(result.content[0].type).toBe("text");
     expect(result.content[0].text).toContain("<document>");
-
-    // Should also include image content blocks for scanned pages
-    const imageBlocks = result.content.filter((b: { type: string }) => b.type === "image");
-    expect(imageBlocks.length).toBeGreaterThanOrEqual(1);
-    expect(imageBlocks[0].mimeType).toBe("image/png");
-    expect(imageBlocks[0].data).toBeTruthy();
+    expect(result.content[0].text).toContain("Unable to extract text");
   });
 
   it("returns a clear error message for password-protected PDFs", async () => {

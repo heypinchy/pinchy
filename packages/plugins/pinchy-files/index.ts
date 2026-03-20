@@ -5,6 +5,7 @@ import { validateAccess, MAX_FILE_SIZE, type AgentFileConfig } from "./validate"
 import { extractPdfText } from "./pdf-extract";
 import { formatPdfResult } from "./pdf-format";
 import { PdfCache } from "./pdf-cache";
+import { describePageImage, type VisionApiConfig } from "./pdf-vision-api";
 
 interface PluginToolContext {
   agentId?: string;
@@ -12,9 +13,7 @@ interface PluginToolContext {
 
 interface ContentBlock {
   type: string;
-  text?: string;
-  data?: string;
-  mimeType?: string;
+  text: string;
 }
 
 interface PluginApi {
@@ -61,6 +60,7 @@ function getCache(): PdfCache {
 async function readPdf(
   realPath: string,
   stats: { size: number; mtimeMs: number },
+  visionConfig: VisionApiConfig | null,
 ): Promise<{ content: ContentBlock[] }> {
   const fileBuffer = readFileSync(realPath);
   const contentHash = createHash("sha256").update(fileBuffer).digest("hex");
@@ -68,42 +68,33 @@ async function readPdf(
   const pdfCache = getCache();
   const cached = pdfCache.get(realPath, stats.size, stats.mtimeMs, contentHash);
   if (cached) {
-    // Cache only stores text — scanned page images are re-extracted if needed
     return { content: [{ type: "text", text: cached }] };
   }
 
   const extraction = await extractPdfText(fileBuffer);
 
-  // Build mixed content: text for text pages, images for scanned pages.
-  // The LLM processes the images directly via its native vision capability.
-  const content: ContentBlock[] = [];
-  const hasScannedPages = extraction.pages.some((p) => p.isScanned);
-
-  // Check if we have rendered images to attach
-  const hasRenderedImages = hasScannedPages && extraction.pages.some(p => p.isScanned && p.renderedImage);
-
-  // Add the formatted text content (includes text from all pages that have text)
-  const formatted = formatPdfResult(extraction, realPath, { imagesAttached: hasRenderedImages });
-  content.push({ type: "text", text: formatted });
-
-  // For scanned pages, include rendered page images so the LLM can read them
-  if (hasScannedPages) {
+  // For scanned pages with rendered images, call the LLM vision API directly
+  // to extract text. This replicates how OpenClaw's built-in PDF tool works.
+  if (visionConfig) {
     for (const page of extraction.pages) {
       if (page.isScanned && page.renderedImage) {
-        content.push({
-          type: "image",
-          data: page.renderedImage.toString("base64"),
-          mimeType: "image/png",
-        });
+        try {
+          const imageBase64 = page.renderedImage.toString("base64");
+          const extractedText = await describePageImage(imageBase64, visionConfig);
+          if (extractedText) {
+            page.text = extractedText;
+            page.isScanned = false; // Now has text, no longer "scanned"
+          }
+        } catch (err) {
+          console.error(`[pinchy-files] Vision API failed for page ${page.pageNumber}:`, err);
+        }
       }
     }
   }
 
-  // Cache the text portion (images are cheap to re-render)
+  const formatted = formatPdfResult(extraction, realPath);
   pdfCache.set(realPath, stats.size, stats.mtimeMs, contentHash, formatted);
-  const imageBlocks = content.filter(b => b.type === "image");
-  console.log(`[pinchy-files] readPdf: ${realPath} → ${content.length} blocks (${imageBlocks.length} images, ${extraction.pages.filter(p => p.isScanned).length} scanned pages)`);
-  return { content };
+  return { content: [{ type: "text", text: formatted }] };
 }
 
 const plugin = {
@@ -121,6 +112,13 @@ const plugin = {
 
   register(api: PluginApi) {
     const agentConfigs = api.pluginConfig?.agents ?? {};
+
+    // Capture runtime APIs for vision (direct LLM API calls for scanned pages)
+    const modelAuth = (api as any).runtime?.modelAuth as {
+      resolveApiKeyForProvider: (provider: string) => Promise<string | null>;
+    } | undefined;
+    const loadConfig = (api as any).runtime?.config?.loadConfig as
+      (() => { agents?: { list?: Array<{ id: string; model: string }> } }) | undefined;
 
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -230,7 +228,21 @@ const plugin = {
 
               // PDF detection
               if (realPath.toLowerCase().endsWith(".pdf")) {
-                return await readPdf(realPath, stats);
+                // Build vision config from runtime APIs
+                let visionConfig: VisionApiConfig | null = null;
+                if (modelAuth && loadConfig) {
+                  const config = loadConfig();
+                  const agentModel = config?.agents?.list?.find(
+                    (a) => a.id === agentId
+                  )?.model;
+                  if (agentModel) {
+                    visionConfig = {
+                      resolveApiKey: modelAuth.resolveApiKeyForProvider,
+                      model: agentModel,
+                    };
+                  }
+                }
+                return await readPdf(realPath, stats, visionConfig);
               }
 
               // Non-PDF: existing behavior
