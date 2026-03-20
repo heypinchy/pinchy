@@ -196,7 +196,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
 
           {/* Desktop table */}
           <div className="hidden lg:block">
-            <Table>
+            <Table className="table-fixed">
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
@@ -215,13 +215,13 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
                     onClick={() => item.kind === "user" && setSelectedUser(item)}
                   >
                     <TableCell
-                      className="max-w-[150px] truncate"
+                      className="truncate"
                       title={item.kind === "user" ? item.name : undefined}
                     >
                       {item.kind === "user" ? item.name : "\u2014"}
                     </TableCell>
                     <TableCell
-                      className="max-w-[200px] truncate"
+                      className="truncate"
                       title={item.kind === "user" ? item.email : item.email || undefined}
                     >
                       {item.kind === "user" ? item.email : item.email || "\u2014"}

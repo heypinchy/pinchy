@@ -112,6 +112,32 @@ describe("SettingsUsers", () => {
     expect(tableView.getAllByText("member").length).toBeGreaterThanOrEqual(2);
   });
 
+  it("should use fixed table layout so truncation works on long names/emails", async () => {
+    renderWithUsersLoaded();
+
+    await waitFor(() => {
+      expect(screen.getByRole("table")).toBeInTheDocument();
+    });
+
+    const table = screen.getByRole("table");
+    expect(table).toHaveClass("table-fixed");
+  });
+
+  it("should set title attributes on name and email cells for tooltip on truncated text", async () => {
+    renderWithUsersLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Alice Admin").length).toBeGreaterThanOrEqual(1);
+    });
+
+    const table = screen.getByRole("table");
+    const aliceNameCell = within(table).getByText("Alice Admin").closest("td")!;
+    expect(aliceNameCell).toHaveAttribute("title", "Alice Admin");
+
+    const aliceEmailCell = within(table).getByText("alice@example.com").closest("td")!;
+    expect(aliceEmailCell).toHaveAttribute("title", "alice@example.com");
+  });
+
   it("should render Invite User button", async () => {
     renderWithUsersLoaded();
 
