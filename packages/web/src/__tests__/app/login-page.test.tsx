@@ -56,7 +56,20 @@ describe("Login Page", () => {
   it("should render email and password fields", () => {
     render(<LoginPage />);
     expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
+    expect(screen.getByLabelText("Password")).toBeInTheDocument();
+  });
+
+  it("should have a show/hide password toggle", async () => {
+    const user = userEvent.setup();
+    render(<LoginPage />);
+
+    const passwordInput = screen.getByLabelText("Password");
+    expect(passwordInput).toHaveAttribute("type", "password");
+
+    const toggleButton = screen.getByRole("button", { name: /show password/i });
+    await user.click(toggleButton);
+
+    expect(passwordInput).toHaveAttribute("type", "text");
   });
 
   it("should have a 'Sign in' button", () => {
@@ -69,7 +82,7 @@ describe("Login Page", () => {
     render(<LoginPage />);
 
     await user.type(screen.getByLabelText(/email/i), "not-an-email");
-    await user.type(screen.getByLabelText(/password/i), "somepassword");
+    await user.type(screen.getByLabelText("Password"), "somepassword");
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => {
@@ -100,7 +113,7 @@ describe("Login Page", () => {
     render(<LoginPage />);
 
     await user.type(screen.getByLabelText(/email/i), "user@example.com");
-    await user.type(screen.getByLabelText(/password/i), "mypassword");
+    await user.type(screen.getByLabelText("Password"), "mypassword");
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => {
@@ -118,7 +131,7 @@ describe("Login Page", () => {
     render(<LoginPage />);
 
     await user.type(screen.getByLabelText(/email/i), "user@example.com");
-    await user.type(screen.getByLabelText(/password/i), "mypassword");
+    await user.type(screen.getByLabelText("Password"), "mypassword");
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => {
@@ -135,7 +148,7 @@ describe("Login Page", () => {
     render(<LoginPage />);
 
     await user.type(screen.getByLabelText(/email/i), "user@example.com");
-    await user.type(screen.getByLabelText(/password/i), "wrongpassword");
+    await user.type(screen.getByLabelText("Password"), "wrongpassword");
     await user.click(screen.getByRole("button", { name: /sign in/i }));
 
     await waitFor(() => {

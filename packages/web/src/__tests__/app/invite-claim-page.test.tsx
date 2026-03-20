@@ -37,10 +37,30 @@ describe("Invite Claim Page", () => {
     expect(screen.getByText("You've been invited to Pinchy")).toBeInTheDocument();
   });
 
-  it("should render Name and Password input fields", () => {
+  it("should render Name, Password, and Confirm password input fields", () => {
     render(<InviteClaimPage />);
     expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/password/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^password$/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/confirm password/i)).toBeInTheDocument();
+  });
+
+  it("should render a show/hide toggle on the password field", () => {
+    render(<InviteClaimPage />);
+    expect(screen.getAllByRole("button", { name: /show password/i }).length).toBeGreaterThanOrEqual(
+      1
+    );
+  });
+
+  it("should toggle password visibility when clicking the toggle button", async () => {
+    const user = userEvent.setup();
+    render(<InviteClaimPage />);
+
+    const passwordInput = screen.getByLabelText(/^password$/i);
+    expect(passwordInput).toHaveAttribute("type", "password");
+
+    const toggle = screen.getAllByRole("button", { name: /show password/i })[0];
+    await user.click(toggle);
+    expect(passwordInput).toHaveAttribute("type", "text");
   });
 
   it("should render a 'Create account' submit button", () => {
@@ -52,7 +72,8 @@ describe("Invite Claim Page", () => {
     const user = userEvent.setup();
     render(<InviteClaimPage />);
 
-    await user.type(screen.getByLabelText(/password/i), "password123");
+    await user.type(screen.getByLabelText(/^password$/i), "password123");
+    await user.type(screen.getByLabelText(/confirm password/i), "password123");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
@@ -67,11 +88,28 @@ describe("Invite Claim Page", () => {
     render(<InviteClaimPage />);
 
     await user.type(screen.getByLabelText(/name/i), "Test User");
-    await user.type(screen.getByLabelText(/password/i), "short");
+    await user.type(screen.getByLabelText(/^password$/i), "short");
+    await user.type(screen.getByLabelText(/confirm password/i), "short");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
       expect(screen.getByText("Password must be at least 8 characters")).toBeInTheDocument();
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
+  it("should show validation error when passwords do not match", async () => {
+    const user = userEvent.setup();
+    render(<InviteClaimPage />);
+
+    await user.type(screen.getByLabelText(/name/i), "Test User");
+    await user.type(screen.getByLabelText(/^password$/i), "password123");
+    await user.type(screen.getByLabelText(/confirm password/i), "different456");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Passwords do not match")).toBeInTheDocument();
     });
 
     expect(global.fetch).not.toHaveBeenCalled();
@@ -87,7 +125,8 @@ describe("Invite Claim Page", () => {
     render(<InviteClaimPage />);
 
     await user.type(screen.getByLabelText(/name/i), "Test User");
-    await user.type(screen.getByLabelText(/password/i), "password123");
+    await user.type(screen.getByLabelText(/^password$/i), "password123");
+    await user.type(screen.getByLabelText(/confirm password/i), "password123");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
@@ -105,7 +144,8 @@ describe("Invite Claim Page", () => {
     render(<InviteClaimPage />);
 
     await user.type(screen.getByLabelText(/name/i), "Test User");
-    await user.type(screen.getByLabelText(/password/i), "password123");
+    await user.type(screen.getByLabelText(/^password$/i), "password123");
+    await user.type(screen.getByLabelText(/confirm password/i), "password123");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
@@ -131,7 +171,8 @@ describe("Invite Claim Page", () => {
     render(<InviteClaimPage />);
 
     await user.type(screen.getByLabelText(/name/i), "Test User");
-    await user.type(screen.getByLabelText(/password/i), "password123");
+    await user.type(screen.getByLabelText(/^password$/i), "password123");
+    await user.type(screen.getByLabelText(/confirm password/i), "password123");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {

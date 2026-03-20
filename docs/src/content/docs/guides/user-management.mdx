@@ -152,6 +152,41 @@ Every user (not just admins) can manage their own profile at **Settings → Prof
 
 Click the **Log out** button in the Session section to end your current session and return to the login page.
 
+## Emergency admin password reset (CLI)
+
+If the admin has lost their password and there is no other admin who can generate a reset link through the UI, you can reset the password directly from the command line.
+
+Run the following command on the server where Pinchy is deployed:
+
+```bash
+docker compose exec pinchy pnpm reset-admin
+```
+
+This finds the first admin user, generates a new random password, and prints it to the terminal:
+
+```
+Admin password reset for: admin@example.com
+New password: aB3kLm9xPqRs7wZn
+```
+
+To reset the password for a specific user by email:
+
+```bash
+docker compose exec pinchy pnpm reset-admin --email admin@example.com
+```
+
+<Aside type="caution">
+  The generated password is shown only once. Make sure to copy it immediately.
+  After logging in, change the password via **Settings → Profile → Change
+  Password**.
+</Aside>
+
+<Aside type="note">
+  This command requires direct access to the server running Pinchy. It connects
+  to the database using the `DATABASE_URL` environment variable configured in
+  Docker Compose.
+</Aside>
+
 ## Audit trail
 
 All user management actions performed by admins are logged in the audit trail, including:
