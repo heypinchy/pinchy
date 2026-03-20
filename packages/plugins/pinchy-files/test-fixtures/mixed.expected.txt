@@ -1,0 +1,9 @@
+Pinchy Platform Overview
+enterprise AI agent platform
+role-based access control
+comprehensive audit trails
+OpenClaw provides the agent runtime
+Deployment Guide
+Docker Compose
+self-hosted deployment model
+air-gapped environments

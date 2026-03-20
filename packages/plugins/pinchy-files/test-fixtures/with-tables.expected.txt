@@ -1,0 +1,13 @@
+Engineering Department Roster
+John Smith
+Lead Engineer
+jane.doe@acme.com
+Robert Chen
+DevOps Manager
+Maria Garcia
+Data Scientist
+ahmed.hassan@acme.com
+Lisa Wang
+Product Manager
+james.wilson@acme.com
+Security

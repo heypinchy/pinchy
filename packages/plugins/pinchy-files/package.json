@@ -8,14 +8,15 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "pdfjs-dist": "^4.10.38",
-    "better-sqlite3": "^11.8.1"
+    "better-sqlite3": "^11.8.1",
+    "pdfjs-dist": "^4.10.38"
   },
   "devDependencies": {
     "@napi-rs/canvas": "^0.1.65",
     "@types/better-sqlite3": "^7.6.12",
-    "vitest": "^3.0.0",
-    "typescript": "^5.7.0"
+    "pdf-lib": "^1.17.1",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
   },
   "pnpm": {
     "onlyBuiltDependencies": [
