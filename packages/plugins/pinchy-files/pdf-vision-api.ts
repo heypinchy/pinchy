@@ -11,6 +11,15 @@ export interface VisionApiConfig {
   model: string; // e.g. "anthropic/claude-haiku-4-5-20251001"
 }
 
+/** Internal config that carries the OpenClaw cfg object */
+export interface VisionApiInternalConfig {
+  modelAuth: {
+    resolveApiKeyForProvider: (params: { provider: string; cfg: unknown }) => Promise<{ apiKey: string } | null>;
+  };
+  cfg: unknown;
+  model: string;
+}
+
 /**
  * Describe a scanned page image using the configured LLM's vision API.
  * Returns extracted text, or null if vision is not available.
@@ -30,9 +39,29 @@ export async function describePageImage(
     case "google":
       return describeViaGoogle(imageBase64, modelId, config);
     default:
-      // Unknown provider — no vision support
       return null;
   }
+}
+
+/**
+ * Create a VisionApiConfig from OpenClaw's internal runtime APIs.
+ */
+export function createVisionConfig(internal: VisionApiInternalConfig): VisionApiConfig {
+  return {
+    model: internal.model,
+    resolveApiKey: async (provider: string) => {
+      try {
+        const result = await internal.modelAuth.resolveApiKeyForProvider({
+          provider,
+          cfg: internal.cfg,
+        });
+        return result?.apiKey ?? null;
+      } catch (err) {
+        console.error(`[pinchy-files] Failed to resolve API key for ${provider}:`, err);
+        return null;
+      }
+    },
+  };
 }
 
 async function describeViaAnthropic(

@@ -5,7 +5,7 @@ import { validateAccess, MAX_FILE_SIZE, type AgentFileConfig } from "./validate"
 import { extractPdfText } from "./pdf-extract";
 import { formatPdfResult } from "./pdf-format";
 import { PdfCache } from "./pdf-cache";
-import { describePageImage, type VisionApiConfig } from "./pdf-vision-api";
+import { createVisionConfig, describePageImage, type VisionApiConfig } from "./pdf-vision-api";
 
 interface PluginToolContext {
   agentId?: string;
@@ -115,10 +115,10 @@ const plugin = {
 
     // Capture runtime APIs for vision (direct LLM API calls for scanned pages)
     const modelAuth = (api as any).runtime?.modelAuth as {
-      resolveApiKeyForProvider: (provider: string) => Promise<string | null>;
+      resolveApiKeyForProvider: (params: { provider: string; cfg: unknown }) => Promise<{ apiKey: string } | null>;
     } | undefined;
     const loadConfig = (api as any).runtime?.config?.loadConfig as
-      (() => { agents?: { list?: Array<{ id: string; model: string }> } }) | undefined;
+      (() => Record<string, unknown>) | undefined;
 
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -231,15 +231,17 @@ const plugin = {
                 // Build vision config from runtime APIs
                 let visionConfig: VisionApiConfig | null = null;
                 if (modelAuth && loadConfig) {
-                  const config = loadConfig();
-                  const agentModel = config?.agents?.list?.find(
+                  const cfg = loadConfig();
+                  const agents = (cfg as any)?.agents?.list as Array<{ id: string; model: string }> | undefined;
+                  const agentModel = agents?.find(
                     (a) => a.id === agentId
                   )?.model;
                   if (agentModel) {
-                    visionConfig = {
-                      resolveApiKey: modelAuth.resolveApiKeyForProvider,
+                    visionConfig = createVisionConfig({
+                      modelAuth,
+                      cfg,
                       model: agentModel,
-                    };
+                    });
                   }
                 }
                 return await readPdf(realPath, stats, visionConfig);
