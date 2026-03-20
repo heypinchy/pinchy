@@ -1,15 +1,44 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { readFileSync as realReadFileSync } from "fs";
+import { join } from "path";
+
+const FIXTURES = join(import.meta.dirname, "test-fixtures");
+
+// Mock validate module so integration tests can use real fixture paths
+// (which are not under /data/). The mock validateAccess simply returns the path.
+vi.mock("./validate", async (importOriginal) => {
+  const original = await importOriginal<typeof import("./validate")>();
+  return {
+    ...original,
+    validateAccess: vi.fn((_config: unknown, requestedPath: string) => requestedPath),
+  };
+});
 
 const mockRegisterTool = vi.fn();
 
-function createMockApi(agentConfigs: Record<string, { allowed_paths: string[] }>) {
+interface MockApiOptions {
+  agentConfigs: Record<string, { allowed_paths: string[] }>;
+  describeImageFile?: (opts: {
+    filePath: string;
+    cfg: unknown;
+    agentDir: string;
+  }) => Promise<{ text: string }>;
+}
+
+function createMockApi(agentConfigsOrOpts: Record<string, { allowed_paths: string[] }> | MockApiOptions) {
+  const opts: MockApiOptions = "agentConfigs" in agentConfigsOrOpts
+    ? agentConfigsOrOpts as MockApiOptions
+    : { agentConfigs: agentConfigsOrOpts as Record<string, { allowed_paths: string[] }> };
+
   return {
     id: "pinchy-files",
     name: "Pinchy Files",
     source: "test",
     config: {},
-    pluginConfig: { agents: agentConfigs },
-    runtime: {},
+    pluginConfig: { agents: opts.agentConfigs },
+    runtime: opts.describeImageFile
+      ? { mediaUnderstanding: { describeImageFile: opts.describeImageFile } }
+      : {},
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     registerTool: mockRegisterTool,
     registerHook: vi.fn(),
@@ -24,6 +53,17 @@ function createMockApi(agentConfigs: Record<string, { allowed_paths: string[] }>
     resolvePath: vi.fn((p: string) => p),
     on: vi.fn(),
   };
+}
+
+function registerAndGetReadTool(api: ReturnType<typeof createMockApi>, agentId: string) {
+  // We use a fresh dynamic import each time but the module is cached,
+  // so register() can be called multiple times safely.
+  const plugin = require("./index").default;
+  plugin.register(api as any);
+  const readFactory = mockRegisterTool.mock.calls.find(
+    (call: any[]) => call[1]?.name === "pinchy_read"
+  )?.[0];
+  return readFactory({ agentId });
 }
 
 describe("pinchy-files plugin", () => {
@@ -169,5 +209,102 @@ describe("pinchy-files plugin", () => {
     const tool = readFactory({ agentId: "agent-1" });
 
     expect(tool.description).toContain("pinchy_ls");
+  });
+});
+
+describe("pinchy_read PDF integration", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function getReadTool(api: ReturnType<typeof createMockApi>) {
+    const { default: plugin } = await import("./index");
+    plugin.register(api as any);
+    const readFactory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_read"
+    )?.[0];
+    return readFactory({ agentId: "agent-1" });
+  }
+
+  it("returns XML-wrapped content for PDF files", async () => {
+    const fixturePath = join(FIXTURES, "text-only.pdf");
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: fixturePath });
+
+    expect(result.content[0].text).toContain("<document>");
+    expect(result.content[0].text).toContain("</document>");
+    expect(result.content[0].text).toContain("<document_content>");
+  });
+
+  it("returns plain text for non-PDF files", async () => {
+    const fixturePath = join(FIXTURES, "text-only.expected.txt");
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: fixturePath });
+
+    // Should NOT contain XML wrapper — plain text
+    expect(result.content[0].text).not.toContain("<document>");
+    // Should contain the file content directly
+    const expectedContent = realReadFileSync(fixturePath, "utf-8");
+    expect(result.content[0].text).toBe(expectedContent);
+  });
+
+  it("captures describeImage from api.runtime.mediaUnderstanding", async () => {
+    const mockDescribe = vi.fn().mockResolvedValue({ text: "A scanned document" });
+    const fixturePath = join(FIXTURES, "scanned.pdf");
+
+    const api = createMockApi({
+      agentConfigs: { "agent-1": { allowed_paths: [FIXTURES + "/"] } },
+      describeImageFile: mockDescribe,
+    });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: fixturePath });
+
+    // describeImage should have been called for scanned pages
+    expect(mockDescribe).toHaveBeenCalled();
+    expect(result.content[0].text).toContain("<document>");
+  });
+
+  it("returns a clear error message for password-protected PDFs", async () => {
+    const fixturePath = join(FIXTURES, "password-protected.pdf");
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: fixturePath });
+
+    // Should return an error message, not crash
+    expect(result.content[0].text.toLowerCase()).toMatch(/password|protected|encrypted/);
+  });
+
+  it("returns a clear error message for corrupted PDFs", async () => {
+    const fixturePath = join(FIXTURES, "corrupted.pdf");
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: fixturePath });
+
+    // Should return an error message, not crash
+    expect(result.content).toHaveLength(1);
+    expect(result.content[0].type).toBe("text");
+    // Should not contain XML wrapper (it's an error)
+    expect(result.content[0].text).not.toContain("<document>");
+  });
+
+  it("uses cache for repeated PDF reads", async () => {
+    const fixturePath = join(FIXTURES, "text-only.pdf");
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    const tool = await getReadTool(api);
+
+    // First read
+    const result1 = await tool.execute("call-1", { path: fixturePath });
+    // Second read (should use cache)
+    const result2 = await tool.execute("call-2", { path: fixturePath });
+
+    expect(result1.content[0].text).toBe(result2.content[0].text);
+    expect(result1.content[0].text).toContain("<document>");
   });
 });
