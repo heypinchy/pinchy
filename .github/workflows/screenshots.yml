@@ -1,0 +1,86 @@
+name: Screenshots
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      viewport_width:
+        description: "Viewport width"
+        default: "1440"
+        type: string
+      viewport_height:
+        description: "Viewport height"
+        default: "900"
+        type: string
+
+jobs:
+  capture:
+    name: Capture screenshots
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: pnpm -C packages/web exec playwright install chromium --with-deps
+
+      - name: Start Pinchy stack
+        run: docker compose up --build -d
+        env:
+          BETTER_AUTH_SECRET: screenshot-session-secret
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          PINCHY_ENTERPRISE_KEY: ${{ secrets.PINCHY_ENTERPRISE_KEY }}
+
+      - name: Seed demo data
+        run: ./screenshots/seed.sh
+
+      - name: Prepare output directory
+        run: mkdir -p ${{ github.workspace }}/screenshots/output
+
+      - name: Capture screenshots
+        run: pnpm -C packages/web exec playwright test --config=../../screenshots/playwright.config.ts
+        env:
+          BASE_URL: http://localhost:7777
+          SCREENSHOT_DIR: ${{ github.workspace }}/screenshots/output
+
+      - name: Upload screenshots as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: pinchy-screenshots
+          path: screenshots/output/
+          retention-days: 90
+
+      - name: Upload to release assets
+        if: github.event_name == 'release'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd screenshots/output
+          tar czf /tmp/pinchy-screenshots.tar.gz *.png
+          gh release upload "${{ github.event.release.tag_name }}" \
+            /tmp/pinchy-screenshots.tar.gz \
+            --clobber
+
+      - name: Notify website repo
+        if: success()
+        env:
+          GH_TOKEN: ${{ secrets.WEBSITE_DISPATCH_TOKEN }}
+        run: |
+          gh api repos/heypinchy/website/dispatches \
+            -f event_type=screenshots-updated \
+            -f "client_payload[run_id]=${{ github.run_id }}" \
+            || echo "⚠️ Website dispatch failed (token may not be configured)"
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

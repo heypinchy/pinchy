@@ -5,7 +5,7 @@ test.describe("Login", () => {
     await page.goto("/login");
 
     await page.getByLabel(/email/i).fill("admin@test.local");
-    await page.getByLabel(/password/i).fill("wrong-password");
+    await page.getByLabel("Password", { exact: true }).fill("wrong-password");
     await page.getByRole("button", { name: /sign in/i }).click();
 
     await expect(page.getByText(/invalid email or password/i)).toBeVisible();
@@ -16,7 +16,7 @@ test.describe("Login", () => {
     await page.goto("/login");
 
     await page.getByLabel(/email/i).fill("admin@test.local");
-    await page.getByLabel(/password/i).fill("test-password-123");
+    await page.getByLabel("Password", { exact: true }).fill("test-password-123");
     await page.getByRole("button", { name: /sign in/i }).click();
 
     // First login after setup → redirected to provider configuration

@@ -194,7 +194,8 @@ export async function regenerateOpenClawConfig() {
     entries["pinchy-context"] = {
       enabled: true,
       config: {
-        apiBaseUrl: process.env.PINCHY_INTERNAL_URL || "http://pinchy:7777",
+        apiBaseUrl:
+          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
         gatewayToken,
         agents: contextPluginAgents,
       },
@@ -206,7 +207,7 @@ export async function regenerateOpenClawConfig() {
   entries["pinchy-audit"] = {
     enabled: true,
     config: {
-      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || "http://pinchy:7777",
+      apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
       gatewayToken,
     },
   };

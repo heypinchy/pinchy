@@ -10,7 +10,8 @@ test.describe("Setup wizard", () => {
     // Fill the form
     await page.getByLabel(/name/i).fill("Test Admin");
     await page.getByLabel(/email/i).fill("admin@test.local");
-    await page.getByLabel(/password/i).fill("test-password-123");
+    await page.getByLabel("Password", { exact: true }).fill("test-password-123");
+    await page.getByLabel(/confirm password/i).fill("test-password-123");
     await page.getByRole("button", { name: /create account/i }).click();
 
     // Verify success state (scrypt password hashing can take several seconds)

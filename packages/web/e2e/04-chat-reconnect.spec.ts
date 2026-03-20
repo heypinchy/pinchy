@@ -113,7 +113,7 @@ test.describe("chat reconnect recovery", () => {
 
     await page.goto("/login");
     await page.getByLabel(/email/i).fill("admin@test.local");
-    await page.getByLabel(/password/i).fill("test-password-123");
+    await page.getByLabel("Password", { exact: true }).fill("test-password-123");
     await page.getByRole("button", { name: /sign in/i }).click();
 
     // Desktop redirects directly to first agent chat
