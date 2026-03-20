@@ -1,0 +1,170 @@
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+import { PdfCache } from "./pdf-cache";
+
+describe("PdfCache", () => {
+  let cacheDir: string;
+  let cache: PdfCache;
+
+  beforeEach(() => {
+    cacheDir = mkdtempSync(join(tmpdir(), "pinchy-cache-test-"));
+    cache = new PdfCache(cacheDir);
+  });
+
+  afterEach(() => {
+    cache.close();
+    rmSync(cacheDir, { recursive: true, force: true });
+  });
+
+  it("returns null for uncached files", () => {
+    const result = cache.get(
+      "/data/docs/report.pdf",
+      1024,
+      1700000000,
+      "abc123",
+    );
+    expect(result).toBeNull();
+  });
+
+  it("stores and retrieves cached content", () => {
+    const content = "<document>test</document>";
+    cache.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", content);
+    const result = cache.get(
+      "/data/docs/report.pdf",
+      1024,
+      1700000000,
+      "abc123",
+    );
+    expect(result).toBe(content);
+  });
+
+  it("returns cached content on fast path (size + mtime match)", () => {
+    cache.set(
+      "/data/docs/report.pdf",
+      1024,
+      1700000000,
+      "abc123",
+      "cached content",
+    );
+    // Same size + mtime → fast path, hash not checked
+    const result = cache.get(
+      "/data/docs/report.pdf",
+      1024,
+      1700000000,
+      "ignored-hash",
+    );
+    expect(result).toBe("cached content");
+  });
+
+  it("returns null when size changes", () => {
+    cache.set(
+      "/data/docs/report.pdf",
+      1024,
+      1700000000,
+      "abc123",
+      "cached content",
+    );
+    const result = cache.get(
+      "/data/docs/report.pdf",
+      2048,
+      1700000000,
+      "abc123",
+    );
+    expect(result).toBeNull();
+  });
+
+  it("falls back to content hash when mtime changes", () => {
+    cache.set(
+      "/data/docs/report.pdf",
+      1024,
+      1700000000,
+      "abc123",
+      "cached content",
+    );
+    // Different mtime, same size, same hash → slow path hit
+    const result = cache.get(
+      "/data/docs/report.pdf",
+      1024,
+      1800000000,
+      "abc123",
+    );
+    expect(result).toBe("cached content");
+  });
+
+  it("returns null when both mtime and hash change", () => {
+    cache.set(
+      "/data/docs/report.pdf",
+      1024,
+      1700000000,
+      "abc123",
+      "cached content",
+    );
+    const result = cache.get(
+      "/data/docs/report.pdf",
+      1024,
+      1800000000,
+      "def456",
+    );
+    expect(result).toBeNull();
+  });
+
+  it("overwrites existing entries on set", () => {
+    cache.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "version 1");
+    cache.set("/data/docs/report.pdf", 2048, 1800000000, "def456", "version 2");
+    const result = cache.get(
+      "/data/docs/report.pdf",
+      2048,
+      1800000000,
+      "def456",
+    );
+    expect(result).toBe("version 2");
+  });
+
+  it("invalidates when format version changes", () => {
+    const cacheV1 = new PdfCache(cacheDir, { formatVersion: 1 });
+    cacheV1.set(
+      "/data/docs/report.pdf",
+      1024,
+      1700000000,
+      "abc123",
+      "v1 format",
+    );
+    cacheV1.close();
+
+    const cacheV2 = new PdfCache(cacheDir, { formatVersion: 2 });
+    const result = cacheV2.get(
+      "/data/docs/report.pdf",
+      1024,
+      1700000000,
+      "abc123",
+    );
+    expect(result).toBeNull();
+    cacheV2.close();
+  });
+
+  it("expires entries after TTL", () => {
+    let now = 1700000000000;
+    const cacheWithClock = new PdfCache(cacheDir, { now: () => now });
+
+    cacheWithClock.set(
+      "/data/docs/report.pdf",
+      1024,
+      1700000000,
+      "abc123",
+      "content",
+    );
+
+    // Advance clock past TTL (7 days = 604800000ms)
+    now += 604800001;
+    const result = cacheWithClock.get(
+      "/data/docs/report.pdf",
+      1024,
+      1700000000,
+      "abc123",
+    );
+    expect(result).toBeNull();
+    cacheWithClock.close();
+  });
+});
