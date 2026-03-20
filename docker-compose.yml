@@ -35,6 +35,7 @@ services:
       - pinchy-workspaces:/root/.openclaw/workspaces
       - openclaw-extensions:/root/.openclaw/extensions
       - pinchy-data:/data
+      - pinchy-pdf-cache:/var/cache/pinchy-files
     restart: unless-stopped
 
   db:
@@ -59,3 +60,4 @@ volumes:
   pinchy-data:
   pinchy-secrets:
   openclaw-extensions:
+  pinchy-pdf-cache:
