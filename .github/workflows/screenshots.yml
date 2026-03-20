@@ -45,13 +45,13 @@ jobs:
         run: ./screenshots/seed.sh
 
       - name: Prepare output directory
-        run: mkdir -p screenshots/output
+        run: mkdir -p ${{ github.workspace }}/screenshots/output
 
       - name: Capture screenshots
         run: pnpm -C packages/web exec playwright test --config=../../screenshots/playwright.config.ts
         env:
           BASE_URL: http://localhost:7777
-          SCREENSHOT_DIR: screenshots/output
+          SCREENSHOT_DIR: ${{ github.workspace }}/screenshots/output
 
       - name: Upload screenshots as artifact
         uses: actions/upload-artifact@v4
