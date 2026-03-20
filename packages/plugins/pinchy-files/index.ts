@@ -75,18 +75,26 @@ async function readPdf(
 
   // For scanned pages with rendered images, call the LLM vision API directly
   // to extract text. This replicates how OpenClaw's built-in PDF tool works.
+  // Calls run in parallel (batches of 5) for speed.
   if (visionConfig) {
-    for (const page of extraction.pages) {
-      if (page.isScanned && page.renderedImage) {
-        try {
-          const imageBase64 = page.renderedImage.toString("base64");
+    const VISION_CONCURRENCY = 5;
+    const scannedPages = extraction.pages.filter((p) => p.isScanned && p.renderedImage);
+
+    for (let i = 0; i < scannedPages.length; i += VISION_CONCURRENCY) {
+      const batch = scannedPages.slice(i, i + VISION_CONCURRENCY);
+      const results = await Promise.allSettled(
+        batch.map(async (page) => {
+          const imageBase64 = page.renderedImage!.toString("base64");
           const extractedText = await describePageImage(imageBase64, visionConfig);
           if (extractedText) {
             page.text = extractedText;
-            page.isScanned = false; // Now has text, no longer "scanned"
+            page.isScanned = false;
           }
-        } catch (err) {
-          console.error(`[pinchy-files] Vision API failed for page ${page.pageNumber}:`, err);
+        }),
+      );
+      for (const result of results) {
+        if (result.status === "rejected") {
+          console.error("[pinchy-files] Vision API failed for page:", result.reason);
         }
       }
     }
