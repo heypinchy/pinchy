@@ -60,6 +60,26 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     category: "powerful",
     group: "group:web",
   },
+
+  // Standalone tools — global access, no sandboxing
+  {
+    id: "pdf",
+    label: "Read any PDF",
+    description: "Read and analyze any PDF on the system, without restrictions",
+    category: "powerful",
+  },
+  {
+    id: "image",
+    label: "Analyze any image",
+    description: "Analyze any image on the system using the AI model's vision",
+    category: "powerful",
+  },
+  {
+    id: "image_generate",
+    label: "Generate images",
+    description: "Generate images using AI image generation models",
+    category: "powerful",
+  },
 ];
 
 const ALL_GROUPS = ["group:runtime", "group:fs", "group:web"] as const;
