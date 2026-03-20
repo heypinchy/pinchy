@@ -79,8 +79,11 @@ async function readPdf(
   const content: ContentBlock[] = [];
   const hasScannedPages = extraction.pages.some((p) => p.isScanned);
 
+  // Check if we have rendered images to attach
+  const hasRenderedImages = hasScannedPages && extraction.pages.some(p => p.isScanned && p.renderedImage);
+
   // Add the formatted text content (includes text from all pages that have text)
-  const formatted = formatPdfResult(extraction, realPath);
+  const formatted = formatPdfResult(extraction, realPath, { imagesAttached: hasRenderedImages });
   content.push({ type: "text", text: formatted });
 
   // For scanned pages, include rendered page images so the LLM can read them
@@ -98,6 +101,8 @@ async function readPdf(
 
   // Cache the text portion (images are cheap to re-render)
   pdfCache.set(realPath, stats.size, stats.mtimeMs, contentHash, formatted);
+  const imageBlocks = content.filter(b => b.type === "image");
+  console.log(`[pinchy-files] readPdf: ${realPath} → ${content.length} blocks (${imageBlocks.length} images, ${extraction.pages.filter(p => p.isScanned).length} scanned pages)`);
   return { content };
 }
 

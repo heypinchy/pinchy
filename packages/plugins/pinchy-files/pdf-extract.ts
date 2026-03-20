@@ -133,8 +133,9 @@ export async function extractPdfText(
     if (isScanned) {
       try {
         renderedImage = await renderPageToImage(page);
-      } catch {
-        // Rendering failed — page will use fallback in vision processing
+        console.log(`[pinchy-files] Page ${i}: rendered scanned page to PNG (${renderedImage.length} bytes)`);
+      } catch (err) {
+        console.error(`[pinchy-files] Page ${i}: failed to render scanned page:`, err);
       }
     }
 
