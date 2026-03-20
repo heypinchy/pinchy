@@ -1,4 +1,9 @@
 import { getDocument, OPS } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const STANDARD_FONT_DATA_URL = join(__dirname, "node_modules/pdfjs-dist/standard_fonts/");
 
 const PDF_MIN_TEXT_CHARS = 200;
 const DEFAULT_MAX_PAGES = 50;
@@ -77,6 +82,7 @@ export async function extractPdfText(
     disableAutoFetch: true,
     disableFontFace: true,
     useSystemFonts: false,
+    standardFontDataUrl: STANDARD_FONT_DATA_URL,
   }).promise;
 
   const totalPages = doc.numPages;
@@ -114,7 +120,7 @@ export async function extractPdfText(
               embeddedImages.push({
                 width: img.width,
                 height: img.height,
-                data: Buffer.from(img.data.buffer),
+                data: Buffer.from(img.data.buffer, img.data.byteOffset, img.data.byteLength),
               });
             }
           } catch {
