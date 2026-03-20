@@ -1,6 +1,7 @@
 import { getDocument, OPS } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
+import { renderPageToImage } from "./pdf-render";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STANDARD_FONT_DATA_URL = join(__dirname, "node_modules/pdfjs-dist/standard_fonts/");
@@ -26,6 +27,7 @@ export interface ExtractedPage {
   isScanned: boolean;
   embeddedImages: ExtractedImage[];
   visionDescriptions?: VisionDescription[];
+  renderedImage?: Buffer;
 }
 
 export interface PdfExtractionResult {
@@ -132,7 +134,17 @@ export async function extractPdfText(
       // Skip image extraction if operator list fails
     }
 
-    pages.push({ pageNumber: i, text, isScanned, embeddedImages });
+    // Render scanned pages to PNG while the page proxy is still alive
+    let renderedImage: Buffer | undefined;
+    if (isScanned) {
+      try {
+        renderedImage = await renderPageToImage(page);
+      } catch {
+        // Rendering failed — page will use fallback in vision processing
+      }
+    }
+
+    pages.push({ pageNumber: i, text, isScanned, embeddedImages, renderedImage });
     page.cleanup();
   }
 

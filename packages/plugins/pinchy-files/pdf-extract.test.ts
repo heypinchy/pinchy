@@ -33,6 +33,30 @@ describe("extractPdfText", () => {
     expect(result.pages[0].text.length).toBeLessThan(200);
   });
 
+  it("renders scanned pages to PNG during extraction", async () => {
+    const buffer = readFileSync(join(FIXTURES, "scanned.pdf"));
+    const result = await extractPdfText(buffer);
+
+    expect(result.pages[0].isScanned).toBe(true);
+    expect(result.pages[0].renderedImage).toBeDefined();
+    expect(result.pages[0].renderedImage!.length).toBeGreaterThan(100);
+    // PNG magic bytes
+    expect(result.pages[0].renderedImage![0]).toBe(0x89);
+    expect(result.pages[0].renderedImage![1]).toBe(0x50);
+    expect(result.pages[0].renderedImage![2]).toBe(0x4e);
+    expect(result.pages[0].renderedImage![3]).toBe(0x47);
+  });
+
+  it("does not render non-scanned pages", async () => {
+    const buffer = readFileSync(join(FIXTURES, "text-only.pdf"));
+    const result = await extractPdfText(buffer);
+
+    for (const page of result.pages) {
+      expect(page.isScanned).toBe(false);
+      expect(page.renderedImage).toBeUndefined();
+    }
+  });
+
   it("extracts table content", async () => {
     const buffer = readFileSync(join(FIXTURES, "with-tables.pdf"));
     const result = await extractPdfText(buffer);

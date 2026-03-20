@@ -13,12 +13,12 @@ function makePage(overrides: Partial<ExtractedPage> = {}): ExtractedPage {
 }
 
 describe("processVisionPages", () => {
-  it("calls describeImage for scanned pages", async () => {
+  it("calls describeImage for scanned pages with renderedImage", async () => {
     const describeImage = vi.fn().mockResolvedValue({
       text: "The document discusses annual revenue of $5M.",
     });
 
-    const pages = [makePage({ isScanned: true })];
+    const pages = [makePage({ isScanned: true, renderedImage: Buffer.from("fake-png-data") })];
     const result = await processVisionPages(pages, describeImage);
 
     expect(describeImage).toHaveBeenCalledTimes(1);
@@ -54,10 +54,23 @@ describe("processVisionPages", () => {
     expect(result[0].visionDescriptions).toBeUndefined();
   });
 
+  it("skips vision for scanned pages without renderedImage or embedded images", async () => {
+    const describeImage = vi.fn().mockResolvedValue({
+      text: "Should not be called",
+    });
+
+    const pages = [makePage({ isScanned: true })];
+    const result = await processVisionPages(pages, describeImage);
+
+    // No renderedImage and no embeddedImages — nothing to describe
+    expect(describeImage).not.toHaveBeenCalled();
+    expect(result[0].visionDescriptions).toBeUndefined();
+  });
+
   it("handles describeImage errors gracefully", async () => {
     const describeImage = vi.fn().mockRejectedValue(new Error("API error"));
 
-    const pages = [makePage({ isScanned: true })];
+    const pages = [makePage({ isScanned: true, renderedImage: Buffer.from("fake-png") })];
     const result = await processVisionPages(pages, describeImage);
 
     // Should not throw, just skip the vision description

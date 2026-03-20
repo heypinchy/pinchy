@@ -12,7 +12,6 @@ export type DescribeImageFn = (opts: {
 export async function processVisionPages(
   pages: ExtractedPage[],
   describeImage: DescribeImageFn | null,
-  renderPage?: (page: unknown) => Promise<Buffer>,
 ): Promise<ExtractedPage[]> {
   if (!describeImage) {
     return pages;
@@ -21,22 +20,21 @@ export async function processVisionPages(
   const result: ExtractedPage[] = [];
 
   for (const page of pages) {
-    const needsScannedVision = page.isScanned;
+    const hasRenderedImage = page.isScanned && page.renderedImage;
     const hasEmbeddedImages = page.embeddedImages.length > 0;
 
-    if (!needsScannedVision && !hasEmbeddedImages) {
+    if (!hasRenderedImage && !hasEmbeddedImages) {
       result.push(page);
       continue;
     }
 
     const descriptions: VisionDescription[] = [];
 
-    // Process scanned page
-    if (needsScannedVision) {
+    // Process scanned page using pre-rendered image
+    if (hasRenderedImage) {
       const desc = await describeScannedPage(
         page,
         describeImage,
-        renderPage,
       );
       if (desc) {
         descriptions.push(desc);
@@ -66,26 +64,17 @@ export async function processVisionPages(
 async function describeScannedPage(
   page: ExtractedPage,
   describeImage: DescribeImageFn,
-  renderPage?: (page: unknown) => Promise<Buffer>,
 ): Promise<VisionDescription | null> {
-  // Use embedded image data if available, otherwise try rendering the page
-  let imageData: Buffer | null = null;
-  if (page.embeddedImages.length > 0) {
-    imageData = page.embeddedImages[0].data;
-  } else if (renderPage) {
-    imageData = await renderPage(page).catch(() => null);
+  // Use pre-rendered image from extraction, fall back to first embedded image
+  const imageData = page.renderedImage ?? (page.embeddedImages.length > 0 ? page.embeddedImages[0].data : null);
+  if (!imageData || imageData.length === 0) {
+    return null;
   }
 
   const tmpDir = mkdtempSync(join(tmpdir(), "pinchy-pdf-"));
   try {
     const filePath = join(tmpDir, "page.png");
-    if (imageData) {
-      writeFileSync(filePath, imageData);
-    } else {
-      // No image data available — write an empty placeholder so describeImage
-      // can still attempt OCR / vision analysis on the file path
-      writeFileSync(filePath, Buffer.alloc(0));
-    }
+    writeFileSync(filePath, imageData);
     const response = await describeImage({
       filePath,
       cfg: {},
