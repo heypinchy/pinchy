@@ -6,6 +6,23 @@
 
 const PROMPT = "Extract all text from this scanned document page. Return only the extracted text content, preserving the structure (headings, paragraphs, lists, tables). If you see tables, format them as markdown tables. Do not add commentary — only return the document text.";
 
+const MAX_RETRIES = 3;
+
+/** Fetch with automatic retry on 429 (rate limit). Respects Retry-After header. */
+async function fetchWithRetry(url: string, init: RequestInit): Promise<Response> {
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    const response = await fetch(url, init);
+    if (response.status !== 429 || attempt === MAX_RETRIES) {
+      return response;
+    }
+    const retryAfter = Number(response.headers.get("retry-after") || "1");
+    const waitMs = (Number.isFinite(retryAfter) ? retryAfter : 1) * 1000;
+    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  }
+  // unreachable, but TypeScript needs it
+  throw new Error("fetchWithRetry: exceeded max retries");
+}
+
 export interface VisionApiConfig {
   resolveApiKey: (provider: string) => Promise<string | null>;
   model: string; // e.g. "anthropic/claude-haiku-4-5-20251001"
@@ -72,7 +89,7 @@ async function describeViaAnthropic(
   const apiKey = await config.resolveApiKey("anthropic");
   if (!apiKey) return null;
 
-  const response = await fetch("https://api.anthropic.com/v1/messages", {
+  const response = await fetchWithRetry("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: {
       "x-api-key": apiKey,
@@ -126,7 +143,7 @@ async function describeViaOpenAI(
   const apiKey = await config.resolveApiKey("openai");
   if (!apiKey) return null;
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
+  const response = await fetchWithRetry("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${apiKey}`,
@@ -170,7 +187,7 @@ async function describeViaGoogle(
   const apiKey = await config.resolveApiKey("google");
   if (!apiKey) return null;
 
-  const response = await fetch(
+  const response = await fetchWithRetry(
     `https://generativelanguage.googleapis.com/v1/models/${modelId}:generateContent?key=${apiKey}`,
     {
       method: "POST",
