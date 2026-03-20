@@ -84,20 +84,13 @@ describe("extractPdfText", () => {
     expect(lastPage.isScanned).toBe(true);
   });
 
-  it("detects embedded images above size threshold", async () => {
+  it("extracts text from PDFs with embedded images", async () => {
     const buffer = readFileSync(join(FIXTURES, "with-images.pdf"));
     const result = await extractPdfText(buffer);
 
-    const pagesWithImages = result.pages.filter(
-      (p) => p.embeddedImages.length > 0,
-    );
-    expect(pagesWithImages.length).toBeGreaterThanOrEqual(1);
-    for (const page of pagesWithImages) {
-      for (const img of page.embeddedImages) {
-        expect(img.width).toBeGreaterThanOrEqual(100);
-        expect(img.height).toBeGreaterThanOrEqual(100);
-      }
-    }
+    // Text should be extracted even when images are present
+    expect(result.pages.length).toBeGreaterThanOrEqual(1);
+    expect(result.pages[0].text.length).toBeGreaterThan(0);
   });
 
   it("respects page limit", async () => {

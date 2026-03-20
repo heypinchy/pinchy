@@ -81,6 +81,7 @@ async function readPdf(
     const results = await Promise.allSettled(
       scannedPages.map(async (page) => {
         const imageBase64 = page.renderedImage!.toString("base64");
+        page.renderedImage = undefined; // free memory immediately
         const extractedText = await describePageImage(imageBase64, visionConfig);
         if (extractedText) {
           page.text = extractedText;
