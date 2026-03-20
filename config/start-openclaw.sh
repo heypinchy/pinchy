@@ -3,15 +3,16 @@ set -e
 
 echo "OpenClaw Gateway starting..."
 
-# Install pinchy-files plugin dependencies if they were built in the image
-# (needed when source files are volume-mounted in dev mode, overriding node_modules)
-if [ -d /opt/pinchy-files-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-files ]; then
-    echo "Installing pinchy-files plugin dependencies..."
-    # Replace host-mounted node_modules entirely with container-built ones
-    # (host modules have macOS native bindings that won't work in Linux container)
-    rm -rf /root/.openclaw/extensions/pinchy-files/node_modules
-    cp -r /opt/pinchy-files-deps/node_modules /root/.openclaw/extensions/pinchy-files/node_modules
-fi
+# Install pinchy-files plugin dependencies from the container image.
+# In dev mode, source files are volume-mounted from the host, but host
+# node_modules contain macOS native bindings that won't work in Linux.
+# This runs before every gateway start (including restarts after config changes).
+install_plugin_deps() {
+    if [ -d /opt/pinchy-files-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-files ]; then
+        rm -rf /root/.openclaw/extensions/pinchy-files/node_modules
+        cp -r /opt/pinchy-files-deps/node_modules /root/.openclaw/extensions/pinchy-files/node_modules
+    fi
+}
 
 # Ensure gateway auth token exists before starting (prevents crash loop
 # when no token is configured yet, e.g. on first startup before setup wizard)
@@ -65,6 +66,7 @@ auto_approve_devices() {
 }
 
 while true; do
+    install_plugin_deps
     scan_data_directories
     openclaw gateway --port 18789 &
     PID=$!
