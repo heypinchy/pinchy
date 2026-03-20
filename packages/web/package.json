@@ -21,7 +21,7 @@
   "dependencies": {
     "@assistant-ui/react": "^0.12.19",
     "@assistant-ui/react-markdown": "^0.12.6",
-    "@dicebear/core": "^9.4.0",
+    "@dicebear/core": "^9.4.2",
     "@dicebear/fun-emoji": "^9.4.0",
     "@hookform/resolvers": "^5.2.2",
     "@radix-ui/react-slot": "^1.2.4",
