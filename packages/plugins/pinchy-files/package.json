@@ -7,8 +7,20 @@
     "test": "vitest run",
     "test:watch": "vitest"
   },
+  "dependencies": {
+    "@napi-rs/canvas": "^0.1.65",
+    "better-sqlite3": "^11.8.1",
+    "pdfjs-dist": "^4.10.38"
+  },
   "devDependencies": {
-    "vitest": "^3.0.0",
-    "typescript": "^5.7.0"
+    "@types/better-sqlite3": "^7.6.12",
+    "pdf-lib": "^1.17.1",
+    "typescript": "^5.7.0",
+    "vitest": "^3.0.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3"
+    ]
   }
 }

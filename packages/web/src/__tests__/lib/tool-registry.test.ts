@@ -83,4 +83,18 @@ describe("computeDeniedGroups", () => {
     expect(denied).toContain("group:fs");
     expect(denied).toContain("group:web");
   });
+
+  it("always denies standalone OpenClaw tools that bypass access control", () => {
+    const denied = computeDeniedGroups(["pinchy_ls", "pinchy_read"]);
+    expect(denied).toContain("pdf");
+    expect(denied).toContain("image");
+    expect(denied).toContain("image_generate");
+  });
+
+  it("denies standalone tools even when powerful tools are allowed", () => {
+    const denied = computeDeniedGroups(["shell", "fs_read", "web_fetch"]);
+    expect(denied).toContain("pdf");
+    expect(denied).toContain("image");
+    expect(denied).toContain("image_generate");
+  });
 });

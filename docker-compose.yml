@@ -4,11 +4,11 @@ services:
       context: .
       dockerfile: Dockerfile.pinchy
     ports:
-      - "7777:7777"
+      - "${PINCHY_PORT:-7777}:7777"
     environment:
       - DATABASE_URL=postgresql://pinchy:${DB_PASSWORD:-pinchy_dev}@db:5432/pinchy
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-}
-      - BETTER_AUTH_URL=${BETTER_AUTH_URL:-http://localhost:7777}
+      - BETTER_AUTH_URL=${BETTER_AUTH_URL:-http://localhost:${PINCHY_PORT:-7777}}
       - OPENCLAW_WS_URL=ws://openclaw:18789
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
       - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY:-}
@@ -35,6 +35,7 @@ services:
       - pinchy-workspaces:/root/.openclaw/workspaces
       - openclaw-extensions:/root/.openclaw/extensions
       - pinchy-data:/data
+      - pinchy-pdf-cache:/var/cache/pinchy-files
     restart: unless-stopped
 
   db:
@@ -59,3 +60,4 @@ volumes:
   pinchy-data:
   pinchy-secrets:
   openclaw-extensions:
+  pinchy-pdf-cache:

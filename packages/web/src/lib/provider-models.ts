@@ -1,6 +1,9 @@
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
 
+// Re-export vision utilities for backwards compatibility
+export { VISION_CAPABLE_PROVIDERS, isModelVisionCapable } from "@/lib/model-vision";
+
 let cachedResult: ProviderModels[] | null = null;
 let cachedAt: number = 0;
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour

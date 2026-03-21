@@ -61,6 +61,10 @@ describe("auth config consistency", () => {
   it("docker-compose.dev.yml should set BETTER_AUTH_SECRET", () => {
     const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.dev.yml"), "utf-8");
     expect(content).toContain("BETTER_AUTH_SECRET");
+  });
+
+  it("docker-compose.yml should set BETTER_AUTH_URL", () => {
+    const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.yml"), "utf-8");
     expect(content).toContain("BETTER_AUTH_URL");
   });
 });

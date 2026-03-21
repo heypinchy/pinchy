@@ -3,12 +3,16 @@
 import { useState, useRef, useEffect } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
+import { AlertTriangle } from "lucide-react";
 import { DirectoryPicker } from "@/components/directory-picker";
 import { getToolsByCategory } from "@/lib/tool-registry";
+import { isModelVisionCapable } from "@/lib/model-vision";
 
 interface AgentSettingsPermissionsProps {
   agent: {
     id: string;
+    model: string;
     allowedTools: string[];
     pluginConfig: { allowed_paths?: string[] } | null;
   };
@@ -84,6 +88,18 @@ export function AgentSettingsPermissions({
               onChange={handlePathsChange}
             />
           </div>
+        )}
+
+        {allowedTools.includes("pinchy_read") && !isModelVisionCapable(agent.model) && (
+          <Alert className="ml-6 border-amber-500/50 text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Limited PDF support</AlertTitle>
+            <AlertDescription>
+              The selected model doesn&apos;t support vision. Scanned PDFs and embedded images
+              won&apos;t be fully readable — only digitally created PDFs with a text layer will
+              work.
+            </AlertDescription>
+          </Alert>
         )}
       </section>
 
