@@ -61,8 +61,10 @@ function getImageObject(
   name: string,
 ): Promise<{ width: number; height: number; data: Uint8ClampedArray } | null> {
   return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve(null), 5000);
     try {
       pageObjs.get(name, (data: unknown) => {
+        clearTimeout(timeout);
         if (
           data &&
           typeof data === "object" &&
@@ -82,6 +84,7 @@ function getImageObject(
         }
       });
     } catch {
+      clearTimeout(timeout);
       resolve(null);
     }
   });

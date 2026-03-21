@@ -38,53 +38,6 @@ export class PdfCache {
     `);
   }
 
-  get(
-    path: string,
-    size: number,
-    mtime: number,
-    contentHash: string,
-  ): string | null {
-    const row = this.db
-      .prepare("SELECT * FROM pdf_cache WHERE path = ?")
-      .get(path) as
-      | {
-          size: number;
-          mtime: number;
-          content_hash: string;
-          format_version: number;
-          content: string;
-          cached_at: number;
-        }
-      | undefined;
-
-    if (!row) return null;
-    if (row.format_version !== this.formatVersion) return null;
-
-    // Check TTL
-    if (this.now() - row.cached_at > this.ttlMs) {
-      this.db.prepare("DELETE FROM pdf_cache WHERE path = ?").run(path);
-      return null;
-    }
-
-    // Fast path: size + mtime match
-    if (row.size === size && row.mtime === mtime) {
-      return row.content;
-    }
-
-    // Size changed → definitely different file
-    if (row.size !== size) return null;
-
-    // Slow path: mtime changed but size same → check content hash
-    if (row.content_hash === contentHash) {
-      this.db
-        .prepare("UPDATE pdf_cache SET mtime = ? WHERE path = ?")
-        .run(mtime, path);
-      return row.content;
-    }
-
-    return null;
-  }
-
   /** Fast path: returns content if size+mtime match and not expired. No hash needed. */
   getFast(path: string, size: number, mtime: number): string | null {
     const row = this.db

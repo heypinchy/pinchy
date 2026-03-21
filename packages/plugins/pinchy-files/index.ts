@@ -210,7 +210,7 @@ const plugin = {
 
               const entries = readdirSync(realPath);
               const results = entries
-                .filter((name) => !name.startsWith(".") && !SYSTEM_FILES.has(name))
+                .filter((name) => !name.startsWith(".") && !name.startsWith("~$") && !SYSTEM_FILES.has(name))
                 .map((name) => {
                   const fullPath = join(realPath, name);
                   const stats = statSync(fullPath);

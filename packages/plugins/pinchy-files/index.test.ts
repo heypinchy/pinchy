@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { readFileSync as realReadFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
+import Database from "better-sqlite3";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
 
@@ -188,6 +189,34 @@ describe("pinchy-files plugin", () => {
     const tool = readFactory({ agentId: "agent-1" });
 
     expect(tool.description).toContain("pinchy_ls");
+  });
+
+  it("pinchy_ls filters out Office lock files (~$document.docx)", async () => {
+    const tmpDir = mkdtempSync(join(tmpdir(), "pinchy-lockfiles-test-"));
+    try {
+      writeFileSync(join(tmpDir, "document.docx"), "real doc");
+      writeFileSync(join(tmpDir, "~$document.docx"), "lock file");
+      writeFileSync(join(tmpDir, "~$budget.xlsx"), "lock file");
+
+      const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+      const { default: plugin } = await import("./index");
+      plugin.register!(api as any);
+
+      const lsFactory = mockRegisterTool.mock.calls.find(
+        (call: any[]) => call[1]?.name === "pinchy_ls"
+      )?.[0];
+      const tool = lsFactory({ agentId: "agent-1" });
+
+      const result = await tool.execute("call-1", { path: tmpDir });
+      const entries = JSON.parse(result.content[0].text);
+      const names = entries.map((e: { name: string }) => e.name);
+
+      expect(names).toContain("document.docx");
+      expect(names).not.toContain("~$document.docx");
+      expect(names).not.toContain("~$budget.xlsx");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 
   it("pinchy_ls filters out system files (Thumbs.db, desktop.ini, .DS_Store)", async () => {
@@ -459,5 +488,27 @@ describe("pinchy_read PDF integration", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
+  });
+
+  it("does not re-extract PDF on cache hit", async () => {
+    const fixturePath = join(FIXTURES, "text-only.pdf");
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    const tool = await getReadTool(api);
+
+    // First read — extraction happens
+    const result1 = await tool.execute("call-1", { path: fixturePath });
+
+    // Second read — should use cache, not re-extract
+    const result2 = await tool.execute("call-2", { path: fixturePath });
+
+    // Results must be identical
+    expect(result1.content[0].text).toBe(result2.content[0].text);
+
+    // Verify cache DB has exactly one entry for this path (not two),
+    // confirming the second read used cache rather than inserting a new row
+    const db = new Database(join(testCacheDir, "pdf-cache.sqlite"));
+    const rows = db.prepare("SELECT COUNT(*) as count FROM pdf_cache WHERE path = ?").get(fixturePath) as { count: number };
+    expect(rows.count).toBe(1);
+    db.close();
   });
 });

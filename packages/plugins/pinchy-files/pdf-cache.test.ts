@@ -18,61 +18,15 @@ describe("PdfCache", () => {
     rmSync(cacheDir, { recursive: true, force: true });
   });
 
-  it("returns null for uncached files", () => {
-    const result = cache.get(
-      "/data/docs/report.pdf",
-      1024,
-      1700000000,
-      "abc123",
-    );
-    expect(result).toBeNull();
+  it("does not expose a get() method", () => {
+    expect((cache as any).get).toBeUndefined();
   });
 
-  it("stores and retrieves cached content", () => {
+  it("stores and retrieves cached content via getFast", () => {
     const content = "<document>test</document>";
     cache.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", content);
-    const result = cache.get(
-      "/data/docs/report.pdf",
-      1024,
-      1700000000,
-      "abc123",
-    );
+    const result = cache.getFast("/data/docs/report.pdf", 1024, 1700000000);
     expect(result).toBe(content);
-  });
-
-  it("returns cached content on fast path (size + mtime match)", () => {
-    cache.set(
-      "/data/docs/report.pdf",
-      1024,
-      1700000000,
-      "abc123",
-      "cached content",
-    );
-    // Same size + mtime → fast path, hash not checked
-    const result = cache.get(
-      "/data/docs/report.pdf",
-      1024,
-      1700000000,
-      "ignored-hash",
-    );
-    expect(result).toBe("cached content");
-  });
-
-  it("returns null when size changes", () => {
-    cache.set(
-      "/data/docs/report.pdf",
-      1024,
-      1700000000,
-      "abc123",
-      "cached content",
-    );
-    const result = cache.get(
-      "/data/docs/report.pdf",
-      2048,
-      1700000000,
-      "abc123",
-    );
-    expect(result).toBeNull();
   });
 
   it("falls back to content hash when mtime changes", () => {
@@ -83,42 +37,20 @@ describe("PdfCache", () => {
       "abc123",
       "cached content",
     );
-    // Different mtime, same size, same hash → slow path hit
-    const result = cache.get(
-      "/data/docs/report.pdf",
-      1024,
-      1800000000,
-      "abc123",
-    );
+    // getFast misses because mtime differs
+    expect(cache.getFast("/data/docs/report.pdf", 1024, 1800000000)).toBeNull();
+    // getByHash succeeds because content hash matches
+    const result = cache.getByHash("/data/docs/report.pdf", "abc123");
     expect(result).toBe("cached content");
-  });
-
-  it("returns null when both mtime and hash change", () => {
-    cache.set(
-      "/data/docs/report.pdf",
-      1024,
-      1700000000,
-      "abc123",
-      "cached content",
-    );
-    const result = cache.get(
-      "/data/docs/report.pdf",
-      1024,
-      1800000000,
-      "def456",
-    );
-    expect(result).toBeNull();
+    // After updating mtime, getFast succeeds with new mtime
+    cache.updateMtime("/data/docs/report.pdf", 1800000000);
+    expect(cache.getFast("/data/docs/report.pdf", 1024, 1800000000)).toBe("cached content");
   });
 
   it("overwrites existing entries on set", () => {
     cache.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "version 1");
     cache.set("/data/docs/report.pdf", 2048, 1800000000, "def456", "version 2");
-    const result = cache.get(
-      "/data/docs/report.pdf",
-      2048,
-      1800000000,
-      "def456",
-    );
+    const result = cache.getFast("/data/docs/report.pdf", 2048, 1800000000);
     expect(result).toBe("version 2");
   });
 
@@ -134,12 +66,7 @@ describe("PdfCache", () => {
     cacheV1.close();
 
     const cacheV2 = new PdfCache(cacheDir, { formatVersion: 2 });
-    const result = cacheV2.get(
-      "/data/docs/report.pdf",
-      1024,
-      1700000000,
-      "abc123",
-    );
+    const result = cacheV2.getFast("/data/docs/report.pdf", 1024, 1700000000);
     expect(result).toBeNull();
     cacheV2.close();
   });
@@ -158,12 +85,7 @@ describe("PdfCache", () => {
 
     // Advance clock past TTL (7 days = 604800000ms)
     now += 604800001;
-    const result = cacheWithClock.get(
-      "/data/docs/report.pdf",
-      1024,
-      1700000000,
-      "abc123",
-    );
+    const result = cacheWithClock.getFast("/data/docs/report.pdf", 1024, 1700000000);
     expect(result).toBeNull();
     cacheWithClock.close();
   });
