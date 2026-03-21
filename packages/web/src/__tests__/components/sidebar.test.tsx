@@ -133,6 +133,28 @@ describe("AppSidebar", () => {
     });
   });
 
+  describe("Usage link visibility", () => {
+    it("should render Usage link when isAdmin is true", () => {
+      render(
+        <SidebarProvider>
+          <AppSidebar isAdmin={true} />
+        </SidebarProvider>
+      );
+      const usageLink = screen.getByRole("link", { name: /usage/i });
+      expect(usageLink).toBeInTheDocument();
+      expect(usageLink).toHaveAttribute("href", "/usage");
+    });
+
+    it("should NOT render Usage link when isAdmin is false", () => {
+      render(
+        <SidebarProvider>
+          <AppSidebar isAdmin={false} />
+        </SidebarProvider>
+      );
+      expect(screen.queryByRole("link", { name: /^usage$/i })).not.toBeInTheDocument();
+    });
+  });
+
   describe("avatar rendering", () => {
     it("should render avatar image for agents", () => {
       setAgents([

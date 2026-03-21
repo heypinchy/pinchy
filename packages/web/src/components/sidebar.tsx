@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
-import { Bug, ClipboardList, Plus, Settings } from "lucide-react";
+import { BarChart3, Bug, ClipboardList, Plus, Settings } from "lucide-react";
 import { LogoutButton } from "@/components/logout-button";
 import { useAgentsContext } from "@/components/agents-provider";
 import {
@@ -109,6 +109,16 @@ export function AppSidebar({ isAdmin }: AppSidebarProps) {
               </Link>
             </SidebarMenuButton>
           </SidebarMenuItem>
+          {isAdmin && (
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild>
+                <Link href="/usage">
+                  <BarChart3 className="size-4" />
+                  <span>Usage</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+          )}
           {isAdmin && (
             <SidebarMenuItem>
               <SidebarMenuButton asChild>
