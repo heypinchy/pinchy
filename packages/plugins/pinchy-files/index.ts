@@ -73,26 +73,53 @@ async function readPdf(
 
   const extraction = await extractPdfText(fileBuffer);
 
-  // For scanned pages with rendered images, call the LLM vision API directly
-  // to extract text. All pages are processed in parallel for maximum speed.
-  // If the provider rate-limits us (429), describePageImage retries automatically.
+  // Call the LLM vision API for scanned pages and embedded images.
+  // All calls run in parallel for maximum speed.
   if (visionConfig) {
-    const scannedPages = extraction.pages.filter((p) => p.isScanned && p.renderedImage);
-    const results = await Promise.allSettled(
-      scannedPages.map(async (page) => {
-        const imageBase64 = page.renderedImage!.toString("base64");
-        page.renderedImage = undefined; // free memory immediately
-        const extractedText = await describePageImage(imageBase64, visionConfig);
-        if (extractedText) {
-          page.text = extractedText;
-          page.isScanned = false;
-        }
-      }),
-    );
-    for (const result of results) {
-      if (result.status === "rejected") {
-        console.error("[pinchy-files] Vision API failed for page:", result.reason);
+    const visionTasks: Promise<void>[] = [];
+
+    // Scanned pages: render → vision API → replace text
+    for (const page of extraction.pages) {
+      if (page.isScanned && page.renderedImage) {
+        visionTasks.push(
+          (async () => {
+            const imageBase64 = page.renderedImage!.toString("base64");
+            page.renderedImage = undefined;
+            const extractedText = await describePageImage(imageBase64, visionConfig);
+            if (extractedText) {
+              page.text = extractedText;
+              page.isScanned = false;
+            }
+          })(),
+        );
       }
+
+      // Embedded images: describe each and append [Figure: ...] to page text
+      for (const img of page.embeddedImages) {
+        visionTasks.push(
+          (async () => {
+            const imageBase64 = img.data.toString("base64");
+            const description = await describePageImage(imageBase64, visionConfig);
+            if (description) {
+              page.text += `\n\n[Figure: ${description}]`;
+            }
+          })(),
+        );
+      }
+    }
+
+    if (visionTasks.length > 0) {
+      const results = await Promise.allSettled(visionTasks);
+      for (const result of results) {
+        if (result.status === "rejected") {
+          console.error("[pinchy-files] Vision API failed:", result.reason);
+        }
+      }
+    }
+
+    // Free embedded image data after vision processing
+    for (const page of extraction.pages) {
+      page.embeddedImages = [];
     }
   }
 

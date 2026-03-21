@@ -9,11 +9,19 @@ const STANDARD_FONT_DATA_URL = join(__dirname, "node_modules/pdfjs-dist/standard
 const PDF_MIN_TEXT_CHARS = 200;
 const DEFAULT_MAX_PAGES = 50;
 
+const MIN_IMAGE_DIMENSION = 100;
+
+export interface ExtractedImage {
+  width: number;
+  height: number;
+  data: Buffer;
+}
+
 export interface ExtractedPage {
   pageNumber: number;
   text: string;
   isScanned: boolean;
-  embeddedImages: []; // kept for interface compat, always empty
+  embeddedImages: ExtractedImage[];
   renderedImage?: Buffer;
 }
 
@@ -97,6 +105,37 @@ export async function extractPdfText(
 
     const isScanned = text.length < PDF_MIN_TEXT_CHARS;
 
+    // Extract embedded images (> 100x100px) from non-scanned pages
+    const embeddedImages: ExtractedImage[] = [];
+    if (!isScanned) {
+      try {
+        const ops = await page.getOperatorList();
+        for (let j = 0; j < ops.fnArray.length; j++) {
+          if (ops.fnArray[j] === OPS.paintImageXObject) {
+            const imgName = ops.argsArray[j][0] as string;
+            try {
+              const img = await getImageObject(page.objs, imgName);
+              if (
+                img &&
+                img.width >= MIN_IMAGE_DIMENSION &&
+                img.height >= MIN_IMAGE_DIMENSION
+              ) {
+                embeddedImages.push({
+                  width: img.width,
+                  height: img.height,
+                  data: Buffer.from(img.data.buffer, img.data.byteOffset, img.data.byteLength),
+                });
+              }
+            } catch {
+              // Skip images that can't be extracted
+            }
+          }
+        }
+      } catch {
+        // Skip image extraction if operator list fails
+      }
+    }
+
     // Render scanned pages to PNG while the page proxy is still alive
     let renderedImage: Buffer | undefined;
     if (isScanned) {
@@ -107,7 +146,7 @@ export async function extractPdfText(
       }
     }
 
-    pages.push({ pageNumber: i, text, isScanned, embeddedImages: [], renderedImage });
+    pages.push({ pageNumber: i, text, isScanned, embeddedImages, renderedImage });
     page.cleanup();
 
     // Yield to event loop between pages so other agents can respond
