@@ -7,6 +7,8 @@ description: How to use groups to control which users can access which agents.
 Groups and agent access control are enterprise features. Activate them by entering a license key in **Settings → License** or via the `PINCHY_ENTERPRISE_KEY` environment variable. See [Enterprise Setup](/guides/enterprise-setup/) for details.
 :::
 
+![Groups management with member counts](/screenshots/groups.png)
+
 ## What are groups?
 
 Groups let admins organize users into teams and control which agents each team can access. Instead of making every agent visible to everyone, you can scope agent access to specific groups — so only the right people see the right agents.
@@ -41,6 +43,8 @@ There are two visibility modes:
 New agents are created with **Restricted** visibility. This means the agent is invisible to regular users until an admin explicitly publishes it. This is a safe default — you can configure and test an agent before anyone else sees it.
 
 When you select **Restricted**, a group picker appears. You can optionally choose one or more groups — only members of those groups (and admins) will see the agent. If no groups are selected, only admins have access.
+
+![Agent access control — visibility mode and group assignment](/screenshots/agent-settings-access.png)
 
 For example, you might create an "HR Team" group and assign your HR Knowledge Base agent to it. Only HR team members and admins can see and chat with that agent.
 

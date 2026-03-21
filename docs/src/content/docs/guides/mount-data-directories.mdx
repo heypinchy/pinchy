@@ -7,6 +7,8 @@ Pinchy agents can only access files inside the `/data/` directory in the contain
 
 ## The `/data/` convention
 
+![Agent permissions with directory picker — select which directories each agent can access](/screenshots/agent-settings-permissions.png)
+
 All agent-accessible files live under `/data/` inside the Pinchy container. This path is a Docker volume by default (`pinchy-data`), but you can bind-mount additional host directories as subdirectories.
 
 This convention provides a clear boundary: anything under `/data/` is potentially accessible to agents (depending on their permissions), and nothing outside `/data/` is.
