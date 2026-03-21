@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateAccess } from "./validate";
+import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE } from "./validate";
 
 const agentConfig = {
   allowed_paths: ["/data/hr-docs/", "/data/policies/"],
@@ -40,5 +40,15 @@ describe("validateAccess", () => {
     expect(() =>
       validateAccess(agentConfig, "/data/hr-docs/../../etc/passwd")
     ).toThrow("Access denied");
+  });
+});
+
+describe("MAX_FILE_SIZE exports", () => {
+  it("exports MAX_FILE_SIZE as 10MB for text files", () => {
+    expect(MAX_FILE_SIZE).toBe(10 * 1024 * 1024);
+  });
+
+  it("exports MAX_PDF_FILE_SIZE as 50MB for PDF files", () => {
+    expect(MAX_PDF_FILE_SIZE).toBe(50 * 1024 * 1024);
   });
 });

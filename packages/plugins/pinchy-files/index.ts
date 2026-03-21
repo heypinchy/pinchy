@@ -1,7 +1,8 @@
 import { readFileSync, readdirSync, statSync, realpathSync } from "fs";
+import { readFile } from "fs/promises";
 import { createHash } from "crypto";
 import { join } from "path";
-import { validateAccess, MAX_FILE_SIZE, type AgentFileConfig } from "./validate";
+import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, type AgentFileConfig } from "./validate";
 import { extractPdfText } from "./pdf-extract";
 import { formatPdfResult } from "./pdf-format";
 import { PdfCache } from "./pdf-cache";
@@ -38,6 +39,14 @@ interface AgentTool {
   ) => Promise<{ content: ContentBlock[]; details?: unknown }>;
 }
 
+const SYSTEM_FILES = new Set([
+  "Thumbs.db", "thumbs.db",
+  "desktop.ini", "Desktop.ini",
+  "$RECYCLE.BIN",
+  "System Volume Information",
+  ".DS_Store",
+]);
+
 function getAgentPaths(
   agentConfigs: Record<string, AgentFileConfig>,
   agentId: string
@@ -62,13 +71,23 @@ async function readPdf(
   stats: { size: number; mtimeMs: number },
   visionConfig: VisionApiConfig | null,
 ): Promise<{ content: ContentBlock[] }> {
-  const fileBuffer = readFileSync(realPath);
+  const pdfCache = getCache();
+
+  // Fast path: check cache with just size+mtime (no file read needed)
+  const cachedFast = pdfCache.getFast(realPath, stats.size, stats.mtimeMs);
+  if (cachedFast) {
+    return { content: [{ type: "text", text: cachedFast }] };
+  }
+
+  // Cache miss or mtime changed — read file and compute hash
+  const fileBuffer = await readFile(realPath);
   const contentHash = createHash("sha256").update(fileBuffer).digest("hex");
 
-  const pdfCache = getCache();
-  const cached = pdfCache.get(realPath, stats.size, stats.mtimeMs, contentHash);
-  if (cached) {
-    return { content: [{ type: "text", text: cached }] };
+  // Slow path: check if content hash matches (mtime changed but content didn't)
+  const cachedSlow = pdfCache.getByHash(realPath, contentHash);
+  if (cachedSlow) {
+    pdfCache.updateMtime(realPath, stats.mtimeMs);
+    return { content: [{ type: "text", text: cachedSlow }] };
   }
 
   const extraction = await extractPdfText(fileBuffer);
@@ -191,7 +210,7 @@ const plugin = {
 
               const entries = readdirSync(realPath);
               const results = entries
-                .filter((name) => !name.startsWith("."))
+                .filter((name) => !name.startsWith(".") && !SYSTEM_FILES.has(name))
                 .map((name) => {
                   const fullPath = join(realPath, name);
                   const stats = statSync(fullPath);
@@ -254,19 +273,21 @@ const plugin = {
               validateAccess({ allowed_paths: paths }, realPath);
 
               const stats = statSync(realPath);
-              if (stats.size > MAX_FILE_SIZE) {
+              const isPdf = realPath.toLowerCase().endsWith(".pdf");
+              const sizeLimit = isPdf ? MAX_PDF_FILE_SIZE : MAX_FILE_SIZE;
+              if (stats.size > sizeLimit) {
                 return {
                   content: [
                     {
                       type: "text",
-                      text: `File too large (${stats.size} bytes). Maximum: ${MAX_FILE_SIZE} bytes.`,
+                      text: `File too large (${stats.size} bytes). Maximum: ${sizeLimit} bytes.`,
                     },
                   ],
                 };
               }
 
               // PDF detection
-              if (realPath.toLowerCase().endsWith(".pdf")) {
+              if (isPdf) {
                 // Build vision config from runtime APIs
                 let visionConfig: VisionApiConfig | null = null;
                 if (modelAuth && loadConfig) {

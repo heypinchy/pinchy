@@ -85,6 +85,64 @@ export class PdfCache {
     return null;
   }
 
+  /** Fast path: returns content if size+mtime match and not expired. No hash needed. */
+  getFast(path: string, size: number, mtime: number): string | null {
+    const row = this.db
+      .prepare("SELECT * FROM pdf_cache WHERE path = ?")
+      .get(path) as
+      | {
+          size: number;
+          mtime: number;
+          format_version: number;
+          content: string;
+          cached_at: number;
+        }
+      | undefined;
+
+    if (!row) return null;
+    if (row.format_version !== this.formatVersion) return null;
+    if (this.now() - row.cached_at > this.ttlMs) {
+      this.db.prepare("DELETE FROM pdf_cache WHERE path = ?").run(path);
+      return null;
+    }
+    if (row.size === size && row.mtime === mtime) {
+      return row.content;
+    }
+    return null;
+  }
+
+  /** Slow path: returns content if content hash matches. */
+  getByHash(path: string, contentHash: string): string | null {
+    const row = this.db
+      .prepare("SELECT * FROM pdf_cache WHERE path = ?")
+      .get(path) as
+      | {
+          content_hash: string;
+          format_version: number;
+          content: string;
+          cached_at: number;
+        }
+      | undefined;
+
+    if (!row) return null;
+    if (row.format_version !== this.formatVersion) return null;
+    if (this.now() - row.cached_at > this.ttlMs) {
+      this.db.prepare("DELETE FROM pdf_cache WHERE path = ?").run(path);
+      return null;
+    }
+    if (row.content_hash === contentHash) {
+      return row.content;
+    }
+    return null;
+  }
+
+  /** Update the stored mtime for a path (used after hash-based cache hit with changed mtime). */
+  updateMtime(path: string, mtime: number): void {
+    this.db
+      .prepare("UPDATE pdf_cache SET mtime = ? WHERE path = ?")
+      .run(mtime, path);
+  }
+
   set(
     path: string,
     size: number,

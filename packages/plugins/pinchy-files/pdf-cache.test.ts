@@ -167,4 +167,85 @@ describe("PdfCache", () => {
     expect(result).toBeNull();
     cacheWithClock.close();
   });
+
+  describe("getFast", () => {
+    it("returns content when size and mtime match", () => {
+      cache.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "cached content");
+      const result = cache.getFast("/data/docs/report.pdf", 1024, 1700000000);
+      expect(result).toBe("cached content");
+    });
+
+    it("returns null when mtime differs", () => {
+      cache.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "cached content");
+      const result = cache.getFast("/data/docs/report.pdf", 1024, 1800000000);
+      expect(result).toBeNull();
+    });
+
+    it("returns null when size differs", () => {
+      cache.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "cached content");
+      const result = cache.getFast("/data/docs/report.pdf", 2048, 1700000000);
+      expect(result).toBeNull();
+    });
+
+    it("returns null for uncached files", () => {
+      const result = cache.getFast("/data/docs/nonexistent.pdf", 1024, 1700000000);
+      expect(result).toBeNull();
+    });
+
+    it("returns null for expired entries", () => {
+      let now = 1700000000000;
+      const cacheWithClock = new PdfCache(cacheDir, { now: () => now });
+      cacheWithClock.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "content");
+
+      now += 604800001; // past TTL
+      const result = cacheWithClock.getFast("/data/docs/report.pdf", 1024, 1700000000);
+      expect(result).toBeNull();
+      cacheWithClock.close();
+    });
+  });
+
+  describe("getByHash", () => {
+    it("returns content when hash matches", () => {
+      cache.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "cached content");
+      const result = cache.getByHash("/data/docs/report.pdf", "abc123");
+      expect(result).toBe("cached content");
+    });
+
+    it("returns null when hash differs", () => {
+      cache.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "cached content");
+      const result = cache.getByHash("/data/docs/report.pdf", "def456");
+      expect(result).toBeNull();
+    });
+
+    it("returns null for uncached files", () => {
+      const result = cache.getByHash("/data/docs/nonexistent.pdf", "abc123");
+      expect(result).toBeNull();
+    });
+
+    it("returns null for expired entries", () => {
+      let now = 1700000000000;
+      const cacheWithClock = new PdfCache(cacheDir, { now: () => now });
+      cacheWithClock.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "content");
+
+      now += 604800001;
+      const result = cacheWithClock.getByHash("/data/docs/report.pdf", "abc123");
+      expect(result).toBeNull();
+      cacheWithClock.close();
+    });
+  });
+
+  describe("updateMtime", () => {
+    it("updates the stored mtime so getFast returns content with new mtime", () => {
+      cache.set("/data/docs/report.pdf", 1024, 1700000000, "abc123", "cached content");
+
+      // mtime changed — getFast should miss
+      expect(cache.getFast("/data/docs/report.pdf", 1024, 1800000000)).toBeNull();
+
+      // Update mtime
+      cache.updateMtime("/data/docs/report.pdf", 1800000000);
+
+      // Now getFast should hit with the new mtime
+      expect(cache.getFast("/data/docs/report.pdf", 1024, 1800000000)).toBe("cached content");
+    });
+  });
 });

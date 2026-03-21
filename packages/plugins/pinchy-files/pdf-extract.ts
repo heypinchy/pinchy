@@ -120,11 +120,34 @@ export async function extractPdfText(
       .replace(/\s+/g, " ")
       .trim();
 
-    const isScanned = text.length < PDF_MIN_TEXT_CHARS;
+    const sparseText = text.length < PDF_MIN_TEXT_CHARS;
+
+    // Check if a sparse-text page contains large images (indicating it's a scan,
+    // not just a short page like a title page or separator).
+    let hasLargeImages = false;
+    if (sparseText) {
+      try {
+        const ops = await page.getOperatorList();
+        for (let j = 0; j < ops.fnArray.length; j++) {
+          if (ops.fnArray[j] === OPS.paintImageXObject) {
+            const imgName = ops.argsArray[j][0] as string;
+            const img = await getImageObject(page.objs, imgName);
+            if (img && img.width >= MIN_IMAGE_DIMENSION && img.height >= MIN_IMAGE_DIMENSION) {
+              hasLargeImages = true;
+              break; // One large image is enough to confirm it's a scan
+            }
+          }
+        }
+      } catch {
+        // If we can't check, assume it's not a scan
+      }
+    }
+
+    const isScanned = sparseText && hasLargeImages;
 
     // Extract embedded images (> 100x100px) from non-scanned pages
     const embeddedImages: ExtractedImage[] = [];
-    if (!isScanned) {
+    if (!isScanned && !sparseText) {
       try {
         const ops = await page.getOperatorList();
         for (let j = 0; j < ops.fnArray.length; j++) {

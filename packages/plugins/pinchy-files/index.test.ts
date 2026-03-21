@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
-import { readFileSync as realReadFileSync, mkdtempSync, rmSync } from "fs";
+import { readFileSync as realReadFileSync, mkdtempSync, rmSync, mkdirSync, writeFileSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
@@ -188,6 +188,41 @@ describe("pinchy-files plugin", () => {
     const tool = readFactory({ agentId: "agent-1" });
 
     expect(tool.description).toContain("pinchy_ls");
+  });
+
+  it("pinchy_ls filters out system files (Thumbs.db, desktop.ini, .DS_Store)", async () => {
+    // Create a temp directory with system files and a normal file
+    const tmpDir = mkdtempSync(join(tmpdir(), "pinchy-sysfiles-test-"));
+    try {
+      writeFileSync(join(tmpDir, "report.pdf"), "fake pdf");
+      writeFileSync(join(tmpDir, "Thumbs.db"), "");
+      writeFileSync(join(tmpDir, "desktop.ini"), "");
+      writeFileSync(join(tmpDir, "$RECYCLE.BIN"), "");
+      writeFileSync(join(tmpDir, "System Volume Information"), "");
+      writeFileSync(join(tmpDir, ".DS_Store"), "");
+
+      const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+      const { default: plugin } = await import("./index");
+      plugin.register!(api as any);
+
+      const lsFactory = mockRegisterTool.mock.calls.find(
+        (call: any[]) => call[1]?.name === "pinchy_ls"
+      )?.[0];
+      const tool = lsFactory({ agentId: "agent-1" });
+
+      const result = await tool.execute("call-1", { path: tmpDir });
+      const entries = JSON.parse(result.content[0].text);
+      const names = entries.map((e: { name: string }) => e.name);
+
+      expect(names).toContain("report.pdf");
+      expect(names).not.toContain("Thumbs.db");
+      expect(names).not.toContain("desktop.ini");
+      expect(names).not.toContain("$RECYCLE.BIN");
+      expect(names).not.toContain("System Volume Information");
+      expect(names).not.toContain(".DS_Store");
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });
 

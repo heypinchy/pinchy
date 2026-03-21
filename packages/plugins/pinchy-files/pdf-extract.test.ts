@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
 import { join } from "path";
+import { PDFDocument } from "pdf-lib";
 import { extractPdfText } from "./pdf-extract";
 
 const FIXTURES = join(import.meta.dirname, "test-fixtures");
@@ -107,5 +108,22 @@ describe("extractPdfText", () => {
     expect(result.pages.length).toBe(50);
     expect(result.totalPages).toBe(60);
     expect(result.truncated).toBe(true);
+  });
+
+  it("does not mark short text pages without images as scanned", async () => {
+    // Create a minimal PDF with just "Hello" on one page — short text, no images.
+    // With the old logic (text.length < 200 → scanned), this would be marked as scanned.
+    // With the new logic, it should NOT be scanned because there are no large images.
+    const pdfDoc = await PDFDocument.create();
+    const page = pdfDoc.addPage([200, 200]);
+    page.drawText("Hello", { x: 50, y: 100, size: 12 });
+    const pdfBytes = await pdfDoc.save();
+    const buffer = Buffer.from(pdfBytes);
+
+    const result = await extractPdfText(buffer);
+
+    expect(result.pages).toHaveLength(1);
+    expect(result.pages[0].text.length).toBeLessThan(200); // confirms sparse text
+    expect(result.pages[0].isScanned).toBe(false); // but NOT scanned (no images)
   });
 });
