@@ -37,6 +37,13 @@ export interface VisionApiInternalConfig {
   model: string;
 }
 
+/** Validate model ID to prevent URL injection (e.g. path traversal in Google API URL). */
+function validateModelId(modelId: string): void {
+  if (!modelId || /\.\./.test(modelId) || !/^[a-zA-Z0-9._:/-]+$/.test(modelId)) {
+    throw new Error(`Invalid model ID: ${modelId}`);
+  }
+}
+
 /**
  * Describe a scanned page image using the configured LLM's vision API.
  * Returns extracted text, or null if vision is not available.
@@ -47,6 +54,7 @@ export async function describePageImage(
 ): Promise<string | null> {
   const [provider, ...modelParts] = config.model.split("/");
   const modelId = modelParts.join("/");
+  validateModelId(modelId);
 
   switch (provider) {
     case "anthropic":

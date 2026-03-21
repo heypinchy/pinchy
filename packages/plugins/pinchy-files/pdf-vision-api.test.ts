@@ -100,7 +100,55 @@ describe("describePageImage", () => {
     });
 
     expect(result).toBeNull();
-    // Should have retried a few times (3 max)
     expect((globalThis.fetch as any).mock.calls.length).toBeLessThanOrEqual(4);
+  });
+
+  it("calls OpenAI API with image_url format", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "OpenAI extracted text" } }],
+      }),
+    });
+
+    const result = await describePageImage("base64data", {
+      model: "openai/gpt-4o",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(result).toBe("OpenAI extracted text");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      "https://api.openai.com/v1/chat/completions",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("calls Google API with inline_data format", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: "Google extracted text" }] } }],
+      }),
+    });
+
+    const result = await describePageImage("base64data", {
+      model: "google/gemini-2.5-flash",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(result).toBe("Google extracted text");
+    expect(globalThis.fetch).toHaveBeenCalledWith(
+      expect.stringContaining("generativelanguage.googleapis.com"),
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("rejects invalid model IDs to prevent URL injection", async () => {
+    await expect(
+      describePageImage("base64data", {
+        model: "google/../../admin",
+        resolveApiKey: async () => "test-key",
+      }),
+    ).rejects.toThrow("Invalid model ID");
   });
 });
