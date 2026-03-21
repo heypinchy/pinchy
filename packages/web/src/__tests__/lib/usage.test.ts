@@ -303,6 +303,40 @@ describe("recordUsage", () => {
     );
   });
 
+  it("still records usage when config.get() fails", async () => {
+    const client = makeOpenClawClient([
+      {
+        key: "agent:agent-1:user-user-1",
+        inputTokens: 100,
+        outputTokens: 200,
+        cacheReadTokens: 10,
+        cacheWriteTokens: 5,
+        model: "claude-sonnet-4-20250514",
+      },
+    ]);
+
+    // Make config.get() throw (e.g. Gateway unreachable)
+    (client.config.get as ReturnType<typeof vi.fn>).mockRejectedValue(
+      new Error("Gateway unreachable")
+    );
+
+    await recordUsage({ openclawClient: client, ...baseParams });
+
+    expect(mockInsert).toHaveBeenCalledWith(usageRecords);
+    expect(mockValues).toHaveBeenCalledWith({
+      userId: "user-1",
+      agentId: "agent-1",
+      agentName: "Smithers",
+      sessionKey: "agent:agent-1:user-user-1",
+      model: "claude-sonnet-4-20250514",
+      inputTokens: 100,
+      outputTokens: 200,
+      cacheReadTokens: 10,
+      cacheWriteTokens: 5,
+      estimatedCostUsd: null,
+    });
+  });
+
   it("caches config and does not call config.get() again within 5 minutes", async () => {
     const configWithPricing = {
       config: {

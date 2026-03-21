@@ -98,13 +98,17 @@ export async function recordUsage(params: RecordUsageParams): Promise<void> {
     // Estimate cost from model pricing config
     let estimatedCostUsd: string | null = null;
     const model = session.model ?? null;
-    if (model) {
-      const pricing = await getModelPricing(openclawClient, model);
-      if (pricing) {
-        const cost =
-          (deltaInput * pricing.input) / 1_000_000 + (deltaOutput * pricing.output) / 1_000_000;
-        estimatedCostUsd = cost.toFixed(6);
+    try {
+      if (model) {
+        const pricing = await getModelPricing(openclawClient, model);
+        if (pricing) {
+          const cost =
+            (deltaInput * pricing.input) / 1_000_000 + (deltaOutput * pricing.output) / 1_000_000;
+          estimatedCostUsd = cost.toFixed(6);
+        }
       }
+    } catch (costError) {
+      console.error("[usage] Failed to estimate cost, recording usage without cost:", costError);
     }
 
     await db.insert(usageRecords).values({
