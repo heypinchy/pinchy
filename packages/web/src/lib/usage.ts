@@ -11,6 +11,47 @@ interface RecordUsageParams {
   sessionKey: string;
 }
 
+// Module-level cache for OpenClaw config pricing
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+let cachedPricing: Map<string, { input: number; output: number }> | null = null;
+let cacheTimestamp = 0;
+
+/** Exported only for tests — resets the module-level pricing cache. */
+export function _resetPricingCacheForTest(): void {
+  cachedPricing = null;
+  cacheTimestamp = 0;
+}
+
+async function getModelPricing(
+  openclawClient: OpenClawClient,
+  modelId: string
+): Promise<{ input: number; output: number } | null> {
+  const now = Date.now();
+
+  if (cachedPricing && now - cacheTimestamp < CACHE_TTL_MS) {
+    return cachedPricing.get(modelId) ?? null;
+  }
+
+  const result = await openclawClient.config.get();
+  const providers = result?.config?.models?.providers ?? {};
+
+  const pricingMap = new Map<string, { input: number; output: number }>();
+  for (const provider of Object.values(providers) as Array<{
+    models?: Array<{ id: string; cost?: { input: number; output: number } }>;
+  }>) {
+    for (const model of provider.models ?? []) {
+      if (model.cost) {
+        pricingMap.set(model.id, model.cost);
+      }
+    }
+  }
+
+  cachedPricing = pricingMap;
+  cacheTimestamp = now;
+
+  return pricingMap.get(modelId) ?? null;
+}
+
 export async function recordUsage(params: RecordUsageParams): Promise<void> {
   try {
     const { openclawClient, userId, agentId, agentName, sessionKey } = params;
@@ -54,17 +95,29 @@ export async function recordUsage(params: RecordUsageParams): Promise<void> {
       return;
     }
 
+    // Estimate cost from model pricing config
+    let estimatedCostUsd: string | null = null;
+    const model = session.model ?? null;
+    if (model) {
+      const pricing = await getModelPricing(openclawClient, model);
+      if (pricing) {
+        const cost =
+          (deltaInput * pricing.input) / 1_000_000 + (deltaOutput * pricing.output) / 1_000_000;
+        estimatedCostUsd = cost.toFixed(6);
+      }
+    }
+
     await db.insert(usageRecords).values({
       userId,
       agentId,
       agentName,
       sessionKey,
-      model: session.model ?? null,
+      model,
       inputTokens: deltaInput,
       outputTokens: deltaOutput,
       cacheReadTokens: deltaCacheRead,
       cacheWriteTokens: deltaCacheWrite,
-      estimatedCostUsd: null,
+      estimatedCostUsd,
     });
   } catch (error) {
     console.error("[usage] Failed to record usage:", error);
