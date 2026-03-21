@@ -97,7 +97,15 @@ async function readPdf(
   }
 
   const formatted = formatPdfResult(extraction, realPath);
-  pdfCache.set(realPath, stats.size, stats.mtimeMs, contentHash, formatted);
+
+  // Only cache if all pages were successfully processed.
+  // If scanned pages still have no text (vision unavailable or failed),
+  // don't cache — next read might have vision available.
+  const hasUnprocessedScans = extraction.pages.some((p) => p.isScanned && !p.text.trim());
+  if (!hasUnprocessedScans) {
+    pdfCache.set(realPath, stats.size, stats.mtimeMs, contentHash, formatted);
+  }
+
   return { content: [{ type: "text", text: formatted }] };
 }
 

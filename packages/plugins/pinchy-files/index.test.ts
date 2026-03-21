@@ -359,4 +359,70 @@ describe("pinchy_read PDF integration", () => {
     expect(result1.content[0].text).toBe(result2.content[0].text);
     expect(result1.content[0].text).toContain("<document>");
   });
+
+  it("does not cache scanned PDF results when vision was unavailable", async () => {
+    // Clear cache first
+    const { rmSync: rm } = await import("fs");
+    const cacheSqlite = join(testCacheDir, "pdf-cache.sqlite");
+    rm(cacheSqlite, { force: true });
+    rm(cacheSqlite + "-wal", { force: true });
+    rm(cacheSqlite + "-shm", { force: true });
+
+    vi.resetModules();
+
+    const fixturePath = join(FIXTURES, "scanned.pdf");
+
+    // First read: no modelAuth → vision unavailable → fallback text
+    const api1 = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    const { default: plugin1 } = await import("./index");
+    plugin1.register!(api1 as any);
+    const readFactory1 = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_read"
+    )?.[0];
+    const tool1 = readFactory1({ agentId: "agent-1" });
+    const result1 = await tool1.execute("call-1", { path: fixturePath });
+
+    // Should contain fallback message (no vision)
+    expect(result1.content[0].text).toContain("Unable to extract text");
+
+    // Second read: with modelAuth → vision should be attempted, not served from cache
+    vi.resetModules();
+    vi.clearAllMocks();
+
+    const mockResolveApiKey = vi.fn().mockResolvedValue({ apiKey: "test-key" });
+    const api2 = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    (api2 as any).runtime = {
+      ...api2.runtime,
+      modelAuth: { resolveApiKeyForProvider: mockResolveApiKey },
+      config: {
+        loadConfig: () => ({
+          agents: { list: [{ id: "agent-1", model: "anthropic/claude-haiku-4-5-20251001" }] },
+        }),
+      },
+    };
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [{ type: "text", text: "Vision extracted: HWB 234 kWh/m²a" }],
+      }),
+    });
+
+    try {
+      const { default: plugin2 } = await import("./index");
+      plugin2.register!(api2 as any);
+      const readFactory2 = mockRegisterTool.mock.calls.find(
+        (call: any[]) => call[1]?.name === "pinchy_read"
+      )?.[0];
+      const tool2 = readFactory2({ agentId: "agent-1" });
+      const result2 = await tool2.execute("call-2", { path: fixturePath });
+
+      // Should NOT contain fallback — vision should have been called (not cached)
+      expect(result2.content[0].text).toContain("HWB 234");
+      expect(result2.content[0].text).not.toContain("Unable to extract text");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
