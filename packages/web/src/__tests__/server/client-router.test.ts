@@ -10,6 +10,7 @@ const {
   mockAppendAuditLog,
   mockGetUserGroupIds,
   mockGetAgentGroupIds,
+  mockRecordUsage,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
@@ -19,6 +20,7 @@ const {
   mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
   mockGetUserGroupIds: vi.fn().mockResolvedValue([]),
   mockGetAgentGroupIds: vi.fn().mockResolvedValue([]),
+  mockRecordUsage: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/agent-access", async (importOriginal) => {
@@ -82,6 +84,10 @@ vi.mock("@/lib/audit", () => ({
 vi.mock("@/lib/groups", () => ({
   getUserGroupIds: (...args: unknown[]) => mockGetUserGroupIds(...args),
   getAgentGroupIds: (...args: unknown[]) => mockGetAgentGroupIds(...args),
+}));
+
+vi.mock("@/lib/usage", () => ({
+  recordUsage: mockRecordUsage,
 }));
 
 import { ClientRouter } from "@/server/client-router";
@@ -1525,6 +1531,61 @@ describe("ClientRouter", () => {
       const greeting = sent[0].messages[0].content;
       expect(greeting).not.toContain("{user}");
       expect(greeting).toContain("I'm Smithers");
+    });
+  });
+
+  describe("usage tracking", () => {
+    it("records usage after chat completes", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockRecordUsage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          openclawClient: expect.anything(),
+          userId: "user-1",
+          agentId: "agent-1",
+          agentName: "Smithers",
+          sessionKey: "agent:agent-1:user-user-1",
+        })
+      );
+    });
+
+    it("does not block chat response when usage tracking fails", async () => {
+      mockRecordUsage.mockRejectedValueOnce(new Error("DB down"));
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const doneMsg = messages.find((m: any) => m.type === "done");
+      expect(doneMsg).toBeDefined();
+
+      // Wait for the fire-and-forget promise to settle
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(consoleSpy).toHaveBeenCalledWith("Usage tracking failed:", expect.any(Error));
+
+      consoleSpy.mockRestore();
     });
   });
 });
