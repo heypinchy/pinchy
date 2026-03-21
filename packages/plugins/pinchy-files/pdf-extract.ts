@@ -1,10 +1,26 @@
 import { getDocument, OPS } from "pdfjs-dist/legacy/build/pdf.mjs";
+import { createCanvas } from "@napi-rs/canvas";
 import { join, dirname } from "path";
 import { fileURLToPath } from "url";
 import { renderPageToImage } from "./pdf-render";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const STANDARD_FONT_DATA_URL = join(__dirname, "node_modules/pdfjs-dist/standard_fonts/");
+
+/** Provide pdfjs-dist with a Canvas factory so it doesn't try to auto-detect one. */
+class NodeCanvasFactory {
+  create(width: number, height: number) {
+    const canvas = createCanvas(width, height);
+    return { canvas, context: canvas.getContext("2d") };
+  }
+  reset(canvasAndContext: { canvas: { width: number; height: number }; context: unknown }, width: number, height: number) {
+    canvasAndContext.canvas.width = width;
+    canvasAndContext.canvas.height = height;
+  }
+  destroy(canvasAndContext: { canvas: unknown }) {
+    canvasAndContext.canvas = null as unknown;
+  }
+}
 
 const PDF_MIN_TEXT_CHARS = 200;
 const DEFAULT_MAX_PAGES = 50;
@@ -85,7 +101,8 @@ export async function extractPdfText(
     disableFontFace: true,
     useSystemFonts: false,
     standardFontDataUrl: STANDARD_FONT_DATA_URL,
-  }).promise;
+    CanvasFactory: NodeCanvasFactory,
+  } as Record<string, unknown>).promise;
 
   const totalPages = doc.numPages;
   const pagesToProcess = Math.min(totalPages, maxPages);
