@@ -239,20 +239,53 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
             <CardContent>
               <ResponsiveContainer width="100%" height={300}>
                 <LineChart data={chartData}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="date" />
-                  <YAxis />
-                  <Tooltip />
+                  <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.9 0 0)" />
+                  <XAxis
+                    dataKey="date"
+                    tickFormatter={(d) => {
+                      const date = new Date(d);
+                      return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+                    }}
+                    interval="preserveStartEnd"
+                    tick={{ fontSize: 12 }}
+                  />
+                  <YAxis tickFormatter={formatTokens} tick={{ fontSize: 12 }} />
+                  <Tooltip
+                    content={({ active, payload, label }) => {
+                      if (!active || !payload?.length) return null;
+                      const date = new Date(label as string);
+                      return (
+                        <div className="rounded-md border bg-background p-2 shadow-sm text-sm">
+                          <p className="font-medium mb-1">
+                            {date.toLocaleDateString("en-US", {
+                              weekday: "short",
+                              month: "short",
+                              day: "numeric",
+                            })}
+                          </p>
+                          {payload.map((entry) => (
+                            <p key={entry.name} style={{ color: entry.color }}>
+                              {entry.name}: {formatTokens(Number(entry.value ?? 0))}
+                            </p>
+                          ))}
+                        </div>
+                      );
+                    }}
+                  />
                   <Line
                     type="monotone"
                     dataKey="inputTokens"
-                    stroke="#3b82f6"
+                    stroke="oklch(0.646 0.222 41.116)"
+                    strokeWidth={2}
+                    dot={false}
                     name="Input Tokens"
                   />
                   <Line
                     type="monotone"
                     dataKey="outputTokens"
-                    stroke="#f97316"
+                    stroke="oklch(0.55 0.02 60)"
+                    strokeWidth={2}
+                    dot={false}
                     name="Output Tokens"
                   />
                 </LineChart>
@@ -281,20 +314,22 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {summary!.agents.map((agent) => (
-                        <TableRow key={agent.agentId}>
-                          <TableCell>{agent.agentName}</TableCell>
-                          <TableCell className="text-right">
-                            {formatTokens(Number(agent.totalInputTokens ?? 0))}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {formatTokens(Number(agent.totalOutputTokens ?? 0))}
-                          </TableCell>
-                          <TableCell className="text-right">
-                            {formatCost(Number(agent.totalCost ?? 0))}
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                      {[...summary!.agents]
+                        .sort((a, b) => Number(b.totalCost ?? 0) - Number(a.totalCost ?? 0))
+                        .map((agent) => (
+                          <TableRow key={agent.agentId}>
+                            <TableCell>{agent.agentName}</TableCell>
+                            <TableCell className="text-right">
+                              {formatTokens(Number(agent.totalInputTokens ?? 0))}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              {formatTokens(Number(agent.totalOutputTokens ?? 0))}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              {formatCost(Number(agent.totalCost ?? 0))}
+                            </TableCell>
+                          </TableRow>
+                        ))}
                     </TableBody>
                   </Table>
                 </CardContent>
@@ -320,20 +355,22 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                          {byUser.users.map((user) => (
-                            <TableRow key={user.userId}>
-                              <TableCell>{user.userName}</TableCell>
-                              <TableCell className="text-right">
-                                {formatTokens(Number(user.totalInputTokens ?? 0))}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                {formatTokens(Number(user.totalOutputTokens ?? 0))}
-                              </TableCell>
-                              <TableCell className="text-right">
-                                {formatCost(Number(user.totalCost ?? 0))}
-                              </TableCell>
-                            </TableRow>
-                          ))}
+                          {[...byUser.users]
+                            .sort((a, b) => Number(b.totalCost ?? 0) - Number(a.totalCost ?? 0))
+                            .map((user) => (
+                              <TableRow key={user.userId}>
+                                <TableCell>{user.userName}</TableCell>
+                                <TableCell className="text-right">
+                                  {formatTokens(Number(user.totalInputTokens ?? 0))}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  {formatTokens(Number(user.totalOutputTokens ?? 0))}
+                                </TableCell>
+                                <TableCell className="text-right">
+                                  {formatCost(Number(user.totalCost ?? 0))}
+                                </TableCell>
+                              </TableRow>
+                            ))}
                         </TableBody>
                       </Table>
                     )}
