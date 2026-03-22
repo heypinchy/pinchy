@@ -143,10 +143,10 @@ describe("UsageDashboard", () => {
     render(<UsageDashboard />);
 
     await waitFor(() => {
-      expect(screen.getByText("Smithers")).toBeInTheDocument();
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
     });
 
-    expect(screen.getByText("Research Bot")).toBeInTheDocument();
+    expect(screen.getAllByText("Research Bot").length).toBeGreaterThan(0);
     // 500000 -> "500.0k"
     expect(screen.getByText("500.0k")).toBeInTheDocument();
     // 700000 -> "700.0k"
@@ -161,7 +161,7 @@ describe("UsageDashboard", () => {
     render(<UsageDashboard />);
 
     await waitFor(() => {
-      expect(screen.getByText("Smithers")).toBeInTheDocument();
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
     });
 
     // Clear mock call history
@@ -182,7 +182,7 @@ describe("UsageDashboard", () => {
     render(<UsageDashboard />);
 
     await waitFor(() => {
-      expect(screen.getByText("Smithers")).toBeInTheDocument();
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
     });
 
     vi.mocked(global.fetch).mockClear();
@@ -232,5 +232,82 @@ describe("UsageDashboard", () => {
     expect(screen.getByRole("button", { name: "30d" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "90d" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "All" })).toBeInTheDocument();
+  });
+
+  it("should render agent filter dropdown with 'All Agents' default", async () => {
+    mockBothEndpoints();
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+    });
+
+    const agentSelect = screen.getByLabelText("Filter by agent");
+    expect(agentSelect).toBeInTheDocument();
+    expect(agentSelect).toHaveValue("all");
+  });
+
+  it("should populate agent filter with agent names from summary data", async () => {
+    mockBothEndpoints();
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+    });
+
+    const agentSelect = screen.getByLabelText("Filter by agent");
+    const options = agentSelect.querySelectorAll("option");
+    expect(options).toHaveLength(3); // "All Agents" + 2 agents
+    expect(options[0]).toHaveTextContent("All Agents");
+    expect(options[1]).toHaveTextContent("Smithers");
+    expect(options[2]).toHaveTextContent("Research Bot");
+  });
+
+  it("should re-fetch with agentId when an agent is selected", async () => {
+    mockBothEndpoints();
+    const user = userEvent.setup();
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+    });
+
+    vi.mocked(global.fetch).mockClear();
+    mockBothEndpoints();
+
+    const agentSelect = screen.getByLabelText("Filter by agent");
+    await user.selectOptions(agentSelect, "agent-1");
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=30&agentId=agent-1");
+      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=30&agentId=agent-1");
+    });
+  });
+
+  it("should remove agentId param when 'All Agents' is re-selected", async () => {
+    mockBothEndpoints();
+    const user = userEvent.setup();
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+    });
+
+    const agentSelect = screen.getByLabelText("Filter by agent");
+    await user.selectOptions(agentSelect, "agent-1");
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("agentId=agent-1"));
+    });
+
+    vi.mocked(global.fetch).mockClear();
+    mockBothEndpoints();
+
+    await user.selectOptions(agentSelect, "all");
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=30");
+      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=30");
+    });
   });
 });

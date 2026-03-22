@@ -70,32 +70,47 @@ const PERIOD_OPTIONS: { label: string; value: DaysOption }[] = [
 
 export function UsageDashboard() {
   const [days, setDays] = useState<DaysOption>(30);
+  const [selectedAgent, setSelectedAgent] = useState("all");
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [timeseries, setTimeseries] = useState<TimeseriesResponse | null>(null);
+  const [knownAgents, setKnownAgents] = useState<AgentSummary[]>([]);
 
   useEffect(() => {
     let cancelled = false;
-    const params = days === "all" ? "" : `?days=${days}`;
+    const params = new URLSearchParams();
+    if (days !== "all") params.set("days", String(days));
+    if (selectedAgent !== "all") params.set("agentId", selectedAgent);
+    const qs = params.toString() ? `?${params.toString()}` : "";
 
     Promise.all([
-      fetch(`/api/usage/summary${params}`).then((r) => r.json()),
-      fetch(`/api/usage/timeseries${params}`).then((r) => r.json()),
+      fetch(`/api/usage/summary${qs}`).then((r) => r.json()),
+      fetch(`/api/usage/timeseries${qs}`).then((r) => r.json()),
     ]).then(([summaryData, timeseriesData]) => {
       if (!cancelled) {
         setSummary(summaryData);
         setTimeseries(timeseriesData);
+        // Only update agent list when not filtering by agent (to keep full list)
+        if (selectedAgent === "all" && summaryData.agents?.length > 0) {
+          setKnownAgents(summaryData.agents);
+        }
       }
     });
 
     return () => {
       cancelled = true;
     };
-  }, [days]);
+  }, [days, selectedAgent]);
 
   function handleDaysChange(value: DaysOption) {
     setSummary(null);
     setTimeseries(null);
     setDays(value);
+  }
+
+  function handleAgentChange(value: string) {
+    setSummary(null);
+    setTimeseries(null);
+    setSelectedAgent(value);
   }
 
   const loading = summary === null || timeseries === null;
@@ -116,17 +131,34 @@ export function UsageDashboard() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h2 className="text-2xl font-bold">Usage & Costs</h2>
-        <div className="flex gap-1">
-          {PERIOD_OPTIONS.map((opt) => (
-            <Button
-              key={opt.label}
-              variant={days === opt.value ? "default" : "outline"}
-              size="sm"
-              onClick={() => handleDaysChange(opt.value)}
+        <div className="flex items-center gap-3">
+          <div className="flex gap-1">
+            {PERIOD_OPTIONS.map((opt) => (
+              <Button
+                key={opt.label}
+                variant={days === opt.value ? "default" : "outline"}
+                size="sm"
+                onClick={() => handleDaysChange(opt.value)}
+              >
+                {opt.label}
+              </Button>
+            ))}
+          </div>
+          {knownAgents.length > 0 && (
+            <select
+              aria-label="Filter by agent"
+              value={selectedAgent}
+              onChange={(e) => handleAgentChange(e.target.value)}
+              className="border-input bg-transparent text-sm rounded-md border px-3 py-1.5 h-8"
             >
-              {opt.label}
-            </Button>
-          ))}
+              <option value="all">All Agents</option>
+              {knownAgents.map((a) => (
+                <option key={a.agentId} value={a.agentId}>
+                  {a.agentName}
+                </option>
+              ))}
+            </select>
+          )}
         </div>
       </div>
 
