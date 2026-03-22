@@ -277,20 +277,25 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
 
               {/* Desktop table */}
               <div className="hidden lg:block">
-                <Table>
+                <Table className="table-fixed">
                   <TableHeader>
                     <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Description</TableHead>
-                      <TableHead>Members</TableHead>
-                      <TableHead>Actions</TableHead>
+                      <TableHead className="w-[25%]">Name</TableHead>
+                      <TableHead className="w-[40%]">Description</TableHead>
+                      <TableHead className="w-[10%]">Members</TableHead>
+                      <TableHead className="w-[25%]">Actions</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
                     {groups.map((group) => (
                       <TableRow key={group.id}>
-                        <TableCell className="font-medium">{group.name}</TableCell>
-                        <TableCell className="text-muted-foreground">
+                        <TableCell className="font-medium truncate" title={group.name}>
+                          {group.name}
+                        </TableCell>
+                        <TableCell
+                          className="text-muted-foreground truncate"
+                          title={group.description || undefined}
+                        >
                           {group.description || "\u2014"}
                         </TableCell>
                         <TableCell>{group.memberCount}</TableCell>

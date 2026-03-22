@@ -29,9 +29,14 @@ function GroupBadges({ groups }: { groups: UserGroup[] }) {
   const visible = groups.slice(0, MAX_VISIBLE);
   const remaining = groups.slice(MAX_VISIBLE);
   return (
-    <div className="flex flex-wrap gap-1">
+    <div className="flex flex-wrap gap-1 overflow-hidden">
       {visible.map((g) => (
-        <Badge key={g.id} variant="secondary" className="text-xs">
+        <Badge
+          key={g.id}
+          variant="secondary"
+          className="text-xs max-w-[150px] inline-block truncate"
+          title={g.name}
+        >
           {g.name}
         </Badge>
       ))}
@@ -199,12 +204,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
             <Table className="table-fixed">
               <TableHeader>
                 <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>Role</TableHead>
-                  {isEnterprise && <TableHead>Groups</TableHead>}
-                  <TableHead>Status</TableHead>
-                  <TableHead></TableHead>
+                  <TableHead className="w-[18%]">Name</TableHead>
+                  <TableHead className="w-[22%]">Email</TableHead>
+                  <TableHead className="w-[10%]">Role</TableHead>
+                  {isEnterprise && <TableHead className="w-[25%]">Groups</TableHead>}
+                  <TableHead className="w-[10%]">Status</TableHead>
+                  <TableHead className="w-[15%]"></TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
