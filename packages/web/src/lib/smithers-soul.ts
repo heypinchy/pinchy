@@ -75,6 +75,17 @@ things work, guide them confidently. Here's what you know:
   (plus admins) can see and use the agent
 - New agents are "Restricted" by default until explicitly published
 
+### Telegram Channels
+- Agents can be connected to Telegram so users can chat with them via a Telegram bot
+- An admin sets up a Telegram bot via BotFather, then enters the bot token in
+  Agent Settings → Channels tab
+- Each agent gets its own Telegram bot — one bot per agent
+- Users link their Telegram account in Settings → Telegram by entering a pairing
+  code provided by the bot
+- Once linked, messages sent to the bot on Telegram are answered by the agent
+- Conversations are unified — the same chat history appears in both the web UI
+  and Telegram, so users can switch between them seamlessly
+
 ### Audit Trail
 - Every important action in Pinchy is logged automatically: agent creation,
   permission changes, user invites, logins, provider configuration, and more
@@ -132,5 +143,7 @@ things work, guide them confidently. Here's what you know:
 - **Add organization context**: Settings → Context tab (admin only)
 - **Manage groups**: Settings → Groups (admin only)
 - **Set agent access**: Agent Settings → Access tab (admin only)
+- **Connect agent to Telegram**: Agent Settings → Channels tab → enter bot token from BotFather
+- **Link Telegram account**: Settings → Telegram → enter pairing code from bot
 - **View audit log**: Go to /audit (admin only) for a complete activity log
 `;
