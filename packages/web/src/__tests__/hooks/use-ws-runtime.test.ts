@@ -7,6 +7,11 @@ let wsInstances: MockWebSocket[] = [];
 
 // Mock WebSocket
 class MockWebSocket {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -1203,6 +1208,92 @@ describe("useWsRuntime", () => {
 
       // Should be empty — agent-1's messages must not leak into agent-2
       expect(result.current.runtime.messages).toHaveLength(0);
+    });
+  });
+
+  describe("message queuing when disconnected", () => {
+    it("should queue message and send it when WebSocket becomes open", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      // WebSocket is still CONNECTING (readyState = 0)
+      ws.readyState = 0;
+
+      // User sends a message before connection is open
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello while connecting" }],
+          parentId: "root",
+        });
+      });
+
+      // Message should NOT have been sent yet (only history request attempt or nothing)
+      const messageSends = ws.send.mock.calls.filter(
+        (call: string[]) => JSON.parse(call[0]).type === "message"
+      );
+      expect(messageSends).toHaveLength(0);
+
+      // User message should still appear optimistically in messages
+      const messages = result.current.runtime.messages;
+      expect(messages).toHaveLength(1);
+      expect(messages[0].role).toBe("user");
+      expect(messages[0].content[0].text).toBe("Hello while connecting");
+
+      // Now the connection opens
+      ws.readyState = 1;
+      act(() => {
+        ws.onopen?.();
+      });
+
+      // The queued message should now be sent
+      const sentMessages = ws.send.mock.calls.filter(
+        (call: string[]) => JSON.parse(call[0]).type === "message"
+      );
+      expect(sentMessages).toHaveLength(1);
+      expect(JSON.parse(sentMessages[0][0]).content).toBe("Hello while connecting");
+    });
+
+    it("should send queued message after reconnect", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws1 = wsInstances[0];
+
+      // Connect first
+      ws1.readyState = 1;
+      act(() => {
+        ws1.onopen?.();
+      });
+
+      // Disconnect
+      ws1.readyState = 3; // CLOSED
+      act(() => {
+        ws1.onclose?.();
+      });
+
+      // User sends message while disconnected
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Sent while offline" }],
+          parentId: "root",
+        });
+      });
+
+      // Reconnect
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+
+      const ws2 = wsInstances[1];
+      ws2.readyState = 1;
+      act(() => {
+        ws2.onopen?.();
+      });
+
+      // The queued message should be sent on the new connection
+      const sentMessages = ws2.send.mock.calls.filter(
+        (call: string[]) => JSON.parse(call[0]).type === "message"
+      );
+      expect(sentMessages).toHaveLength(1);
+      expect(JSON.parse(sentMessages[0][0]).content).toBe("Sent while offline");
     });
   });
 
