@@ -12,6 +12,12 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import {
+  Tooltip as UiTooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { EnterpriseFeatureCard } from "@/components/enterprise-feature-card";
 import {
   ResponsiveContainer,
@@ -211,22 +217,34 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
             </select>
           )}
           {hasData && (
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={!enterprise}
-              title={!enterprise ? "Enterprise feature" : undefined}
-              onClick={() => {
-                if (!enterprise) return;
-                const params = new URLSearchParams();
-                params.set("format", "csv");
-                params.set("days", days === "all" ? "0" : String(days));
-                if (selectedAgent !== "all") params.set("agentId", selectedAgent);
-                window.open(`/api/usage/export?${params.toString()}`);
-              }}
-            >
-              Export CSV
-            </Button>
+            <TooltipProvider>
+              <UiTooltip>
+                <TooltipTrigger asChild>
+                  <span tabIndex={!enterprise ? 0 : undefined}>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={!enterprise}
+                      onClick={() => {
+                        if (!enterprise) return;
+                        const params = new URLSearchParams();
+                        params.set("format", "csv");
+                        params.set("days", days === "all" ? "0" : String(days));
+                        if (selectedAgent !== "all") params.set("agentId", selectedAgent);
+                        window.open(`/api/usage/export?${params.toString()}`);
+                      }}
+                    >
+                      Export CSV
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                {!enterprise && (
+                  <TooltipContent>
+                    <p>Enterprise feature</p>
+                  </TooltipContent>
+                )}
+              </UiTooltip>
+            </TooltipProvider>
           )}
         </div>
       </div>
@@ -311,7 +329,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                   <Line
                     type="monotone"
                     dataKey="outputTokens"
-                    stroke="oklch(0.62 0.01 60)"
+                    stroke="oklch(0.62 0.1 230)"
                     strokeWidth={2}
                     dot={false}
                     name="Output Tokens"
@@ -343,7 +361,16 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                     </TableHeader>
                     <TableBody>
                       {[...summary!.agents]
-                        .sort((a, b) => Number(b.totalCost ?? 0) - Number(a.totalCost ?? 0))
+                        .sort((a, b) => {
+                          const costDiff = Number(b.totalCost ?? 0) - Number(a.totalCost ?? 0);
+                          if (costDiff !== 0) return costDiff;
+                          return (
+                            Number(b.totalInputTokens ?? 0) +
+                            Number(b.totalOutputTokens ?? 0) -
+                            Number(a.totalInputTokens ?? 0) -
+                            Number(a.totalOutputTokens ?? 0)
+                          );
+                        })
                         .map((agent) => (
                           <TableRow key={agent.agentId}>
                             <TableCell>{agent.agentName}</TableCell>
@@ -384,7 +411,16 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                         </TableHeader>
                         <TableBody>
                           {[...byUser.users]
-                            .sort((a, b) => Number(b.totalCost ?? 0) - Number(a.totalCost ?? 0))
+                            .sort((a, b) => {
+                              const costDiff = Number(b.totalCost ?? 0) - Number(a.totalCost ?? 0);
+                              if (costDiff !== 0) return costDiff;
+                              return (
+                                Number(b.totalInputTokens ?? 0) +
+                                Number(b.totalOutputTokens ?? 0) -
+                                Number(a.totalInputTokens ?? 0) -
+                                Number(a.totalOutputTokens ?? 0)
+                              );
+                            })
                             .map((user) => (
                               <TableRow key={user.userId}>
                                 <TableCell>{user.userName}</TableCell>
