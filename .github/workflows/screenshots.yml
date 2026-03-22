@@ -8,7 +8,7 @@ on:
 jobs:
   capture:
     name: Capture screenshots
-    runs-on: ubuntu-latest
+    runs-on: macos-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +23,16 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Install Playwright Chromium
-        run: pnpm -C packages/web exec playwright install chromium --with-deps
+        run: pnpm -C packages/web exec playwright install chromium
+
+      - name: Start PostgreSQL
+        run: |
+          brew install postgresql@17
+          brew services start postgresql@17
+          sleep 3
+          /opt/homebrew/opt/postgresql@17/bin/createuser -s pinchy 2>/dev/null || true
+          /opt/homebrew/opt/postgresql@17/bin/createdb -O pinchy pinchy 2>/dev/null || true
+          /opt/homebrew/opt/postgresql@17/bin/psql -c "ALTER USER pinchy PASSWORD 'pinchy_dev';" pinchy
 
       - name: Generate enterprise key for screenshots
         id: license
@@ -33,12 +42,26 @@ jobs:
             --org "Acme Corp (Screenshots)" --type trial --days 14)
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
-      - name: Start Pinchy stack
-        run: docker compose up --build -d
+      - name: Build and start Pinchy
+        run: |
+          cd packages/web
+          pnpm build
+          pnpm start &
+          # Wait for Pinchy to be ready
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7777/api/health > /dev/null 2>&1; then
+              echo "Pinchy is ready"
+              break
+            fi
+            sleep 2
+          done
         env:
+          DATABASE_URL: postgresql://pinchy:pinchy_dev@localhost:5432/pinchy
           BETTER_AUTH_SECRET: screenshot-session-secret
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
           PINCHY_ENTERPRISE_KEY: ${{ steps.license.outputs.token }}
+          OPENCLAW_GATEWAY_URL: ws://localhost:18789
+          PORT: 7777
 
       - name: Seed demo data
         run: ./screenshots/seed.sh
@@ -86,7 +109,3 @@ jobs:
             -f event_type=screenshots-updated \
             -f "client_payload[run_id]=${{ github.run_id }}" \
             || echo "⚠️ Website dispatch failed (token may not be configured)"
-
-      - name: Tear down
-        if: always()
-        run: docker compose down -v

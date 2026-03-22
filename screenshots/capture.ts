@@ -55,7 +55,7 @@ async function getAgentId(page: Page, name: string): Promise<string | null> {
 }
 
 test.describe("Feature screenshots", () => {
-  test.use({ viewport: VIEWPORT });
+  test.use({ viewport: VIEWPORT, deviceScaleFactor: 2 });
 
   test.beforeEach(async ({ page }) => {
     await login(page);
