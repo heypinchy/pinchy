@@ -267,17 +267,6 @@ describe("UsageDashboard", () => {
       });
     }
 
-    it("should not show 'By User' tab when not enterprise", async () => {
-      mockBothEndpoints();
-      render(<UsageDashboard />);
-
-      await waitFor(() => {
-        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
-      });
-
-      expect(screen.queryByRole("tab", { name: "By User" })).not.toBeInTheDocument();
-    });
-
     it("should show 'By User' tab when enterprise", async () => {
       mockBothEndpoints();
       render(<UsageDashboard isEnterprise />);
@@ -325,18 +314,7 @@ describe("UsageDashboard", () => {
       expect(screen.getByText("$1.05")).toBeInTheDocument();
     });
 
-    it("should show 'Export CSV' button when enterprise", async () => {
-      mockBothEndpoints();
-      render(<UsageDashboard isEnterprise />);
-
-      await waitFor(() => {
-        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
-      });
-
-      expect(screen.getByRole("button", { name: "Export CSV" })).toBeInTheDocument();
-    });
-
-    it("should not show 'Export CSV' button when not enterprise", async () => {
+    it("should show 'By User' tab even when not enterprise", async () => {
       mockBothEndpoints();
       render(<UsageDashboard />);
 
@@ -344,7 +322,48 @@ describe("UsageDashboard", () => {
         expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
       });
 
-      expect(screen.queryByRole("button", { name: "Export CSV" })).not.toBeInTheDocument();
+      expect(screen.getByRole("tab", { name: "By User" })).toBeInTheDocument();
+    });
+
+    it("should show enterprise feature card when 'By User' tab clicked without enterprise", async () => {
+      mockBothEndpoints();
+      const user = userEvent.setup();
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      await user.click(screen.getByRole("tab", { name: "By User" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Enterprise")).toBeInTheDocument();
+      });
+    });
+
+    it("should show 'Export CSV' button always but disabled without enterprise", async () => {
+      mockBothEndpoints();
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      const exportBtn = screen.getByRole("button", { name: "Export CSV" });
+      expect(exportBtn).toBeInTheDocument();
+      expect(exportBtn).toBeDisabled();
+    });
+
+    it("should enable 'Export CSV' button when enterprise", async () => {
+      mockBothEndpoints();
+      render(<UsageDashboard isEnterprise />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      const exportBtn = screen.getByRole("button", { name: "Export CSV" });
+      expect(exportBtn).toBeEnabled();
     });
 
     it("should use correct URL for export button", async () => {

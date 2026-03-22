@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { EnterpriseFeatureCard } from "@/components/enterprise-feature-card";
 import {
   ResponsiveContainer,
   LineChart,
@@ -200,11 +201,14 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
               ))}
             </select>
           )}
-          {isEnterprise && hasData && (
+          {hasData && (
             <Button
               variant="outline"
               size="sm"
+              disabled={!isEnterprise}
+              title={!isEnterprise ? "Enterprise feature" : undefined}
               onClick={() => {
+                if (!isEnterprise) return;
                 const params = new URLSearchParams();
                 params.set("format", "csv");
                 params.set("days", days === "all" ? "0" : String(days));
@@ -311,7 +315,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
           <Tabs value={activeTab} onValueChange={handleTabChange}>
             <TabsList>
               <TabsTrigger value="by-agent">By Agent</TabsTrigger>
-              {isEnterprise && <TabsTrigger value="by-user">By User</TabsTrigger>}
+              <TabsTrigger value="by-user">By User</TabsTrigger>
             </TabsList>
             <TabsContent value="by-agent">
               <Card>
@@ -350,8 +354,8 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
                 </CardContent>
               </Card>
             </TabsContent>
-            {isEnterprise && (
-              <TabsContent value="by-user">
+            <TabsContent value="by-user">
+              {isEnterprise ? (
                 <Card>
                   <CardHeader>
                     <CardTitle>Per-User Breakdown</CardTitle>
@@ -391,8 +395,13 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
                     )}
                   </CardContent>
                 </Card>
-              </TabsContent>
-            )}
+              ) : (
+                <EnterpriseFeatureCard
+                  feature="Per-User Breakdown"
+                  description="See which team members use the most tokens and which agents they prefer. Identify power users and optimize costs per person."
+                />
+              )}
+            </TabsContent>
           </Tabs>
         </>
       )}
