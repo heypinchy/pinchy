@@ -32,7 +32,9 @@ async function getModelPricing(
     return cachedPricing.get(modelId) ?? null;
   }
 
-  const result = await openclawClient.config.get();
+  const result = (await openclawClient.config.get()) as {
+    config?: { models?: { providers?: Record<string, unknown> } };
+  };
   const providers = result?.config?.models?.providers ?? {};
 
   const pricingMap = new Map<string, { input: number; output: number }>();
@@ -57,8 +59,18 @@ export async function recordUsage(params: RecordUsageParams): Promise<void> {
     const { openclawClient, userId, agentId, agentName, sessionKey } = params;
 
     // Get current cumulative token counts from OpenClaw
-    const { sessions } = await openclawClient.sessions.list();
-    const session = sessions.find((s: { key: string }) => s.key === sessionKey);
+    const listResult = (await openclawClient.sessions.list()) as {
+      sessions?: Array<{
+        key: string;
+        inputTokens?: number;
+        outputTokens?: number;
+        cacheReadTokens?: number;
+        cacheWriteTokens?: number;
+        model?: string;
+      }>;
+    };
+    const sessions = listResult?.sessions ?? [];
+    const session = sessions.find((s) => s.key === sessionKey);
 
     if (!session) {
       return;
