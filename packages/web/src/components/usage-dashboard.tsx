@@ -11,6 +11,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   ResponsiveContainer,
   LineChart,
@@ -45,8 +46,24 @@ interface TimeseriesPoint {
   cost: string | null;
 }
 
+interface UserSummary {
+  userId: string;
+  userName: string;
+  totalInputTokens: string | null;
+  totalOutputTokens: string | null;
+  totalCost: string | null;
+}
+
+interface ByUserResponse {
+  users: UserSummary[];
+}
+
 interface TimeseriesResponse {
   points: TimeseriesPoint[];
+}
+
+interface UsageDashboardProps {
+  isEnterprise?: boolean;
 }
 
 function formatTokens(n: number): string {
@@ -68,12 +85,14 @@ const PERIOD_OPTIONS: { label: string; value: DaysOption }[] = [
   { label: "All", value: "all" },
 ];
 
-export function UsageDashboard() {
+export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
   const [days, setDays] = useState<DaysOption>(30);
   const [selectedAgent, setSelectedAgent] = useState("all");
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
   const [timeseries, setTimeseries] = useState<TimeseriesResponse | null>(null);
   const [knownAgents, setKnownAgents] = useState<AgentSummary[]>([]);
+  const [byUser, setByUser] = useState<ByUserResponse | null>(null);
+  const [activeTab, setActiveTab] = useState("by-agent");
 
   useEffect(() => {
     let cancelled = false;
@@ -101,16 +120,41 @@ export function UsageDashboard() {
     };
   }, [days, selectedAgent]);
 
+  useEffect(() => {
+    if (!isEnterprise || activeTab !== "by-user") return;
+    let cancelled = false;
+    const params = new URLSearchParams();
+    if (days !== "all") params.set("days", String(days));
+    if (selectedAgent !== "all") params.set("agentId", selectedAgent);
+    const qs = params.toString() ? `?${params.toString()}` : "";
+
+    fetch(`/api/usage/by-user${qs}`)
+      .then((r) => r.json())
+      .then((data) => {
+        if (!cancelled) setByUser(data);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [isEnterprise, activeTab, days, selectedAgent]);
+
   function handleDaysChange(value: DaysOption) {
     setSummary(null);
     setTimeseries(null);
+    setByUser(null);
     setDays(value);
   }
 
   function handleAgentChange(value: string) {
     setSummary(null);
     setTimeseries(null);
+    setByUser(null);
     setSelectedAgent(value);
+  }
+
+  function handleTabChange(value: string) {
+    setActiveTab(value);
   }
 
   const loading = summary === null || timeseries === null;
@@ -219,39 +263,117 @@ export function UsageDashboard() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Per-Agent Breakdown</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Agent</TableHead>
-                    <TableHead className="text-right">Input Tokens</TableHead>
-                    <TableHead className="text-right">Output Tokens</TableHead>
-                    <TableHead className="text-right">Cost</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {summary!.agents.map((agent) => (
-                    <TableRow key={agent.agentId}>
-                      <TableCell>{agent.agentName}</TableCell>
-                      <TableCell className="text-right">
-                        {formatTokens(Number(agent.totalInputTokens ?? 0))}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {formatTokens(Number(agent.totalOutputTokens ?? 0))}
-                      </TableCell>
-                      <TableCell className="text-right">
-                        {formatCost(Number(agent.totalCost ?? 0))}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
+          <Tabs value={activeTab} onValueChange={handleTabChange}>
+            <TabsList>
+              <TabsTrigger value="by-agent">By Agent</TabsTrigger>
+              {isEnterprise && <TabsTrigger value="by-user">By User</TabsTrigger>}
+            </TabsList>
+            <TabsContent value="by-agent">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Per-Agent Breakdown</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Agent</TableHead>
+                        <TableHead className="text-right">Input Tokens</TableHead>
+                        <TableHead className="text-right">Output Tokens</TableHead>
+                        <TableHead className="text-right">Cost</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {summary!.agents.map((agent) => (
+                        <TableRow key={agent.agentId}>
+                          <TableCell>{agent.agentName}</TableCell>
+                          <TableCell className="text-right">
+                            {formatTokens(Number(agent.totalInputTokens ?? 0))}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {formatTokens(Number(agent.totalOutputTokens ?? 0))}
+                          </TableCell>
+                          <TableCell className="text-right">
+                            {formatCost(Number(agent.totalCost ?? 0))}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            </TabsContent>
+            {isEnterprise && (
+              <TabsContent value="by-user">
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Per-User Breakdown</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {byUser === null ? (
+                      <p>Loading...</p>
+                    ) : (
+                      <Table>
+                        <TableHeader>
+                          <TableRow>
+                            <TableHead>User</TableHead>
+                            <TableHead className="text-right">Input Tokens</TableHead>
+                            <TableHead className="text-right">Output Tokens</TableHead>
+                            <TableHead className="text-right">Cost</TableHead>
+                          </TableRow>
+                        </TableHeader>
+                        <TableBody>
+                          {byUser.users.map((user) => (
+                            <TableRow key={user.userId}>
+                              <TableCell>{user.userName}</TableCell>
+                              <TableCell className="text-right">
+                                {formatTokens(Number(user.totalInputTokens ?? 0))}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {formatTokens(Number(user.totalOutputTokens ?? 0))}
+                              </TableCell>
+                              <TableCell className="text-right">
+                                {formatCost(Number(user.totalCost ?? 0))}
+                              </TableCell>
+                            </TableRow>
+                          ))}
+                        </TableBody>
+                      </Table>
+                    )}
+                  </CardContent>
+                </Card>
+              </TabsContent>
+            )}
+          </Tabs>
+
+          {isEnterprise && (
+            <div className="flex gap-2 mt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const params = new URLSearchParams();
+                  params.set("format", "csv");
+                  if (days !== "all") params.set("days", String(days));
+                  window.open(`/api/usage/export?${params.toString()}`);
+                }}
+              >
+                Export CSV
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  const params = new URLSearchParams();
+                  params.set("format", "json");
+                  if (days !== "all") params.set("days", String(days));
+                  window.open(`/api/usage/export?${params.toString()}`);
+                }}
+              >
+                Export JSON
+              </Button>
+            </div>
+          )}
         </>
       )}
     </div>

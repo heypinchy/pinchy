@@ -234,6 +234,165 @@ describe("UsageDashboard", () => {
     expect(screen.getByRole("button", { name: "All" })).toBeInTheDocument();
   });
 
+  describe("enterprise features", () => {
+    const mockByUserResponse = {
+      users: [
+        {
+          userId: "user-1",
+          userName: "Alice",
+          totalInputTokens: "300000",
+          totalOutputTokens: "400000",
+          totalCost: "2.10",
+        },
+        {
+          userId: "user-2",
+          userName: "Bob",
+          totalInputTokens: "200000",
+          totalOutputTokens: "150000",
+          totalCost: "1.05",
+        },
+      ],
+    };
+
+    function mockAllEndpoints() {
+      vi.mocked(global.fetch).mockImplementation((url) => {
+        const urlStr = String(url);
+        if (urlStr.includes("/api/usage/summary")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => mockSummaryResponse,
+          } as Response);
+        }
+        if (urlStr.includes("/api/usage/timeseries")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => mockTimeseriesResponse,
+          } as Response);
+        }
+        if (urlStr.includes("/api/usage/by-user")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => mockByUserResponse,
+          } as Response);
+        }
+        return Promise.resolve({
+          ok: false,
+          json: async () => ({}),
+        } as Response);
+      });
+    }
+
+    it("should not show 'By User' tab when not enterprise", async () => {
+      mockBothEndpoints();
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      expect(screen.queryByRole("tab", { name: "By User" })).not.toBeInTheDocument();
+    });
+
+    it("should show 'By User' tab when enterprise", async () => {
+      mockBothEndpoints();
+      render(<UsageDashboard isEnterprise />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      expect(screen.getByRole("tab", { name: "By User" })).toBeInTheDocument();
+    });
+
+    it("should fetch from /api/usage/by-user when 'By User' tab is clicked", async () => {
+      mockAllEndpoints();
+      const user = userEvent.setup();
+      render(<UsageDashboard isEnterprise />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      await user.click(screen.getByRole("tab", { name: "By User" }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/usage/by-user"));
+      });
+    });
+
+    it("should display per-user table with user names and values", async () => {
+      mockAllEndpoints();
+      const user = userEvent.setup();
+      render(<UsageDashboard isEnterprise />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      await user.click(screen.getByRole("tab", { name: "By User" }));
+
+      await waitFor(() => {
+        expect(screen.getByText("Alice")).toBeInTheDocument();
+        expect(screen.getByText("Bob")).toBeInTheDocument();
+      });
+
+      expect(screen.getByText("$2.10")).toBeInTheDocument();
+      expect(screen.getByText("$1.05")).toBeInTheDocument();
+    });
+
+    it("should show 'Export CSV' button when enterprise", async () => {
+      mockBothEndpoints();
+      render(<UsageDashboard isEnterprise />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      expect(screen.getByRole("button", { name: "Export CSV" })).toBeInTheDocument();
+    });
+
+    it("should not show 'Export CSV' button when not enterprise", async () => {
+      mockBothEndpoints();
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      expect(screen.queryByRole("button", { name: "Export CSV" })).not.toBeInTheDocument();
+    });
+
+    it("should show 'Export JSON' button when enterprise", async () => {
+      mockBothEndpoints();
+      render(<UsageDashboard isEnterprise />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      expect(screen.getByRole("button", { name: "Export JSON" })).toBeInTheDocument();
+    });
+
+    it("should use correct URL for export buttons", async () => {
+      mockBothEndpoints();
+      const windowOpenSpy = vi.spyOn(window, "open").mockImplementation(() => null);
+      const user = userEvent.setup();
+      render(<UsageDashboard isEnterprise />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      await user.click(screen.getByRole("button", { name: "Export CSV" }));
+      expect(windowOpenSpy).toHaveBeenCalledWith("/api/usage/export?format=csv&days=30");
+
+      await user.click(screen.getByRole("button", { name: "Export JSON" }));
+      expect(windowOpenSpy).toHaveBeenCalledWith("/api/usage/export?format=json&days=30");
+
+      windowOpenSpy.mockRestore();
+    });
+  });
+
   it("should render agent filter dropdown with 'All Agents' default", async () => {
     mockBothEndpoints();
     render(<UsageDashboard />);

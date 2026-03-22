@@ -19,6 +19,10 @@ vi.mock("@/components/usage-dashboard", () => ({
   UsageDashboard: () => <div data-testid="usage-dashboard">Usage Dashboard</div>,
 }));
 
+vi.mock("@/lib/enterprise", () => ({
+  isEnterprise: vi.fn().mockResolvedValue(false),
+}));
+
 import UsagePage from "@/app/(app)/usage/page";
 
 describe("UsagePage (server component)", () => {
