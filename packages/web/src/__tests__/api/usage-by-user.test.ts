@@ -152,6 +152,15 @@ describe("GET /api/usage/by-user", () => {
     expect(mockLeftJoin).toHaveBeenCalledWith({ id: "id", name: "name" }, expect.anything());
   });
 
+  it("returns 400 for invalid days parameter", async () => {
+    const request = new NextRequest("http://localhost:7777/api/usage/by-user?days=abc");
+    const response = await GET(request);
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toEqual({ error: "Invalid days parameter" });
+  });
+
   it("supports agentId filter", async () => {
     mockGroupBy.mockResolvedValueOnce([sampleUsers[0]]);
 

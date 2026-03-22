@@ -166,6 +166,24 @@ describe("GET /api/usage/export", () => {
     expect(lines[1]).toContain("1000");
   });
 
+  it("returns 400 for invalid days parameter", async () => {
+    const request = new NextRequest("http://localhost:7777/api/usage/export?days=abc");
+    const response = await GET(request);
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toEqual({ error: "Invalid days parameter" });
+  });
+
+  it("limits export to 100000 rows", async () => {
+    mockLimit.mockResolvedValueOnce(sampleRecords);
+
+    const request = new NextRequest("http://localhost:7777/api/usage/export");
+    await GET(request);
+
+    expect(mockLimit).toHaveBeenCalledWith(100000);
+  });
+
   it("supports days filter", async () => {
     mockLimit.mockResolvedValueOnce(sampleRecords);
 

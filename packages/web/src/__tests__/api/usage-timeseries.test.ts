@@ -135,6 +135,15 @@ describe("GET /api/usage/timeseries", () => {
     expect(daysDiff).toBeCloseTo(30, 0);
   });
 
+  it("returns 400 for invalid days parameter", async () => {
+    const request = new NextRequest("http://localhost:7777/api/usage/timeseries?days=abc");
+    const response = await GET(request);
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toEqual({ error: "Invalid days parameter" });
+  });
+
   it("returns empty data when no records", async () => {
     mockOrderBy.mockResolvedValueOnce([]);
 

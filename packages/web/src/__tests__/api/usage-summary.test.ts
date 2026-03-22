@@ -180,6 +180,15 @@ describe("GET /api/usage/summary", () => {
     expect(eq).toHaveBeenCalledWith("agent_id", "a1");
   });
 
+  it("returns 400 for invalid days parameter", async () => {
+    const request = new NextRequest("http://localhost:7777/api/usage/summary?days=abc");
+    const response = await GET(request);
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body).toEqual({ error: "Invalid days parameter" });
+  });
+
   it("returns empty agents array when no data", async () => {
     mockGroupBy.mockResolvedValueOnce([]);
 
