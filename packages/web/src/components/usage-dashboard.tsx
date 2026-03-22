@@ -290,7 +290,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
                   <Line
                     type="monotone"
                     dataKey="inputTokens"
-                    stroke="oklch(0.65 0.17 55)"
+                    stroke="oklch(0.65 0.195 50)"
                     strokeWidth={2}
                     dot={false}
                     name="Input Tokens"
