@@ -347,18 +347,7 @@ describe("UsageDashboard", () => {
       expect(screen.queryByRole("button", { name: "Export CSV" })).not.toBeInTheDocument();
     });
 
-    it("should show 'Export JSON' button when enterprise", async () => {
-      mockBothEndpoints();
-      render(<UsageDashboard isEnterprise />);
-
-      await waitFor(() => {
-        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
-      });
-
-      expect(screen.getByRole("button", { name: "Export JSON" })).toBeInTheDocument();
-    });
-
-    it("should use correct URL for export buttons", async () => {
+    it("should use correct URL for export button", async () => {
       mockBothEndpoints();
       const windowOpenSpy = vi.spyOn(window, "open").mockImplementation(() => null);
       const user = userEvent.setup();
@@ -370,9 +359,6 @@ describe("UsageDashboard", () => {
 
       await user.click(screen.getByRole("button", { name: "Export CSV" }));
       expect(windowOpenSpy).toHaveBeenCalledWith("/api/usage/export?format=csv&days=30");
-
-      await user.click(screen.getByRole("button", { name: "Export JSON" }));
-      expect(windowOpenSpy).toHaveBeenCalledWith("/api/usage/export?format=json&days=30");
 
       windowOpenSpy.mockRestore();
     });

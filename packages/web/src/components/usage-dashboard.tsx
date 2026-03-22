@@ -200,6 +200,21 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
               ))}
             </select>
           )}
+          {isEnterprise && hasData && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                const params = new URLSearchParams();
+                params.set("format", "csv");
+                params.set("days", days === "all" ? "0" : String(days));
+                if (selectedAgent !== "all") params.set("agentId", selectedAgent);
+                window.open(`/api/usage/export?${params.toString()}`);
+              }}
+            >
+              Export CSV
+            </Button>
+          )}
         </div>
       </div>
 
@@ -379,37 +394,6 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
               </TabsContent>
             )}
           </Tabs>
-
-          {isEnterprise && (
-            <div className="flex gap-2 mt-4">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  const params = new URLSearchParams();
-                  params.set("format", "csv");
-                  params.set("days", days === "all" ? "0" : String(days));
-                  if (selectedAgent !== "all") params.set("agentId", selectedAgent);
-                  window.open(`/api/usage/export?${params.toString()}`);
-                }}
-              >
-                Export CSV
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  const params = new URLSearchParams();
-                  params.set("format", "json");
-                  params.set("days", days === "all" ? "0" : String(days));
-                  if (selectedAgent !== "all") params.set("agentId", selectedAgent);
-                  window.open(`/api/usage/export?${params.toString()}`);
-                }}
-              >
-                Export JSON
-              </Button>
-            </div>
-          )}
         </>
       )}
     </div>
