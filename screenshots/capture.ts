@@ -145,14 +145,6 @@ test.describe("Feature screenshots", () => {
       await page.locator("text=Users").first().click().catch(() => {});
     }
     await page.waitForTimeout(1500);
-    // Inject CSS to fix overflow clipping on the Revoke button
-    await page.addStyleTag({
-      content: `
-        * { overflow: visible !important; overflow-x: visible !important; }
-        table { table-layout: auto !important; width: auto !important; }
-      `,
-    });
-    await page.waitForTimeout(300);
     await screenshot(page, "user-management.png");
   });
 
