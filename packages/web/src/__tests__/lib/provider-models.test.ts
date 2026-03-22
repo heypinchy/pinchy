@@ -19,8 +19,8 @@ vi.mock("@/lib/providers", () => ({
     google: {
       name: "Google",
       settingsKey: "google_api_key",
-      envVar: "GOOGLE_API_KEY",
-      defaultModel: "google/gemini-2.0-flash",
+      envVar: "GEMINI_API_KEY",
+      defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
   },
@@ -198,7 +198,7 @@ describe("fetchProviderModels", () => {
         JSON.stringify({
           models: [
             {
-              name: "models/gemini-2.0-flash",
+              name: "models/gemini-2.5-flash",
               displayName: "Gemini 2.0 Flash",
               supportedGenerationMethods: ["generateContent"],
             },
@@ -216,7 +216,7 @@ describe("fetchProviderModels", () => {
     const result = await fetchProviderModels();
     const google = result.find((p) => p.id === "google");
     expect(google).toBeDefined();
-    expect(google!.models).toEqual([{ id: "google/gemini-2.0-flash", name: "Gemini 2.0 Flash" }]);
+    expect(google!.models).toEqual([{ id: "google/gemini-2.5-flash", name: "Gemini 2.0 Flash" }]);
   });
 
   it("uses fallback models when API returns non-ok status", async () => {
@@ -276,5 +276,32 @@ describe("fetchProviderModels", () => {
     await fetchProviderModels();
 
     expect(fetch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("vision capability detection", () => {
+  it("marks anthropic, openai, google as vision-capable providers", async () => {
+    const { VISION_CAPABLE_PROVIDERS } = await import("@/lib/provider-models");
+    expect(VISION_CAPABLE_PROVIDERS).toContain("anthropic");
+    expect(VISION_CAPABLE_PROVIDERS).toContain("openai");
+    expect(VISION_CAPABLE_PROVIDERS).toContain("google");
+  });
+
+  it("detects vision capability from model ID", async () => {
+    const { isModelVisionCapable } = await import("@/lib/provider-models");
+
+    // Cloud providers are vision-capable
+    expect(isModelVisionCapable("anthropic/claude-sonnet-4-6")).toBe(true);
+    expect(isModelVisionCapable("openai/gpt-4o")).toBe(true);
+    expect(isModelVisionCapable("google/gemini-2.5-flash")).toBe(true);
+
+    // Unknown provider → not vision-capable (conservative default)
+    expect(isModelVisionCapable("ollama/llama3.1:8b")).toBe(false);
+    expect(isModelVisionCapable("unknown/model")).toBe(false);
+
+    // Known vision-capable Ollama models
+    expect(isModelVisionCapable("ollama/llava")).toBe(true);
+    expect(isModelVisionCapable("ollama/llama3.2-vision")).toBe(true);
+    expect(isModelVisionCapable("ollama/qwen2.5-vl:7b")).toBe(true);
   });
 });

@@ -252,6 +252,95 @@ describe("pinchy-audit plugin", () => {
     });
   });
 
+  describe("sensitive data sanitization", () => {
+    it("redacts sensitive key names in params before posting", async () => {
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const afterHook = mockOn.mock.calls.find((c) => c[0] === "after_tool_call")?.[1];
+
+      await afterHook(
+        {
+          toolName: "http_request",
+          params: { url: "https://api.example.com", apiKey: "sk-live-secret123" },
+          result: "ok",
+          durationMs: 50,
+        },
+        {
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:user-user-1",
+          toolName: "http_request",
+        }
+      );
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      expect(body.params.apiKey).toBe("[REDACTED]");
+      expect(body.params.url).toBe("https://api.example.com");
+    });
+
+    it("redacts secret patterns in result strings before posting", async () => {
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const afterHook = mockOn.mock.calls.find((c) => c[0] === "after_tool_call")?.[1];
+
+      await afterHook(
+        {
+          toolName: "pinchy_read",
+          params: { path: "/data/.env" },
+          result: "API_KEY=sk-abcdefghijklmnopqrstuvwxyz\nAPP_NAME=pinchy",
+          durationMs: 10,
+        },
+        {
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:user-user-1",
+          toolName: "pinchy_read",
+        }
+      );
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      expect(body.result).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+      expect(body.result).toContain("[REDACTED]");
+    });
+
+    it("also sanitizes params in before_tool_call events", async () => {
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+
+      await beforeHook(
+        {
+          toolName: "http_request",
+          params: { password: "super-secret" },
+        },
+        {
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:user-user-1",
+          toolName: "http_request",
+        }
+      );
+
+      const body = JSON.parse((fetch as any).mock.calls[0][1].body);
+      expect(body.params.password).toBe("[REDACTED]");
+    });
+  });
+
   it("does not throw when audit endpoint fails", async () => {
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
 

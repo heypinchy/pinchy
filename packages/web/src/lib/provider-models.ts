@@ -1,6 +1,9 @@
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
 
+// Re-export vision utilities for backwards compatibility
+export { VISION_CAPABLE_PROVIDERS, isModelVisionCapable } from "@/lib/model-vision";
+
 let cachedResult: ProviderModels[] | null = null;
 let cachedAt: number = 0;
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
@@ -33,7 +36,7 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "openai/o1", name: "o1" },
   ],
   google: [
-    { id: "google/gemini-2.0-flash", name: "Gemini 2.0 Flash" },
+    { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
     { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
   ],
 };

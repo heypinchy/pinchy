@@ -1,0 +1,109 @@
+---
+title: Context Management
+description: How Pinchy uses persistent user and organization context to give agents the background they need for every conversation.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+## What is context?
+
+Context is persistent background information that Pinchy injects into every agent conversation automatically. Instead of repeating who you are, what your role is, or how your company works every time you chat with an agent, you write it down once and every conversation starts with that knowledge already in place.
+
+There are two types of context:
+
+- **User context** — personal information about you: your name, role, preferred language, communication style, and how you work.
+- **Organization context** — shared information about your company: team structure, terminology, conventions, and domain knowledge.
+
+Both are stored as Markdown, so you can structure them with headings, lists, and formatting.
+
+## How context reaches agents
+
+Context flows to agents through two complementary paths: a file written into the agent's workspace, and an extra system prompt injected at chat time.
+
+### Workspace files
+
+When you save context, Pinchy writes a `USER.md` file into the relevant agent workspaces on the OpenClaw runtime. This file is part of the agent's working environment — the agent can reference it like any other file in its workspace.
+
+The routing rules are straightforward:
+
+- **User context** is written to your **personal agent** (Smithers) workspace.
+- **Organization context** is written to all **shared agent** workspaces.
+
+This means your personal Smithers knows about you specifically, while shared agents know about the organization as a whole.
+
+### Extra system prompt
+
+In addition to the workspace file, Pinchy injects user context into every conversation via an extra system prompt. When you send a message to a shared agent, the agent receives your name and your personal context as part of the system prompt — so it knows who it is talking to, even though the workspace file contains org context.
+
+<Aside>
+  Personal agents do not receive user context via the extra system prompt,
+  because they already have it in their `USER.md` workspace file. This avoids
+  duplication.
+</Aside>
+
+## Setting context manually
+
+Both types of context are editable in **Settings > Context**.
+
+### User context
+
+Every user can edit their own user context. This section is labeled **"Your Context"** and contains information about you personally. Typical content includes:
+
+- Your name and role
+- Preferred language and communication style
+- Tools and technologies you use
+- How you like responses structured
+
+### Organization context
+
+Only admins can see and edit the organization context section, labeled **"Organization Context"**. This applies to all shared agents and typically includes:
+
+- Company name and industry
+- Team structure and key people
+- Internal terminology and abbreviations
+- Conventions and standards
+
+<Aside type="tip">
+  Changes take effect on your next conversation. Active conversations continue
+  with the context they started with.
+</Aside>
+
+## How Smithers collects context during onboarding
+
+When a new user first opens Pinchy, their personal Smithers agent has an onboarding mission: learn about the user through natural conversation. Smithers asks about your role, preferred language, and communication style, then uses the `pinchy-context` plugin to save what it learned as your user context.
+
+For admin users, Smithers goes further — after saving user context, it asks about the organization and saves that as org context too.
+
+Once onboarding is complete, the onboarding instructions are removed from Smithers automatically, and the saved context is used for all future conversations. Users can review and refine what Smithers wrote by going to **Settings > Context** at any time.
+
+For more on the onboarding flow, see the [Getting Started](/guides/getting-started/) guide.
+
+## The pinchy-context plugin
+
+The onboarding flow is powered by the `pinchy-context` OpenClaw plugin, which provides two tools to agents:
+
+| Tool                         | What it does                                                       |
+| ---------------------------- | ------------------------------------------------------------------ |
+| **pinchy_save_user_context** | Saves a Markdown summary of the user's personal context            |
+| **pinchy_save_org_context**  | Saves a Markdown summary of the organization context (admins only) |
+
+These tools call back into Pinchy's internal API to store the context in the database, then trigger a workspace sync so the updated `USER.md` files are written immediately. Only agents configured with these tools can use them — they are not available to arbitrary agents.
+
+## Admin vs. user permissions
+
+| Action                    | Admin | User |
+| ------------------------- | ----- | ---- |
+| Edit own user context     | Yes   | Yes  |
+| View organization context | Yes   | No   |
+| Edit organization context | Yes   | No   |
+
+Users only ever see and edit their own personal context. Organization context is an admin responsibility — when an admin updates it, the change propagates to all shared agent workspaces automatically.
+
+## Storage and syncing
+
+Context is stored in two places:
+
+1. **Database** — user context lives on the user record; org context lives in the settings table. This is the source of truth.
+2. **Workspace files** — `USER.md` files in each agent's OpenClaw workspace. These are derived from the database and re-synced whenever context is saved.
+
+This dual storage means agents always have fast access to context (via local files), while the database ensures context survives container restarts and workspace rebuilds.

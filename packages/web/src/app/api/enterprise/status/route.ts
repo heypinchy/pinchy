@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
-import { isEnterprise } from "@/lib/enterprise";
+import { getLicenseStatus, isKeyFromEnv } from "@/lib/enterprise";
 
 export async function GET() {
   const session = await getSession({ headers: await headers() });
@@ -9,6 +9,13 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const enterprise = await isEnterprise();
-  return NextResponse.json({ enterprise });
+  const status = await getLicenseStatus();
+  return NextResponse.json({
+    enterprise: status.active,
+    type: status.type ?? null,
+    org: status.org ?? null,
+    expiresAt: status.expiresAt?.toISOString() ?? null,
+    daysRemaining: status.daysRemaining ?? null,
+    managedByEnv: isKeyFromEnv(),
+  });
 }

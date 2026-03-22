@@ -33,6 +33,8 @@ The agent is created with an auto-generated avatar and you are taken to its chat
 
 Open the agent's settings by clicking the gear icon, then select the **Permissions** tab.
 
+![Permissions tab with safe tools and directory picker](/screenshots/agent-settings-permissions.png)
+
 Under **Safe Tools**, you will see that "List approved directories" and "Read approved files" are already enabled (because the Knowledge Base template includes them). Below the safe tools checkboxes, the **Allowed Directories** picker shows all directories found under `/data/`.
 
 Select the directories that contain the documents this agent should be able to read. For example, if you mounted your HR policies at `/data/hr-policies` and your engineering handbook at `/data/engineering`, select one or both.
@@ -44,8 +46,18 @@ Click **Save** to apply the permissions.
 Go back to the agent's chat and start asking questions. The agent can:
 
 - List files in the directories you selected
-- Read the contents of those files
+- Read the contents of those files, including **PDF documents**
 - Answer questions based on what it reads
+
+### PDF support
+
+Knowledge Base agents fully support PDF files:
+
+- **Text-based PDFs** — text is extracted directly, preserving structure and tables
+- **Scanned PDFs** — pages are analyzed using the configured AI model's vision capabilities (requires a vision-capable model)
+- **Mixed PDFs** — documents with both text and scanned pages are handled automatically
+
+For best results with scanned documents, use a vision-capable model (all Anthropic, OpenAI, and Google models support this). If you're using Ollama, choose a vision model like `llava` or `llama3.2-vision`. You'll see a warning in the Permissions tab if the selected model doesn't support vision.
 
 The agent **cannot**:
 

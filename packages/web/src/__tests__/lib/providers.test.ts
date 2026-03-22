@@ -75,7 +75,7 @@ describe("PROVIDERS", () => {
   it("should have default models for all providers", () => {
     expect(PROVIDERS.anthropic.defaultModel).toBe("anthropic/claude-haiku-4-5-20251001");
     expect(PROVIDERS.openai.defaultModel).toBe("openai/gpt-4o-mini");
-    expect(PROVIDERS.google.defaultModel).toBe("google/gemini-2.0-flash");
+    expect(PROVIDERS.google.defaultModel).toBe("google/gemini-2.5-flash");
   });
 
   it("should have settings keys for all providers", () => {

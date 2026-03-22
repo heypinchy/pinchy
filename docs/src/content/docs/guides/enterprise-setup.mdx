@@ -1,0 +1,91 @@
+---
+title: Enterprise Setup
+description: How to activate and manage Pinchy Enterprise features with a license key.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Pinchy Enterprise unlocks features like [Groups](/concepts/groups/), agent access control, and priority support. Activating it takes one step: enter a valid license key.
+
+## Getting a license key
+
+Contact us to get a license key:
+
+- **Trial key** — 14 days, all enterprise features. [Book a call](https://calendly.com/clemenshelm/pinchy-demo) or email [hey@clemenshelm.com](mailto:hey@clemenshelm.com).
+- **Paid key** — Annual license, renewable. Same contact.
+
+No credit card required for trials. No per-agent or per-message fees.
+
+## Activating your key
+
+There are two ways to enter your license key. Use whichever fits your workflow.
+
+### Option 1: Settings UI (recommended)
+
+1. Log in as an admin.
+2. Go to **Settings → License**.
+3. Paste your license key and click **Save**.
+
+The key is validated immediately. If valid, enterprise features activate instantly — no restart needed.
+
+### Option 2: Environment variable
+
+Set `PINCHY_ENTERPRISE_KEY` in your Docker Compose configuration:
+
+```yaml
+services:
+  pinchy:
+    environment:
+      - PINCHY_ENTERPRISE_KEY=eyJ...your-key-here
+```
+
+Then restart the container:
+
+```bash
+docker compose up -d
+```
+
+<Aside type="tip">
+  The environment variable takes priority over a key entered in the Settings UI.
+  If both are set, the env var wins.
+</Aside>
+
+## Verifying your key
+
+After entering a key, go to **Settings → License**. You should see:
+
+- **License type** — Trial or Paid
+- **Organization** — The name tied to your key
+- **Expiry date** — When the key expires
+- **Days remaining**
+
+The enterprise features (Groups tab, agent access control) should now be available.
+
+## What happens when a key expires
+
+Pinchy degrades gracefully. Nothing breaks:
+
+- Agents with **Restricted** visibility fall back to **All users** — everyone can access them.
+- Group assignments stay in the database but are not enforced.
+- The audit trail continues to work.
+- All data, agents, and configuration remain intact.
+
+Renew your key and permissions are restored instantly.
+
+<Aside type="note">
+  Admins see a warning banner when the key is close to expiring: 30 days before
+  for paid keys, 7 days for trial keys.
+</Aside>
+
+## Enterprise features
+
+| Feature                     | Description                                                      |
+| --------------------------- | ---------------------------------------------------------------- |
+| [Groups](/concepts/groups/) | Organize users into teams, scope agent access per group          |
+| Agent Access Control        | Set agents to "Restricted" visibility, assign to specific groups |
+| Role-Based Access Control   | Granular permissions per user, per agent, per action             |
+| Priority Support            | Direct access to the Pinchy team with priority response times    |
+
+## Offline validation
+
+License keys are validated locally using cryptographic signatures. No internet connection is required — Pinchy never phones home. This makes enterprise features fully compatible with air-gapped and offline deployments.

@@ -36,3 +36,4 @@ Pinchy is built with security as a core design principle:
 - **Two-tier access control** — admin and user roles with agent-level access checks (personal vs. shared agents)
 - **Encryption at rest** — provider API keys are encrypted with AES-256-GCM
 - **Offline-capable** — works without any external network calls
+- **Audit log sanitization** — tool parameters and results are automatically redacted for sensitive patterns (API keys, tokens, passwords) before storage, using a two-layer Defense in Depth approach

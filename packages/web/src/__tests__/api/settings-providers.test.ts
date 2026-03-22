@@ -38,8 +38,8 @@ vi.mock("@/lib/providers", () => ({
     google: {
       name: "Google",
       settingsKey: "google_api_key",
-      envVar: "GOOGLE_API_KEY",
-      defaultModel: "google/gemini-2.0-flash",
+      envVar: "GEMINI_API_KEY",
+      defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
   },

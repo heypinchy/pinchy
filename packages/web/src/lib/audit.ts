@@ -4,6 +4,26 @@ import { db } from "@/db";
 import { auditLog } from "@/db/schema";
 import { getOrCreateSecret } from "@/lib/encryption";
 
+// ── Audit Detail Base Types ─────────────────────────────────────────────
+
+export type EntityRef = { id: string; name: string };
+
+export type UpdateDetail = {
+  changes: Record<string, { from: unknown; to: unknown }>;
+  [key: string]: unknown;
+};
+
+export type DeleteDetail = { name: string; [key: string]: unknown };
+
+export type MembershipDetail = {
+  added: EntityRef[];
+  removed: EntityRef[];
+  memberCount: number;
+  [key: string]: unknown;
+};
+
+export type AuditResource = "agent" | "group" | "user" | "settings" | "config" | "channel";
+
 export type AuditEventType =
   | `tool.${string}`
   | "tool.denied"
@@ -23,8 +43,8 @@ export type AuditEventType =
   | "group.members_updated"
   | "user.groups_updated"
   | "user.role_updated"
-  | "channel.configured"
-  | "channel.removed";
+  | "channel.created"
+  | "channel.deleted";
 
 interface HmacFields {
   timestamp: Date;
@@ -80,13 +100,33 @@ export function truncateDetail(detail: unknown): unknown {
   };
 }
 
-interface AuditLogEntry {
+type AuditLogBase = {
   actorType: "user" | "agent" | "system";
   actorId: string;
-  eventType: AuditEventType;
   resource?: string | null;
-  detail?: unknown;
-}
+};
+
+export type AuditLogEntry =
+  | (AuditLogBase & {
+      eventType: `${AuditResource}.updated` | "user.role_updated";
+      detail: UpdateDetail;
+    })
+  | (AuditLogBase & {
+      eventType: `${AuditResource}.deleted`;
+      detail: DeleteDetail;
+    })
+  | (AuditLogBase & {
+      eventType: `${AuditResource}.created` | "user.invited" | "config.changed";
+      detail: Record<string, unknown>;
+    })
+  | (AuditLogBase & {
+      eventType: `${AuditResource}.members_updated` | "user.groups_updated";
+      detail: MembershipDetail;
+    })
+  | (AuditLogBase & {
+      eventType: `auth.${string}` | `tool.${string}`;
+      detail?: Record<string, unknown>;
+    });
 
 export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
   const secret = getOrCreateSecret("audit_hmac_secret");

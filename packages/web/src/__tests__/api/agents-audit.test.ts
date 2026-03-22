@@ -61,7 +61,14 @@ vi.mock("@/db", () => ({
         ]),
       }),
     }),
-    select: vi.fn(),
+    delete: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    }),
+    select: vi.fn().mockImplementation(() => ({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    })),
   },
 }));
 
@@ -99,6 +106,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { deleteAgent, updateAgent } from "@/lib/agents";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { writeIdentityFile } from "@/lib/workspace";
+import { getAgentGroupIds } from "@/lib/groups";
 import { db } from "@/db";
 
 function mockAgent(agent: Record<string, unknown> | undefined) {
@@ -170,6 +178,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     mockAgent({
       id: "agent-1",
       name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-20250514",
       isPersonal: false,
       ownerId: null,
     });
@@ -177,12 +186,12 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
       name: "Updated Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-opus-4-6",
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
-      body: JSON.stringify({ name: "Updated Agent", model: "anthropic/claude-sonnet-4-20250514" }),
+      body: JSON.stringify({ name: "Updated Agent", model: "anthropic/claude-opus-4-6" }),
       headers: { "Content-Type": "application/json" },
     });
 
@@ -196,7 +205,109 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
       actorId: "user-1",
       eventType: "agent.updated",
       resource: "agent:agent-1",
-      detail: { changes: ["name", "model"] },
+      detail: {
+        changes: {
+          name: { from: "Test Agent", to: "Updated Agent" },
+          model: { from: "anthropic/claude-sonnet-4-20250514", to: "anthropic/claude-opus-4-6" },
+        },
+      },
+    });
+  });
+
+  it("does not log audit when no fields actually changed", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-20250514",
+      isPersonal: false,
+      ownerId: null,
+    });
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-20250514",
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "Test Agent", model: "anthropic/claude-sonnet-4-20250514" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("logs allowedGroups diff when groupIds change", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-20250514",
+      isPersonal: false,
+      ownerId: null,
+    });
+
+    // Old group assignments
+    vi.mocked(getAgentGroupIds).mockResolvedValueOnce(["group-old", "group-keep"]);
+
+    // Mock db.delete for removing old group assignments
+    vi.mocked(db.delete).mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    // Mock db.insert for new group assignments
+    vi.mocked(db.insert).mockReturnValueOnce({
+      values: vi.fn().mockResolvedValue(undefined),
+    } as never);
+
+    // Mock db.select for resolving group names
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([
+          { id: "group-new", name: "New Group" },
+          { id: "group-old", name: "Old Group" },
+        ]),
+      }),
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ groupIds: ["group-keep", "group-new"] }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "agent.updated",
+      resource: "agent:agent-1",
+      detail: {
+        changes: {},
+        allowedGroups: {
+          added: [{ id: "group-new", name: "New Group" }],
+          removed: [{ id: "group-old", name: "Old Group" }],
+        },
+      },
     });
   });
 });

@@ -148,7 +148,7 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
     expect(mockConfigPatch).toHaveBeenCalled();
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
-        eventType: "channel.configured",
+        eventType: "channel.created",
         resource: "agent:agent-1",
         detail: expect.objectContaining({
           agent: { id: "agent-1", name: "Test Agent" },
@@ -225,7 +225,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     expect(mockConfigPatch).toHaveBeenCalled();
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
-        eventType: "channel.removed",
+        eventType: "channel.deleted",
         resource: "agent:agent-1",
         detail: expect.objectContaining({
           agent: { id: "agent-1", name: "Test Agent" },

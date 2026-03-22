@@ -53,10 +53,17 @@ vi.mock("@/db", () => {
   const mockDeleteWhere = vi.fn().mockResolvedValue(undefined);
   const mockDelete = vi.fn().mockReturnValue({ where: mockDeleteWhere });
 
+  // Default chainable select (for group name lookups etc.)
+  const defaultSelect = () => ({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue([]),
+    }),
+  });
+
   return {
     db: {
       insert: mockInsert,
-      select: vi.fn(),
+      select: vi.fn().mockImplementation(defaultSelect),
       delete: mockDelete,
     },
   };
@@ -89,6 +96,10 @@ vi.mock("@/lib/path-validation", () => ({
 
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue("anthropic"),
+}));
+
+vi.mock("@/lib/enterprise", () => ({
+  isEnterprise: vi.fn().mockResolvedValue(true),
 }));
 
 import { auth } from "@/lib/auth";

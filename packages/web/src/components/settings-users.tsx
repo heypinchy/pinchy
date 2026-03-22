@@ -21,6 +21,7 @@ import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-lis
 
 interface SettingsUsersProps {
   currentUserId: string;
+  refreshKey?: number;
 }
 
 function GroupBadges({ groups }: { groups: UserGroup[] }) {
@@ -50,7 +51,7 @@ function GroupBadges({ groups }: { groups: UserGroup[] }) {
   );
 }
 
-export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
+export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps) {
   const [items, setItems] = useState<UserListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
@@ -85,7 +86,15 @@ export function SettingsUsers({ currentUserId }: SettingsUsersProps) {
 
   useEffect(() => {
     fetchUsers();
-  }, [fetchUsers]);
+  }, [fetchUsers, refreshKey]);
+
+  useEffect(() => {
+    if (!selectedUser || !isEnterprise) return;
+    fetch("/api/groups")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data) => setAllGroups(Array.isArray(data) ? data : []))
+      .catch(() => {});
+  }, [selectedUser, isEnterprise]);
 
   async function handleRevoke(inviteId: string) {
     await fetch(`/api/users/invites/${inviteId}`, { method: "DELETE" });

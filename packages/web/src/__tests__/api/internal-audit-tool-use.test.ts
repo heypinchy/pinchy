@@ -208,4 +208,56 @@ describe("POST /api/internal/audit/tool-use", () => {
       },
     });
   });
+
+  describe("sensitive data sanitization", () => {
+    it("redacts sensitive key names in params before logging", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "http_request",
+          agentId: "agent-1",
+          params: { url: "https://api.example.com", apiKey: "sk-live-abc123" },
+          result: "ok",
+        })
+      );
+
+      const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      const detail = call?.detail as Record<string, unknown>;
+      const params = detail?.params as Record<string, unknown>;
+      expect(params.apiKey).toBe("[REDACTED]");
+      expect(params.url).toBe("https://api.example.com");
+    });
+
+    it("redacts secret patterns in result strings before logging", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "pinchy_read",
+          agentId: "agent-1",
+          result: "Found key: sk-abcdefghijklmnopqrstuvwxyz in config",
+        })
+      );
+
+      const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      const detail = call?.detail as Record<string, unknown>;
+      expect(detail?.result).toContain("[REDACTED]");
+      expect(detail?.result).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+    });
+
+    it("redacts env-file content in result strings", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "pinchy_read",
+          agentId: "agent-1",
+          result: "API_KEY=my-secret-key\nAPP_NAME=pinchy",
+        })
+      );
+
+      const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+      const detail = call?.detail as Record<string, unknown>;
+      expect(detail?.result).toContain("API_KEY=[REDACTED]");
+      expect(detail?.result).toContain("APP_NAME=pinchy");
+    });
+  });
 });

@@ -276,7 +276,52 @@ describe("ClientRouter", () => {
     expect(textChunks[1].content).toBe("there!");
   });
 
-  it("should include consistent messageId in all chunks", async () => {
+  it("should strip <final> tags from streamed chunks", async () => {
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "<final>" };
+      yield { type: "text" as const, text: "Hello there!" };
+      yield { type: "text" as const, text: "</final>" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      agentId: "agent-1",
+      content: "hi",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const textChunks = messages.filter((m: any) => m.type === "chunk");
+    const allText = textChunks.map((c: any) => c.content).join("");
+    expect(allText).not.toContain("<final>");
+    expect(allText).not.toContain("</final>");
+    expect(allText).toContain("Hello there!");
+  });
+
+  it("should strip <final> tags when they appear mid-chunk", async () => {
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "<final>Right away!" };
+      yield { type: "text" as const, text: " How can I help?</final>" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      agentId: "agent-1",
+      content: "hi",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const textChunks = messages.filter((m: any) => m.type === "chunk");
+    const allText = textChunks.map((c: any) => c.content).join("");
+    expect(allText).toBe("Right away! How can I help?");
+  });
+
+  it("should include consistent messageId within a single turn", async () => {
     const clientWs = createMockClientWs();
     async function* fakeStream() {
       yield { type: "text" as const, text: "a" };
@@ -295,6 +340,45 @@ describe("ClientRouter", () => {
     const messageIds = messages.map((m: any) => m.messageId);
     expect(new Set(messageIds).size).toBe(1);
     expect(messageIds[0]).toBeTruthy();
+  });
+
+  it("should assign different messageIds to each agent turn in a multi-turn stream", async () => {
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      // Turn 1: agent searches documents
+      yield { type: "text" as const, text: "Let me search..." };
+      yield { type: "done" as const, text: "" };
+      // Turn 2: agent gives final answer
+      yield { type: "text" as const, text: "The house is 231m²." };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "How big is the house?",
+      agentId: "agent-1",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const turn1Chunks = messages.filter(
+      (m: any) => m.type === "chunk" && m.content.includes("search")
+    );
+    const turn2Chunks = messages.filter(
+      (m: any) => m.type === "chunk" && m.content.includes("231")
+    );
+    const doneMessages = messages.filter((m: any) => m.type === "done");
+
+    // Each turn should have its own messageId
+    expect(turn1Chunks[0].messageId).not.toBe(turn2Chunks[0].messageId);
+
+    // Chunks within a turn share the same messageId
+    expect(turn1Chunks[0].messageId).toBe(doneMessages[0].messageId);
+    expect(turn2Chunks[0].messageId).toBe(doneMessages[1].messageId);
+
+    // Both messageIds should be truthy
+    expect(turn1Chunks[0].messageId).toBeTruthy();
+    expect(turn2Chunks[0].messageId).toBeTruthy();
   });
 
   it("should send a done message after stream completes", async () => {
@@ -519,6 +603,27 @@ describe("ClientRouter", () => {
     expect(sent[0].messages).toEqual([
       { role: "assistant", content: "Here is the answer. And more.", timestamp: undefined },
     ]);
+  });
+
+  it("should strip <final> tags from history messages", async () => {
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "assistant",
+          content: "<final>Right away! How can I help?</final>",
+        },
+      ],
+    });
+
+    await router.handleMessage(clientWs as any, {
+      type: "history",
+      content: "",
+      agentId: "agent-1",
+    });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].messages[0].content).toBe("Right away! How can I help?");
   });
 
   it("should strip timestamp prefix from user messages in history", async () => {

@@ -182,6 +182,71 @@ describe("useWsRuntime", () => {
     expect(result.current.runtime.isRunning).toBe(false);
   });
 
+  it("should create separate messages for each turn in a multi-turn stream", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    // User sends a message
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "How big is the house?" }],
+        parentId: "root",
+      });
+    });
+
+    // Turn 1: agent searches
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({ type: "chunk", content: "Let me search...", messageId: "turn-1" }),
+      });
+    });
+
+    expect(result.current.runtime.isRunning).toBe(true);
+
+    // Turn 1 done
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({ type: "done", messageId: "turn-1" }),
+      });
+    });
+
+    // Turn 2: agent responds with new messageId
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "chunk",
+          content: "The house is 231m².",
+          messageId: "turn-2",
+        }),
+      });
+    });
+
+    // isRunning should be true again when new chunks arrive
+    expect(result.current.runtime.isRunning).toBe(true);
+
+    // Turn 2 done
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({ type: "done", messageId: "turn-2" }),
+      });
+    });
+
+    expect(result.current.runtime.isRunning).toBe(false);
+
+    // Should have 3 messages: user + 2 assistant turns
+    const messages = result.current.runtime.messages;
+    expect(messages).toHaveLength(3);
+    expect(messages[0].role).toBe("user");
+    expect(messages[1].role).toBe("assistant");
+    expect(messages[1].content[0].text).toBe("Let me search...");
+    expect(messages[2].role).toBe("assistant");
+    expect(messages[2].content[0].text).toBe("The house is 231m².");
+  });
+
   it("should send message without sessionKey", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];

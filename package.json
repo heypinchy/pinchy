@@ -1,6 +1,6 @@
 {
   "name": "pinchy",
-  "version": "0.0.1",
+  "version": "0.2.0",
   "private": true,
   "description": "Enterprise AI agent platform built on OpenClaw",
   "scripts": {
@@ -15,12 +15,14 @@
   "packageManager": "pnpm@10.29.3",
   "devDependencies": {
     "husky": "^9.1.7",
-    "lint-staged": "^16.2.7"
+    "lint-staged": "^16.4.0"
   },
   "pnpm": {
     "overrides": {
       "rollup@>=4.0.0 <4.59.0": ">=4.59.0",
-      "esbuild@<=0.24.2": ">=0.25.0"
+      "esbuild@<=0.24.2": ">=0.25.0",
+      "undici@>=7.0.0 <7.24.0": ">=7.24.0",
+      "kysely@>=0.26.0 <=0.28.13": ">=0.28.14"
     }
   },
   "lint-staged": {

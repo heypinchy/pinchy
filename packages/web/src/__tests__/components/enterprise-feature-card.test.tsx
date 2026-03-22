@@ -26,7 +26,10 @@ describe("EnterpriseFeatureCard", () => {
     render(<EnterpriseFeatureCard feature="Groups" description="Description here." />);
 
     const link = screen.getByRole("link", { name: /learn more/i });
-    expect(link).toHaveAttribute("href", "https://heypinchy.com/enterprise");
+    expect(link).toHaveAttribute(
+      "href",
+      "https://heypinchy.com/enterprise?utm_source=app&utm_medium=feature-card"
+    );
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
   });

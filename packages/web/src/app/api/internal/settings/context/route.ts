@@ -1,3 +1,4 @@
+// audit-exempt: internal endpoint called by OpenClaw plugin (Smithers), not a user-facing action
 import { NextRequest, NextResponse } from "next/server";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { setSetting } from "@/lib/settings";

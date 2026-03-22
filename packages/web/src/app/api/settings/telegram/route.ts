@@ -1,3 +1,4 @@
+// audit-exempt: User self-service action (linking own Telegram account), not an admin operation
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";

@@ -1,3 +1,4 @@
+// audit-exempt: initial setup runs before any users exist, no actor to audit
 import { NextRequest, NextResponse } from "next/server";
 import { createAdmin } from "@/lib/setup";
 import { validatePassword } from "@/lib/validate-password";

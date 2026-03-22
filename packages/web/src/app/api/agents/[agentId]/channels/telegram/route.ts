@@ -85,7 +85,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
   await appendAuditLog({
     actorType: "user",
     actorId: admin.user.id,
-    eventType: "channel.configured",
+    eventType: "channel.created",
     resource: `agent:${agentId}`,
     detail: {
       agent: { id: agentId, name: agent.name },
@@ -123,9 +123,10 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
   await appendAuditLog({
     actorType: "user",
     actorId: admin.user.id,
-    eventType: "channel.removed",
+    eventType: "channel.deleted",
     resource: `agent:${agentId}`,
     detail: {
+      name: `telegram:${agent.name}`,
       agent: { id: agentId, name: agent.name },
       channel: "telegram",
     },

@@ -84,7 +84,7 @@ export class ClientRouter {
 
     const sessionKey = this.computeSessionKey(message.agentId);
 
-    const messageId = crypto.randomUUID();
+    let messageId = crypto.randomUUID();
 
     try {
       await this.waitForConnection();
@@ -150,11 +150,14 @@ export class ClientRouter {
         }
 
         if (chunk.type === "text") {
-          this.sendToClient(clientWs, {
-            type: "chunk",
-            content: chunk.text,
-            messageId,
-          });
+          const cleaned = chunk.text.replace(/<\/?final>/g, "");
+          if (cleaned) {
+            this.sendToClient(clientWs, {
+              type: "chunk",
+              content: cleaned,
+              messageId,
+            });
+          }
         }
 
         if (chunk.type === "error") {
@@ -173,6 +176,10 @@ export class ClientRouter {
             type: "done",
             messageId,
           });
+          // Next agent turn gets a fresh messageId so the browser
+          // creates a separate assistant message — consistent with
+          // how OpenClaw stores them in history.
+          messageId = crypto.randomUUID();
         }
       }
     } catch (err) {
@@ -212,6 +219,9 @@ export class ClientRouter {
           } else {
             content = typeof msg.content === "string" ? msg.content : "";
           }
+
+          // Strip protocol tags from assistant responses
+          content = content.replace(/<\/?final>/g, "");
 
           // Strip OpenClaw timestamp prefix from user messages
           if (msg.role === "user") {

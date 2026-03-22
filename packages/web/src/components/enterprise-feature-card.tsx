@@ -24,11 +24,19 @@ export function EnterpriseFeatureCard({ feature, description }: EnterpriseFeatur
         <div className="rounded-lg border bg-muted/50 p-4 space-y-2">
           <p className="text-sm font-medium">How to enable</p>
           <p className="text-sm text-muted-foreground">
-            Set the{" "}
+            Set your license key in{" "}
+            <a href="/settings?tab=license" className="text-primary underline">
+              Settings → License
+            </a>
+            , or via the{" "}
             <code className="bg-muted px-1 py-0.5 rounded text-xs">PINCHY_ENTERPRISE_KEY</code>{" "}
-            environment variable in your Docker Compose configuration to unlock enterprise features.
+            environment variable.
           </p>
-          <a href="https://heypinchy.com/enterprise" target="_blank" rel="noopener noreferrer">
+          <a
+            href="https://heypinchy.com/enterprise?utm_source=app&utm_medium=feature-card"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
             <Button variant="outline" size="sm" className="mt-2">
               Learn more
             </Button>

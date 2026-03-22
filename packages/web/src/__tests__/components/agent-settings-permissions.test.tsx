@@ -43,10 +43,13 @@ describe("AgentSettingsPermissions", () => {
     );
 
     expect(screen.getByText("Powerful Tools")).toBeInTheDocument();
-    expect(screen.getByLabelText("Run commands")).toBeInTheDocument();
+    expect(screen.getByLabelText("Run shell commands")).toBeInTheDocument();
     expect(screen.getByLabelText("Read any file")).toBeInTheDocument();
-    expect(screen.getByLabelText("Write files")).toBeInTheDocument();
-    expect(screen.getByLabelText("Browse the web")).toBeInTheDocument();
+    expect(screen.getByLabelText("Write any file")).toBeInTheDocument();
+    expect(screen.getByLabelText("Read any PDF")).toBeInTheDocument();
+    expect(screen.getByLabelText("Analyze any image")).toBeInTheDocument();
+    expect(screen.getByLabelText("Generate images")).toBeInTheDocument();
+    expect(screen.getByLabelText("Fetch web pages")).toBeInTheDocument();
     expect(screen.getByLabelText("Search the web")).toBeInTheDocument();
   });
 
@@ -111,6 +114,56 @@ describe("AgentSettingsPermissions", () => {
     );
 
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
+  });
+
+  describe("vision warning", () => {
+    it("shows vision warning when pinchy_read enabled and model lacks vision", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{
+            ...defaultAgent,
+            allowedTools: ["pinchy_read"],
+            pluginConfig: { allowed_paths: ["/data/docs"] },
+            model: "ollama/llama3.1:8b",
+          }}
+          directories={defaultDirectories}
+          onChange={vi.fn()}
+        />
+      );
+      expect(screen.getByText(/limited pdf support/i)).toBeInTheDocument();
+    });
+
+    it("does not show warning when model supports vision", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{
+            ...defaultAgent,
+            allowedTools: ["pinchy_read"],
+            pluginConfig: { allowed_paths: ["/data/docs"] },
+            model: "anthropic/claude-sonnet-4-6",
+          }}
+          directories={defaultDirectories}
+          onChange={vi.fn()}
+        />
+      );
+      expect(screen.queryByText(/limited pdf support/i)).not.toBeInTheDocument();
+    });
+
+    it("does not show warning when pinchy_read not enabled", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{
+            ...defaultAgent,
+            allowedTools: [],
+            pluginConfig: null,
+            model: "ollama/llama3.1:8b",
+          }}
+          directories={defaultDirectories}
+          onChange={vi.fn()}
+        />
+      );
+      expect(screen.queryByText(/limited pdf support/i)).not.toBeInTheDocument();
+    });
   });
 
   describe("onChange behavior", () => {

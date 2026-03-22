@@ -78,12 +78,6 @@ function highlightJson(json: string): string {
   return Prism.highlight(json, Prism.languages.json, "json");
 }
 
-function isNegativeEvent(eventType: string): boolean {
-  return (
-    eventType.includes("failed") || eventType.includes("deleted") || eventType.includes("denied")
-  );
-}
-
 function ActorCell({
   actorId,
   actorName,
@@ -375,9 +369,7 @@ export function AuditLogTable() {
                 }}
               >
                 <div className="flex items-center justify-between">
-                  <Badge variant={isNegativeEvent(entry.eventType) ? "destructive" : "secondary"}>
-                    {entry.eventType}
-                  </Badge>
+                  <Badge variant="secondary">{entry.eventType}</Badge>
                   <span className="text-xs text-muted-foreground">
                     {new Date(entry.timestamp).toLocaleString()}
                   </span>
@@ -442,11 +434,7 @@ export function AuditLogTable() {
                         />
                       </TableCell>
                       <TableCell>
-                        <Badge
-                          variant={isNegativeEvent(entry.eventType) ? "destructive" : "secondary"}
-                        >
-                          {entry.eventType}
-                        </Badge>
+                        <Badge variant="secondary">{entry.eventType}</Badge>
                       </TableCell>
                       <TableCell>
                         <ResourceCell

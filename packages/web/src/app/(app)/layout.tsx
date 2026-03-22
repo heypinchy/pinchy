@@ -7,6 +7,7 @@ import { AppSidebar } from "@/components/sidebar";
 import { AppShell } from "@/components/app-shell";
 import { AgentsProvider } from "@/components/agents-provider";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
+import { EnterpriseBanner } from "@/components/enterprise-banner";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   await cookies();
@@ -28,6 +29,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <SidebarProvider>
         <AppSidebar isAdmin={isAdmin} />
         <SidebarInset className="h-dvh overflow-hidden">
+          <EnterpriseBanner isAdmin={isAdmin} />
           <AppShell isAdmin={isAdmin}>{children}</AppShell>
         </SidebarInset>
       </SidebarProvider>

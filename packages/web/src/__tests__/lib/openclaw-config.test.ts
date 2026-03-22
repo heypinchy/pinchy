@@ -121,14 +121,14 @@ describe("writeOpenClawConfig", () => {
     writeOpenClawConfig({
       provider: "google",
       apiKey: "AIza-key",
-      model: "google/gemini-2.0-flash",
+      model: "google/gemini-2.5-flash",
     });
 
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.env.GOOGLE_API_KEY).toBe("AIza-key");
-    expect(config.agents.defaults.model.primary).toBe("google/gemini-2.0-flash");
+    expect(config.env.GEMINI_API_KEY).toBe("AIza-key");
+    expect(config.agents.defaults.model.primary).toBe("google/gemini-2.5-flash");
   });
 
   it("should generate auth token when no existing config", () => {
@@ -280,14 +280,14 @@ describe("regenerateOpenClawConfig", () => {
       name: "Smithers",
       model: "anthropic/claude-opus-4-6",
       workspace: "/root/.openclaw/workspaces/uuid-agent-1",
-      tools: { deny: ["group:runtime", "group:fs", "group:web"] },
+      tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
     });
     expect(config.agents.list[1]).toEqual({
       id: "uuid-agent-2",
       name: "Jeeves",
       model: "openai/gpt-4o",
       workspace: "/root/.openclaw/workspaces/uuid-agent-2",
-      tools: { deny: ["group:runtime", "group:fs", "group:web"] },
+      tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
     });
   });
 
@@ -334,7 +334,7 @@ describe("regenerateOpenClawConfig", () => {
 
     expect(config.env.ANTHROPIC_API_KEY).toBe("sk-ant-decrypted");
     expect(config.env.OPENAI_API_KEY).toBe("sk-openai-decrypted");
-    expect(config.env.GOOGLE_API_KEY).toBeUndefined();
+    expect(config.env.GEMINI_API_KEY).toBeUndefined();
   });
 
   it("should set defaults.model from default provider", async () => {
@@ -569,6 +569,48 @@ describe("regenerateOpenClawConfig", () => {
       apiBaseUrl: "http://pinchy:7777",
       gatewayToken: "gw-token-123",
     });
+  });
+
+  it("should use PORT env var in plugin apiBaseUrl when set", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    // Simulate custom port
+    const originalPort = process.env.PORT;
+    process.env.PORT = "7778";
+
+    try {
+      mockedDb.select.mockReturnValue({
+        from: vi.fn().mockResolvedValue([
+          {
+            id: "smithers-1",
+            name: "Smithers",
+            model: "anthropic/claude-sonnet-4-20250514",
+            pluginConfig: null,
+            allowedTools: ["pinchy_save_user_context"],
+            ownerId: "user-1",
+            isPersonal: true,
+            createdAt: new Date(),
+          },
+        ]),
+      } as never);
+
+      await regenerateOpenClawConfig();
+
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written);
+
+      expect(config.plugins.entries["pinchy-audit"].config.apiBaseUrl).toBe("http://pinchy:7778");
+      expect(config.plugins.entries["pinchy-context"].config.apiBaseUrl).toBe("http://pinchy:7778");
+    } finally {
+      if (originalPort === undefined) {
+        delete process.env.PORT;
+      } else {
+        process.env.PORT = originalPort;
+      }
+    }
   });
 
   it("should include both pinchy-files and pinchy-context when agents use both", async () => {

@@ -1,3 +1,4 @@
+// audit-exempt: users updating their own profile is a self-service action
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";

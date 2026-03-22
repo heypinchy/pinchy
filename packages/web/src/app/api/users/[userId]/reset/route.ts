@@ -1,3 +1,4 @@
+// audit-exempt: password reset generates a token but does not change credentials directly
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
