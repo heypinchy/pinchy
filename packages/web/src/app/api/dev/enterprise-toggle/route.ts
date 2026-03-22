@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { clearLicenseCache } from "@/lib/enterprise";
+import { clearLicenseCache, isEnterprise } from "@/lib/enterprise";
+import { setSetting, deleteSetting } from "@/lib/settings";
 
 // audit-exempt: dev-only endpoint, not available in production
 
@@ -15,12 +16,16 @@ export async function POST() {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
-  const wasEnabled = !!process.env.PINCHY_ENTERPRISE_KEY;
+  // Clear env var so loadToken() falls through to DB
+  delete process.env.PINCHY_ENTERPRISE_KEY;
+  clearLicenseCache();
+
+  const wasEnabled = await isEnterprise();
 
   if (wasEnabled) {
-    delete process.env.PINCHY_ENTERPRISE_KEY;
+    await deleteSetting("enterprise_key");
   } else {
-    process.env.PINCHY_ENTERPRISE_KEY = DEV_ENTERPRISE_KEY;
+    await setSetting("enterprise_key", DEV_ENTERPRISE_KEY, true);
   }
 
   clearLicenseCache();

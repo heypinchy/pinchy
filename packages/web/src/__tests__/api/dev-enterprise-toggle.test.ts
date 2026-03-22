@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextResponse } from "next/server";
 
 vi.mock("@/lib/api-auth", () => ({
@@ -6,9 +6,17 @@ vi.mock("@/lib/api-auth", () => ({
 }));
 
 const mockClearLicenseCache = vi.fn();
+const mockIsEnterprise = vi.fn();
 vi.mock("@/lib/enterprise", () => ({
   clearLicenseCache: mockClearLicenseCache,
-  isEnterprise: vi.fn().mockResolvedValue(false),
+  isEnterprise: mockIsEnterprise,
+}));
+
+const mockSetSetting = vi.fn().mockResolvedValue(undefined);
+const mockDeleteSetting = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/settings", () => ({
+  setSetting: mockSetSetting,
+  deleteSetting: mockDeleteSetting,
 }));
 
 import { requireAdmin } from "@/lib/api-auth";
@@ -57,24 +65,31 @@ describe("POST /api/dev/enterprise-toggle", () => {
   });
 
   it("enables enterprise when currently disabled", async () => {
-    delete process.env.PINCHY_ENTERPRISE_KEY;
+    mockIsEnterprise.mockResolvedValueOnce(false);
     const response = await POST();
     const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(body.enterprise).toBe(true);
-    expect(process.env.PINCHY_ENTERPRISE_KEY).toBeTruthy();
-    expect(mockClearLicenseCache).toHaveBeenCalled();
+    expect(mockSetSetting).toHaveBeenCalledWith("enterprise_key", expect.any(String), true);
+    expect(mockClearLicenseCache).toHaveBeenCalledTimes(2);
   });
 
   it("disables enterprise when currently enabled", async () => {
-    process.env.PINCHY_ENTERPRISE_KEY = "some-key";
+    mockIsEnterprise.mockResolvedValueOnce(true);
     const response = await POST();
     const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(body.enterprise).toBe(false);
+    expect(mockDeleteSetting).toHaveBeenCalledWith("enterprise_key");
+    expect(mockClearLicenseCache).toHaveBeenCalledTimes(2);
+  });
+
+  it("clears PINCHY_ENTERPRISE_KEY env var", async () => {
+    process.env.PINCHY_ENTERPRISE_KEY = "some-key";
+    mockIsEnterprise.mockResolvedValueOnce(true);
+    await POST();
     expect(process.env.PINCHY_ENTERPRISE_KEY).toBeUndefined();
-    expect(mockClearLicenseCache).toHaveBeenCalled();
   });
 });
