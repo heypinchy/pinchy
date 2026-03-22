@@ -134,8 +134,6 @@ test.describe("Feature screenshots", () => {
   // audit trail is test 01 (first) to avoid Playwright login noise
 
   test("user management", async ({ page }) => {
-    // Use wider viewport for user management to fit the Revoke button
-    await page.setViewportSize({ width: 1440, height: 720 });
     await page.goto(`${BASE_URL}/settings`);
     await page.waitForTimeout(1500);
     const usersTab = page.getByRole("tab", { name: /users/i });

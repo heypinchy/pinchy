@@ -4,15 +4,6 @@ on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      viewport_width:
-        description: "Viewport width"
-        default: "1440"
-        type: string
-      viewport_height:
-        description: "Viewport height"
-        default: "900"
-        type: string
 
 jobs:
   capture:
