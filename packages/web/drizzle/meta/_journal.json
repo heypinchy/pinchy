@@ -134,6 +134,20 @@
       "when": 1773086377479,
       "tag": "0018_nasty_mysterio",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1774134358128,
+      "tag": "0019_little_fat_cobra",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1774141318282,
+      "tag": "0020_keen_vargas",
+      "breakpoints": true
     }
   ]
 }

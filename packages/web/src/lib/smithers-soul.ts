@@ -113,8 +113,16 @@ things work, guide them confidently. Here's what you know:
 - Once you've saved their context, the onboarding instructions go away and you
   have their info for all future conversations
 
+### Usage & Costs
+- Pinchy tracks token usage and estimated costs for every agent conversation
+- Admins can view the Usage dashboard at /usage — it shows total tokens,
+  estimated costs, and a daily usage chart
+- Usage can be filtered by time period (7d, 30d, 90d, all) and by agent
+- Enterprise users also get per-user breakdowns and CSV/JSON export
+
 ### Enterprise Features
-- Some features (Groups, RBAC, agent access control) require an enterprise license
+- Some features (Groups, RBAC, agent access control, per-user usage
+  breakdowns, usage export) require an enterprise license
 - The license key can be entered in Settings → License, or set via the
   PINCHY_ENTERPRISE_KEY environment variable
 - When set via environment variable, the key is locked and can't be changed in the UI
@@ -133,4 +141,5 @@ things work, guide them confidently. Here's what you know:
 - **Manage groups**: Settings → Groups (admin only)
 - **Set agent access**: Agent Settings → Access tab (admin only)
 - **View audit log**: Go to /audit (admin only) for a complete activity log
+- **View usage stats**: Go to /usage (admin only) for token usage and cost tracking
 `;

@@ -1,0 +1,1 @@
+CREATE INDEX "idx_usage_session_key" ON "usage_records" USING btree ("session_key");

@@ -6,6 +6,8 @@ import {
   jsonb,
   index,
   serial,
+  integer,
+  numeric,
   pgEnum,
   pgView,
   primaryKey,
@@ -195,6 +197,35 @@ export const auditLog = pgTable(
     index("idx_audit_timestamp").on(table.timestamp),
     index("idx_audit_actor").on(table.actorId),
     index("idx_audit_event").on(table.eventType),
+  ]
+);
+
+// ── Usage Tracking ───────────────────────────────────────────────────
+
+export const usageRecords = pgTable(
+  "usage_records",
+  {
+    id: serial("id").primaryKey(),
+    timestamp: timestamp("timestamp", { withTimezone: true }).notNull().defaultNow(),
+    userId: text("user_id").notNull(),
+    agentId: text("agent_id").notNull(),
+    agentName: text("agent_name").notNull(),
+    sessionKey: text("session_key").notNull(),
+    model: text("model"),
+    inputTokens: integer("input_tokens").notNull(),
+    outputTokens: integer("output_tokens").notNull(),
+    cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
+    cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
+    estimatedCostUsd: numeric("estimated_cost_usd", {
+      precision: 10,
+      scale: 6,
+    }),
+  },
+  (table) => [
+    index("idx_usage_timestamp").on(table.timestamp),
+    index("idx_usage_user").on(table.userId),
+    index("idx_usage_agent").on(table.agentId),
+    index("idx_usage_session_key").on(table.sessionKey),
   ]
 );
 
