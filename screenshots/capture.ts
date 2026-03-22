@@ -18,14 +18,18 @@ const STORAGE_STATE = path.join(OUTPUT_DIR, ".auth.json");
 const VIEWPORT = { width: 1280, height: 720 };
 
 async function login(page: Page) {
+  // Try restoring session from saved state
   if (fs.existsSync(STORAGE_STATE)) {
+    const state = JSON.parse(fs.readFileSync(STORAGE_STATE, "utf-8"));
+    await page.context().addCookies(state.cookies || []);
     await page.goto(`${BASE_URL}/`);
     await page.waitForTimeout(2000);
     if (!page.url().includes("/login") && !page.url().includes("/setup")) return;
   }
 
+  // Session invalid or not saved — perform fresh login
   await page.goto(`${BASE_URL}/login`);
-  await page.waitForTimeout(1000);
+  await page.getByLabel(/email/i).waitFor({ state: "visible", timeout: 30000 });
   await page.getByLabel(/email/i).fill(ADMIN_EMAIL);
   await page.getByLabel("Password", { exact: true }).fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: /sign in/i }).click();
