@@ -171,7 +171,7 @@ describe("UsageDashboard", () => {
     });
   });
 
-  it("should fetch without days param when 'All' is clicked", async () => {
+  it("should fetch with days=0 when 'All' is clicked", async () => {
     mockBothEndpoints();
     const user = userEvent.setup();
     render(<UsageDashboard />);
@@ -186,8 +186,8 @@ describe("UsageDashboard", () => {
     await user.click(screen.getByRole("button", { name: "All" }));
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries");
+      expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=0");
+      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=0");
     });
   });
 

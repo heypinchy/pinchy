@@ -92,7 +92,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
   useEffect(() => {
     let cancelled = false;
     const params = new URLSearchParams();
-    if (days !== "all") params.set("days", String(days));
+    params.set("days", days === "all" ? "0" : String(days));
     if (selectedAgent !== "all") params.set("agentId", selectedAgent);
     const qs = params.toString() ? `?${params.toString()}` : "";
 
@@ -119,7 +119,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
     if (!isEnterprise || activeTab !== "by-user") return;
     let cancelled = false;
     const params = new URLSearchParams();
-    if (days !== "all") params.set("days", String(days));
+    params.set("days", days === "all" ? "0" : String(days));
     if (selectedAgent !== "all") params.set("agentId", selectedAgent);
     const qs = params.toString() ? `?${params.toString()}` : "";
 
@@ -275,7 +275,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
                   <Line
                     type="monotone"
                     dataKey="inputTokens"
-                    stroke="oklch(0.646 0.222 41.116)"
+                    stroke="oklch(0.65 0.17 55)"
                     strokeWidth={2}
                     dot={false}
                     name="Input Tokens"
@@ -283,7 +283,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
                   <Line
                     type="monotone"
                     dataKey="outputTokens"
-                    stroke="oklch(0.55 0.02 60)"
+                    stroke="oklch(0.62 0.01 60)"
                     strokeWidth={2}
                     dot={false}
                     name="Output Tokens"
@@ -388,7 +388,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
                 onClick={() => {
                   const params = new URLSearchParams();
                   params.set("format", "csv");
-                  if (days !== "all") params.set("days", String(days));
+                  params.set("days", days === "all" ? "0" : String(days));
                   if (selectedAgent !== "all") params.set("agentId", selectedAgent);
                   window.open(`/api/usage/export?${params.toString()}`);
                 }}
@@ -401,7 +401,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
                 onClick={() => {
                   const params = new URLSearchParams();
                   params.set("format", "json");
-                  if (days !== "all") params.set("days", String(days));
+                  params.set("days", days === "all" ? "0" : String(days));
                   if (selectedAgent !== "all") params.set("agentId", selectedAgent);
                   window.open(`/api/usage/export?${params.toString()}`);
                 }}
