@@ -70,7 +70,9 @@ export async function recordUsage(params: RecordUsageParams): Promise<void> {
       }>;
     };
     const sessions = listResult?.sessions ?? [];
-    const session = sessions.find((s) => s.key === sessionKey);
+    // OpenClaw normalizes session keys to lowercase
+    const normalizedKey = sessionKey.toLowerCase();
+    const session = sessions.find((s) => s.key === normalizedKey);
 
     if (!session) {
       return;

@@ -154,6 +154,34 @@ describe("recordUsage", () => {
     expect(mockInsert).not.toHaveBeenCalled();
   });
 
+  it("matches session key case-insensitively (OpenClaw normalizes to lowercase)", async () => {
+    const client = makeOpenClawClient([
+      {
+        key: "agent:agent-1:user-user-1", // lowercase from OpenClaw
+        inputTokens: 500,
+        outputTokens: 250,
+        model: "claude-sonnet-4-20250514",
+      },
+    ]);
+
+    // Pinchy generates mixed-case session key
+    await recordUsage({
+      openclawClient: client,
+      userId: "user-1",
+      agentId: "agent-1",
+      agentName: "Smithers",
+      sessionKey: "agent:agent-1:user-User-1", // mixed case
+    });
+
+    expect(mockInsert).toHaveBeenCalled();
+    expect(mockValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        inputTokens: 500,
+        outputTokens: 250,
+      })
+    );
+  });
+
   it("does not throw when sessions.list() fails", async () => {
     const client = {
       sessions: {
