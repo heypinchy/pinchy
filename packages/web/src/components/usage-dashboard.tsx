@@ -81,7 +81,8 @@ const PERIOD_OPTIONS: { label: string; value: DaysOption }[] = [
   { label: "All", value: "all" },
 ];
 
-export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
+export function UsageDashboard({ isEnterprise: initialEnterprise = false }: UsageDashboardProps) {
+  const [enterprise, setEnterprise] = useState(initialEnterprise);
   const [days, setDays] = useState<DaysOption>(30);
   const [selectedAgent, setSelectedAgent] = useState("all");
   const [summary, setSummary] = useState<SummaryResponse | null>(null);
@@ -89,6 +90,14 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
   const [knownAgents, setKnownAgents] = useState<AgentSummary[]>([]);
   const [byUser, setByUser] = useState<ByUserResponse | null>(null);
   const [activeTab, setActiveTab] = useState("by-agent");
+
+  // Fetch fresh enterprise status client-side (server value may be stale after dev toggle)
+  useEffect(() => {
+    fetch("/api/enterprise/status")
+      .then((r) => r.json())
+      .then((data) => setEnterprise(data.enterprise ?? false))
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -117,7 +126,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
   }, [days, selectedAgent]);
 
   useEffect(() => {
-    if (!isEnterprise || activeTab !== "by-user") return;
+    if (!enterprise || activeTab !== "by-user") return;
     let cancelled = false;
     const params = new URLSearchParams();
     params.set("days", days === "all" ? "0" : String(days));
@@ -133,7 +142,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
     return () => {
       cancelled = true;
     };
-  }, [isEnterprise, activeTab, days, selectedAgent]);
+  }, [enterprise, activeTab, days, selectedAgent]);
 
   function handleDaysChange(value: DaysOption) {
     setSummary(null);
@@ -205,10 +214,10 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
             <Button
               variant="outline"
               size="sm"
-              disabled={!isEnterprise}
-              title={!isEnterprise ? "Enterprise feature" : undefined}
+              disabled={!enterprise}
+              title={!enterprise ? "Enterprise feature" : undefined}
               onClick={() => {
-                if (!isEnterprise) return;
+                if (!enterprise) return;
                 const params = new URLSearchParams();
                 params.set("format", "csv");
                 params.set("days", days === "all" ? "0" : String(days));
@@ -355,7 +364,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
               </Card>
             </TabsContent>
             <TabsContent value="by-user">
-              {isEnterprise ? (
+              {enterprise ? (
                 <Card>
                   <CardHeader>
                     <CardTitle>Per-User Breakdown</CardTitle>

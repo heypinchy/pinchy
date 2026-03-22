@@ -65,9 +65,19 @@ describe("UsageDashboard", () => {
     fetchSpy.mockRestore();
   });
 
-  function mockBothEndpoints(summaryOverride?: object, timeseriesOverride?: object) {
+  function mockBothEndpoints(
+    summaryOverride?: object,
+    timeseriesOverride?: object,
+    enterpriseOverride?: boolean
+  ) {
     vi.mocked(global.fetch).mockImplementation((url) => {
       const urlStr = String(url);
+      if (urlStr.includes("/api/enterprise/status")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ enterprise: enterpriseOverride ?? false }),
+        } as Response);
+      }
       if (urlStr.includes("/api/usage/summary")) {
         return Promise.resolve({
           ok: true,
@@ -242,6 +252,12 @@ describe("UsageDashboard", () => {
     function mockAllEndpoints() {
       vi.mocked(global.fetch).mockImplementation((url) => {
         const urlStr = String(url);
+        if (urlStr.includes("/api/enterprise/status")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ enterprise: true }),
+          } as Response);
+        }
         if (urlStr.includes("/api/usage/summary")) {
           return Promise.resolve({
             ok: true,
@@ -355,7 +371,7 @@ describe("UsageDashboard", () => {
     });
 
     it("should enable 'Export CSV' button when enterprise", async () => {
-      mockBothEndpoints();
+      mockBothEndpoints(undefined, undefined, true);
       render(<UsageDashboard isEnterprise />);
 
       await waitFor(() => {
@@ -367,7 +383,7 @@ describe("UsageDashboard", () => {
     });
 
     it("should use correct URL for export button", async () => {
-      mockBothEndpoints();
+      mockBothEndpoints(undefined, undefined, true);
       const windowOpenSpy = vi.spyOn(window, "open").mockImplementation(() => null);
       const user = userEvent.setup();
       render(<UsageDashboard isEnterprise />);
