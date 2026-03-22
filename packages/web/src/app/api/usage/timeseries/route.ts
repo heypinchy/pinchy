@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
+import { parseDays } from "@/lib/usage-params";
 import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
 import { sql, sum, gte, eq, and } from "drizzle-orm";
@@ -9,8 +10,9 @@ export async function GET(request: NextRequest) {
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
   const url = new URL(request.url);
-  const daysParam = url.searchParams.get("days") || "30";
-  const days = daysParam === "all" ? 0 : parseInt(daysParam);
+  const daysOrError = parseDays(url.searchParams.get("days"));
+  if (daysOrError instanceof NextResponse) return daysOrError;
+  const days = daysOrError;
   const agentId = url.searchParams.get("agentId");
 
   const conditions = [];

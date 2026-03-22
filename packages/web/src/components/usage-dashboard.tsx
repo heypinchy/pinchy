@@ -113,18 +113,28 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
     const qs = params.toString() ? `?${params.toString()}` : "";
 
     Promise.all([
-      fetch(`/api/usage/summary${qs}`).then((r) => r.json()),
-      fetch(`/api/usage/timeseries${qs}`).then((r) => r.json()),
-    ]).then(([summaryData, timeseriesData]) => {
-      if (!cancelled) {
-        setSummary(summaryData);
-        setTimeseries(timeseriesData);
-        // Only update agent list when not filtering by agent (to keep full list)
-        if (selectedAgent === "all" && summaryData.agents?.length > 0) {
-          setKnownAgents(summaryData.agents);
+      fetch(`/api/usage/summary${qs}`).then((r) => {
+        if (!r.ok) throw new Error(`Summary API error: ${r.status}`);
+        return r.json();
+      }),
+      fetch(`/api/usage/timeseries${qs}`).then((r) => {
+        if (!r.ok) throw new Error(`Timeseries API error: ${r.status}`);
+        return r.json();
+      }),
+    ])
+      .then(([summaryData, timeseriesData]) => {
+        if (!cancelled) {
+          setSummary(summaryData);
+          setTimeseries(timeseriesData);
+          // Only update agent list when not filtering by agent (to keep full list)
+          if (selectedAgent === "all" && summaryData.agents?.length > 0) {
+            setKnownAgents(summaryData.agents);
+          }
         }
-      }
-    });
+      })
+      .catch((err) => {
+        console.error("[usage] Failed to fetch usage data:", err);
+      });
 
     return () => {
       cancelled = true;
@@ -140,9 +150,15 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
     const qs = params.toString() ? `?${params.toString()}` : "";
 
     fetch(`/api/usage/by-user${qs}`)
-      .then((r) => r.json())
+      .then((r) => {
+        if (!r.ok) throw new Error(`By-user API error: ${r.status}`);
+        return r.json();
+      })
       .then((data) => {
         if (!cancelled) setByUser(data);
+      })
+      .catch((err) => {
+        console.error("[usage] Failed to fetch by-user data:", err);
       });
 
     return () => {
@@ -186,10 +202,25 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <h2 className="text-2xl font-bold">Usage & Costs</h2>
-        <div className="flex items-center gap-3">
-          <div className="flex gap-1">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+          <select
+            aria-label="Select time period"
+            value={String(days)}
+            onChange={(e) => {
+              const v = e.target.value;
+              handleDaysChange(v === "all" ? "all" : (Number(v) as 7 | 30 | 90));
+            }}
+            className="border-input bg-transparent text-sm rounded-md border px-3 py-1.5 h-8 sm:hidden"
+          >
+            {PERIOD_OPTIONS.map((opt) => (
+              <option key={opt.label} value={String(opt.value)}>
+                {opt.label}
+              </option>
+            ))}
+          </select>
+          <div className="hidden sm:flex gap-1">
             {PERIOD_OPTIONS.map((opt) => (
               <Button
                 key={opt.label}
@@ -282,9 +313,9 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
             <CardHeader>
               <CardTitle>Daily Token Usage</CardTitle>
             </CardHeader>
-            <CardContent>
-              <ResponsiveContainer width="100%" height={300}>
-                <LineChart data={chartData}>
+            <CardContent className="px-2 sm:px-6">
+              <ResponsiveContainer width="100%" height={250} className="sm:!h-[300px]">
+                <LineChart data={chartData} margin={{ left: -10, right: 5, top: 5, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.9 0 0)" />
                   <XAxis
                     dataKey="date"
@@ -293,9 +324,10 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                       return date.toLocaleDateString("en-US", { month: "short", day: "numeric" });
                     }}
                     interval="preserveStartEnd"
-                    tick={{ fontSize: 12 }}
+                    tick={{ fontSize: 11 }}
+                    tickMargin={4}
                   />
-                  <YAxis tickFormatter={formatTokens} tick={{ fontSize: 12 }} />
+                  <YAxis tickFormatter={formatTokens} tick={{ fontSize: 11 }} width={45} />
                   <Tooltip
                     content={({ active, payload, label }) => {
                       if (!active || !payload?.length) return null;
@@ -344,7 +376,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
               <TabsTrigger value="by-agent">By Agent</TabsTrigger>
               <TabsTrigger value="by-user">By User</TabsTrigger>
             </TabsList>
-            <TabsContent value="by-agent">
+            <TabsContent value="by-agent" forceMount className="data-[state=inactive]:hidden">
               <Card>
                 <CardHeader>
                   <CardTitle>Per-Agent Breakdown</CardTitle>
@@ -390,7 +422,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                 </CardContent>
               </Card>
             </TabsContent>
-            <TabsContent value="by-user">
+            <TabsContent value="by-user" forceMount className="data-[state=inactive]:hidden">
               {enterprise ? (
                 <Card>
                   <CardHeader>

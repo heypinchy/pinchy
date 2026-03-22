@@ -1,16 +1,18 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
+import { parseDays } from "@/lib/usage-params";
 import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
-import { sum, max, gte, eq, and } from "drizzle-orm";
+import { max, sum, gte, eq, and } from "drizzle-orm";
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
   const url = new URL(request.url);
-  const daysParam = url.searchParams.get("days") || "30";
-  const days = daysParam === "all" ? 0 : parseInt(daysParam);
+  const daysOrError = parseDays(url.searchParams.get("days"));
+  if (daysOrError instanceof NextResponse) return daysOrError;
+  const days = daysOrError;
   const agentId = url.searchParams.get("agentId");
 
   const conditions = [];
@@ -25,6 +27,9 @@ export async function GET(request: NextRequest) {
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
+  // max(agentName) returns the lexicographically greatest name.
+  // If an agent is renamed, this may show either old or new name
+  // until all old records age out. Acceptable trade-off for simplicity.
   const agents = await db
     .select({
       agentId: usageRecords.agentId,

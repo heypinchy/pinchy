@@ -1,9 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
+import { parseDays } from "@/lib/usage-params";
 import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
 import { desc, gte, eq, and } from "drizzle-orm";
+
+const MAX_EXPORT_ROWS = 100_000;
 
 /** Escape a value for CSV per RFC 4180: wrap in double quotes if it contains comma, quote, or newline. */
 function csvEscape(value: string): string {
@@ -23,8 +26,9 @@ export async function GET(request: NextRequest) {
 
   const url = new URL(request.url);
   const format = url.searchParams.get("format") || "json";
-  const daysParam = url.searchParams.get("days") || "30";
-  const days = daysParam === "all" ? 0 : parseInt(daysParam);
+  const daysOrError = parseDays(url.searchParams.get("days"));
+  if (daysOrError instanceof NextResponse) return daysOrError;
+  const days = daysOrError;
   const agentId = url.searchParams.get("agentId");
 
   const conditions = [];
@@ -43,7 +47,8 @@ export async function GET(request: NextRequest) {
     .select()
     .from(usageRecords)
     .where(where)
-    .orderBy(desc(usageRecords.timestamp));
+    .orderBy(desc(usageRecords.timestamp))
+    .limit(MAX_EXPORT_ROWS);
 
   if (format === "csv") {
     const headers = [

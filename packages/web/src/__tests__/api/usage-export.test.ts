@@ -11,8 +11,9 @@ vi.mock("@/lib/enterprise", () => ({
   isEnterprise: vi.fn().mockResolvedValue(true),
 }));
 
-// Build chainable mock: select().from().where().orderBy()
-const mockOrderBy = vi.fn();
+// Build chainable mock: select().from().where().orderBy().limit()
+const mockLimit = vi.fn();
+const mockOrderBy = vi.fn().mockReturnValue({ limit: mockLimit });
 const mockWhere = vi.fn().mockReturnValue({ orderBy: mockOrderBy });
 const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
 const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
@@ -95,7 +96,8 @@ describe("GET /api/usage/export", () => {
     mockSelect.mockReturnValue({ from: mockFrom });
     mockFrom.mockReturnValue({ where: mockWhere });
     mockWhere.mockReturnValue({ orderBy: mockOrderBy });
-    mockOrderBy.mockResolvedValue(sampleRecords);
+    mockOrderBy.mockReturnValue({ limit: mockLimit });
+    mockLimit.mockResolvedValue(sampleRecords);
 
     const mod = await import("@/app/api/usage/export/route");
     GET = mod.GET;
@@ -165,7 +167,7 @@ describe("GET /api/usage/export", () => {
   });
 
   it("supports days filter", async () => {
-    mockOrderBy.mockResolvedValueOnce(sampleRecords);
+    mockLimit.mockResolvedValueOnce(sampleRecords);
 
     const request = new NextRequest("http://localhost:7777/api/usage/export?days=7");
     const response = await GET(request);
@@ -175,7 +177,7 @@ describe("GET /api/usage/export", () => {
   });
 
   it("supports agentId filter", async () => {
-    mockOrderBy.mockResolvedValueOnce([sampleRecords[0]]);
+    mockLimit.mockResolvedValueOnce([sampleRecords[0]]);
 
     const request = new NextRequest("http://localhost:7777/api/usage/export?agentId=a1");
     const response = await GET(request);

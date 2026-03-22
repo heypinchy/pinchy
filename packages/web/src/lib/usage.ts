@@ -22,6 +22,16 @@ export function _resetPricingCacheForTest(): void {
   cacheTimestamp = 0;
 }
 
+// Per-session serialization to prevent race conditions in delta computation.
+// Without this, concurrent recordUsage calls for the same session could read
+// stale DB sums and double-count tokens.
+const pendingBySession = new Map<string, Promise<void>>();
+
+/** Exported only for tests — resets the per-session serialization map. */
+export function _resetPendingSessionsForTest(): void {
+  pendingBySession.clear();
+}
+
 async function getModelPricing(
   openclawClient: OpenClawClient,
   modelId: string
@@ -55,8 +65,20 @@ async function getModelPricing(
 }
 
 export async function recordUsage(params: RecordUsageParams): Promise<void> {
+  const { sessionKey } = params;
+  // Normalize to lowercase to match OpenClaw's key format
+  const normalizedKey = sessionKey.toLowerCase();
+
+  // Chain calls for the same session to prevent concurrent delta computation
+  const prev = pendingBySession.get(normalizedKey) ?? Promise.resolve();
+  const next = prev.then(() => recordUsageImpl(params, normalizedKey)).catch(() => {});
+  pendingBySession.set(normalizedKey, next);
+  return next;
+}
+
+async function recordUsageImpl(params: RecordUsageParams, normalizedKey: string): Promise<void> {
   try {
-    const { openclawClient, userId, agentId, agentName, sessionKey } = params;
+    const { openclawClient, userId, agentId, agentName } = params;
 
     // Get current cumulative token counts from OpenClaw
     const listResult = (await openclawClient.sessions.list()) as {
@@ -70,8 +92,6 @@ export async function recordUsage(params: RecordUsageParams): Promise<void> {
       }>;
     };
     const sessions = listResult?.sessions ?? [];
-    // OpenClaw normalizes session keys to lowercase
-    const normalizedKey = sessionKey.toLowerCase();
     const session = sessions.find((s) => s.key === normalizedKey);
 
     if (!session) {
@@ -84,6 +104,7 @@ export async function recordUsage(params: RecordUsageParams): Promise<void> {
     const currentCacheWrite = session.cacheWriteTokens ?? 0;
 
     // Get sum of all previously recorded deltas for this session
+    // Use normalizedKey to match what we store (consistent casing)
     const [prev] = await db
       .select({
         totalInput: sum(usageRecords.inputTokens),
@@ -92,7 +113,7 @@ export async function recordUsage(params: RecordUsageParams): Promise<void> {
         totalCacheWrite: sum(usageRecords.cacheWriteTokens),
       })
       .from(usageRecords)
-      .where(eq(usageRecords.sessionKey, sessionKey));
+      .where(eq(usageRecords.sessionKey, normalizedKey));
 
     const prevInput = Number(prev?.totalInput ?? 0);
     const prevOutput = Number(prev?.totalOutput ?? 0);
@@ -129,7 +150,7 @@ export async function recordUsage(params: RecordUsageParams): Promise<void> {
       userId,
       agentId,
       agentName,
-      sessionKey,
+      sessionKey: normalizedKey,
       model,
       inputTokens: deltaInput,
       outputTokens: deltaOutput,
