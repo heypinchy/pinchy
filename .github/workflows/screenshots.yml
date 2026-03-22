@@ -28,8 +28,8 @@ jobs:
       - name: Install Geist font
         run: |
           mkdir -p ~/.local/share/fonts
-          gh release download 1.8.0 --repo vercel/geist-font --pattern 'geist-font-*.zip' --dir /tmp
-          unzip -o /tmp/geist-font-*.zip -d /tmp/geist
+          curl -fsSL -o /tmp/geist.zip "https://github.com/vercel/geist-font/releases/download/1.8.0/geist-font-1.8.0.zip"
+          unzip -o /tmp/geist.zip -d /tmp/geist
           find /tmp/geist -name '*.ttf' -o -name '*.otf' | xargs -I{} cp {} ~/.local/share/fonts/
           fc-cache -fv
 
