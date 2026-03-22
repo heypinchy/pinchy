@@ -5,6 +5,14 @@ import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
 import { desc, gte, eq, and } from "drizzle-orm";
 
+/** Escape a value for CSV per RFC 4180: wrap in double quotes if it contains comma, quote, or newline. */
+function csvEscape(value: string): string {
+  if (value.includes(",") || value.includes('"') || value.includes("\n")) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
@@ -15,7 +23,8 @@ export async function GET(request: NextRequest) {
 
   const url = new URL(request.url);
   const format = url.searchParams.get("format") || "json";
-  const days = parseInt(url.searchParams.get("days") || "30");
+  const daysParam = url.searchParams.get("days") || "30";
+  const days = daysParam === "all" ? 0 : parseInt(daysParam);
   const agentId = url.searchParams.get("agentId");
 
   const conditions = [];
@@ -55,7 +64,7 @@ export async function GET(request: NextRequest) {
           const val = r[h as keyof typeof r];
           if (val === null || val === undefined) return "";
           if (val instanceof Date) return val.toISOString();
-          return String(val);
+          return csvEscape(String(val));
         })
         .join(",")
     );

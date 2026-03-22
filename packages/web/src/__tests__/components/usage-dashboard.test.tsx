@@ -37,15 +37,10 @@ describe("UsageDashboard", () => {
         totalCost: "1.32",
       },
     ],
-    totals: {
-      totalInputTokens: "650000",
-      totalOutputTokens: "950000",
-      totalCost: "4.82",
-    },
   };
 
   const mockTimeseriesResponse = {
-    points: [
+    data: [
       {
         date: "2026-03-20",
         inputTokens: "200000",
@@ -206,17 +201,7 @@ describe("UsageDashboard", () => {
   });
 
   it("should show 'No usage data' when summary has no agents", async () => {
-    mockBothEndpoints(
-      {
-        agents: [],
-        totals: {
-          totalInputTokens: "0",
-          totalOutputTokens: "0",
-          totalCost: "0",
-        },
-      },
-      { points: [] }
-    );
+    mockBothEndpoints({ agents: [] }, { data: [] });
     render(<UsageDashboard />);
 
     await waitFor(() => {

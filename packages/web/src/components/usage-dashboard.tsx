@@ -32,11 +32,6 @@ interface AgentSummary {
 
 interface SummaryResponse {
   agents: AgentSummary[];
-  totals: {
-    totalInputTokens: string | null;
-    totalOutputTokens: string | null;
-    totalCost: string | null;
-  };
 }
 
 interface TimeseriesPoint {
@@ -59,7 +54,7 @@ interface ByUserResponse {
 }
 
 interface TimeseriesResponse {
-  points: TimeseriesPoint[];
+  data: TimeseriesPoint[];
 }
 
 interface UsageDashboardProps {
@@ -159,11 +154,13 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
 
   const loading = summary === null || timeseries === null;
 
-  const totalTokens =
-    Number(summary?.totals.totalInputTokens ?? 0) + Number(summary?.totals.totalOutputTokens ?? 0);
-  const totalCost = Number(summary?.totals.totalCost ?? 0);
+  const totalTokens = (summary?.agents ?? []).reduce(
+    (acc, a) => acc + Number(a.totalInputTokens ?? 0) + Number(a.totalOutputTokens ?? 0),
+    0
+  );
+  const totalCost = (summary?.agents ?? []).reduce((acc, a) => acc + Number(a.totalCost ?? 0), 0);
 
-  const chartData = (timeseries?.points ?? []).map((p) => ({
+  const chartData = (timeseries?.data ?? []).map((p) => ({
     date: p.date,
     inputTokens: Number(p.inputTokens ?? 0),
     outputTokens: Number(p.outputTokens ?? 0),
@@ -355,6 +352,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
                   const params = new URLSearchParams();
                   params.set("format", "csv");
                   if (days !== "all") params.set("days", String(days));
+                  if (selectedAgent !== "all") params.set("agentId", selectedAgent);
                   window.open(`/api/usage/export?${params.toString()}`);
                 }}
               >
@@ -367,6 +365,7 @@ export function UsageDashboard({ isEnterprise = false }: UsageDashboardProps) {
                   const params = new URLSearchParams();
                   params.set("format", "json");
                   if (days !== "all") params.set("days", String(days));
+                  if (selectedAgent !== "all") params.set("agentId", selectedAgent);
                   window.open(`/api/usage/export?${params.toString()}`);
                 }}
               >

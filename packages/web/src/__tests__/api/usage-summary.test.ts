@@ -31,6 +31,7 @@ vi.mock("@/db/schema", () => ({
 
 vi.mock("drizzle-orm", () => ({
   sum: vi.fn((col) => `sum(${col})`),
+  max: vi.fn((col) => `max(${col})`),
   gte: vi.fn((col, val) => ({ col, val, op: "gte" })),
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...args) => args),

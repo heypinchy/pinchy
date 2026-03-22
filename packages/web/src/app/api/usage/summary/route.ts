@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
-import { sum, gte, eq, and } from "drizzle-orm";
+import { sum, max, gte, eq, and } from "drizzle-orm";
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -28,14 +28,14 @@ export async function GET(request: NextRequest) {
   const agents = await db
     .select({
       agentId: usageRecords.agentId,
-      agentName: usageRecords.agentName,
+      agentName: max(usageRecords.agentName),
       totalInputTokens: sum(usageRecords.inputTokens),
       totalOutputTokens: sum(usageRecords.outputTokens),
       totalCost: sum(usageRecords.estimatedCostUsd),
     })
     .from(usageRecords)
     .where(where)
-    .groupBy(usageRecords.agentId, usageRecords.agentName);
+    .groupBy(usageRecords.agentId);
 
   return NextResponse.json({ agents });
 }

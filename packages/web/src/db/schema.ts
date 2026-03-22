@@ -225,6 +225,7 @@ export const usageRecords = pgTable(
     index("idx_usage_timestamp").on(table.timestamp),
     index("idx_usage_user").on(table.userId),
     index("idx_usage_agent").on(table.agentId),
+    index("idx_usage_session_key").on(table.sessionKey),
   ]
 );
 
