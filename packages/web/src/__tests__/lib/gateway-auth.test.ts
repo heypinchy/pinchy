@@ -60,6 +60,21 @@ describe("validateGatewayToken", () => {
     expect(validateGatewayToken(headers)).toBe(false);
   });
 
+  it("uses constant-time comparison to prevent timing attacks", async () => {
+    const { constantTimeEqual } = await import("@/lib/gateway-auth");
+
+    // timingSafeEqual requires equal-length buffers — our wrapper must handle
+    // different lengths safely by returning false (not throwing)
+    expect(constantTimeEqual("short", "much-longer-token")).toBe(false);
+    expect(constantTimeEqual("much-longer-token", "short")).toBe(false);
+    expect(constantTimeEqual("", "non-empty")).toBe(false);
+    expect(constantTimeEqual("non-empty", "")).toBe(false);
+
+    // Same-length matching and non-matching
+    expect(constantTimeEqual("secret-123", "secret-123")).toBe(true);
+    expect(constantTimeEqual("secret-123", "secret-456")).toBe(false);
+  });
+
   it("returns false when config file does not exist", async () => {
     // Don't write the config file
     try {
