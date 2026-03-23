@@ -2,6 +2,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import { randomBytes } from "crypto";
 import { dirname } from "path";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
+import { getDefaultModel } from "@/lib/provider-models";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { getSetting } from "@/lib/settings";
@@ -117,7 +118,7 @@ export async function regenerateOpenClawConfig() {
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
   const defaults: Record<string, unknown> = {};
   if (defaultProvider && PROVIDERS[defaultProvider]) {
-    defaults.model = { primary: PROVIDERS[defaultProvider].defaultModel };
+    defaults.model = { primary: await getDefaultModel(defaultProvider) };
   }
 
   // Build agents list with OpenClaw-side workspace paths, tools.deny, and plugin configs

@@ -103,6 +103,36 @@ async function fetchModelsForProvider(
   return config.transform(data);
 }
 
+const DEFAULT_MODEL_PATTERNS: Record<ProviderName, RegExp> = {
+  anthropic: /haiku/,
+  openai: /gpt-.*-mini/,
+  google: /gemini-.*-flash/,
+};
+
+const PREVIEW_PATTERN = /preview/i;
+
+export function selectDefaultModel(provider: ProviderName, models: ModelInfo[]): string {
+  const pattern = DEFAULT_MODEL_PATTERNS[provider];
+  const candidates = models.filter((m) => pattern.test(m.id) && !PREVIEW_PATTERN.test(m.id));
+
+  if (candidates.length > 0) {
+    return candidates[candidates.length - 1].id;
+  }
+
+  return PROVIDERS[provider].defaultModel;
+}
+
+export async function getDefaultModel(provider: ProviderName): Promise<string> {
+  const allProviders = await fetchProviderModels();
+  const providerModels = allProviders.find((p) => p.id === provider);
+
+  if (!providerModels || providerModels.models.length === 0) {
+    return PROVIDERS[provider].defaultModel;
+  }
+
+  return selectDefaultModel(provider, providerModels.models);
+}
+
 export async function fetchProviderModels(): Promise<ProviderModels[]> {
   const now = Date.now();
   if (cachedResult && now - cachedAt < CACHE_TTL_MS) {

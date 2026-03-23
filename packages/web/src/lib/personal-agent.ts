@@ -8,7 +8,8 @@ import {
 } from "@/lib/workspace";
 import { getContextForAgent } from "@/lib/context-sync";
 import { getSetting } from "@/lib/settings";
-import { PROVIDERS, type ProviderName } from "@/lib/providers";
+import { type ProviderName } from "@/lib/providers";
+import { getDefaultModel } from "@/lib/provider-models";
 import { SMITHERS_SOUL_MD } from "@/lib/smithers-soul";
 import { getOnboardingPrompt, ONBOARDING_GREETING } from "@/lib/onboarding-prompt";
 
@@ -69,7 +70,7 @@ export async function seedPersonalAgent(userId: string, isAdmin = false) {
 
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
   const model = defaultProvider
-    ? PROVIDERS[defaultProvider].defaultModel
+    ? await getDefaultModel(defaultProvider)
     : "anthropic/claude-sonnet-4-20250514";
 
   return createSmithersAgent({ model, ownerId: userId, isPersonal: true, isAdmin });

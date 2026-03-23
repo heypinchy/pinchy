@@ -279,6 +279,98 @@ describe("fetchProviderModels", () => {
   });
 });
 
+describe("selectDefaultModel", () => {
+  it("selects the smallest Anthropic model (haiku pattern)", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    const models = [
+      { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" },
+      { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+      { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
+    ];
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
+  });
+
+  it("selects the mini OpenAI model (gpt-*-mini pattern)", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    const models = [
+      { id: "openai/gpt-4o", name: "gpt-4o" },
+      { id: "openai/gpt-4o-mini", name: "gpt-4o-mini" },
+      { id: "openai/o1", name: "o1" },
+    ];
+    expect(selectDefaultModel("openai", models)).toBe("openai/gpt-4o-mini");
+  });
+
+  it("selects the flash Google model (gemini-*-flash pattern)", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    const models = [
+      { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+      { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    ];
+    expect(selectDefaultModel("google", models)).toBe("google/gemini-2.5-flash");
+  });
+
+  it("prefers stable versions over preview versions", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    const models = [
+      { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
+      { id: "anthropic/claude-haiku-4-5-20251001-preview", name: "Claude Haiku 4.5 Preview" },
+    ];
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
+  });
+
+  it("falls back to hardcoded default when no pattern matches", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    const models = [{ id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" }];
+    // No haiku in the list — falls back to PROVIDERS[provider].defaultModel
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
+  });
+
+  it("falls back to hardcoded default when model list is empty", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    expect(selectDefaultModel("openai", [])).toBe("openai/gpt-4o-mini");
+  });
+});
+
+describe("getDefaultModel", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCache();
+    vi.mocked(getSetting).mockResolvedValue(null);
+  });
+
+  it("returns dynamically selected model from live model list", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test-key";
+      return null;
+    });
+
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: "claude-opus-4-6", display_name: "Claude Opus 4.6" },
+            { id: "claude-sonnet-4-6", display_name: "Claude Sonnet 4.6" },
+            { id: "claude-haiku-4-5-20251001", display_name: "Claude Haiku 4.5" },
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+
+    const { getDefaultModel } = await import("@/lib/provider-models");
+    const model = await getDefaultModel("anthropic");
+    expect(model).toBe("anthropic/claude-haiku-4-5-20251001");
+  });
+
+  it("falls back to hardcoded default when provider has no API key", async () => {
+    vi.mocked(getSetting).mockResolvedValue(null);
+
+    const { getDefaultModel } = await import("@/lib/provider-models");
+    const model = await getDefaultModel("openai");
+    expect(model).toBe("openai/gpt-4o-mini");
+  });
+});
+
 describe("vision capability detection", () => {
   it("marks anthropic, openai, google as vision-capable providers", async () => {
     const { VISION_CAPABLE_PROVIDERS } = await import("@/lib/provider-models");
