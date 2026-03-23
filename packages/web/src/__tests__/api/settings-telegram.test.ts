@@ -36,17 +36,11 @@ vi.mock("drizzle-orm", async (importOriginal) => {
   };
 });
 
-const mockPairingApprove = vi.fn();
 const mockConfigGet = vi.fn().mockResolvedValue({ hash: "abc123" });
 const mockConfigPatch = vi.fn().mockResolvedValue(undefined);
-const mockHasMethod = vi.fn().mockReturnValue(true);
 
 vi.mock("@/server/openclaw-client", () => ({
   getOpenClawClient: () => ({
-    hasMethod: (...args: unknown[]) => mockHasMethod(...args),
-    pairing: {
-      approve: (...args: unknown[]) => mockPairingApprove(...args),
-    },
     config: {
       get: (...args: unknown[]) => mockConfigGet(...args),
       patch: (...args: unknown[]) => mockConfigPatch(...args),
@@ -117,67 +111,53 @@ describe("POST /api/settings/telegram", () => {
     mockInsert.mockReturnValue({
       values: vi.fn().mockResolvedValue(undefined),
     });
-    mockPairingApprove.mockResolvedValue({ userId: "8734062810" });
     mockConfigGet.mockResolvedValue({ hash: "abc123" });
     mockConfigPatch.mockResolvedValue(undefined);
-    mockHasMethod.mockReturnValue(true);
   });
 
   it("returns 401 when unauthenticated", async () => {
     mockGetSession.mockResolvedValueOnce(null);
 
-    const response = await POST(makePostRequest({ code: "ABC123" }));
+    const response = await POST(makePostRequest({ telegramUserId: "12345" }));
     expect(response.status).toBe(401);
   });
 
-  it("returns 400 when code is missing", async () => {
+  it("returns 400 when telegramUserId is missing", async () => {
     const response = await POST(makePostRequest({}));
     expect(response.status).toBe(400);
-
-    const data = await response.json();
-    expect(data.error).toBe("Pairing code is required");
   });
 
-  it("returns 400 when code is not a string", async () => {
-    const response = await POST(makePostRequest({ code: 123 }));
+  it("returns 400 when telegramUserId is not a string", async () => {
+    const response = await POST(makePostRequest({ telegramUserId: 123 }));
     expect(response.status).toBe(400);
   });
 
-  it("approves pairing code, stores link, and updates config", async () => {
-    const response = await POST(makePostRequest({ code: "ABC123" }));
+  it("adds user to allowFrom via config.patch, stores link, and updates identityLinks", async () => {
+    const response = await POST(makePostRequest({ telegramUserId: "8734062810" }));
     expect(response.status).toBe(200);
 
     const data = await response.json();
     expect(data).toEqual({ linked: true, telegramUserId: "8734062810" });
 
-    // Verify pairing was approved
-    expect(mockPairingApprove).toHaveBeenCalledWith("telegram", "ABC123");
-
     // Verify link was stored in DB
     expect(mockInsert).toHaveBeenCalled();
 
-    // Verify config was patched with identity link
-    expect(mockConfigPatch).toHaveBeenCalledWith(
-      expect.stringContaining("telegram:8734062810"),
-      "abc123"
-    );
+    // Verify config was patched with allowFrom AND identityLinks
+    expect(mockConfigPatch).toHaveBeenCalledWith(expect.stringContaining("8734062810"), "abc123");
+    const patchArg = mockConfigPatch.mock.calls[0][0];
+    const patch = JSON.parse(patchArg);
+    expect(patch.channels.telegram.allowFrom).toContain("8734062810");
+    expect(patch.session.identityLinks["user-1"]).toEqual(["telegram:8734062810"]);
   });
 
-  it("returns 501 when pairing method is not available", async () => {
-    mockHasMethod.mockReturnValueOnce(false);
+  it("returns 502 when config.patch fails", async () => {
+    mockConfigPatch.mockRejectedValueOnce(new Error("timeout"));
 
-    const response = await POST(makePostRequest({ code: "ABC123" }));
-    expect(response.status).toBe(501);
-  });
+    const response = await POST(makePostRequest({ telegramUserId: "12345" }));
+    expect(response.status).toBe(502);
 
-  it("returns 400 when pairing fails", async () => {
-    mockPairingApprove.mockRejectedValueOnce(new Error("Invalid code"));
-
-    const response = await POST(makePostRequest({ code: "BADCODE" }));
-    expect(response.status).toBe(400);
-
-    const data = await response.json();
-    expect(data.error).toBe("Invalid code");
+    // Verify link was NOT stored (OpenClaw first, DB second)
+    expect(mockInsert).not.toHaveBeenCalled();
   });
 });
 

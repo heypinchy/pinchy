@@ -67,7 +67,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
     }
   }, []);
 
-  // Fetch Smithers ID for inline setup
+  // Find Smithers agent for inline setup
   useEffect(() => {
     if (isAdmin) {
       fetch("/api/agents")
@@ -77,7 +77,9 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
         })
         .then((data) => {
           const agents = Array.isArray(data) ? data : [];
-          const smithers = agents.find((a: { isPersonal: boolean }) => !a.isPersonal);
+          const smithers = agents.find(
+            (a: { avatarSeed: string | null }) => a.avatarSeed === "__smithers__"
+          );
           if (smithers) setSmithersId(smithers.id);
         })
         .catch(() => {});
@@ -96,7 +98,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
       const res = await fetch("/api/settings/telegram", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ code: code.trim() }),
+        body: JSON.stringify({ telegramUserId: code.trim() }),
       });
 
       if (res.ok) {
@@ -281,8 +283,8 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
               <QRCodeSVG value={botLink} size={180} />
             </div>
             <p className="text-sm text-muted-foreground text-center max-w-sm">
-              Scan this code with your phone to open Telegram. Send any message — you&apos;ll
-              receive a pairing code.
+              Scan this code with your phone to open Telegram. Send any message — the bot will reply
+              with your Telegram user ID.
             </p>
             <a
               href={botLink}
@@ -296,11 +298,11 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="pairing-code">Pairing Code</Label>
+            <Label htmlFor="telegram-user-id">Telegram User ID</Label>
             <div className="flex items-center gap-2">
               <Input
-                id="pairing-code"
-                placeholder="Enter pairing code"
+                id="telegram-user-id"
+                placeholder="Enter your Telegram user ID"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 onKeyDown={(e) => {

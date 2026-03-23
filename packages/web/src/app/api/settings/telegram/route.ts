@@ -29,38 +29,43 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { code } = await req.json();
-  if (!code || typeof code !== "string") {
-    return NextResponse.json({ error: "Pairing code is required" }, { status: 400 });
+  const { telegramUserId } = await req.json();
+  if (!telegramUserId || typeof telegramUserId !== "string") {
+    return NextResponse.json({ error: "Telegram user ID is required" }, { status: 400 });
   }
 
-  const client = getOpenClawClient();
-
-  // Approve the pairing via OpenClaw Gateway
-  let telegramUserId: string;
+  let client;
   try {
-    if (client.hasMethod("pairing.approve")) {
-      const result = await client.pairing.approve("telegram", code);
-      telegramUserId = String((result as Record<string, unknown>)?.userId ?? "");
-    } else {
-      return NextResponse.json(
-        {
-          error: "Pairing approval not available. Please contact your administrator.",
-        },
-        { status: 501 }
-      );
-    }
-  } catch (err) {
+    client = getOpenClawClient();
+  } catch {
     return NextResponse.json(
-      { error: err instanceof Error ? err.message : "Pairing failed" },
-      { status: 400 }
+      { error: "Agent runtime is not connected. Please try again in a moment." },
+      { status: 503 }
     );
   }
 
-  if (!telegramUserId) {
+  // Add Telegram user to allowFrom and set up identity link via config.patch
+  const configResult = await client.config.get();
+  const hash = (configResult as Record<string, unknown>).hash as string;
+  const patch = {
+    channels: {
+      telegram: {
+        allowFrom: [telegramUserId],
+      },
+    },
+    session: {
+      identityLinks: {
+        [session.user.id]: [`telegram:${telegramUserId}`],
+      },
+    },
+  };
+
+  try {
+    await client.config.patch(JSON.stringify(patch), hash);
+  } catch {
     return NextResponse.json(
-      { error: "Could not determine Telegram user ID from pairing response" },
-      { status: 500 }
+      { error: "Failed to update agent runtime configuration. Please try again." },
+      { status: 502 }
     );
   }
 
@@ -70,18 +75,6 @@ export async function POST(req: Request) {
     channel: "telegram",
     channelUserId: telegramUserId,
   });
-
-  // Update identityLinks in OpenClaw config
-  const configResult = await client.config.get();
-  const hash = (configResult as Record<string, unknown>).hash as string;
-  const patch = {
-    session: {
-      identityLinks: {
-        [session.user.id]: [`telegram:${telegramUserId}`],
-      },
-    },
-  };
-  await client.config.patch(JSON.stringify(patch), hash);
 
   return NextResponse.json({ linked: true, telegramUserId });
 }
@@ -98,13 +91,23 @@ export async function DELETE() {
     .where(and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")));
 
   // Remove from identityLinks in OpenClaw config
-  const client = getOpenClawClient();
-  const configResult = await client.config.get();
-  const hash = (configResult as Record<string, unknown>).hash as string;
-  await client.config.patch(
-    JSON.stringify({ session: { identityLinks: { [session.user.id]: null } } }),
-    hash
-  );
+  let client;
+  try {
+    client = getOpenClawClient();
+  } catch {
+    return NextResponse.json({ linked: false });
+  }
+
+  try {
+    const configResult = await client.config.get();
+    const hash = (configResult as Record<string, unknown>).hash as string;
+    await client.config.patch(
+      JSON.stringify({ session: { identityLinks: { [session.user.id]: null } } }),
+      hash
+    );
+  } catch {
+    // Config patch failed but DB link is already removed — acceptable
+  }
 
   return NextResponse.json({ linked: false });
 }

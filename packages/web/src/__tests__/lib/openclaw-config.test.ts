@@ -748,4 +748,95 @@ describe("restart-state integration", () => {
 
     expect(restartState.notifyRestart).toHaveBeenCalledOnce();
   });
+
+  it("should include Telegram channel config when bot token is configured", async () => {
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      if (key === "telegram_bot_username:agent-1") return "acme_smithers_bot";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.channels.telegram).toEqual({
+      enabled: true,
+      botToken: "123456:ABC-token",
+      dmPolicy: "pairing",
+    });
+    expect(config.bindings).toEqual([{ agentId: "agent-1", match: { channel: "telegram" } }]);
+    expect(config.session.dmScope).toBe("per-peer");
+  });
+
+  it("should not include Telegram config when no bot token is configured", async () => {
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.channels).toBeUndefined();
+    expect(config.bindings).toBeUndefined();
+  });
+
+  it("should include identityLinks from channel_links table", async () => {
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          // First call: agents table
+          return Promise.resolve([
+            { id: "agent-1", name: "Smithers", model: "m", allowedTools: [] },
+          ]);
+        }
+        // Second call: channel_links table
+        return Promise.resolve([
+          { userId: "user-1", channel: "telegram", channelUserId: "999888" },
+        ]);
+      }),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "token";
+      if (key === "telegram_bot_username:agent-1") return "bot";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.session.identityLinks).toEqual({
+      "user-1": ["telegram:999888"],
+    });
+  });
 });

@@ -3,7 +3,7 @@ import { randomBytes } from "crypto";
 import { dirname } from "path";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { agents, channelLinks } from "@/db/schema";
 import { getSetting } from "@/lib/settings";
 import { computeDeniedGroups } from "@/lib/tool-registry";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
@@ -221,6 +221,37 @@ export async function regenerateOpenClawConfig() {
 
   if (Object.keys(entries).length > 0) {
     config.plugins = { allow: allowedPlugins, entries };
+  }
+
+  // Build Telegram channel config from DB settings
+  for (const agent of allAgents) {
+    const botToken = await getSetting(`telegram_bot_token:${agent.id}`);
+    if (botToken) {
+      config.channels = {
+        telegram: {
+          enabled: true,
+          botToken,
+          dmPolicy: "pairing",
+        },
+      };
+      config.bindings = [{ agentId: agent.id, match: { channel: "telegram" } }];
+
+      // Build identity links from channel_links table
+      const links = await db.select().from(channelLinks);
+      const identityLinks: Record<string, string[]> = {};
+      for (const link of links) {
+        if (link.channel === "telegram") {
+          identityLinks[link.userId] = [`telegram:${link.channelUserId}`];
+        }
+      }
+
+      config.session = {
+        dmScope: "per-peer",
+        ...(Object.keys(identityLinks).length > 0 && { identityLinks }),
+      };
+
+      break; // Only one Telegram channel supported for now
+    }
   }
 
   const dir = dirname(CONFIG_PATH);

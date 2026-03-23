@@ -61,7 +61,7 @@ describe("TelegramLinkSettings", () => {
       expect(screen.getByText(/Scan this code/i)).toBeInTheDocument();
     });
     expect(screen.getByText(/open in Telegram/i)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/pairing code/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/telegram user id/i)).toBeInTheDocument();
 
     // QR code link should point to the bot
     const link = screen.getByRole("link", { name: /open in Telegram/i });

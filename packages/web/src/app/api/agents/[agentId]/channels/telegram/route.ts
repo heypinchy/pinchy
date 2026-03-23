@@ -45,12 +45,17 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
     return NextResponse.json({ error: validation.error }, { status: 400 });
   }
 
-  // Store encrypted token and bot username
-  await setSetting(`telegram_bot_token:${agentId}`, botToken, true);
-  await setSetting(`telegram_bot_username:${agentId}`, validation.botUsername!, false);
+  // Push config to OpenClaw FIRST — if this fails, don't persist anything
+  let client;
+  try {
+    client = getOpenClawClient();
+  } catch {
+    return NextResponse.json(
+      { error: "Agent runtime is not connected. Please try again in a moment." },
+      { status: 503 }
+    );
+  }
 
-  // Push config to OpenClaw via config.patch
-  const client = getOpenClawClient();
   const configResult = await client.config.get();
   const hash = (configResult as Record<string, unknown>).hash as string;
 
@@ -81,7 +86,18 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
     ],
   };
 
-  await client.config.patch(JSON.stringify(patch), hash);
+  try {
+    await client.config.patch(JSON.stringify(patch), hash);
+  } catch {
+    return NextResponse.json(
+      { error: "Failed to configure the agent runtime. Please try again." },
+      { status: 502 }
+    );
+  }
+
+  // OpenClaw accepted — now persist to DB
+  await setSetting(`telegram_bot_token:${agentId}`, botToken, true);
+  await setSetting(`telegram_bot_username:${agentId}`, validation.botUsername!, false);
 
   await appendAuditLog({
     actorType: "user",
