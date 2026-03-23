@@ -341,23 +341,103 @@ describe("pinchy-audit plugin", () => {
     });
   });
 
-  it("does not throw when audit endpoint fails", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network down")));
+  describe("audit failure handling", () => {
+    it("retries on transient failure and succeeds on subsequent attempt", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("network down"))
+        .mockResolvedValueOnce({ ok: true });
+      vi.stubGlobal("fetch", fetchMock);
 
-    const { default: plugin } = await import("./index");
-    plugin.register?.(
-      createMockApi({
-        apiBaseUrl: "http://pinchy:7777",
-        gatewayToken: "gw-token",
-      }) as any
-    );
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
 
-    const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
-    await expect(
-      beforeHook(
-        { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
-        { toolName: "pinchy_read" }
-      )
-    ).resolves.toBeUndefined();
+      const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+      await expect(
+        beforeHook(
+          { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+          { toolName: "pinchy_read" }
+        )
+      ).resolves.toBeUndefined();
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("retries on non-ok HTTP response", async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: false, status: 500 })
+        .mockResolvedValueOnce({ ok: true });
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const afterHook = mockOn.mock.calls.find((c) => c[0] === "after_tool_call")?.[1];
+      await expect(
+        afterHook(
+          { toolName: "pinchy_read", params: {}, result: "ok" },
+          { toolName: "pinchy_read", agentId: "agent-1" }
+        )
+      ).resolves.toBeUndefined();
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("throws after all retries are exhausted (fail-closed)", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockRejectedValue(new Error("network down"))
+      );
+
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const beforeHook = mockOn.mock.calls.find((c) => c[0] === "before_tool_call")?.[1];
+      await expect(
+        beforeHook(
+          { toolName: "pinchy_read", params: {}, runId: "run-1", toolCallId: "tool-1" },
+          { toolName: "pinchy_read" }
+        )
+      ).rejects.toThrow("network down");
+    });
+
+    it("throws after all retries exhausted on non-ok HTTP responses", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({ ok: false, status: 500 })
+      );
+
+      const { default: plugin } = await import("./index");
+      plugin.register?.(
+        createMockApi({
+          apiBaseUrl: "http://pinchy:7777",
+          gatewayToken: "gw-token",
+        }) as any
+      );
+
+      const afterHook = mockOn.mock.calls.find((c) => c[0] === "after_tool_call")?.[1];
+      await expect(
+        afterHook(
+          { toolName: "pinchy_read", params: {}, result: "ok" },
+          { toolName: "pinchy_read", agentId: "agent-1" }
+        )
+      ).rejects.toThrow(/audit endpoint returned 500/);
+    });
   });
 });
