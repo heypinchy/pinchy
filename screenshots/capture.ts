@@ -163,6 +163,12 @@ test.describe("Feature screenshots", () => {
     await screenshot(page, "groups.png");
   });
 
+  test("usage dashboard", async ({ page }) => {
+    await page.goto(`${BASE_URL}/usage`);
+    await page.waitForTimeout(2500);
+    await screenshot(page, "usage-dashboard.png");
+  });
+
   test("provider settings", async ({ page }) => {
     await page.goto(`${BASE_URL}/settings`);
     await page.waitForTimeout(1500);
