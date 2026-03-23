@@ -26,7 +26,7 @@ vi.mock("@/lib/provider-models", () => ({
 }));
 
 vi.mock("@/lib/providers", () => ({
-  validateProviderKey: vi.fn().mockResolvedValue(true),
+  validateProviderKey: vi.fn().mockResolvedValue({ valid: true }),
   PROVIDERS: {
     anthropic: {
       name: "Anthropic",

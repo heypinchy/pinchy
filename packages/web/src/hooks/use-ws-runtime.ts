@@ -75,6 +75,7 @@ export function useWsRuntime(agentId: string): {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldRecoverFromHistoryRef = useRef(false);
+  const pendingMessageRef = useRef<string | null>(null);
 
   // Reset state when switching agents — prevents stale messages from
   // one agent blocking history load for a different agent.
@@ -101,6 +102,12 @@ export function useWsRuntime(agentId: string): {
         setIsConnected(true);
         reconnectAttemptRef.current = 0;
         ws.send(JSON.stringify({ type: "history", agentId }));
+
+        // Flush any message that was queued while disconnected/connecting
+        if (pendingMessageRef.current) {
+          ws.send(pendingMessageRef.current);
+          pendingMessageRef.current = null;
+        }
       };
 
       ws.onclose = () => {
@@ -327,13 +334,18 @@ export function useWsRuntime(agentId: string): {
         wsContent = text;
       }
 
-      wsRef.current?.send(
-        JSON.stringify({
-          type: "message",
-          content: wsContent,
-          agentId,
-        })
-      );
+      const payload = JSON.stringify({
+        type: "message",
+        content: wsContent,
+        agentId,
+      });
+
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(payload);
+      } else {
+        // Queue for delivery when connection opens
+        pendingMessageRef.current = payload;
+      }
     },
     [agentId]
   );

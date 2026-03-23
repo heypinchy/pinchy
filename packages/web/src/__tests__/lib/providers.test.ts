@@ -8,12 +8,12 @@ describe("validateProviderKey", () => {
     vi.clearAllMocks();
   });
 
-  it("should return true for valid Anthropic key", async () => {
+  it("should return valid for valid Anthropic key", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 200 }));
 
     const result = await validateProviderKey("anthropic", "sk-ant-valid");
 
-    expect(result).toBe(true);
+    expect(result).toEqual({ valid: true });
     expect(fetch).toHaveBeenCalledWith(
       "https://api.anthropic.com/v1/models",
       expect.objectContaining({
@@ -24,11 +24,44 @@ describe("validateProviderKey", () => {
     );
   });
 
-  it("should return false for invalid Anthropic key", async () => {
+  it("should return invalid with error when both attempts return 401", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 401 }));
 
     const result = await validateProviderKey("anthropic", "sk-ant-invalid");
-    expect(result).toBe(false);
+    expect(result).toEqual({ valid: false, error: "invalid_key" });
+    // Should retry once before declaring invalid
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("should return valid when first attempt is 401 but retry succeeds", async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(new Response("{}", { status: 401 }))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+
+    const result = await validateProviderKey("anthropic", "sk-ant-flaky");
+    expect(result).toEqual({ valid: true });
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it("should not retry for non-401/403 errors", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 500 }));
+
+    await validateProviderKey("anthropic", "sk-ant-key");
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("should return provider_error for 5xx responses", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 500 }));
+
+    const result = await validateProviderKey("anthropic", "sk-ant-key");
+    expect(result).toEqual({ valid: false, error: "provider_error", status: 500 });
+  });
+
+  it("should return provider_error for 429 rate limiting", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 429 }));
+
+    const result = await validateProviderKey("anthropic", "sk-ant-key");
+    expect(result).toEqual({ valid: false, error: "provider_error", status: 429 });
   });
 
   it("should return true for valid OpenAI key", async () => {
@@ -36,7 +69,7 @@ describe("validateProviderKey", () => {
 
     const result = await validateProviderKey("openai", "sk-valid");
 
-    expect(result).toBe(true);
+    expect(result).toEqual({ valid: true });
     expect(fetch).toHaveBeenCalledWith(
       "https://api.openai.com/v1/models",
       expect.objectContaining({
@@ -52,22 +85,29 @@ describe("validateProviderKey", () => {
 
     const result = await validateProviderKey("google", "AIza-valid");
 
-    expect(result).toBe(true);
+    expect(result).toEqual({ valid: true });
     expect(fetch).toHaveBeenCalledWith(
       "https://generativelanguage.googleapis.com/v1/models?key=AIza-valid",
       expect.any(Object)
     );
   });
 
-  it("should return false on network error", async () => {
-    vi.mocked(fetch).mockRejectedValue(new Error("Network error"));
+  it("should return network_error on fetch failure", async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error("getaddrinfo ENOTFOUND"));
 
     const result = await validateProviderKey("anthropic", "sk-ant-key");
-    expect(result).toBe(false);
+    expect(result).toEqual({ valid: false, error: "network_error" });
   });
 
   it("should reject unknown provider", async () => {
     await expect(validateProviderKey("unknown" as any, "key")).rejects.toThrow("Unknown provider");
+  });
+
+  it("should return invalid_key for 403 Forbidden", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 403 }));
+
+    const result = await validateProviderKey("anthropic", "sk-ant-key");
+    expect(result).toEqual({ valid: false, error: "invalid_key" });
   });
 });
 

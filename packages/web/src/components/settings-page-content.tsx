@@ -150,7 +150,7 @@ export function SettingsPageContent({
           </TabsContent>
 
           <TabsContent value="telegram">
-            <TelegramLinkSettings />
+            <TelegramLinkSettings isAdmin={isAdmin} />
           </TabsContent>
 
           {isAdmin && (

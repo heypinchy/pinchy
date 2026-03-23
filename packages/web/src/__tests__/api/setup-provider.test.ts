@@ -9,7 +9,7 @@ vi.mock("@/lib/api-auth", () => ({
 }));
 
 vi.mock("@/lib/providers", () => ({
-  validateProviderKey: vi.fn().mockResolvedValue(true),
+  validateProviderKey: vi.fn().mockResolvedValue({ valid: true }),
   PROVIDERS: {
     anthropic: {
       name: "Anthropic",
@@ -202,8 +202,8 @@ describe("POST /api/setup/provider", () => {
     expect(response.status).toBe(400);
   });
 
-  it("should return 422 when key validation fails", async () => {
-    vi.mocked(validateProviderKey).mockResolvedValueOnce(false);
+  it("should return 422 when key is invalid", async () => {
+    vi.mocked(validateProviderKey).mockResolvedValueOnce({ valid: false, error: "invalid_key" });
 
     const response = await POST(
       makeRequest({
@@ -215,6 +215,41 @@ describe("POST /api/setup/provider", () => {
     expect(response.status).toBe(422);
     const data = await response.json();
     expect(data.error).toContain("Invalid API key");
+  });
+
+  it("should return 502 when provider API is unreachable", async () => {
+    vi.mocked(validateProviderKey).mockResolvedValueOnce({ valid: false, error: "network_error" });
+
+    const response = await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-key",
+      }) as any
+    );
+
+    expect(response.status).toBe(502);
+    const data = await response.json();
+    expect(data.error).toContain("Could not reach");
+  });
+
+  it("should return 502 with helpful message when provider returns server error", async () => {
+    vi.mocked(validateProviderKey).mockResolvedValueOnce({
+      valid: false,
+      error: "provider_error",
+      status: 500,
+    });
+
+    const response = await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-key",
+      }) as any
+    );
+
+    expect(response.status).toBe(502);
+    const data = await response.json();
+    expect(data.error).toContain("key may be valid");
+    expect(data.error).toContain("500");
   });
 
   it("should return 401 when not authenticated", async () => {

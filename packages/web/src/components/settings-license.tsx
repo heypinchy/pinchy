@@ -103,8 +103,13 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
             </div>
             {license.expiresAt && (
               <p className="text-sm">
-                Expires: {new Date(license.expiresAt).toLocaleDateString()} ({license.daysRemaining}{" "}
-                days remaining)
+                Expires:{" "}
+                {new Date(license.expiresAt).toLocaleDateString("en-US", {
+                  year: "numeric",
+                  month: "short",
+                  day: "numeric",
+                })}{" "}
+                ({license.daysRemaining} days remaining)
               </p>
             )}
             {license.managedByEnv && (

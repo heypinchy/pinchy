@@ -79,6 +79,14 @@ Diverse entries spanning ~14 days, covering:
 - `settings.updated` — provider configuration
 - `group.created` — group setup
 
+## Usage Data (seeded)
+
+30 days of realistic token usage across all 4 agents and 4 users:
+- **Models:** Smithers & Mindy use Haiku, Frink & Tibor use Sonnet
+- **Volume:** 10-25 messages/weekday, 4-10 on weekends
+- **Costs:** Estimated from model pricing ($0.80/$4 for Haiku, $3/$15 for Sonnet per 1M tokens)
+- **Users:** Monty (40%), Carl (25%), Homer (20%), Lenny (15%) — weighted by activity
+
 ## Extending This Scenario
 
 When adding new screenshots or features:

@@ -26,11 +26,26 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "API key is required" }, { status: 400 });
   }
 
-  const isValid = await validateProviderKey(provider, apiKey);
-  if (!isValid) {
+  const validation = await validateProviderKey(provider, apiKey);
+  if (!validation.valid) {
+    if (validation.error === "invalid_key") {
+      return NextResponse.json(
+        { error: "Invalid API key. Please check and try again." },
+        { status: 422 }
+      );
+    }
+    if (validation.error === "network_error") {
+      return NextResponse.json(
+        { error: "Could not reach the provider API. Please check your network and try again." },
+        { status: 502 }
+      );
+    }
+    // provider_error (429, 5xx, etc.)
     return NextResponse.json(
-      { error: "Invalid API key. Please check and try again." },
-      { status: 422 }
+      {
+        error: `The provider returned an error (HTTP ${validation.status}). The key may be valid — please try again in a moment.`,
+      },
+      { status: 502 }
     );
   }
 

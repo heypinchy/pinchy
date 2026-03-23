@@ -44,6 +44,11 @@ test.describe("chat reconnect recovery", () => {
       } = { historyRequests: 0 };
 
       class MockWebSocket {
+        static CONNECTING = 0;
+        static OPEN = 1;
+        static CLOSING = 2;
+        static CLOSED = 3;
+
         onopen: (() => void) | null = null;
         onmessage: ((event: { data: string }) => void) | null = null;
         onclose: (() => void) | null = null;

@@ -25,10 +25,11 @@ describe("BottomTabBar", () => {
     expect(screen.getByRole("link", { name: /audit/i })).toBeInTheDocument();
   });
 
-  it("should render 3 tabs for admin users", () => {
+  it("should render 4 tabs for admin users", () => {
     render(<BottomTabBar currentPath="/agents" isAdmin={true} />);
     const links = screen.getAllByRole("link");
-    expect(links).toHaveLength(3);
+    expect(links).toHaveLength(4);
+    expect(screen.getByRole("link", { name: /usage/i })).toBeInTheDocument();
   });
 
   it("should render 2 tabs for non-admin users", () => {

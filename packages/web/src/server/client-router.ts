@@ -4,6 +4,7 @@ import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { isEnterprise } from "@/lib/enterprise";
 import { appendAuditLog } from "@/lib/audit";
+import { recordUsage } from "@/lib/usage";
 import { SessionCache } from "@/server/session-cache";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
@@ -176,6 +177,18 @@ export class ClientRouter {
             type: "done",
             messageId,
           });
+
+          // Fire-and-forget usage tracking
+          recordUsage({
+            openclawClient: this.openclawClient,
+            userId: this.userId,
+            agentId: message.agentId,
+            agentName: agent.name,
+            sessionKey,
+          }).catch((err) => {
+            console.error("Usage tracking failed:", err);
+          });
+
           // Next agent turn gets a fresh messageId so the browser
           // creates a separate assistant message — consistent with
           // how OpenClaw stores them in history.

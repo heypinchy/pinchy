@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { Bot, Settings, ClipboardList } from "lucide-react";
+import { BarChart3, Bot, Settings, ClipboardList } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface BottomTabBarProps {
@@ -23,6 +23,13 @@ const tabs = [
     icon: Settings,
     isActive: (path: string) => path.startsWith("/settings"),
     adminOnly: false,
+  },
+  {
+    label: "Usage",
+    href: "/usage",
+    icon: BarChart3,
+    isActive: (path: string) => path.startsWith("/usage"),
+    adminOnly: true,
   },
   {
     label: "Audit",

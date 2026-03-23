@@ -1,0 +1,122 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import "@testing-library/jest-dom";
+import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { TelegramLinkSettings } from "@/components/telegram-link-settings";
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
+
+function mockFetch(linkStatus: object, bots: object[], agents?: object[]) {
+  return vi.fn().mockImplementation((url: string) => {
+    if (url === "/api/settings/telegram") {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(linkStatus) });
+    }
+    if (url === "/api/settings/telegram/bots") {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ bots }) });
+    }
+    if (url === "/api/agents" && agents) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ agents }) });
+    }
+    return Promise.resolve({ ok: false });
+  });
+}
+
+describe("TelegramLinkSettings", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("shows setup button for admin when no bots configured", async () => {
+    global.fetch = mockFetch(
+      { linked: false },
+      [],
+      [{ id: "a1", name: "Smithers", isPersonal: false }]
+    );
+
+    render(<TelegramLinkSettings isAdmin={true} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Set up Telegram" })).toBeInTheDocument();
+    });
+  });
+
+  it("shows 'not set up' message for members when no bots configured", async () => {
+    global.fetch = mockFetch({ linked: false }, []);
+
+    render(<TelegramLinkSettings isAdmin={false} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/isn't set up yet/i)).toBeInTheDocument();
+    });
+  });
+
+  it("shows QR code and pairing input when bots exist but user not linked", async () => {
+    global.fetch = mockFetch({ linked: false }, [
+      { agentId: "a1", agentName: "Smithers", botUsername: "acme_smithers_bot" },
+    ]);
+
+    render(<TelegramLinkSettings isAdmin={false} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Scan this code/i)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/open in Telegram/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/pairing code/i)).toBeInTheDocument();
+
+    // QR code link should point to the bot
+    const link = screen.getByRole("link", { name: /open in Telegram/i });
+    expect(link).toHaveAttribute("href", "https://t.me/acme_smithers_bot");
+  });
+
+  it("shows linked state when user is linked", async () => {
+    global.fetch = mockFetch({ linked: true, channelUserId: "12345" }, []);
+
+    render(<TelegramLinkSettings isAdmin={false} />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Linked")).toBeInTheDocument();
+    });
+    expect(screen.getByRole("button", { name: /Unlink/i })).toBeInTheDocument();
+  });
+
+  it("shows inline setup when admin clicks setup button", async () => {
+    global.fetch = mockFetch(
+      { linked: false },
+      [],
+      [{ id: "a1", name: "Smithers", isPersonal: false }]
+    );
+
+    render(<TelegramLinkSettings isAdmin={true} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Set up Telegram" })).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Set up Telegram" }));
+
+    expect(screen.getByText(/create a Telegram bot for Smithers/i)).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/bot token/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Connect" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
+  });
+
+  it("hides inline setup when admin clicks cancel", async () => {
+    global.fetch = mockFetch(
+      { linked: false },
+      [],
+      [{ id: "a1", name: "Smithers", isPersonal: false }]
+    );
+
+    render(<TelegramLinkSettings isAdmin={true} />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Set up Telegram" })).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: "Set up Telegram" }));
+    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    expect(screen.getByRole("button", { name: "Set up Telegram" })).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/bot token/i)).not.toBeInTheDocument();
+  });
+});

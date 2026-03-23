@@ -367,6 +367,90 @@ docker compose exec -T db psql -U pinchy -d pinchy -c "
 " > /dev/null 2>&1
 echo "  ✅ Only seeded entries remain"
 
+# =====================================================
+# 12. Seed usage data (30 days, realistic token counts)
+# =====================================================
+echo "📊 Seeding usage data..."
+
+# Get Smithers agent ID
+SMITHERS_ID=$(docker compose exec -T db psql -U pinchy -d pinchy -t -A -c "SELECT id FROM agents WHERE name = 'Smithers' AND deleted_at IS NULL LIMIT 1;")
+
+docker compose exec -T db psql -U pinchy -d pinchy <<SQL
+DELETE FROM usage_records;
+
+DO \$\$
+DECLARE
+  d INTEGER;
+  day_date TIMESTAMPTZ;
+  msgs INTEGER;
+  i INTEGER;
+  agent_ids TEXT[] := ARRAY['$SMITHERS_ID', '$FRINK_ID', '$TIBOR_ID', '$MINDY_ID'];
+  agent_names TEXT[] := ARRAY['Smithers', 'Frink', 'Tibor', 'Mindy'];
+  agent_models TEXT[] := ARRAY[
+    'claude-haiku-4-5-20251001', 'claude-sonnet-4-20250514',
+    'claude-sonnet-4-20250514', 'claude-haiku-4-5-20251001'
+  ];
+  user_ids TEXT[] := ARRAY['$ADMIN_ID', 'usr_carl_carlson', 'usr_homer_jay', 'usr_lenny_leonard'];
+  a_idx INTEGER; u_idx INTEGER;
+  inp INTEGER; outp INTEGER;
+  cost NUMERIC(10,6);
+  input_price NUMERIC; output_price NUMERIC;
+BEGIN
+  FOR d IN 1..30 LOOP
+    day_date := NOW() - (d || ' days')::INTERVAL;
+    IF EXTRACT(DOW FROM day_date) IN (0, 6) THEN
+      msgs := 4 + floor(random() * 6)::INTEGER;
+    ELSE
+      msgs := 10 + floor(random() * 15)::INTEGER;
+    END IF;
+
+    FOR i IN 1..msgs LOOP
+      a_idx := CASE
+        WHEN random() < 0.35 THEN 1
+        WHEN random() < 0.55 THEN 2
+        WHEN random() < 0.75 THEN 3
+        ELSE 4
+      END;
+      u_idx := CASE
+        WHEN random() < 0.40 THEN 1
+        WHEN random() < 0.65 THEN 2
+        WHEN random() < 0.85 THEN 3
+        ELSE 4
+      END;
+
+      IF agent_models[a_idx] = 'claude-sonnet-4-20250514' THEN
+        inp := 800 + floor(random() * 3200)::INTEGER;
+        outp := 400 + floor(random() * 2600)::INTEGER;
+        input_price := 3.0; output_price := 15.0;
+      ELSE
+        inp := 300 + floor(random() * 1700)::INTEGER;
+        outp := 150 + floor(random() * 1350)::INTEGER;
+        input_price := 0.80; output_price := 4.0;
+      END IF;
+
+      cost := (inp * input_price / 1000000.0) + (outp * output_price / 1000000.0);
+
+      INSERT INTO usage_records (
+        timestamp, user_id, agent_id, agent_name, session_key, model,
+        input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        estimated_cost_usd
+      ) VALUES (
+        day_date + (floor(random() * 43200) || ' seconds')::INTERVAL,
+        user_ids[u_idx], agent_ids[a_idx], agent_names[a_idx],
+        'agent:' || agent_ids[a_idx] || ':user-' || lower(user_ids[u_idx]),
+        agent_models[a_idx], inp, outp,
+        floor(random() * inp * 0.3)::INTEGER,
+        floor(random() * inp * 0.1)::INTEGER,
+        cost
+      );
+    END LOOP;
+  END LOOP;
+END \$\$;
+SQL
+
+USAGE_COUNT=$(docker compose exec -T db psql -U pinchy -d pinchy -t -A -c "SELECT count(*) FROM usage_records;")
+echo "  ✅ $USAGE_COUNT usage records seeded (30 days, 4 agents, 4 users)"
+
 echo ""
 echo "🎉 Seed complete! Ready for screenshots."
 echo "   Run: npx playwright test screenshots/capture.ts"

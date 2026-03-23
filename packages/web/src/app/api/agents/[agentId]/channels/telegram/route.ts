@@ -45,8 +45,9 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
     return NextResponse.json({ error: validation.error }, { status: 400 });
   }
 
-  // Store encrypted
+  // Store encrypted token and bot username
   await setSetting(`telegram_bot_token:${agentId}`, botToken, true);
+  await setSetting(`telegram_bot_username:${agentId}`, validation.botUsername!, false);
 
   // Push config to OpenClaw via config.patch
   const client = getOpenClawClient();
@@ -113,6 +114,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
   }
 
   await deleteSetting(`telegram_bot_token:${agentId}`);
+  await deleteSetting(`telegram_bot_username:${agentId}`);
 
   // Patch OpenClaw config to remove channel
   const client = getOpenClawClient();

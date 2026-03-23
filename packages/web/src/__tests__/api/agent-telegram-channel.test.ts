@@ -145,6 +145,7 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
 
     expect(mockValidateTelegramBotToken).toHaveBeenCalledWith("123456:ABC-token");
     expect(setSetting).toHaveBeenCalledWith("telegram_bot_token:agent-1", "123456:ABC-token", true);
+    expect(setSetting).toHaveBeenCalledWith("telegram_bot_username:agent-1", "test_bot", false);
     expect(mockConfigPatch).toHaveBeenCalled();
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -222,6 +223,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     expect(data).toEqual({ success: true });
 
     expect(deleteSetting).toHaveBeenCalledWith("telegram_bot_token:agent-1");
+    expect(deleteSetting).toHaveBeenCalledWith("telegram_bot_username:agent-1");
     expect(mockConfigPatch).toHaveBeenCalled();
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({

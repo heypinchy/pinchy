@@ -8,6 +8,7 @@ import { AppShell } from "@/components/app-shell";
 import { AgentsProvider } from "@/components/agents-provider";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { EnterpriseBanner } from "@/components/enterprise-banner";
+import { DevToolbar } from "@/components/dev-toolbar";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   await cookies();
@@ -33,6 +34,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
           <AppShell isAdmin={isAdmin}>{children}</AppShell>
         </SidebarInset>
       </SidebarProvider>
+      {process.env.NODE_ENV === "development" && <DevToolbar />}
     </AgentsProvider>
   );
 }

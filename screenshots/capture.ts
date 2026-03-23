@@ -18,14 +18,18 @@ const STORAGE_STATE = path.join(OUTPUT_DIR, ".auth.json");
 const VIEWPORT = { width: 1280, height: 720 };
 
 async function login(page: Page) {
+  // Try restoring session from saved state
   if (fs.existsSync(STORAGE_STATE)) {
+    const state = JSON.parse(fs.readFileSync(STORAGE_STATE, "utf-8"));
+    await page.context().addCookies(state.cookies || []);
     await page.goto(`${BASE_URL}/`);
     await page.waitForTimeout(2000);
     if (!page.url().includes("/login") && !page.url().includes("/setup")) return;
   }
 
+  // Session invalid or not saved — perform fresh login
   await page.goto(`${BASE_URL}/login`);
-  await page.waitForTimeout(1000);
+  await page.getByLabel(/email/i).waitFor({ state: "visible", timeout: 30000 });
   await page.getByLabel(/email/i).fill(ADMIN_EMAIL);
   await page.getByLabel("Password", { exact: true }).fill(ADMIN_PASSWORD);
   await page.getByRole("button", { name: /sign in/i }).click();
@@ -51,7 +55,7 @@ async function getAgentId(page: Page, name: string): Promise<string | null> {
 }
 
 test.describe("Feature screenshots", () => {
-  test.use({ viewport: VIEWPORT });
+  test.use({ viewport: VIEWPORT, deviceScaleFactor: 2 });
 
   test.beforeEach(async ({ page }) => {
     await login(page);
@@ -134,8 +138,6 @@ test.describe("Feature screenshots", () => {
   // audit trail is test 01 (first) to avoid Playwright login noise
 
   test("user management", async ({ page }) => {
-    // Use wider viewport for user management to fit the Revoke button
-    await page.setViewportSize({ width: 1440, height: 720 });
     await page.goto(`${BASE_URL}/settings`);
     await page.waitForTimeout(1500);
     const usersTab = page.getByRole("tab", { name: /users/i });
@@ -145,14 +147,6 @@ test.describe("Feature screenshots", () => {
       await page.locator("text=Users").first().click().catch(() => {});
     }
     await page.waitForTimeout(1500);
-    // Inject CSS to fix overflow clipping on the Revoke button
-    await page.addStyleTag({
-      content: `
-        * { overflow: visible !important; overflow-x: visible !important; }
-        table { table-layout: auto !important; width: auto !important; }
-      `,
-    });
-    await page.waitForTimeout(300);
     await screenshot(page, "user-management.png");
   });
 
@@ -167,6 +161,12 @@ test.describe("Feature screenshots", () => {
     }
     await page.waitForTimeout(1500);
     await screenshot(page, "groups.png");
+  });
+
+  test("usage dashboard", async ({ page }) => {
+    await page.goto(`${BASE_URL}/usage`);
+    await page.waitForTimeout(2500);
+    await screenshot(page, "usage-dashboard.png");
   });
 
   test("provider settings", async ({ page }) => {

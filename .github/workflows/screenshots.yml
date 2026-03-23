@@ -4,15 +4,6 @@ on:
   release:
     types: [published]
   workflow_dispatch:
-    inputs:
-      viewport_width:
-        description: "Viewport width"
-        default: "1440"
-        type: string
-      viewport_height:
-        description: "Viewport height"
-        default: "900"
-        type: string
 
 jobs:
   capture:
@@ -33,6 +24,14 @@ jobs:
 
       - name: Install Playwright Chromium
         run: pnpm -C packages/web exec playwright install chromium --with-deps
+
+      - name: Install Geist font
+        run: |
+          mkdir -p ~/.local/share/fonts
+          curl -fsSL -o /tmp/geist.zip "https://github.com/vercel/geist-font/releases/download/1.8.0/geist-font-1.8.0.zip"
+          unzip -o /tmp/geist.zip -d /tmp/geist
+          find /tmp/geist -name '*.ttf' -o -name '*.otf' | xargs -I{} cp {} ~/.local/share/fonts/
+          fc-cache -fv
 
       - name: Generate enterprise key for screenshots
         id: license
