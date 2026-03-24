@@ -284,7 +284,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
             </div>
             <p className="text-sm text-muted-foreground text-center max-w-sm">
               Scan this code with your phone to open Telegram. Send any message — the bot will reply
-              with a pairing code.
+              with a message like this:
             </p>
             <a
               href={botLink}
@@ -297,8 +297,19 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
             </a>
           </div>
 
+          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground space-y-1">
+            <p>OpenClaw: access not configured.</p>
+            <p className="mt-1">Your Telegram user id: 1234567890</p>
+            <p className="mt-1">
+              Pairing code: <span className="font-bold text-foreground">ABC123XY</span>
+            </p>
+            <p className="mt-1 opacity-60">Ask the bot owner to approve with: ...</p>
+          </div>
+
           <div className="space-y-2">
-            <Label htmlFor="pairing-code">Pairing Code</Label>
+            <Label htmlFor="pairing-code">
+              Enter the <span className="font-semibold">Pairing code</span> from the bot message
+            </Label>
             <div className="flex items-center gap-2">
               <Input
                 id="pairing-code"
