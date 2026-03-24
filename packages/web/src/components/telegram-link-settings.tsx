@@ -315,20 +315,25 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
         ) : (
           <div className="space-y-6">
             <p className="text-sm text-muted-foreground">
-              The bot replied with a message like this. Enter the{" "}
-              <span className="font-semibold text-foreground">pairing code</span> below.
+              The bot replied with a message like this. Copy the{" "}
+              <span className="font-semibold text-foreground">pairing code</span> and paste it
+              below.
             </p>
 
-            {/* Mock bot message */}
-            <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm space-y-2">
-              <p className="text-muted-foreground">OpenClaw: access not configured.</p>
-              <p className="text-muted-foreground">Your Telegram user id: 1234567890</p>
-              <p>
-                Pairing code: <span className="font-bold text-primary">ABC123XY</span>
-              </p>
-              <p className="text-muted-foreground/60 text-xs">
-                Ask the bot owner to approve with: ...
-              </p>
+            {/* Mock Telegram message bubble */}
+            <div className="flex">
+              <div className="relative max-w-xs rounded-xl rounded-tl-sm bg-[#e8f5e9] px-3 py-2 text-sm shadow-sm">
+                <p className="text-gray-700">OpenClaw: access not configured.</p>
+                <p className="mt-2 text-gray-700">Your Telegram user id: 1234567890</p>
+                <p className="mt-2 text-gray-900">
+                  Pairing code: <span className="font-bold text-primary">ABC123XY</span>
+                </p>
+                <p className="mt-2 text-gray-400 text-xs">
+                  Ask the bot owner to approve with:
+                  <br />
+                  openclaw pairing approve telegram ABC123XY
+                </p>
+              </div>
             </div>
 
             <div className="space-y-2">

@@ -60,7 +60,7 @@ Companies want AI agents but face a trilemma:
 - **User Management** (implemented): Invite system with token-based onboarding, admin and user roles, password management.
 - **Knowledge Base Agents** (implemented): Scoped read-only access to specific directories. Template-based creation.
 - **Smithers Onboarding** (implemented): New users get an onboarding interview — Smithers learns about them through conversation and saves their context via plugin tools. Admins are additionally asked about their organization.
-- **Telegram Channels** (implemented): Each agent can be connected to a Telegram bot. Admins configure a bot token (from BotFather) in Agent Settings → Channels. Users link their Telegram account via a pairing code. Sessions are unified across web and Telegram via `identityLinks`. Config changes are hot-reloaded via `config.patch` RPC (no restart).
+- **Telegram Channels** (implemented): Admins set up Telegram in Settings → Telegram (guided flow with BotFather instructions, connects to Smithers). Additional agents can be connected via Agent Settings → Channels. Users link their Telegram account by scanning a QR code, messaging the bot, and entering a pairing code. Sessions are unified across web and Telegram via `identityLinks`. Config architecture: DB is source of truth, `regenerateOpenClawConfig` at startup for persistence, `config.patch` fire-and-forget from routes for live activation.
 - **Cross-Channel Workflows**: Additional channels (email, Slack) and cross-channel routing are planned. Telegram is the first implemented channel.
 - **Self-Hosted**: Your server, your data, your models. Works without internet.
 - **Docker Compose Deployment**: Single `docker compose up` to run everything.

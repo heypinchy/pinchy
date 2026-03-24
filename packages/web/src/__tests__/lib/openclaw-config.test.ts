@@ -749,6 +749,29 @@ describe("restart-state integration", () => {
     expect(restartState.notifyRestart).toHaveBeenCalledOnce();
   });
 
+  it("should skip writing and not restart when config content is unchanged", async () => {
+    const { restartState } = await import("@/server/restart-state");
+
+    // First call writes the config
+    await regenerateOpenClawConfig();
+    const firstWrite = mockedWriteFileSync.mock.calls[0][1] as string;
+
+    vi.clearAllMocks();
+    // Mock readFileSync to return what was just written
+    mockedReadFileSync.mockReturnValue(firstWrite);
+    mockedExistsSync.mockReturnValue(true);
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([]),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+
+    // Second call should skip writing
+    await regenerateOpenClawConfig();
+
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+    expect(restartState.notifyRestart).not.toHaveBeenCalled();
+  });
+
   it("should include Telegram channel config when bot token is configured", async () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockResolvedValue([

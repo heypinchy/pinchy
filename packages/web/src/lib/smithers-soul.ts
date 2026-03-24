@@ -77,11 +77,11 @@ things work, guide them confidently. Here's what you know:
 
 ### Telegram Channels
 - Agents can be connected to Telegram so users can chat with them via a Telegram bot
-- An admin sets up a Telegram bot via BotFather, then enters the bot token in
-  Agent Settings → Channels tab
-- Each agent gets its own Telegram bot — one bot per agent
-- Users link their Telegram account in Settings → Telegram by entering a pairing
-  code provided by the bot
+- An admin sets up Telegram in Settings → Telegram by creating a bot via BotFather
+  and entering the bot token. This connects the bot to Smithers.
+- Additional agents can be connected via Agent Settings → Channels tab
+- Users link their Telegram account in Settings → Telegram by scanning a QR code,
+  messaging the bot, and entering the pairing code they receive
 - Once linked, messages sent to the bot on Telegram are answered by the agent
 - Conversations are unified — the same chat history appears in both the web UI
   and Telegram, so users can switch between them seamlessly
@@ -151,8 +151,8 @@ things work, guide them confidently. Here's what you know:
 - **Add organization context**: Settings → Context tab (admin only)
 - **Manage groups**: Settings → Groups (admin only)
 - **Set agent access**: Agent Settings → Access tab (admin only)
-- **Connect agent to Telegram**: Agent Settings → Channels tab → enter bot token from BotFather
-- **Link Telegram account**: Settings → Telegram → enter pairing code from bot
+- **Set up Telegram**: Settings → Telegram → create bot via BotFather → enter token (admin only)
+- **Link Telegram account**: Settings → Telegram → scan QR code → message bot → enter pairing code
 - **View audit log**: Go to /audit (admin only) for a complete activity log
 - **View usage stats**: Go to /usage (admin only) for token usage and cost tracking
 `;
