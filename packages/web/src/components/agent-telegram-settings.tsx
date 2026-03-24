@@ -29,9 +29,10 @@ interface TelegramConfig {
 
 interface AgentTelegramSettingsProps {
   agentId: string;
+  onConnected?: () => void;
 }
 
-export function AgentTelegramSettings({ agentId }: AgentTelegramSettingsProps) {
+export function AgentTelegramSettings({ agentId, onConnected }: AgentTelegramSettingsProps) {
   const [config, setConfig] = useState<TelegramConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [botToken, setBotToken] = useState("");
@@ -49,7 +50,6 @@ export function AgentTelegramSettings({ agentId }: AgentTelegramSettingsProps) {
         setConfig(data);
       }
     } catch {
-      // Silently fail — show unconfigured state
       setConfig({ configured: false });
     } finally {
       setLoading(false);
@@ -74,7 +74,7 @@ export function AgentTelegramSettings({ agentId }: AgentTelegramSettingsProps) {
       });
 
       if (!res.ok) {
-        let message = "Failed to connect bot";
+        let message = "Failed to connect";
         try {
           const data = await res.json();
           if (data.error) message = data.error;
@@ -89,8 +89,9 @@ export function AgentTelegramSettings({ agentId }: AgentTelegramSettingsProps) {
       setBotToken("");
       toast.success("Telegram bot connected");
       fetchConfig();
+      onConnected?.();
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to connect bot";
+      const message = err instanceof Error ? err.message : "Failed to connect";
       setError(message);
     } finally {
       setSaving(false);
@@ -108,14 +109,14 @@ export function AgentTelegramSettings({ agentId }: AgentTelegramSettingsProps) {
 
       if (!res.ok) {
         const data = await res.json();
-        throw new Error(data.error || "Failed to disconnect bot");
+        throw new Error(data.error || "Failed to disconnect");
       }
 
       setConnectedUsername(null);
       toast.success("Telegram bot disconnected");
       fetchConfig();
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to disconnect bot");
+      toast.error(err instanceof Error ? err.message : "Failed to disconnect");
     } finally {
       setRemoving(false);
     }
@@ -180,6 +181,11 @@ export function AgentTelegramSettings({ agentId }: AgentTelegramSettingsProps) {
             </>
           ) : (
             <>
+              <p className="text-sm text-muted-foreground">
+                Create a Telegram bot for this agent. Pick a name your team will recognize. The bot
+                name must be unique and can&apos;t be changed later.
+              </p>
+
               <Collapsible open={guideOpen} onOpenChange={setGuideOpen}>
                 <CollapsibleTrigger className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
                   <ChevronDown
@@ -189,9 +195,21 @@ export function AgentTelegramSettings({ agentId }: AgentTelegramSettingsProps) {
                 </CollapsibleTrigger>
                 <CollapsibleContent>
                   <div className="mt-3 space-y-3 rounded-md border p-3 text-sm">
+                    <p className="text-muted-foreground">
+                      Tip: Use{" "}
+                      <a
+                        href="https://web.telegram.org"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-primary hover:underline"
+                      >
+                        Telegram Web
+                      </a>{" "}
+                      or the desktop app to easily copy the token.
+                    </p>
                     <ol className="space-y-1.5 list-decimal list-inside text-muted-foreground">
                       <li>
-                        Open Telegram and search for{" "}
+                        Open{" "}
                         <a
                           href="https://t.me/BotFather"
                           target="_blank"
@@ -199,14 +217,18 @@ export function AgentTelegramSettings({ agentId }: AgentTelegramSettingsProps) {
                           className="text-primary hover:underline"
                         >
                           @BotFather
-                        </a>
+                        </a>{" "}
+                        in Telegram
                       </li>
                       <li>
-                        Send <code className="bg-muted px-1 rounded">/newbot</code> and follow the
-                        prompts
+                        Send <code className="bg-muted px-1 rounded">/newbot</code>
                       </li>
-                      <li>Copy the bot token BotFather gives you</li>
-                      <li>Paste it below</li>
+                      <li>Choose a display name</li>
+                      <li>
+                        Choose a username ending in{" "}
+                        <code className="bg-muted px-1 rounded">bot</code>
+                      </li>
+                      <li>Copy the token BotFather gives you</li>
                     </ol>
                   </div>
                 </CollapsibleContent>
@@ -217,11 +239,17 @@ export function AgentTelegramSettings({ agentId }: AgentTelegramSettingsProps) {
                 <Input
                   id="telegram-bot-token"
                   type="password"
-                  placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+                  placeholder="Paste your bot token here"
                   value={botToken}
                   onChange={(e) => {
                     setBotToken(e.target.value);
                     setError("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleConnect();
+                    }
                   }}
                 />
                 <p className="text-xs text-muted-foreground flex items-center gap-1">
@@ -229,6 +257,13 @@ export function AgentTelegramSettings({ agentId }: AgentTelegramSettingsProps) {
                   Your bot token is encrypted at rest and never leaves your server.
                 </p>
               </div>
+
+              {connectedUsername && (
+                <div className="flex items-center gap-2 text-sm text-green-600">
+                  <CircleCheck className="size-4" />
+                  Connected to @{connectedUsername}
+                </div>
+              )}
 
               {error && <p className="text-sm text-destructive">{error}</p>}
 

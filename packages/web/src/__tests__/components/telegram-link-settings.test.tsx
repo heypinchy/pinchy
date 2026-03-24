@@ -15,7 +15,11 @@ function mockFetch(linkStatus: object, bots: object[], agents?: object[]) {
       return Promise.resolve({ ok: true, json: () => Promise.resolve({ bots }) });
     }
     if (url === "/api/agents" && agents) {
-      return Promise.resolve({ ok: true, json: () => Promise.resolve({ agents }) });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(agents) });
+    }
+    // AgentTelegramSettings fetches /api/agents/<id>/channels/telegram
+    if (typeof url === "string" && url.includes("/channels/telegram")) {
+      return Promise.resolve({ ok: true, json: () => Promise.resolve({ configured: false }) });
     }
     return Promise.resolve({ ok: false });
   });
@@ -84,11 +88,11 @@ describe("TelegramLinkSettings", () => {
     expect(screen.getByRole("button", { name: /Unlink/i })).toBeInTheDocument();
   });
 
-  it("shows inline setup when admin clicks setup button", async () => {
+  it("shows AgentTelegramSettings when admin clicks setup button", async () => {
     global.fetch = mockFetch(
       { linked: false },
       [],
-      [{ id: "a1", name: "Smithers", isPersonal: false }]
+      [{ id: "a1", name: "Smithers", isPersonal: true, avatarSeed: "__smithers__" }]
     );
 
     render(<TelegramLinkSettings isAdmin={true} />);
@@ -99,29 +103,10 @@ describe("TelegramLinkSettings", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Set up Telegram" }));
 
-    expect(screen.getByText(/create a Telegram bot for Smithers/i)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/bot token/i)).toBeInTheDocument();
+    // AgentTelegramSettings is now embedded with the bot token form
+    await waitFor(() => {
+      expect(screen.getByPlaceholderText(/bot token/i)).toBeInTheDocument();
+    });
     expect(screen.getByRole("button", { name: "Connect" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Cancel" })).toBeInTheDocument();
-  });
-
-  it("hides inline setup when admin clicks cancel", async () => {
-    global.fetch = mockFetch(
-      { linked: false },
-      [],
-      [{ id: "a1", name: "Smithers", isPersonal: false }]
-    );
-
-    render(<TelegramLinkSettings isAdmin={true} />);
-
-    await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Set up Telegram" })).toBeInTheDocument();
-    });
-
-    await userEvent.click(screen.getByRole("button", { name: "Set up Telegram" }));
-    await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-
-    expect(screen.getByRole("button", { name: "Set up Telegram" })).toBeInTheDocument();
-    expect(screen.queryByPlaceholderText(/bot token/i)).not.toBeInTheDocument();
   });
 });

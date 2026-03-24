@@ -8,8 +8,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { ChevronDown, ExternalLink, Lock, CircleCheck } from "lucide-react";
+import { ExternalLink, CircleCheck } from "lucide-react";
+import { AgentTelegramSettings } from "./agent-telegram-settings";
 
 interface TelegramLinkStatus {
   linked: boolean;
@@ -35,14 +35,9 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
   const [unlinking, setUnlinking] = useState(false);
   const [pairingStep, setPairingStep] = useState<1 | 2>(1);
 
-  // Inline setup state (admin only)
+  // Admin setup state
   const [showSetup, setShowSetup] = useState(false);
-  const [setupGuideOpen, setSetupGuideOpen] = useState(false);
-  const [botToken, setBotToken] = useState("");
-  const [saving, setSaving] = useState(false);
-  const [setupError, setSetupError] = useState("");
   const [smithersId, setSmithersId] = useState<string | null>(null);
-  const [connectedBotName, setConnectedBotName] = useState<string | null>(null);
 
   const fetchData = useCallback(async () => {
     try {
@@ -138,47 +133,6 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
     }
   }
 
-  async function handleSetupConnect() {
-    if (!botToken.trim()) return;
-    if (!smithersId) {
-      setSetupError("Could not find Smithers. Please reload the page and try again.");
-      return;
-    }
-
-    setSaving(true);
-    setSetupError("");
-
-    try {
-      const res = await fetch(`/api/agents/${smithersId}/channels/telegram`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ botToken }),
-      });
-
-      if (!res.ok) {
-        let message = "Failed to connect";
-        try {
-          const data = await res.json();
-          if (data.error) message = data.error;
-        } catch {
-          // not JSON
-        }
-        throw new Error(message);
-      }
-
-      const data = await res.json();
-      setConnectedBotName(data.botUsername || null);
-      setBotToken("");
-      setShowSetup(false);
-      toast.success("Telegram connected to Smithers");
-      await fetchData();
-    } catch (err) {
-      setSetupError(err instanceof Error ? err.message : "Failed to connect");
-    } finally {
-      setSaving(false);
-    }
-  }
-
   if (loading) {
     return (
       <Card>
@@ -237,25 +191,10 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
                   </p>
                   <Button onClick={() => setShowSetup(true)}>Set up Telegram</Button>
                 </>
+              ) : smithersId ? (
+                <AgentTelegramSettings agentId={smithersId} onConnected={fetchData} />
               ) : (
-                <InlineSetup
-                  guideOpen={setupGuideOpen}
-                  onGuideOpenChange={setSetupGuideOpen}
-                  botToken={botToken}
-                  onBotTokenChange={(v) => {
-                    setBotToken(v);
-                    setSetupError("");
-                  }}
-                  error={setupError}
-                  saving={saving}
-                  connectedBotName={connectedBotName}
-                  onConnect={handleSetupConnect}
-                  onCancel={() => {
-                    setShowSetup(false);
-                    setBotToken("");
-                    setSetupError("");
-                  }}
-                />
+                <p className="text-sm text-muted-foreground">Loading...</p>
               )}
             </div>
           ) : (
@@ -367,124 +306,5 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
         )}
       </CardContent>
     </Card>
-  );
-}
-
-// ── Inline admin setup for connecting Smithers to Telegram ───────────────
-
-function InlineSetup({
-  guideOpen,
-  onGuideOpenChange,
-  botToken,
-  onBotTokenChange,
-  error,
-  saving,
-  connectedBotName,
-  onConnect,
-  onCancel,
-}: {
-  guideOpen: boolean;
-  onGuideOpenChange: (open: boolean) => void;
-  botToken: string;
-  onBotTokenChange: (value: string) => void;
-  error: string;
-  saving: boolean;
-  connectedBotName: string | null;
-  onConnect: () => void;
-  onCancel: () => void;
-}) {
-  return (
-    <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">
-        First, create a Telegram bot for Smithers. Pick a name your team will recognize, e.g.{" "}
-        <code className="bg-muted px-1 rounded text-xs">@acme_smithers_bot</code>. The name must be
-        unique and can&apos;t be changed later.
-      </p>
-
-      <Collapsible open={guideOpen} onOpenChange={onGuideOpenChange}>
-        <CollapsibleTrigger className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-          <ChevronDown className={`size-4 transition-transform ${guideOpen ? "rotate-180" : ""}`} />
-          How to create a Telegram bot
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="mt-3 space-y-3 rounded-md border p-3 text-sm">
-            <p className="text-muted-foreground">
-              Tip: Use{" "}
-              <a
-                href="https://web.telegram.org"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                Telegram Web
-              </a>{" "}
-              or the desktop app to easily copy the token.
-            </p>
-            <ol className="space-y-1.5 list-decimal list-inside text-muted-foreground">
-              <li>
-                Open{" "}
-                <a
-                  href="https://t.me/BotFather"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-primary hover:underline"
-                >
-                  @BotFather
-                </a>{" "}
-                in Telegram
-              </li>
-              <li>
-                Send <code className="bg-muted px-1 rounded">/newbot</code>
-              </li>
-              <li>Choose a display name (e.g. &quot;Acme Smithers&quot;)</li>
-              <li>
-                Choose a username ending in <code className="bg-muted px-1 rounded">bot</code> (e.g.{" "}
-                <code className="bg-muted px-1 rounded">acme_smithers_bot</code>)
-              </li>
-              <li>Copy the token BotFather gives you</li>
-            </ol>
-          </div>
-        </CollapsibleContent>
-      </Collapsible>
-
-      <div className="space-y-2">
-        <Label htmlFor="setup-bot-token">Bot Token</Label>
-        <Input
-          id="setup-bot-token"
-          type="password"
-          placeholder="Paste your bot token here"
-          value={botToken}
-          onChange={(e) => onBotTokenChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") {
-              e.preventDefault();
-              onConnect();
-            }
-          }}
-        />
-        <p className="text-xs text-muted-foreground flex items-center gap-1">
-          <Lock className="size-3" />
-          Your bot token is encrypted at rest and never leaves your server.
-        </p>
-      </div>
-
-      {connectedBotName && (
-        <div className="flex items-center gap-2 text-sm text-green-600">
-          <CircleCheck className="size-4" />
-          Connected to @{connectedBotName}
-        </div>
-      )}
-
-      {error && <p className="text-sm text-destructive">{error}</p>}
-
-      <div className="flex items-center gap-2">
-        <Button onClick={onConnect} disabled={!botToken.trim() || saving}>
-          {saving ? "Connecting..." : "Connect"}
-        </Button>
-        <Button variant="ghost" onClick={onCancel}>
-          Cancel
-        </Button>
-      </div>
-    </div>
   );
 }
