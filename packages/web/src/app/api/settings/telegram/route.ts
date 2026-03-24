@@ -2,8 +2,8 @@
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
-import { getOpenClawClient } from "@/server/openclaw-client";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -46,47 +46,14 @@ export async function POST(req: Request) {
 
   const { telegramUserId } = pairing;
 
-  let client;
-  try {
-    client = getOpenClawClient();
-  } catch {
-    return NextResponse.json(
-      { error: "Agent runtime is not connected. Please try again in a moment." },
-      { status: 503 }
-    );
-  }
-
-  // Add Telegram user to allowFrom and set up identity link via config.patch
-  const configResult = await client.config.get();
-  const hash = (configResult as Record<string, unknown>).hash as string;
-  const patch = {
-    channels: {
-      telegram: {
-        allowFrom: [telegramUserId],
-      },
-    },
-    session: {
-      identityLinks: {
-        [session.user.id]: [`telegram:${telegramUserId}`],
-      },
-    },
-  };
-
-  try {
-    await client.config.patch(JSON.stringify(patch), hash);
-  } catch {
-    return NextResponse.json(
-      { error: "Failed to update agent runtime configuration. Please try again." },
-      { status: 502 }
-    );
-  }
-
-  // Store link in DB
+  // Store link in DB, then regenerate OpenClaw config (includes allowFrom + identityLinks)
   await db.insert(channelLinks).values({
     userId: session.user.id,
     channel: "telegram",
     channelUserId: telegramUserId,
   });
+
+  await regenerateOpenClawConfig();
 
   return NextResponse.json({ linked: true, telegramUserId });
 }
@@ -97,29 +64,12 @@ export async function DELETE() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Remove link from DB
+  // Remove link from DB, then regenerate config
   await db
     .delete(channelLinks)
     .where(and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")));
 
-  // Remove from identityLinks in OpenClaw config
-  let client;
-  try {
-    client = getOpenClawClient();
-  } catch {
-    return NextResponse.json({ linked: false });
-  }
-
-  try {
-    const configResult = await client.config.get();
-    const hash = (configResult as Record<string, unknown>).hash as string;
-    await client.config.patch(
-      JSON.stringify({ session: { identityLinks: { [session.user.id]: null } } }),
-      hash
-    );
-  } catch {
-    // Config patch failed but DB link is already removed — acceptable
-  }
+  await regenerateOpenClawConfig();
 
   return NextResponse.json({ linked: false });
 }

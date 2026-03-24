@@ -3,9 +3,9 @@ import { requireAdmin } from "@/lib/api-auth";
 import { validateTelegramBotToken } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
-import { getOpenClawClient } from "@/server/openclaw-client";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
-import { agents, channelLinks } from "@/db/schema";
+import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
 export async function GET(req: Request, { params }: { params: Promise<{ agentId: string }> }) {
@@ -45,59 +45,11 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
     return NextResponse.json({ error: validation.error }, { status: 400 });
   }
 
-  // Push config to OpenClaw FIRST — if this fails, don't persist anything
-  let client;
-  try {
-    client = getOpenClawClient();
-  } catch {
-    return NextResponse.json(
-      { error: "Agent runtime is not connected. Please try again in a moment." },
-      { status: 503 }
-    );
-  }
-
-  const configResult = await client.config.get();
-  const hash = (configResult as Record<string, unknown>).hash as string;
-
-  // Build identityLinks from all existing channel links
-  const links = await db.select().from(channelLinks).where(eq(channelLinks.channel, "telegram"));
-  const identityLinks: Record<string, string[]> = {};
-  for (const link of links) {
-    identityLinks[link.userId] = [`telegram:${link.channelUserId}`];
-  }
-
-  const patch: Record<string, unknown> = {
-    session: {
-      dmScope: "per-peer",
-      ...(Object.keys(identityLinks).length > 0 && { identityLinks }),
-    },
-    channels: {
-      telegram: {
-        enabled: true,
-        botToken,
-        dmPolicy: "pairing",
-      },
-    },
-    bindings: [
-      {
-        agentId,
-        match: { channel: "telegram" },
-      },
-    ],
-  };
-
-  try {
-    await client.config.patch(JSON.stringify(patch), hash);
-  } catch {
-    return NextResponse.json(
-      { error: "Failed to configure the agent runtime. Please try again." },
-      { status: 502 }
-    );
-  }
-
-  // OpenClaw accepted — now persist to DB
+  // Store in DB, then regenerate OpenClaw config (includes channel, bindings, session)
   await setSetting(`telegram_bot_token:${agentId}`, botToken, true);
   await setSetting(`telegram_bot_username:${agentId}`, validation.botUsername!, false);
+
+  await regenerateOpenClawConfig();
 
   await appendAuditLog({
     actorType: "user",
@@ -132,11 +84,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
   await deleteSetting(`telegram_bot_token:${agentId}`);
   await deleteSetting(`telegram_bot_username:${agentId}`);
 
-  // Patch OpenClaw config to remove channel
-  const client = getOpenClawClient();
-  const configResult = await client.config.get();
-  const hash = (configResult as Record<string, unknown>).hash as string;
-  await client.config.patch(JSON.stringify({ channels: { telegram: null } }), hash);
+  await regenerateOpenClawConfig();
 
   await appendAuditLog({
     actorType: "user",

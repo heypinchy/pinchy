@@ -227,24 +227,26 @@ export async function regenerateOpenClawConfig() {
   for (const agent of allAgents) {
     const botToken = await getSetting(`telegram_bot_token:${agent.id}`);
     if (botToken) {
+      // Build allowFrom and identityLinks from channel_links table
+      const links = await db.select().from(channelLinks);
+      const allowFrom: string[] = [];
+      const identityLinks: Record<string, string[]> = {};
+      for (const link of links) {
+        if (link.channel === "telegram") {
+          allowFrom.push(link.channelUserId);
+          identityLinks[link.userId] = [`telegram:${link.channelUserId}`];
+        }
+      }
+
       config.channels = {
         telegram: {
           enabled: true,
           botToken,
           dmPolicy: "pairing",
+          ...(allowFrom.length > 0 && { allowFrom }),
         },
       };
       config.bindings = [{ agentId: agent.id, match: { channel: "telegram" } }];
-
-      // Build identity links from channel_links table
-      const links = await db.select().from(channelLinks);
-      const identityLinks: Record<string, string[]> = {};
-      for (const link of links) {
-        if (link.channel === "telegram") {
-          identityLinks[link.userId] = [`telegram:${link.channelUserId}`];
-        }
-      }
-
       config.session = {
         dmScope: "per-peer",
         ...(Object.keys(identityLinks).length > 0 && { identityLinks }),
