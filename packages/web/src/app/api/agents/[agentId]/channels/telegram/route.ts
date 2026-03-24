@@ -3,7 +3,6 @@ import { requireAdmin } from "@/lib/api-auth";
 import { validateTelegramBotToken } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
-import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { db } from "@/db";
 import { agents, channelLinks } from "@/db/schema";
@@ -46,13 +45,12 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
     return NextResponse.json({ error: validation.error }, { status: 400 });
   }
 
-  // Store in DB and regenerate config file (for restart persistence)
+  // DB first (source of truth — survives restarts via regenerateOpenClawConfig at startup)
   await setSetting(`telegram_bot_token:${agentId}`, botToken, true);
   await setSetting(`telegram_bot_username:${agentId}`, validation.botUsername!, false);
-  await regenerateOpenClawConfig();
 
-  // Also fire config.patch for live hot-reload (don't await — it may timeout
-  // but the patch still gets applied by OpenClaw before the connection drops)
+  // Fire config.patch for live hot-reload (fire-and-forget — don't call
+  // regenerateOpenClawConfig here to avoid race conditions with OpenClaw)
   try {
     const client = getOpenClawClient();
     const configResult = await client.config.get();
@@ -111,7 +109,15 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
   await deleteSetting(`telegram_bot_token:${agentId}`);
   await deleteSetting(`telegram_bot_username:${agentId}`);
 
-  await regenerateOpenClawConfig();
+  // Fire config.patch to remove channel live (fire-and-forget)
+  try {
+    const client = getOpenClawClient();
+    const configResult = await client.config.get();
+    const hash = (configResult as Record<string, unknown>).hash as string;
+    client.config.patch(JSON.stringify({ channels: { telegram: null } }), hash).catch(() => {});
+  } catch {
+    // OpenClaw not connected
+  }
 
   await appendAuditLog({
     actorType: "user",

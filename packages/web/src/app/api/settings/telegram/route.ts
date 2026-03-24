@@ -3,7 +3,6 @@ import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
-import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
@@ -47,15 +46,15 @@ export async function POST(req: Request) {
 
   const { telegramUserId } = pairing;
 
-  // Store link in DB and regenerate config file (for restart persistence)
+  // DB first (source of truth — survives restarts via regenerateOpenClawConfig at startup)
   await db.insert(channelLinks).values({
     userId: session.user.id,
     channel: "telegram",
     channelUserId: telegramUserId,
   });
-  await regenerateOpenClawConfig();
 
-  // Fire config.patch for live hot-reload (don't await)
+  // Fire config.patch for live hot-reload (fire-and-forget — don't call
+  // regenerateOpenClawConfig here to avoid race conditions with OpenClaw)
   try {
     const client = getOpenClawClient();
     const configResult = await client.config.get();
@@ -70,7 +69,7 @@ export async function POST(req: Request) {
       )
       .catch(() => {});
   } catch {
-    // OpenClaw not connected — config file has the changes for next restart
+    // OpenClaw not connected — changes picked up on next restart
   }
 
   return NextResponse.json({ linked: true, telegramUserId });
@@ -82,13 +81,12 @@ export async function DELETE() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Remove link from DB and regenerate config file
+  // DB first
   await db
     .delete(channelLinks)
     .where(and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")));
-  await regenerateOpenClawConfig();
 
-  // Fire config.patch for live hot-reload (don't await)
+  // Fire config.patch for live hot-reload (fire-and-forget)
   try {
     const client = getOpenClawClient();
     const configResult = await client.config.get();
