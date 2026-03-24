@@ -1,6 +1,6 @@
 # Block commits containing local absolute paths (e.g. /Users/clemens/...)
 # Exclude this hook and CI config (they legitimately reference the pattern)
-ADDED_LINES=$(git diff --cached --diff-filter=d -U0 -- ':!.husky/' ':!.github/' | grep '^+' | grep -v '^+++')
+ADDED_LINES=$(git diff --cached --diff-filter=d -U0 -- ':!.husky/' ':!.github/' | grep '^+' | grep -v '^+++' || true)
 if echo "$ADDED_LINES" | grep -qE '/Users/|C:/Users/'; then
   echo "❌ Staged changes contain a local absolute path (/Users/... or C:/Users/...)."
   echo "   These should not be committed to the repo."

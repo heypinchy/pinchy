@@ -347,9 +347,9 @@ jobs:
         run: |
           # Block local absolute paths that should never be committed
           PATTERNS='/Users/|C:\\Users\\|C:/Users/'
-          if git grep -lEI "$PATTERNS" -- ':!*.lock' ':!.github/' ':!*.md' 2>/dev/null; then
+          if git grep -lEI "$PATTERNS" -- ':!*.lock' ':!.github/' ':!.husky/' ':!*.md' 2>/dev/null; then
             echo "::error::Local absolute paths found in codebase:"
-            git grep -nEI "$PATTERNS" -- ':!*.lock' ':!.github/' ':!*.md'
+            git grep -nEI "$PATTERNS" -- ':!*.lock' ':!.github/' ':!.husky/' ':!*.md'
             exit 1
           fi
           echo "No local paths detected"
