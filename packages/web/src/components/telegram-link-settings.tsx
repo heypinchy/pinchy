@@ -98,7 +98,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
       const res = await fetch("/api/settings/telegram", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ telegramUserId: code.trim() }),
+        body: JSON.stringify({ code: code.trim() }),
       });
 
       if (res.ok) {
@@ -284,7 +284,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
             </div>
             <p className="text-sm text-muted-foreground text-center max-w-sm">
               Scan this code with your phone to open Telegram. Send any message — the bot will reply
-              with your Telegram user ID.
+              with a pairing code.
             </p>
             <a
               href={botLink}
@@ -298,11 +298,11 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="telegram-user-id">Telegram User ID</Label>
+            <Label htmlFor="pairing-code">Pairing Code</Label>
             <div className="flex items-center gap-2">
               <Input
-                id="telegram-user-id"
-                placeholder="Enter your Telegram user ID"
+                id="pairing-code"
+                placeholder="Enter pairing code"
                 value={code}
                 onChange={(e) => setCode(e.target.value)}
                 onKeyDown={(e) => {

@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { getOpenClawClient } from "@/server/openclaw-client";
+import { resolvePairingCode } from "@/lib/telegram-pairing";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -29,10 +30,21 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { telegramUserId } = await req.json();
-  if (!telegramUserId || typeof telegramUserId !== "string") {
-    return NextResponse.json({ error: "Telegram user ID is required" }, { status: 400 });
+  const { code } = await req.json();
+  if (!code || typeof code !== "string") {
+    return NextResponse.json({ error: "Pairing code is required" }, { status: 400 });
   }
+
+  // Resolve pairing code to Telegram user ID by reading OpenClaw's pairing file
+  const pairing = resolvePairingCode(code);
+  if (!pairing.found) {
+    return NextResponse.json(
+      { error: "Invalid or expired pairing code. Send a new message to the bot and try again." },
+      { status: 400 }
+    );
+  }
+
+  const { telegramUserId } = pairing;
 
   let client;
   try {

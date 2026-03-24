@@ -11,6 +11,11 @@ vi.mock("@/lib/auth", () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
 }));
 
+const mockResolvePairingCode = vi.fn();
+vi.mock("@/lib/telegram-pairing", () => ({
+  resolvePairingCode: (...args: unknown[]) => mockResolvePairingCode(...args),
+}));
+
 const mockFindFirst = vi.fn();
 const mockInsert = vi.fn();
 const mockDelete = vi.fn();
@@ -111,6 +116,7 @@ describe("POST /api/settings/telegram", () => {
     mockInsert.mockReturnValue({
       values: vi.fn().mockResolvedValue(undefined),
     });
+    mockResolvePairingCode.mockReturnValue({ found: true, telegramUserId: "8734062810" });
     mockConfigGet.mockResolvedValue({ hash: "abc123" });
     mockConfigPatch.mockResolvedValue(undefined);
   });
@@ -118,42 +124,49 @@ describe("POST /api/settings/telegram", () => {
   it("returns 401 when unauthenticated", async () => {
     mockGetSession.mockResolvedValueOnce(null);
 
-    const response = await POST(makePostRequest({ telegramUserId: "12345" }));
+    const response = await POST(makePostRequest({ code: "ABC123" }));
     expect(response.status).toBe(401);
   });
 
-  it("returns 400 when telegramUserId is missing", async () => {
+  it("returns 400 when code is missing", async () => {
     const response = await POST(makePostRequest({}));
     expect(response.status).toBe(400);
   });
 
-  it("returns 400 when telegramUserId is not a string", async () => {
-    const response = await POST(makePostRequest({ telegramUserId: 123 }));
-    expect(response.status).toBe(400);
-  });
-
-  it("adds user to allowFrom via config.patch, stores link, and updates identityLinks", async () => {
-    const response = await POST(makePostRequest({ telegramUserId: "8734062810" }));
+  it("resolves pairing code, adds to allowFrom, stores link", async () => {
+    const response = await POST(makePostRequest({ code: "FMSVEN7M" }));
     expect(response.status).toBe(200);
 
     const data = await response.json();
     expect(data).toEqual({ linked: true, telegramUserId: "8734062810" });
 
+    // Verify pairing code was resolved
+    expect(mockResolvePairingCode).toHaveBeenCalledWith("FMSVEN7M");
+
     // Verify link was stored in DB
     expect(mockInsert).toHaveBeenCalled();
 
     // Verify config was patched with allowFrom AND identityLinks
-    expect(mockConfigPatch).toHaveBeenCalledWith(expect.stringContaining("8734062810"), "abc123");
     const patchArg = mockConfigPatch.mock.calls[0][0];
     const patch = JSON.parse(patchArg);
     expect(patch.channels.telegram.allowFrom).toContain("8734062810");
     expect(patch.session.identityLinks["user-1"]).toEqual(["telegram:8734062810"]);
   });
 
+  it("returns 400 when pairing code is invalid", async () => {
+    mockResolvePairingCode.mockReturnValueOnce({ found: false });
+
+    const response = await POST(makePostRequest({ code: "BADCODE" }));
+    expect(response.status).toBe(400);
+
+    const data = await response.json();
+    expect(data.error).toContain("Invalid or expired");
+  });
+
   it("returns 502 when config.patch fails", async () => {
     mockConfigPatch.mockRejectedValueOnce(new Error("timeout"));
 
-    const response = await POST(makePostRequest({ telegramUserId: "12345" }));
+    const response = await POST(makePostRequest({ code: "ABC123" }));
     expect(response.status).toBe(502);
 
     // Verify link was NOT stored (OpenClaw first, DB second)
@@ -186,10 +199,7 @@ describe("DELETE /api/settings/telegram", () => {
     const data = await response.json();
     expect(data).toEqual({ linked: false });
 
-    // Verify link was deleted from DB
     expect(mockDelete).toHaveBeenCalled();
-
-    // Verify config was patched to remove identity link
     expect(mockConfigPatch).toHaveBeenCalledWith(
       expect.stringContaining('"user-1":null'),
       "abc123"
