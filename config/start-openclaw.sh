@@ -81,9 +81,10 @@ while true; do
     APPROVE_PID=$!
 
     # Wait for config change or process exit.
-    # Grace period: OpenClaw rewrites openclaw.json on startup ("Config overwrite"),
-    # which would immediately trigger inotifywait and cause a needless restart.
-    (sleep 10 && inotifywait -q -e modify /root/.openclaw/openclaw.json) &
+    # Grace period: OpenClaw rewrites openclaw.json multiple times on startup
+    # (meta.lastTouchedAt, config reload, etc.). Wait long enough for startup
+    # to complete before watching for external config changes.
+    (sleep 30 && inotifywait -q -e modify /root/.openclaw/openclaw.json) &
     WATCH_PID=$!
 
     # Wait for either to finish

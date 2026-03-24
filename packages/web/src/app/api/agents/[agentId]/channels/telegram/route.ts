@@ -4,8 +4,9 @@ import { validateTelegramBotToken } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { getOpenClawClient } from "@/server/openclaw-client";
 import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { agents, channelLinks } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
 export async function GET(req: Request, { params }: { params: Promise<{ agentId: string }> }) {
@@ -45,11 +46,37 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
     return NextResponse.json({ error: validation.error }, { status: 400 });
   }
 
-  // Store in DB, then regenerate OpenClaw config (includes channel, bindings, session)
+  // Store in DB and regenerate config file (for restart persistence)
   await setSetting(`telegram_bot_token:${agentId}`, botToken, true);
   await setSetting(`telegram_bot_username:${agentId}`, validation.botUsername!, false);
-
   await regenerateOpenClawConfig();
+
+  // Also fire config.patch for live hot-reload (don't await — it may timeout
+  // but the patch still gets applied by OpenClaw before the connection drops)
+  try {
+    const client = getOpenClawClient();
+    const configResult = await client.config.get();
+    const hash = (configResult as Record<string, unknown>).hash as string;
+
+    const links = await db.select().from(channelLinks).where(eq(channelLinks.channel, "telegram"));
+    const identityLinks: Record<string, string[]> = {};
+    for (const link of links) {
+      identityLinks[link.userId] = [`telegram:${link.channelUserId}`];
+    }
+
+    const patch = {
+      session: {
+        dmScope: "per-peer",
+        ...(Object.keys(identityLinks).length > 0 && { identityLinks }),
+      },
+      channels: { telegram: { enabled: true, botToken, dmPolicy: "pairing" } },
+      bindings: [{ agentId, match: { channel: "telegram" } }],
+    };
+    // Fire and forget — don't block the response on the RPC timeout
+    client.config.patch(JSON.stringify(patch), hash).catch(() => {});
+  } catch {
+    // OpenClaw not connected — config file will be picked up on next restart
+  }
 
   await appendAuditLog({
     actorType: "user",

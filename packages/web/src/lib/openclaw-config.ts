@@ -261,6 +261,16 @@ export async function regenerateOpenClawConfig() {
     mkdirSync(dir, { recursive: true });
   }
 
-  writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), { encoding: "utf-8", mode: 0o644 });
+  // Only write if content actually changed — prevents unnecessary OpenClaw restarts
+  // (inotifywait on the config file triggers a restart on every write)
+  const newContent = JSON.stringify(config, null, 2);
+  try {
+    const existing = readFileSync(CONFIG_PATH, "utf-8");
+    if (existing === newContent) return;
+  } catch {
+    // File doesn't exist yet — write it
+  }
+
+  writeFileSync(CONFIG_PATH, newContent, { encoding: "utf-8", mode: 0o644 });
   restartState.notifyRestart();
 }

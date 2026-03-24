@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { getOpenClawClient } from "@/server/openclaw-client";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -46,14 +47,31 @@ export async function POST(req: Request) {
 
   const { telegramUserId } = pairing;
 
-  // Store link in DB, then regenerate OpenClaw config (includes allowFrom + identityLinks)
+  // Store link in DB and regenerate config file (for restart persistence)
   await db.insert(channelLinks).values({
     userId: session.user.id,
     channel: "telegram",
     channelUserId: telegramUserId,
   });
-
   await regenerateOpenClawConfig();
+
+  // Fire config.patch for live hot-reload (don't await)
+  try {
+    const client = getOpenClawClient();
+    const configResult = await client.config.get();
+    const hash = (configResult as Record<string, unknown>).hash as string;
+    client.config
+      .patch(
+        JSON.stringify({
+          channels: { telegram: { allowFrom: [telegramUserId] } },
+          session: { identityLinks: { [session.user.id]: [`telegram:${telegramUserId}`] } },
+        }),
+        hash
+      )
+      .catch(() => {});
+  } catch {
+    // OpenClaw not connected — config file has the changes for next restart
+  }
 
   return NextResponse.json({ linked: true, telegramUserId });
 }
@@ -64,12 +82,23 @@ export async function DELETE() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Remove link from DB, then regenerate config
+  // Remove link from DB and regenerate config file
   await db
     .delete(channelLinks)
     .where(and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")));
-
   await regenerateOpenClawConfig();
+
+  // Fire config.patch for live hot-reload (don't await)
+  try {
+    const client = getOpenClawClient();
+    const configResult = await client.config.get();
+    const hash = (configResult as Record<string, unknown>).hash as string;
+    client.config
+      .patch(JSON.stringify({ session: { identityLinks: { [session.user.id]: null } } }), hash)
+      .catch(() => {});
+  } catch {
+    // OpenClaw not connected
+  }
 
   return NextResponse.json({ linked: false });
 }
