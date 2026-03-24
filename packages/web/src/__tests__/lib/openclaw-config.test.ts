@@ -772,7 +772,7 @@ describe("restart-state integration", () => {
     expect(restartState.notifyRestart).not.toHaveBeenCalled();
   });
 
-  it("should include Telegram channel config when bot token is configured", async () => {
+  it("should include Telegram channel config with accounts when one bot is configured", async () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockResolvedValue([
         {
@@ -796,13 +796,47 @@ describe("restart-state integration", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.channels.telegram).toEqual({
-      enabled: true,
-      botToken: "123456:ABC-token",
-      dmPolicy: "pairing",
-    });
-    expect(config.bindings).toEqual([{ agentId: "agent-1", match: { channel: "telegram" } }]);
+    expect(config.channels.telegram.enabled).toBe(true);
+    expect(config.channels.telegram.dmPolicy).toBe("pairing");
+    expect(config.channels.telegram.accounts["agent-1"].botToken).toBe("123456:ABC-token");
+    expect(config.bindings).toEqual([
+      { agentId: "agent-1", match: { channel: "telegram", account: "agent-1" } },
+    ]);
     expect(config.session.dmScope).toBe("per-peer");
+  });
+
+  it("should support multiple Telegram bots for different agents", async () => {
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        { id: "agent-1", name: "Smithers", model: "m", allowedTools: [] },
+        { id: "agent-2", name: "Support", model: "m", allowedTools: [] },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "token-1";
+      if (key === "telegram_bot_username:agent-1") return "smithers_bot";
+      if (key === "telegram_bot_token:agent-2") return "token-2";
+      if (key === "telegram_bot_username:agent-2") return "support_bot";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.channels.telegram.accounts["agent-1"].botToken).toBe("token-1");
+    expect(config.channels.telegram.accounts["agent-2"].botToken).toBe("token-2");
+    expect(config.bindings).toHaveLength(2);
+    expect(config.bindings).toContainEqual({
+      agentId: "agent-1",
+      match: { channel: "telegram", account: "agent-1" },
+    });
+    expect(config.bindings).toContainEqual({
+      agentId: "agent-2",
+      match: { channel: "telegram", account: "agent-2" },
+    });
   });
 
   it("should not include Telegram config when no bot token is configured", async () => {

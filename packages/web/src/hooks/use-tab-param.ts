@@ -19,7 +19,7 @@ export const AGENT_SETTINGS_TABS = [
   "instructions",
   "permissions",
   "access",
-  "channels",
+  "telegram",
 ] as const;
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number];

@@ -361,7 +361,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
                 Access {dirtyTabs.has("access") && <DirtyDot />}
               </TabsTrigger>
             )}
-            {showPermissions && <TabsTrigger value="channels">Channels</TabsTrigger>}
+            {isAdmin && <TabsTrigger value="telegram">Telegram</TabsTrigger>}
           </TabsList>
 
           <TabsContent value="general" keepMounted>
@@ -415,8 +415,8 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
             </TabsContent>
           )}
 
-          {showPermissions && (
-            <TabsContent value="channels">
+          {isAdmin && (
+            <TabsContent value="telegram">
               <AgentTelegramSettings agentId={agentId} />
             </TabsContent>
           )}
