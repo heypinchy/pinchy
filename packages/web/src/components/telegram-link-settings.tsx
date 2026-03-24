@@ -33,6 +33,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
   const [code, setCode] = useState("");
   const [linking, setLinking] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
+  const [pairingStep, setPairingStep] = useState<1 | 2>(1);
 
   // Inline setup state (admin only)
   const [showSetup, setShowSetup] = useState(false);
@@ -277,58 +278,88 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
         <CardDescription>Link your Telegram account to chat with agents.</CardDescription>
       </CardHeader>
       <CardContent>
-        <div className="space-y-6">
-          <div className="flex flex-col items-center gap-4">
-            <div className="rounded-lg border p-4 bg-white">
-              <QRCodeSVG value={botLink} size={180} />
-            </div>
-            <p className="text-sm text-muted-foreground text-center max-w-sm">
-              Scan this code with your phone to open Telegram. Send any message — the bot will reply
-              with a message like this:
-            </p>
-            <a
-              href={botLink}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
-            >
-              Or open in Telegram
-              <ExternalLink className="size-3" />
-            </a>
-          </div>
-
-          <div className="rounded-md border bg-muted/30 p-3 text-xs text-muted-foreground space-y-1">
-            <p>OpenClaw: access not configured.</p>
-            <p className="mt-1">Your Telegram user id: 1234567890</p>
-            <p className="mt-1">
-              Pairing code: <span className="font-bold text-foreground">ABC123XY</span>
-            </p>
-            <p className="mt-1 opacity-60">Ask the bot owner to approve with: ...</p>
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="pairing-code">
-              Enter the <span className="font-semibold">Pairing code</span> from the bot message
-            </Label>
-            <div className="flex items-center gap-2">
-              <Input
-                id="pairing-code"
-                placeholder="Enter pairing code"
-                value={code}
-                onChange={(e) => setCode(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    handleLink();
-                  }
-                }}
-              />
-              <Button onClick={handleLink} disabled={linking || !code.trim()}>
-                {linking ? "Linking..." : "Link"}
-              </Button>
-            </div>
-          </div>
+        {/* Step indicator */}
+        <div className="flex items-center gap-2 mb-6">
+          <div
+            className={`h-1.5 flex-1 rounded-full ${pairingStep >= 1 ? "bg-primary" : "bg-muted"}`}
+          />
+          <div
+            className={`h-1.5 flex-1 rounded-full ${pairingStep >= 2 ? "bg-primary" : "bg-muted"}`}
+          />
         </div>
+
+        {pairingStep === 1 ? (
+          <div className="space-y-6">
+            <div className="flex flex-col items-center gap-4">
+              <div className="rounded-lg border p-4 bg-white">
+                <QRCodeSVG value={botLink} size={180} />
+              </div>
+              <p className="text-sm text-muted-foreground text-center max-w-sm">
+                Scan this code with your phone to open the bot in Telegram. Send any message to get
+                started.
+              </p>
+              <a
+                href={botLink}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+              >
+                Or open in Telegram
+                <ExternalLink className="size-3" />
+              </a>
+            </div>
+            <Button className="w-full" onClick={() => setPairingStep(2)}>
+              I sent a message
+            </Button>
+          </div>
+        ) : (
+          <div className="space-y-6">
+            <p className="text-sm text-muted-foreground">
+              The bot replied with a message like this. Enter the{" "}
+              <span className="font-semibold text-foreground">pairing code</span> below.
+            </p>
+
+            {/* Mock bot message */}
+            <div className="rounded-lg border bg-muted/40 px-4 py-3 text-sm space-y-2">
+              <p className="text-muted-foreground">OpenClaw: access not configured.</p>
+              <p className="text-muted-foreground">Your Telegram user id: 1234567890</p>
+              <p>
+                Pairing code: <span className="font-bold text-primary">ABC123XY</span>
+              </p>
+              <p className="text-muted-foreground/60 text-xs">
+                Ask the bot owner to approve with: ...
+              </p>
+            </div>
+
+            <div className="space-y-2">
+              <Label htmlFor="pairing-code">Pairing Code</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="pairing-code"
+                  placeholder="e.g. ABC123XY"
+                  value={code}
+                  onChange={(e) => setCode(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      handleLink();
+                    }
+                  }}
+                />
+                <Button onClick={handleLink} disabled={linking || !code.trim()}>
+                  {linking ? "Linking..." : "Link"}
+                </Button>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setPairingStep(1)}
+              className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+            >
+              &larr; Back
+            </button>
+          </div>
+        )}
       </CardContent>
     </Card>
   );

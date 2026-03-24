@@ -50,22 +50,27 @@ describe("TelegramLinkSettings", () => {
     });
   });
 
-  it("shows QR code and pairing input when bots exist but user not linked", async () => {
+  it("shows QR code in step 1, pairing input in step 2", async () => {
     global.fetch = mockFetch({ linked: false }, [
       { agentId: "a1", agentName: "Smithers", botUsername: "acme_smithers_bot" },
     ]);
 
     render(<TelegramLinkSettings isAdmin={false} />);
 
+    // Step 1: QR code
     await waitFor(() => {
       expect(screen.getByText(/Scan this code/i)).toBeInTheDocument();
     });
-    expect(screen.getByText(/open in Telegram/i)).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/pairing code/i)).toBeInTheDocument();
-
-    // QR code link should point to the bot
     const link = screen.getByRole("link", { name: /open in Telegram/i });
     expect(link).toHaveAttribute("href", "https://t.me/acme_smithers_bot");
+    expect(screen.queryByPlaceholderText(/ABC123XY/i)).not.toBeInTheDocument();
+
+    // Click to go to step 2
+    await userEvent.click(screen.getByRole("button", { name: /I sent a message/i }));
+
+    // Step 2: pairing code input + example message
+    expect(screen.getByPlaceholderText(/ABC123XY/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Pairing Code/i)).toBeInTheDocument();
   });
 
   it("shows linked state when user is linked", async () => {
