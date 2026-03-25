@@ -14,7 +14,9 @@ DigitalOcean is a solid choice for running Pinchy — straightforward interface,
 - **Team accounts** — Built-in team management for sharing infrastructure access.
 
 <Aside type="note">
-  For EU data residency requirements, choose the **Amsterdam (AMS3)** or **Frankfurt (FRA1)** region. Your AI conversations and data will stay in the EU.
+  For EU data residency requirements, choose the **Amsterdam (AMS3)** or
+  **Frankfurt (FRA1)** region. Your AI conversations and data will stay in the
+  EU.
 </Aside>
 
 ## What you'll need
@@ -35,15 +37,16 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
 2. **Configure the Droplet**
 
-   | Setting | Value |
-   | ------- | ----- |
-   | **Region** | Amsterdam or Frankfurt (EU) / New York or San Francisco (US) |
-   | **Image** | Ubuntu (latest LTS version) |
-   | **Size** | The smallest plan with at least 4 GB RAM and 2 vCPUs |
-   | **Hostname** | `pinchy` (or whatever you prefer) |
+   | Setting      | Value                                                        |
+   | ------------ | ------------------------------------------------------------ |
+   | **Region**   | Amsterdam or Frankfurt (EU) / New York or San Francisco (US) |
+   | **Image**    | Ubuntu (latest LTS version)                                  |
+   | **Size**     | The smallest plan with at least 4 GB RAM and 2 vCPUs         |
+   | **Hostname** | `pinchy` (or whatever you prefer)                            |
 
    <Aside type="tip">
-     For teams with more than 5 users or heavy agent workloads, consider the $48/mo plan (8 GB RAM, 4 vCPUs) for smoother performance.
+     For teams with more than 5 users or heavy agent workloads, consider the
+     $48/mo plan (8 GB RAM, 4 vCPUs) for smoother performance.
    </Aside>
 
 3. **Choose authentication**
@@ -83,18 +86,18 @@ A "Droplet" is DigitalOcean's name for a virtual server.
      - echo $! > /tmp/loading-server.pid
      - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
      - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
-     - echo 'PINCHY_PORT=80' > /opt/pinchy/.env
-     - cd /opt/pinchy && docker compose build
+     - cd /opt/pinchy && docker compose up --build -d
+     - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
      - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
      - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
-     - cd /opt/pinchy && docker compose up -d
+     - iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
+     - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
    ```
 
    <details>
-   <summary>What does this script do?</summary>
+<summary>What does this script do?</summary>
 
    This is a **cloud-init** script — a standard way to configure servers on first boot. When your Droplet starts, it automatically:
-
    1. Installs Docker, Git, and a firewall
    2. Opens only the ports needed (SSH, HTTP, HTTPS)
    3. Adds 2 GB of swap space (extra memory from disk — important for 4 GB Droplets)
@@ -102,6 +105,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
    5. Downloads, builds, and starts Pinchy
 
    No manual setup required. You can also [download the script](/cloud-init.yml) separately.
+
    </details>
 
 5. **Create the Droplet**
@@ -117,8 +121,8 @@ A "Droplet" is DigitalOcean's name for a virtual server.
    After about 5 minutes, visit `http://<your-droplet-ip>` in your browser. You should see the Pinchy setup wizard.
 
    <Aside type="note">
-     If you see a connection error, wait another minute — the build might still be running. You can check the progress by connecting via SSH (`ssh root@<your-droplet-ip>`) and running `docker compose -f /opt/pinchy/docker-compose.yml logs -f pinchy`.
-   </Aside>
+  If you see a connection error, wait another minute — the build might still be running. You can check the progress by connecting via SSH (`ssh root@<your-droplet-ip>`) and running `docker compose -f /opt/pinchy/docker-compose.yml logs -f pinchy`.
+</Aside>
 
    The setup wizard will guide you through creating your admin account and configuring your first LLM provider.
 
@@ -131,7 +135,7 @@ The steps above get Pinchy running over plain HTTP. For production use, you shou
 - **HTTPS with Caddy** — automatic SSL certificates for your domain
 - **Setting BETTER_AUTH_URL** — so login sessions work with your domain
 - **Pinning secrets** — so your encryption keys don't depend on Docker volumes
-- **Switching to port 7777** — once Caddy handles port 80/443, change Pinchy to run on 7777 internally
+- **Removing the iptables redirect** — once Caddy is running, remove the port 80→7777 redirect
 
 <details>
 <summary>How do I connect to my Droplet to run these commands?</summary>
@@ -158,18 +162,19 @@ ssh root@<your-droplet-ip>
 - **Mac** — Open **Terminal** (search for it in Spotlight with ⌘+Space)
 - **Windows** — Open **PowerShell** (search in Start menu) or install [Windows Terminal](https://aka.ms/terminal)
 - **Linux** — Open your terminal app (usually Ctrl+Alt+T)
-</details>
+  </details>
 
 While connected, every command you type runs on your Droplet. Type `exit` to disconnect.
+
 </details>
 
 ## Point your domain (optional but recommended)
 
 To use HTTPS, you need a domain pointing to your Droplet. Add a DNS record at your domain registrar (the service where you registered your domain):
 
-| Type | Name | Value |
-| ---- | ---- | ----- |
-| A | `pinchy` (or your preferred subdomain) | Your Droplet's IP address |
+| Type | Name                                   | Value                     |
+| ---- | -------------------------------------- | ------------------------- |
+| A    | `pinchy` (or your preferred subdomain) | Your Droplet's IP address |
 
 <details>
 <summary>What's an A record?</summary>
@@ -177,6 +182,7 @@ To use HTTPS, you need a domain pointing to your Droplet. Add a DNS record at yo
 An A record is a DNS entry that maps a domain name (like `pinchy.example.com`) to an IP address (like `164.90.1.23`). When someone visits your domain, their browser looks up the A record to find your server.
 
 Look for "DNS records" or "DNS settings" in your domain registrar's dashboard.
+
 </details>
 
 You can also manage DNS directly in DigitalOcean under **Networking → Domains**.

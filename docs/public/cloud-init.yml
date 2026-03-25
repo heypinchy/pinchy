@@ -41,13 +41,16 @@ runcmd:
   - cd /opt/pinchy-loading && python3 -m http.server 80 &
   - echo $! > /tmp/loading-server.pid
 
-  # Clone and build Pinchy (build only, don't start yet)
+  # Clone, build, and start Pinchy on port 7777
   - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
   - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
-  - echo 'PINCHY_PORT=80' > /opt/pinchy/.env
-  - cd /opt/pinchy && docker compose build
+  - cd /opt/pinchy && docker compose up --build -d
 
-  # Stop the loading page, then start Pinchy on port 80
+  # Wait for Pinchy to be healthy before switching
+  - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
+
+  # Seamless switch — kill loading page, redirect port 80 to Pinchy
   - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
   - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
-  - cd /opt/pinchy && docker compose up -d
+  - iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
+  - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777

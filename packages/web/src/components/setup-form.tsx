@@ -45,7 +45,7 @@ type PreflightState =
   | { status: "error"; infrastructure: InfrastructureStatus };
 
 export const PREFLIGHT_CONFIG = {
-  maxRetries: 5,
+  maxRetries: 10,
   retryIntervalMs: 3000,
 };
 
