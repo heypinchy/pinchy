@@ -16,30 +16,14 @@ vi.mock("@/lib/telegram-pairing", () => ({
   resolvePairingCode: (...args: unknown[]) => mockResolvePairingCode(...args),
 }));
 
-const mockConfigGet = vi.fn().mockResolvedValue({ hash: "abc123" });
-const mockConfigPatch = vi.fn().mockResolvedValue(undefined);
-
-vi.mock("@/server/openclaw-client", () => ({
-  getOpenClawClient: () => ({
-    config: {
-      get: (...args: unknown[]) => mockConfigGet(...args),
-      patch: (...args: unknown[]) => mockConfigPatch(...args),
-    },
-  }),
-}));
-
-// regenerateOpenClawConfig should NOT be called from routes
-const mockRegenerateOpenClawConfig = vi.fn();
-const mockQueueConfigPatch = vi.fn();
+const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
-  queueConfigPatch: (...args: unknown[]) => mockQueueConfigPatch(...args),
 }));
 
 const mockFindFirst = vi.fn();
 const mockInsert = vi.fn();
 const mockDelete = vi.fn();
-const mockSelectWhere = vi.fn();
 
 vi.mock("@/db", () => ({
   db: {
@@ -50,11 +34,6 @@ vi.mock("@/db", () => ({
     },
     insert: (...args: unknown[]) => mockInsert(...args),
     delete: (...args: unknown[]) => mockDelete(...args),
-    select: vi.fn().mockReturnValue({
-      from: vi.fn().mockReturnValue({
-        where: (...args: unknown[]) => mockSelectWhere(...args),
-      }),
-    }),
   },
 }));
 
@@ -131,8 +110,7 @@ describe("POST /api/settings/telegram", () => {
       values: vi.fn().mockResolvedValue(undefined),
     });
     mockResolvePairingCode.mockReturnValue({ found: true, telegramUserId: "8734062810" });
-    mockConfigGet.mockResolvedValue({ hash: "abc123" });
-    mockConfigPatch.mockResolvedValue(undefined);
+    mockRegenerateOpenClawConfig.mockResolvedValue(undefined);
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -147,7 +125,7 @@ describe("POST /api/settings/telegram", () => {
     expect(response.status).toBe(400);
   });
 
-  it("resolves pairing code, stores link in DB, fires config.patch", async () => {
+  it("resolves pairing code, stores link in DB, regenerates config", async () => {
     const response = await POST(makePostRequest({ code: "FMSVEN7M" }));
     expect(response.status).toBe(200);
 
@@ -160,17 +138,8 @@ describe("POST /api/settings/telegram", () => {
     // DB written first
     expect(mockInsert).toHaveBeenCalled();
 
-    // queueConfigPatch fired for live activation
-    expect(mockQueueConfigPatch).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        channels: { telegram: { allowFrom: ["8734062810"] } },
-        session: { identityLinks: { "user-1": ["telegram:8734062810"] } },
-      })
-    );
-
-    // regenerateOpenClawConfig NOT called (only at startup, not from routes)
-    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
+    // Config file regenerated (persists across OpenClaw restarts)
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
   });
 
   it("returns 400 when pairing code is invalid", async () => {
@@ -201,13 +170,6 @@ describe("DELETE /api/settings/telegram", () => {
     mockDelete.mockReturnValue({
       where: vi.fn().mockResolvedValue(undefined),
     });
-    mockFindFirst.mockResolvedValue({
-      userId: "user-1",
-      channel: "telegram",
-      channelUserId: "8734062810",
-    });
-    // After delete, no remaining links
-    mockSelectWhere.mockResolvedValue([]);
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -217,7 +179,7 @@ describe("DELETE /api/settings/telegram", () => {
     expect(response.status).toBe(401);
   });
 
-  it("removes link from DB and fires queueConfigPatch", async () => {
+  it("removes link from DB and regenerates config", async () => {
     const response = await DELETE();
     expect(response.status).toBe(200);
 
@@ -227,28 +189,7 @@ describe("DELETE /api/settings/telegram", () => {
     // DB updated
     expect(mockDelete).toHaveBeenCalled();
 
-    // queueConfigPatch fired with empty allowFrom (no remaining links)
-    expect(mockQueueConfigPatch).toHaveBeenCalledWith(expect.anything(), {
-      channels: { telegram: { allowFrom: [] } },
-      session: { identityLinks: { "user-1": null } },
-    });
-
-    // regenerateOpenClawConfig NOT called
-    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
-  });
-
-  it("preserves other users in allowFrom when unlinking", async () => {
-    // Another user remains linked after this user's delete
-    mockSelectWhere.mockResolvedValue([
-      { userId: "user-2", channel: "telegram", channelUserId: "111222333" },
-    ]);
-
-    const response = await DELETE();
-    expect(response.status).toBe(200);
-
-    expect(mockQueueConfigPatch).toHaveBeenCalledWith(expect.anything(), {
-      channels: { telegram: { allowFrom: ["111222333"] } },
-      session: { identityLinks: { "user-1": null } },
-    });
+    // Config file regenerated (handles allowFrom from remaining DB links)
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
   });
 });

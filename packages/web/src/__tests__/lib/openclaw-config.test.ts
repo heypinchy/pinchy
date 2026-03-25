@@ -866,12 +866,7 @@ describe("restart-state integration", () => {
 
 // ── applyConfigPatch ─────────────────────────────────────────────────────
 
-import {
-  applyConfigPatch,
-  pushStartupConfig,
-  queueConfigPatch,
-  _resetQueue,
-} from "@/lib/openclaw-config";
+import { applyConfigPatch, pushStartupConfig } from "@/lib/openclaw-config";
 
 describe("applyConfigPatch", () => {
   function mockClient(overrides?: {
@@ -1011,79 +1006,5 @@ describe("pushStartupConfig", () => {
 
     expect(result.applied).toBe(false);
     expect(client.config.patch).not.toHaveBeenCalled();
-  });
-});
-
-// ── queueConfigPatch ─────────────────────────────────────────────────────
-
-describe("queueConfigPatch", () => {
-  function mockClient() {
-    return {
-      config: {
-        get: vi.fn().mockResolvedValue({ hash: "h1" }),
-        patch: vi.fn().mockResolvedValue({ payload: {} }),
-      },
-    };
-  }
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    vi.useFakeTimers();
-    _resetQueue();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-  });
-
-  it("applies single patch after debounce window", async () => {
-    const client = mockClient();
-    queueConfigPatch(client as any, { channels: { telegram: { enabled: true } } });
-
-    // Not applied yet
-    expect(client.config.patch).not.toHaveBeenCalled();
-
-    // Advance past debounce window
-    await vi.advanceTimersByTimeAsync(2000);
-
-    expect(client.config.patch).toHaveBeenCalledOnce();
-    const patchArg = JSON.parse(client.config.patch.mock.calls[0][0]);
-    expect(patchArg.channels.telegram.enabled).toBe(true);
-  });
-
-  it("merges two rapid patches into one config.patch call", async () => {
-    const client = mockClient();
-    queueConfigPatch(client as any, {
-      channels: { telegram: { enabled: true, botToken: "tok" } },
-    });
-    queueConfigPatch(client as any, {
-      channels: { telegram: { allowFrom: ["123"] } },
-      session: { identityLinks: { u1: ["telegram:123"] } },
-    });
-
-    await vi.advanceTimersByTimeAsync(2000);
-
-    expect(client.config.patch).toHaveBeenCalledOnce();
-    const patchArg = JSON.parse(client.config.patch.mock.calls[0][0]);
-    // Deep-merged: both telegram fields present
-    expect(patchArg.channels.telegram.botToken).toBe("tok");
-    expect(patchArg.channels.telegram.allowFrom).toEqual(["123"]);
-    expect(patchArg.session.identityLinks["u1"]).toEqual(["telegram:123"]);
-  });
-
-  it("replaces arrays instead of merging them", async () => {
-    const client = mockClient();
-    queueConfigPatch(client as any, {
-      bindings: [{ agentId: "a1", match: { channel: "telegram" } }],
-    });
-    queueConfigPatch(client as any, {
-      bindings: [{ agentId: "a2", match: { channel: "telegram" } }],
-    });
-
-    await vi.advanceTimersByTimeAsync(2000);
-
-    const patchArg = JSON.parse(client.config.patch.mock.calls[0][0]);
-    // Second array replaces first (deepMerge behavior)
-    expect(patchArg.bindings).toEqual([{ agentId: "a2", match: { channel: "telegram" } }]);
   });
 });

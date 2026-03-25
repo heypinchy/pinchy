@@ -24,23 +24,9 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
-const mockConfigGet = vi.fn().mockResolvedValue({ hash: "abc123" });
-const mockConfigPatch = vi.fn().mockResolvedValue(undefined);
-vi.mock("@/server/openclaw-client", () => ({
-  getOpenClawClient: () => ({
-    config: {
-      get: (...args: unknown[]) => mockConfigGet(...args),
-      patch: (...args: unknown[]) => mockConfigPatch(...args),
-    },
-  }),
-}));
-
-// regenerateOpenClawConfig should NOT be called from routes
-const mockRegenerateOpenClawConfig = vi.fn();
-const mockQueueConfigPatch = vi.fn();
+const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
-  queueConfigPatch: (...args: unknown[]) => mockQueueConfigPatch(...args),
 }));
 
 vi.mock("@/db", () => ({
@@ -154,20 +140,7 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
     expect(mockValidateTelegramBotToken).toHaveBeenCalledWith("123456:ABC-token");
     expect(setSetting).toHaveBeenCalledWith("telegram_bot_token:agent-1", "123456:ABC-token", true);
     expect(setSetting).toHaveBeenCalledWith("telegram_bot_username:agent-1", "test_bot", false);
-    expect(mockQueueConfigPatch).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        channels: expect.objectContaining({
-          telegram: expect.objectContaining({
-            enabled: true,
-            botToken: "123456:ABC-token",
-            dmPolicy: "pairing",
-          }),
-        }),
-        bindings: [{ agentId: "agent-1", match: { channel: "telegram" } }],
-      })
-    );
-    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "channel.created",
@@ -245,10 +218,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
 
     expect(deleteSetting).toHaveBeenCalledWith("telegram_bot_token:agent-1");
     expect(deleteSetting).toHaveBeenCalledWith("telegram_bot_username:agent-1");
-    expect(mockQueueConfigPatch).toHaveBeenCalledWith(expect.anything(), {
-      channels: { telegram: null },
-    });
-    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
+    expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "channel.deleted",

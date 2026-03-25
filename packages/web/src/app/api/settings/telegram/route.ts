@@ -3,8 +3,7 @@ import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
-import { queueConfigPatch } from "@/lib/openclaw-config";
-import { getOpenClawClient } from "@/server/openclaw-client";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -47,24 +46,15 @@ export async function POST(req: Request) {
 
   const { telegramUserId } = pairing;
 
-  // DB first (source of truth — survives restarts via regenerateOpenClawConfig at startup)
+  // DB first (source of truth)
   await db.insert(channelLinks).values({
     userId: session.user.id,
     channel: "telegram",
     channelUserId: telegramUserId,
   });
 
-  // Fire config.patch for live hot-reload (fire-and-forget — don't call
-  // regenerateOpenClawConfig here to avoid race conditions with OpenClaw)
-  try {
-    const client = getOpenClawClient();
-    queueConfigPatch(client, {
-      channels: { telegram: { allowFrom: [telegramUserId] } },
-      session: { identityLinks: { [session.user.id]: [`telegram:${telegramUserId}`] } },
-    });
-  } catch {
-    // OpenClaw not connected — changes picked up on next restart
-  }
+  // Regenerate config file — OpenClaw detects the change and hot-reloads
+  await regenerateOpenClawConfig();
 
   return NextResponse.json({ linked: true, telegramUserId });
 }
@@ -80,23 +70,8 @@ export async function DELETE() {
     .delete(channelLinks)
     .where(and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")));
 
-  // Build allowFrom from remaining DB links (source of truth)
-  const remainingLinks = await db
-    .select()
-    .from(channelLinks)
-    .where(eq(channelLinks.channel, "telegram"));
-  const allowFrom = remainingLinks.map((l) => l.channelUserId);
-
-  // Fire config.patch for live hot-reload (fire-and-forget)
-  try {
-    const client = getOpenClawClient();
-    queueConfigPatch(client, {
-      channels: { telegram: { allowFrom } },
-      session: { identityLinks: { [session.user.id]: null } },
-    });
-  } catch {
-    // OpenClaw not connected — changes picked up on next restart
-  }
+  // Regenerate config file — OpenClaw detects the change and hot-reloads
+  await regenerateOpenClawConfig();
 
   return NextResponse.json({ linked: false });
 }
