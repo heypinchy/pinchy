@@ -863,3 +863,86 @@ describe("restart-state integration", () => {
     });
   });
 });
+
+// ── applyConfigPatch ─────────────────────────────────────────────────────
+
+import { applyConfigPatch } from "@/lib/openclaw-config";
+
+describe("applyConfigPatch", () => {
+  function mockClient(overrides?: {
+    getResult?: unknown;
+    getError?: Error;
+    patchResult?: unknown;
+    patchError?: Error;
+  }) {
+    return {
+      config: {
+        get: vi.fn().mockImplementation(() => {
+          if (overrides?.getError) return Promise.reject(overrides.getError);
+          return Promise.resolve(overrides?.getResult ?? { hash: "hash-1" });
+        }),
+        patch: vi.fn().mockImplementation(() => {
+          if (overrides?.patchError) return Promise.reject(overrides.patchError);
+          return Promise.resolve(overrides?.patchResult ?? { payload: {} });
+        }),
+      },
+    };
+  }
+
+  it("should return applied: true on success", async () => {
+    const client = mockClient();
+    const result = await applyConfigPatch(client as any, { foo: "bar" });
+
+    expect(result).toEqual({ applied: true });
+    expect(client.config.get).toHaveBeenCalledOnce();
+    expect(client.config.patch).toHaveBeenCalledWith('{"foo":"bar"}', "hash-1");
+  });
+
+  it("should retry once on hash conflict and succeed", async () => {
+    const client = mockClient();
+    client.config.patch
+      .mockRejectedValueOnce(new Error("hash_mismatch"))
+      .mockResolvedValueOnce({ payload: {} });
+    client.config.get
+      .mockResolvedValueOnce({ hash: "hash-1" })
+      .mockResolvedValueOnce({ hash: "hash-2" });
+
+    const result = await applyConfigPatch(client as any, { foo: "bar" });
+
+    expect(result).toEqual({ applied: true });
+    expect(client.config.get).toHaveBeenCalledTimes(2);
+    expect(client.config.patch).toHaveBeenCalledTimes(2);
+    expect(client.config.patch).toHaveBeenLastCalledWith('{"foo":"bar"}', "hash-2");
+  });
+
+  it("should return applied: false when both attempts fail with hash conflict", async () => {
+    const client = mockClient();
+    client.config.patch.mockRejectedValue(new Error("hash_mismatch"));
+    client.config.get
+      .mockResolvedValueOnce({ hash: "hash-1" })
+      .mockResolvedValueOnce({ hash: "hash-2" });
+
+    const result = await applyConfigPatch(client as any, { foo: "bar" });
+
+    expect(result).toEqual({ applied: false, error: "hash_mismatch" });
+  });
+
+  it("should treat timeout/disconnect as success (OpenClaw restarted)", async () => {
+    const client = mockClient();
+    client.config.patch.mockRejectedValueOnce(new Error("Request config.patch timed out"));
+
+    const result = await applyConfigPatch(client as any, { foo: "bar" });
+
+    expect(result).toEqual({ applied: true });
+    expect(client.config.patch).toHaveBeenCalledOnce();
+  });
+
+  it("should return applied: false when config.get fails", async () => {
+    const client = mockClient({ getError: new Error("not connected") });
+
+    const result = await applyConfigPatch(client as any, { foo: "bar" });
+
+    expect(result).toEqual({ applied: false, error: "not connected" });
+    expect(client.config.patch).not.toHaveBeenCalled();
+  });
+});

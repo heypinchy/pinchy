@@ -274,3 +274,58 @@ export async function regenerateOpenClawConfig() {
   writeFileSync(CONFIG_PATH, newContent, { encoding: "utf-8", mode: 0o644 });
   restartState.notifyRestart();
 }
+
+// ── applyConfigPatch ─────────────────────────────────────────────────────
+
+type PatchResult = { applied: true } | { applied: false; error: string };
+
+interface ConfigClient {
+  config: {
+    get: () => Promise<{ hash: string } & Record<string, unknown>>;
+    patch: (raw: string, baseHash: string) => Promise<unknown>;
+  };
+}
+
+/**
+ * Apply a config.patch to OpenClaw with hash-conflict retry.
+ *
+ * - Timeout/disconnect is treated as success (OpenClaw restarts after applying channel changes)
+ * - Hash conflicts retry once (another config change may have raced)
+ * - Other failures return { applied: false } — the change is safe in DB
+ *   and will be picked up on next restart via regenerateOpenClawConfig
+ */
+export async function applyConfigPatch(
+  client: ConfigClient,
+  patchData: Record<string, unknown>
+): Promise<PatchResult> {
+  const raw = JSON.stringify(patchData);
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const configResult = await client.config.get();
+      const hash = configResult.hash as string;
+      await client.config.patch(raw, hash);
+      return { applied: true };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+
+      // Timeout/disconnect = OpenClaw restarted after applying the patch
+      if (
+        message.includes("timed out") ||
+        message.includes("disconnect") ||
+        message.includes("closed")
+      ) {
+        return { applied: true };
+      }
+
+      // Hash conflict = another config change raced. Retry once.
+      if (message.includes("hash") && attempt === 0) {
+        continue;
+      }
+
+      return { applied: false, error: message };
+    }
+  }
+
+  return { applied: false, error: "hash_mismatch" };
+}

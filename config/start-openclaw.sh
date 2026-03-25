@@ -80,19 +80,15 @@ while true; do
     auto_approve_devices &
     APPROVE_PID=$!
 
-    # Wait for config change or process exit.
-    # Grace period: OpenClaw rewrites openclaw.json multiple times on startup
-    # (meta.lastTouchedAt, config reload, etc.). Wait long enough for startup
-    # to complete before watching for external config changes.
-    (sleep 30 && inotifywait -q -e modify /root/.openclaw/openclaw.json) &
-    WATCH_PID=$!
-
-    # Wait for either to finish
-    wait -n "$PID" "$WATCH_PID" 2>/dev/null || true
+    # Wait for OpenClaw to exit. Config changes are handled by OpenClaw's
+    # internal hot-reload (config.patch triggers restart internally).
+    # No external file watcher needed — inotifywait caused restart loops
+    # when config.patch wrote the config file.
+    wait "$PID" 2>/dev/null || true
 
     echo "Restarting OpenClaw Gateway..."
-    kill "$PID" "$WATCH_PID" "$APPROVE_PID" 2>/dev/null || true
-    wait "$PID" "$WATCH_PID" "$APPROVE_PID" 2>/dev/null || true
+    kill "$APPROVE_PID" 2>/dev/null || true
+    wait "$APPROVE_PID" 2>/dev/null || true
 
     sleep 1
 done
