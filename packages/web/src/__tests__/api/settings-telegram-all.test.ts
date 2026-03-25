@@ -12,7 +12,11 @@ vi.mock("@/lib/api-auth", () => ({
 const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
-  requestGatewayRestart: vi.fn(),
+}));
+
+const mockClearAllowStore = vi.fn();
+vi.mock("@/lib/telegram-allow-store", () => ({
+  clearAllowStore: (...args: unknown[]) => mockClearAllowStore(...args),
 }));
 
 vi.mock("@/lib/audit", () => ({

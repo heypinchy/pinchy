@@ -19,7 +19,13 @@ vi.mock("@/lib/telegram-pairing", () => ({
 const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
-  requestGatewayRestart: vi.fn(),
+}));
+
+const mockAddToAllowStore = vi.fn();
+const mockRemoveFromAllowStore = vi.fn();
+vi.mock("@/lib/telegram-allow-store", () => ({
+  addToAllowStore: (...args: unknown[]) => mockAddToAllowStore(...args),
+  removeFromAllowStore: (...args: unknown[]) => mockRemoveFromAllowStore(...args),
 }));
 
 const mockFindFirst = vi.fn();
@@ -139,7 +145,10 @@ describe("POST /api/settings/telegram", () => {
     // DB written first
     expect(mockInsert).toHaveBeenCalled();
 
-    // Config file regenerated (persists across OpenClaw restarts)
+    // Allow-from store updated (no config change, no channel restart)
+    expect(mockAddToAllowStore).toHaveBeenCalledWith("8734062810");
+
+    // Config regenerated for identityLinks only
     expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
   });
 
@@ -168,6 +177,11 @@ describe("DELETE /api/settings/telegram", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(userSession);
+    mockFindFirst.mockResolvedValue({
+      userId: "user-1",
+      channel: "telegram",
+      channelUserId: "8734062810",
+    });
     mockDelete.mockReturnValue({
       where: vi.fn().mockResolvedValue(undefined),
     });
@@ -180,7 +194,7 @@ describe("DELETE /api/settings/telegram", () => {
     expect(response.status).toBe(401);
   });
 
-  it("removes link from DB and regenerates config", async () => {
+  it("removes link from DB, updates allow store, and regenerates config", async () => {
     const response = await DELETE();
     expect(response.status).toBe(200);
 
@@ -190,7 +204,10 @@ describe("DELETE /api/settings/telegram", () => {
     // DB updated
     expect(mockDelete).toHaveBeenCalled();
 
-    // Config file regenerated (handles allowFrom from remaining DB links)
+    // Allow-from store updated (no channel restart)
+    expect(mockRemoveFromAllowStore).toHaveBeenCalledWith("8734062810");
+
+    // Config regenerated for identityLinks
     expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
   });
 });

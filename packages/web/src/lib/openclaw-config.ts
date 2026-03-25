@@ -11,9 +11,6 @@ import { restartState } from "@/server/restart-state";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
-const RESTART_TRIGGER_PATH = process.env.OPENCLAW_CONFIG_PATH
-  ? dirname(process.env.OPENCLAW_CONFIG_PATH) + "/restart-requested"
-  : "/openclaw-config/restart-requested";
 
 interface OpenClawConfigParams {
   provider: ProviderName;
@@ -231,15 +228,17 @@ export async function regenerateOpenClawConfig() {
   // Build Telegram channel config from DB settings
   // For now: single bot token (first configured agent wins).
   // Multi-bot via OpenClaw accounts is a future enhancement.
+  //
+  // NOTE: allowFrom is NOT written here. It's managed via OpenClaw's native
+  // allow-from store (credentials/telegram-allowFrom.json) to avoid triggering
+  // the broken channel restart (openclaw/openclaw#47458).
   for (const agent of allAgents) {
     const botToken = await getSetting(`telegram_bot_token:${agent.id}`);
     if (botToken) {
       const links = await db.select().from(channelLinks);
-      const allowFrom: string[] = [];
       const identityLinks: Record<string, string[]> = {};
       for (const link of links) {
         if (link.channel === "telegram") {
-          allowFrom.push(link.channelUserId);
           identityLinks[link.userId] = [`telegram:${link.channelUserId}`];
         }
       }
@@ -249,7 +248,6 @@ export async function regenerateOpenClawConfig() {
           enabled: true,
           botToken,
           dmPolicy: "pairing",
-          ...(allowFrom.length > 0 && { allowFrom }),
         },
       };
       config.bindings = [{ agentId: agent.id, match: { channel: "telegram" } }];
@@ -270,61 +268,12 @@ export async function regenerateOpenClawConfig() {
   const newContent = JSON.stringify(config, null, 2);
   try {
     const existing = readFileSync(CONFIG_PATH, "utf-8");
-    if (existing === newContent) {
-      console.log("[pinchy] regenerateOpenClawConfig: config unchanged, skipping write");
-      return;
-    }
-    console.log("[pinchy] regenerateOpenClawConfig: config changed, writing file");
+    if (existing === newContent) return;
   } catch {
-    console.log("[pinchy] regenerateOpenClawConfig: no existing file, writing new");
+    // File doesn't exist yet — write it
   }
-
-  // Log key Telegram fields for debugging
-  const channels = (config as Record<string, unknown>).channels as
-    | Record<string, unknown>
-    | undefined;
-  const telegram = channels?.telegram as Record<string, unknown> | undefined;
-  console.log(
-    "[pinchy] regenerateOpenClawConfig: telegram enabled:",
-    !!telegram,
-    "allowFrom:",
-    telegram?.allowFrom ?? "none"
-  );
 
   writeFileSync(CONFIG_PATH, newContent, { encoding: "utf-8", mode: 0o644 });
-  // Don't call restartState.notifyRestart() here — we can't predict whether
-  // OpenClaw will hot-reload (no disconnect) or full-restart (disconnect).
-  // If it full-restarts, the WebSocket disconnect triggers the restart overlay
-  // automatically via server.ts. If it hot-reloads, no overlay needed.
-}
-
-/**
- * Request a full OpenClaw gateway restart via the shared volume.
- *
- * Workaround for openclaw/openclaw#47458: OpenClaw's internal hot-reload
- * breaks Telegram polling (stopChannel 15s timeout vs getUpdates 30s timeout
- * causes zombie polling sessions). A full process restart is the only
- * reliable way to reset Telegram polling.
- *
- * start-openclaw.sh watches for this trigger file and kills/restarts the
- * gateway process when it appears.
- *
- * TODO: Remove this workaround once openclaw/openclaw#47458 is fixed.
- */
-export function requestGatewayRestart() {
-  try {
-    writeFileSync(RESTART_TRIGGER_PATH, new Date().toISOString(), {
-      encoding: "utf-8",
-      mode: 0o644,
-    });
-    restartState.notifyRestart();
-    console.log("[pinchy] Gateway restart requested (Telegram polling workaround)");
-  } catch (err) {
-    console.warn(
-      "[pinchy] Failed to request gateway restart:",
-      err instanceof Error ? err.message : err
-    );
-  }
 }
 
 // ── Types for config patch helpers ────────────────────────────────────────

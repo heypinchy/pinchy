@@ -29,6 +29,10 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
 }));
 
+vi.mock("@/lib/telegram-allow-store", () => ({
+  clearAllowStore: vi.fn(),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     query: {

@@ -82,30 +82,9 @@ scan_data_directories
 echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 || true
 
-# Restart trigger: Pinchy can request a full gateway restart by writing
-# to this file. Needed because OpenClaw's internal hot-reload breaks
-# Telegram polling (openclaw/openclaw#47458 — stopChannel 15s timeout
-# vs getUpdates 30s timeout causes zombie polling sessions).
-RESTART_TRIGGER="/openclaw-config/restart-requested"
-
-# Keep the container alive. Check for restart trigger and port health.
+# Keep the container alive. Health-check restarts gateway if it crashes.
 while true; do
-    sleep 2
-
-    # Check if Pinchy requested a restart (e.g. after Telegram unlink)
-    if [ -f "$RESTART_TRIGGER" ]; then
-        echo "Restart requested by Pinchy, killing gateway..."
-        rm -f "$RESTART_TRIGGER"
-        pkill -f "openclaw-gateway" 2>/dev/null || true
-        sleep 3
-        fix_config_permissions
-        install_plugin_deps
-        scan_data_directories
-        openclaw gateway --port 18789 || true
-        continue
-    fi
-
-    # Health check: restart if gateway died
+    sleep 30
     if ! (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
         echo "OpenClaw Gateway stopped (port 18789 not responding), restarting..."
         fix_config_permissions

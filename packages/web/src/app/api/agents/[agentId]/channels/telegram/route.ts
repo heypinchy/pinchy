@@ -4,6 +4,7 @@ import { validateTelegramBotToken } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { clearAllowStore } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -85,7 +86,8 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
   await deleteSetting(`telegram_bot_token:${agentId}`);
   await deleteSetting(`telegram_bot_username:${agentId}`);
 
-  // Regenerate config file — OpenClaw detects the change and hot-reloads
+  // Clear allow-from store and regenerate config (removes channel entirely)
+  clearAllowStore();
   await regenerateOpenClawConfig();
 
   await appendAuditLog({
