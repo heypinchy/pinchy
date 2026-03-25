@@ -230,8 +230,9 @@
       }, 400);
     }, 3000);
 
-    // Elapsed timer
-    const start = Date.now();
+    // Elapsed timer — INSTALL_START_TIME is replaced by cloud-init with the actual
+    // Unix timestamp (ms) when setup began. Falls back to page load time.
+    const start = INSTALL_START_TIME || Date.now();
     function updateTimer() {
       const s = Math.floor((Date.now() - start) / 1000);
       const min = Math.floor(s / 60);

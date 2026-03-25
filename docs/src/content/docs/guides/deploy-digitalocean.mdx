@@ -78,6 +78,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
      - echo '/swapfile none swap sw 0 0' >> /etc/fstab
      - mkdir -p /opt/pinchy-loading
      - curl -fsSL https://docs.heypinchy.com/installing.html -o /opt/pinchy-loading/index.html || true
+     - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /opt/pinchy-loading/index.html
      - cd /opt/pinchy-loading && python3 -m http.server 80 &
      - echo $! > /tmp/loading-server.pid
      - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
