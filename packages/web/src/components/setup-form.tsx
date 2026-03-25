@@ -44,6 +44,11 @@ type PreflightState =
   | { status: "ready" }
   | { status: "error"; infrastructure: InfrastructureStatus };
 
+export const PREFLIGHT_CONFIG = {
+  maxRetries: 5,
+  retryIntervalMs: 3000,
+};
+
 function usePreflightCheck() {
   const [state, setState] = useState<PreflightState>({ status: "checking" });
 
@@ -51,22 +56,39 @@ function usePreflightCheck() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/setup/status")
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled) return;
-        const infra = data.infrastructure as InfrastructureStatus | undefined;
-        if (infra && (infra.database === "unreachable" || infra.openclaw === "unreachable")) {
-          setState({ status: "error", infrastructure: infra });
-        } else {
+    let attempt = 0;
+
+    async function check() {
+      while (!cancelled && attempt < PREFLIGHT_CONFIG.maxRetries) {
+        try {
+          const res = await fetch("/api/setup/status");
+          const data = await res.json();
+          if (cancelled) return;
+
+          const infra = data.infrastructure as InfrastructureStatus | undefined;
+          if (infra && (infra.database === "unreachable" || infra.openclaw === "unreachable")) {
+            attempt++;
+            if (attempt >= PREFLIGHT_CONFIG.maxRetries) {
+              setState({ status: "error", infrastructure: infra });
+              return;
+            }
+            // Wait before retrying — services may still be starting
+            await new Promise((resolve) => setTimeout(resolve, PREFLIGHT_CONFIG.retryIntervalMs));
+            continue;
+          }
+
           setState({ status: "ready" });
+          return;
+        } catch {
+          if (cancelled) return;
+          // If status check itself fails, show form anyway (graceful fallback)
+          setState({ status: "ready" });
+          return;
         }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        // If status check itself fails, show form anyway (graceful fallback)
-        setState({ status: "ready" });
-      });
+      }
+    }
+
+    check();
     return () => {
       cancelled = true;
     };
