@@ -31,94 +31,98 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
 <Steps>
 
-1. **Log in to the [DigitalOcean Control Panel](https://cloud.digitalocean.com/)**
+1.  **Log in to the [DigitalOcean Control Panel](https://cloud.digitalocean.com/)**
 
-   Click **Create → Droplets**.
+    Click **Create → Droplets**.
 
-2. **Configure the Droplet**
+2.  **Configure the Droplet**
 
-   | Setting      | Value                                                        |
-   | ------------ | ------------------------------------------------------------ |
-   | **Region**   | Amsterdam or Frankfurt (EU) / New York or San Francisco (US) |
-   | **Image**    | Ubuntu (latest LTS version)                                  |
-   | **Size**     | The smallest plan with at least 4 GB RAM and 2 vCPUs         |
-   | **Hostname** | `pinchy` (or whatever you prefer)                            |
+    | Setting      | Value                                                        |
+    | ------------ | ------------------------------------------------------------ |
+    | **Region**   | Amsterdam or Frankfurt (EU) / New York or San Francisco (US) |
+    | **Image**    | Ubuntu (latest LTS version)                                  |
+    | **Size**     | The smallest plan with at least 4 GB RAM and 2 vCPUs         |
+    | **Hostname** | `pinchy` (or whatever you prefer)                            |
 
-   <Aside type="tip">
-     For teams with more than 5 users or heavy agent workloads, consider the
-     $48/mo plan (8 GB RAM, 4 vCPUs) for smoother performance.
-   </Aside>
+    <Aside type="tip">
+      For teams with more than 5 users or heavy agent workloads, consider the
+      $48/mo plan (8 GB RAM, 4 vCPUs) for smoother performance.
+    </Aside>
 
-3. **Choose authentication**
+3.  **Choose authentication**
 
-   Under **Authentication**, you can choose **SSH Key** or **Password**. For the automated setup below, either works — you only need SSH access later for production hardening.
+    Under **Authentication**, you can choose **SSH Key** or **Password**. For the automated setup below, either works — you only need SSH access later for production hardening.
 
-4. **Paste the setup script**
+4.  **Paste the setup script**
 
-   Scroll down to **Advanced Options** and check **Add User Data**. Paste the following script. It automatically installs Docker, deploys Pinchy, sets up a firewall, and adds swap.
+    Scroll down to **Advanced Options** and check **Add User Data**. Paste the following script. It automatically installs Docker, deploys Pinchy, sets up a firewall, and adds swap.
 
-   ```yaml
-   #cloud-config
-   runcmd:
-     - mkdir -p /opt/pinchy-loading
-     - curl -fsSL https://docs.heypinchy.com/installing.html -o /opt/pinchy-loading/index.html || true
-     - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /opt/pinchy-loading/index.html
-     - cd /opt/pinchy-loading && python3 -m http.server 80 &
-     - echo $! > /tmp/loading-server.pid
-     - apt-get update -qq
-     - apt-get install -y -qq docker.io docker-compose-v2 git ufw
-     - ufw allow OpenSSH
-     - ufw allow 80/tcp
-     - ufw allow 443/tcp
-     - ufw --force enable
-     - systemctl enable docker
-     - systemctl start docker
-     - fallocate -l 2G /swapfile
-     - chmod 600 /swapfile
-     - mkswap /swapfile
-     - swapon /swapfile
-     - echo '/swapfile none swap sw 0 0' >> /etc/fstab
-     - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
-     - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
-     - cd /opt/pinchy && docker compose up --build -d
-     - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
-     - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
-     - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
-     - iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
-     - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
-   ```
+    ```yaml
+    #cloud-config
+    runcmd:
+      - mkdir -p /opt/pinchy-loading
+      - curl -fsSL https://docs.heypinchy.com/installing.html -o /opt/pinchy-loading/index.html || true
+      - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /opt/pinchy-loading/index.html
+      - cd /opt/pinchy-loading && python3 -m http.server 80 &
+      - echo $! > /tmp/loading-server.pid
+      - apt-get update -qq
+      - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+      - ufw allow OpenSSH
+      - ufw allow 80/tcp
+      - ufw allow 443/tcp
+      - ufw allow 7777/tcp
+      - ufw --force enable
+      - systemctl enable docker
+      - systemctl start docker
+      - fallocate -l 2G /swapfile
+      - chmod 600 /swapfile
+      - mkswap /swapfile
+      - swapon /swapfile
+      - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
+      - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
+      - cd /opt/pinchy && docker compose up --build -d
+      - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
+      - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
+      - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
+      - iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
+      - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
+    ```
 
-      <details>
-<summary>What does this script do?</summary>
+          <details>
 
-   This is a **cloud-init** script — a standard way to configure servers on first boot. When your Droplet starts, it automatically:
-   1. Installs Docker, Git, and a firewall
-   2. Opens only the ports needed (SSH, HTTP, HTTPS)
-   3. Adds 2 GB of swap space (extra memory from disk — important for 4 GB Droplets)
-   4. Shows a loading page while Pinchy is being built
-   5. Downloads, builds, and starts Pinchy
+    <summary>What does this script do?</summary>
 
-   No manual setup required. You can also [download the script](/cloud-init.yml) separately.
+    This is a **cloud-init** script — a standard way to configure servers on first boot. When your Droplet starts, it automatically:
+    1. Installs Docker, Git, and a firewall
+    2. Opens only the ports needed (SSH, HTTP, HTTPS)
+    3. Adds 2 GB of swap space (extra memory from disk — important for 4 GB Droplets)
+    4. Shows a loading page while Pinchy is being built
+    5. Downloads, builds, and starts Pinchy
 
-      </details>
+    No manual setup required. You can also [download the script](/cloud-init.yml) separately.
 
-5. **Create the Droplet**
+          </details>
 
-   Click **Create Droplet**. It'll be ready in about 30 seconds, but the setup script needs another **5–8 minutes** to finish installing everything (DigitalOcean builds tend to be a bit slower than other providers).
+5.  **Create the Droplet**
 
-6. **Note the IP address**
+    Click **Create Droplet**. It'll be ready in about 30 seconds, but the setup script needs another **5–8 minutes** to finish installing everything (DigitalOcean builds tend to be a bit slower than other providers).
 
-   The Droplet's IPv4 address appears on the dashboard (e.g., `164.90.x.x`).
+6.  **Note the IP address**
 
-7. **Open Pinchy**
+    The Droplet's IPv4 address appears on the dashboard (e.g., `164.90.x.x`).
 
-   After about 5 minutes, visit `http://<your-droplet-ip>` in your browser. You should see the Pinchy setup wizard.
+7.  **Open Pinchy**
 
-      <Aside type="note">
-  If you see a connection error, wait another minute — the build might still be running. You can check the progress by connecting via SSH (`ssh root@<your-droplet-ip>`) and running `docker compose -f /opt/pinchy/docker-compose.yml logs -f pinchy`.
-</Aside>
+    After about 5 minutes, visit `http://<your-droplet-ip>` in your browser. You should see the Pinchy setup wizard.
 
-   The setup wizard will guide you through creating your admin account and configuring your first LLM provider.
+          <Aside type="note">
+
+    If you see a connection error, wait another minute — the build might still be running. You can check the progress by connecting via SSH (`ssh root@<your-droplet-ip>`) and running `docker compose -f /opt/pinchy/docker-compose.yml logs -f pinchy`.
+
+    </Aside>
+
+    The setup wizard will guide you through creating your admin account and configuring your first LLM provider.
 
 </Steps>
 
