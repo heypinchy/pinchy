@@ -18,7 +18,10 @@ runcmd:
 
   # Now install packages (loading page is already visible)
   - apt-get update -qq
-  - apt-get install -y -qq docker.io docker-compose-v2 git ufw iptables-persistent
+  - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+  - echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+  - echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
+  - apt-get install -y -qq iptables-persistent
 
   # Firewall
   - ufw allow OpenSSH

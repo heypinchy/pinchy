@@ -86,7 +86,10 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
       - cd /opt/pinchy-loading && python3 -m http.server 80 &
       - echo $! > /tmp/loading-server.pid
       - apt-get update -qq
-      - apt-get install -y -qq docker.io docker-compose-v2 git ufw iptables-persistent
+      - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+      - echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+      - echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
+      - apt-get install -y -qq iptables-persistent
       - ufw allow OpenSSH
       - ufw allow 80/tcp
       - ufw allow 443/tcp
