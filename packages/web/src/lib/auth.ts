@@ -65,6 +65,15 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
 });
 
 export const auth = betterAuth({
+  // Trust the origin from the request. Pinchy is self-hosted — the server
+  // itself is the trust boundary, not the origin header. This allows login
+  // to work whether accessed via IP, localhost, or custom domain without
+  // needing to configure BETTER_AUTH_URL upfront.
+  trustedOrigins: (request) => {
+    const host = request?.headers?.get("host") ?? request?.headers?.get("x-forwarded-host");
+    const proto = request?.headers?.get("x-forwarded-proto") ?? "http";
+    return host ? [`${proto}://${host}`] : [];
+  },
   database: drizzleAdapter(db, {
     provider: "pg",
     schema: {
