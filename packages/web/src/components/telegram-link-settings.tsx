@@ -34,6 +34,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
   const [linking, setLinking] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
   const [pairingStep, setPairingStep] = useState<1 | 2>(1);
+  const [connecting, setConnecting] = useState(false);
 
   // Admin setup state
   const [showSetup, setShowSetup] = useState(false);
@@ -98,8 +99,12 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
       });
 
       if (res.ok) {
-        toast.success("Telegram account linked");
         setCode("");
+        setConnecting(true);
+        // Wait for OpenClaw to restart and reconnect Telegram after config.patch
+        await new Promise((r) => setTimeout(r, 10000));
+        setConnecting(false);
+        toast.success("Telegram account linked");
         await fetchData();
       } else {
         const data = await res.json();
@@ -141,6 +146,29 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">Loading...</p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // Connecting state: after pairing, waiting for OpenClaw to restart
+  if (connecting) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Telegram</CardTitle>
+          <CardDescription>Applying changes...</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-3">
+            <div className="flex items-center gap-2 mb-6">
+              <div className="h-1.5 flex-1 rounded-full bg-primary" />
+              <div className="h-1.5 flex-1 rounded-full bg-primary animate-pulse" />
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Connecting to Telegram. This takes a few seconds...
+            </p>
+          </div>
         </CardContent>
       </Card>
     );
