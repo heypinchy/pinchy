@@ -1,0 +1,47 @@
+#cloud-config
+# Pinchy %%PINCHY_VERSION%% — Automated VPS Setup
+# https://docs.heypinchy.com/guides/vps-deployment/
+#
+# This cloud-init script installs Docker, deploys Pinchy, configures
+# a firewall, and adds swap. Paste it into the "User Data" field when
+# creating your server.
+#
+# After boot (~5 minutes), visit http://<your-server-ip>:7777
+
+package_update: true
+
+packages:
+  - docker.io
+  - docker-compose-v2
+  - git
+  - ufw
+
+runcmd:
+  # Enable and start Docker
+  - systemctl enable docker
+  - systemctl start docker
+
+  # Firewall — allow SSH, HTTP, HTTPS, and Pinchy (for initial setup)
+  - ufw allow OpenSSH
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - ufw allow 7777/tcp
+  - ufw --force enable
+
+  # Add 2 GB swap (recommended for 4 GB servers)
+  - fallocate -l 2G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+  # Clone and start Pinchy
+  - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
+  - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
+  - cd /opt/pinchy && docker compose up --build -d
+
+write_files:
+  - path: /opt/pinchy-setup-complete
+    content: |
+      Pinchy %%PINCHY_VERSION%% installed successfully.
+      Visit http://$(hostname -I | awk '{print $1}'):7777 to complete setup.
