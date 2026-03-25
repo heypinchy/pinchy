@@ -65,30 +65,31 @@ auto_approve_devices() {
     done
 }
 
+install_plugin_deps
+scan_data_directories
+
+# OpenClaw rewrites openclaw.json on startup with root-only permissions.
+# Wait briefly, then fix permissions so Pinchy can write to it.
+(sleep 3 && fix_config_permissions) &
+
+# Start auto-approver in the background
+auto_approve_devices &
+
+# Start gateway. The `openclaw gateway` command daemonizes — it spawns the
+# actual gateway process and exits immediately. In a container there's no
+# systemd, so we supervise via a health-check loop instead of `wait`.
+echo "Starting OpenClaw Gateway..."
+openclaw gateway --port 18789 || true
+
+# Keep the container alive and monitor the gateway process.
+# If the gateway exits (crash, OOM), restart it.
 while true; do
-    install_plugin_deps
-    scan_data_directories
-    openclaw gateway --port 18789 &
-    PID=$!
-    echo "OpenClaw Gateway running (pid: $PID)"
-
-    # OpenClaw rewrites openclaw.json on startup with root-only permissions.
-    # Wait briefly, then fix permissions so Pinchy can write to it.
-    (sleep 3 && fix_config_permissions) &
-
-    # Start auto-approver in the background
-    auto_approve_devices &
-    APPROVE_PID=$!
-
-    # Wait for OpenClaw to exit. Config changes are handled by OpenClaw's
-    # internal hot-reload (config.patch triggers restart internally).
-    # No external file watcher needed — inotifywait caused restart loops
-    # when config.patch wrote the config file.
-    wait "$PID" 2>/dev/null || true
-
-    echo "Restarting OpenClaw Gateway..."
-    kill "$APPROVE_PID" 2>/dev/null || true
-    wait "$APPROVE_PID" 2>/dev/null || true
-
-    sleep 1
+    sleep 10
+    if ! openclaw gateway status 2>/dev/null | grep -q "RPC probe: ok"; then
+        echo "OpenClaw Gateway stopped, restarting..."
+        fix_config_permissions
+        install_plugin_deps
+        scan_data_directories
+        openclaw gateway --port 18789 || true
+    fi
 done

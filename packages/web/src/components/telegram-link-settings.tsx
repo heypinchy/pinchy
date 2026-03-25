@@ -8,6 +8,17 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "@/components/ui/alert-dialog";
 import { ExternalLink, CircleCheck } from "lucide-react";
 import { AgentTelegramSettings } from "./agent-telegram-settings";
 import { useRestart } from "@/components/restart-provider";
@@ -37,6 +48,8 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
   const [linkError, setLinkError] = useState("");
   const [pairingStep, setPairingStep] = useState<1 | 2>(1);
   const { triggerRestart } = useRestart();
+
+  const [removingAll, setRemovingAll] = useState(false);
 
   // Admin setup state
   const [showSetup, setShowSetup] = useState(false);
@@ -126,6 +139,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
       });
 
       if (res.ok) {
+        setPairingStep(1);
         triggerRestart();
         toast.success("Telegram account unlinked");
         await fetchData();
@@ -137,6 +151,25 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
       toast.error("Failed to unlink Telegram account");
     } finally {
       setUnlinking(false);
+    }
+  }
+
+  async function handleRemoveAll() {
+    setRemovingAll(true);
+    try {
+      const res = await fetch("/api/settings/telegram/all", { method: "DELETE" });
+      if (res.ok) {
+        triggerRestart();
+        toast.success("Telegram removed");
+        await fetchData();
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to remove Telegram");
+      }
+    } catch {
+      toast.error("Failed to remove Telegram");
+    } finally {
+      setRemovingAll(false);
     }
   }
 
@@ -170,6 +203,34 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
             <Button variant="outline" onClick={handleUnlink} disabled={unlinking}>
               {unlinking ? "Unlinking..." : "Unlink Telegram account"}
             </Button>
+            {isAdmin && (
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="ghost"
+                    className="text-destructive hover:text-destructive"
+                    disabled={removingAll}
+                  >
+                    {removingAll ? "Removing..." : "Remove Telegram for everyone"}
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Remove Telegram for everyone?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will disconnect all Telegram bots and unlink all users. Everyone will
+                      lose Telegram access. You can set it up again later.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction variant="destructive" onClick={handleRemoveAll}>
+                      Remove Telegram
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+            )}
           </div>
         </CardContent>
       </Card>
