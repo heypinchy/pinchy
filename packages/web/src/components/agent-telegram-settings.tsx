@@ -30,9 +30,11 @@ interface TelegramConfig {
 interface AgentTelegramSettingsProps {
   agentId: string;
   onConnected?: () => void;
+  /** Render without Card wrapper (for embedding in an existing Card) */
+  bare?: boolean;
 }
 
-export function AgentTelegramSettings({ agentId, onConnected }: AgentTelegramSettingsProps) {
+export function AgentTelegramSettings({ agentId, onConnected, bare }: AgentTelegramSettingsProps) {
   const [config, setConfig] = useState<TelegramConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [botToken, setBotToken] = useState("");
@@ -128,6 +130,146 @@ export function AgentTelegramSettings({ agentId, onConnected }: AgentTelegramSet
 
   const isConfigured = config?.configured === true;
 
+  const content = (
+    <div className="space-y-4">
+      {isConfigured ? (
+        <>
+          <div className="flex items-center gap-2">
+            <CircleCheck className="size-5 text-green-600 shrink-0" />
+            <span className="text-sm font-medium">Connected</span>
+            {connectedUsername && <Badge variant="secondary">@{connectedUsername}</Badge>}
+          </div>
+          {config?.hint && (
+            <p className="text-xs text-muted-foreground flex items-center gap-1">
+              <Lock className="size-3" />
+              Token ending in ····{config.hint}
+            </p>
+          )}
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                className="text-destructive hover:text-destructive"
+                disabled={removing}
+              >
+                {removing ? "Disconnecting..." : "Disconnect"}
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Disconnect Telegram bot?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  This will remove the Telegram bot connection for this agent. Users will no longer
+                  be able to chat with the agent via Telegram.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction variant="destructive" onClick={handleDisconnect}>
+                  Disconnect
+                </AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        </>
+      ) : (
+        <>
+          <p className="text-sm text-muted-foreground">
+            Create a Telegram bot for this agent. Pick a name your team will recognize. The bot name
+            must be unique and can&apos;t be changed later.
+          </p>
+
+          <Collapsible open={guideOpen} onOpenChange={setGuideOpen}>
+            <CollapsibleTrigger className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
+              <ChevronDown
+                className={`size-4 transition-transform ${guideOpen ? "rotate-180" : ""}`}
+              />
+              How to create a Telegram bot
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="mt-3 space-y-3 rounded-md border p-3 text-sm">
+                <p className="text-muted-foreground">
+                  Tip: Use{" "}
+                  <a
+                    href="https://web.telegram.org"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-primary hover:underline"
+                  >
+                    Telegram Web
+                  </a>{" "}
+                  or the desktop app to easily copy the token.
+                </p>
+                <ol className="space-y-1.5 list-decimal list-inside text-muted-foreground">
+                  <li>
+                    Open{" "}
+                    <a
+                      href="https://t.me/BotFather"
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-primary hover:underline"
+                    >
+                      @BotFather
+                    </a>{" "}
+                    in Telegram
+                  </li>
+                  <li>
+                    Send <code className="bg-muted px-1 rounded">/newbot</code>
+                  </li>
+                  <li>Choose a display name</li>
+                  <li>
+                    Choose a username ending in <code className="bg-muted px-1 rounded">bot</code>
+                  </li>
+                  <li>Copy the token BotFather gives you</li>
+                </ol>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
+
+          <div className="space-y-2">
+            <Label htmlFor="telegram-bot-token">Bot Token</Label>
+            <Input
+              id="telegram-bot-token"
+              type="password"
+              placeholder="Paste your bot token here"
+              value={botToken}
+              onChange={(e) => {
+                setBotToken(e.target.value);
+                setError("");
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  handleConnect();
+                }
+              }}
+            />
+            <p className="text-xs text-muted-foreground flex items-center gap-1">
+              <Lock className="size-3" />
+              Your bot token is encrypted at rest and never leaves your server.
+            </p>
+          </div>
+
+          {connectedUsername && (
+            <div className="flex items-center gap-2 text-sm text-green-600">
+              <CircleCheck className="size-4" />
+              Connected to @{connectedUsername}
+            </div>
+          )}
+
+          {error && <p className="text-sm text-destructive">{error}</p>}
+
+          <Button onClick={handleConnect} disabled={!botToken.trim() || saving}>
+            {saving ? "Connecting..." : "Connect"}
+          </Button>
+        </>
+      )}
+    </div>
+  );
+
+  if (bare) return content;
+
   return (
     <div className="space-y-6 pt-4">
       <Card>
@@ -137,142 +279,7 @@ export function AgentTelegramSettings({ agentId, onConnected }: AgentTelegramSet
             Connect a Telegram bot so users can chat with this agent directly in Telegram.
           </CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          {isConfigured ? (
-            <>
-              <div className="flex items-center gap-2">
-                <CircleCheck className="size-5 text-green-600 shrink-0" />
-                <span className="text-sm font-medium">Connected</span>
-                {connectedUsername && <Badge variant="secondary">@{connectedUsername}</Badge>}
-              </div>
-              {config?.hint && (
-                <p className="text-xs text-muted-foreground flex items-center gap-1">
-                  <Lock className="size-3" />
-                  Token ending in ····{config.hint}
-                </p>
-              )}
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="text-destructive hover:text-destructive"
-                    disabled={removing}
-                  >
-                    {removing ? "Disconnecting..." : "Disconnect"}
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>Disconnect Telegram bot?</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This will remove the Telegram bot connection for this agent. Users will no
-                      longer be able to chat with the agent via Telegram.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction variant="destructive" onClick={handleDisconnect}>
-                      Disconnect
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            </>
-          ) : (
-            <>
-              <p className="text-sm text-muted-foreground">
-                Create a Telegram bot for this agent. Pick a name your team will recognize. The bot
-                name must be unique and can&apos;t be changed later.
-              </p>
-
-              <Collapsible open={guideOpen} onOpenChange={setGuideOpen}>
-                <CollapsibleTrigger className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-                  <ChevronDown
-                    className={`size-4 transition-transform ${guideOpen ? "rotate-180" : ""}`}
-                  />
-                  How to create a Telegram bot
-                </CollapsibleTrigger>
-                <CollapsibleContent>
-                  <div className="mt-3 space-y-3 rounded-md border p-3 text-sm">
-                    <p className="text-muted-foreground">
-                      Tip: Use{" "}
-                      <a
-                        href="https://web.telegram.org"
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-primary hover:underline"
-                      >
-                        Telegram Web
-                      </a>{" "}
-                      or the desktop app to easily copy the token.
-                    </p>
-                    <ol className="space-y-1.5 list-decimal list-inside text-muted-foreground">
-                      <li>
-                        Open{" "}
-                        <a
-                          href="https://t.me/BotFather"
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-primary hover:underline"
-                        >
-                          @BotFather
-                        </a>{" "}
-                        in Telegram
-                      </li>
-                      <li>
-                        Send <code className="bg-muted px-1 rounded">/newbot</code>
-                      </li>
-                      <li>Choose a display name</li>
-                      <li>
-                        Choose a username ending in{" "}
-                        <code className="bg-muted px-1 rounded">bot</code>
-                      </li>
-                      <li>Copy the token BotFather gives you</li>
-                    </ol>
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
-
-              <div className="space-y-2">
-                <Label htmlFor="telegram-bot-token">Bot Token</Label>
-                <Input
-                  id="telegram-bot-token"
-                  type="password"
-                  placeholder="Paste your bot token here"
-                  value={botToken}
-                  onChange={(e) => {
-                    setBotToken(e.target.value);
-                    setError("");
-                  }}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      handleConnect();
-                    }
-                  }}
-                />
-                <p className="text-xs text-muted-foreground flex items-center gap-1">
-                  <Lock className="size-3" />
-                  Your bot token is encrypted at rest and never leaves your server.
-                </p>
-              </div>
-
-              {connectedUsername && (
-                <div className="flex items-center gap-2 text-sm text-green-600">
-                  <CircleCheck className="size-4" />
-                  Connected to @{connectedUsername}
-                </div>
-              )}
-
-              {error && <p className="text-sm text-destructive">{error}</p>}
-
-              <Button onClick={handleConnect} disabled={!botToken.trim() || saving}>
-                {saving ? "Connecting..." : "Connect"}
-              </Button>
-            </>
-          )}
-        </CardContent>
+        <CardContent>{content}</CardContent>
       </Card>
     </div>
   );
