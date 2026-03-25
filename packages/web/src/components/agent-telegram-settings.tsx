@@ -20,6 +20,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { CircleCheck, ChevronDown, Lock } from "lucide-react";
+import { useRestart } from "@/components/restart-provider";
 
 interface TelegramConfig {
   configured: boolean;
@@ -35,6 +36,7 @@ interface AgentTelegramSettingsProps {
 }
 
 export function AgentTelegramSettings({ agentId, onConnected, bare }: AgentTelegramSettingsProps) {
+  const { triggerRestart } = useRestart();
   const [config, setConfig] = useState<TelegramConfig | null>(null);
   const [loading, setLoading] = useState(true);
   const [botToken, setBotToken] = useState("");
@@ -89,6 +91,7 @@ export function AgentTelegramSettings({ agentId, onConnected, bare }: AgentTeleg
       const data = await res.json();
       setConnectedUsername(data.botUsername || null);
       setBotToken("");
+      triggerRestart();
       toast.success("Telegram bot connected");
       fetchConfig();
       onConnected?.();
@@ -115,6 +118,7 @@ export function AgentTelegramSettings({ agentId, onConnected, bare }: AgentTeleg
       }
 
       setConnectedUsername(null);
+      triggerRestart();
       toast.success("Telegram bot disconnected");
       fetchConfig();
     } catch (err) {
