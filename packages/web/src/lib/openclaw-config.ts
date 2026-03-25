@@ -275,7 +275,7 @@ export async function regenerateOpenClawConfig() {
   restartState.notifyRestart();
 }
 
-// ── applyConfigPatch ─────────────────────────────────────────────────────
+// ── Types for config patch helpers ────────────────────────────────────────
 
 type PatchResult = { applied: true } | { applied: false; error: string };
 
@@ -285,6 +285,27 @@ interface ConfigClient {
     patch: (raw: string, baseHash: string) => Promise<unknown>;
   };
 }
+
+// ── pushStartupConfig ────────────────────────────────────────────────────
+
+/**
+ * Read the config file and push it to OpenClaw via config.patch.
+ *
+ * Called once on first WebSocket connect to close the startup gap: if OpenClaw
+ * started before Pinchy wrote the config, it has an outdated version. This
+ * pushes the full config as a patch so channels, bindings, and session are
+ * applied without requiring a manual restart.
+ */
+export async function pushStartupConfig(client: ConfigClient): Promise<PatchResult> {
+  try {
+    const config = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+    return applyConfigPatch(client, config);
+  } catch (err) {
+    return { applied: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// ── applyConfigPatch ─────────────────────────────────────────────────────
 
 /**
  * Apply a config.patch to OpenClaw with hash-conflict retry.
@@ -328,4 +349,44 @@ export async function applyConfigPatch(
   }
 
   return { applied: false, error: "hash_mismatch" };
+}
+
+// ── queueConfigPatch ─────────────────────────────────────────────────────
+
+const DEBOUNCE_MS = 2000;
+let pendingPatch: Record<string, unknown> | null = null;
+let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Queue a config patch with debounce. Rapid patches (e.g. bot setup + pairing)
+ * are deep-merged and applied as a single config.patch after a 2-second window.
+ */
+export function queueConfigPatch(client: ConfigClient, patchData: Record<string, unknown>) {
+  if (pendingPatch) {
+    pendingPatch = deepMerge(pendingPatch, patchData);
+  } else {
+    pendingPatch = { ...patchData };
+  }
+
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+  }
+
+  debounceTimer = setTimeout(() => {
+    const patch = pendingPatch;
+    pendingPatch = null;
+    debounceTimer = null;
+    if (patch) {
+      applyConfigPatch(client, patch);
+    }
+  }, DEBOUNCE_MS);
+}
+
+/** Reset queue state (for testing only). */
+export function _resetQueue() {
+  if (debounceTimer) {
+    clearTimeout(debounceTimer);
+  }
+  pendingPatch = null;
+  debounceTimer = null;
 }

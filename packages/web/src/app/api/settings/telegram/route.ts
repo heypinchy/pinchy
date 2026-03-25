@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
+import { queueConfigPatch } from "@/lib/openclaw-config";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
@@ -57,17 +58,10 @@ export async function POST(req: Request) {
   // regenerateOpenClawConfig here to avoid race conditions with OpenClaw)
   try {
     const client = getOpenClawClient();
-    const configResult = await client.config.get();
-    const hash = (configResult as Record<string, unknown>).hash as string;
-    client.config
-      .patch(
-        JSON.stringify({
-          channels: { telegram: { allowFrom: [telegramUserId] } },
-          session: { identityLinks: { [session.user.id]: [`telegram:${telegramUserId}`] } },
-        }),
-        hash
-      )
-      .catch(() => {});
+    queueConfigPatch(client, {
+      channels: { telegram: { allowFrom: [telegramUserId] } },
+      session: { identityLinks: { [session.user.id]: [`telegram:${telegramUserId}`] } },
+    });
   } catch {
     // OpenClaw not connected — changes picked up on next restart
   }
@@ -81,38 +75,25 @@ export async function DELETE() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  // Find the user's Telegram ID before deleting
-  const existingLink = await db.query.channelLinks.findFirst({
-    where: and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")),
-  });
-  const telegramUserId = existingLink?.channelUserId;
-
   // DB first
   await db
     .delete(channelLinks)
     .where(and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")));
 
-  // Fire config.patch to remove from allowFrom and identityLinks
+  // Build allowFrom from remaining DB links (source of truth)
+  const remainingLinks = await db
+    .select()
+    .from(channelLinks)
+    .where(eq(channelLinks.channel, "telegram"));
+  const allowFrom = remainingLinks.map((l) => l.channelUserId);
+
+  // Fire config.patch for live hot-reload (fire-and-forget)
   try {
     const client = getOpenClawClient();
-    const configResult = await client.config.get();
-    const hash = (configResult as Record<string, unknown>).hash as string;
-    const currentConfig = configResult as Record<string, unknown>;
-    const telegramConfig = (currentConfig.channels as Record<string, unknown>)?.telegram as
-      | Record<string, unknown>
-      | undefined;
-    const currentAllowFrom = (telegramConfig?.allowFrom as string[]) || [];
-    const newAllowFrom = currentAllowFrom.filter((id) => id !== telegramUserId);
-
-    client.config
-      .patch(
-        JSON.stringify({
-          channels: { telegram: { allowFrom: newAllowFrom } },
-          session: { identityLinks: { [session.user.id]: null } },
-        }),
-        hash
-      )
-      .catch(() => {});
+    queueConfigPatch(client, {
+      channels: { telegram: { allowFrom } },
+      session: { identityLinks: { [session.user.id]: null } },
+    });
   } catch {
     // OpenClaw not connected — changes picked up on next restart
   }

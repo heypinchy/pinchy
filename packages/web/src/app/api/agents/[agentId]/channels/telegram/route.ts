@@ -3,6 +3,7 @@ import { requireAdmin } from "@/lib/api-auth";
 import { validateTelegramBotToken } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
+import { queueConfigPatch } from "@/lib/openclaw-config";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { db } from "@/db";
 import { agents, channelLinks } from "@/db/schema";
@@ -53,8 +54,6 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
   // regenerateOpenClawConfig here to avoid race conditions with OpenClaw)
   try {
     const client = getOpenClawClient();
-    const configResult = await client.config.get();
-    const hash = (configResult as Record<string, unknown>).hash as string;
 
     const links = await db.select().from(channelLinks).where(eq(channelLinks.channel, "telegram"));
     const identityLinks: Record<string, string[]> = {};
@@ -76,8 +75,8 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
       },
       bindings: [{ agentId, match: { channel: "telegram" } }],
     };
-    // Fire and forget — don't block the response on the RPC timeout
-    client.config.patch(JSON.stringify(patch), hash).catch(() => {});
+    // Fire and forget — applyConfigPatch handles hash conflicts and retries
+    queueConfigPatch(client, patch);
   } catch {
     // OpenClaw not connected — config file will be picked up on next restart
   }
@@ -118,9 +117,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
   // Fire config.patch to remove channel live (fire-and-forget)
   try {
     const client = getOpenClawClient();
-    const configResult = await client.config.get();
-    const hash = (configResult as Record<string, unknown>).hash as string;
-    client.config.patch(JSON.stringify({ channels: { telegram: null } }), hash).catch(() => {});
+    queueConfigPatch(client, { channels: { telegram: null } });
   } catch {
     // OpenClaw not connected
   }

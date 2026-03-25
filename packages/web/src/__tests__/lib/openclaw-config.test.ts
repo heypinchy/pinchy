@@ -866,7 +866,12 @@ describe("restart-state integration", () => {
 
 // ── applyConfigPatch ─────────────────────────────────────────────────────
 
-import { applyConfigPatch } from "@/lib/openclaw-config";
+import {
+  applyConfigPatch,
+  pushStartupConfig,
+  queueConfigPatch,
+  _resetQueue,
+} from "@/lib/openclaw-config";
 
 describe("applyConfigPatch", () => {
   function mockClient(overrides?: {
@@ -944,5 +949,141 @@ describe("applyConfigPatch", () => {
 
     expect(result).toEqual({ applied: false, error: "not connected" });
     expect(client.config.patch).not.toHaveBeenCalled();
+  });
+});
+
+// ── pushStartupConfig ────────────────────────────────────────────────────
+
+describe("pushStartupConfig", () => {
+  function mockClient(overrides?: { getResult?: unknown; patchError?: Error }) {
+    return {
+      config: {
+        get: vi.fn().mockResolvedValue(overrides?.getResult ?? { hash: "h1" }),
+        patch: vi.fn().mockImplementation(() => {
+          if (overrides?.patchError) return Promise.reject(overrides.patchError);
+          return Promise.resolve({ payload: {} });
+        }),
+      },
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+  });
+
+  it("reads config file and pushes via applyConfigPatch", async () => {
+    const configContent = {
+      gateway: { mode: "local", auth: { token: "t" } },
+      channels: { telegram: { enabled: true, botToken: "tok" } },
+      bindings: [{ agentId: "a1", match: { channel: "telegram" } }],
+      agents: { list: [{ id: "a1", name: "Smithers" }] },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(configContent));
+
+    const client = mockClient();
+    const result = await pushStartupConfig(client as any);
+
+    expect(result).toEqual({ applied: true });
+    expect(client.config.patch).toHaveBeenCalled();
+    const patchArg = JSON.parse(client.config.patch.mock.calls[0][0]);
+    expect(patchArg.channels.telegram.enabled).toBe(true);
+    expect(patchArg.bindings).toEqual([{ agentId: "a1", match: { channel: "telegram" } }]);
+  });
+
+  it("returns applied: false when config file does not exist", async () => {
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+
+    const client = mockClient();
+    const result = await pushStartupConfig(client as any);
+
+    expect(result).toEqual({ applied: false, error: expect.stringContaining("ENOENT") });
+    expect(client.config.patch).not.toHaveBeenCalled();
+  });
+
+  it("returns applied: false when config file is invalid JSON", async () => {
+    mockedReadFileSync.mockReturnValue("not-json{{{");
+
+    const client = mockClient();
+    const result = await pushStartupConfig(client as any);
+
+    expect(result.applied).toBe(false);
+    expect(client.config.patch).not.toHaveBeenCalled();
+  });
+});
+
+// ── queueConfigPatch ─────────────────────────────────────────────────────
+
+describe("queueConfigPatch", () => {
+  function mockClient() {
+    return {
+      config: {
+        get: vi.fn().mockResolvedValue({ hash: "h1" }),
+        patch: vi.fn().mockResolvedValue({ payload: {} }),
+      },
+    };
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    _resetQueue();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("applies single patch after debounce window", async () => {
+    const client = mockClient();
+    queueConfigPatch(client as any, { channels: { telegram: { enabled: true } } });
+
+    // Not applied yet
+    expect(client.config.patch).not.toHaveBeenCalled();
+
+    // Advance past debounce window
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(client.config.patch).toHaveBeenCalledOnce();
+    const patchArg = JSON.parse(client.config.patch.mock.calls[0][0]);
+    expect(patchArg.channels.telegram.enabled).toBe(true);
+  });
+
+  it("merges two rapid patches into one config.patch call", async () => {
+    const client = mockClient();
+    queueConfigPatch(client as any, {
+      channels: { telegram: { enabled: true, botToken: "tok" } },
+    });
+    queueConfigPatch(client as any, {
+      channels: { telegram: { allowFrom: ["123"] } },
+      session: { identityLinks: { u1: ["telegram:123"] } },
+    });
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    expect(client.config.patch).toHaveBeenCalledOnce();
+    const patchArg = JSON.parse(client.config.patch.mock.calls[0][0]);
+    // Deep-merged: both telegram fields present
+    expect(patchArg.channels.telegram.botToken).toBe("tok");
+    expect(patchArg.channels.telegram.allowFrom).toEqual(["123"]);
+    expect(patchArg.session.identityLinks["u1"]).toEqual(["telegram:123"]);
+  });
+
+  it("replaces arrays instead of merging them", async () => {
+    const client = mockClient();
+    queueConfigPatch(client as any, {
+      bindings: [{ agentId: "a1", match: { channel: "telegram" } }],
+    });
+    queueConfigPatch(client as any, {
+      bindings: [{ agentId: "a2", match: { channel: "telegram" } }],
+    });
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    const patchArg = JSON.parse(client.config.patch.mock.calls[0][0]);
+    // Second array replaces first (deepMerge behavior)
+    expect(patchArg.bindings).toEqual([{ agentId: "a2", match: { channel: "telegram" } }]);
   });
 });

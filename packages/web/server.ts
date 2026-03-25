@@ -177,12 +177,35 @@ app.prepare().then(async () => {
       // Swallow rejection — the error event handler logs once
     });
 
-    openclawClient.on("connected", () => {
+    openclawClient.on("connected", async () => {
       console.log("Connected to OpenClaw Gateway");
+      const firstConnect = !hasConnected;
       hasConnected = true;
       errorLogged = false;
       if (restartState.isRestarting) {
         restartState.notifyReady();
+      }
+
+      // Push config to OpenClaw on first connect (closes startup gap:
+      // if OpenClaw started before Pinchy wrote the config, it has stale state)
+      if (firstConnect) {
+        try {
+          const { pushStartupConfig } = await import("./src/lib/openclaw-config");
+          const result = await pushStartupConfig(openclawClient!);
+          if (result.applied) {
+            console.log("[pinchy] Config pushed to OpenClaw on first connect");
+          } else {
+            console.warn(
+              "[pinchy] Config push failed (will retry on next restart):",
+              (result as { error: string }).error
+            );
+          }
+        } catch (err) {
+          console.warn(
+            "[pinchy] Could not push config on connect:",
+            err instanceof Error ? err.message : err
+          );
+        }
       }
     });
 
