@@ -72,9 +72,9 @@ scan_data_directories
 # Wait briefly, then fix permissions so Pinchy can write to it.
 (sleep 3 && fix_config_permissions) &
 
-# Auto-approver temporarily disabled — the repeated CLI calls may interfere
-# with Telegram long-polling. Device pairing is handled via Pinchy UI instead.
-# auto_approve_devices &
+# Start auto-approver in the background (needed for Docker networking
+# where connections come from container IPs, not localhost)
+auto_approve_devices &
 
 # Start gateway. The `openclaw gateway` command daemonizes — it spawns the
 # actual gateway process and exits immediately. In a container there's no
@@ -83,13 +83,19 @@ echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 || true
 
 # Keep the container alive. Health-check restarts gateway if it crashes.
+# Double-check with a delay to avoid interfering with OpenClaw's internal
+# SIGUSR1 restarts (port is briefly unavailable during restart).
 while true; do
     sleep 30
     if ! (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
-        echo "OpenClaw Gateway stopped (port 18789 not responding), restarting..."
-        fix_config_permissions
-        install_plugin_deps
-        scan_data_directories
-        openclaw gateway --port 18789 || true
+        # Port is down — wait 10s and check again (internal restart takes ~5s)
+        sleep 10
+        if ! (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
+            echo "OpenClaw Gateway stopped (port 18789 not responding after 10s), restarting..."
+            fix_config_permissions
+            install_plugin_deps
+            scan_data_directories
+            openclaw gateway --port 18789 || true
+        fi
     fi
 done
