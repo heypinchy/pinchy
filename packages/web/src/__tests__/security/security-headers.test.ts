@@ -14,7 +14,8 @@ const REQUIRED_HEADERS = [
   "X-XSS-Protection",
   "Referrer-Policy",
   "Permissions-Policy",
-  "Strict-Transport-Security",
+  // Strict-Transport-Security is only included when HTTPS is configured
+  // (BETTER_AUTH_URL starts with https://). On plain HTTP it breaks browsers.
 ];
 
 describe("Security headers", () => {
