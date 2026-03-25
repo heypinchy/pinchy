@@ -34,6 +34,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
   const [code, setCode] = useState("");
   const [linking, setLinking] = useState(false);
   const [unlinking, setUnlinking] = useState(false);
+  const [linkError, setLinkError] = useState("");
   const [pairingStep, setPairingStep] = useState<1 | 2>(1);
   const { triggerRestart } = useRestart();
 
@@ -92,6 +93,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
     if (!code.trim()) return;
 
     setLinking(true);
+    setLinkError("");
     try {
       const res = await fetch("/api/settings/telegram", {
         method: "POST",
@@ -101,15 +103,16 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
 
       if (res.ok) {
         setCode("");
+        setLinkError("");
         triggerRestart();
         toast.success("Telegram account linked");
         await fetchData();
       } else {
         const data = await res.json();
-        toast.error(data.error || "Failed to link Telegram account");
+        setLinkError(data.error || "Failed to link Telegram account");
       }
     } catch {
-      toast.error("Failed to link Telegram account");
+      setLinkError("Failed to link Telegram account");
     } finally {
       setLinking(false);
     }
@@ -286,7 +289,10 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
                   id="pairing-code"
                   placeholder="e.g. ABC123XY"
                   value={code}
-                  onChange={(e) => setCode(e.target.value)}
+                  onChange={(e) => {
+                    setCode(e.target.value);
+                    setLinkError("");
+                  }}
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
                       e.preventDefault();
@@ -298,6 +304,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
                   {linking ? "Linking..." : "Link"}
                 </Button>
               </div>
+              {linkError && <p className="text-sm text-destructive">{linkError}</p>}
             </div>
 
             <button

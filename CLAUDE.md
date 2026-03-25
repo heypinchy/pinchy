@@ -161,6 +161,21 @@ When creating or modifying any POST/PUT/PATCH/DELETE endpoint:
 4. All referenced entities snapshotted as `{ id, name }` pairs (`EntityRef`)?
 5. Test exists that verifies the `appendAuditLog` call with correct payload?
 
+### Error & Notification Display Policy
+User feedback (errors, success confirmations) must use the correct display pattern. Using the wrong one creates inconsistent UX.
+
+**Inline errors** (`setError()` → `<p className="text-sm text-destructive">`) when:
+- The error is directly tied to a form field (validation failure, invalid input)
+- The user should correct their input and retry
+- The form/dialog stays open after the error
+
+**Toast notifications** (`toast.success()` / `toast.error()` from sonner) when:
+- Confirming a completed action ("Settings saved", "Bot connected")
+- A background or system error occurs that isn't tied to a specific field
+- The UI navigates away after the action (dialog closes, redirect)
+
+**Never mix both for the same action.** A form submission error is always inline, never a toast. A success confirmation is always a toast, never inline (exception: multi-step flows that show a success screen).
+
 ### Documentation
 - **Docs site**: `docs/` directory, built with Astro Starlight. Deployed to [docs.heypinchy.com](https://docs.heypinchy.com).
 - **Docs-first process**: Every feature plan MUST include a documentation update task. When behavior changes, docs must be updated in the same PR.
