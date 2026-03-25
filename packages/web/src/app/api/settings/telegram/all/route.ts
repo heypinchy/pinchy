@@ -36,6 +36,7 @@ export async function DELETE() {
     eventType: "channel.deleted",
     resource: "settings:telegram",
     detail: {
+      name: "telegram",
       channel: "telegram",
       scope: "all",
       botsRemoved: botTokenSettings.length,
