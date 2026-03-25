@@ -260,14 +260,14 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
             </p>
 
             {/* Mock Telegram incoming message bubble */}
-            <div className="flex">
-              <div className="max-w-xs rounded-2xl rounded-bl-sm bg-white border shadow px-3.5 py-2.5 text-sm text-gray-800 space-y-2">
+            <div className="flex select-none pointer-events-none">
+              <div className="max-w-xs rounded-2xl rounded-bl-sm bg-white border shadow px-3.5 py-2.5 text-sm text-gray-400 space-y-2">
                 <p>OpenClaw: access not configured.</p>
                 <p>Your Telegram user id: 1234567890</p>
+                <div className="rounded-md border-2 border-primary/30 bg-primary/5 px-2.5 py-1.5 text-gray-800">
+                  Pairing code: <span className="font-bold text-primary">ABC123XY</span>
+                </div>
                 <p>
-                  Pairing code: <span className="font-bold">ABC123XY</span>
-                </p>
-                <p className="text-gray-400">
                   Ask the bot owner to approve with:
                   <br />
                   openclaw pairing approve telegram ABC123XY
