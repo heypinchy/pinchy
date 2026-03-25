@@ -74,6 +74,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
           dmPolicy: "pairing",
         },
       },
+      bindings: [{ agentId, match: { channel: "telegram" } }],
     };
     // Fire and forget — don't block the response on the RPC timeout
     client.config.patch(JSON.stringify(patch), hash).catch(() => {});

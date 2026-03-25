@@ -81,21 +81,40 @@ export async function DELETE() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
+  // Find the user's Telegram ID before deleting
+  const existingLink = await db.query.channelLinks.findFirst({
+    where: and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")),
+  });
+  const telegramUserId = existingLink?.channelUserId;
+
   // DB first
   await db
     .delete(channelLinks)
     .where(and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")));
 
-  // Fire config.patch for live hot-reload (fire-and-forget)
+  // Fire config.patch to remove from allowFrom and identityLinks
   try {
     const client = getOpenClawClient();
     const configResult = await client.config.get();
     const hash = (configResult as Record<string, unknown>).hash as string;
+    const currentConfig = configResult as Record<string, unknown>;
+    const telegramConfig = (currentConfig.channels as Record<string, unknown>)?.telegram as
+      | Record<string, unknown>
+      | undefined;
+    const currentAllowFrom = (telegramConfig?.allowFrom as string[]) || [];
+    const newAllowFrom = currentAllowFrom.filter((id) => id !== telegramUserId);
+
     client.config
-      .patch(JSON.stringify({ session: { identityLinks: { [session.user.id]: null } } }), hash)
+      .patch(
+        JSON.stringify({
+          channels: { telegram: { allowFrom: newAllowFrom } },
+          session: { identityLinks: { [session.user.id]: null } },
+        }),
+        hash
+      )
       .catch(() => {});
   } catch {
-    // OpenClaw not connected
+    // OpenClaw not connected — changes picked up on next restart
   }
 
   return NextResponse.json({ linked: false });

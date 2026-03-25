@@ -247,6 +247,7 @@ export async function regenerateOpenClawConfig() {
           ...(allowFrom.length > 0 && { allowFrom }),
         },
       };
+      config.bindings = [{ agentId: agent.id, match: { channel: "telegram" } }];
       config.session = {
         dmScope: "per-peer",
         ...(Object.keys(identityLinks).length > 0 && { identityLinks }),

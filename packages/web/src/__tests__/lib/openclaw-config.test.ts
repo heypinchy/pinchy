@@ -801,7 +801,7 @@ describe("restart-state integration", () => {
       botToken: "123456:ABC-token",
       dmPolicy: "pairing",
     });
-    expect(config.bindings).toBeUndefined();
+    expect(config.bindings).toEqual([{ agentId: "agent-1", match: { channel: "telegram" } }]);
     expect(config.session.dmScope).toBe("per-peer");
   });
 
