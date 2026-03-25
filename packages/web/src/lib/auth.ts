@@ -64,6 +64,10 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
   }
 });
 
+// Detect if HTTPS is configured (via BETTER_AUTH_URL or reverse proxy headers).
+// Without HTTPS, cookies must not have the Secure flag or browsers will reject them.
+const isHttps = process.env.BETTER_AUTH_URL?.startsWith("https://") ?? false;
+
 export const auth = betterAuth({
   // Trust the origin from the request. Pinchy is self-hosted — the server
   // itself is the trust boundary, not the origin header. This allows login
@@ -73,6 +77,12 @@ export const auth = betterAuth({
     const host = request?.headers?.get("host") ?? request?.headers?.get("x-forwarded-host");
     const proto = request?.headers?.get("x-forwarded-proto") ?? "http";
     return host ? [`${proto}://${host}`] : [];
+  },
+  advanced: {
+    // In production (NODE_ENV=production), Better Auth defaults to Secure cookies.
+    // On plain HTTP (no BETTER_AUTH_URL with https://), browsers silently reject
+    // Secure cookies — causing login to appear to succeed but sessions to not persist.
+    useSecureCookies: isHttps,
   },
   database: drizzleAdapter(db, {
     provider: "pg",
