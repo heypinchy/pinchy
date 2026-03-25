@@ -6,7 +6,7 @@
 # a firewall, and adds swap. Paste it into the "User Data" field when
 # creating your server.
 #
-# After boot (~5 minutes), visit http://<your-server-ip>:7777
+# After boot (~5 minutes), visit http://<your-server-ip>
 
 package_update: true
 
@@ -21,11 +21,10 @@ runcmd:
   - systemctl enable docker
   - systemctl start docker
 
-  # Firewall — allow SSH, HTTP, HTTPS, and Pinchy (for initial setup)
+  # Firewall — allow SSH, HTTP, and HTTPS
   - ufw allow OpenSSH
   - ufw allow 80/tcp
   - ufw allow 443/tcp
-  - ufw allow 7777/tcp
   - ufw --force enable
 
   # Add 2 GB swap (recommended for 4 GB servers)
@@ -35,13 +34,19 @@ runcmd:
   - swapon /swapfile
   - echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
-  # Clone and start Pinchy
+  # Show a branded loading page while Pinchy builds
+  - mkdir -p /opt/pinchy-loading
+  - curl -fsSL https://docs.heypinchy.com/installing.html -o /opt/pinchy-loading/index.html || true
+  - cd /opt/pinchy-loading && python3 -m http.server 80 &
+  - echo $! > /tmp/loading-server.pid
+
+  # Clone and build Pinchy (build only, don't start yet)
   - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
   - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
-  - cd /opt/pinchy && docker compose up --build -d
+  - echo 'PINCHY_PORT=80' > /opt/pinchy/.env
+  - cd /opt/pinchy && docker compose build
 
-write_files:
-  - path: /opt/pinchy-setup-complete
-    content: |
-      Pinchy %%PINCHY_VERSION%% installed successfully.
-      Visit http://$(hostname -I | awk '{print $1}'):7777 to complete setup.
+  # Stop the loading page, then start Pinchy on port 80
+  - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
+  - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
+  - cd /opt/pinchy && docker compose up -d

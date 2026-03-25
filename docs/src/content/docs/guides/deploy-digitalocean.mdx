@@ -10,7 +10,7 @@ DigitalOcean is a solid choice for running Pinchy — straightforward interface,
 ## Why DigitalOcean for self-hosted AI agents?
 
 - **Global data centers** — New York, San Francisco, London, Amsterdam, Frankfurt, Singapore, Bangalore, Sydney, and more. Pick the region closest to your team.
-- **Simple pricing** — A 4 GB Droplet starts at $24/month with predictable costs.
+- **Simple pricing** — A Droplet with 4 GB RAM starts at around $24/month with predictable costs.
 - **Team accounts** — Built-in team management for sharing infrastructure access.
 
 <Aside type="note">
@@ -38,8 +38,8 @@ A "Droplet" is DigitalOcean's name for a virtual server.
    | Setting | Value |
    | ------- | ----- |
    | **Region** | Amsterdam or Frankfurt (EU) / New York or San Francisco (US) |
-   | **Image** | Ubuntu 24.04 |
-   | **Size** | Basic $24/mo (4 GB RAM, 2 vCPUs) — minimum for Pinchy |
+   | **Image** | Ubuntu (latest LTS version) |
+   | **Size** | The smallest plan with at least 4 GB RAM and 2 vCPUs |
    | **Hostname** | `pinchy` (or whatever you prefer) |
 
    <Aside type="tip">
@@ -70,16 +70,23 @@ A "Droplet" is DigitalOcean's name for a virtual server.
      - ufw allow OpenSSH
      - ufw allow 80/tcp
      - ufw allow 443/tcp
-     - ufw allow 7777/tcp
      - ufw --force enable
      - fallocate -l 2G /swapfile
      - chmod 600 /swapfile
      - mkswap /swapfile
      - swapon /swapfile
      - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+     - mkdir -p /opt/pinchy-loading
+     - curl -fsSL https://docs.heypinchy.com/installing.html -o /opt/pinchy-loading/index.html || true
+     - cd /opt/pinchy-loading && python3 -m http.server 80 &
+     - echo $! > /tmp/loading-server.pid
      - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
      - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
-     - cd /opt/pinchy && docker compose up --build -d
+     - echo 'PINCHY_PORT=80' > /opt/pinchy/.env
+     - cd /opt/pinchy && docker compose build
+     - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
+     - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
+     - cd /opt/pinchy && docker compose up -d
    ```
 
    <details>
@@ -88,9 +95,10 @@ A "Droplet" is DigitalOcean's name for a virtual server.
    This is a **cloud-init** script — a standard way to configure servers on first boot. When your Droplet starts, it automatically:
 
    1. Installs Docker, Git, and a firewall
-   2. Opens only the ports needed (SSH, HTTP, HTTPS, and Pinchy's port 7777)
+   2. Opens only the ports needed (SSH, HTTP, HTTPS)
    3. Adds 2 GB of swap space (extra memory from disk — important for 4 GB Droplets)
-   4. Downloads Pinchy and starts it
+   4. Shows a loading page while Pinchy is being built
+   5. Downloads, builds, and starts Pinchy
 
    No manual setup required. You can also [download the script](/cloud-init.yml) separately.
    </details>
@@ -105,7 +113,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
 7. **Open Pinchy**
 
-   After about 5 minutes, visit `http://<your-droplet-ip>:7777` in your browser. You should see the Pinchy setup wizard.
+   After about 5 minutes, visit `http://<your-droplet-ip>` in your browser. You should see the Pinchy setup wizard.
 
    <Aside type="note">
      If you see a connection error, wait another minute — the build might still be running. You can check the progress by connecting via SSH (`ssh root@<your-droplet-ip>`) and running `docker compose -f /opt/pinchy/docker-compose.yml logs -f pinchy`.
@@ -122,7 +130,7 @@ The steps above get Pinchy running over plain HTTP. For production use, you shou
 - **HTTPS with Caddy** — automatic SSL certificates for your domain
 - **Setting BETTER_AUTH_URL** — so login sessions work with your domain
 - **Pinning secrets** — so your encryption keys don't depend on Docker volumes
-- **Closing port 7777** — once HTTPS is set up, remove the direct access rule
+- **Switching to port 7777** — once Caddy handles port 80/443, change Pinchy to run on 7777 internally
 
 <details>
 <summary>How do I connect to my Droplet to run these commands?</summary>

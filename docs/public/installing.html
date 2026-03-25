@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="15">
+<title>Pinchy is getting ready...</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'DM Sans', system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: #fafaf9;
+    color: #1c1917;
+    overflow: hidden;
+  }
+
+  .container {
+    text-align: center;
+    padding: 2rem;
+    max-width: 480px;
+  }
+
+  .logo {
+    width: 96px;
+    height: 96px;
+    margin: 0 auto 2rem;
+    animation: bob 3s ease-in-out infinite;
+    filter: drop-shadow(0 8px 24px rgba(234, 88, 12, 0.15));
+  }
+
+  .logo img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  @keyframes bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-8px); }
+  }
+
+  h1 {
+    font-size: 1.5rem;
+    font-weight: 600;
+    color: #1c1917;
+    margin-bottom: 0.75rem;
+    letter-spacing: -0.01em;
+  }
+
+  .message {
+    font-size: 1rem;
+    color: #78716c;
+    font-weight: 400;
+    height: 1.5rem;
+    transition: opacity 0.4s ease;
+  }
+
+  .progress-track {
+    margin: 2.5rem auto 0;
+    width: 200px;
+    height: 3px;
+    background: #e7e5e4;
+    border-radius: 2px;
+    overflow: hidden;
+  }
+
+  .progress-bar {
+    height: 100%;
+    width: 30%;
+    background: linear-gradient(90deg, #ea580c, #f97316);
+    border-radius: 2px;
+    animation: slide 2s ease-in-out infinite;
+  }
+
+  @keyframes slide {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(400%); }
+  }
+
+  .footer {
+    margin-top: 3rem;
+    font-size: 0.8rem;
+    color: #a8a29e;
+  }
+
+  .footer a {
+    color: #ea580c;
+    text-decoration: none;
+  }
+
+  .footer a:hover {
+    text-decoration: underline;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">
+      <img src="https://raw.githubusercontent.com/heypinchy/pinchy/main/packages/web/public/pinchy-logo.png" alt="Pinchy" onerror="this.parentElement.innerHTML='&#x1F99E;'">
+    </div>
+    <h1>Pinchy is getting ready...</h1>
+    <div class="message" id="message"></div>
+    <div class="progress-track">
+      <div class="progress-bar"></div>
+    </div>
+    <div class="footer">
+      This page refreshes automatically. <a href="https://docs.heypinchy.com">Learn more</a>
+    </div>
+  </div>
+
+  <script>
+    const messages = [
+      "Sharpening the claws...",
+      "Polishing the shell...",
+      "Stretching the antennae...",
+      "Emerging from the deep...",
+      "Checking the tide...",
+      "Adjusting the pincers...",
+      "Scanning the seabed...",
+      "Snapping into action...",
+      "Warming up...",
+      "Waving hello...",
+    ];
+
+    const el = document.getElementById('message');
+    let i = Math.floor(Math.random() * messages.length);
+
+    function rotate() {
+      el.style.opacity = 0;
+      setTimeout(() => {
+        i = (i + 1) % messages.length;
+        el.textContent = messages[i];
+        el.style.opacity = 1;
+      }, 400);
+    }
+
+    el.textContent = messages[i];
+    setInterval(rotate, 3000);
+  </script>
+</body>
+</html>
