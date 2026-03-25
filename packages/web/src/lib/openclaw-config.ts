@@ -281,7 +281,7 @@ type PatchResult = { applied: true } | { applied: false; error: string };
 
 interface ConfigClient {
   config: {
-    get: () => Promise<{ hash: string } & Record<string, unknown>>;
+    get: () => Promise<Record<string, unknown>>;
     patch: (raw: string, baseHash: string) => Promise<unknown>;
   };
 }
