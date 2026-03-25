@@ -56,9 +56,9 @@ function usePreflightCheck() {
 
   useEffect(() => {
     let cancelled = false;
-    let attempt = 0;
 
     async function check() {
+      let attempt = 0;
       while (!cancelled && attempt < PREFLIGHT_CONFIG.maxRetries) {
         try {
           const res = await fetch("/api/setup/status");

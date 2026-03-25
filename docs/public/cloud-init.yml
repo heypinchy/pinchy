@@ -18,7 +18,7 @@ runcmd:
 
   # Now install packages (loading page is already visible)
   - apt-get update -qq
-  - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+  - apt-get install -y -qq docker.io docker-compose-v2 git ufw iptables-persistent
 
   # Firewall
   - ufw allow OpenSSH
@@ -51,3 +51,4 @@ runcmd:
   - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
   - iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
   - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
+  - netfilter-persistent save

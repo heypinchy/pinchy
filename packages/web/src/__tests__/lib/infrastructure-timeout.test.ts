@@ -33,28 +33,33 @@ describe("checkOpenClaw", () => {
     expect(result).toBe("unreachable");
   });
 
-  it("should use a 5 second timeout", async () => {
+  it("should use a 5 second timeout and return unreachable on timeout", async () => {
+    vi.useFakeTimers();
     process.env.OPENCLAW_WS_URL = "ws://openclaw:18789";
 
-    let abortSignal: AbortSignal | undefined;
+    let rejectFetch: (reason: Error) => void;
     vi.stubGlobal(
       "fetch",
       vi.fn().mockImplementation((_url: string, opts?: { signal?: AbortSignal }) => {
-        abortSignal = opts?.signal;
-        return new Promise(() => {}); // Never resolves
+        return new Promise((_, reject) => {
+          rejectFetch = reject;
+          // Abort signal triggers rejection when timeout fires
+          opts?.signal?.addEventListener("abort", () => {
+            reject(new DOMException("The operation was aborted", "AbortError"));
+          });
+        });
       })
     );
 
-    // Start the check (don't await — it will hang)
     const promise = checkOpenClaw();
 
-    // Verify the AbortController timeout is set to 5000ms
-    // We can't easily test the exact timeout, but we can verify the signal exists
-    expect(abortSignal).toBeDefined();
-    expect(abortSignal?.aborted).toBe(false);
+    // Advance past the 5s timeout
+    await vi.advanceTimersByTimeAsync(5100);
 
-    // Clean up: abort to prevent hanging
-    abortSignal?.addEventListener("abort", () => {});
+    const result = await promise;
+    expect(result).toBe("unreachable");
+
+    vi.useRealTimers();
   });
 
   it("should return 'connected' even on 4xx responses", async () => {

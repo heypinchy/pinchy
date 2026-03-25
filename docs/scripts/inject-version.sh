@@ -42,6 +42,9 @@ if [ "$COUNT" = "0" ]; then
   exit 0
 fi
 
+# Save the injected tag so restore-placeholders.sh can reverse it exactly
+echo "$TAG" > "$DOCS_DIR/.injected-version"
+
 # Replace in-place (works on both macOS and Linux)
 find "$DOCS_DIR/src" "$DOCS_DIR/public" \( -name '*.mdx' -o -name '*.md' -o -name '*.yml' \) -exec sed -i.bak "s/%%PINCHY_VERSION%%/$TAG/g" {} +
 find "$DOCS_DIR/src" "$DOCS_DIR/public" -name '*.bak' -delete

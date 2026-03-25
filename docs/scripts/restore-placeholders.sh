@@ -1,22 +1,28 @@
 #!/bin/sh
 # Restores %%PINCHY_VERSION%% placeholders after a dev session or build.
 # Ensures source files stay clean with placeholders (not hardcoded versions).
+# Reads the injected version from .injected-version (written by inject-version.sh).
 
 set -e
 
-REPO_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DOCS_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 
-VERSION=$(node -p "require('$REPO_ROOT/packages/web/package.json').version" 2>/dev/null || true)
+INJECTED_VERSION_FILE="$DOCS_DIR/.injected-version"
 
-if [ -z "$VERSION" ]; then
-  echo "WARNING: Could not read version — skipping restore" >&2
+if [ ! -f "$INJECTED_VERSION_FILE" ]; then
+  echo "[docs] No .injected-version file — nothing to restore"
   exit 0
 fi
 
-TAG="v$VERSION"
+TAG=$(cat "$INJECTED_VERSION_FILE")
+
+if [ -z "$TAG" ]; then
+  echo "WARNING: .injected-version is empty — skipping restore" >&2
+  exit 0
+fi
 
 find "$DOCS_DIR/src" "$DOCS_DIR/public" \( -name '*.mdx' -o -name '*.md' -o -name '*.yml' \) -exec sed -i.bak "s/$TAG/%%PINCHY_VERSION%%/g" {} +
 find "$DOCS_DIR/src" "$DOCS_DIR/public" -name '*.bak' -delete
+rm -f "$INJECTED_VERSION_FILE"
 
-echo "[docs] Restored %%PINCHY_VERSION%% placeholders"
+echo "[docs] Restored %%PINCHY_VERSION%% placeholders (was: $TAG)"
