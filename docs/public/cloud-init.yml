@@ -6,47 +6,43 @@
 # a firewall, and adds swap. Paste it into the "User Data" field when
 # creating your server.
 #
-# After boot (~5 minutes), visit http://<your-server-ip>
-
-package_update: true
-
-packages:
-  - docker.io
-  - docker-compose-v2
-  - git
-  - ufw
+# After boot, visit http://<your-server-ip>
 
 runcmd:
-  # Enable and start Docker
-  - systemctl enable docker
-  - systemctl start docker
-
-  # Firewall — allow SSH, HTTP, and HTTPS
-  - ufw allow OpenSSH
-  - ufw allow 80/tcp
-  - ufw allow 443/tcp
-  - ufw --force enable
-
-  # Add 2 GB swap (recommended for 4 GB servers)
-  - fallocate -l 2G /swapfile
-  - chmod 600 /swapfile
-  - mkswap /swapfile
-  - swapon /swapfile
-  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
-
-  # Show a branded loading page while Pinchy builds
+  # Show loading page FIRST (python3 + curl are pre-installed on Ubuntu)
   - mkdir -p /opt/pinchy-loading
   - curl -fsSL https://docs.heypinchy.com/installing.html -o /opt/pinchy-loading/index.html || true
   - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /opt/pinchy-loading/index.html
   - cd /opt/pinchy-loading && python3 -m http.server 80 &
   - echo $! > /tmp/loading-server.pid
 
-  # Clone, build, and start Pinchy on port 7777
+  # Now install packages (loading page is already visible)
+  - apt-get update -qq
+  - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+
+  # Firewall
+  - ufw allow OpenSSH
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - ufw --force enable
+
+  # Docker
+  - systemctl enable docker
+  - systemctl start docker
+
+  # Swap (recommended for 4 GB servers)
+  - fallocate -l 2G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+  # Clone, build, and start Pinchy
   - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
   - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
   - cd /opt/pinchy && docker compose up --build -d
 
-  # Wait for Pinchy to be healthy before switching
+  # Wait for Pinchy to be healthy
   - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
 
   # Seamless switch — kill loading page, redirect port 80 to Pinchy

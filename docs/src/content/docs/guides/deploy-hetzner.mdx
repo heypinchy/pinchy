@@ -65,12 +65,12 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
    Scroll past the **Networking** and **SSH keys** sections — you can leave them at their defaults. You'll see a warning saying "No SSH key selected" — that's fine. The cloud-init script below handles everything automatically, and you won't need SSH access for the initial setup.
 
-   <details>
+      <details>
 <summary>When would I need SSH access?</summary>
 
    SSH is needed later for production hardening (setting up HTTPS, pinning secrets, etc.). You can add an SSH key at any time via the Hetzner console, or use the **web console** (available on the server's detail page) for emergency access.
 
-   </details>
+      </details>
 
 8. **Paste the setup script**
 
@@ -78,31 +78,25 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
    ```yaml
    #cloud-config
-   package_update: true
-
-   packages:
-     - docker.io
-     - docker-compose-v2
-     - git
-     - ufw
-
    runcmd:
-     - systemctl enable docker
-     - systemctl start docker
-     - ufw allow OpenSSH
-     - ufw allow 80/tcp
-     - ufw allow 443/tcp
-     - ufw --force enable
-     - fallocate -l 2G /swapfile
-     - chmod 600 /swapfile
-     - mkswap /swapfile
-     - swapon /swapfile
-     - echo '/swapfile none swap sw 0 0' >> /etc/fstab
      - mkdir -p /opt/pinchy-loading
      - curl -fsSL https://docs.heypinchy.com/installing.html -o /opt/pinchy-loading/index.html || true
      - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /opt/pinchy-loading/index.html
      - cd /opt/pinchy-loading && python3 -m http.server 80 &
      - echo $! > /tmp/loading-server.pid
+     - apt-get update -qq
+     - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+     - ufw allow OpenSSH
+     - ufw allow 80/tcp
+     - ufw allow 443/tcp
+     - ufw --force enable
+     - systemctl enable docker
+     - systemctl start docker
+     - fallocate -l 2G /swapfile
+     - chmod 600 /swapfile
+     - mkswap /swapfile
+     - swapon /swapfile
+     - echo '/swapfile none swap sw 0 0' >> /etc/fstab
      - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
      - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
      - cd /opt/pinchy && docker compose up --build -d
@@ -113,7 +107,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
      - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
    ```
 
-   <details>
+      <details>
 <summary>What does this script do?</summary>
 
    This is a **cloud-init** script — a standard way to configure servers on first boot. When your server starts, it automatically:
@@ -125,7 +119,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
    No manual setup required. You can also [download the script](/cloud-init.yml) separately.
 
-   </details>
+      </details>
 
 9. **Give your server a name and create it**
 

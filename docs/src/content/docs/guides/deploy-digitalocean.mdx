@@ -59,31 +59,25 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
    ```yaml
    #cloud-config
-   package_update: true
-
-   packages:
-     - docker.io
-     - docker-compose-v2
-     - git
-     - ufw
-
    runcmd:
-     - systemctl enable docker
-     - systemctl start docker
-     - ufw allow OpenSSH
-     - ufw allow 80/tcp
-     - ufw allow 443/tcp
-     - ufw --force enable
-     - fallocate -l 2G /swapfile
-     - chmod 600 /swapfile
-     - mkswap /swapfile
-     - swapon /swapfile
-     - echo '/swapfile none swap sw 0 0' >> /etc/fstab
      - mkdir -p /opt/pinchy-loading
      - curl -fsSL https://docs.heypinchy.com/installing.html -o /opt/pinchy-loading/index.html || true
      - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /opt/pinchy-loading/index.html
      - cd /opt/pinchy-loading && python3 -m http.server 80 &
      - echo $! > /tmp/loading-server.pid
+     - apt-get update -qq
+     - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+     - ufw allow OpenSSH
+     - ufw allow 80/tcp
+     - ufw allow 443/tcp
+     - ufw --force enable
+     - systemctl enable docker
+     - systemctl start docker
+     - fallocate -l 2G /swapfile
+     - chmod 600 /swapfile
+     - mkswap /swapfile
+     - swapon /swapfile
+     - echo '/swapfile none swap sw 0 0' >> /etc/fstab
      - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
      - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
      - cd /opt/pinchy && docker compose up --build -d
@@ -94,7 +88,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
      - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
    ```
 
-   <details>
+      <details>
 <summary>What does this script do?</summary>
 
    This is a **cloud-init** script — a standard way to configure servers on first boot. When your Droplet starts, it automatically:
@@ -106,7 +100,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
    No manual setup required. You can also [download the script](/cloud-init.yml) separately.
 
-   </details>
+      </details>
 
 5. **Create the Droplet**
 
@@ -120,7 +114,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
    After about 5 minutes, visit `http://<your-droplet-ip>` in your browser. You should see the Pinchy setup wizard.
 
-   <Aside type="note">
+      <Aside type="note">
   If you see a connection error, wait another minute — the build might still be running. You can check the progress by connecting via SSH (`ssh root@<your-droplet-ip>`) and running `docker compose -f /opt/pinchy/docker-compose.yml logs -f pinchy`.
 </Aside>
 
