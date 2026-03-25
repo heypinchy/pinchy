@@ -48,4 +48,39 @@ describe("Security headers", () => {
 
     expect(xcto?.value).toBe("nosniff");
   });
+
+  it("should not include HSTS header when BETTER_AUTH_URL is not set", async () => {
+    const originalUrl = process.env.BETTER_AUTH_URL;
+    delete process.env.BETTER_AUTH_URL;
+
+    const headerEntries = await nextConfig.headers!();
+    const allHeaders = headerEntries.flatMap((entry) => entry.headers.map((h) => h.key));
+    expect(allHeaders).not.toContain("Strict-Transport-Security");
+
+    process.env.BETTER_AUTH_URL = originalUrl;
+  });
+
+  it("should not include HSTS header when BETTER_AUTH_URL is http://", async () => {
+    const originalUrl = process.env.BETTER_AUTH_URL;
+    process.env.BETTER_AUTH_URL = "http://pinchy.example.com";
+
+    const headerEntries = await nextConfig.headers!();
+    const allHeaders = headerEntries.flatMap((entry) => entry.headers.map((h) => h.key));
+    expect(allHeaders).not.toContain("Strict-Transport-Security");
+
+    process.env.BETTER_AUTH_URL = originalUrl;
+  });
+
+  it("should include HSTS header when BETTER_AUTH_URL is https://", async () => {
+    const originalUrl = process.env.BETTER_AUTH_URL;
+    process.env.BETTER_AUTH_URL = "https://pinchy.example.com";
+
+    const headerEntries = await nextConfig.headers!();
+    const allHeaders = headerEntries.flatMap((entry) => entry.headers);
+    const hsts = allHeaders.find((h) => h.key === "Strict-Transport-Security");
+    expect(hsts).toBeDefined();
+    expect(hsts?.value).toContain("max-age=");
+
+    process.env.BETTER_AUTH_URL = originalUrl;
+  });
 });
