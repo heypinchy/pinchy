@@ -11,19 +11,22 @@ If you're coming from a provider-specific guide ([Hetzner](/guides/deploy-hetzne
 
 ## Requirements
 
-| Resource | Minimum | Recommended |
-| -------- | ------- | ----------- |
-| RAM | 4 GB | 8 GB |
-| CPU | 2 vCPUs | 4 vCPUs |
-| Disk | 20 GB | 40 GB |
-| OS | Ubuntu 22.04+ | Ubuntu 24.04 |
+| Resource | Minimum       | Recommended  |
+| -------- | ------------- | ------------ |
+| RAM      | 4 GB          | 8 GB         |
+| CPU      | 2 vCPUs       | 4 vCPUs      |
+| Disk     | 20 GB         | 40 GB        |
+| OS       | Ubuntu 22.04+ | Ubuntu 24.04 |
 
 You also need:
+
 - A domain name pointing to your server's IP address (for HTTPS)
 - An LLM provider API key (Anthropic, OpenAI, or Google)
 
 <Aside type="caution">
-  Pinchy requires **Docker Engine** (not Podman). Many VPS providers pre-install Docker, but some Linux distributions ship Podman as a Docker replacement. Verify with `docker --version` — it should say **Docker**, not Podman.
+  Pinchy requires **Docker Engine** (not Podman). Many VPS providers pre-install
+  Docker, but some Linux distributions ship Podman as a Docker replacement.
+  Verify with `docker --version` — it should say **Docker**, not Podman.
 </Aside>
 
 ## Deploy Pinchy
@@ -49,14 +52,13 @@ You also need:
    For non-Ubuntu distributions, follow the [official Docker installation guide](https://docs.docker.com/engine/install/).
 
    <details>
-   <summary>What do these commands do?</summary>
-
+<summary>What do these commands do?</summary>
    - `apt-get update` — refreshes the list of available software packages
    - `apt-get install -y` — installs the listed packages (`-y` means "yes, don't ask for confirmation"):
      - `docker.io` — Docker Engine, the tool that runs containers
      - `docker-compose-v2` — Docker Compose, which starts multiple containers together
      - `git` — needed to download the Pinchy source code
-   </details>
+       </details>
 
 2. **Download and start Pinchy**
 
@@ -70,15 +72,14 @@ You also need:
    The first build takes 3–5 minutes depending on your server's internet speed.
 
    <details>
-   <summary>What do these commands do?</summary>
-
+<summary>What do these commands do?</summary>
    - `git clone` — downloads the Pinchy source code from GitHub
    - `cd pinchy` — enters the downloaded directory
    - `git checkout %%PINCHY_VERSION%%` — switches to the %%PINCHY_VERSION%% release
    - `docker compose up --build -d` — builds all container images and starts them:
      - `--build` — build from source (needed on first run and after updates)
      - `-d` — run in the background (you get your terminal back)
-   </details>
+       </details>
 
 3. **Verify all services are running**
 
@@ -151,38 +152,10 @@ A reverse proxy sits between the internet and Pinchy. When someone visits your d
 4. Pinchy sends the response back through Caddy
 
 This way, Pinchy never needs to deal with SSL certificates, and port 7777 is never exposed to the internet. It's the same pattern used by most web applications — WordPress behind nginx, for example.
+
 </details>
 
 See the [Hardening Guide](/guides/hardening/#reverse-proxy-with-tls) for nginx examples and advanced configuration.
-
-### Set BETTER_AUTH_URL
-
-Once you have HTTPS working, tell Pinchy its public URL so that login sessions and redirects work correctly. Create a file called `.env` in the Pinchy project directory:
-
-```bash
-cd /root/pinchy
-nano .env
-```
-
-Add this line (use your actual domain):
-
-```bash
-BETTER_AUTH_URL=https://pinchy.example.com
-```
-
-Save (Ctrl+O, Enter, Ctrl+X) and restart Pinchy:
-
-```bash
-docker compose down && docker compose up -d
-```
-
-<details>
-<summary>What's a .env file?</summary>
-
-A `.env` file is a simple text file that sets environment variables — configuration values that Pinchy reads on startup. Each line has the format `KEY=value`. The file lives in the same directory as `docker-compose.yml` and Docker automatically loads it.
-
-The dot at the beginning of the filename means it's a "hidden file" — it won't show up in `ls` by default, but `ls -a` will display it.
-</details>
 
 ### Pin secrets
 
@@ -201,9 +174,6 @@ BETTER_AUTH_SECRET=<replace with output of the command below>
 
 # Encryption key for API keys at rest
 ENCRYPTION_KEY=<replace with output of the command below>
-
-# Public URL (must match your domain)
-BETTER_AUTH_URL=https://pinchy.example.com
 ```
 
 Generate each secret by running this command (run it three times, once for each secret):
@@ -233,6 +203,7 @@ ufw enable
 ```
 
 Type `y` when asked to confirm. This allows:
+
 - **SSH** (port 22) — so you can still log in to your server
 - **HTTP** (port 80) — needed for Caddy's certificate renewal
 - **HTTPS** (port 443) — how users access Pinchy
@@ -240,7 +211,9 @@ Type `y` when asked to confirm. This allows:
 Everything else is blocked — including port 7777, which is now only reachable by Caddy on the same machine.
 
 <Aside type="tip">
-  Some VPS providers (Hetzner, DigitalOcean, AWS) also offer cloud firewalls in their dashboard. Use both — host firewall + cloud firewall — for defense in depth.
+  Some VPS providers (Hetzner, DigitalOcean, AWS) also offer cloud firewalls in
+  their dashboard. Use both — host firewall + cloud firewall — for defense in
+  depth.
 </Aside>
 
 ### Add swap (recommended for 4 GB servers)
@@ -281,6 +254,7 @@ docker compose logs pinchy
 ```
 
 Common causes:
+
 - **Database not ready** — wait a few seconds, the container will auto-restart
 - **Port already in use** — check with `ss -tlnp | grep 7777`
 

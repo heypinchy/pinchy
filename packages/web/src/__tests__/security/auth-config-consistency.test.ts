@@ -63,8 +63,8 @@ describe("auth config consistency", () => {
     expect(content).toContain("BETTER_AUTH_SECRET");
   });
 
-  it("docker-compose.yml should set BETTER_AUTH_URL", () => {
-    const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.yml"), "utf-8");
-    expect(content).toContain("BETTER_AUTH_URL");
+  it("auth.ts should configure trustedOrigins for dynamic origin detection", () => {
+    const content = readFileSync(resolve(PROJECT_ROOT, "packages/web/src/lib/auth.ts"), "utf-8");
+    expect(content).toContain("trustedOrigins");
   });
 });

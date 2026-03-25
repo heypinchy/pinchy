@@ -151,7 +151,6 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 The steps above get Pinchy running over plain HTTP. For production use, you should add HTTPS and pin your secrets. Follow the [VPS Deployment Guide — Production setup](/guides/vps-deployment/#production-setup) for:
 
 - **HTTPS with Caddy** — automatic SSL certificates for your domain
-- **Setting BETTER_AUTH_URL** — so login sessions work with your domain
 - **Pinning secrets** — so your encryption keys don't depend on Docker volumes
 - **Removing the iptables redirect** — once Caddy is running, remove the port 80→7777 redirect
 
