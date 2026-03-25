@@ -123,15 +123,6 @@
     to { transform: rotate(360deg); }
   }
 
-  .message {
-    font-size: 0.9rem;
-    font-style: italic;
-    color: #a8a29e;
-    height: 1.4rem;
-    transition: opacity 0.4s ease;
-    margin-bottom: 1.5rem;
-  }
-
   .timer {
     font-size: 0.85rem;
     color: #a8a29e;
@@ -187,8 +178,6 @@
       </div>
     </div>
 
-    <div class="message" id="message"></div>
-
     <div class="timer">
       Elapsed: <span id="elapsed">0:00</span>
     </div>
@@ -200,35 +189,8 @@
   </div>
 
   <script>
-    // Rotating personality messages
-    const messages = [
-      "Sharpening the claws...",
-      "Polishing the shell...",
-      "Stretching the antennae...",
-      "Emerging from the deep...",
-      "Checking the tide...",
-      "Adjusting the pincers...",
-      "Scanning the seabed...",
-      "Snapping into action...",
-      "Warming up the engines...",
-      "Waving hello...",
-    ];
-
-    const msgEl = document.getElementById('message');
     const elapsedEl = document.getElementById('elapsed');
     const steps = document.querySelectorAll('.step');
-    let msgIndex = Math.floor(Math.random() * messages.length);
-
-    // Rotate fun messages
-    msgEl.textContent = messages[msgIndex];
-    setInterval(() => {
-      msgEl.style.opacity = 0;
-      setTimeout(() => {
-        msgIndex = (msgIndex + 1) % messages.length;
-        msgEl.textContent = messages[msgIndex];
-        msgEl.style.opacity = 1;
-      }, 400);
-    }, 3000);
 
     // Elapsed timer — INSTALL_START_TIME is replaced by cloud-init with the actual
     // Unix timestamp (ms) when setup began. Falls back to page load time.
