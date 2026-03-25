@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
-import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { regenerateOpenClawConfig, requestGatewayRestart } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -47,6 +47,12 @@ export async function POST(req: Request) {
   const { telegramUserId } = pairing;
 
   // DB first (source of truth)
+  console.log(
+    "[pinchy] POST /settings/telegram: inserting channel link for user",
+    session.user.id,
+    "telegramUserId",
+    telegramUserId
+  );
   await db.insert(channelLinks).values({
     userId: session.user.id,
     channel: "telegram",
@@ -54,7 +60,9 @@ export async function POST(req: Request) {
   });
 
   // Regenerate config file — OpenClaw detects the change and hot-reloads
+  console.log("[pinchy] POST /settings/telegram: calling regenerateOpenClawConfig");
   await regenerateOpenClawConfig();
+  console.log("[pinchy] POST /settings/telegram: regenerateOpenClawConfig done");
 
   return NextResponse.json({ linked: true, telegramUserId });
 }
@@ -66,12 +74,23 @@ export async function DELETE() {
   }
 
   // DB first
+  console.log(
+    "[pinchy] DELETE /settings/telegram: deleting channel link for user",
+    session.user.id
+  );
   await db
     .delete(channelLinks)
     .where(and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")));
 
-  // Regenerate config file — OpenClaw detects the change and hot-reloads
+  // Workaround for openclaw#47458: OpenClaw's hot-reload breaks Telegram polling.
+  // Write restart trigger BEFORE regenerating config. The start-openclaw.sh
+  // health-check loop picks it up within 5s and kills the gateway. If OpenClaw
+  // detects the config change first and does a broken hot-reload, the kill
+  // still happens shortly after and starts a clean process.
+  console.log("[pinchy] DELETE /settings/telegram: requesting gateway restart");
+  requestGatewayRestart();
   await regenerateOpenClawConfig();
+  console.log("[pinchy] DELETE /settings/telegram: done");
 
   return NextResponse.json({ linked: false });
 }

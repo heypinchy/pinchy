@@ -11,6 +11,9 @@ import { restartState } from "@/server/restart-state";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
+const RESTART_TRIGGER_PATH = process.env.OPENCLAW_CONFIG_PATH
+  ? dirname(process.env.OPENCLAW_CONFIG_PATH) + "/restart-requested"
+  : "/openclaw-config/restart-requested";
 
 interface OpenClawConfigParams {
   provider: ProviderName;
@@ -214,12 +217,14 @@ export async function regenerateOpenClawConfig() {
 
   // Note: pinchy-files is only included when agents use it (via pluginConfigs loop above).
 
-  // Set plugins.allow to only the enabled plugin IDs. This prevents OpenClaw from
-  // auto-discovering unused plugins from the extensions directory, which would cause
-  // either a restart loop (invalid config) or "disabled but config present" warning spam.
-  const allowedPlugins = Object.keys(entries);
+  // Merge our plugin IDs into the existing allow list. OpenClaw adds its own
+  // plugins (e.g. "telegram") to plugins.allow — if we overwrite the list,
+  // OpenClaw sees a diff and triggers a full gateway restart every time.
+  const existingAllow = ((existing.plugins as Record<string, unknown>)?.allow as string[]) || [];
+  const ourPlugins = Object.keys(entries);
+  const allowedPlugins = [...new Set([...existingAllow, ...ourPlugins])];
 
-  if (Object.keys(entries).length > 0) {
+  if (allowedPlugins.length > 0 || Object.keys(entries).length > 0) {
     config.plugins = { allow: allowedPlugins, entries };
   }
 
@@ -262,17 +267,64 @@ export async function regenerateOpenClawConfig() {
   }
 
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts
-  // (inotifywait on the config file triggers a restart on every write)
   const newContent = JSON.stringify(config, null, 2);
   try {
     const existing = readFileSync(CONFIG_PATH, "utf-8");
-    if (existing === newContent) return;
+    if (existing === newContent) {
+      console.log("[pinchy] regenerateOpenClawConfig: config unchanged, skipping write");
+      return;
+    }
+    console.log("[pinchy] regenerateOpenClawConfig: config changed, writing file");
   } catch {
-    // File doesn't exist yet — write it
+    console.log("[pinchy] regenerateOpenClawConfig: no existing file, writing new");
   }
 
+  // Log key Telegram fields for debugging
+  const channels = (config as Record<string, unknown>).channels as
+    | Record<string, unknown>
+    | undefined;
+  const telegram = channels?.telegram as Record<string, unknown> | undefined;
+  console.log(
+    "[pinchy] regenerateOpenClawConfig: telegram enabled:",
+    !!telegram,
+    "allowFrom:",
+    telegram?.allowFrom ?? "none"
+  );
+
   writeFileSync(CONFIG_PATH, newContent, { encoding: "utf-8", mode: 0o644 });
-  restartState.notifyRestart();
+  // Don't call restartState.notifyRestart() here — we can't predict whether
+  // OpenClaw will hot-reload (no disconnect) or full-restart (disconnect).
+  // If it full-restarts, the WebSocket disconnect triggers the restart overlay
+  // automatically via server.ts. If it hot-reloads, no overlay needed.
+}
+
+/**
+ * Request a full OpenClaw gateway restart via the shared volume.
+ *
+ * Workaround for openclaw/openclaw#47458: OpenClaw's internal hot-reload
+ * breaks Telegram polling (stopChannel 15s timeout vs getUpdates 30s timeout
+ * causes zombie polling sessions). A full process restart is the only
+ * reliable way to reset Telegram polling.
+ *
+ * start-openclaw.sh watches for this trigger file and kills/restarts the
+ * gateway process when it appears.
+ *
+ * TODO: Remove this workaround once openclaw/openclaw#47458 is fixed.
+ */
+export function requestGatewayRestart() {
+  try {
+    writeFileSync(RESTART_TRIGGER_PATH, new Date().toISOString(), {
+      encoding: "utf-8",
+      mode: 0o644,
+    });
+    restartState.notifyRestart();
+    console.log("[pinchy] Gateway restart requested (Telegram polling workaround)");
+  } catch (err) {
+    console.warn(
+      "[pinchy] Failed to request gateway restart:",
+      err instanceof Error ? err.message : err
+    );
+  }
 }
 
 // ── Types for config patch helpers ────────────────────────────────────────

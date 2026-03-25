@@ -21,7 +21,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { ExternalLink, CircleCheck } from "lucide-react";
 import { AgentTelegramSettings } from "./agent-telegram-settings";
-import { useRestart } from "@/components/restart-provider";
 
 interface TelegramLinkStatus {
   linked: boolean;
@@ -47,7 +46,6 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
   const [unlinking, setUnlinking] = useState(false);
   const [linkError, setLinkError] = useState("");
   const [pairingStep, setPairingStep] = useState<1 | 2>(1);
-  const { triggerRestart } = useRestart();
 
   const [removingAll, setRemovingAll] = useState(false);
 
@@ -117,7 +115,6 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
       if (res.ok) {
         setCode("");
         setLinkError("");
-        triggerRestart();
         toast.success("Telegram account linked");
         await fetchData();
       } else {
@@ -140,7 +137,6 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
 
       if (res.ok) {
         setPairingStep(1);
-        triggerRestart();
         toast.success("Telegram account unlinked");
         await fetchData();
       } else {
@@ -159,7 +155,6 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
     try {
       const res = await fetch("/api/settings/telegram/all", { method: "DELETE" });
       if (res.ok) {
-        triggerRestart();
         toast.success("Telegram removed");
         await fetchData();
       } else {

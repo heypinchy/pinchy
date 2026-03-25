@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { regenerateOpenClawConfig, requestGatewayRestart } from "@/lib/openclaw-config";
 import { appendAuditLog } from "@/lib/audit";
 import { deleteSetting } from "@/lib/settings";
 import { db } from "@/db";
@@ -29,6 +29,10 @@ export async function DELETE() {
 
   // Regenerate config file — removes channels/bindings/session
   await regenerateOpenClawConfig();
+
+  // Workaround: OpenClaw's hot-reload breaks Telegram polling (openclaw#47458).
+  // Request a full gateway restart so polling recovers cleanly.
+  requestGatewayRestart();
 
   await appendAuditLog({
     actorType: "user",

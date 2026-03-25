@@ -60,8 +60,8 @@ auto_approve_devices() {
     while true; do
         openclaw devices approve --latest \
             --url ws://127.0.0.1:18789 \
-            --token "$token" 2>/dev/null || true
-        sleep 3
+            --token "$token" >/dev/null 2>&1 || true
+        sleep 5
     done
 }
 
@@ -72,8 +72,9 @@ scan_data_directories
 # Wait briefly, then fix permissions so Pinchy can write to it.
 (sleep 3 && fix_config_permissions) &
 
-# Start auto-approver in the background
-auto_approve_devices &
+# Auto-approver temporarily disabled — the repeated CLI calls may interfere
+# with Telegram long-polling. Device pairing is handled via Pinchy UI instead.
+# auto_approve_devices &
 
 # Start gateway. The `openclaw gateway` command daemonizes — it spawns the
 # actual gateway process and exits immediately. In a container there's no
@@ -81,12 +82,32 @@ auto_approve_devices &
 echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 || true
 
-# Keep the container alive and monitor the gateway process.
-# If the gateway exits (crash, OOM), restart it.
+# Restart trigger: Pinchy can request a full gateway restart by writing
+# to this file. Needed because OpenClaw's internal hot-reload breaks
+# Telegram polling (openclaw/openclaw#47458 — stopChannel 15s timeout
+# vs getUpdates 30s timeout causes zombie polling sessions).
+RESTART_TRIGGER="/openclaw-config/restart-requested"
+
+# Keep the container alive. Check for restart trigger and port health.
 while true; do
-    sleep 10
-    if ! openclaw gateway status 2>/dev/null | grep -q "RPC probe: ok"; then
-        echo "OpenClaw Gateway stopped, restarting..."
+    sleep 2
+
+    # Check if Pinchy requested a restart (e.g. after Telegram unlink)
+    if [ -f "$RESTART_TRIGGER" ]; then
+        echo "Restart requested by Pinchy, killing gateway..."
+        rm -f "$RESTART_TRIGGER"
+        pkill -f "openclaw-gateway" 2>/dev/null || true
+        sleep 3
+        fix_config_permissions
+        install_plugin_deps
+        scan_data_directories
+        openclaw gateway --port 18789 || true
+        continue
+    fi
+
+    # Health check: restart if gateway died
+    if ! (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
+        echo "OpenClaw Gateway stopped (port 18789 not responding), restarting..."
         fix_config_permissions
         install_plugin_deps
         scan_data_directories

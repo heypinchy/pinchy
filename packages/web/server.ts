@@ -186,27 +186,10 @@ app.prepare().then(async () => {
         restartState.notifyReady();
       }
 
-      // Push config to OpenClaw on first connect (closes startup gap:
-      // if OpenClaw started before Pinchy wrote the config, it has stale state)
-      if (firstConnect) {
-        try {
-          const { pushStartupConfig } = await import("./src/lib/openclaw-config");
-          const result = await pushStartupConfig(openclawClient!);
-          if (result.applied) {
-            console.log("[pinchy] Config pushed to OpenClaw on first connect");
-          } else {
-            console.warn(
-              "[pinchy] Config push failed (will retry on next restart):",
-              (result as { error: string }).error
-            );
-          }
-        } catch (err) {
-          console.warn(
-            "[pinchy] Could not push config on connect:",
-            err instanceof Error ? err.message : err
-          );
-        }
-      }
+      // No startup config push needed — regenerateOpenClawConfig() writes the
+      // config file at Pinchy startup, and OpenClaw reads it on its own startup.
+      // Pushing via config.patch would cause an unnecessary internal restart
+      // that breaks Telegram polling (openclaw/openclaw#47458).
     });
 
     openclawClient.on("disconnected", () => {

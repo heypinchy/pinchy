@@ -741,12 +741,12 @@ describe("restart-state integration", () => {
     expect(restartState.notifyRestart).toHaveBeenCalledOnce();
   });
 
-  it("regenerateOpenClawConfig calls restartState.notifyRestart", async () => {
+  it("regenerateOpenClawConfig does not call restartState.notifyRestart (OpenClaw detects file changes)", async () => {
     const { restartState } = await import("@/server/restart-state");
 
     await regenerateOpenClawConfig();
 
-    expect(restartState.notifyRestart).toHaveBeenCalledOnce();
+    expect(restartState.notifyRestart).not.toHaveBeenCalled();
   });
 
   it("should skip writing and not restart when config content is unchanged", async () => {

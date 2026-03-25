@@ -19,6 +19,7 @@ vi.mock("@/lib/telegram-pairing", () => ({
 const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
+  requestGatewayRestart: vi.fn(),
 }));
 
 const mockFindFirst = vi.fn();
