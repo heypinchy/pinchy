@@ -10,6 +10,7 @@ import { SettingsUsers } from "@/components/settings-users";
 import { SettingsContext } from "@/components/settings-context";
 import { SettingsProfile } from "@/components/settings-profile";
 import { SettingsGroups } from "@/components/settings-groups";
+import { SettingsIntegrations } from "@/components/settings-integrations";
 import { SettingsLicense } from "@/components/settings-license";
 
 interface ProviderStatus {
@@ -125,6 +126,7 @@ export function SettingsPageContent({
               )}
               {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
               {isAdmin && <TabsTrigger value="groups">Groups</TabsTrigger>}
+              {isAdmin && <TabsTrigger value="integrations">Integrations</TabsTrigger>}
               {isAdmin && <TabsTrigger value="license">License</TabsTrigger>}
             </TabsList>
           </div>
@@ -180,6 +182,12 @@ export function SettingsPageContent({
           {isAdmin && (
             <TabsContent value="groups" keepMounted>
               <SettingsGroups refreshKey={enterpriseRefreshKey} />
+            </TabsContent>
+          )}
+
+          {isAdmin && (
+            <TabsContent value="integrations" keepMounted>
+              <SettingsIntegrations />
             </TabsContent>
           )}
 
