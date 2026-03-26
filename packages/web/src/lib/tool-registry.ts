@@ -78,6 +78,49 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     category: "powerful",
     group: "group:web",
   },
+  // Odoo integration tools (safe = read-only, powerful = write operations)
+  {
+    id: "odoo_schema",
+    label: "Odoo: Browse schema",
+    description: "Discover available Odoo models and their fields",
+    category: "safe",
+  },
+  {
+    id: "odoo_read",
+    label: "Odoo: Read data",
+    description: "Query records from Odoo with filters and field selection",
+    category: "safe",
+  },
+  {
+    id: "odoo_count",
+    label: "Odoo: Count records",
+    description: "Count matching records in Odoo without transferring data",
+    category: "safe",
+  },
+  {
+    id: "odoo_aggregate",
+    label: "Odoo: Aggregate data",
+    description: "Server-side sums, averages, and grouping in Odoo",
+    category: "safe",
+  },
+  {
+    id: "odoo_create",
+    label: "Odoo: Create records",
+    description: "Create new records in Odoo",
+    category: "powerful",
+  },
+  {
+    id: "odoo_write",
+    label: "Odoo: Update records",
+    description: "Modify existing records in Odoo",
+    category: "powerful",
+  },
+  {
+    id: "odoo_delete",
+    label: "Odoo: Delete records",
+    description: "Delete records from Odoo",
+    category: "powerful",
+  },
 ];
 
 const ALL_GROUPS = ["group:runtime", "group:fs", "group:web"] as const;

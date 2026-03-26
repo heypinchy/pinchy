@@ -12,6 +12,10 @@ install_plugin_deps() {
         rm -rf /root/.openclaw/extensions/pinchy-files/node_modules
         cp -r /opt/pinchy-files-deps/node_modules /root/.openclaw/extensions/pinchy-files/node_modules
     fi
+    if [ -d /opt/pinchy-odoo-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-odoo ]; then
+        rm -rf /root/.openclaw/extensions/pinchy-odoo/node_modules
+        cp -r /opt/pinchy-odoo-deps/node_modules /root/.openclaw/extensions/pinchy-odoo/node_modules
+    fi
 }
 
 # Ensure gateway auth token exists before starting (prevents crash loop
