@@ -45,7 +45,7 @@ type PreflightState =
   | { status: "error"; infrastructure: InfrastructureStatus };
 
 export const PREFLIGHT_CONFIG = {
-  maxRetries: 20,
+  maxRetries: 30,
   retryIntervalMs: 3000,
 };
 
@@ -142,6 +142,13 @@ export function SetupForm() {
     }
   }
 
+  // Auto-retry after showing the error — services may still be starting
+  useEffect(() => {
+    if (preflight.status !== "error") return;
+    const timer = setTimeout(retry, 10_000);
+    return () => clearTimeout(timer);
+  }, [preflight.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (preflight.status === "checking") {
     return (
       <Card className="w-full">
@@ -166,9 +173,9 @@ export function SetupForm() {
           <div className="flex justify-center mb-2">
             <AlertTriangle className="size-12 text-destructive" />
           </div>
-          <CardTitle>Infrastructure Problem</CardTitle>
+          <CardTitle>Waiting for services...</CardTitle>
           <CardDescription>
-            Pinchy can&apos;t start setup because required services are not available.
+            Some services are still starting up. This page will retry automatically.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
