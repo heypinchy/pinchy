@@ -311,9 +311,8 @@ jobs:
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v
 
   telegram-e2e:
-    name: Telegram E2E Tests (experimental)
+    name: Telegram E2E Tests
     runs-on: ubuntu-latest
-    continue-on-error: true
 
     steps:
       - uses: actions/checkout@v4
