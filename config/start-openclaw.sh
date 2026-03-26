@@ -81,9 +81,9 @@ auto_approve_devices() {
 install_plugin_deps
 scan_data_directories
 
-# OpenClaw rewrites openclaw.json on startup with root-only permissions.
-# Wait briefly, then fix permissions so Pinchy can write to it.
-(sleep 3 && fix_config_permissions) &
+# OpenClaw rewrites openclaw.json with root-only permissions on every startup
+# and internal restart. Run a background loop that keeps fixing permissions.
+(while true; do sleep 3; fix_config_permissions; done) &
 
 # Start auto-approver in background — stops when Pinchy signals connection
 # (writes pinchy-device-approved). Safety timeout: 5 minutes.
@@ -100,9 +100,6 @@ openclaw gateway --port 18789 || true
 # SIGUSR1 restarts (port is briefly unavailable during restart).
 while true; do
     sleep 30
-    # OpenClaw rewrites openclaw.json with 600 on every internal restart.
-    # Keep fixing permissions so Pinchy can always write config.
-    fix_config_permissions
     if ! (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
         # Port is down — wait 10s and check again (internal restart takes ~5s)
         sleep 10
