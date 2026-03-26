@@ -51,34 +51,35 @@ You also need:
 
    For non-Ubuntu distributions, follow the [official Docker installation guide](https://docs.docker.com/engine/install/).
 
-<details>
-  <summary>What do these commands do?</summary>- `apt-get update` — refreshes
-  the list of available software packages - `apt-get install -y` — installs the
-  listed packages (`-y` means "yes, don't ask for confirmation"): - `docker.io`
-  — Docker Engine, the tool that runs containers - `docker-compose-v2` — Docker
-  Compose, which starts multiple containers together - `git` — needed to
-  download the Pinchy source code
-</details>
+   <details>
+     <summary>What do these commands do?</summary>- `apt-get update` — refreshes
+     the list of available software packages - `apt-get install -y` — installs
+     the listed packages (`-y` means "yes, don't ask for confirmation"): -
+     `docker.io` — Docker Engine, the tool that runs containers -
+     `docker-compose-v2` — Docker Compose, which starts multiple containers
+     together - `git` — needed to download the Pinchy source code
+   </details>
 
 2. **Download and start Pinchy**
 
    ```bash
    git clone https://github.com/heypinchy/pinchy.git
    cd pinchy
-   git checkout v0.2.1
+   git checkout %%PINCHY_VERSION%%
    docker compose up --build -d
    ```
 
    The first build takes 3–5 minutes depending on your server's internet speed.
 
-<details>
-  <summary>What do these commands do?</summary>- `git clone` — downloads the
-  Pinchy source code from GitHub - `cd pinchy` — enters the downloaded directory
-  - `git checkout v0.2.1` — switches to the v0.2.1 release - `docker compose up
-  --build -d` — builds all container images and starts them: - `--build` — build
-  from source (needed on first run and after updates) - `-d` — run in the
-  background (you get your terminal back)
-</details>
+   <details>
+     <summary>What do these commands do?</summary>- `git clone` — downloads the
+     Pinchy source code from GitHub - `cd pinchy` — enters the downloaded
+     directory - `git checkout %%PINCHY_VERSION%%` — switches to the
+     %%PINCHY_VERSION%% release - `docker compose up --build -d` — builds all
+     container images and starts them: - `--build` — build from source (needed
+     on first run and after updates) - `-d` — run in the background (you get
+     your terminal back)
+   </details>
 
 3. **Verify all services are running**
 

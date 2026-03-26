@@ -65,13 +65,13 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
     Scroll past the **Networking** and **SSH keys** sections — you can leave them at their defaults. You'll see a warning saying "No SSH key selected" — that's fine. The cloud-init script below handles everything automatically, and you won't need SSH access for the initial setup.
 
-<details>
+    <details>
 
     <summary>When would I need SSH access?</summary>
 
     SSH is needed later for production hardening (setting up HTTPS, pinning secrets, etc.). You can add an SSH key at any time via the Hetzner console, or use the **web console** (available on the server's detail page) for emergency access.
 
-</details>
+    </details>
 
 8.  **Paste the setup script**
 
@@ -103,7 +103,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
       - swapon /swapfile
       - echo '/swapfile none swap sw 0 0' >> /etc/fstab
       - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
-      - cd /opt/pinchy && git checkout v0.2.1
+      - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
       - cd /opt/pinchy && docker compose up --build -d
       - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
       - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
@@ -113,7 +113,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
       - netfilter-persistent save
     ```
 
-<details>
+    <details>
 
     <summary>What does this script do?</summary>
 
@@ -126,7 +126,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
     No manual setup required. You can also [download the script](/cloud-init.yml) separately.
 
-</details>
+    </details>
 
 9.  **Give your server a name and create it**
 

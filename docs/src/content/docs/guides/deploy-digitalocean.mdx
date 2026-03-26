@@ -83,7 +83,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
       - swapon /swapfile
       - echo '/swapfile none swap sw 0 0' >> /etc/fstab
       - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
-      - cd /opt/pinchy && git checkout v0.2.1
+      - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
       - cd /opt/pinchy && docker compose up --build -d
       - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
       - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
@@ -93,9 +93,8 @@ A "Droplet" is DigitalOcean's name for a virtual server.
       - netfilter-persistent save
     ```
 
-<details>
-
-    <summary>What does this script do?</summary>
+    <details>
+<summary>What does this script do?</summary>
 
     This is a **cloud-init** script — a standard way to configure servers on first boot. When your Droplet starts, it automatically:
     1. Installs Docker, Git, and a firewall
@@ -106,7 +105,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
     No manual setup required. You can also [download the script](/cloud-init.yml) separately.
 
-</details>
+    </details>
 
 5.  **Create the Droplet**
 
@@ -120,11 +119,9 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
     After about 5 minutes, visit `http://<your-droplet-ip>` in your browser. You should see the Pinchy setup wizard.
 
-          <Aside type="note">
-
-    If you see a connection error, wait another minute — the build might still be running. You can check the progress by connecting via SSH (`ssh root@<your-droplet-ip>`) and running `docker compose -f /opt/pinchy/docker-compose.yml logs -f pinchy`.
-
-    </Aside>
+    <Aside type="note">
+  If you see a connection error, wait another minute — the build might still be running. You can check the progress by connecting via SSH (`ssh root@<your-droplet-ip>`) and running `docker compose -f /opt/pinchy/docker-compose.yml logs -f pinchy`.
+</Aside>
 
     The setup wizard will guide you through creating your admin account and configuring your first LLM provider.
 
