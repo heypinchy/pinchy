@@ -29,7 +29,12 @@ vi.mock("fs", async (importOriginal) => {
   };
 });
 
-import { addToAllowStore, removeFromAllowStore, clearAllowStore } from "@/lib/telegram-allow-store";
+import {
+  addToAllowStore,
+  removeFromAllowStore,
+  clearAllowStore,
+  removePairingRequest,
+} from "@/lib/telegram-allow-store";
 
 describe("telegram-allow-store", () => {
   beforeEach(() => {
@@ -132,6 +137,46 @@ describe("telegram-allow-store", () => {
       });
 
       clearAllowStore();
+
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("removePairingRequest", () => {
+    it("removes pairing request for given telegram user ID", () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({
+          version: 1,
+          requests: [
+            { id: "8754697762", code: "ABC123", createdAt: "2026-01-01" },
+            { id: "111222333", code: "XYZ789", createdAt: "2026-01-01" },
+          ],
+        })
+      );
+
+      removePairingRequest("8754697762");
+
+      const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
+      expect(written.requests).toHaveLength(1);
+      expect(written.requests[0].id).toBe("111222333");
+    });
+
+    it("does nothing if user not in pairing store", () => {
+      mockReadFileSync.mockReturnValue(
+        JSON.stringify({ version: 1, requests: [{ id: "111222333", code: "XYZ" }] })
+      );
+
+      removePairingRequest("999999");
+
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+
+    it("does nothing if pairing file does not exist", () => {
+      mockReadFileSync.mockImplementation(() => {
+        throw new Error("ENOENT");
+      });
+
+      removePairingRequest("8754697762");
 
       expect(mockWriteFileSync).not.toHaveBeenCalled();
     });

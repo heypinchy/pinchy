@@ -4,7 +4,11 @@ import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
 import { updateIdentityLinks } from "@/lib/openclaw-config";
-import { addToAllowStore, removeFromAllowStore } from "@/lib/telegram-allow-store";
+import {
+  addToAllowStore,
+  removeFromAllowStore,
+  removePairingRequest,
+} from "@/lib/telegram-allow-store";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -95,8 +99,10 @@ export async function DELETE() {
     .where(and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")));
 
   // Remove from OpenClaw's native allow-from store (no config change, no channel restart)
+  // Also remove the pairing request so OpenClaw issues a fresh code on next message
   if (existingLink) {
     removeFromAllowStore(existingLink.channelUserId);
+    removePairingRequest(existingLink.channelUserId);
   }
 
   // Update identityLinks (targeted write — removes this user's mapping)

@@ -61,3 +61,42 @@ export function clearAllowStore() {
   if (!store) return;
   writeStore({ ...store, allowFrom: [] });
 }
+
+/**
+ * Remove a pairing request from OpenClaw's pairing store.
+ *
+ * When a user unlinks their Telegram account, the old pairing code must be
+ * removed. Otherwise, upsertPairingRequest() in OpenClaw returns created:false
+ * for the existing code and no new pairing message is sent.
+ */
+const PAIRING_PATH = join(dirname(CONFIG_PATH), "credentials", "telegram-pairing.json");
+
+interface PairingStore {
+  version: number;
+  requests: Array<{ id: string; code: string; [key: string]: unknown }>;
+}
+
+function readPairingStore(): PairingStore | null {
+  try {
+    return JSON.parse(readFileSync(PAIRING_PATH, "utf-8"));
+  } catch {
+    return null;
+  }
+}
+
+export function removePairingRequest(telegramUserId: string) {
+  const store = readPairingStore();
+  if (!store?.requests) return;
+  const filtered = store.requests.filter((r) => r.id !== telegramUserId);
+  if (filtered.length === store.requests.length) return; // not found
+  const tmpPath = PAIRING_PATH + ".tmp";
+  const dir = dirname(PAIRING_PATH);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  writeFileSync(tmpPath, JSON.stringify({ ...store, requests: filtered }, null, 2), {
+    encoding: "utf-8",
+    mode: 0o644,
+  });
+  renameSync(tmpPath, PAIRING_PATH);
+}

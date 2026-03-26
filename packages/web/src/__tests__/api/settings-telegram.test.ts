@@ -23,9 +23,11 @@ vi.mock("@/lib/openclaw-config", () => ({
 
 const mockAddToAllowStore = vi.fn();
 const mockRemoveFromAllowStore = vi.fn();
+const mockRemovePairingRequest = vi.fn();
 vi.mock("@/lib/telegram-allow-store", () => ({
   addToAllowStore: (...args: unknown[]) => mockAddToAllowStore(...args),
   removeFromAllowStore: (...args: unknown[]) => mockRemoveFromAllowStore(...args),
+  removePairingRequest: (...args: unknown[]) => mockRemovePairingRequest(...args),
 }));
 
 const mockFindFirst = vi.fn();
