@@ -3,9 +3,11 @@ import { randomBytes } from "crypto";
 import { dirname } from "path";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
+import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { agents, agentConnectionPermissions, integrationConnections } from "@/db/schema";
 import { getSetting } from "@/lib/settings";
+import { decrypt } from "@/lib/encryption";
 import { computeDeniedGroups } from "@/lib/tool-registry";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { restartState } from "@/server/restart-state";
@@ -214,6 +216,94 @@ export async function regenerateOpenClawConfig() {
   };
 
   // Note: pinchy-files is only included when agents use it (via pluginConfigs loop above).
+
+  // Collect Odoo integration configs for agents with integration permissions
+  const allPermissions = await db
+    .select()
+    .from(agentConnectionPermissions)
+    .innerJoin(
+      integrationConnections,
+      eq(agentConnectionPermissions.connectionId, integrationConnections.id)
+    );
+
+  const odooAgentConfigs: Record<string, Record<string, unknown>> = {};
+  const permsByAgent = new Map<
+    string,
+    Map<
+      string,
+      { connection: typeof integrationConnections.$inferSelect; ops: Map<string, string[]> }
+    >
+  >();
+
+  for (const row of allPermissions) {
+    const perm = row.agent_connection_permissions;
+    const conn = row.integration_connections;
+
+    if (conn.type !== "odoo") continue;
+
+    if (!permsByAgent.has(perm.agentId)) {
+      permsByAgent.set(perm.agentId, new Map());
+    }
+    const agentPerms = permsByAgent.get(perm.agentId)!;
+
+    if (!agentPerms.has(perm.connectionId)) {
+      agentPerms.set(perm.connectionId, { connection: conn, ops: new Map() });
+    }
+    const connPerms = agentPerms.get(perm.connectionId)!;
+
+    if (!connPerms.ops.has(perm.model)) {
+      connPerms.ops.set(perm.model, []);
+    }
+    connPerms.ops.get(perm.model)!.push(perm.operation);
+  }
+
+  // Build plugin config per agent (using first connection — single connection per agent for now)
+  for (const [agentId, connections] of permsByAgent) {
+    const [firstConnection] = connections.values();
+    if (!firstConnection) continue;
+
+    const conn = firstConnection.connection;
+    const decryptedCreds = JSON.parse(decrypt(conn.credentials));
+    const permissions: Record<string, string[]> = {};
+    for (const [model, ops] of firstConnection.ops) {
+      permissions[model] = ops;
+    }
+
+    // Parse schema from connection data
+    const schema: Record<string, unknown> = {};
+    if (conn.data && typeof conn.data === "object") {
+      const data = conn.data as {
+        models?: Array<{ model: string; name: string; fields: unknown[] }>;
+      };
+      if (data.models) {
+        for (const m of data.models) {
+          schema[m.model] = { name: m.name, fields: m.fields };
+        }
+      }
+    }
+
+    odooAgentConfigs[agentId] = {
+      connection: {
+        name: conn.name,
+        description: conn.description,
+        url: decryptedCreds.url,
+        db: decryptedCreds.db,
+        uid: decryptedCreds.uid,
+        apiKey: decryptedCreds.apiKey,
+      },
+      permissions,
+      schema,
+    };
+  }
+
+  if (Object.keys(odooAgentConfigs).length > 0) {
+    entries["pinchy-odoo"] = {
+      enabled: true,
+      config: {
+        agents: odooAgentConfigs,
+      },
+    };
+  }
 
   // Set plugins.allow to only the enabled plugin IDs. This prevents OpenClaw from
   // auto-discovering unused plugins from the extensions directory, which would cause
