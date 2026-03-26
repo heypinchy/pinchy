@@ -20,7 +20,6 @@ import {
   getTelegramLinkStatus,
   waitForPinchy,
   waitForMockTelegram,
-  readPairingFile,
   seedSetup,
 } from "./helpers";
 
@@ -30,6 +29,7 @@ const TELEGRAM_USERNAME = "e2e_tester";
 
 test.describe.serial("Telegram Integration", () => {
   let agentId: string;
+  let lastPairingCode: string;
 
   test.beforeAll(async () => {
     // Wait for services to be ready
@@ -79,58 +79,23 @@ test.describe.serial("Telegram Integration", () => {
     });
 
     expect(response).toBeTruthy();
-    // The response should contain a pairing code or pairing instructions
-    console.log(`[test] Bot pairing response: "${response}"`);
+    // Extract pairing code from bot response (format: "Pairing code: XXXXXXXX")
+    const codeMatch = response.match(/Pairing code:\s*(\S+)/i);
+    expect(codeMatch).toBeTruthy();
+    lastPairingCode = codeMatch![1];
+    console.log(`[test] Bot pairing response, code: ${lastPairingCode}`);
   });
 
   test("user can link via pairing code", async () => {
-    // Read the pairing file from the shared volume
-    const pairingData = readPairingFile();
-    expect(pairingData).not.toBeNull();
+    expect(lastPairingCode).toBeTruthy();
 
-    // Find the code for our test user
-    const pairings = (pairingData as Record<string, unknown>)?.pairings as
-      | Array<{ code: string; telegramUserId: string }>
-      | undefined;
-
-    let pairingCode: string | undefined;
-
-    if (pairings) {
-      // New format: array of pairings
-      const entry = pairings.find((p) => String(p.telegramUserId) === TELEGRAM_USER_ID);
-      pairingCode = entry?.code;
-    } else {
-      // Try other format: direct code mapping
-      const entries = Object.entries(pairingData as Record<string, unknown>);
-      for (const [code, data] of entries) {
-        if (
-          typeof data === "object" &&
-          data !== null &&
-          String((data as Record<string, unknown>).telegramUserId) === TELEGRAM_USER_ID
-        ) {
-          pairingCode = code;
-          break;
-        }
-      }
-    }
-
-    if (!pairingCode) {
-      // Fallback: extract from bot response text
-      console.log(
-        "[test] Could not find code in pairing file, pairing data:",
-        JSON.stringify(pairingData)
-      );
-    }
-
-    expect(pairingCode).toBeTruthy();
-
-    const res = await linkTelegram(pairingCode!);
+    const res = await linkTelegram(lastPairingCode);
     const data = await res.json();
     expect(res.status).toBe(200);
     expect(data.linked).toBe(true);
     expect(data.telegramUserId).toBe(TELEGRAM_USER_ID);
 
-    console.log(`[test] Linked with pairing code: ${pairingCode}`);
+    console.log(`[test] Linked with pairing code: ${lastPairingCode}`);
   });
 
   test("linked user receives agent response (not pairing)", async () => {
@@ -188,45 +153,20 @@ test.describe.serial("Telegram Integration", () => {
     });
 
     expect(response).toBeTruthy();
-    console.log(`[test] Post-unlink response: "${response.substring(0, 100)}..."`);
+    // Extract new pairing code from response
+    const codeMatch = response.match(/Pairing code:\s*(\S+)/i);
+    expect(codeMatch).toBeTruthy();
+    lastPairingCode = codeMatch![1];
+    console.log(`[test] Post-unlink response, new code: ${lastPairingCode}`);
   });
 
   test("user can re-link after unlink", async () => {
-    // Read new pairing code
-    const pairingData = readPairingFile();
-    expect(pairingData).not.toBeNull();
+    expect(lastPairingCode).toBeTruthy();
 
-    // Extract code (same logic as above)
-    let pairingCode: string | undefined;
-    const entries = Object.entries(pairingData as Record<string, unknown>);
-    for (const [code, data] of entries) {
-      if (
-        typeof data === "object" &&
-        data !== null &&
-        String((data as Record<string, unknown>).telegramUserId) === TELEGRAM_USER_ID
-      ) {
-        pairingCode = code;
-        break;
-      }
-    }
-
-    if (!pairingCode) {
-      const pairings = (pairingData as Record<string, unknown>)?.pairings as Array<{
-        code: string;
-        telegramUserId: string;
-      }>;
-      if (pairings) {
-        const entry = pairings.find((p) => String(p.telegramUserId) === TELEGRAM_USER_ID);
-        pairingCode = entry?.code;
-      }
-    }
-
-    expect(pairingCode).toBeTruthy();
-
-    const res = await linkTelegram(pairingCode!);
+    const res = await linkTelegram(lastPairingCode);
     expect(res.status).toBe(200);
 
-    console.log(`[test] Re-linked with pairing code: ${pairingCode}`);
+    console.log(`[test] Re-linked with pairing code: ${lastPairingCode}`);
   });
 
   test("re-linked user receives agent response", async () => {

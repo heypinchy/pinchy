@@ -114,16 +114,16 @@ export async function regenerateOpenClawConfig() {
     }
   }
 
-  // Read default provider to set defaults.model.
-  // Preserve existing agents.defaults (OpenClaw enriches with heartbeat, models,
-  // contextPruning, compaction etc.) — overwriting them triggers a hot-reload
-  // that breaks Telegram polling via openclaw#47458.
-  const existingDefaults =
-    ((existing.agents as Record<string, unknown>)?.defaults as Record<string, unknown>) || {};
-  const defaults: Record<string, unknown> = { ...existingDefaults };
+  // Only set defaults.model — nothing else. OpenClaw enriches agents.defaults
+  // with heartbeat, models, contextPruning, compaction at runtime. If Pinchy
+  // writes those fields (even to preserve them), it causes a race condition:
+  // after a full restart, OpenClaw hasn't enriched yet → Pinchy writes without
+  // them → OpenClaw enriches → diff detected → hot-reload → polling dies
+  // (openclaw#47458). By only writing model, we avoid touching any other field.
+  const pinchyDefaults: Record<string, unknown> = {};
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
   if (defaultProvider && PROVIDERS[defaultProvider]) {
-    defaults.model = { primary: await getDefaultModel(defaultProvider) };
+    pinchyDefaults.model = { primary: await getDefaultModel(defaultProvider) };
   }
 
   // Build agents list with OpenClaw-side workspace paths, tools.deny, and plugin configs
@@ -172,13 +172,18 @@ export async function regenerateOpenClawConfig() {
   // Build complete config — gateway and OpenClaw-enriched fields preserved,
   // everything else from DB. OpenClaw adds meta, commands, etc. at startup;
   // removing them would cause unnecessary diffs on every write.
+  //
+  // Deep-merge agents into existing to preserve OpenClaw-enriched fields
+  // (contextPruning, heartbeat, models, compaction) that may not yet be
+  // in the config file right after a full restart.
+  const existingAgents = (existing.agents as Record<string, unknown>) || {};
   const config: Record<string, unknown> = {
     gateway,
     env,
-    agents: {
-      defaults,
+    agents: deepMerge(existingAgents, {
+      defaults: pinchyDefaults,
       list: agentsList,
-    },
+    }),
   };
 
   // Preserve OpenClaw-enriched top-level fields that Pinchy doesn't manage

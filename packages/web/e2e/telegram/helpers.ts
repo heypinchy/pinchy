@@ -102,7 +102,7 @@ export async function disconnectBot(agentId: string): Promise<void> {
 // ── Telegram link helpers ──────────────────────────────────────────────
 
 export async function linkTelegram(pairingCode: string): Promise<Response> {
-  return pinchyPost("/api/settings/telegram", { pairingCode });
+  return pinchyPost("/api/settings/telegram", { code: pairingCode });
 }
 
 export async function unlinkTelegram(): Promise<Response> {
