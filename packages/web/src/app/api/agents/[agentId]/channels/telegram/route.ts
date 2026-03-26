@@ -3,7 +3,7 @@ import { requireAdmin } from "@/lib/api-auth";
 import { validateTelegramBotToken } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
-import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { updateTelegramChannelConfig } from "@/lib/openclaw-config";
 import { clearAllowStore } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
@@ -50,8 +50,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
   await setSetting(`telegram_bot_token:${agentId}`, botToken, true);
   await setSetting(`telegram_bot_username:${agentId}`, validation.botUsername!, false);
 
-  // Regenerate config file — OpenClaw detects the change and hot-reloads
-  await regenerateOpenClawConfig();
+  // Update only Telegram channel config (targeted write — preserves OpenClaw-enriched
+  // fields like agents.defaults to avoid hot-reloads that break polling)
+  updateTelegramChannelConfig(
+    { enabled: true, botToken, dmPolicy: "pairing" },
+    agentId,
+    {} // No identity links yet — user hasn't linked
+  );
 
   await appendAuditLog({
     actorType: "user",
@@ -86,9 +91,9 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
   await deleteSetting(`telegram_bot_token:${agentId}`);
   await deleteSetting(`telegram_bot_username:${agentId}`);
 
-  // Clear allow-from store and regenerate config (removes channel entirely)
+  // Clear allow-from store and remove channel config
   clearAllowStore();
-  await regenerateOpenClawConfig();
+  updateTelegramChannelConfig(null, null, {});
 
   await appendAuditLog({
     actorType: "user",

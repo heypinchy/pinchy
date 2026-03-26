@@ -9,9 +9,9 @@ vi.mock("@/lib/api-auth", () => ({
   requireAdmin: (...args: unknown[]) => mockRequireAdmin(...args),
 }));
 
-const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
+const mockUpdateTelegramChannelConfig = vi.fn();
 vi.mock("@/lib/openclaw-config", () => ({
-  regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
+  updateTelegramChannelConfig: (...args: unknown[]) => mockUpdateTelegramChannelConfig(...args),
 }));
 
 const mockClearAllowStore = vi.fn();
@@ -107,7 +107,7 @@ describe("DELETE /api/settings/telegram/all", () => {
     const response = await DELETE();
     expect(response.status).toBe(200);
 
-    expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
+    expect(mockUpdateTelegramChannelConfig).toHaveBeenCalled();
   });
 
   it("logs audit event", async () => {

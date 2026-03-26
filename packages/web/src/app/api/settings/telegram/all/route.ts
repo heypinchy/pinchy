@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { updateTelegramChannelConfig } from "@/lib/openclaw-config";
 import { clearAllowStore } from "@/lib/telegram-allow-store";
 import { appendAuditLog } from "@/lib/audit";
 import { deleteSetting } from "@/lib/settings";
@@ -28,9 +28,9 @@ export async function DELETE() {
     await deleteSetting(`telegram_bot_username:${agentId}`);
   }
 
-  // Clear the allow-from store and regenerate config
+  // Clear the allow-from store and remove channel config
   clearAllowStore();
-  await regenerateOpenClawConfig();
+  updateTelegramChannelConfig(null, null, {});
 
   await appendAuditLog({
     actorType: "user",

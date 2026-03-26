@@ -300,6 +300,103 @@ export async function regenerateOpenClawConfig() {
   writeFileSync(CONFIG_PATH, newContent, { encoding: "utf-8", mode: 0o644 });
 }
 
+// ── Targeted config updates ───────────────────────────────────────────────
+
+/**
+ * Update only session.identityLinks in the config file.
+ *
+ * Unlike regenerateOpenClawConfig(), this reads the existing config and only
+ * modifies session.identityLinks. All other fields (agents.defaults, env,
+ * plugins, channels, meta, etc.) are preserved byte-for-byte. This avoids
+ * unnecessary diffs that trigger hot-reloads breaking Telegram polling
+ * (openclaw#47458).
+ *
+ * OpenClaw treats identityLinks changes as "dynamic reads" — no channel
+ * restart, no hot-reload, just updated in memory.
+ */
+export function updateIdentityLinks(identityLinks: Record<string, string[]>): void {
+  const existing = readExistingConfig();
+
+  const session = (existing.session as Record<string, unknown>) || {};
+  const updatedSession = {
+    ...session,
+    identityLinks,
+  };
+
+  const updated = { ...existing, session: updatedSession };
+
+  // Only write if content actually changed
+  const newContent = JSON.stringify(updated, null, 2);
+  try {
+    const current = readFileSync(CONFIG_PATH, "utf-8");
+    if (current === newContent) return;
+  } catch {
+    // File doesn't exist — write it
+  }
+
+  const dir = dirname(CONFIG_PATH);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  writeFileSync(CONFIG_PATH, newContent, { encoding: "utf-8", mode: 0o644 });
+}
+
+/**
+ * Update only Telegram channel config (channels.telegram, bindings, session)
+ * without touching agents.defaults, env, plugins, or other OpenClaw-enriched fields.
+ *
+ * Used by bot connect/disconnect to avoid full config regeneration, which
+ * overwrites OpenClaw-enriched fields (agents.defaults.*) and triggers
+ * hot-reloads that break Telegram polling (openclaw#47458).
+ */
+export function updateTelegramChannelConfig(
+  telegram: { enabled: true; botToken: string; dmPolicy: string } | null,
+  agentId: string | null,
+  identityLinks: Record<string, string[]>
+): void {
+  const existing = readExistingConfig();
+
+  if (telegram) {
+    // Preserve OpenClaw-enriched telegram fields (groupPolicy, streaming)
+    const existingTelegram =
+      ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
+    existing.channels = {
+      ...((existing.channels as Record<string, unknown>) || {}),
+      telegram: { ...existingTelegram, ...telegram },
+    };
+    existing.bindings = [{ agentId, match: { channel: "telegram" } }];
+  } else {
+    // Remove telegram channel
+    const channels = (existing.channels as Record<string, unknown>) || {};
+    delete channels.telegram;
+    existing.channels = Object.keys(channels).length > 0 ? channels : undefined;
+    existing.bindings = undefined;
+  }
+
+  const session = (existing.session as Record<string, unknown>) || {};
+  existing.session = {
+    ...session,
+    dmScope: "per-peer",
+    ...(Object.keys(identityLinks).length > 0 ? { identityLinks } : { identityLinks: undefined }),
+  };
+
+  const newContent = JSON.stringify(existing, null, 2);
+  try {
+    const current = readFileSync(CONFIG_PATH, "utf-8");
+    if (current === newContent) return;
+  } catch {
+    // File doesn't exist
+  }
+
+  const dir = dirname(CONFIG_PATH);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+
+  writeFileSync(CONFIG_PATH, newContent, { encoding: "utf-8", mode: 0o644 });
+}
+
 // ── Types for config patch helpers ────────────────────────────────────────
 
 type PatchResult = { applied: true } | { applied: false; error: string };

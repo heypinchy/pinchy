@@ -16,9 +16,9 @@ vi.mock("@/lib/telegram-pairing", () => ({
   resolvePairingCode: (...args: unknown[]) => mockResolvePairingCode(...args),
 }));
 
-const mockRegenerateOpenClawConfig = vi.fn().mockResolvedValue(undefined);
+const mockUpdateIdentityLinks = vi.fn();
 vi.mock("@/lib/openclaw-config", () => ({
-  regenerateOpenClawConfig: (...args: unknown[]) => mockRegenerateOpenClawConfig(...args),
+  updateIdentityLinks: (...args: unknown[]) => mockUpdateIdentityLinks(...args),
 }));
 
 const mockAddToAllowStore = vi.fn();
@@ -31,6 +31,7 @@ vi.mock("@/lib/telegram-allow-store", () => ({
 const mockFindFirst = vi.fn();
 const mockInsert = vi.fn();
 const mockDelete = vi.fn();
+const mockSelectFrom = vi.fn().mockResolvedValue([]);
 
 vi.mock("@/db", () => ({
   db: {
@@ -41,6 +42,9 @@ vi.mock("@/db", () => ({
     },
     insert: (...args: unknown[]) => mockInsert(...args),
     delete: (...args: unknown[]) => mockDelete(...args),
+    select: vi.fn().mockReturnValue({
+      from: (...args: unknown[]) => mockSelectFrom(...args),
+    }),
   },
 }));
 
@@ -117,7 +121,7 @@ describe("POST /api/settings/telegram", () => {
       values: vi.fn().mockResolvedValue(undefined),
     });
     mockResolvePairingCode.mockReturnValue({ found: true, telegramUserId: "8734062810" });
-    mockRegenerateOpenClawConfig.mockResolvedValue(undefined);
+    mockUpdateIdentityLinks.mockReturnValue(undefined);
   });
 
   it("returns 401 when unauthenticated", async () => {
@@ -148,8 +152,8 @@ describe("POST /api/settings/telegram", () => {
     // Allow-from store updated (no config change, no channel restart)
     expect(mockAddToAllowStore).toHaveBeenCalledWith("8734062810");
 
-    // Config regenerated for identityLinks only
-    expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
+    // identityLinks updated (targeted write, no full config regeneration)
+    expect(mockUpdateIdentityLinks).toHaveBeenCalled();
   });
 
   it("returns 400 when pairing code is invalid", async () => {
@@ -207,7 +211,7 @@ describe("DELETE /api/settings/telegram", () => {
     // Allow-from store updated (no channel restart)
     expect(mockRemoveFromAllowStore).toHaveBeenCalledWith("8734062810");
 
-    // Config regenerated for identityLinks
-    expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
+    // identityLinks updated (targeted write, no full config regeneration)
+    expect(mockUpdateIdentityLinks).toHaveBeenCalled();
   });
 });

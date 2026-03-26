@@ -3,11 +3,26 @@ import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
-import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { updateIdentityLinks } from "@/lib/openclaw-config";
 import { addToAllowStore, removeFromAllowStore } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
+
+/**
+ * Build identityLinks map from all telegram channel links in DB.
+ * Format: { userId: ["telegram:channelUserId"] }
+ */
+async function buildIdentityLinks(): Promise<Record<string, string[]>> {
+  const links = await db.select().from(channelLinks);
+  const identityLinks: Record<string, string[]> = {};
+  for (const link of links) {
+    if (link.channel === "telegram") {
+      identityLinks[link.userId] = [`telegram:${link.channelUserId}`];
+    }
+  }
+  return identityLinks;
+}
 
 export async function GET() {
   const session = await getSession({ headers: await headers() });
@@ -57,8 +72,9 @@ export async function POST(req: Request) {
   // Add to OpenClaw's native allow-from store (no config change, no channel restart)
   addToAllowStore(telegramUserId);
 
-  // Regenerate config for identityLinks (session unification) — does NOT trigger channel restart
-  await regenerateOpenClawConfig();
+  // Update only identityLinks in config (targeted write — no agents.defaults diff,
+  // no hot-reload, no Telegram polling disruption)
+  updateIdentityLinks(await buildIdentityLinks());
 
   return NextResponse.json({ linked: true, telegramUserId });
 }
@@ -83,8 +99,8 @@ export async function DELETE() {
     removeFromAllowStore(existingLink.channelUserId);
   }
 
-  // Regenerate config to remove identityLinks
-  await regenerateOpenClawConfig();
+  // Update identityLinks (targeted write — removes this user's mapping)
+  updateIdentityLinks(await buildIdentityLinks());
 
   return NextResponse.json({ linked: false });
 }
