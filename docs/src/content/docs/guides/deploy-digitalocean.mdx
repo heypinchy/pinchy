@@ -106,11 +106,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
 9.  **Open Pinchy**
 
-    After about 5 minutes, visit `http://<your-droplet-ip>` in your browser. You should see the Pinchy setup wizard.
-
-    <Aside type="note">
-      If you see a connection error, wait another minute — the build might still be running. You can check the progress by connecting via SSH (`ssh root@<your-droplet-ip>`) and running `docker compose -f /opt/pinchy/docker-compose.yml logs -f pinchy`.
-    </Aside>
+    Visit `http://<your-droplet-ip>` in your browser. You'll see a loading page that tracks the installation progress. Once the build finishes (typically 5–8 minutes on DigitalOcean), it automatically redirects to the Pinchy setup wizard.
 
     The setup wizard will guide you through creating your admin account and configuring your first LLM provider.
 
