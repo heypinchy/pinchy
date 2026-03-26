@@ -12,8 +12,9 @@ interface TelegramValidationFailure {
 export type TelegramValidationResult = TelegramValidationSuccess | TelegramValidationFailure;
 
 export async function validateTelegramBotToken(token: string): Promise<TelegramValidationResult> {
+  const apiUrl = process.env.TELEGRAM_API_URL || "https://api.telegram.org";
   try {
-    const response = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const response = await fetch(`${apiUrl}/bot${token}/getMe`);
     const data = await response.json();
 
     if (!data.ok) {

@@ -113,9 +113,14 @@ export async function regenerateOpenClawConfig() {
     }
   }
 
-  // Read default provider to set defaults.model
+  // Read default provider to set defaults.model.
+  // Preserve existing agents.defaults (OpenClaw enriches with heartbeat, models,
+  // contextPruning, compaction etc.) — overwriting them triggers a hot-reload
+  // that breaks Telegram polling via openclaw#47458.
+  const existingDefaults =
+    ((existing.agents as Record<string, unknown>)?.defaults as Record<string, unknown>) || {};
+  const defaults: Record<string, unknown> = { ...existingDefaults };
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
-  const defaults: Record<string, unknown> = {};
   if (defaultProvider && PROVIDERS[defaultProvider]) {
     defaults.model = { primary: PROVIDERS[defaultProvider].defaultModel };
   }
@@ -163,7 +168,9 @@ export async function regenerateOpenClawConfig() {
     return agentEntry;
   });
 
-  // Build complete config — gateway preserved, everything else from DB
+  // Build complete config — gateway and OpenClaw-enriched fields preserved,
+  // everything else from DB. OpenClaw adds meta, commands, etc. at startup;
+  // removing them would cause unnecessary diffs on every write.
   const config: Record<string, unknown> = {
     gateway,
     env,
@@ -172,6 +179,13 @@ export async function regenerateOpenClawConfig() {
       list: agentsList,
     },
   };
+
+  // Preserve OpenClaw-enriched top-level fields that Pinchy doesn't manage
+  for (const key of ["meta", "commands"] as const) {
+    if (existing[key] !== undefined) {
+      config[key] = existing[key];
+    }
+  }
 
   const entries: Record<string, unknown> = {};
   for (const [pluginId, agentConfigs] of Object.entries(pluginConfigs)) {
@@ -243,8 +257,12 @@ export async function regenerateOpenClawConfig() {
         }
       }
 
+      // Preserve OpenClaw-enriched channel fields (groupPolicy, streaming)
+      const existingTelegram =
+        ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
       config.channels = {
         telegram: {
+          ...existingTelegram,
           enabled: true,
           botToken,
           dmPolicy: "pairing",

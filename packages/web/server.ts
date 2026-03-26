@@ -186,6 +186,24 @@ app.prepare().then(async () => {
         restartState.notifyReady();
       }
 
+      // Signal to OpenClaw container that device approval succeeded.
+      // The auto_approve_devices loop watches for this file and stops,
+      // preventing continuous CLI calls that kill Telegram polling.
+      if (firstConnect) {
+        try {
+          const fs = await import("fs");
+          const signalPath = process.env.OPENCLAW_CONFIG_PATH
+            ? require("path").join(
+                require("path").dirname(process.env.OPENCLAW_CONFIG_PATH),
+                "pinchy-device-approved"
+              )
+            : "/openclaw-config/pinchy-device-approved";
+          fs.writeFileSync(signalPath, new Date().toISOString());
+        } catch {
+          // Non-critical — approval loop has a safety timeout
+        }
+      }
+
       // No startup config push needed — regenerateOpenClawConfig() writes the
       // config file at Pinchy startup, and OpenClaw reads it on its own startup.
       // Pushing via config.patch would cause an unnecessary internal restart

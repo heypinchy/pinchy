@@ -52,17 +52,30 @@ scan_data_directories() {
 }
 
 # Auto-approve pending device pairing requests (needed for Docker networking
-# where connections come from container IPs, not localhost)
+# where connections come from container IPs, not localhost).
+# Stops as soon as Pinchy signals successful connection (writes signal file).
+# Running this loop continuously kills Telegram polling because each CLI
+# invocation loads the full plugin system.
 auto_approve_devices() {
     local token
     token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8')).gateway.auth.token)}catch{}")
+    # Remove stale signal file from previous run
+    rm -f /root/.openclaw/pinchy-device-approved
     sleep 5
-    while true; do
+    local elapsed=0
+    while [ $elapsed -lt 300 ]; do
+        # Stop once Pinchy signals successful connection
+        if [ -f /root/.openclaw/pinchy-device-approved ]; then
+            echo "auto_approve_devices: Pinchy connected, stopping"
+            return 0
+        fi
         openclaw devices approve --latest \
             --url ws://127.0.0.1:18789 \
             --token "$token" >/dev/null 2>&1 || true
+        elapsed=$((elapsed + 5))
         sleep 5
     done
+    echo "auto_approve_devices: safety timeout (5min), stopping"
 }
 
 install_plugin_deps
@@ -72,8 +85,8 @@ scan_data_directories
 # Wait briefly, then fix permissions so Pinchy can write to it.
 (sleep 3 && fix_config_permissions) &
 
-# Start auto-approver in the background (needed for Docker networking
-# where connections come from container IPs, not localhost)
+# Start auto-approver in background — stops when Pinchy signals connection
+# (writes pinchy-device-approved). Safety timeout: 5 minutes.
 auto_approve_devices &
 
 # Start gateway. The `openclaw gateway` command daemonizes — it spawns the

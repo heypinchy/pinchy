@@ -64,4 +64,21 @@ describe("validateTelegramBotToken", () => {
     await validateTelegramBotToken("token123:xyz");
     expect(fetchMock).toHaveBeenCalledWith("https://api.telegram.org/bottoken123:xyz/getMe");
   });
+
+  it("should use TELEGRAM_API_URL env var when set", async () => {
+    process.env.TELEGRAM_API_URL = "http://mock-telegram:9001";
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        ok: true,
+        result: { id: 42, is_bot: true, first_name: "TestBot", username: "test_bot" },
+      }),
+    });
+
+    const result = await validateTelegramBotToken("test-token:abc");
+    expect(fetchMock).toHaveBeenCalledWith("http://mock-telegram:9001/bottest-token:abc/getMe");
+    expect(result).toEqual({ valid: true, botId: 42, botUsername: "test_bot" });
+
+    delete process.env.TELEGRAM_API_URL;
+  });
 });

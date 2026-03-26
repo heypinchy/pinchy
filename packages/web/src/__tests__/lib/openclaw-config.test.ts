@@ -313,8 +313,9 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written);
 
     expect(config.gateway.auth.token).toBe("existing-secret-token");
-    // Only gateway block is preserved — other top-level fields (meta, etc.) are rebuilt from DB
-    expect(config.meta).toBeUndefined();
+    // OpenClaw-enriched fields (meta, commands, agents.defaults.*) are preserved
+    // to avoid unnecessary diffs that trigger hot-reloads breaking Telegram polling
+    expect(config.meta).toEqual({ version: "1.2.3", generatedAt: "2025-01-01T00:00:00Z" });
     expect(config.gateway.mode).toBe("local");
     expect(config.gateway.bind).toBe("lan");
   });
