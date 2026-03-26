@@ -83,7 +83,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
       - swapon /swapfile
       - echo '/swapfile none swap sw 0 0' >> /etc/fstab
       - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
-      - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
+      - cd /opt/pinchy && git checkout v0.2.1
       - cd /opt/pinchy && docker compose up --build -d
       - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
       - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
@@ -93,7 +93,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
       - netfilter-persistent save
     ```
 
-          <details>
+<details>
 
     <summary>What does this script do?</summary>
 
@@ -106,7 +106,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
     No manual setup required. You can also [download the script](/cloud-init.yml) separately.
 
-          </details>
+</details>
 
 5.  **Create the Droplet**
 
