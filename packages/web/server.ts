@@ -9,6 +9,7 @@ import { SessionCache } from "./src/server/session-cache";
 import { validateWsSession } from "./src/server/ws-auth";
 import { restartState } from "./src/server/restart-state";
 import { setOpenClawClient } from "./src/server/openclaw-client";
+import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { logCapture } from "./src/lib/log-capture";
 
 logCapture.install();
@@ -85,6 +86,7 @@ app.prepare().then(async () => {
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1 * 1024 * 1024 });
   const sessionMap = new Map<WebSocket, { userId: string; userRole: string }>();
+  const wsRateLimiter = new WsRateLimiter();
 
   function broadcastToClients(message: Record<string, unknown>) {
     const payload = JSON.stringify(message);
@@ -99,14 +101,31 @@ app.prepare().then(async () => {
   server.on("upgrade", async (request, socket, head) => {
     const { pathname } = parse(request.url!, true);
     if (pathname === "/api/ws") {
+      // Rate limit by IP before doing any auth work
+      const ip = request.socket.remoteAddress ?? "unknown";
+      if (!wsRateLimiter.allowUpgrade(ip)) {
+        socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
       const sessionInfo = await validateWsSession(request.headers.cookie);
       if (!sessionInfo) {
         socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n");
         socket.destroy();
         return;
       }
+
+      // Limit concurrent connections per user
       const { userId, userRole } = sessionInfo;
+      if (!wsRateLimiter.allowConnection(userId)) {
+        socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
+        socket.destroy();
+        return;
+      }
+
       wss.handleUpgrade(request, socket, head, (ws) => {
+        wsRateLimiter.trackConnection(userId);
         sessionMap.set(ws, { userId, userRole });
         wss.emit("connection", ws, request);
       });
@@ -138,11 +157,13 @@ app.prepare().then(async () => {
     });
 
     clientWs.on("close", () => {
+      if (sessionInfo) wsRateLimiter.releaseConnection(sessionInfo.userId);
       sessionMap.delete(clientWs);
     });
 
     clientWs.on("error", (err) => {
       console.error("Client WebSocket error:", err.message);
+      if (sessionInfo) wsRateLimiter.releaseConnection(sessionInfo.userId);
       sessionMap.delete(clientWs);
     });
   });

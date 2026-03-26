@@ -74,6 +74,10 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue("anthropic"),
 }));
 
+vi.mock("@/lib/provider-models", () => ({
+  getDefaultModel: vi.fn().mockResolvedValue("anthropic/claude-haiku-4-5-20251001"),
+}));
+
 vi.mock("@/lib/personality-presets", () => ({
   getPersonalityPreset: vi.fn((id: string) => {
     const presets: Record<string, { greetingMessage: string | null; soulMd: string }> = {
@@ -101,6 +105,7 @@ import { POST } from "@/app/api/agents/route";
 import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { validateAllowedPaths } from "@/lib/path-validation";
+import { getDefaultModel } from "@/lib/provider-models";
 import {
   ensureWorkspace,
   writeWorkspaceFile,
@@ -515,6 +520,27 @@ describe("POST /api/agents", () => {
     // visibility field — the DB default takes care of it.
     const insertedValues = insertValuesMock.mock.calls[0][0];
     expect(insertedValues).not.toHaveProperty("visibility");
+  });
+
+  it("should use getDefaultModel to select model dynamically", async () => {
+    vi.mocked(getDefaultModel).mockResolvedValueOnce("anthropic/claude-haiku-5-0");
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Test Agent",
+        templateId: "custom",
+      }),
+    });
+
+    await POST(request);
+
+    expect(getDefaultModel).toHaveBeenCalledWith("anthropic");
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "anthropic/claude-haiku-5-0",
+      })
+    );
   });
 
   it("should use template defaultTagline when tagline not provided", async () => {

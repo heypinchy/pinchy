@@ -398,10 +398,11 @@ DECLARE
 BEGIN
   FOR d IN 1..30 LOOP
     day_date := NOW() - (d || ' days')::INTERVAL;
+    -- Realistic enterprise usage: ~80 messages/weekday, ~25 weekend (4 active users)
     IF EXTRACT(DOW FROM day_date) IN (0, 6) THEN
-      msgs := 4 + floor(random() * 6)::INTEGER;
+      msgs := 15 + floor(random() * 20)::INTEGER;
     ELSE
-      msgs := 10 + floor(random() * 15)::INTEGER;
+      msgs := 60 + floor(random() * 45)::INTEGER;
     END IF;
 
     FOR i IN 1..msgs LOOP
@@ -418,13 +419,16 @@ BEGIN
         ELSE 4
       END;
 
+      -- Realistic token counts per turn (context + response)
       IF agent_models[a_idx] = 'claude-sonnet-4-20250514' THEN
-        inp := 800 + floor(random() * 3200)::INTEGER;
-        outp := 400 + floor(random() * 2600)::INTEGER;
+        -- Sonnet: heavier usage, longer context, detailed responses
+        inp := 3000 + floor(random() * 9000)::INTEGER;
+        outp := 1500 + floor(random() * 5500)::INTEGER;
         input_price := 3.0; output_price := 15.0;
       ELSE
-        inp := 300 + floor(random() * 1700)::INTEGER;
-        outp := 150 + floor(random() * 1350)::INTEGER;
+        -- Haiku: lighter but still substantial
+        inp := 1500 + floor(random() * 5500)::INTEGER;
+        outp := 800 + floor(random() * 3200)::INTEGER;
         input_price := 0.80; output_price := 4.0;
       END IF;
 

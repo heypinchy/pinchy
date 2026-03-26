@@ -157,34 +157,44 @@ function cleanupRecentToolStarts(recentStarts: Map<string, RecentToolStart>): vo
   }
 }
 
+const MAX_RETRIES = 2;
+
 async function postToolAuditEvent(
   cfg: PluginConfig,
   logger: PluginLogger | undefined,
   payload: ToolAuditPayload
 ): Promise<void> {
   const endpoint = `${normalizeBaseUrl(cfg.apiBaseUrl)}/api/internal/audit/tool-use`;
+  let lastError: Error | undefined;
 
-  try {
-    const res = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${cfg.gatewayToken}`,
-      },
-      body: JSON.stringify(payload),
-    });
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const res = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${cfg.gatewayToken}`,
+        },
+        body: JSON.stringify(payload),
+      });
 
-    if (!res.ok) {
-      logger?.warn?.(
+      if (res.ok) return;
+
+      lastError = new Error(
         `[pinchy-audit] audit endpoint returned ${res.status} for ${payload.phase} ${payload.toolName}`
       );
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
     }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger?.warn?.(
-      `[pinchy-audit] failed to post ${payload.phase} event for ${payload.toolName}: ${message}`
-    );
+
+    if (attempt < MAX_RETRIES) {
+      logger?.warn?.(
+        `[pinchy-audit] audit failed (attempt ${attempt + 1}/${MAX_RETRIES + 1}), retrying: ${lastError?.message}`
+      );
+    }
   }
+
+  throw lastError;
 }
 
 const plugin = {

@@ -209,6 +209,23 @@ describe("POST /api/internal/audit/tool-use", () => {
     });
   });
 
+  it("returns 500 with error message when appendAuditLog fails", async () => {
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("DB connection lost"));
+
+    const res = await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "browser",
+        agentId: "agent-1",
+        result: "ok",
+      })
+    );
+
+    expect(res.status).toBe(500);
+    const body = await res.json();
+    expect(body.error).toBe("Audit logging failed");
+  });
+
   describe("sensitive data sanitization", () => {
     it("redacts sensitive key names in params before logging", async () => {
       await POST(

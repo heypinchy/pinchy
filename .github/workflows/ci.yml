@@ -343,6 +343,17 @@ jobs:
       - name: Audit production dependencies
         run: pnpm audit --prod
 
+      - name: Check for local paths in codebase
+        run: |
+          # Block local absolute paths that should never be committed
+          PATTERNS='/Users/|C:\\Users\\|C:/Users/'
+          if git grep -lEI "$PATTERNS" -- ':!*.lock' ':!.github/' ':!.husky/' ':!*.md' 2>/dev/null; then
+            echo "::error::Local absolute paths found in codebase:"
+            git grep -nEI "$PATTERNS" -- ':!*.lock' ':!.github/' ':!.husky/' ':!*.md'
+            exit 1
+          fi
+          echo "No local paths detected"
+
       - name: Check for secrets in codebase
         run: |
           # Check for common secret patterns in tracked files

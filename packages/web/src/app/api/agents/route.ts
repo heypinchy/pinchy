@@ -18,7 +18,8 @@ import {
 import { getContextForAgent } from "@/lib/context-sync";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { getSetting } from "@/lib/settings";
-import { PROVIDERS, type ProviderName } from "@/lib/providers";
+import { type ProviderName } from "@/lib/providers";
+import { getDefaultModel } from "@/lib/provider-models";
 import { appendAuditLog } from "@/lib/audit";
 import { getVisibleAgents } from "@/lib/visible-agents";
 
@@ -85,10 +86,10 @@ export async function POST(request: NextRequest) {
   // Resolve personality preset from template
   const preset = getPersonalityPreset(template.defaultPersonality);
 
-  // Determine default model from current provider
+  // Determine default model dynamically from provider's live model list
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
   const model = defaultProvider
-    ? PROVIDERS[defaultProvider].defaultModel
+    ? await getDefaultModel(defaultProvider)
     : "anthropic/claude-haiku-4-5-20251001";
 
   const [agent] = await db

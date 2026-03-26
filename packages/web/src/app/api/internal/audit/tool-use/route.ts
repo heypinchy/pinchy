@@ -115,14 +115,18 @@ export async function POST(request: NextRequest) {
 
   const sanitizedDetail = sanitizeDetail(detail);
 
-  await appendAuditLog({
-    actorType,
-    actorId,
-    // Change 2: eventType becomes tool.<toolName>
-    eventType: `tool.${payload.toolName}`,
-    resource: `agent:${payload.agentId}`,
-    detail: sanitizedDetail,
-  });
+  try {
+    await appendAuditLog({
+      actorType,
+      actorId,
+      // Change 2: eventType becomes tool.<toolName>
+      eventType: `tool.${payload.toolName}`,
+      resource: `agent:${payload.agentId}`,
+      detail: sanitizedDetail,
+    });
+  } catch {
+    return NextResponse.json({ error: "Audit logging failed" }, { status: 500 });
+  }
 
   return NextResponse.json({ success: true });
 }
