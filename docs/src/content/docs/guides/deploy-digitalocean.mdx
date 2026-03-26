@@ -93,20 +93,6 @@ A "Droplet" is DigitalOcean's name for a virtual server.
       - netfilter-persistent save
     ```
 
-    <details>
-<summary>What does this script do?</summary>
-
-    This is a **cloud-init** script — a standard way to configure servers on first boot. When your Droplet starts, it automatically:
-    1. Installs Docker, Git, and a firewall
-    2. Opens only the ports needed (SSH, HTTP, HTTPS)
-    3. Adds 2 GB of swap space (extra memory from disk — important for 4 GB Droplets)
-    4. Shows a loading page while Pinchy is being built
-    5. Downloads, builds, and starts Pinchy
-
-    No manual setup required. You can also [download the script](/cloud-init.yml) separately.
-
-    </details>
-
 5.  **Create the Droplet**
 
     Click **Create Droplet**. It'll be ready in about 30 seconds, but the setup script needs another **5–8 minutes** to finish installing everything (DigitalOcean builds tend to be a bit slower than other providers).
@@ -120,8 +106,8 @@ A "Droplet" is DigitalOcean's name for a virtual server.
     After about 5 minutes, visit `http://<your-droplet-ip>` in your browser. You should see the Pinchy setup wizard.
 
     <Aside type="note">
-If you see a connection error, wait another minute — the build might still be running. You can check the progress by connecting via SSH (`ssh root@<your-droplet-ip>`) and running `docker compose -f /opt/pinchy/docker-compose.yml logs -f pinchy`.
-</Aside>
+      If you see a connection error, wait another minute — the build might still be running. You can check the progress by connecting via SSH (`ssh root@<your-droplet-ip>`) and running `docker compose -f /opt/pinchy/docker-compose.yml logs -f pinchy`.
+    </Aside>
 
     The setup wizard will guide you through creating your admin account and configuring your first LLM provider.
 
@@ -154,13 +140,11 @@ If you chose SSH key authentication, make sure you have the key on your machine,
 ssh root@<your-droplet-ip>
 ```
 
-<details>
-<summary>Where do I find the terminal?</summary>
+**Where do I find the terminal?**
 
 - **Mac** — Open **Terminal** (search for it in Spotlight with ⌘+Space)
 - **Windows** — Open **PowerShell** (search in Start menu) or install [Windows Terminal](https://aka.ms/terminal)
 - **Linux** — Open your terminal app (usually Ctrl+Alt+T)
-  </details>
 
 While connected, every command you type runs on your Droplet. Type `exit` to disconnect.
 
