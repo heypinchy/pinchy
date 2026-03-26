@@ -38,6 +38,12 @@ vi.mock("@/components/agent-settings-permissions", () => ({
   },
 }));
 
+vi.mock("@/components/agent-integrations-tab", () => ({
+  AgentIntegrationsTab: (props: { onChange: (v: unknown, isDirty: boolean) => void }) => {
+    return <div data-testid="integrations-tab">Integrations</div>;
+  },
+}));
+
 const mockTriggerRestart = vi.fn();
 vi.mock("@/components/restart-provider", () => ({
   useRestart: () => ({ triggerRestart: mockTriggerRestart }),

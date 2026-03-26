@@ -18,6 +18,7 @@ export const AGENT_SETTINGS_TABS = [
   "personality",
   "instructions",
   "permissions",
+  "integrations",
   "access",
 ] as const;
 
