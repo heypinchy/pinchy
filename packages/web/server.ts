@@ -213,11 +213,9 @@ app.prepare().then(async () => {
       if (firstConnect) {
         try {
           const fs = await import("fs");
+          const path = await import("path");
           const signalPath = process.env.OPENCLAW_CONFIG_PATH
-            ? require("path").join(
-                require("path").dirname(process.env.OPENCLAW_CONFIG_PATH),
-                "pinchy-device-approved"
-              )
+            ? path.join(path.dirname(process.env.OPENCLAW_CONFIG_PATH), "pinchy-device-approved")
             : "/openclaw-config/pinchy-device-approved";
           fs.writeFileSync(signalPath, new Date().toISOString());
         } catch {
