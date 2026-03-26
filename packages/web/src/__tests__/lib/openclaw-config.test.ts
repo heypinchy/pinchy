@@ -24,9 +24,13 @@ vi.mock("fs", async (importOriginal) => {
 
 vi.mock("@/db", () => ({
   db: {
-    select: vi.fn().mockReturnValue({
-      from: vi.fn().mockResolvedValue([]),
-    }),
+    select: vi.fn().mockImplementation(() => ({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve([]), {
+          innerJoin: vi.fn().mockResolvedValue([]),
+        })
+      ),
+    })),
   },
 }));
 
@@ -226,6 +230,15 @@ describe("writeOpenClawConfig", () => {
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
 
+/** Helper: create a mock `from()` that returns a thenable with `.innerJoin()` */
+function mockFrom(data: unknown[] = []) {
+  return vi.fn().mockImplementation(() =>
+    Object.assign(Promise.resolve(data), {
+      innerJoin: vi.fn().mockResolvedValue([]),
+    })
+  );
+}
+
 describe("regenerateOpenClawConfig", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -234,7 +247,7 @@ describe("regenerateOpenClawConfig", () => {
       throw new Error("ENOENT: no such file or directory");
     });
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([]),
+      from: mockFrom(),
     } as never);
     mockedGetSetting.mockResolvedValue(null);
   });
@@ -264,7 +277,7 @@ describe("regenerateOpenClawConfig", () => {
       },
     ];
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue(agentsData),
+      from: mockFrom(agentsData),
     } as never);
 
     mockedGetSetting.mockResolvedValue(null);
@@ -354,7 +367,7 @@ describe("regenerateOpenClawConfig", () => {
 
   it("should handle empty agents list", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([]),
+      from: mockFrom(),
     } as never);
 
     await regenerateOpenClawConfig();
@@ -379,7 +392,7 @@ describe("regenerateOpenClawConfig", () => {
 
   it("should deny all groups for agents with only safe tools", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "kb-agent-id",
           name: "HR Knowledge Base",
@@ -407,7 +420,7 @@ describe("regenerateOpenClawConfig", () => {
 
   it("should deny all groups for agents with empty allowedTools", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "custom-agent-id",
           name: "Dev Assistant",
@@ -434,7 +447,7 @@ describe("regenerateOpenClawConfig", () => {
 
   it("should not deny group:runtime when shell is allowed", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "power-agent-id",
           name: "Power Agent",
@@ -460,7 +473,7 @@ describe("regenerateOpenClawConfig", () => {
 
   it("should include pinchy-files plugin config for agents with safe tools", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "kb-agent-id",
           name: "HR Knowledge Base",
@@ -523,7 +536,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
 
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "smithers-1",
           name: "Smithers",
@@ -583,7 +596,7 @@ describe("regenerateOpenClawConfig", () => {
 
     try {
       mockedDb.select.mockReturnValue({
-        from: vi.fn().mockResolvedValue([
+        from: mockFrom([
           {
             id: "smithers-1",
             name: "Smithers",
@@ -620,7 +633,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
 
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "smithers-1",
           name: "Smithers",
@@ -660,7 +673,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
 
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "admin-smithers",
           name: "Smithers",
@@ -687,7 +700,7 @@ describe("regenerateOpenClawConfig", () => {
 
   it("should omit pinchy-context and pinchy-files when no agents use them", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "custom-agent-id",
           name: "Dev Assistant",
@@ -724,7 +737,7 @@ describe("restart-state integration", () => {
       throw new Error("ENOENT: no such file or directory");
     });
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([]),
+      from: mockFrom(),
     } as never);
     mockedGetSetting.mockResolvedValue(null);
   });
