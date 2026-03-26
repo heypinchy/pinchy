@@ -22,7 +22,6 @@ services:
   openclaw:
     extra_hosts:
       - "api.telegram.org:172.28.0.10"
-      - "api.anthropic.com:172.28.0.10"
     environment:
       - NODE_TLS_REJECT_UNAUTHORIZED=0
 

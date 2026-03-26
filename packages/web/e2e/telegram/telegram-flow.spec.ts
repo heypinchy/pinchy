@@ -73,8 +73,9 @@ test.describe.serial("Telegram Integration", () => {
     });
 
     // OpenClaw should respond with a pairing message (not silence!)
+    // Timeout 90s: OpenClaw 2026.3.24 model prewarm can be slow on first start
     const response = await waitForBotResponse(TELEGRAM_USER_ID, {
-      timeout: 30000,
+      timeout: 90000,
       since: beforeSend,
     });
 
