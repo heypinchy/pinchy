@@ -181,6 +181,8 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
     );
   }
 
+  const primaryBot = bots[0];
+
   // State 3: User is linked
   if (linkStatus?.linked) {
     return (
@@ -194,6 +196,9 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
             <div className="flex items-center gap-2">
               <CircleCheck className="size-5 text-green-600 shrink-0" />
               <Badge className="bg-green-600 text-white">Linked</Badge>
+              {primaryBot && (
+                <span className="text-sm text-muted-foreground">via @{primaryBot.botUsername}</span>
+              )}
             </div>
             <Button variant="outline" onClick={handleUnlink} disabled={unlinking}>
               {unlinking ? "Unlinking..." : "Unlink Telegram account"}
@@ -233,7 +238,6 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
   }
 
   const hasBots = bots.length > 0;
-  const primaryBot = bots[0];
 
   // State 1: No bots configured
   if (!hasBots) {

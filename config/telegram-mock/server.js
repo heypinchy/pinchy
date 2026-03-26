@@ -10,16 +10,9 @@
 
 const https = require("https");
 const http = require("http");
-const crypto = require("crypto");
-const { TelegramServer } = require("telegram-test-api");
-
 // ── Self-signed cert for api.telegram.org ──────────────────────────────
 
 function generateSelfSignedCert() {
-  const { generateKeyPairSync, createSign, X509Certificate } = crypto;
-
-  // Use Node.js built-in to create a self-signed cert
-  // For simplicity, shell out to openssl
   const { execSync } = require("child_process");
   const tmpDir = "/tmp/telegram-mock-certs";
   execSync(`mkdir -p ${tmpDir}`);

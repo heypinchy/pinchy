@@ -20,6 +20,8 @@ import {
   getTelegramLinkStatus,
   waitForPinchy,
   waitForMockTelegram,
+  waitForOpenClawConnected,
+  waitForTelegramPolling,
   seedSetup,
 } from "./helpers";
 
@@ -39,9 +41,7 @@ test.describe.serial("Telegram Integration", () => {
     // Create admin user and provider config if not already done
     await seedSetup();
     await resetMockTelegram();
-
-    // Wait for OpenClaw to be connected
-    await new Promise((r) => setTimeout(r, 10000));
+    await waitForOpenClawConnected();
   });
 
   test("setup: login and get agent ID", async () => {
@@ -55,8 +55,8 @@ test.describe.serial("Telegram Integration", () => {
     expect(result.botUsername).toBeTruthy();
     expect(result.botId).toBeGreaterThan(0);
 
-    // Wait for OpenClaw to start polling the mock
-    await new Promise((r) => setTimeout(r, 5000));
+    // Wait for OpenClaw to start polling the mock Telegram server
+    await waitForTelegramPolling();
   });
 
   test("unlinked user receives pairing response", async () => {
@@ -101,7 +101,8 @@ test.describe.serial("Telegram Integration", () => {
 
   test("linked user receives agent response (not pairing)", async () => {
     // Wait for config reload
-    await new Promise((r) => setTimeout(r, 3000));
+    // Brief wait for OpenClaw to detect config change via file watcher
+    await new Promise((r) => setTimeout(r, 2000));
 
     const beforeSend = new Date().toISOString();
 
@@ -135,7 +136,8 @@ test.describe.serial("Telegram Integration", () => {
   test("unlinked user receives NEW pairing code (polling still works)", async () => {
     // This is the critical test — after unlink, polling must still work
     // and the bot must respond with a new pairing code
-    await new Promise((r) => setTimeout(r, 3000));
+    // Brief wait for OpenClaw to detect config change via file watcher
+    await new Promise((r) => setTimeout(r, 2000));
 
     const beforeSend = new Date().toISOString();
 
@@ -171,7 +173,8 @@ test.describe.serial("Telegram Integration", () => {
   });
 
   test("re-linked user receives agent response", async () => {
-    await new Promise((r) => setTimeout(r, 3000));
+    // Brief wait for OpenClaw to detect config change via file watcher
+    await new Promise((r) => setTimeout(r, 2000));
 
     const beforeSend = new Date().toISOString();
 

@@ -91,7 +91,10 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
   await deleteSetting(`telegram_bot_token:${agentId}`);
   await deleteSetting(`telegram_bot_username:${agentId}`);
 
-  // Clear allow-from store and remove channel config
+  // Clear ALL users from allow-from store. This is intentional: current
+  // architecture supports a single Telegram bot, so disconnecting it
+  // invalidates all user links. Future multi-bot support will need
+  // per-agent scoping here.
   clearAllowStore();
   updateTelegramChannelConfig(null, null, {});
 

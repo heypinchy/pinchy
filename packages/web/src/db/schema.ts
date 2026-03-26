@@ -5,6 +5,7 @@ import {
   boolean,
   jsonb,
   index,
+  uniqueIndex,
   serial,
   integer,
   numeric,
@@ -187,6 +188,7 @@ export const channelLinks = pgTable(
   (table) => [
     index("channel_links_user_id_idx").on(table.userId),
     index("channel_links_channel_user_idx").on(table.channel, table.channelUserId),
+    uniqueIndex("channel_links_user_channel_uniq").on(table.userId, table.channel),
   ]
 );
 

@@ -304,3 +304,36 @@ export async function waitForMockTelegram(timeout = 30000): Promise<void> {
   }
   throw new Error(`Mock Telegram not ready within ${timeout}ms`);
 }
+
+export async function waitForOpenClawConnected(timeout = 60000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      const res = await fetch(`${PINCHY_URL}/api/health/openclaw`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data.connected) return;
+      }
+    } catch {
+      // Not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new Error(`OpenClaw not connected within ${timeout}ms`);
+}
+
+export async function waitForTelegramPolling(timeout = 30000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      const res = await fetch(`${MOCK_TELEGRAM_URL}/control/health`);
+      const data = await res.json();
+      // Once bots > 0, OpenClaw has started polling (sent at least one getUpdates)
+      if (data.bots > 0) return;
+    } catch {
+      // Not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 1000));
+  }
+  throw new Error(`Telegram polling not started within ${timeout}ms`);
+}

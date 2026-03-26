@@ -120,7 +120,9 @@ describe("POST /api/settings/telegram", () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(userSession);
     mockInsert.mockReturnValue({
-      values: vi.fn().mockResolvedValue(undefined),
+      values: vi.fn().mockReturnValue({
+        onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+      }),
     });
     mockResolvePairingCode.mockReturnValue({ found: true, telegramUserId: "8734062810" });
     mockUpdateIdentityLinks.mockReturnValue(undefined);

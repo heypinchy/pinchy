@@ -11,13 +11,19 @@ export async function GET() {
   }
 
   const userId = session.user.id;
+  const isAdmin = session.user.role === "admin";
   const allAgents = await db.query.agents.findMany();
 
-  // Filter agents the user can access
-  const accessibleAgents = allAgents.filter((agent) => {
-    if (!agent.isPersonal) return true;
-    return agent.ownerId === userId;
-  });
+  // Filter agents the user can access (admins see all)
+  const accessibleAgents = isAdmin
+    ? allAgents
+    : allAgents.filter((agent) => {
+        // Personal agents: only owner
+        if (agent.isPersonal) return agent.ownerId === userId;
+        // Restricted visibility: would need group check (skip for non-admin)
+        if (agent.visibility === "restricted") return false;
+        return true;
+      });
 
   // Find agents with configured Telegram bots
   const bots: { agentId: string; agentName: string; botUsername: string }[] = [];

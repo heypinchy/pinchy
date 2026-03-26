@@ -60,6 +60,15 @@ if (process.env.NODE_ENV === "production") {
 }
 
 app.prepare().then(async () => {
+  // Migrate session keys from old format (user-<id>) to new (direct:<id>)
+  try {
+    const { migrateSessionKeys } = await import("./src/lib/session-migration");
+    const openclawDataPath = process.env.OPENCLAW_DATA_PATH || "/openclaw-config";
+    migrateSessionKeys(openclawDataPath);
+  } catch {
+    // Non-critical — old sessions will just start fresh
+  }
+
   // Regenerate OpenClaw config on startup to ensure it's in sync with code changes.
   // This handles cases like new plugin configs or changed config structure after updates.
   try {

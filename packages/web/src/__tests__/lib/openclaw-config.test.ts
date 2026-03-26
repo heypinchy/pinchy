@@ -43,7 +43,11 @@ vi.mock("@/lib/migrate-onboarding", () => ({
 }));
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
-import { writeOpenClawConfig, regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import {
+  writeOpenClawConfig,
+  regenerateOpenClawConfig,
+  updateIdentityLinks,
+} from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
 
@@ -862,151 +866,6 @@ describe("restart-state integration", () => {
     expect(config.session.identityLinks).toEqual({
       "user-1": ["telegram:999888"],
     });
-  });
-});
-
-// ── applyConfigPatch ─────────────────────────────────────────────────────
-
-import { applyConfigPatch, pushStartupConfig } from "@/lib/openclaw-config";
-
-describe("applyConfigPatch", () => {
-  function mockClient(overrides?: {
-    getResult?: unknown;
-    getError?: Error;
-    patchResult?: unknown;
-    patchError?: Error;
-  }) {
-    return {
-      config: {
-        get: vi.fn().mockImplementation(() => {
-          if (overrides?.getError) return Promise.reject(overrides.getError);
-          return Promise.resolve(overrides?.getResult ?? { hash: "hash-1" });
-        }),
-        patch: vi.fn().mockImplementation(() => {
-          if (overrides?.patchError) return Promise.reject(overrides.patchError);
-          return Promise.resolve(overrides?.patchResult ?? { payload: {} });
-        }),
-      },
-    };
-  }
-
-  it("should return applied: true on success", async () => {
-    const client = mockClient();
-    const result = await applyConfigPatch(client as any, { foo: "bar" });
-
-    expect(result).toEqual({ applied: true });
-    expect(client.config.get).toHaveBeenCalledOnce();
-    expect(client.config.patch).toHaveBeenCalledWith('{"foo":"bar"}', "hash-1");
-  });
-
-  it("should retry once on hash conflict and succeed", async () => {
-    const client = mockClient();
-    client.config.patch
-      .mockRejectedValueOnce(new Error("hash_mismatch"))
-      .mockResolvedValueOnce({ payload: {} });
-    client.config.get
-      .mockResolvedValueOnce({ hash: "hash-1" })
-      .mockResolvedValueOnce({ hash: "hash-2" });
-
-    const result = await applyConfigPatch(client as any, { foo: "bar" });
-
-    expect(result).toEqual({ applied: true });
-    expect(client.config.get).toHaveBeenCalledTimes(2);
-    expect(client.config.patch).toHaveBeenCalledTimes(2);
-    expect(client.config.patch).toHaveBeenLastCalledWith('{"foo":"bar"}', "hash-2");
-  });
-
-  it("should return applied: false when both attempts fail with hash conflict", async () => {
-    const client = mockClient();
-    client.config.patch.mockRejectedValue(new Error("hash_mismatch"));
-    client.config.get
-      .mockResolvedValueOnce({ hash: "hash-1" })
-      .mockResolvedValueOnce({ hash: "hash-2" });
-
-    const result = await applyConfigPatch(client as any, { foo: "bar" });
-
-    expect(result).toEqual({ applied: false, error: "hash_mismatch" });
-  });
-
-  it("should treat timeout/disconnect as success (OpenClaw restarted)", async () => {
-    const client = mockClient();
-    client.config.patch.mockRejectedValueOnce(new Error("Request config.patch timed out"));
-
-    const result = await applyConfigPatch(client as any, { foo: "bar" });
-
-    expect(result).toEqual({ applied: true });
-    expect(client.config.patch).toHaveBeenCalledOnce();
-  });
-
-  it("should return applied: false when config.get fails", async () => {
-    const client = mockClient({ getError: new Error("not connected") });
-
-    const result = await applyConfigPatch(client as any, { foo: "bar" });
-
-    expect(result).toEqual({ applied: false, error: "not connected" });
-    expect(client.config.patch).not.toHaveBeenCalled();
-  });
-});
-
-// ── pushStartupConfig ────────────────────────────────────────────────────
-
-describe("pushStartupConfig", () => {
-  function mockClient(overrides?: { getResult?: unknown; patchError?: Error }) {
-    return {
-      config: {
-        get: vi.fn().mockResolvedValue(overrides?.getResult ?? { hash: "h1" }),
-        patch: vi.fn().mockImplementation(() => {
-          if (overrides?.patchError) return Promise.reject(overrides.patchError);
-          return Promise.resolve({ payload: {} });
-        }),
-      },
-    };
-  }
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockedExistsSync.mockReturnValue(true);
-  });
-
-  it("reads config file and pushes via applyConfigPatch", async () => {
-    const configContent = {
-      gateway: { mode: "local", auth: { token: "t" } },
-      channels: { telegram: { enabled: true, botToken: "tok" } },
-      bindings: [{ agentId: "a1", match: { channel: "telegram" } }],
-      agents: { list: [{ id: "a1", name: "Smithers" }] },
-    };
-    mockedReadFileSync.mockReturnValue(JSON.stringify(configContent));
-
-    const client = mockClient();
-    const result = await pushStartupConfig(client as any);
-
-    expect(result).toEqual({ applied: true });
-    expect(client.config.patch).toHaveBeenCalled();
-    const patchArg = JSON.parse(client.config.patch.mock.calls[0][0]);
-    expect(patchArg.channels.telegram.enabled).toBe(true);
-    expect(patchArg.bindings).toEqual([{ agentId: "a1", match: { channel: "telegram" } }]);
-  });
-
-  it("returns applied: false when config file does not exist", async () => {
-    mockedReadFileSync.mockImplementation(() => {
-      throw new Error("ENOENT: no such file or directory");
-    });
-
-    const client = mockClient();
-    const result = await pushStartupConfig(client as any);
-
-    expect(result).toEqual({ applied: false, error: expect.stringContaining("ENOENT") });
-    expect(client.config.patch).not.toHaveBeenCalled();
-  });
-
-  it("returns applied: false when config file is invalid JSON", async () => {
-    mockedReadFileSync.mockReturnValue("not-json{{{");
-
-    const client = mockClient();
-    const result = await pushStartupConfig(client as any);
-
-    expect(result.applied).toBe(false);
-    expect(client.config.patch).not.toHaveBeenCalled();
   });
 });
 

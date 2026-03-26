@@ -66,12 +66,19 @@ export async function POST(req: Request) {
 
   const { telegramUserId } = pairing;
 
-  // DB first (source of truth)
-  await db.insert(channelLinks).values({
-    userId: session.user.id,
-    channel: "telegram",
-    channelUserId: telegramUserId,
-  });
+  // DB first (source of truth). onConflictDoUpdate handles re-linking
+  // to a different Telegram account (unique constraint on userId+channel).
+  await db
+    .insert(channelLinks)
+    .values({
+      userId: session.user.id,
+      channel: "telegram",
+      channelUserId: telegramUserId,
+    })
+    .onConflictDoUpdate({
+      target: [channelLinks.userId, channelLinks.channel],
+      set: { channelUserId: telegramUserId, linkedAt: new Date() },
+    });
 
   // Add to OpenClaw's native allow-from store (no config change, no channel restart)
   addToAllowStore(telegramUserId);
