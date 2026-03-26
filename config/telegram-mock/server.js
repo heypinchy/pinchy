@@ -24,7 +24,7 @@ function generateSelfSignedCert() {
   const tmpDir = "/tmp/telegram-mock-certs";
   execSync(`mkdir -p ${tmpDir}`);
   execSync(
-    `openssl req -x509 -newkey rsa:2048 -keyout ${tmpDir}/key.pem -out ${tmpDir}/cert.pem -days 1 -nodes -subj "/CN=api.telegram.org" 2>/dev/null`
+    `openssl req -x509 -newkey rsa:2048 -keyout ${tmpDir}/key.pem -out ${tmpDir}/cert.pem -days 1 -nodes -subj "/CN=mock-api" -addext "subjectAltName=DNS:api.telegram.org,DNS:api.anthropic.com" 2>/dev/null`
   );
   const fs = require("fs");
   return {
@@ -44,6 +44,37 @@ const bots = new Map();
 
 // Pending updates for each bot (simulated incoming messages from users)
 const pendingUpdates = new Map(); // token -> update[]
+
+// ── Anthropic API mock (for model prewarm) ─────────────────────────────
+
+function handleAnthropicRequest(url, body) {
+  if (url === "/v1/models" || url.startsWith("/v1/models")) {
+    return {
+      data: [
+        { id: "claude-haiku-4-5-20251001", type: "model", display_name: "Claude Haiku" },
+        { id: "claude-sonnet-4-20250514", type: "model", display_name: "Claude Sonnet" },
+      ],
+      has_more: false,
+    };
+  }
+  if (url === "/v1/messages") {
+    return {
+      id: "msg_mock",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "Mock response from test server." }],
+      model: body?.model || "claude-haiku-4-5-20251001",
+      stop_reason: "end_turn",
+      usage: { input_tokens: 10, output_tokens: 5 },
+    };
+  }
+  return { error: { type: "not_found", message: "Unknown endpoint" } };
+}
+
+function parsedBody(raw) {
+  if (!raw) return {};
+  try { return JSON.parse(raw); } catch { return {}; }
+}
 
 // ── Bot API handlers ───────────────────────────────────────────────────
 
@@ -162,6 +193,14 @@ function startHttpsServer(cert) {
     req.on("data", (chunk) => (body += chunk));
     req.on("error", (err) => console.error(`[telegram-mock] HTTPS request error: ${err.message}`));
     req.on("end", () => {
+      // Handle Anthropic API requests (model prewarm and chat)
+      if (req.url.startsWith("/v1/")) {
+        const result = handleAnthropicRequest(req.url, parsedBody(body));
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+        return;
+      }
+
       // Parse /bot<token>/<method>
       const match = req.url.match(/^\/bot([^/]+)\/(\w+)/);
       if (!match) {
@@ -171,28 +210,20 @@ function startHttpsServer(cert) {
       }
 
       const [, token, method] = match;
-      let parsedBody = {};
-      if (body) {
-        try {
-          parsedBody = JSON.parse(body);
-        } catch {
-          // Try URL-encoded
-          parsedBody = Object.fromEntries(new URLSearchParams(body));
-        }
-      }
+      let bodyData = parsedBody(body);
 
       console.log(`[telegram-mock] HTTPS ${method} from bot ${token.substring(0, 10)}...`);
 
       // getUpdates is async (long-poll)
       if (method === "getUpdates") {
-        handleGetUpdates(token, parsedBody).then((result) => {
+        handleGetUpdates(token, bodyData).then((result) => {
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify(result));
         });
         return;
       }
 
-      const result = handleBotRequest(token, method, parsedBody);
+      const result = handleBotRequest(token, method, bodyData);
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify(result));
     });
@@ -319,22 +350,15 @@ function startControlServer() {
       const botMatch = req.url.match(/^\/bot([^/]+)\/(\w+)/);
       if (botMatch) {
         const [, token, method] = botMatch;
-        let parsedBody = {};
-        if (body) {
-          try {
-            parsedBody = JSON.parse(body);
-          } catch {
-            parsedBody = Object.fromEntries(new URLSearchParams(body));
-          }
-        }
+        const botBody = parsedBody(body);
         if (method === "getUpdates") {
-          handleGetUpdates(token, parsedBody).then((result) => {
+          handleGetUpdates(token, botBody).then((result) => {
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify(result));
           });
           return;
         }
-        const result = handleBotRequest(token, method, parsedBody);
+        const result = handleBotRequest(token, method, botBody);
         res.writeHead(200);
         res.end(JSON.stringify(result));
         return;

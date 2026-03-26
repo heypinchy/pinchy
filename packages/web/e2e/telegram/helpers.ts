@@ -244,7 +244,9 @@ export async function seedSetup(): Promise<void> {
   await new Promise((r) => setTimeout(r, 2000));
 
   // Seed provider config directly in DB (encrypted=false since key is fake).
-  // Can't use the provider setup API because it validates against real Anthropic.
+  // OpenClaw 2026.3.24 runs model prewarm before starting channels — a fake
+  // key causes it to hang forever, blocking Telegram startup.
+  const testApiKey = process.env.TEST_ANTHROPIC_API_KEY || "sk-ant-fake-key-for-e2e-testing";
   await sql`
     INSERT INTO settings (key, value, encrypted)
     VALUES ('default_provider', 'anthropic', false)
@@ -252,8 +254,8 @@ export async function seedSetup(): Promise<void> {
   `;
   await sql`
     INSERT INTO settings (key, value, encrypted)
-    VALUES ('anthropic_api_key', 'sk-ant-fake-key-for-e2e-testing', false)
-    ON CONFLICT (key) DO UPDATE SET value = 'sk-ant-fake-key-for-e2e-testing'
+    VALUES ('anthropic_api_key', ${testApiKey}, false)
+    ON CONFLICT (key) DO UPDATE SET value = ${testApiKey}
   `;
 
   await sql.end();
