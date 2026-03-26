@@ -100,6 +100,9 @@ openclaw gateway --port 18789 || true
 # SIGUSR1 restarts (port is briefly unavailable during restart).
 while true; do
     sleep 30
+    # OpenClaw rewrites openclaw.json with 600 on every internal restart.
+    # Keep fixing permissions so Pinchy can always write config.
+    fix_config_permissions
     if ! (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
         # Port is down — wait 10s and check again (internal restart takes ~5s)
         sleep 10
