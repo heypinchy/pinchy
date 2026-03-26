@@ -13,12 +13,6 @@ DigitalOcean is a solid choice for running Pinchy — straightforward interface,
 - **Simple pricing** — A Droplet with 4 GB RAM starts at around $24/month with predictable costs.
 - **Team accounts** — Built-in team management for sharing infrastructure access.
 
-<Aside type="note">
-  For EU data residency requirements, choose the **Amsterdam (AMS3)** or
-  **Frankfurt (FRA1)** region. Your AI conversations and data will stay in the
-  EU.
-</Aside>
-
 ## What you'll need
 
 - A [DigitalOcean account](https://cloud.digitalocean.com/registrations/new) (free to create, pay-as-you-go)
@@ -35,27 +29,36 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
     Click **Create → Droplets**.
 
-2.  **Configure the Droplet**
+2.  **Choose a region**
 
-    | Setting      | Value                                                        |
-    | ------------ | ------------------------------------------------------------ |
-    | **Region**   | Amsterdam or Frankfurt (EU) / New York or San Francisco (US) |
-    | **Image**    | Ubuntu (latest LTS version)                                  |
-    | **Size**     | The smallest plan with at least 4 GB RAM and 2 vCPUs         |
-    | **Hostname** | `pinchy` (or whatever you prefer)                            |
+    Pick the datacenter closest to you or your users. Pinchy works in any region.
+
+    <Aside type="note">
+      For EU data residency requirements, choose a European region like
+      **Frankfurt (FRA1)** or **Amsterdam (AMS3)**. Your AI conversations and
+      data will stay in the EU.
+    </Aside>
+
+3.  **Choose an image**
+
+    Select **Ubuntu** and keep the default version (**24.04 LTS x64**).
+
+4.  **Choose a size**
+
+    Under **Droplet Type**, keep **Basic** (Shared CPU). Under **CPU options**, **Regular** (SSD) is fine. Pick the **$24/mo** plan (4 GB RAM, 2 CPUs).
 
     <Aside type="tip">
       For teams with more than 5 users or heavy agent workloads, consider the
       $48/mo plan (8 GB RAM, 4 vCPUs) for smoother performance.
     </Aside>
 
-3.  **Choose authentication**
+5.  **Choose authentication**
 
-    Under **Authentication**, you can choose **SSH Key** or **Password**. For the automated setup below, either works — you only need SSH access later for production hardening.
+    Select **SSH Key** or **Password**. Either works for the automated setup below — you'll need SSH access later for production hardening.
 
-4.  **Paste the setup script**
+6.  **Paste the setup script**
 
-    Scroll down to **Advanced Options** and check **Add User Data**. Paste the following script. It automatically installs Docker, deploys Pinchy, sets up a firewall, and adds swap.
+    Expand **Advanced Options** and enable **User Data**. Paste the following script. It automatically installs Docker, deploys Pinchy, sets up a firewall, and adds swap.
 
     ```yaml
     #cloud-config
@@ -93,15 +96,15 @@ A "Droplet" is DigitalOcean's name for a virtual server.
       - netfilter-persistent save
     ```
 
-5.  **Create the Droplet**
+7.  **Set the hostname and create the Droplet**
 
-    Click **Create Droplet**. It'll be ready in about 30 seconds, but the setup script needs another **5–8 minutes** to finish installing everything (DigitalOcean builds tend to be a bit slower than other providers).
+    Under **Finalize Details**, change the hostname to `pinchy` (or whatever you prefer) and click **Create Droplet**. It'll be ready in about 30 seconds, but the setup script needs another **5–8 minutes** to finish installing everything (DigitalOcean builds tend to be a bit slower than other providers).
 
-6.  **Note the IP address**
+8.  **Note the IP address**
 
     The Droplet's IPv4 address appears on the dashboard (e.g., `164.90.x.x`).
 
-7.  **Open Pinchy**
+9.  **Open Pinchy**
 
     After about 5 minutes, visit `http://<your-droplet-ip>` in your browser. You should see the Pinchy setup wizard.
 
