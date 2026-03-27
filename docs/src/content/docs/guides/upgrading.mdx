@@ -97,6 +97,35 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
+## Upgrading from v0.2.1 to v0.3.0
+
+Standard upgrade — no breaking changes, no new required environment variables.
+
+```bash
+git fetch --tags
+git checkout v0.3.0
+docker compose up --build
+```
+
+### What's new in v0.3.0
+
+- **Usage & Cost Stats dashboard** — admins can view token usage and estimated costs per agent and per user at `/usage`.
+- **Smart PDF reading** — Knowledge Base agents can now extract text from PDFs automatically.
+- **Dynamic model selection** — the default model is selected from your provider's live model list rather than being hardcoded.
+- **Rate limiting on WebSocket connections** — protects the gateway from connection floods.
+- **Setup password recovery** — admins can recover access via the `PINCHY_ADMIN_EMAIL` environment variable if locked out.
+- **Security hardening** — timing-safe token validation, fail-closed audit logging.
+
+### New optional environment variable: PINCHY_ADMIN_EMAIL
+
+If you want to be able to recover admin access via the setup wizard, add this to your `.env`:
+
+```bash
+PINCHY_ADMIN_EMAIL=your-admin@example.com
+```
+
+This is optional — Pinchy works fine without it.
+
 ## Upgrading from v0.2.0 to v0.2.1
 
 This is a docs-only release — no code changes, no database migrations, no breaking changes. Just pull the new tag and rebuild:

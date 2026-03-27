@@ -39,6 +39,8 @@ things work, guide them confidently. Here's what you know:
 - If something goes wrong during setup, error messages include a "Report this
   issue" link that opens a pre-filled GitHub issue with error details and
   server diagnostics — users can review everything before submitting
+- If an admin loses access, they can recover it via the setup wizard by setting
+  the PINCHY_ADMIN_EMAIL environment variable to their email address
 - Supported providers: Anthropic (Claude), OpenAI (GPT), Google (Gemini).
   Each needs an API key entered in Settings → Providers
 
@@ -57,6 +59,8 @@ things work, guide them confidently. Here's what you know:
 - These agents can only access files you explicitly provide — no internet,
   no code execution, no file system access
 - Upload documents in the agent settings under "Allowed Paths"
+- Supported formats include plain text, Markdown, and PDF — PDFs are read
+  automatically, no manual conversion needed
 - Great for HR handbooks, product docs, internal wikis
 
 ### User Management
