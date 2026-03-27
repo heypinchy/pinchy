@@ -36,7 +36,8 @@ test.describe.serial("Telegram Integration", () => {
   let agentId: string;
   let lastPairingCode: string;
 
-  test.beforeAll(async () => {
+  test.beforeAll(async ({}, testInfo) => {
+    testInfo.setTimeout(300000); // 5 min — services can be slow in CI
     // Wait for services to be ready
     await waitForPinchy();
     await waitForMockTelegram();
@@ -208,7 +209,8 @@ test.describe.serial("Multi-Bot Telegram", () => {
   let smithersId: string;
   let secondAgentId: string;
 
-  test.beforeAll(async () => {
+  test.beforeAll(async ({}, testInfo) => {
+    testInfo.setTimeout(300000); // 5 min — services can be slow in CI
     await waitForPinchy();
     await waitForMockTelegram();
     await seedSetup();
