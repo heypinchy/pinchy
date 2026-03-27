@@ -79,6 +79,23 @@ export async function getAgentId(): Promise<string> {
   return agent.id;
 }
 
+export async function getAgentByName(name: string): Promise<{ id: string; name: string } | null> {
+  const res = await pinchyGet("/api/agents");
+  const data = await res.json();
+  return data.find((a: { name: string }) => a.name === name) || null;
+}
+
+export async function createAgent(
+  name: string,
+  model: string
+): Promise<{ id: string; name: string }> {
+  const res = await pinchyPost("/api/agents", { name, model });
+  if (!res.ok) {
+    throw new Error(`createAgent failed: ${res.status} ${await res.text()}`);
+  }
+  return res.json();
+}
+
 // ── Bot setup helpers ──────────────────────────────────────────────────
 
 export async function connectBot(

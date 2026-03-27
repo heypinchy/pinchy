@@ -11,7 +11,10 @@ import { test, expect } from "@playwright/test";
 import {
   login,
   getAgentId,
+  getAgentByName,
+  createAgent,
   connectBot,
+  disconnectBot,
   sendTelegramMessage,
   waitForBotResponse,
   resetMockTelegram,
@@ -194,5 +197,114 @@ test.describe.serial("Telegram Integration", () => {
 
     expect(response).toBeTruthy();
     console.log(`[test] Post-relink response: "${response.substring(0, 100)}..."`);
+  });
+});
+
+// ── Multi-Bot Tests ─────────────────────────────────────────────────
+
+const SECOND_BOT_TOKEN = "789012:DEF-second-bot-for-e2e";
+
+test.describe.serial("Multi-Bot Telegram", () => {
+  let smithersId: string;
+  let secondAgentId: string;
+
+  test.beforeAll(async () => {
+    await waitForPinchy();
+    await waitForMockTelegram();
+    await seedSetup();
+    await waitForOpenClawConnected();
+    await login();
+  });
+
+  test("setup: get Smithers agent ID", async () => {
+    smithersId = await getAgentId();
+    expect(smithersId).toBeTruthy();
+    console.log(`[multi-bot] Smithers agent: ${smithersId}`);
+  });
+
+  test("setup: create second agent and connect bot", async () => {
+    let agent = await getAgentByName("Support Bot");
+    if (!agent) {
+      agent = await createAgent("Support Bot", "anthropic/claude-haiku-4-5-20251001");
+    }
+    secondAgentId = agent.id;
+    expect(secondAgentId).toBeTruthy();
+
+    const result = await connectBot(secondAgentId, SECOND_BOT_TOKEN);
+    expect(result.botUsername).toBeTruthy();
+    console.log(`[multi-bot] Second bot: @${result.botUsername} for agent ${secondAgentId}`);
+
+    // Wait for OpenClaw to start polling the second bot
+    await waitForTelegramPolling();
+  });
+
+  test("second bot responds to unlinked user with pairing code", async () => {
+    const beforeSend = new Date().toISOString();
+
+    await sendTelegramMessage({
+      token: SECOND_BOT_TOKEN,
+      chatId: TELEGRAM_USER_ID,
+      text: "Hello Support Bot!",
+      userId: TELEGRAM_USER_ID,
+      username: TELEGRAM_USERNAME,
+      firstName: "E2E",
+    });
+
+    const response = await waitForBotResponse(TELEGRAM_USER_ID, {
+      timeout: 90000,
+      since: beforeSend,
+    });
+
+    expect(response).toBeTruthy();
+    const codeMatch = response.match(/Pairing code:\s*(\S+)/i);
+    expect(codeMatch).toBeTruthy();
+    console.log(`[multi-bot] Second bot pairing code: ${codeMatch![1]}`);
+  });
+
+  test("first bot (Smithers) still responds after second bot connected", async () => {
+    const beforeSend = new Date().toISOString();
+
+    await sendTelegramMessage({
+      token: BOT_TOKEN,
+      chatId: TELEGRAM_USER_ID,
+      text: "Smithers, are you still there?",
+      userId: TELEGRAM_USER_ID,
+      username: TELEGRAM_USERNAME,
+      firstName: "E2E",
+    });
+
+    const response = await waitForBotResponse(TELEGRAM_USER_ID, {
+      timeout: 60000,
+      since: beforeSend,
+    });
+
+    expect(response).toBeTruthy();
+    console.log(`[multi-bot] Smithers still responds: "${response.substring(0, 80)}..."`);
+  });
+
+  test("disconnecting second bot does not affect Smithers", async () => {
+    await disconnectBot(secondAgentId);
+
+    // Brief wait for OpenClaw to detect config change
+    await new Promise((r) => setTimeout(r, 2000));
+
+    const beforeSend = new Date().toISOString();
+
+    await sendTelegramMessage({
+      token: BOT_TOKEN,
+      chatId: TELEGRAM_USER_ID,
+      text: "Smithers after second bot disconnect?",
+      userId: TELEGRAM_USER_ID,
+      username: TELEGRAM_USERNAME,
+      firstName: "E2E",
+    });
+
+    const response = await waitForBotResponse(TELEGRAM_USER_ID, {
+      timeout: 60000,
+      since: beforeSend,
+    });
+
+    expect(response).toBeTruthy();
+    console.log(`[multi-bot] Smithers after disconnect: "${response.substring(0, 80)}..."`);
   });
 });
