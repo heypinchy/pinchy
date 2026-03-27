@@ -44,7 +44,7 @@ test.describe.serial("Telegram Integration", () => {
     // Create admin user and provider config if not already done
     await seedSetup();
     await resetMockTelegram();
-    await waitForOpenClawConnected();
+    await waitForOpenClawConnected(120000);
   });
 
   test("setup: login and get agent ID", async () => {
@@ -212,7 +212,7 @@ test.describe.serial("Multi-Bot Telegram", () => {
     await waitForPinchy();
     await waitForMockTelegram();
     await seedSetup();
-    await waitForOpenClawConnected();
+    await waitForOpenClawConnected(120000);
     await login();
   });
 
