@@ -417,7 +417,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
 
           {isAdmin && (
             <TabsContent value="telegram">
-              <AgentTelegramSettings agentId={agentId} />
+              <AgentTelegramSettings
+                agentId={agentId}
+                isSmithers={agent.avatarSeed === "__smithers__"}
+              />
             </TabsContent>
           )}
         </Tabs>

@@ -6,6 +6,7 @@ import { eq, and, count } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
 import { appendAuditLog } from "@/lib/audit";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 
 export async function PATCH(
   request: NextRequest,
@@ -61,6 +62,8 @@ export async function PATCH(
     detail: { changes: { role: { from: user.role, to: role } }, userName: user.name },
   }).catch(() => {});
 
+  await recalculateTelegramAllowStores();
+
   return NextResponse.json({ success: true });
 }
 
@@ -109,6 +112,7 @@ export async function DELETE(
   }
 
   await regenerateOpenClawConfig();
+  await recalculateTelegramAllowStores();
 
   return NextResponse.json({ success: true });
 }

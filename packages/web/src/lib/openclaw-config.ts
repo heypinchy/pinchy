@@ -245,42 +245,47 @@ export async function regenerateOpenClawConfig() {
     config.plugins = { allow: allowedPlugins, entries };
   }
 
-  // Build Telegram channel config from DB settings
-  // For now: single bot token (first configured agent wins).
-  // Multi-bot via OpenClaw accounts is a future enhancement.
+  // Build Telegram channel config from DB settings using OpenClaw's multi-account format.
+  // Each agent with a bot token gets its own account. Bindings route via accountId.
   //
-  // NOTE: allowFrom is NOT written here. It's managed via OpenClaw's native
-  // allow-from store (credentials/telegram-allowFrom.json) to avoid triggering
-  // the broken channel restart (openclaw/openclaw#47458).
+  // NOTE: allowFrom is NOT written here. It's managed via per-account allow-from
+  // store files (credentials/telegram-<accountId>-allowFrom.json) to avoid
+  // triggering the broken channel restart (openclaw/openclaw#47458).
+  const accounts: Record<string, { botToken: string }> = {};
+  const bindings: Array<{ agentId: string; match: { channel: string; accountId: string } }> = [];
+
   for (const agent of allAgents) {
     const botToken = await getSetting(`telegram_bot_token:${agent.id}`);
     if (botToken) {
-      const links = await db.select().from(channelLinks);
-      const identityLinks: Record<string, string[]> = {};
-      for (const link of links) {
-        if (link.channel === "telegram") {
-          identityLinks[link.userId] = [`telegram:${link.channelUserId}`];
-        }
-      }
-
-      // Preserve OpenClaw-enriched channel fields (groupPolicy, streaming)
-      const existingTelegram =
-        ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
-      config.channels = {
-        telegram: {
-          ...existingTelegram,
-          enabled: true,
-          botToken,
-          dmPolicy: "pairing",
-        },
-      };
-      config.bindings = [{ agentId: agent.id, match: { channel: "telegram" } }];
-      config.session = {
-        dmScope: "per-peer",
-        ...(Object.keys(identityLinks).length > 0 && { identityLinks }),
-      };
-      break;
+      accounts[agent.id] = { botToken };
+      bindings.push({ agentId: agent.id, match: { channel: "telegram", accountId: agent.id } });
     }
+  }
+
+  if (Object.keys(accounts).length > 0) {
+    const links = await db.select().from(channelLinks);
+    const identityLinks: Record<string, string[]> = {};
+    for (const link of links) {
+      if (link.channel === "telegram") {
+        identityLinks[link.userId] = [`telegram:${link.channelUserId}`];
+      }
+    }
+
+    // Preserve OpenClaw-enriched channel fields (groupPolicy, streaming)
+    const existingTelegram =
+      ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
+    config.channels = {
+      telegram: {
+        ...existingTelegram,
+        dmPolicy: "pairing",
+        accounts,
+      },
+    };
+    config.bindings = bindings;
+    config.session = {
+      dmScope: "per-peer",
+      ...(Object.keys(identityLinks).length > 0 && { identityLinks }),
+    };
   }
 
   const dir = dirname(CONFIG_PATH);
@@ -343,31 +348,76 @@ export function updateIdentityLinks(identityLinks: Record<string, string[]>): vo
 }
 
 /**
- * Update only Telegram channel config (channels.telegram, bindings, session)
- * without touching agents.defaults, env, plugins, or other OpenClaw-enriched fields.
+ * Update a single Telegram account in the config (add or remove).
+ *
+ * Uses OpenClaw's multi-account format: channels.telegram.accounts.<accountId>.
+ * Preserves all other accounts, bindings, and OpenClaw-enriched fields.
+ *
+ * Pass `account: null` to remove an account. When the last account is removed,
+ * the entire telegram channel config is removed.
  *
  * Used by bot connect/disconnect to avoid full config regeneration, which
  * overwrites OpenClaw-enriched fields (agents.defaults.*) and triggers
  * hot-reloads that break Telegram polling (openclaw#47458).
  */
 export function updateTelegramChannelConfig(
-  telegram: { enabled: true; botToken: string; dmPolicy: string } | null,
-  agentId: string | null,
+  accountId: string | null,
+  account: { botToken: string } | null,
   identityLinks: Record<string, string[]>
 ): void {
   const existing = readExistingConfig();
 
-  if (telegram) {
-    // Preserve OpenClaw-enriched telegram fields (groupPolicy, streaming)
+  if (accountId && account) {
+    // Add/update account
     const existingTelegram =
       ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
+    const existingAccounts = (existingTelegram.accounts as Record<string, unknown>) || {};
+
+    existingAccounts[accountId] = account;
+
     existing.channels = {
       ...((existing.channels as Record<string, unknown>) || {}),
-      telegram: { ...existingTelegram, ...telegram },
+      telegram: {
+        ...existingTelegram,
+        dmPolicy: "pairing",
+        accounts: existingAccounts,
+      },
     };
-    existing.bindings = [{ agentId, match: { channel: "telegram" } }];
+
+    // Update bindings: add this account's binding, preserve others
+    const existingBindings =
+      (existing.bindings as Array<{ agentId: string; match: Record<string, string> }>) || [];
+    const otherBindings = existingBindings.filter((b) => b.match?.accountId !== accountId);
+    existing.bindings = [
+      ...otherBindings,
+      { agentId: accountId, match: { channel: "telegram", accountId } },
+    ];
+  } else if (accountId && !account) {
+    // Remove specific account
+    const existingTelegram =
+      ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
+    const existingAccounts = (existingTelegram.accounts as Record<string, unknown>) || {};
+
+    delete existingAccounts[accountId];
+
+    if (Object.keys(existingAccounts).length === 0) {
+      // Last account removed — remove entire telegram config
+      const channels = (existing.channels as Record<string, unknown>) || {};
+      delete channels.telegram;
+      existing.channels = Object.keys(channels).length > 0 ? channels : undefined;
+      existing.bindings = undefined;
+    } else {
+      existing.channels = {
+        ...((existing.channels as Record<string, unknown>) || {}),
+        telegram: { ...existingTelegram, accounts: existingAccounts },
+      };
+      // Remove this account's binding
+      const existingBindings =
+        (existing.bindings as Array<{ agentId: string; match: Record<string, string> }>) || [];
+      existing.bindings = existingBindings.filter((b) => b.match?.accountId !== accountId);
+    }
   } else {
-    // Remove telegram channel
+    // No accountId — remove ALL telegram config (used by remove-all)
     const channels = (existing.channels as Record<string, unknown>) || {};
     delete channels.telegram;
     existing.channels = Object.keys(channels).length > 0 ? channels : undefined;

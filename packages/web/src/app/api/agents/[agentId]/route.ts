@@ -12,6 +12,7 @@ import { writeIdentityFile } from "@/lib/workspace";
 import { db } from "@/db";
 import { agentGroups, groups } from "@/db/schema";
 import { getAgentGroupIds } from "@/lib/groups";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 
 export async function GET(
   request: NextRequest,
@@ -215,6 +216,11 @@ export async function PATCH(
       resource: `agent:${agentId}`,
       detail: auditDetail,
     }).catch(() => {});
+  }
+
+  // Recalculate Telegram allow-from stores when visibility or groups change
+  if (body.visibility !== undefined || body.groupIds !== undefined) {
+    await recalculateTelegramAllowStores();
   }
 
   return NextResponse.json(agent);

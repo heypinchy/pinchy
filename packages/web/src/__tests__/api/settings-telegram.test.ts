@@ -21,12 +21,11 @@ vi.mock("@/lib/openclaw-config", () => ({
   updateIdentityLinks: (...args: unknown[]) => mockUpdateIdentityLinks(...args),
 }));
 
-const mockAddToAllowStore = vi.fn();
-const mockRemoveFromAllowStore = vi.fn();
+const mockRecalculateTelegramAllowStores = vi.fn().mockResolvedValue(undefined);
 const mockRemovePairingRequest = vi.fn();
 vi.mock("@/lib/telegram-allow-store", () => ({
-  addToAllowStore: (...args: unknown[]) => mockAddToAllowStore(...args),
-  removeFromAllowStore: (...args: unknown[]) => mockRemoveFromAllowStore(...args),
+  recalculateTelegramAllowStores: (...args: unknown[]) =>
+    mockRecalculateTelegramAllowStores(...args),
   removePairingRequest: (...args: unknown[]) => mockRemovePairingRequest(...args),
 }));
 
@@ -153,8 +152,8 @@ describe("POST /api/settings/telegram", () => {
     // DB written first
     expect(mockInsert).toHaveBeenCalled();
 
-    // Allow-from store updated (no config change, no channel restart)
-    expect(mockAddToAllowStore).toHaveBeenCalledWith("8734062810");
+    // Per-account allow-from stores recalculated (permission-aware)
+    expect(mockRecalculateTelegramAllowStores).toHaveBeenCalled();
 
     // identityLinks updated (targeted write, no full config regeneration)
     expect(mockUpdateIdentityLinks).toHaveBeenCalled();
@@ -212,8 +211,8 @@ describe("DELETE /api/settings/telegram", () => {
     // DB updated
     expect(mockDelete).toHaveBeenCalled();
 
-    // Allow-from store updated (no channel restart)
-    expect(mockRemoveFromAllowStore).toHaveBeenCalledWith("8734062810");
+    // Per-account allow-from stores recalculated (removes unlinked user)
+    expect(mockRecalculateTelegramAllowStores).toHaveBeenCalled();
 
     // identityLinks updated (targeted write, no full config regeneration)
     expect(mockUpdateIdentityLinks).toHaveBeenCalled();

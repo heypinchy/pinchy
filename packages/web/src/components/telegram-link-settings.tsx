@@ -259,7 +259,12 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
                   <Button onClick={() => setShowSetup(true)}>Set up Telegram</Button>
                 </>
               ) : smithersId ? (
-                <AgentTelegramSettings agentId={smithersId} onConnected={fetchData} bare />
+                <AgentTelegramSettings
+                  agentId={smithersId}
+                  onConnected={fetchData}
+                  bare
+                  isSmithers
+                />
               ) : (
                 <p className="text-sm text-muted-foreground">Loading...</p>
               )}

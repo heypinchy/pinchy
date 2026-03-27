@@ -23,6 +23,10 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/telegram-allow-store", () => ({
+  recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
+}));
+
 // Mock modules that the existing DELETE handler imports
 vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),

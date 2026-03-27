@@ -29,8 +29,13 @@ vi.mock("@/lib/openclaw-config", () => ({
   updateTelegramChannelConfig: (...args: unknown[]) => mockUpdateTelegramChannelConfig(...args),
 }));
 
+const mockClearAllowStoreForAccount = vi.fn();
+const mockRecalculateTelegramAllowStores = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/telegram-allow-store", () => ({
   clearAllowStore: vi.fn(),
+  clearAllowStoreForAccount: (...args: unknown[]) => mockClearAllowStoreForAccount(...args),
+  recalculateTelegramAllowStores: (...args: unknown[]) =>
+    mockRecalculateTelegramAllowStores(...args),
 }));
 
 vi.mock("@/db", () => ({
@@ -202,6 +207,39 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
 
     expect(response.status).toBe(401);
   });
+
+  it("returns 409 when bot token is already used by another agent", async () => {
+    // Simulate another agent already using this bot (same bot ID "123456")
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi
+          .fn()
+          .mockResolvedValue([{ key: "telegram_bot_token:agent-2", value: "encrypted" }]),
+      }),
+    } as never);
+    // getSetting returns the existing agent's token with the same bot ID
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-2") return "123456:OTHER-secret";
+      return null;
+    });
+
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+    const data = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(data.error).toContain("already in use");
+  });
+
+  it("calls recalculateTelegramAllowStores after connecting", async () => {
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockRecalculateTelegramAllowStores).toHaveBeenCalled();
+  });
 });
 
 describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
@@ -211,7 +249,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(mockAgent as any);
   });
 
-  it("removes token, patches config, logs audit event", async () => {
+  it("removes token, clears account store, patches config, logs audit event", async () => {
     const response = await DELETE(new Request("http://localhost"), {
       params: mockParams,
     });
@@ -222,6 +260,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
 
     expect(deleteSetting).toHaveBeenCalledWith("telegram_bot_token:agent-1");
     expect(deleteSetting).toHaveBeenCalledWith("telegram_bot_username:agent-1");
+    expect(mockClearAllowStoreForAccount).toHaveBeenCalledWith("agent-1");
     expect(mockUpdateTelegramChannelConfig).toHaveBeenCalled();
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -233,6 +272,22 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
         }),
       })
     );
+  });
+
+  it("returns 400 when trying to disconnect Smithers' bot", async () => {
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      ...mockAgent,
+      avatarSeed: "__smithers__",
+    } as any);
+
+    const response = await DELETE(new Request("http://localhost"), {
+      params: mockParams,
+    });
+    const data = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(data.error).toContain("Smithers");
+    expect(deleteSetting).not.toHaveBeenCalled();
   });
 
   it("returns 404 for non-existent agent", async () => {

@@ -23,6 +23,10 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/telegram-allow-store", () => ({
+  recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/lib/enterprise", () => ({
   isEnterprise: vi.fn().mockResolvedValue(true),
 }));

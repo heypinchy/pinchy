@@ -26,6 +26,15 @@ vi.mock("@/lib/workspace", () => ({
   deleteWorkspace: vi.fn(),
 }));
 
+vi.mock("@/lib/telegram-allow-store", () => ({
+  recalculateTelegramAllowStores: vi.fn().mockResolvedValue(undefined),
+  clearAllowStoreForAccount: vi.fn(),
+}));
+
+vi.mock("@/lib/settings", () => ({
+  deleteSetting: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { deleteAgent } from "@/lib/agents";
 import { agents } from "@/db/schema";
 import { db } from "@/db";

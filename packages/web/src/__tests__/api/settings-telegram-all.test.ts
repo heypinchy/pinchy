@@ -14,9 +14,9 @@ vi.mock("@/lib/openclaw-config", () => ({
   updateTelegramChannelConfig: (...args: unknown[]) => mockUpdateTelegramChannelConfig(...args),
 }));
 
-const mockClearAllowStore = vi.fn();
+const mockClearAllAllowStores = vi.fn();
 vi.mock("@/lib/telegram-allow-store", () => ({
-  clearAllowStore: (...args: unknown[]) => mockClearAllowStore(...args),
+  clearAllAllowStores: (...args: unknown[]) => mockClearAllAllowStores(...args),
 }));
 
 vi.mock("@/lib/audit", () => ({

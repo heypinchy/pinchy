@@ -4,10 +4,13 @@ import { validateTelegramBotToken } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
 import { updateTelegramChannelConfig } from "@/lib/openclaw-config";
-import { clearAllowStore } from "@/lib/telegram-allow-store";
+import {
+  clearAllowStoreForAccount,
+  recalculateTelegramAllowStores,
+} from "@/lib/telegram-allow-store";
 import { db } from "@/db";
-import { agents } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { agents, settings } from "@/db/schema";
+import { eq, like } from "drizzle-orm";
 
 export async function GET(req: Request, { params }: { params: Promise<{ agentId: string }> }) {
   const admin = await requireAdmin();
@@ -40,10 +43,29 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
     return NextResponse.json({ error: "Agent not found" }, { status: 404 });
   }
 
-  // Validate token via Telegram API
+  // Validate token via Telegram API first (gives us the botId for duplicate check)
   const validation = await validateTelegramBotToken(botToken);
   if (!validation.valid) {
     return NextResponse.json({ error: validation.error }, { status: 400 });
+  }
+
+  // Check for duplicate bot token — Telegram only allows one getUpdates consumer per token.
+  // Compare bot IDs (first part of token: "<botId>:<secret>") across all configured agents.
+  const existingTokenSettings = await db
+    .select()
+    .from(settings)
+    .where(like(settings.key, "telegram_bot_token:%"));
+
+  const newBotId = botToken.split(":")[0];
+  for (const row of existingTokenSettings) {
+    if (row.key === `telegram_bot_token:${agentId}`) continue; // same agent, allow re-connect
+    const existingToken = await getSetting(row.key);
+    if (existingToken && existingToken.split(":")[0] === newBotId) {
+      return NextResponse.json(
+        { error: "This bot token is already in use by another agent" },
+        { status: 409 }
+      );
+    }
   }
 
   // DB first (source of truth)
@@ -53,10 +75,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
   // Update only Telegram channel config (targeted write — preserves OpenClaw-enriched
   // fields like agents.defaults to avoid hot-reloads that break polling)
   updateTelegramChannelConfig(
-    { enabled: true, botToken, dmPolicy: "pairing" },
     agentId,
-    {} // No identity links yet — user hasn't linked
+    { botToken },
+    {} // Identity links will be set by recalculate below
   );
+
+  // Populate allow-from store with all linked users who have permission to this agent
+  await recalculateTelegramAllowStores();
 
   await appendAuditLog({
     actorType: "user",
@@ -88,15 +113,26 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
     return NextResponse.json({ error: "Agent not found" }, { status: 404 });
   }
 
+  // Smithers' bot can only be removed via "Remove Telegram for everyone" in Settings.
+  // Preventing individual disconnect avoids edge cases where the primary onboarding
+  // agent has no bot while other agents still do.
+  if (agent.avatarSeed === "__smithers__") {
+    return NextResponse.json(
+      {
+        error:
+          "Smithers' bot cannot be disconnected individually. Use 'Remove Telegram for everyone' in Settings.",
+      },
+      { status: 400 }
+    );
+  }
+
   await deleteSetting(`telegram_bot_token:${agentId}`);
   await deleteSetting(`telegram_bot_username:${agentId}`);
 
-  // Clear ALL users from allow-from store. This is intentional: current
-  // architecture supports a single Telegram bot, so disconnecting it
-  // invalidates all user links. Future multi-bot support will need
-  // per-agent scoping here.
-  clearAllowStore();
-  updateTelegramChannelConfig(null, null, {});
+  // Clear only this account's allow-from store (other agents' bots are unaffected)
+  clearAllowStoreForAccount(agentId);
+  // Remove this account from config (other accounts preserved)
+  updateTelegramChannelConfig(agentId, null, {});
 
   await appendAuditLog({
     actorType: "user",

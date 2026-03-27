@@ -4,11 +4,7 @@ import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
 import { updateIdentityLinks } from "@/lib/openclaw-config";
-import {
-  addToAllowStore,
-  removeFromAllowStore,
-  removePairingRequest,
-} from "@/lib/telegram-allow-store";
+import { recalculateTelegramAllowStores, removePairingRequest } from "@/lib/telegram-allow-store";
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
@@ -80,8 +76,8 @@ export async function POST(req: Request) {
       set: { channelUserId: telegramUserId, linkedAt: new Date() },
     });
 
-  // Add to OpenClaw's native allow-from store (no config change, no channel restart)
-  addToAllowStore(telegramUserId);
+  // Recalculate per-account allow-from stores (permission-aware)
+  await recalculateTelegramAllowStores();
 
   // Update only identityLinks in config (targeted write — no agents.defaults diff,
   // no hot-reload, no Telegram polling disruption)
@@ -105,12 +101,13 @@ export async function DELETE() {
     .delete(channelLinks)
     .where(and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")));
 
-  // Remove from OpenClaw's native allow-from store (no config change, no channel restart)
-  // Also remove the pairing request so OpenClaw issues a fresh code on next message
+  // Remove the pairing request so OpenClaw issues a fresh code on next message
   if (existingLink) {
-    removeFromAllowStore(existingLink.channelUserId);
     removePairingRequest(existingLink.channelUserId);
   }
+
+  // Recalculate per-account allow-from stores (removes unlinked user)
+  await recalculateTelegramAllowStores();
 
   // Update identityLinks (targeted write — removes this user's mapping)
   updateIdentityLinks(await buildIdentityLinks());
