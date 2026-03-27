@@ -75,6 +75,9 @@ jobs:
     services:
       postgres:
         image: postgres:16
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
         env:
           POSTGRES_DB: pinchy
           POSTGRES_USER: pinchy
@@ -113,6 +116,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Start production stack
         run: docker compose up --build -d
@@ -316,6 +325,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - uses: pnpm/action-setup@v4
 
