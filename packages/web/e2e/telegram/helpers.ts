@@ -329,7 +329,7 @@ export async function waitForOpenClawConnected(timeout = 60000): Promise<void> {
       const res = await fetch(`${PINCHY_URL}/api/health/openclaw`);
       if (res.ok) {
         const data = await res.json();
-        if (data.connected) return;
+        if (data.status === "ok") return;
       }
     } catch {
       // Not ready yet
