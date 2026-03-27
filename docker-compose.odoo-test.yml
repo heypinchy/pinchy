@@ -1,0 +1,12 @@
+services:
+  odoo-mock:
+    build:
+      context: config/odoo-mock
+    ports:
+      - "9002:9002"
+      - "8069:8069"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:9002/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
