@@ -1,5 +1,6 @@
 import { createAvatar } from "@dicebear/core";
 import * as funEmoji from "@dicebear/fun-emoji";
+import { uuid } from "@/lib/uuid";
 
 const SMITHERS_AVATAR_PATH = "/images/smithers-avatar.png";
 
@@ -53,5 +54,5 @@ export function getAgentAvatarSvg(agent: { avatarSeed: string | null; name: stri
 }
 
 export function generateAvatarSeed(): string {
-  return crypto.randomUUID();
+  return uuid();
 }

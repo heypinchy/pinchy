@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRestart } from "@/components/restart-provider";
+import { uuid } from "@/lib/uuid";
 import {
   useExternalStoreRuntime,
   SimpleImageAttachmentAdapter,
@@ -140,7 +141,7 @@ export function useWsRuntime(agentId: string): {
           if (data.type === "history") {
             const historyMessages = (data.messages ?? []).map(
               (msg: { role: string; content: string; timestamp?: string }) => ({
-                id: crypto.randomUUID(),
+                id: uuid(),
                 role: msg.role === "system" ? "assistant" : msg.role,
                 content: msg.content,
                 timestamp: msg.timestamp,
@@ -225,7 +226,7 @@ export function useWsRuntime(agentId: string): {
             setMessages((prev) => [
               ...prev,
               {
-                id: crypto.randomUUID(),
+                id: uuid(),
                 role: "assistant",
                 content: data.message || "An unknown error occurred.",
               },
@@ -289,7 +290,7 @@ export function useWsRuntime(agentId: string): {
           setMessages((prev) => [
             ...prev,
             {
-              id: crypto.randomUUID(),
+              id: uuid(),
               role: "assistant",
               content: "Image exceeds the 5MB size limit. Please use a smaller image.",
             },
@@ -301,7 +302,7 @@ export function useWsRuntime(agentId: string): {
       if (!text.trim() && images.length === 0) return;
 
       const userMessage: WsMessage = {
-        id: crypto.randomUUID(),
+        id: uuid(),
         role: "user",
         content: text,
         timestamp: new Date().toISOString(),

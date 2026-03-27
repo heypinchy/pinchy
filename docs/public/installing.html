@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="20">
+<title>Pinchy is getting ready...</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap');
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'DM Sans', system-ui, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    background: #fafaf9;
+    color: #1c1917;
+    overflow: hidden;
+  }
+
+  .container {
+    text-align: center;
+    padding: 2rem;
+    max-width: 520px;
+    width: 100%;
+  }
+
+  .logo {
+    width: 88px;
+    height: 88px;
+    margin: 0 auto 1.75rem;
+    animation: bob 3s ease-in-out infinite;
+    filter: drop-shadow(0 8px 24px rgba(234, 88, 12, 0.12));
+  }
+
+  .logo img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+  }
+
+  @keyframes bob {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(-6px); }
+  }
+
+  h1 {
+    font-size: 1.4rem;
+    font-weight: 600;
+    color: #1c1917;
+    margin-bottom: 0.5rem;
+    letter-spacing: -0.01em;
+  }
+
+  .subtitle {
+    font-size: 0.95rem;
+    color: #78716c;
+    margin-bottom: 2rem;
+  }
+
+  .steps {
+    text-align: left;
+    margin: 0 auto 2rem;
+    max-width: 320px;
+  }
+
+  .step {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.5rem 0;
+    font-size: 0.9rem;
+    color: #a8a29e;
+    transition: color 0.4s ease;
+  }
+
+  .step.active {
+    color: #1c1917;
+  }
+
+  .step.done {
+    color: #78716c;
+  }
+
+  .step-icon {
+    width: 20px;
+    height: 20px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .step.waiting .step-icon::before {
+    content: '';
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: #d6d3d1;
+  }
+
+  .step.active .step-icon::before {
+    content: '';
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    border: 2px solid #ea580c;
+    border-top-color: transparent;
+    animation: spin 0.8s linear infinite;
+  }
+
+  .step.done .step-icon::before {
+    content: '\2713';
+    font-size: 0.85rem;
+    color: #16a34a;
+  }
+
+  @keyframes spin {
+    to { transform: rotate(360deg); }
+  }
+
+  .timer {
+    font-size: 0.85rem;
+    color: #a8a29e;
+    margin-bottom: 1.5rem;
+  }
+
+  .timer span {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .footer {
+    font-size: 0.8rem;
+    color: #a8a29e;
+  }
+
+  .footer a {
+    color: #ea580c;
+    text-decoration: none;
+  }
+
+  .footer a:hover {
+    text-decoration: underline;
+  }
+</style>
+</head>
+<body>
+  <div class="container">
+    <div class="logo">
+      <img src="https://raw.githubusercontent.com/heypinchy/pinchy/main/packages/web/public/pinchy-logo.png"
+           alt="Pinchy"
+           onerror="this.parentElement.innerHTML='&#x1F99E;'">
+    </div>
+
+    <h1>Pinchy is getting ready...</h1>
+    <p class="subtitle">This usually takes 5-10 minutes. Sit tight.</p>
+
+    <div class="steps" id="steps">
+      <div class="step" data-after="0">
+        <span class="step-icon"></span>
+        Installing Docker and dependencies
+      </div>
+      <div class="step" data-after="30">
+        <span class="step-icon"></span>
+        Downloading Pinchy
+      </div>
+      <div class="step" data-after="45">
+        <span class="step-icon"></span>
+        Building container images
+      </div>
+      <div class="step" data-after="180">
+        <span class="step-icon"></span>
+        Starting Pinchy
+      </div>
+    </div>
+
+    <div class="timer">
+      Elapsed: <span id="elapsed">0:00</span>
+    </div>
+
+    <div class="footer">
+      This page refreshes automatically when Pinchy is ready.<br>
+      <a href="https://docs.heypinchy.com" target="_blank" rel="noopener">Documentation</a>
+    </div>
+  </div>
+
+  <script>
+    const elapsedEl = document.getElementById('elapsed');
+    const steps = document.querySelectorAll('.step');
+
+    // Elapsed timer — INSTALL_START_TIME is replaced by cloud-init with the actual
+    // Unix timestamp (ms) when setup began. Falls back to page load time.
+    const start = INSTALL_START_TIME || Date.now();
+    function updateTimer() {
+      const s = Math.floor((Date.now() - start) / 1000);
+      const min = Math.floor(s / 60);
+      const sec = String(s % 60).padStart(2, '0');
+      elapsedEl.textContent = min + ':' + sec;
+    }
+    setInterval(updateTimer, 1000);
+
+    // Step progression (simulated based on typical timing)
+    function updateSteps() {
+      const elapsed = (Date.now() - start) / 1000;
+      let activeSet = false;
+
+      // Walk steps in reverse to find the current active one
+      for (let i = steps.length - 1; i >= 0; i--) {
+        const threshold = parseInt(steps[i].dataset.after);
+        if (elapsed >= threshold && !activeSet) {
+          steps[i].className = 'step active';
+          activeSet = true;
+        } else if (elapsed >= threshold) {
+          steps[i].className = 'step done';
+        } else {
+          steps[i].className = 'step waiting';
+        }
+      }
+    }
+    setInterval(updateSteps, 1000);
+    updateSteps();
+  </script>
+</body>
+</html>

@@ -1,0 +1,279 @@
+---
+title: VPS Deployment
+description: Step-by-step guide for deploying Pinchy on a virtual private server (VPS).
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+This guide walks you through deploying Pinchy on a fresh Linux VPS. It has been tested on Ubuntu 24.04, but any Linux distribution with Docker support will work.
+
+If you're coming from a provider-specific guide ([Hetzner](/guides/deploy-hetzner/), [DigitalOcean](/guides/deploy-digitalocean/)), you should already be connected to your server via SSH. All commands below run **on the server**, not on your local machine.
+
+## Requirements
+
+| Resource | Minimum       | Recommended  |
+| -------- | ------------- | ------------ |
+| RAM      | 4 GB          | 8 GB         |
+| CPU      | 2 vCPUs       | 4 vCPUs      |
+| Disk     | 20 GB         | 40 GB        |
+| OS       | Ubuntu 22.04+ | Ubuntu 24.04 |
+
+You also need:
+
+- A domain name pointing to your server's IP address (for HTTPS)
+- An LLM provider API key (Anthropic, OpenAI, or Google)
+
+<Aside type="caution">
+  Pinchy requires **Docker Engine** (not Podman). Many VPS providers pre-install
+  Docker, but some Linux distributions ship Podman as a Docker replacement.
+  Verify with `docker --version` — it should say **Docker**, not Podman.
+</Aside>
+
+## Deploy Pinchy
+
+<Steps>
+
+1. **Install Docker**
+
+   If Docker is not already installed on your server:
+
+   ```bash
+   apt-get update
+   apt-get install -y docker.io docker-compose-v2 git
+   ```
+
+   Verify the installation:
+
+   ```bash
+   docker --version        # Should show: Docker version 24+
+   docker compose version  # Should show: Docker Compose version v2+
+   ```
+
+   For non-Ubuntu distributions, follow the [official Docker installation guide](https://docs.docker.com/engine/install/).
+
+   <details>
+     <summary>What do these commands do?</summary>- `apt-get update` — refreshes
+     the list of available software packages - `apt-get install -y` — installs
+     the listed packages (`-y` means "yes, don't ask for confirmation"): -
+     `docker.io` — Docker Engine, the tool that runs containers -
+     `docker-compose-v2` — Docker Compose, which starts multiple containers
+     together - `git` — needed to download the Pinchy source code
+   </details>
+
+2. **Download and start Pinchy**
+
+   ```bash
+   git clone https://github.com/heypinchy/pinchy.git
+   cd pinchy
+   git checkout %%PINCHY_VERSION%%
+   docker compose up --build -d
+   ```
+
+   The first build takes 3–5 minutes depending on your server's internet speed.
+
+   <details>
+     <summary>What do these commands do?</summary>- `git clone` — downloads the
+     Pinchy source code from GitHub - `cd pinchy` — enters the downloaded
+     directory - `git checkout %%PINCHY_VERSION%%` — switches to the
+     %%PINCHY_VERSION%% release - `docker compose up --build -d` — builds all
+     container images and starts them: - `--build` — build from source (needed
+     on first run and after updates) - `-d` — run in the background (you get
+     your terminal back)
+   </details>
+
+3. **Verify all services are running**
+
+   ```bash
+   docker compose ps
+   ```
+
+   You should see three services — `pinchy`, `openclaw`, and `db` — all with status **Up** or **healthy**.
+
+   Check the Pinchy logs to make sure everything started correctly:
+
+   ```bash
+   docker compose logs pinchy
+   ```
+
+   Look for: `Pinchy ready on http://localhost:7777`
+
+4. **Open the setup wizard**
+
+   Visit `http://<your-server-ip>:7777` in your browser. Replace `<your-server-ip>` with your server's actual IP address.
+
+   The setup wizard will guide you through creating your admin account and configuring your first LLM provider. You'll need your API key (from Anthropic, OpenAI, or Google) ready.
+
+</Steps>
+
+That's it — Pinchy is running! The rest of this guide covers production hardening, which you should do before using Pinchy with real data.
+
+## Production setup
+
+The steps above get Pinchy working, but for production use you should add HTTPS, a firewall, and pinned secrets.
+
+### Set up HTTPS with Caddy
+
+Never expose Pinchy directly on port 7777 in production. Use a reverse proxy that handles HTTPS for you. We recommend [Caddy](https://caddyserver.com/) because it automatically gets and renews SSL certificates — zero configuration.
+
+```bash
+apt-get install -y caddy
+```
+
+Edit the Caddy configuration file:
+
+```bash
+nano /etc/caddy/Caddyfile
+```
+
+Replace the contents with (use your actual domain):
+
+```
+pinchy.example.com {
+    reverse_proxy localhost:7777
+}
+```
+
+Save the file (Ctrl+O, Enter, Ctrl+X in nano) and restart Caddy:
+
+```bash
+systemctl restart caddy
+```
+
+Caddy automatically provisions Let's Encrypt certificates for your domain. After a few seconds, visit `https://pinchy.example.com` — you should see Pinchy with a valid HTTPS certificate.
+
+<details>
+<summary>What's a reverse proxy and why do I need one?</summary>
+
+A reverse proxy sits between the internet and Pinchy. When someone visits your domain:
+
+1. Their browser connects to **Caddy** on port 443 (HTTPS)
+2. Caddy handles the SSL certificate and encryption
+3. Caddy forwards the request to **Pinchy** on port 7777 (internal only)
+4. Pinchy sends the response back through Caddy
+
+This way, Pinchy never needs to deal with SSL certificates, and port 7777 is never exposed to the internet.
+
+</details>
+
+See the [Hardening Guide](/guides/hardening/#reverse-proxy-with-tls) for nginx examples and advanced configuration.
+
+### Pin secrets
+
+By default, Pinchy auto-generates secrets on first start and persists them in Docker volumes. For production, pin your own secrets so they don't depend on Docker volumes surviving. Add these lines to your `.env` file:
+
+```bash
+nano /root/pinchy/.env
+```
+
+```bash
+# Database password (default: pinchy_dev)
+DB_PASSWORD=<replace with output of the command below>
+
+# Session secret
+BETTER_AUTH_SECRET=<replace with output of the command below>
+
+# Encryption key for API keys at rest
+ENCRYPTION_KEY=<replace with output of the command below>
+```
+
+Generate each secret by running this command (run it three times, once for each secret):
+
+```bash
+openssl rand -hex 32
+```
+
+Copy each output and paste it as the value in your `.env` file. Then restart:
+
+```bash
+cd /root/pinchy
+docker compose down && docker compose up -d
+```
+
+See [Installation — Environment variables](/installation/#environment-variables) for the full reference.
+
+### Configure a firewall
+
+A firewall controls which network ports are accessible from the internet. Lock down your server to only the ports you need:
+
+```bash
+ufw allow OpenSSH
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw enable
+```
+
+Type `y` when asked to confirm. This allows:
+
+- **SSH** (port 22) — so you can still log in to your server
+- **HTTP** (port 80) — needed for Caddy's certificate renewal
+- **HTTPS** (port 443) — how users access Pinchy
+
+Everything else is blocked — including port 7777, which is now only reachable by Caddy on the same machine.
+
+<Aside type="tip">
+  Some VPS providers (Hetzner, DigitalOcean, AWS) also offer cloud firewalls in
+  their dashboard. Use both — host firewall + cloud firewall — for defense in
+  depth.
+</Aside>
+
+### Add swap (recommended for 4 GB servers)
+
+Swap is disk space that your server can use as extra memory when RAM runs low. On servers with only 4 GB RAM, adding swap prevents crashes during Docker builds:
+
+```bash
+fallocate -l 2G /swapfile
+chmod 600 /swapfile
+mkswap /swapfile
+swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab
+```
+
+The last line ensures swap is re-enabled after a server reboot.
+
+## Updating Pinchy
+
+To update to a new release:
+
+```bash
+cd /root/pinchy
+git fetch --tags
+git checkout v0.3.0   # replace with the new version
+docker compose up --build -d
+```
+
+Pinchy runs database migrations automatically on startup — no manual steps needed. See the [Upgrade Guide](/guides/upgrading/) for version-specific notes.
+
+## Troubleshooting
+
+### Pinchy container exits immediately
+
+Check the logs:
+
+```bash
+docker compose logs pinchy
+```
+
+Common causes:
+
+- **Database not ready** — wait a few seconds, the container will auto-restart
+- **Port already in use** — check with `ss -tlnp | grep 7777`
+
+### Build fails with out-of-memory errors
+
+Add swap (see above) or use a server with more RAM. The Docker build needs approximately 2 GB free memory for `pnpm install`.
+
+### "Corepack is about to download" on every restart
+
+Upgrade to the latest Pinchy version — this was fixed by caching pnpm at build time.
+
+### WebSocket connection errors in the browser
+
+If you're behind a reverse proxy, make sure it supports WebSocket upgrades. For nginx, add:
+
+```nginx
+proxy_http_version 1.1;
+proxy_set_header Upgrade $http_upgrade;
+proxy_set_header Connection "upgrade";
+```
+
+Caddy handles WebSocket upgrades automatically.

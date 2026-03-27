@@ -1,5 +1,8 @@
 FROM node:22-slim
 
+# Cache pnpm in a shared location so the non-root pinchy user can use it
+# without re-downloading on every container start.
+ENV COREPACK_HOME=/app/.cache/corepack
 RUN corepack enable
 
 WORKDIR /app

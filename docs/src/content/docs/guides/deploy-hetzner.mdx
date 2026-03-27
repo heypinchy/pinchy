@@ -1,0 +1,248 @@
+---
+title: Deploy Pinchy on Hetzner Cloud
+description: Deploy a self-hosted AI agent platform on Hetzner Cloud. Step-by-step guide from server creation to running Pinchy with Docker.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU data centers (Germany and Finland), which keeps your data under EU jurisdiction — no overseas transfers, no third-party cloud AI providers touching your conversations. Combined with strong price-to-performance ratios, it's the go-to option for European teams that take data sovereignty seriously.
+
+## Why Hetzner for self-hosted AI agents?
+
+- **EU data centers** — Falkenstein, Nuremberg, Helsinki. Your AI conversations stay in the EU.
+- **Price** — A server with 4 GB RAM and 2 vCPUs costs under €4/month (including IPv4). Enough to run Pinchy with a small team.
+- **Predictable pricing** — No surprise bandwidth charges. 20 TB outbound traffic included.
+- **ISO 27001 certified** — Relevant if your compliance team asks where the servers are.
+
+## What you'll need
+
+- A [Hetzner Cloud account](https://accounts.hetzner.com/) (free to create, pay-as-you-go)
+- A domain name (optional for testing, required for production HTTPS)
+- An LLM provider API key (Anthropic, OpenAI, or Google) — you'll enter this in Pinchy's setup wizard
+
+## Create your server
+
+<Steps>
+
+1.  **Open the Hetzner Cloud Console**
+
+    After signing up or logging in at [accounts.hetzner.com](https://accounts.hetzner.com/), click the **grid icon** (⊞) in the top-right corner and select **Console**. This is where you manage your servers.
+
+2.  **Create or select a project**
+
+    You'll see your projects on the dashboard. Create a new one (e.g., "Pinchy") or click an existing project to open it.
+
+3.  **Start creating a server**
+
+    Inside your project, click the red **Create Resource** button in the top-right corner and select **Servers**.
+
+4.  **Choose server type**
+
+    Under **Shared Resources**, select **Cost-Optimized**, then pick **x86 (Intel/AMD)** as the architecture.
+
+    Scroll down to the server sizes and select the smallest option with **at least 4 GB RAM** and **2 vCPUs**. This is the minimum for Pinchy.
+
+    <Aside type="tip">
+      For teams with more than 5 users or heavy agent workloads, pick the next
+      size up (8 GB RAM, 4 vCPUs) for smoother performance.
+    </Aside>
+
+5.  **Choose a location**
+
+    Pick any location — all are fine for Pinchy:
+    - **Falkenstein** or **Nuremberg** (Germany)
+    - **Helsinki** (Finland)
+    - **Ashburn, VA** or **Hillsboro, OR** (US)
+    - **Singapore**
+
+    For EU data residency, choose one of the European locations.
+
+6.  **Choose the image**
+
+    Under **Image**, make sure **OS Images** is selected and pick **Ubuntu** (the latest LTS version).
+
+7.  **Skip SSH Keys (for now)**
+
+    Scroll past the **Networking** and **SSH keys** sections — you can leave them at their defaults. You'll see a warning saying "No SSH key selected" — that's fine. The cloud-init script below handles everything automatically, and you won't need SSH access for the initial setup.
+
+    <details>
+
+    <summary>When would I need SSH access?</summary>
+
+    SSH is needed later for production hardening (setting up HTTPS, pinning secrets, etc.). You can add an SSH key at any time via the Hetzner console, or use the **web console** (available on the server's detail page) for emergency access.
+
+    </details>
+
+8.  **Paste the setup script**
+
+    Scroll down past Volumes, Firewalls, Backups, Placement groups, and Labels until you reach **Cloud config** — it's near the very bottom. Paste the following script into the "Cloud-init configuration" text area:
+
+    ```yaml
+    #cloud-config
+    runcmd:
+      - mkdir -p /opt/pinchy-loading
+      - curl -fsSL https://github.com/heypinchy/pinchy/releases/download/%%PINCHY_VERSION%%/installing.html -o /opt/pinchy-loading/index.html
+      - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /opt/pinchy-loading/index.html
+      - cd /opt/pinchy-loading && python3 -m http.server 80 &
+      - echo $! > /tmp/loading-server.pid
+      - apt-get update -qq
+      - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+      - echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+      - echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
+      - apt-get install -y -qq iptables-persistent
+      - ufw allow OpenSSH
+      - ufw allow 80/tcp
+      - ufw allow 443/tcp
+      - ufw allow 7777/tcp
+      - ufw --force enable
+      - systemctl enable docker
+      - systemctl start docker
+      - fallocate -l 2G /swapfile
+      - chmod 600 /swapfile
+      - mkswap /swapfile
+      - swapon /swapfile
+      - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
+      - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
+      - cd /opt/pinchy && docker compose up --build -d
+      - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
+      - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
+      - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
+      - iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
+      - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
+      - netfilter-persistent save
+    ```
+
+    <details>
+
+    <summary>What does this script do?</summary>
+
+    This is a **cloud-init** script — a standard way to configure servers on first boot. When your server starts, it automatically:
+    1. Installs Docker, Git, and a firewall
+    2. Opens only the ports needed (SSH, HTTP, HTTPS)
+    3. Adds 2 GB of swap space (extra memory from disk — important for 4 GB servers)
+    4. Shows a loading page while Pinchy is being built
+    5. Downloads, builds, and starts Pinchy
+
+    No manual setup required. You can also [download the script](/cloud-init.yml) separately.
+
+    </details>
+
+9.  **Give your server a name and create it**
+
+    Scroll down to **Name**, enter `pinchy` (or whatever you prefer), and click **Create & Buy now**. Your server will be ready in about 20 seconds, but the setup script needs another **3–5 minutes** to finish installing everything.
+
+10. **Note the IP address**
+
+    After creation, you'll see the server's detail page. The **IPv4 address** is shown at the top (e.g., `116.202.x.x`). You'll need this to access Pinchy.
+
+11. **Open Pinchy**
+
+    After about 5 minutes, visit `http://<your-server-ip>` in your browser (replace `<your-server-ip>` with the actual IP address). You should see the Pinchy setup wizard.
+
+    <Aside type="note">
+      If you see a connection error, wait another minute — the build might still
+      be running. The Hetzner console shows a CPU usage graph on your server's
+      page — when it drops back to idle, the build is done.
+    </Aside>
+
+    The setup wizard will guide you through creating your admin account and configuring your first LLM provider.
+
+</Steps>
+
+## Production setup
+
+The steps above get Pinchy running over plain HTTP. For production use, you should add HTTPS and pin your secrets. Follow the [VPS Deployment Guide — Production setup](/guides/vps-deployment/#production-setup) for:
+
+- **HTTPS with Caddy** — automatic SSL certificates for your domain
+- **Pinning secrets** — so your encryption keys don't depend on Docker volumes
+- **Removing the iptables redirect** — once Caddy is running, remove the port 80→7777 redirect
+
+These steps require running commands on your server. You have two options:
+
+1. **Web console** — On the server's detail page in Hetzner, click the **>\_** icon (top-right) to open a browser-based terminal. No SSH key needed.
+2. **SSH** — Connect from your local terminal with `ssh root@<your-server-ip>`. This requires an SSH key — see below.
+
+<details>
+<summary>How do I set up SSH access?</summary>
+
+SSH lets you run commands on your server from your local terminal. It's faster and more comfortable than the web console.
+
+**1. Open a terminal on your computer:**
+
+- **Mac** — Open **Terminal** (search in Spotlight with ⌘+Space)
+- **Windows** — Open **PowerShell** (search in Start menu) or install [Windows Terminal](https://aka.ms/terminal)
+- **Linux** — Open your terminal app (usually Ctrl+Alt+T)
+
+**2. Check if you already have an SSH key:**
+
+```bash
+cat ~/.ssh/id_ed25519.pub
+```
+
+If you see a line starting with `ssh-ed25519`, skip to step 4. If you get "No such file", continue with step 3.
+
+**3. Create an SSH key:**
+
+```bash
+ssh-keygen -t ed25519 -C "your-email@example.com"
+```
+
+Press Enter to accept the default file location, then choose a passphrase (or press Enter twice for no passphrase).
+
+**4. Add the key to Hetzner:**
+
+Display your public key and copy the output:
+
+```bash
+cat ~/.ssh/id_ed25519.pub
+```
+
+In the Hetzner Console, go to **Security** in the left sidebar → **SSH Keys** → **Add SSH key**. Paste your key and give it a name.
+
+**5. Rebuild your server with the SSH key** (or create a new one with the key selected). Then connect:
+
+```bash
+ssh root@<your-server-ip>
+```
+
+While connected, every command you type runs on your server. Type `exit` to disconnect.
+
+</details>
+
+## Point your domain (optional but recommended)
+
+To use HTTPS, you need a domain pointing to your server. Add a DNS record at your domain registrar (the service where you registered your domain):
+
+| Type | Name                                   | Value                    |
+| ---- | -------------------------------------- | ------------------------ |
+| A    | `pinchy` (or your preferred subdomain) | Your server's IP address |
+
+<details>
+<summary>What's an A record?</summary>
+
+An A record is a DNS entry that maps a domain name (like `pinchy.example.com`) to an IP address (like `116.202.1.23`). When someone visits your domain, their browser looks up the A record to find your server.
+
+Look for "DNS records" or "DNS settings" in your domain registrar's dashboard.
+
+</details>
+
+## Hetzner-specific tips
+
+### Snapshots for backups
+
+Hetzner offers server snapshots (€0.012/GB/month). Take a snapshot after your initial setup — it lets you restore the entire server in minutes if something goes wrong.
+
+**Servers → your server → Snapshots → Create Snapshot**
+
+### Cloud firewall
+
+Hetzner offers a **Firewall** feature under **Security → Firewalls**. For defense in depth, configure the cloud firewall to only allow ports 22, 80, and 443 — in addition to the host firewall (`ufw`) that the setup script already configured.
+
+### Volumes for persistent data
+
+For larger Knowledge Base deployments, you can attach a Hetzner Volume (up to 10 TB) and mount it as a data directory. See [Mount Data Directories](/guides/mount-data-directories/) for details.
+
+### Scaling up
+
+If you outgrow your server, you can resize to a larger type directly in the Hetzner console. Pinchy's data lives in Docker volumes, so it survives server resizes. Plan for a brief downtime window (a few minutes) during the resize.

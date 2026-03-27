@@ -1,0 +1,193 @@
+---
+title: Deploy Pinchy on DigitalOcean
+description: Deploy a self-hosted AI agent platform on DigitalOcean. Step-by-step guide from Droplet creation to running Pinchy with Docker.
+---
+
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+DigitalOcean is a solid choice for running Pinchy — straightforward interface, predictable pricing, and data centers on multiple continents. If your team is distributed or you want to keep your AI agents close to your users, DigitalOcean's global footprint makes that easy.
+
+## Why DigitalOcean for self-hosted AI agents?
+
+- **Global data centers** — New York, San Francisco, London, Amsterdam, Frankfurt, Singapore, Bangalore, Sydney, and more. Pick the region closest to your team.
+- **Simple pricing** — A Droplet with 4 GB RAM starts at around $24/month with predictable costs.
+- **Team accounts** — Built-in team management for sharing infrastructure access.
+
+<Aside type="tip">
+  On a budget? [Hetzner Cloud](/guides/deploy-hetzner/) offers comparable
+  servers starting at €4.50/month — about a fifth of the cost — with faster boot
+  times and EU data centers.
+</Aside>
+
+## What you'll need
+
+- A [DigitalOcean account](https://cloud.digitalocean.com/registrations/new) (free to create, pay-as-you-go)
+- A domain name (optional for testing, required for production HTTPS)
+- An LLM provider API key (Anthropic, OpenAI, or Google) — you'll enter this in Pinchy's setup wizard
+
+## Create your Droplet
+
+A "Droplet" is DigitalOcean's name for a virtual server.
+
+<Steps>
+
+1.  **Log in to the [DigitalOcean Control Panel](https://cloud.digitalocean.com/)**
+
+    Click **Create → Droplets**.
+
+2.  **Choose a region**
+
+    Pick the datacenter closest to you or your users. Pinchy works in any region.
+
+    <Aside type="note">
+      For EU data residency requirements, choose a European region like
+      **Frankfurt (FRA1)** or **Amsterdam (AMS3)**. Your AI conversations and
+      data will stay in the EU.
+    </Aside>
+
+3.  **Choose an image**
+
+    Select **Ubuntu** and keep the default version (**24.04 LTS x64**).
+
+4.  **Choose a size**
+
+    Under **Droplet Type**, keep **Basic** (Shared CPU). Under **CPU options**, **Regular** (SSD) is fine. Pick the **$24/mo** plan (4 GB RAM, 2 CPUs).
+
+    <Aside type="tip">
+      For teams with more than 5 users or heavy agent workloads, consider the
+      $48/mo plan (8 GB RAM, 4 vCPUs) for smoother performance.
+    </Aside>
+
+5.  **Choose authentication**
+
+    Select **SSH Key** or **Password**. Either works for the automated setup below — you'll need SSH access later for production hardening.
+
+6.  **Paste the setup script**
+
+    Expand **Advanced Options** and check **Add Initialization scripts (free)**. Paste the following script into the text field. It automatically installs Docker, deploys Pinchy, sets up a firewall, and adds swap.
+
+    ```yaml
+    #cloud-config
+    runcmd:
+      - mkdir -p /opt/pinchy-loading
+      - curl -fsSL https://github.com/heypinchy/pinchy/releases/download/%%PINCHY_VERSION%%/installing.html -o /opt/pinchy-loading/index.html
+      - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /opt/pinchy-loading/index.html
+      - cd /opt/pinchy-loading && python3 -m http.server 80 &
+      - echo $! > /tmp/loading-server.pid
+      - apt-get update -qq
+      - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+      - echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+      - echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
+      - apt-get install -y -qq iptables-persistent
+      - ufw allow OpenSSH
+      - ufw allow 80/tcp
+      - ufw allow 443/tcp
+      - ufw allow 7777/tcp
+      - ufw --force enable
+      - systemctl enable docker
+      - systemctl start docker
+      - fallocate -l 2G /swapfile
+      - chmod 600 /swapfile
+      - mkswap /swapfile
+      - swapon /swapfile
+      - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+      - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
+      - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
+      - cd /opt/pinchy && docker compose up --build -d
+      - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
+      - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
+      - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
+      - iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
+      - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
+      - netfilter-persistent save
+    ```
+
+7.  **Set the hostname and create the Droplet**
+
+    Under **Finalize Details**, change the hostname to `pinchy` (or whatever you prefer) and click **Create Droplet**. It'll be ready in about 30 seconds, but the setup script needs another **5–8 minutes** to finish installing everything (DigitalOcean builds tend to be a bit slower than other providers).
+
+8.  **Note the IP address**
+
+    The Droplet's IPv4 address appears on the dashboard (e.g., `164.90.x.x`).
+
+9.  **Open Pinchy**
+
+    Visit `http://<your-droplet-ip>` in your browser. You'll see a loading page that tracks the installation progress. Once the build finishes (typically 5–8 minutes on DigitalOcean), it automatically redirects to the Pinchy setup wizard.
+
+    The setup wizard will guide you through creating your admin account and configuring your first LLM provider.
+
+</Steps>
+
+## Production setup
+
+The steps above get Pinchy running over plain HTTP. For production use, you should add HTTPS and pin your secrets. Follow the [VPS Deployment Guide — Production setup](/guides/vps-deployment/#production-setup) for:
+
+- **HTTPS with Caddy** — automatic SSL certificates for your domain
+- **Pinning secrets** — so your encryption keys don't depend on Docker volumes
+- **Removing the iptables redirect** — once Caddy is running, remove the port 80→7777 redirect
+
+<details>
+<summary>How do I connect to my Droplet to run these commands?</summary>
+
+You'll need to use **SSH** (Secure Shell) — a way to run commands on a remote server from your terminal.
+
+If you chose password authentication when creating the Droplet:
+
+```bash
+ssh root@<your-droplet-ip>
+```
+
+Enter the password you set (or check your email for the one DigitalOcean generated).
+
+If you chose SSH key authentication, make sure you have the key on your machine, then:
+
+```bash
+ssh root@<your-droplet-ip>
+```
+
+**Where do I find the terminal?**
+
+- **Mac** — Open **Terminal** (search for it in Spotlight with ⌘+Space)
+- **Windows** — Open **PowerShell** (search in Start menu) or install [Windows Terminal](https://aka.ms/terminal)
+- **Linux** — Open your terminal app (usually Ctrl+Alt+T)
+
+While connected, every command you type runs on your Droplet. Type `exit` to disconnect.
+
+</details>
+
+## Point your domain (optional but recommended)
+
+To use HTTPS, you need a domain pointing to your Droplet. Add a DNS record at your domain registrar (the service where you registered your domain):
+
+| Type | Name                                   | Value                     |
+| ---- | -------------------------------------- | ------------------------- |
+| A    | `pinchy` (or your preferred subdomain) | Your Droplet's IP address |
+
+<details>
+<summary>What's an A record?</summary>
+
+An A record is a DNS entry that maps a domain name (like `pinchy.example.com`) to an IP address (like `164.90.1.23`). When someone visits your domain, their browser looks up the A record to find your server.
+
+Look for "DNS records" or "DNS settings" in your domain registrar's dashboard.
+
+</details>
+
+You can also manage DNS directly in DigitalOcean under **Networking → Domains**.
+
+## DigitalOcean-specific tips
+
+### Enable backups
+
+DigitalOcean offers automated weekly backups for 20% of the Droplet cost. Enable this under **Droplet → Backups** — it's the easiest disaster recovery option.
+
+### Cloud firewall
+
+DigitalOcean offers **Cloud Firewalls** under **Networking → Firewalls**. For defense in depth, configure the cloud firewall to only allow ports 22, 80, and 443 — in addition to the host firewall (`ufw`) that the setup script already configured.
+
+### Volumes for persistent data
+
+For larger Knowledge Base deployments, attach a DigitalOcean Volume (up to 16 TB) and mount it as a data directory. See [Mount Data Directories](/guides/mount-data-directories/) for details.
+
+### Scaling up
+
+If you outgrow the 4 GB Droplet, you can resize it in the control panel. Pinchy's data lives in Docker volumes, so it survives Droplet resizes. Power off the Droplet first, resize, then power back on — downtime is typically under 2 minutes.
