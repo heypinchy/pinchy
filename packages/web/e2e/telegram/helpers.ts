@@ -89,7 +89,10 @@ export async function createAgent(
   name: string,
   model: string
 ): Promise<{ id: string; name: string }> {
-  const res = await pinchyPost("/api/agents", { name, model });
+  const res = await pinchyPost("/api/agents", {
+    name,
+    templateId: "knowledge-base",
+  });
   if (!res.ok) {
     throw new Error(`createAgent failed: ${res.status} ${await res.text()}`);
   }
