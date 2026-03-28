@@ -8,6 +8,7 @@ import { ClientRouter } from "./src/server/client-router";
 import { SessionCache } from "./src/server/session-cache";
 import { validateWsSession } from "./src/server/ws-auth";
 import { restartState } from "./src/server/restart-state";
+import { setOpenClawClient } from "./src/server/openclaw-client";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { logCapture } from "./src/lib/log-capture";
 
@@ -59,6 +60,15 @@ if (process.env.NODE_ENV === "production") {
 }
 
 app.prepare().then(async () => {
+  // Migrate session keys from old format (user-<id>) to new (direct:<id>)
+  try {
+    const { migrateSessionKeys } = await import("./src/lib/session-migration");
+    const openclawDataPath = process.env.OPENCLAW_DATA_PATH || "/openclaw-config";
+    migrateSessionKeys(openclawDataPath);
+  } catch {
+    // Non-critical — old sessions will just start fresh
+  }
+
   // Regenerate OpenClaw config on startup to ensure it's in sync with code changes.
   // This handles cases like new plugin configs or changed config structure after updates.
   try {
@@ -188,6 +198,8 @@ app.prepare().then(async () => {
       maxReconnectAttempts: Infinity,
     });
 
+    setOpenClawClient(openclawClient);
+
     let hasConnected = false;
     let errorLogged = false;
 
@@ -195,13 +207,35 @@ app.prepare().then(async () => {
       // Swallow rejection — the error event handler logs once
     });
 
-    openclawClient.on("connected", () => {
+    openclawClient.on("connected", async () => {
       console.log("Connected to OpenClaw Gateway");
+      const firstConnect = !hasConnected;
       hasConnected = true;
       errorLogged = false;
       if (restartState.isRestarting) {
         restartState.notifyReady();
       }
+
+      // Signal to OpenClaw container that device approval succeeded.
+      // The auto_approve_devices loop watches for this file and stops,
+      // preventing continuous CLI calls that kill Telegram polling.
+      if (firstConnect) {
+        try {
+          const fs = await import("fs");
+          const path = await import("path");
+          const signalPath = process.env.OPENCLAW_CONFIG_PATH
+            ? path.join(path.dirname(process.env.OPENCLAW_CONFIG_PATH), "pinchy-device-approved")
+            : "/openclaw-config/pinchy-device-approved";
+          fs.writeFileSync(signalPath, new Date().toISOString());
+        } catch {
+          // Non-critical — approval loop has a safety timeout
+        }
+      }
+
+      // No startup config push needed — regenerateOpenClawConfig() writes the
+      // config file at Pinchy startup, and OpenClaw reads it on its own startup.
+      // Pushing via config.patch would cause an unnecessary internal restart
+      // that breaks Telegram polling (openclaw/openclaw#47458).
     });
 
     openclawClient.on("disconnected", () => {

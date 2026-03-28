@@ -81,10 +81,10 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
         nameForm.reset({ name: values.name });
       } else {
         const data = await res.json();
-        toast.error(data.error || "Failed to update name");
+        nameForm.setError("root", { message: data.error || "Failed to update name" });
       }
     } catch {
-      toast.error("Failed to update name");
+      nameForm.setError("root", { message: "Failed to update name" });
     }
   }
 
@@ -103,10 +103,10 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
         passwordForm.reset();
       } else {
         const data = await res.json();
-        toast.error(data.error || "Failed to change password");
+        passwordForm.setError("root", { message: data.error || "Failed to change password" });
       }
     } catch {
-      toast.error("Failed to change password");
+      passwordForm.setError("root", { message: "Failed to change password" });
     }
   }
 
@@ -132,6 +132,9 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
                   </FormItem>
                 )}
               />
+              {nameForm.formState.errors.root && (
+                <p className="text-sm text-destructive">{nameForm.formState.errors.root.message}</p>
+              )}
               <Button type="submit" disabled={nameForm.formState.isSubmitting}>
                 Save
               </Button>
@@ -186,6 +189,11 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
                   </FormItem>
                 )}
               />
+              {passwordForm.formState.errors.root && (
+                <p className="text-sm text-destructive">
+                  {passwordForm.formState.errors.root.message}
+                </p>
+              )}
               <Button type="submit" disabled={passwordForm.formState.isSubmitting}>
                 Change Password
               </Button>

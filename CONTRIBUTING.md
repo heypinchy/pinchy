@@ -80,6 +80,37 @@ All new features require tests. We practice TDD — write the failing test first
 - Run `pnpm lint` and `pnpm format` before submitting
 - Pre-commit hook runs linting automatically via Husky
 
+## UI Conventions
+
+### Error Messages & Notifications
+
+We use two patterns for user feedback — **inline errors** and **toast notifications**. Using the right one matters for consistency.
+
+**Inline errors** (rendered below the input field):
+- Form validation failures — wrong password, invalid token, expired code
+- The user needs to correct something and retry
+- The form stays open
+
+```tsx
+const [error, setError] = useState("");
+// In the handler:
+setError("Invalid or expired pairing code");
+// In JSX:
+{error && <p className="text-sm text-destructive">{error}</p>}
+```
+
+**Toast notifications** (via [sonner](https://sonner.emilkowal.dev/)):
+- Success confirmations — "Settings saved", "Bot connected"
+- System errors not tied to a form field
+- Actions where the UI navigates away afterward
+
+```tsx
+toast.success("Telegram bot connected");
+toast.error("Failed to disconnect");
+```
+
+**Rule of thumb:** If there's an input field the user should fix → inline. Everything else → toast. Never use both for the same action.
+
 ## Code of Conduct
 
 By participating in this project, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md). Be kind, be respectful, assume good intentions.

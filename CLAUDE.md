@@ -4,7 +4,7 @@
 
 Pinchy is an **enterprise AI agent platform** built on top of [OpenClaw](https://github.com/openclaw/openclaw). OpenClaw is the most powerful open-source AI agent runtime — but it's designed for individual power users. Pinchy adds the enterprise layer: permissions, audit trails, user management, and governance.
 
-**Status: Early development.** The core is working — setup wizard, authentication, provider configuration, agent chat via OpenClaw, agent permissions (allow-list model), knowledge base agents, user management with invite system, personal and shared agents, per-user/org context management, Smithers onboarding interview, audit trail, and Docker Compose deployment. Enterprise features (granular RBAC, plugin marketplace, cross-channel workflows) are next.
+**Status: Early development.** The core is working — setup wizard, authentication, provider configuration, agent chat via OpenClaw, agent permissions (allow-list model), knowledge base agents, user management with invite system, personal and shared agents, per-user/org context management, Smithers onboarding interview, audit trail, Telegram channel integration, and Docker Compose deployment. Enterprise features (granular RBAC, plugin marketplace, additional channel integrations) are next.
 
 ### The Problem Pinchy Solves
 
@@ -24,7 +24,12 @@ Companies want AI agents but face a trilemma:
 │  │ Web UI   │  │ REST API │  │ Admin │ │
 │  └────┬─────┘  └────┬─────┘  └───┬───┘ │
 │       │              │            │     │
-│  ┌────┴──────────────┴────────────┴───┐ │
+│       │  ┌───────────────────┐    │     │
+│       │  │ Channels          │    │     │
+│       │  │ (Telegram, …)     │    │     │
+│       │  └────────┬──────────┘    │     │
+│       │           │               │     │
+│  ┌────┴───────────┴───────────────┴───┐ │
 │  │         Permission Layer           │ │
 │  │  (RBAC, Scoped Tools, Audit Log)   │ │
 │  └────────────────┬───────────────────┘ │
@@ -38,6 +43,7 @@ Companies want AI agents but face a trilemma:
 │  🔌 Plugin Architecture                │
 │  🔐 Role-Based Access Control          │
 │  📋 Audit Trail (IMPLEMENTED)          │
+│  💬 Telegram Integration (IMPLEMENTED) │
 │  🔀 Cross-Channel Workflows            │
 │  🏠 Self-Hosted & Offline-Capable      │
 │  🤖 Model Agnostic (OpenAI, Anthropic, │
@@ -54,7 +60,8 @@ Companies want AI agents but face a trilemma:
 - **User Management** (implemented): Invite system with token-based onboarding, admin and user roles, password management.
 - **Knowledge Base Agents** (implemented): Scoped read-only access to specific directories. Template-based creation.
 - **Smithers Onboarding** (implemented): New users get an onboarding interview — Smithers learns about them through conversation and saves their context via plugin tools. Admins are additionally asked about their organization.
-- **Cross-Channel Workflows**: Input on email, output on Slack. Properly routed and permissioned. (Planned)
+- **Telegram Channels** (implemented): Admins set up Telegram in Settings → Telegram (guided flow with BotFather instructions, connects to Smithers). Additional agents can be connected via Agent Settings → Channels. Users link their Telegram account by scanning a QR code, messaging the bot, and entering a pairing code. Sessions are unified across web and Telegram via `identityLinks`. Config architecture: DB is source of truth, `regenerateOpenClawConfig()` writes the config file (both at startup and from routes after changes). OpenClaw detects file changes via internal file watcher and hot-reloads. No WebSocket RPC (`config.patch`) needed for config changes.
+- **Cross-Channel Workflows**: Additional channels (email, Slack) and cross-channel routing are planned. Telegram is the first implemented channel.
 - **Self-Hosted**: Your server, your data, your models. Works without internet.
 - **Docker Compose Deployment**: Single `docker compose up` to run everything.
 
@@ -140,6 +147,10 @@ Example patterns:
 { "changes": { "visibility": { "from": "all", "to": "restricted" }, "allowedGroups": { "added": [{ "id": "g1", "name": "Engineering" }] } } }
 // User invited with groups
 { "email": "max@example.com", "role": "member", "groups": [{ "id": "g1", "name": "Engineering" }] }
+// Telegram channel configured for agent
+{ "agent": { "id": "a1", "name": "Support Bot" }, "channel": "telegram", "botUsername": "support_pinchy_bot" }
+// Telegram channel removed from agent
+{ "agent": { "id": "a1", "name": "Support Bot" }, "channel": "telegram" }
 ```
 
 ### Checklist for API Routes with State Changes
@@ -149,6 +160,21 @@ When creating or modifying any POST/PUT/PATCH/DELETE endpoint:
 3. Detail payload uses the correct base type (`UpdateDetail` for `*.updated`, `DeleteDetail` for `*.deleted`, `MembershipDetail` for `*.members_updated`)?
 4. All referenced entities snapshotted as `{ id, name }` pairs (`EntityRef`)?
 5. Test exists that verifies the `appendAuditLog` call with correct payload?
+
+### Error & Notification Display Policy
+User feedback (errors, success confirmations) must use the correct display pattern. Using the wrong one creates inconsistent UX.
+
+**Inline errors** (`setError()` → `<p className="text-sm text-destructive">`) when:
+- The error is directly tied to a form field (validation failure, invalid input)
+- The user should correct their input and retry
+- The form/dialog stays open after the error
+
+**Toast notifications** (`toast.success()` / `toast.error()` from sonner) when:
+- Confirming a completed action ("Settings saved", "Bot connected")
+- A background or system error occurs that isn't tied to a specific field
+- The UI navigates away after the action (dialog closes, redirect)
+
+**Never mix both for the same action.** A form submission error is always inline, never a toast. A success confirmation is always a toast, never inline (exception: multi-step flows that show a success screen).
 
 ### Documentation
 - **Docs site**: `docs/` directory, built with Astro Starlight. Deployed to [docs.heypinchy.com](https://docs.heypinchy.com).
@@ -223,7 +249,7 @@ cd docs && pnpm build                 # Build docs
 ## Context for AI Assistants
 
 When working on this project:
-1. **The core is working** — setup, auth, provider config, agent chat, agent permissions (allow-list), knowledge base agents, user management (invites), personal/shared agents, and audit trail are all implemented. Enterprise features (granular RBAC, plugin marketplace, cross-channel workflows) are planned.
+1. **The core is working** — setup, auth, provider config, agent chat, agent permissions (allow-list), knowledge base agents, user management (invites), personal/shared agents, audit trail, and Telegram channels are all implemented. Enterprise features (granular RBAC, plugin marketplace, additional channel integrations) are planned.
 2. **OpenClaw is the foundation** — familiarize yourself with [OpenClaw docs](https://docs.openclaw.ai) before making architectural decisions
 3. **Keep it simple** — prefer boring, proven technology over clever abstractions
 4. **Test everything** — no PR without tests

@@ -130,7 +130,7 @@ describe("ClientRouter", () => {
     vi.clearAllMocks();
     sessionCache = new SessionCache();
     // Default: session exists and cache is fresh (equivalent to runtimeActivated: true)
-    sessionCache.refresh([{ key: "agent:agent-1:user-user-1" }]);
+    sessionCache.refresh([{ key: "agent:agent-1:direct:user-1" }]);
     mockOpenClawClient = createMockOpenClawClient(true);
     router = new ClientRouter(mockOpenClawClient as any, "user-1", "member", sessionCache);
 
@@ -225,7 +225,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("Hi Smithers", {
       agentId: "agent-1",
-      sessionKey: "agent:agent-1:user-user-1",
+      sessionKey: "agent:agent-1:direct:user-1",
     });
   });
 
@@ -250,7 +250,7 @@ describe("ClientRouter", () => {
 
     // Session is in cache, so sessions.list should NOT be called
     expect(mockSessionsList).not.toHaveBeenCalled();
-    expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:user-user-1");
+    expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:direct:user-1");
     const sent = clientWs.sent.map((s) => JSON.parse(s));
     expect(sent).toHaveLength(1);
     expect(sent[0].type).toBe("history");
@@ -509,7 +509,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("Hi", {
       agentId: "agent-1",
-      sessionKey: "agent:agent-1:user-user-1",
+      sessionKey: "agent:agent-1:direct:user-1",
     });
     expect(mockSessionsHistory).not.toHaveBeenCalled();
     const messages = clientWs.sent.map((s) => JSON.parse(s));
@@ -536,7 +536,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("What is this?", {
       agentId: "agent-1",
-      sessionKey: "agent:agent-1:user-user-1",
+      sessionKey: "agent:agent-1:direct:user-1",
       attachments: [{ mimeType: "image/png", content: "abc123" }],
     });
   });
@@ -561,7 +561,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("First part. Second part.", {
       agentId: "agent-1",
-      sessionKey: "agent:agent-1:user-user-1",
+      sessionKey: "agent:agent-1:direct:user-1",
     });
   });
 
@@ -580,7 +580,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("Hi", {
       agentId: "agent-1",
-      sessionKey: "agent:agent-1:user-user-1",
+      sessionKey: "agent:agent-1:direct:user-1",
     });
   });
 
@@ -697,7 +697,7 @@ describe("ClientRouter", () => {
       agentId: "agent-1",
     });
 
-    expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:user-user-1");
+    expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:direct:user-1");
     const sent = clientWs.sent.map((s) => JSON.parse(s));
     expect(sent).toHaveLength(1);
     expect(sent[0].type).toBe("history");
@@ -724,7 +724,7 @@ describe("ClientRouter", () => {
       agentId: "agent-1",
     });
 
-    expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:user-user-1");
+    expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:direct:user-1");
     const sent = clientWs.sent.map((s) => JSON.parse(s));
     expect(sent).toHaveLength(1);
     expect(sent[0].type).toBe("history");
@@ -754,7 +754,7 @@ describe("ClientRouter", () => {
       agentId: "agent-1",
     });
 
-    expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:user-user-1");
+    expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:direct:user-1");
     const sent = clientWs.sent.map((s) => JSON.parse(s));
     expect(sent).toHaveLength(1);
     expect(sent[0].type).toBe("history");
@@ -782,7 +782,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("What can you do?", {
       agentId: "agent-1",
-      sessionKey: "agent:agent-1:user-user-1",
+      sessionKey: "agent:agent-1:direct:user-1",
       extraSystemPrompt: expect.stringContaining("Hello! I'm Smithers."),
     });
   });
@@ -802,7 +802,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("Hi", {
       agentId: "agent-1",
-      sessionKey: "agent:agent-1:user-user-1",
+      sessionKey: "agent:agent-1:direct:user-1",
     });
   });
 
@@ -827,7 +827,7 @@ describe("ClientRouter", () => {
 
     expect(mockChat).toHaveBeenCalledWith("Hi", {
       agentId: "agent-1",
-      sessionKey: "agent:agent-1:user-user-1",
+      sessionKey: "agent:agent-1:direct:user-1",
     });
   });
 
@@ -841,7 +841,7 @@ describe("ClientRouter", () => {
     mockChat.mockReturnValue(fakeStream());
 
     // Before chat: key is not in cache
-    expect(freshCache.has("agent:agent-1:user-user-1")).toBe(false);
+    expect(freshCache.has("agent:agent-1:direct:user-1")).toBe(false);
 
     await freshRouter.handleMessage(createMockClientWs() as any, {
       type: "message",
@@ -850,7 +850,7 @@ describe("ClientRouter", () => {
     });
 
     // After chat completes: key should be in cache
-    expect(freshCache.has("agent:agent-1:user-user-1")).toBe(true);
+    expect(freshCache.has("agent:agent-1:direct:user-1")).toBe(true);
   });
 
   it("should fall back to empty history when history fetch fails and no greeting", async () => {
@@ -1108,10 +1108,10 @@ describe("ClientRouter", () => {
     });
 
     expect(mockSessionsList).not.toHaveBeenCalled();
-    expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:user-user-1");
+    expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:direct:user-1");
   });
 
-  it("should use session key format agent:<agentId>:user-<userId> for per-user scoping", async () => {
+  it("should use session key format agent:<agentId>:direct:<userId> for per-user scoping", async () => {
     // This test ensures the session key includes both agentId and userId.
     // The agentId segment must match OpenClaw's validation (agentId param == agentId in key).
     // The user scope ensures each user gets their own session per agent.
@@ -1128,19 +1128,19 @@ describe("ClientRouter", () => {
     });
 
     const sessionKey = mockChat.mock.calls[0][1].sessionKey;
-    expect(sessionKey).toMatch(/^agent:.+:user-.+$/);
-    expect(sessionKey).toBe("agent:agent-1:user-user-1");
+    expect(sessionKey).toMatch(/^agent:.+:direct:.+$/);
+    expect(sessionKey).toBe("agent:agent-1:direct:user-1");
   });
 
   it("should find session when sessions.list returns user-scoped keys", async () => {
-    // Sessions in OpenClaw use the format agent:<id>:user-<userId>.
+    // Sessions in OpenClaw use the format agent:<id>:direct:<userId>.
     // The router must generate keys in the same format to find existing sessions.
     const freshCache = new SessionCache();
     const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
 
     // OpenClaw returns sessions with its native key format
     mockSessionsList.mockResolvedValue({
-      sessions: [{ key: "agent:agent-1:user-user-1" }],
+      sessions: [{ key: "agent:agent-1:direct:user-1" }],
     });
     mockSessionsHistory.mockResolvedValue({
       messages: [
@@ -1272,7 +1272,7 @@ describe("ClientRouter", () => {
 
       expect(mockChat).toHaveBeenCalledWith("Hi", {
         agentId: "agent-1",
-        sessionKey: "agent:agent-1:user-user-1",
+        sessionKey: "agent:agent-1:direct:user-1",
       });
       // User IS fetched (for name injection), but context is not injected for personal agents
       expect(mockUserFindFirst).toHaveBeenCalled();
@@ -1294,7 +1294,7 @@ describe("ClientRouter", () => {
 
       expect(mockChat).toHaveBeenCalledWith("Hi", {
         agentId: "agent-1",
-        sessionKey: "agent:agent-1:user-user-1",
+        sessionKey: "agent:agent-1:direct:user-1",
       });
     });
 
@@ -1443,7 +1443,7 @@ describe("ClientRouter", () => {
 
       expect(mockChat).toHaveBeenCalledWith("Hi", {
         agentId: "agent-1",
-        sessionKey: "agent:agent-1:user-user-1",
+        sessionKey: "agent:agent-1:direct:user-1",
       });
     });
   });
@@ -1555,7 +1555,7 @@ describe("ClientRouter", () => {
           userId: "user-1",
           agentId: "agent-1",
           agentName: "Smithers",
-          sessionKey: "agent:agent-1:user-user-1",
+          sessionKey: "agent:agent-1:direct:user-1",
         })
       );
     });

@@ -6,6 +6,7 @@ import { useSearchParams, usePathname, useRouter } from "next/navigation";
 export const SETTINGS_TABS = [
   "context",
   "profile",
+  "telegram",
   "provider",
   "users",
   "groups",
@@ -18,6 +19,7 @@ export const AGENT_SETTINGS_TABS = [
   "instructions",
   "permissions",
   "access",
+  "telegram",
 ] as const;
 
 export type SettingsTab = (typeof SETTINGS_TABS)[number];

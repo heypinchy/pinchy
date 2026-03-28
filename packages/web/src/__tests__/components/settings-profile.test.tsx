@@ -192,7 +192,7 @@ describe("SettingsProfile", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
-  it("should show error toast from API when saving name fails", async () => {
+  it("should show inline error from API when saving name fails", async () => {
     const user = userEvent.setup();
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: false,
@@ -204,11 +204,11 @@ describe("SettingsProfile", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Name already taken");
+      expect(screen.getByText("Name already taken")).toBeInTheDocument();
     });
   });
 
-  it("should show fallback error toast when saving name fails without message", async () => {
+  it("should show fallback inline error when saving name fails without message", async () => {
     const user = userEvent.setup();
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: false,
@@ -220,11 +220,11 @@ describe("SettingsProfile", () => {
     await user.click(screen.getByRole("button", { name: "Save" }));
 
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Failed to update name");
+      expect(screen.getByText("Failed to update name")).toBeInTheDocument();
     });
   });
 
-  it("should show error toast from API when changing password fails", async () => {
+  it("should show inline error from API when changing password fails", async () => {
     const user = userEvent.setup();
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: false,
@@ -239,11 +239,11 @@ describe("SettingsProfile", () => {
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Current password is incorrect");
+      expect(screen.getByText("Current password is incorrect")).toBeInTheDocument();
     });
   });
 
-  it("should show fallback error toast when changing password fails without message", async () => {
+  it("should show fallback inline error when changing password fails without message", async () => {
     const user = userEvent.setup();
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: false,
@@ -258,7 +258,7 @@ describe("SettingsProfile", () => {
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith("Failed to change password");
+      expect(screen.getByText("Failed to change password")).toBeInTheDocument();
     });
   });
 

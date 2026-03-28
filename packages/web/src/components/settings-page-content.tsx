@@ -11,6 +11,7 @@ import { SettingsContext } from "@/components/settings-context";
 import { SettingsProfile } from "@/components/settings-profile";
 import { SettingsGroups } from "@/components/settings-groups";
 import { SettingsLicense } from "@/components/settings-license";
+import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 
 interface ProviderStatus {
   defaultProvider: string | null;
@@ -45,7 +46,9 @@ export function SettingsPageContent({
   initialLicense?: LicenseInfo;
 }) {
   const { data: session } = authClient.useSession();
-  const visibleTabs: SettingsTab[] = isAdmin ? [...SETTINGS_TABS] : ["context", "profile"];
+  const visibleTabs: SettingsTab[] = isAdmin
+    ? [...SETTINGS_TABS]
+    : ["context", "profile", "telegram"];
   const [activeTab, setActiveTab] = useTabParam("context", visibleTabs, initialTab);
 
   const [status, setStatus] = useState<ProviderStatus | null>(null);
@@ -120,6 +123,7 @@ export function SettingsPageContent({
             <TabsList>
               <TabsTrigger value="context">Context {contextDirty && <DirtyDot />}</TabsTrigger>
               <TabsTrigger value="profile">Profile {profileDirty && <DirtyDot />}</TabsTrigger>
+              <TabsTrigger value="telegram">Telegram</TabsTrigger>
               {isAdmin && (
                 <TabsTrigger value="provider">Provider {providerDirty && <DirtyDot />}</TabsTrigger>
               )}
@@ -143,6 +147,10 @@ export function SettingsPageContent({
               userName={session?.user?.name ?? ""}
               onDirtyChange={handleProfileDirtyChange}
             />
+          </TabsContent>
+
+          <TabsContent value="telegram">
+            <TelegramLinkSettings isAdmin={isAdmin} />
           </TabsContent>
 
           {isAdmin && (

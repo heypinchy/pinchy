@@ -52,46 +52,63 @@ scan_data_directories() {
 }
 
 # Auto-approve pending device pairing requests (needed for Docker networking
-# where connections come from container IPs, not localhost)
+# where connections come from container IPs, not localhost).
+# Stops as soon as Pinchy signals successful connection (writes signal file).
+# Running this loop continuously kills Telegram polling because each CLI
+# invocation loads the full plugin system.
 auto_approve_devices() {
     local token
     token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8')).gateway.auth.token)}catch{}")
+    # Remove stale signal file from previous run
+    rm -f /root/.openclaw/pinchy-device-approved
     sleep 5
-    while true; do
+    local elapsed=0
+    while [ $elapsed -lt 300 ]; do
+        # Stop once Pinchy signals successful connection
+        if [ -f /root/.openclaw/pinchy-device-approved ]; then
+            echo "auto_approve_devices: Pinchy connected, stopping"
+            return 0
+        fi
         openclaw devices approve --latest \
             --url ws://127.0.0.1:18789 \
-            --token "$token" 2>/dev/null || true
-        sleep 3
+            --token "$token" >/dev/null 2>&1 || true
+        elapsed=$((elapsed + 5))
+        sleep 5
     done
+    echo "auto_approve_devices: safety timeout (5min), stopping"
 }
 
+install_plugin_deps
+scan_data_directories
+
+# OpenClaw rewrites openclaw.json with root-only permissions on every startup
+# and internal restart. Run a background loop that keeps fixing permissions.
+(while true; do sleep 3; fix_config_permissions; done) &
+
+# Start auto-approver in background — stops when Pinchy signals connection
+# (writes pinchy-device-approved). Safety timeout: 5 minutes.
+auto_approve_devices &
+
+# Start gateway. The `openclaw gateway` command daemonizes — it spawns the
+# actual gateway process and exits immediately. In a container there's no
+# systemd, so we supervise via a health-check loop instead of `wait`.
+echo "Starting OpenClaw Gateway..."
+openclaw gateway --port 18789 || true
+
+# Keep the container alive. Health-check restarts gateway if it crashes.
+# Double-check with a delay to avoid interfering with OpenClaw's internal
+# SIGUSR1 restarts (port is briefly unavailable during restart).
 while true; do
-    install_plugin_deps
-    scan_data_directories
-    openclaw gateway --port 18789 &
-    PID=$!
-    echo "OpenClaw Gateway running (pid: $PID)"
-
-    # OpenClaw rewrites openclaw.json on startup with root-only permissions.
-    # Wait briefly, then fix permissions so Pinchy can write to it.
-    (sleep 3 && fix_config_permissions) &
-
-    # Start auto-approver in the background
-    auto_approve_devices &
-    APPROVE_PID=$!
-
-    # Wait for config change or process exit.
-    # Grace period: OpenClaw rewrites openclaw.json on startup ("Config overwrite"),
-    # which would immediately trigger inotifywait and cause a needless restart.
-    (sleep 10 && inotifywait -q -e modify /root/.openclaw/openclaw.json) &
-    WATCH_PID=$!
-
-    # Wait for either to finish
-    wait -n "$PID" "$WATCH_PID" 2>/dev/null || true
-
-    echo "Restarting OpenClaw Gateway..."
-    kill "$PID" "$WATCH_PID" "$APPROVE_PID" 2>/dev/null || true
-    wait "$PID" "$WATCH_PID" "$APPROVE_PID" 2>/dev/null || true
-
-    sleep 1
+    sleep 30
+    if ! (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
+        # Port is down — wait 10s and check again (internal restart takes ~5s)
+        sleep 10
+        if ! (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
+            echo "OpenClaw Gateway stopped (port 18789 not responding after 10s), restarting..."
+            fix_config_permissions
+            install_plugin_deps
+            scan_data_directories
+            openclaw gateway --port 18789 || true
+        fi
+    fi
 done

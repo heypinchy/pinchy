@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { groups, userGroups, users } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 
 async function groupExists(groupId: string): Promise<boolean> {
   const rows = await db.select({ id: groups.id }).from(groups).where(eq(groups.id, groupId));
@@ -102,6 +103,8 @@ export async function PUT(
       memberCount: userIds.length,
     },
   }).catch(() => {});
+
+  await recalculateTelegramAllowStores();
 
   return NextResponse.json({ success: true });
 }

@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { users, groups, userGroups } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 
 export async function PUT(
   request: NextRequest,
@@ -91,6 +92,8 @@ export async function PUT(
       memberCount: groupIds.length,
     },
   }).catch(() => {});
+
+  await recalculateTelegramAllowStores();
 
   return NextResponse.json({ success: true });
 }

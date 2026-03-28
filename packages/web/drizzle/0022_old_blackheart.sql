@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX "channel_links_user_channel_uniq" ON "channel_links" USING btree ("user_id","channel");
