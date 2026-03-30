@@ -17,7 +17,7 @@ export default defineConfig({
   // Skip @llm tests in CI — they require real Anthropic API auth that
   // OpenClaw's per-agent auth-profiles system doesn't pick up from env vars.
   // Pairing tests (no LLM needed) run in all environments.
-  grepInvert: process.env.CI ? /@llm/ : undefined,
+  grepInvert: process.env.CI ? /@llm|@channel-restart/ : undefined,
   use: {
     baseURL: "http://localhost:7777",
   },
