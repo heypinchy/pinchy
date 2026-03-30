@@ -49,8 +49,22 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
       apiKey: creds.apiKey,
     });
 
-    // Fetch all models
-    const allModels = await client.models();
+    // Fetch all models — requires admin/Access Rights permissions in Odoo
+    let allModels;
+    try {
+      allModels = await client.models();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Unknown error";
+      if (msg.includes("ir.model") || msg.includes("Access")) {
+        return NextResponse.json({
+          success: false,
+          error:
+            "The Odoo user does not have permission to read model definitions (ir.model). " +
+            "Please grant the user 'Settings / Access Rights' permissions in Odoo.",
+        });
+      }
+      throw e;
+    }
 
     // Fetch fields for each model — only commonly used Odoo modules to keep it manageable
     const RELEVANT_PREFIXES = [

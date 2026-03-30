@@ -229,11 +229,27 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
         return;
       }
 
-      toast.success("Integration created successfully");
+      const created = await res.json();
+
+      // Phase 3: Auto-sync schema in background (non-blocking)
+      toast.success("Integration created — syncing schema...");
       form.reset();
       setSelectedType(null);
       setSubmitPhase("idle");
       onSuccess();
+
+      // Fire-and-forget sync
+      fetch(`/api/integrations/${created.id}/sync`, { method: "POST" })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.success) {
+            toast.success(`Schema synced: ${data.models} models loaded`);
+          } else {
+            toast.error(`Schema sync failed: ${data.error}`);
+          }
+          onSuccess(); // refresh list to show sync status
+        })
+        .catch(() => toast.error("Schema sync failed"));
     } catch {
       form.setError("root", { message: "Failed to create integration" });
       setSubmitPhase("idle");
