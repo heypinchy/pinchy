@@ -346,9 +346,9 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                   name="login"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel>Login</FormLabel>
+                      <FormLabel>Email</FormLabel>
                       <FormControl>
-                        <Input placeholder="admin" {...field} />
+                        <Input type="email" placeholder="admin@example.com" {...field} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
