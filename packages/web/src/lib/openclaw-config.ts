@@ -465,7 +465,10 @@ export function updateTelegramChannelConfig(
   existing.session = {
     ...session,
     dmScope: "per-peer",
-    ...(Object.keys(identityLinks).length > 0 ? { identityLinks } : { identityLinks: undefined }),
+    // Only update identityLinks if explicitly provided (non-empty).
+    // Empty object means "don't touch" — preserves existing links set by
+    // updateIdentityLinks() or regenerateOpenClawConfig().
+    ...(Object.keys(identityLinks).length > 0 && { identityLinks }),
   };
 
   const newContent = JSON.stringify(existing, null, 2);
