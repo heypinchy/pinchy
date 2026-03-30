@@ -11,17 +11,15 @@ vi.mock("@/lib/auth", () => ({
 }));
 
 const mockEncrypt = vi.fn().mockReturnValue("encrypted-creds");
-const mockDecrypt = vi
-  .fn()
-  .mockReturnValue(
-    JSON.stringify({
-      url: "https://odoo.example.com",
-      db: "prod",
-      login: "admin",
-      apiKey: "secret-key",
-      uid: 2,
-    })
-  );
+const mockDecrypt = vi.fn().mockReturnValue(
+  JSON.stringify({
+    url: "https://odoo.example.com",
+    db: "prod",
+    login: "admin",
+    apiKey: "secret-key",
+    uid: 2,
+  })
+);
 vi.mock("@/lib/encryption", () => ({
   encrypt: (...args: unknown[]) => mockEncrypt(...args),
   decrypt: (...args: unknown[]) => mockDecrypt(...args),
@@ -32,6 +30,21 @@ const mockAppendAuditLog = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
 }));
+
+const { mockAuthenticate, mockVersion, mockModels, mockFields } = vi.hoisted(() => ({
+  mockAuthenticate: vi.fn(),
+  mockVersion: vi.fn(),
+  mockModels: vi.fn(),
+  mockFields: vi.fn(),
+}));
+
+vi.mock("odoo-node", () => {
+  function OdooClient() {
+    return { version: mockVersion, models: mockModels, fields: mockFields };
+  }
+  OdooClient.authenticate = mockAuthenticate;
+  return { OdooClient };
+});
 
 const { mockInsertValues, mockSelectFrom, mockUpdateSet, mockDeleteWhere } = vi.hoisted(() => ({
   mockInsertValues: vi.fn(),
@@ -519,6 +532,8 @@ describe("POST /api/integrations/[connectionId]/test", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
+    mockAuthenticate.mockResolvedValue(2);
+    mockVersion.mockResolvedValue({ serverVersion: "17.0" });
   });
 
   it("should return 401 when not authenticated", async () => {
@@ -557,7 +572,7 @@ describe("POST /api/integrations/[connectionId]/test", () => {
     expect(response.status).toBe(404);
   });
 
-  it("should validate credentials format and return success", async () => {
+  it("should authenticate and return version on success", async () => {
     const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
 
     const response = await POST(makeRequest("/api/integrations/conn-1/test", { method: "POST" }), {
@@ -567,7 +582,194 @@ describe("POST /api/integrations/[connectionId]/test", () => {
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
-    expect(mockDecrypt).toHaveBeenCalledWith("encrypted-creds");
+    expect(body.version).toBe("17.0");
+    expect(body.uid).toBe(2);
+    expect(mockAuthenticate).toHaveBeenCalledWith({
+      url: "https://odoo.example.com",
+      db: "prod",
+      login: "admin",
+      apiKey: "secret-key",
+    });
+    expect(mockVersion).toHaveBeenCalled();
+  });
+
+  it("should return error when authentication fails", async () => {
+    mockAuthenticate.mockRejectedValueOnce(new Error("Authentication failed"));
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(makeRequest("/api/integrations/conn-1/test", { method: "POST" }), {
+      params: Promise.resolve({ connectionId: "conn-1" }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Authentication failed");
+  });
+
+  it("should update uid when it changes", async () => {
+    mockAuthenticate.mockResolvedValueOnce(5);
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(makeRequest("/api/integrations/conn-1/test", { method: "POST" }), {
+      params: Promise.resolve({ connectionId: "conn-1" }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.uid).toBe(5);
+    expect(mockEncrypt).toHaveBeenCalledWith(
+      JSON.stringify({
+        url: "https://odoo.example.com",
+        db: "prod",
+        login: "admin",
+        apiKey: "secret-key",
+        uid: 5,
+      })
+    );
+  });
+});
+
+describe("POST /api/integrations/test-credentials", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockAuthenticate.mockResolvedValue(2);
+    mockVersion.mockResolvedValue({ serverVersion: "17.0" });
+  });
+
+  it("should return 401 when not authenticated", async () => {
+    mockGetSession.mockResolvedValueOnce(null);
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "odoo",
+          credentials: {
+            url: "https://odoo.example.com",
+            db: "prod",
+            login: "admin",
+            apiKey: "key",
+          },
+        }),
+      })
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("should return 403 for non-admin users", async () => {
+    mockGetSession.mockResolvedValueOnce(memberSession);
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "odoo",
+          credentials: {
+            url: "https://odoo.example.com",
+            db: "prod",
+            login: "admin",
+            apiKey: "key",
+          },
+        }),
+      })
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("should return 400 for invalid type", async () => {
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "shopify",
+          credentials: {
+            url: "https://odoo.example.com",
+            db: "prod",
+            login: "admin",
+            apiKey: "key",
+          },
+        }),
+      })
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("should return 400 for missing credentials fields", async () => {
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "odoo",
+          credentials: { url: "not-a-url" },
+        }),
+      })
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("should return success with version and uid on valid credentials", async () => {
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "odoo",
+          credentials: {
+            url: "https://odoo.example.com",
+            db: "prod",
+            login: "admin",
+            apiKey: "key",
+          },
+        }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.version).toBe("17.0");
+    expect(body.uid).toBe(2);
+    expect(mockAuthenticate).toHaveBeenCalledWith({
+      url: "https://odoo.example.com",
+      db: "prod",
+      login: "admin",
+      apiKey: "key",
+    });
+    expect(mockVersion).toHaveBeenCalled();
+  });
+
+  it("should return error when authentication fails", async () => {
+    mockAuthenticate.mockRejectedValueOnce(new Error("Invalid API key"));
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "odoo",
+          credentials: {
+            url: "https://odoo.example.com",
+            db: "prod",
+            login: "admin",
+            apiKey: "bad-key",
+          },
+        }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Invalid API key");
   });
 });
 
@@ -575,6 +777,14 @@ describe("POST /api/integrations/[connectionId]/sync", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
+    mockModels.mockResolvedValue([
+      { model: "sale.order", name: "Sales Order" },
+      { model: "res.partner", name: "Contact" },
+      { model: "ir.model", name: "Model" }, // should be filtered out
+    ]);
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char", required: true, readonly: false },
+    ]);
   });
 
   it("should return 401 when not authenticated", async () => {
@@ -603,7 +813,25 @@ describe("POST /api/integrations/[connectionId]/sync", () => {
     expect(response.status).toBe(404);
   });
 
-  it("should return not-yet-implemented error", async () => {
+  it("should sync models and return count", async () => {
+    const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
+
+    const response = await POST(makeRequest("/api/integrations/conn-1/sync", { method: "POST" }), {
+      params: Promise.resolve({ connectionId: "conn-1" }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    // Only sale.order and res.partner match relevant prefixes (ir.model is filtered out)
+    expect(body.models).toBe(2);
+    expect(body.lastSyncAt).toBeDefined();
+    expect(mockModels).toHaveBeenCalled();
+    expect(mockFields).toHaveBeenCalledTimes(2);
+  });
+
+  it("should return error when OdooClient throws", async () => {
+    mockModels.mockRejectedValueOnce(new Error("Connection refused"));
     const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
 
     const response = await POST(makeRequest("/api/integrations/conn-1/sync", { method: "POST" }), {
@@ -613,6 +841,6 @@ describe("POST /api/integrations/[connectionId]/sync", () => {
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(false);
-    expect(body.error).toContain("Not yet implemented");
+    expect(body.error).toBe("Connection refused");
   });
 });
