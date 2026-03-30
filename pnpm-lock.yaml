@@ -68,6 +68,9 @@ importers:
       next-themes:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      odoo-node:
+        specifier: 0.1.1
+        version: 0.1.1
       openclaw-node:
         specifier: 0.3.0
         version: 0.3.0
@@ -4094,6 +4097,10 @@ packages:
 
   obug@2.1.1:
     resolution: {integrity: sha512-uTqF9MuPraAQ+IsnPf366RG4cP9RtUi7MLO1N3KEc+wb0a6yKpeL0lmk2IB1jY5KHPAlTc6T/JRdC/YqxHNwkQ==}
+
+  odoo-node@0.1.1:
+    resolution: {integrity: sha512-EMO/Ln+w1TXR2ySXXWRiDdPl0FEB7tycF4zDqpiXxMuLaRo9aQKz4iI8RnqAP/m3srMGhmyGqkONmuWIRdySDw==}
+    engines: {node: '>=20.0.0'}
 
   onetime@7.0.0:
     resolution: {integrity: sha512-VXJjc87FScF88uafS3JllDgvAm+c/Slfz06lorj2uAY34rlUu0Nt+v8wreiImcrgAjjIHp1rXpTDlLOGw29WwQ==}
@@ -8900,6 +8907,8 @@ snapshots:
       es-object-atoms: 1.1.1
 
   obug@2.1.1: {}
+
+  odoo-node@0.1.1: {}
 
   onetime@7.0.0:
     dependencies:

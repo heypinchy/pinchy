@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { eq } from "drizzle-orm";
+import { OdooClient } from "odoo-node";
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
@@ -40,15 +41,39 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
       );
     }
 
-    // TODO: Wire up real Odoo authentication test when odoo-node is installed in Pinchy
-    // const client = new OdooClient(parsed.data);
-    // await client.authenticate();
+    const creds = parsed.data;
 
-    return NextResponse.json({ success: true });
-  } catch {
-    return NextResponse.json(
-      { success: false, error: "Failed to validate credentials" },
-      { status: 200 }
-    );
+    // Authenticate against the real Odoo instance
+    const uid = await OdooClient.authenticate({
+      url: creds.url,
+      db: creds.db,
+      login: creds.login,
+      apiKey: creds.apiKey,
+    });
+
+    // Verify we can also get the version
+    const client = new OdooClient({ url: creds.url, db: creds.db, uid, apiKey: creds.apiKey });
+    const version = await client.version();
+
+    // If uid changed (e.g. first connection with placeholder uid), update stored credentials
+    if (uid !== creds.uid) {
+      const { encrypt } = await import("@/lib/encryption");
+      await db
+        .update(integrationConnections)
+        .set({
+          credentials: encrypt(JSON.stringify({ ...creds, uid })),
+          updatedAt: new Date(),
+        })
+        .where(eq(integrationConnections.id, connectionId));
+    }
+
+    return NextResponse.json({
+      success: true,
+      version: version.serverVersion,
+      uid,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Connection failed";
+    return NextResponse.json({ success: false, error: message }, { status: 200 });
   }
 }

@@ -1,10 +1,13 @@
-// audit-exempt: placeholder endpoint, no state changes yet (will need audit when implemented)
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { eq } from "drizzle-orm";
+import { OdooClient } from "odoo-node";
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
+import { decrypt } from "@/lib/encryption";
+import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import { appendAuditLog } from "@/lib/audit";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -28,15 +31,86 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
     return NextResponse.json({ error: "Connection not found" }, { status: 404 });
   }
 
-  // TODO: Implement schema sync when odoo-node is installed in Pinchy
-  // 1. Decrypt credentials
-  // 2. Create OdooClient
-  // 3. Fetch models via client.models()
-  // 4. Fetch fields per model
-  // 5. Store in `data` jsonb column
+  try {
+    const decrypted = JSON.parse(decrypt(connection.credentials));
+    const parsed = odooCredentialsSchema.safeParse(decrypted);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { success: false, error: "Invalid credentials format" },
+        { status: 200 }
+      );
+    }
 
-  return NextResponse.json({
-    success: false,
-    error: "Not yet implemented — odoo-node package required",
-  });
+    const creds = parsed.data;
+    const client = new OdooClient({
+      url: creds.url,
+      db: creds.db,
+      uid: creds.uid,
+      apiKey: creds.apiKey,
+    });
+
+    // Fetch all models
+    const allModels = await client.models();
+
+    // Fetch fields for each model — only commonly used Odoo modules to keep it manageable
+    const RELEVANT_PREFIXES = [
+      "sale.",
+      "purchase.",
+      "stock.",
+      "product.",
+      "res.partner",
+      "res.company",
+      "account.",
+      "crm.",
+      "mail.",
+      "hr.",
+      "helpdesk.",
+      "note.",
+    ];
+
+    const relevantModels = allModels.filter((m) =>
+      RELEVANT_PREFIXES.some((prefix) => m.model.startsWith(prefix))
+    );
+
+    const models = await Promise.all(
+      relevantModels.map(async (m) => {
+        try {
+          const fields = await client.fields(m.model);
+          return { model: m.model, name: m.name, fields };
+        } catch {
+          // Some models may not be accessible — skip them
+          return { model: m.model, name: m.name, fields: [] };
+        }
+      })
+    );
+
+    const lastSyncAt = new Date().toISOString();
+    const data = { models, lastSyncAt };
+
+    await db
+      .update(integrationConnections)
+      .set({ data, updatedAt: new Date() })
+      .where(eq(integrationConnections.id, connectionId));
+
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "config.changed",
+      detail: {
+        action: "integration_schema_synced",
+        id: connectionId,
+        name: connection.name,
+        modelCount: models.length,
+      },
+    }).catch(() => {});
+
+    return NextResponse.json({
+      success: true,
+      models: models.length,
+      lastSyncAt,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Sync failed";
+    return NextResponse.json({ success: false, error: message }, { status: 200 });
+  }
 }
