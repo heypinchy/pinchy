@@ -26,10 +26,35 @@ import { toast } from "sonner";
 
 // --- Integration type registry (extend here for future integrations) ---
 
+function OdooIcon({ className }: { className?: string }) {
+  return (
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 191" className={className}>
+      <circle cx="527.5" cy="118.4" r="72.4" fill="#888" />
+      <path
+        d="M527.5 161.1c23.6 0 42.7-19.1 42.7-42.7s-19.1-42.7-42.7-42.7-42.7 19.1-42.7 42.7 19.1 42.7 42.7 42.7z"
+        fill="currentColor"
+      />
+      <circle cx="374" cy="118.4" r="72.4" fill="#888" />
+      <path
+        d="M374 161.1c23.6 0 42.7-19.1 42.7-42.7S397.6 75.7 374 75.7s-42.7 19.1-42.7 42.7 19.1 42.7 42.7 42.7z"
+        fill="currentColor"
+      />
+      <path
+        d="M294.9 117.8v.6c0 40-32.4 72.4-72.4 72.4s-72.4-32.4-72.4-72.4S182.5 46 222.5 46c16.4 0 31.5 5.5 43.7 14.6V14.4A14.34 14.34 0 0 1 280.6 0c7.9 0 14.4 6.5 14.4 14.4v102.7c0 .2 0 .5-.1.7z"
+        fill="#888"
+      />
+      <circle cx="222.5" cy="118.4" r="42.7" fill="currentColor" />
+      <circle cx="72.4" cy="118.2" r="72.4" fill="#9c5789" />
+      <circle cx="71.7" cy="118.5" r="42.7" fill="currentColor" />
+    </svg>
+  );
+}
+
 interface IntegrationType {
   id: string;
   name: string;
   description: string;
+  icon: React.ComponentType<{ className?: string }>;
 }
 
 const INTEGRATION_TYPES: IntegrationType[] = [
@@ -37,8 +62,9 @@ const INTEGRATION_TYPES: IntegrationType[] = [
     id: "odoo",
     name: "Odoo",
     description: "Connect your Odoo ERP to query sales, inventory, and customer data.",
+    icon: OdooIcon,
   },
-  // Future: { id: "shopify", name: "Shopify", description: "..." },
+  // Future: { id: "shopify", name: "Shopify", description: "...", icon: ShopifyIcon },
 ];
 
 // --- Odoo credentials form ---
@@ -138,16 +164,22 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
             </DialogHeader>
 
             <div className="grid gap-3 pt-2">
-              {INTEGRATION_TYPES.map((type) => (
-                <button
-                  key={type.id}
-                  onClick={() => setSelectedType(type.id)}
-                  className="flex flex-col items-start gap-1 rounded-lg border p-4 text-left transition-colors hover:bg-accent"
-                >
-                  <span className="font-medium">{type.name}</span>
-                  <span className="text-sm text-muted-foreground">{type.description}</span>
-                </button>
-              ))}
+              {INTEGRATION_TYPES.map((type) => {
+                const Icon = type.icon;
+                return (
+                  <button
+                    key={type.id}
+                    onClick={() => setSelectedType(type.id)}
+                    className="flex items-center gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-accent"
+                  >
+                    <Icon className="h-8 w-16 shrink-0" />
+                    <div className="flex flex-col gap-1">
+                      <span className="font-medium">{type.name}</span>
+                      <span className="text-sm text-muted-foreground">{type.description}</span>
+                    </div>
+                  </button>
+                );
+              })}
             </div>
           </>
         ) : (
