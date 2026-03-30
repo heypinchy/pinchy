@@ -116,8 +116,44 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
     form.reset();
   }
 
+  const [submitPhase, setSubmitPhase] = useState<"idle" | "testing" | "creating">("idle");
+
   async function onSubmit(values: OdooFormValues) {
+    form.clearErrors("root");
+
     try {
+      // Phase 1: Test credentials
+      setSubmitPhase("testing");
+      const testRes = await fetch("/api/integrations/test-credentials", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: selectedType,
+          credentials: {
+            url: values.url,
+            db: values.db,
+            login: values.login,
+            apiKey: values.apiKey,
+          },
+        }),
+      });
+
+      const testData = await testRes.json();
+
+      if (!testRes.ok) {
+        form.setError("root", { message: testData.error || "Connection test failed" });
+        setSubmitPhase("idle");
+        return;
+      }
+
+      if (!testData.success) {
+        form.setError("root", { message: testData.error || "Connection test failed" });
+        setSubmitPhase("idle");
+        return;
+      }
+
+      // Phase 2: Create integration with the real uid from test
+      setSubmitPhase("creating");
       const res = await fetch("/api/integrations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -130,24 +166,26 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
             db: values.db,
             login: values.login,
             apiKey: values.apiKey,
-            // TODO: Replace with real uid from Odoo authenticate() once odoo-node is wired up
-            uid: 1,
+            uid: testData.uid,
           },
         }),
       });
 
       if (!res.ok) {
         const data = await res.json();
-        toast.error(data.error || "Failed to create integration");
+        form.setError("root", { message: data.error || "Failed to create integration" });
+        setSubmitPhase("idle");
         return;
       }
 
       toast.success("Integration created successfully");
       form.reset();
       setSelectedType(null);
+      setSubmitPhase("idle");
       onSuccess();
     } catch {
-      toast.error("Failed to create integration");
+      form.setError("root", { message: "Failed to create integration" });
+      setSubmitPhase("idle");
     }
   }
 
@@ -285,6 +323,10 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                   )}
                 />
 
+                {form.formState.errors.root && (
+                  <p className="text-sm text-destructive">{form.formState.errors.root.message}</p>
+                )}
+
                 <div className="flex justify-between pt-2">
                   <Button type="button" variant="ghost" onClick={handleBack}>
                     Back
@@ -293,8 +335,12 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                     <Button type="button" variant="outline" onClick={() => handleClose(false)}>
                       Cancel
                     </Button>
-                    <Button type="submit" disabled={form.formState.isSubmitting}>
-                      {form.formState.isSubmitting ? "Creating..." : "Create"}
+                    <Button type="submit" disabled={submitPhase !== "idle"}>
+                      {submitPhase === "testing"
+                        ? "Testing connection..."
+                        : submitPhase === "creating"
+                          ? "Creating..."
+                          : "Test & Create"}
                     </Button>
                   </div>
                 </div>
