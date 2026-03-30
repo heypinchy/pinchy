@@ -22,6 +22,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 
 // --- Integration type registry (extend here for future integrations) ---
@@ -107,6 +114,8 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
     if (!isOpen) {
       setSelectedType(null);
       form.reset();
+      setDbFetchState("idle");
+      setFetchedDatabases([]);
     }
     onOpenChange(isOpen);
   }
@@ -114,9 +123,62 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
   function handleBack() {
     setSelectedType(null);
     form.reset();
+    setDbFetchState("idle");
+    setFetchedDatabases([]);
   }
 
   const [submitPhase, setSubmitPhase] = useState<"idle" | "testing" | "creating">("idle");
+  const [dbFetchState, setDbFetchState] = useState<"idle" | "loading" | "done" | "failed">("idle");
+  const [fetchedDatabases, setFetchedDatabases] = useState<string[]>([]);
+
+  function parseSubdomainHint(url: string): string | null {
+    try {
+      const hostname = new URL(url).hostname;
+      // Match *.odoo.com or *.dev.odoo.com
+      const odooMatch = hostname.match(/^([^.]+)\.(?:dev\.)?odoo\.com$/);
+      return odooMatch ? odooMatch[1] : null;
+    } catch {
+      return null;
+    }
+  }
+
+  async function handleUrlBlur(url: string) {
+    // Only fetch if URL looks valid
+    try {
+      new URL(url);
+    } catch {
+      return;
+    }
+
+    setDbFetchState("loading");
+    setFetchedDatabases([]);
+
+    try {
+      const res = await fetch("/api/integrations/list-databases", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+      const data = await res.json();
+
+      if (data.success && Array.isArray(data.databases) && data.databases.length > 0) {
+        setFetchedDatabases(data.databases);
+        setDbFetchState("done");
+
+        // Auto-select if subdomain matches one of the databases
+        const hint = parseSubdomainHint(url);
+        if (hint && data.databases.includes(hint)) {
+          form.setValue("db", hint);
+        } else if (data.databases.length === 1) {
+          form.setValue("db", data.databases[0]);
+        }
+      } else {
+        setDbFetchState("failed");
+      }
+    } catch {
+      setDbFetchState("failed");
+    }
+  }
 
   async function onSubmit(values: OdooFormValues) {
     form.clearErrors("root");
@@ -274,7 +336,16 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                     <FormItem>
                       <FormLabel>URL</FormLabel>
                       <FormControl>
-                        <Input placeholder="https://odoo.example.com" {...field} />
+                        <Input
+                          placeholder="https://odoo.example.com"
+                          {...field}
+                          onBlur={(e) => {
+                            field.onBlur();
+                            if (e.target.value) {
+                              handleUrlBlur(e.target.value);
+                            }
+                          }}
+                        />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -288,7 +359,27 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                     <FormItem>
                       <FormLabel>Database</FormLabel>
                       <FormControl>
-                        <Input placeholder="production" {...field} />
+                        {dbFetchState === "loading" ? (
+                          <p className="text-sm text-muted-foreground py-2">Loading databases...</p>
+                        ) : dbFetchState === "done" && fetchedDatabases.length > 0 ? (
+                          <Select
+                            value={field.value}
+                            onValueChange={(value) => field.onChange(value)}
+                          >
+                            <SelectTrigger className="w-full">
+                              <SelectValue placeholder="Select a database" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {fetchedDatabases.map((db) => (
+                                <SelectItem key={db} value={db}>
+                                  {db}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        ) : (
+                          <Input placeholder="production" {...field} />
+                        )}
                       </FormControl>
                       <FormMessage />
                     </FormItem>
