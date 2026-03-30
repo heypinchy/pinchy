@@ -396,7 +396,6 @@ jobs:
         run: pnpm -C packages/web test:e2e:telegram
         env:
           CI: true
-          TEST_ANTHROPIC_API_KEY: ${{ secrets.TEST_ANTHROPIC_API_KEY }}
 
       - name: Show logs on failure
         if: failure()
