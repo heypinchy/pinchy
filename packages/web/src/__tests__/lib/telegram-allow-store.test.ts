@@ -659,6 +659,37 @@ describe("telegram-allow-store", () => {
       expect(writePaths.some((p: string) => p.includes("telegram-agent"))).toBe(false);
     });
 
+    it("includes personal agents (e.g. Smithers) that have a bot token", async () => {
+      setupDbMocks({
+        agents: [
+          {
+            id: "smithers-1",
+            visibility: "restricted",
+            isPersonal: true,
+            deletedAt: null,
+            avatarSeed: "__smithers__",
+          },
+        ],
+        channelLinks: [{ userId: "user-1", channelUserId: "111222333" }],
+        agentGroups: [],
+        userGroups: [],
+        users: [{ id: "user-1", role: "member", banned: false }],
+      });
+      mockGetSetting.mockImplementation((key: string) =>
+        key === "telegram_bot_token:smithers-1" ? Promise.resolve("token-1") : Promise.resolve(null)
+      );
+
+      await recalculateTelegramAllowStores();
+
+      const writeCalls = mockWriteFileSync.mock.calls;
+      const accountWrite = writeCalls.find((c: unknown[]) =>
+        (c[0] as string).includes("telegram-smithers-1-allowFrom.json")
+      );
+      expect(accountWrite).toBeTruthy();
+      const written = JSON.parse(accountWrite![1] as string);
+      expect(written.allowFrom).toContain("111222333");
+    });
+
     it("excludes banned users", async () => {
       setupDbMocks({
         agents: [

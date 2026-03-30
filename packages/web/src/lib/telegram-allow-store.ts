@@ -124,18 +124,20 @@ export function clearAllAllowStores() {
  * Idempotent: always produces the correct state regardless of prior state.
  */
 export async function recalculateTelegramAllowStores(): Promise<void> {
-  // 1. Get all non-deleted, non-personal agents
-  const allAgents = await db
-    .select()
-    .from(agents)
-    .where(and(isNull(agents.deletedAt), eq(agents.isPersonal, false)));
+  // 1. Get all non-deleted agents (including personal ones like Smithers,
+  // which can have Telegram bots connected via Settings → Telegram)
+  const allAgents = await db.select().from(agents).where(isNull(agents.deletedAt));
 
   // 2. Find which agents have bot tokens
-  const agentsWithBots: Array<{ id: string; visibility: string }> = [];
+  const agentsWithBots: Array<{ id: string; visibility: string; isPersonal: boolean }> = [];
   for (const agent of allAgents) {
     const botToken = await getSetting(`telegram_bot_token:${agent.id}`);
     if (botToken) {
-      agentsWithBots.push({ id: agent.id, visibility: agent.visibility });
+      agentsWithBots.push({
+        id: agent.id,
+        visibility: agent.visibility,
+        isPersonal: agent.isPersonal,
+      });
     }
   }
 
@@ -187,7 +189,11 @@ export async function recalculateTelegramAllowStores(): Promise<void> {
       const user = userMap.get(link.userId);
       if (!user || user.banned) continue;
 
-      if (agent.visibility === "all") {
+      if (agent.isPersonal) {
+        // Personal agents (e.g. Smithers): all linked users get access.
+        // Smithers is personal but the Telegram bot serves everyone.
+        allowedTelegramIds.push(link.channelUserId);
+      } else if (agent.visibility === "all") {
         // All non-banned linked users get access
         allowedTelegramIds.push(link.channelUserId);
       } else {
