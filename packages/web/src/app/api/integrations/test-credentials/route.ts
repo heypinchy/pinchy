@@ -36,18 +36,18 @@ export async function POST(request: NextRequest) {
   const { credentials } = parsed.data;
 
   try {
-    const uid = await OdooClient.authenticate({
-      url: credentials.url,
-      db: credentials.db,
-      login: credentials.login,
-      apiKey: credentials.apiKey,
-    });
+    const url = credentials.url.trim();
+    const db = credentials.db.trim();
+    const login = credentials.login.trim();
+    const apiKey = credentials.apiKey.trim();
+
+    const uid = await OdooClient.authenticate({ url, db, login, apiKey });
 
     const client = new OdooClient({
-      url: credentials.url,
-      db: credentials.db,
+      url,
+      db,
       uid,
-      apiKey: credentials.apiKey,
+      apiKey,
     });
     const version = await client.version();
 
