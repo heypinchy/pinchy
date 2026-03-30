@@ -128,6 +128,16 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
   const [dbFetchState, setDbFetchState] = useState<"idle" | "loading" | "done" | "failed">("idle");
   const [fetchedDatabases, setFetchedDatabases] = useState<string[]>([]);
 
+  function normalizeOdooUrl(raw: string): string | null {
+    try {
+      const parsed = new URL(raw);
+      // Strip path — only keep origin (protocol + host)
+      return parsed.origin;
+    } catch {
+      return null;
+    }
+  }
+
   function parseSubdomainHint(url: string): string | null {
     try {
       const hostname = new URL(url).hostname;
@@ -139,12 +149,13 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
     }
   }
 
-  async function handleUrlBlur(url: string) {
-    // Only fetch if URL looks valid
-    try {
-      new URL(url);
-    } catch {
-      return;
+  async function handleUrlBlur(raw: string) {
+    const url = normalizeOdooUrl(raw);
+    if (!url) return;
+
+    // Update the form field to the normalized URL
+    if (url !== raw) {
+      form.setValue("url", url);
     }
 
     setDbFetchState("loading");
