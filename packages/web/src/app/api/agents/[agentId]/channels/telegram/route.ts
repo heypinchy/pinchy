@@ -77,7 +77,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
   updateTelegramChannelConfig(
     agentId,
     { botToken },
-    {} // Identity links will be set by recalculate below
+    null // Don't touch identityLinks — preserved from existing config
   );
 
   // Populate allow-from store with all linked users who have permission to this agent
@@ -113,10 +113,9 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
     return NextResponse.json({ error: "Agent not found" }, { status: 404 });
   }
 
-  // Smithers' bot can only be removed via "Remove Telegram for everyone" in Settings.
-  // Preventing individual disconnect avoids edge cases where the primary onboarding
-  // agent has no bot while other agents still do.
-  if (agent.avatarSeed === "__smithers__") {
+  // Personal agents (Smithers) can only be disconnected via "Remove Telegram for everyone"
+  // in Settings. Uses isPersonal flag (not avatarSeed which is user-editable).
+  if (agent.isPersonal) {
     return NextResponse.json(
       {
         error:
@@ -132,7 +131,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
   // Clear only this account's allow-from store (other agents' bots are unaffected)
   clearAllowStoreForAccount(agentId);
   // Remove this account from config (other accounts preserved)
-  updateTelegramChannelConfig(agentId, null, {});
+  updateTelegramChannelConfig(agentId, null, null);
 
   await appendAuditLog({
     actorType: "user",

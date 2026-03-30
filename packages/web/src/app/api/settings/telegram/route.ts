@@ -17,8 +17,11 @@ async function buildIdentityLinks(): Promise<Record<string, string[]>> {
   const links = await db.select().from(channelLinks);
   const identityLinks: Record<string, string[]> = {};
   for (const link of links) {
-    if (link.channel === "telegram") {
-      identityLinks[link.userId] = [`telegram:${link.channelUserId}`];
+    const identity = `${link.channel}:${link.channelUserId}`;
+    if (!identityLinks[link.userId]) {
+      identityLinks[link.userId] = [identity];
+    } else {
+      identityLinks[link.userId].push(identity);
     }
   }
   return identityLinks;

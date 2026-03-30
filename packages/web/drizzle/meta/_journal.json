@@ -162,6 +162,13 @@
       "when": 1774561764104,
       "tag": "0022_old_blackheart",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1774902510386,
+      "tag": "0023_gorgeous_red_ghost",
+      "breakpoints": true
     }
   ]
 }

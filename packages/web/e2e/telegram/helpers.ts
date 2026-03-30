@@ -148,6 +148,7 @@ export async function sendTelegramMessage(opts: {
   userId?: string;
   username?: string;
   firstName?: string;
+  lastName?: string;
 }): Promise<void> {
   const res = await fetch(`${MOCK_TELEGRAM_URL}/control/sendMessage`, {
     method: "POST",

@@ -274,10 +274,10 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     );
   });
 
-  it("returns 400 when trying to disconnect Smithers' bot", async () => {
+  it("returns 400 when trying to disconnect a personal agent's bot", async () => {
     vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
       ...mockAgent,
-      avatarSeed: "__smithers__",
+      isPersonal: true,
     } as any);
 
     const response = await DELETE(new Request("http://localhost"), {
@@ -286,7 +286,7 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data.error).toContain("Smithers");
+    expect(data.error).toContain("Remove Telegram for everyone");
     expect(deleteSetting).not.toHaveBeenCalled();
   });
 

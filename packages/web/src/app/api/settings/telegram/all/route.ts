@@ -30,7 +30,7 @@ export async function DELETE() {
 
   // Clear all per-account allow-from stores and remove all channel config
   clearAllAllowStores();
-  updateTelegramChannelConfig(null, null, {});
+  updateTelegramChannelConfig(null, null, null);
 
   await appendAuditLog({
     actorType: "user",

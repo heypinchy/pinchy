@@ -1,4 +1,4 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
+import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "fs";
 import { randomBytes } from "crypto";
 import { dirname } from "path";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
@@ -12,6 +12,17 @@ import { restartState } from "@/server/restart-state";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
+
+/** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
+function writeConfigAtomic(content: string) {
+  const dir = dirname(CONFIG_PATH);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
+  }
+  const tmpPath = CONFIG_PATH + ".tmp";
+  writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o644 });
+  renameSync(tmpPath, CONFIG_PATH);
+}
 
 interface OpenClawConfigParams {
   provider: ProviderName;
@@ -77,13 +88,7 @@ export function writeOpenClawConfig({ provider, apiKey, model }: OpenClawConfigP
   };
 
   const merged = deepMerge(existing, pinchyFields);
-
-  const dir = dirname(CONFIG_PATH);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-
-  writeFileSync(CONFIG_PATH, JSON.stringify(merged, null, 2), { encoding: "utf-8", mode: 0o644 });
+  writeConfigAtomic(JSON.stringify(merged, null, 2));
   restartState.notifyRestart();
 }
 
@@ -277,8 +282,11 @@ export async function regenerateOpenClawConfig() {
     const links = await db.select().from(channelLinks);
     const identityLinks: Record<string, string[]> = {};
     for (const link of links) {
-      if (link.channel === "telegram") {
-        identityLinks[link.userId] = [`telegram:${link.channelUserId}`];
+      const identity = `${link.channel}:${link.channelUserId}`;
+      if (!identityLinks[link.userId]) {
+        identityLinks[link.userId] = [identity];
+      } else {
+        identityLinks[link.userId].push(identity);
       }
     }
 
@@ -286,25 +294,26 @@ export async function regenerateOpenClawConfig() {
     // Each linked user's DMs are routed to THEIR personal agent, not the
     // bot owner's agent. This ensures Telegram conversations match the
     // user's personal Smithers in the web UI.
-    for (const { accountId, ownerId } of personalBotsAccountIds) {
+    if (personalBotsAccountIds.length > 0) {
       const telegramLinks = links.filter((l) => l.channel === "telegram");
-      // Build a map of userId → their personal agent of the same type
-      // For Smithers: find each user's own Smithers agent
+      // Map userId → their personal agent ID (hoisted outside loop)
       const personalAgentsByOwner = new Map(
         allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => [a.ownerId, a.id])
       );
 
-      for (const link of telegramLinks) {
-        // Route to user's own personal agent, or fall back to the bot owner's agent
-        const targetAgentId = personalAgentsByOwner.get(link.userId) || accountId;
-        bindings.push({
-          agentId: targetAgentId,
-          match: {
-            channel: "telegram",
-            accountId,
-            peer: { kind: "dm", id: link.channelUserId },
-          },
-        });
+      for (const { accountId } of personalBotsAccountIds) {
+        for (const link of telegramLinks) {
+          // Route to user's own personal agent, or fall back to the bot owner's agent
+          const targetAgentId = personalAgentsByOwner.get(link.userId) || accountId;
+          bindings.push({
+            agentId: targetAgentId,
+            match: {
+              channel: "telegram",
+              accountId,
+              peer: { kind: "dm", id: link.channelUserId },
+            },
+          });
+        }
       }
     }
 
@@ -325,11 +334,6 @@ export async function regenerateOpenClawConfig() {
     };
   }
 
-  const dir = dirname(CONFIG_PATH);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts
   const newContent = JSON.stringify(config, null, 2);
   try {
@@ -339,7 +343,7 @@ export async function regenerateOpenClawConfig() {
     // File doesn't exist yet — write it
   }
 
-  writeFileSync(CONFIG_PATH, newContent, { encoding: "utf-8", mode: 0o644 });
+  writeConfigAtomic(newContent);
 }
 
 // ── Targeted config updates ───────────────────────────────────────────────
@@ -376,12 +380,7 @@ export function updateIdentityLinks(identityLinks: Record<string, string[]>): vo
     // File doesn't exist — write it
   }
 
-  const dir = dirname(CONFIG_PATH);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-
-  writeFileSync(CONFIG_PATH, newContent, { encoding: "utf-8", mode: 0o644 });
+  writeConfigAtomic(newContent);
 }
 
 /**
@@ -400,7 +399,7 @@ export function updateIdentityLinks(identityLinks: Record<string, string[]>): vo
 export function updateTelegramChannelConfig(
   accountId: string | null,
   account: { botToken: string } | null,
-  identityLinks: Record<string, string[]>
+  identityLinks: Record<string, string[]> | null
 ): void {
   const existing = readExistingConfig();
 
@@ -465,10 +464,9 @@ export function updateTelegramChannelConfig(
   existing.session = {
     ...session,
     dmScope: "per-peer",
-    // Only update identityLinks if explicitly provided (non-empty).
-    // Empty object means "don't touch" — preserves existing links set by
-    // updateIdentityLinks() or regenerateOpenClawConfig().
-    ...(Object.keys(identityLinks).length > 0 && { identityLinks }),
+    // null = "don't touch existing identityLinks" (used by bot connect/disconnect).
+    // Non-null = overwrite with provided value (used by link/unlink).
+    ...(identityLinks !== null && { identityLinks }),
   };
 
   const newContent = JSON.stringify(existing, null, 2);
@@ -479,10 +477,5 @@ export function updateTelegramChannelConfig(
     // File doesn't exist
   }
 
-  const dir = dirname(CONFIG_PATH);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-
-  writeFileSync(CONFIG_PATH, newContent, { encoding: "utf-8", mode: 0o644 });
+  writeConfigAtomic(newContent);
 }

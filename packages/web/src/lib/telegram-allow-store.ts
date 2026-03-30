@@ -122,8 +122,20 @@ export function clearAllAllowStores() {
  * group membership changes, agent visibility changes, etc.
  *
  * Idempotent: always produces the correct state regardless of prior state.
+ * Serialized via in-process mutex to prevent concurrent writes from producing
+ * inconsistent store files.
  */
-export async function recalculateTelegramAllowStores(): Promise<void> {
+let recalculateMutex: Promise<void> = Promise.resolve();
+
+export function recalculateTelegramAllowStores(): Promise<void> {
+  // Serialize concurrent calls — each waits for the previous to complete
+  recalculateMutex = recalculateMutex
+    .catch(() => {}) // don't let a failed previous run block the next
+    .then(() => recalculateTelegramAllowStoresImpl());
+  return recalculateMutex;
+}
+
+async function recalculateTelegramAllowStoresImpl(): Promise<void> {
   // 1. Get all non-deleted agents (including personal ones like Smithers,
   // which can have Telegram bots connected via Settings → Telegram)
   const allAgents = await db.select().from(agents).where(isNull(agents.deletedAt));
@@ -160,7 +172,6 @@ export async function recalculateTelegramAllowStores(): Promise<void> {
   }
 
   // 5. Get all users (for role check and ban status)
-  const linkedUserIds = links.map((l) => l.userId);
   const allUsers = await db.select().from(users);
   const userMap = new Map(allUsers.map((u) => [u.id, u]));
 

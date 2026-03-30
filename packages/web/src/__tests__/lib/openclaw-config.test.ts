@@ -6,6 +6,7 @@ vi.mock("fs", async (importOriginal) => {
   const readFileSyncMock = vi.fn();
   const existsSyncMock = vi.fn().mockReturnValue(true);
   const mkdirSyncMock = vi.fn();
+  const renameSyncMock = vi.fn();
   return {
     ...actual,
     default: {
@@ -14,11 +15,13 @@ vi.mock("fs", async (importOriginal) => {
       readFileSync: readFileSyncMock,
       existsSync: existsSyncMock,
       mkdirSync: mkdirSyncMock,
+      renameSync: renameSyncMock,
     },
     writeFileSync: writeFileSyncMock,
     readFileSync: readFileSyncMock,
     existsSync: existsSyncMock,
     mkdirSync: mkdirSyncMock,
+    renameSync: renameSyncMock,
   };
 });
 
