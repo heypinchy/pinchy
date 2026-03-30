@@ -30,6 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { normalizeOdooUrl, parseOdooSubdomainHint } from "@/lib/integrations/odoo-url";
 
 // --- Integration type registry (extend here for future integrations) ---
 
@@ -128,27 +129,6 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
   const [dbFetchState, setDbFetchState] = useState<"idle" | "loading" | "done" | "failed">("idle");
   const [fetchedDatabases, setFetchedDatabases] = useState<string[]>([]);
 
-  function normalizeOdooUrl(raw: string): string | null {
-    try {
-      const parsed = new URL(raw);
-      // Strip path — only keep origin (protocol + host)
-      return parsed.origin;
-    } catch {
-      return null;
-    }
-  }
-
-  function parseSubdomainHint(url: string): string | null {
-    try {
-      const hostname = new URL(url).hostname;
-      // Match *.odoo.com or *.dev.odoo.com
-      const odooMatch = hostname.match(/^([^.]+)\.(?:dev\.)?odoo\.com$/);
-      return odooMatch ? odooMatch[1] : null;
-    } catch {
-      return null;
-    }
-  }
-
   async function handleUrlBlur(raw: string) {
     const url = normalizeOdooUrl(raw);
     if (!url) return;
@@ -174,7 +154,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
         setDbFetchState("done");
 
         // Auto-select if subdomain matches one of the databases
-        const hint = parseSubdomainHint(url);
+        const hint = parseOdooSubdomainHint(url);
         if (hint && data.databases.includes(hint)) {
           form.setValue("db", hint);
         } else if (data.databases.length === 1) {

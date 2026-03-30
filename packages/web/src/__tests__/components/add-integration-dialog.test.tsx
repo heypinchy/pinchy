@@ -183,8 +183,11 @@ describe("AddIntegrationDialog", () => {
       await user.type(urlInput, "https://odoo.example.com");
       await user.tab();
 
+      // Database field should be disabled while loading
       await waitFor(() => {
-        expect(screen.getByText("Loading databases...")).toBeInTheDocument();
+        const dbInput = screen.getByLabelText("Database");
+        expect(dbInput).toBeDisabled();
+        expect(dbInput).toHaveAttribute("placeholder", "Loading databases...");
       });
 
       // Resolve the fetch
@@ -193,8 +196,9 @@ describe("AddIntegrationDialog", () => {
         json: async () => ({ success: true, databases: ["prod"] }),
       } as Response);
 
+      // After loading, should show dropdown
       await waitFor(() => {
-        expect(screen.queryByText("Loading databases...")).not.toBeInTheDocument();
+        expect(screen.getByRole("combobox")).toBeInTheDocument();
       });
 
       fetchSpy.mockRestore();
