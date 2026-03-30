@@ -118,6 +118,7 @@ export default defineConfig({
             { label: 'Mount Data Directories', slug: 'guides/mount-data-directories' },
             { label: 'User Management', slug: 'guides/user-management' },
             { label: 'Smithers Onboarding', slug: 'guides/smithers-onboarding' },
+            { label: 'Set Up Telegram', slug: 'guides/telegram-setup' },
             { label: 'Enterprise Setup', slug: 'guides/enterprise-setup' },
             { label: 'VPS Deployment', slug: 'guides/vps-deployment' },
             { label: 'Deploy on Hetzner Cloud', slug: 'guides/deploy-hetzner' },
