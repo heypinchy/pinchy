@@ -103,7 +103,7 @@ test.describe.serial("Telegram Integration", () => {
     console.log(`[test] Linked with pairing code: ${lastPairingCode}`);
   });
 
-  test("linked user receives agent response (not pairing)", async () => {
+  test("linked user receives agent response (not pairing)", { tag: "@llm" }, async () => {
     // Wait for config reload
     // Brief wait for OpenClaw to detect config change via file watcher
     await new Promise((r) => setTimeout(r, 2000));
@@ -176,7 +176,7 @@ test.describe.serial("Telegram Integration", () => {
     console.log(`[test] Re-linked with pairing code: ${lastPairingCode}`);
   });
 
-  test("re-linked user receives agent response", async () => {
+  test("re-linked user receives agent response", { tag: "@llm" }, async () => {
     // Brief wait for OpenClaw to detect config change via file watcher
     await new Promise((r) => setTimeout(r, 2000));
 
@@ -216,6 +216,9 @@ test.describe.serial("Multi-Bot Telegram", () => {
     await seedSetup();
     await waitForOpenClawConnected(120000);
     await login();
+    // Clean state: unlink user from previous test suite, reset mock
+    await unlinkTelegram().catch(() => {});
+    await resetMockTelegram();
   });
 
   test("setup: get Smithers agent ID", async () => {

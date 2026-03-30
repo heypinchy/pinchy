@@ -14,6 +14,10 @@ export default defineConfig({
   workers: 1,
   reporter: "list",
   timeout: 120000, // 2 min per test (LLM responses can be slow)
+  // Skip @llm tests in CI — they require real Anthropic API auth that
+  // OpenClaw's per-agent auth-profiles system doesn't pick up from env vars.
+  // Pairing tests (no LLM needed) run in all environments.
+  grepInvert: process.env.CI ? /@llm/ : undefined,
   use: {
     baseURL: "http://localhost:7777",
   },
