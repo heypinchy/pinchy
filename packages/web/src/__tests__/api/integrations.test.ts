@@ -773,6 +773,138 @@ describe("POST /api/integrations/test-credentials", () => {
   });
 });
 
+describe("POST /api/integrations/list-databases", () => {
+  let mockFetch: ReturnType<typeof vi.fn>;
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockFetch = vi.fn();
+    global.fetch = mockFetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("should return 401 when not authenticated", async () => {
+    mockGetSession.mockResolvedValueOnce(null);
+    const { POST } = await import("@/app/api/integrations/list-databases/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/list-databases", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://odoo.example.com" }),
+      })
+    );
+    expect(response.status).toBe(401);
+  });
+
+  it("should return 403 for non-admin users", async () => {
+    mockGetSession.mockResolvedValueOnce(memberSession);
+    const { POST } = await import("@/app/api/integrations/list-databases/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/list-databases", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://odoo.example.com" }),
+      })
+    );
+    expect(response.status).toBe(403);
+  });
+
+  it("should return 400 when url is missing", async () => {
+    const { POST } = await import("@/app/api/integrations/list-databases/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/list-databases", {
+        method: "POST",
+        body: JSON.stringify({}),
+      })
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("should return 400 when url is invalid", async () => {
+    const { POST } = await import("@/app/api/integrations/list-databases/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/list-databases", {
+        method: "POST",
+        body: JSON.stringify({ url: "not-a-url" }),
+      })
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("should return databases on success", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ jsonrpc: "2.0", id: 1, result: ["production", "staging"] }),
+    });
+    const { POST } = await import("@/app/api/integrations/list-databases/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/list-databases", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://odoo.example.com" }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.databases).toEqual(["production", "staging"]);
+    expect(mockFetch).toHaveBeenCalledWith("https://odoo.example.com/web/database/list", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "call", params: {} }),
+    });
+  });
+
+  it("should return error when fetch throws", async () => {
+    mockFetch.mockRejectedValueOnce(new Error("Network error"));
+    const { POST } = await import("@/app/api/integrations/list-databases/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/list-databases", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://odoo.example.com" }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Could not list databases");
+  });
+
+  it("should return error when Odoo returns error response", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        jsonrpc: "2.0",
+        id: 1,
+        error: { message: "Access denied", code: 200, data: {} },
+      }),
+    });
+    const { POST } = await import("@/app/api/integrations/list-databases/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/list-databases", {
+        method: "POST",
+        body: JSON.stringify({ url: "https://odoo.example.com" }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Could not list databases");
+  });
+});
+
 describe("POST /api/integrations/[connectionId]/sync", () => {
   beforeEach(() => {
     vi.clearAllMocks();
