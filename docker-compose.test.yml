@@ -25,6 +25,8 @@ services:
       - "api.anthropic.com:172.28.0.10"
     environment:
       - NODE_TLS_REJECT_UNAUTHORIZED=0
+      # Route LLM calls to mock server — Anthropic SDK respects ANTHROPIC_BASE_URL
+      - ANTHROPIC_BASE_URL=https://172.28.0.10
 
   pinchy:
     environment:

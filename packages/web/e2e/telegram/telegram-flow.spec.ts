@@ -227,7 +227,7 @@ test.describe.serial("Multi-Bot Telegram", () => {
   test("setup: create second agent and connect bot", async () => {
     let agent = await getAgentByName("Support Bot");
     if (!agent) {
-      agent = await createAgent("Support Bot", "anthropic/claude-haiku-4-5-20251001");
+      agent = await createAgent("Support Bot");
     }
     secondAgentId = agent.id;
     expect(secondAgentId).toBeTruthy();

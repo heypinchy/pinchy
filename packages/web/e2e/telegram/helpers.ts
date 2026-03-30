@@ -85,18 +85,20 @@ export async function getAgentByName(name: string): Promise<{ id: string; name: 
   return data.find((a: { name: string }) => a.name === name) || null;
 }
 
-export async function createAgent(
-  name: string,
-  model: string
-): Promise<{ id: string; name: string }> {
-  const res = await pinchyPost("/api/agents", {
-    name,
-    templateId: "knowledge-base",
-  });
-  if (!res.ok) {
-    throw new Error(`createAgent failed: ${res.status} ${await res.text()}`);
-  }
-  return res.json();
+export async function createAgent(name: string): Promise<{ id: string; name: string }> {
+  // Create agent directly in DB — the POST /api/agents endpoint requires
+  // template-specific fields (e.g. pluginConfig for knowledge-base) that
+  // aren't needed for a basic agent used in multi-bot tests.
+  const dbUrl = process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
+  const { default: postgres } = await import("postgres");
+  const sql = postgres(dbUrl);
+  const id = crypto.randomUUID();
+  await sql`
+    INSERT INTO agents (id, name, model, allowed_tools, visibility)
+    VALUES (${id}, ${name}, 'anthropic/claude-haiku-4-5-20251001', '[]'::jsonb, 'all')
+  `;
+  await sql.end();
+  return { id, name };
 }
 
 // ── Bot setup helpers ──────────────────────────────────────────────────
