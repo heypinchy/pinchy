@@ -849,6 +849,85 @@ describe("restart-state integration", () => {
     ]);
   });
 
+  it("should generate per-user peer bindings for personal agents (Smithers)", async () => {
+    // Personal agent (Smithers) with bot token: each linked user should get
+    // a peer-specific binding routing to their OWN personal Smithers agent.
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          // agents table: admin's Smithers has the bot, plus user-b's Smithers
+          return Promise.resolve([
+            {
+              id: "admin-smithers",
+              name: "Smithers",
+              model: "m",
+              allowedTools: [],
+              isPersonal: true,
+              ownerId: "user-a",
+            },
+            {
+              id: "user-b-smithers",
+              name: "Smithers",
+              model: "m",
+              allowedTools: [],
+              isPersonal: true,
+              ownerId: "user-b",
+            },
+          ]);
+        }
+        // channel_links table: both users linked
+        return Promise.resolve([
+          { userId: "user-a", channel: "telegram", channelUserId: "111222333" },
+          { userId: "user-b", channel: "telegram", channelUserId: "444555666" },
+        ]);
+      }),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:admin-smithers") return "123456:ABC-token";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    // One account for the bot
+    expect(config.channels.telegram.accounts).toEqual({
+      "admin-smithers": { botToken: "123456:ABC-token" },
+    });
+
+    // Per-user peer bindings: user-a → admin-smithers, user-b → user-b-smithers
+    expect(config.bindings).toEqual(
+      expect.arrayContaining([
+        {
+          agentId: "admin-smithers",
+          match: {
+            channel: "telegram",
+            accountId: "admin-smithers",
+            peer: { kind: "dm", id: "111222333" },
+          },
+        },
+        {
+          agentId: "user-b-smithers",
+          match: {
+            channel: "telegram",
+            accountId: "admin-smithers",
+            peer: { kind: "dm", id: "444555666" },
+          },
+        },
+      ])
+    );
+    // No generic binding without peer (all users are routed via peer-specific bindings)
+    const genericBinding = config.bindings.find(
+      (b: Record<string, unknown>) => (b.match as Record<string, unknown>).peer === undefined
+    );
+    expect(genericBinding).toBeUndefined();
+  });
+
   it("should not include Telegram config when no bot token is configured", async () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockResolvedValue([

@@ -252,13 +252,24 @@ export async function regenerateOpenClawConfig() {
   // store files (credentials/telegram-<accountId>-allowFrom.json) to avoid
   // triggering the broken channel restart (openclaw/openclaw#47458).
   const accounts: Record<string, { botToken: string }> = {};
-  const bindings: Array<{ agentId: string; match: { channel: string; accountId: string } }> = [];
+  interface TelegramBinding {
+    agentId: string;
+    match: { channel: string; accountId: string; peer?: { kind: string; id: string } };
+  }
+  const bindings: TelegramBinding[] = [];
+  const personalBotsAccountIds: Array<{ accountId: string; ownerId: string | null }> = [];
 
   for (const agent of allAgents) {
     const botToken = await getSetting(`telegram_bot_token:${agent.id}`);
     if (botToken) {
       accounts[agent.id] = { botToken };
-      bindings.push({ agentId: agent.id, match: { channel: "telegram", accountId: agent.id } });
+      if (agent.isPersonal) {
+        // Personal agents: per-user peer bindings will be added below
+        personalBotsAccountIds.push({ accountId: agent.id, ownerId: agent.ownerId });
+      } else {
+        // Shared agents: one generic binding per account
+        bindings.push({ agentId: agent.id, match: { channel: "telegram", accountId: agent.id } });
+      }
     }
   }
 
@@ -268,6 +279,32 @@ export async function regenerateOpenClawConfig() {
     for (const link of links) {
       if (link.channel === "telegram") {
         identityLinks[link.userId] = [`telegram:${link.channelUserId}`];
+      }
+    }
+
+    // Build per-user peer bindings for personal agents (e.g. Smithers).
+    // Each linked user's DMs are routed to THEIR personal agent, not the
+    // bot owner's agent. This ensures Telegram conversations match the
+    // user's personal Smithers in the web UI.
+    for (const { accountId, ownerId } of personalBotsAccountIds) {
+      const telegramLinks = links.filter((l) => l.channel === "telegram");
+      // Build a map of userId → their personal agent of the same type
+      // For Smithers: find each user's own Smithers agent
+      const personalAgentsByOwner = new Map(
+        allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => [a.ownerId, a.id])
+      );
+
+      for (const link of telegramLinks) {
+        // Route to user's own personal agent, or fall back to the bot owner's agent
+        const targetAgentId = personalAgentsByOwner.get(link.userId) || accountId;
+        bindings.push({
+          agentId: targetAgentId,
+          match: {
+            channel: "telegram",
+            accountId,
+            peer: { kind: "dm", id: link.channelUserId },
+          },
+        });
       }
     }
 
