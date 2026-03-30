@@ -152,16 +152,12 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
 ## Production setup
 
-The steps above get Pinchy running over plain HTTP. For production use, you should add HTTPS and pin your secrets. Follow the [VPS Deployment Guide — Production setup](/guides/vps-deployment/#production-setup) for:
+The steps above get Pinchy running over plain HTTP. Before using it with real data, add HTTPS and pin your secrets.
 
-- **HTTPS with Caddy** — automatic SSL certificates for your domain
-- **Pinning secrets** — so your encryption keys don't depend on Docker volumes
-- **Removing the iptables redirect** — once Caddy is running, remove the port 80→7777 redirect
-
-These steps require running commands on your server. You have two options:
+All commands below run **on your server**. You have two options to connect:
 
 1. **Web console** — On the server's detail page in Hetzner, click the **>\_** icon (top-right) to open a browser-based terminal. No SSH key needed.
-2. **SSH** — Connect from your local terminal with `ssh root@<your-server-ip>`. This requires an SSH key — see below.
+2. **SSH** — Connect from your local terminal with `ssh root@<your-server-ip>`.
 
 <details>
 <summary>How do I set up SSH access?</summary>
@@ -209,6 +205,75 @@ ssh root@<your-server-ip>
 While connected, every command you type runs on your server. Type `exit` to disconnect.
 
 </details>
+
+### Set up HTTPS with Caddy
+
+Install Caddy, which handles SSL certificates automatically:
+
+```bash
+apt-get install -y caddy
+```
+
+Edit the Caddy configuration:
+
+```bash
+nano /etc/caddy/Caddyfile
+```
+
+Replace the contents with (use your actual domain):
+
+```
+pinchy.example.com {
+    reverse_proxy localhost:7777
+}
+```
+
+Save the file (Ctrl+O, Enter, Ctrl+X) and restart Caddy:
+
+```bash
+systemctl restart caddy
+```
+
+After a few seconds, visit `https://pinchy.example.com` — Caddy automatically provisions a Let's Encrypt certificate.
+
+### Remove the port 80 redirect
+
+The setup script added an iptables rule that redirected port 80 → 7777 for the initial HTTP access. Now that Caddy handles both port 80 and 443, remove it:
+
+```bash
+iptables -t nat -D PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
+iptables -t nat -D OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
+netfilter-persistent save
+```
+
+### Pin secrets
+
+By default, Pinchy auto-generates secrets on first start and stores them in Docker volumes. Pin your own secrets so they survive volume recreation:
+
+```bash
+nano /opt/pinchy/.env
+```
+
+Add these lines (generate each value with `openssl rand -hex 32`, run it three times):
+
+```bash
+DB_PASSWORD=<output of openssl rand -hex 32>
+BETTER_AUTH_SECRET=<output of openssl rand -hex 32>
+ENCRYPTION_KEY=<output of openssl rand -hex 32>
+```
+
+Then restart Pinchy to apply:
+
+```bash
+cd /opt/pinchy
+docker compose up -d
+```
+
+<Aside type="caution">
+  Changing `DB_PASSWORD` after the database is already running requires also
+  updating the password inside PostgreSQL. For a fresh setup, do this before
+  completing the setup wizard.
+</Aside>
 
 ## Point your domain (optional but recommended)
 
