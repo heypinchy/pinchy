@@ -384,9 +384,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                     <FormItem>
                       <FormLabel>Database</FormLabel>
                       <FormControl>
-                        {dbFetchState === "loading" ? (
-                          <p className="text-sm text-muted-foreground py-2">Loading databases...</p>
-                        ) : dbFetchState === "done" && fetchedDatabases.length > 0 ? (
+                        {dbFetchState === "done" && fetchedDatabases.length > 0 ? (
                           <Select
                             value={field.value}
                             onValueChange={(value) => field.onChange(value)}
@@ -403,7 +401,14 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                             </SelectContent>
                           </Select>
                         ) : (
-                          <Input placeholder="production" {...field} />
+                          <Input
+                            placeholder={
+                              dbFetchState === "loading" ? "Loading databases..." : "production"
+                            }
+                            disabled={dbFetchState === "loading"}
+                            {...field}
+                            value={field.value ?? ""}
+                          />
                         )}
                       </FormControl>
                       <FormMessage />
