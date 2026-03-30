@@ -30,6 +30,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
+import { PasswordInput } from "@/components/password-input";
 import { normalizeOdooUrl, parseOdooSubdomainHint } from "@/lib/integrations/odoo-url";
 
 // --- Integration type registry (extend here for future integrations) ---
@@ -360,9 +361,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>API Key</FormLabel>
-                      <FormControl>
-                        <Input type="password" placeholder="Your API key" {...field} />
-                      </FormControl>
+                      <PasswordInput placeholder="Your API key" {...field} />
                       <FormMessage />
                     </FormItem>
                   )}
