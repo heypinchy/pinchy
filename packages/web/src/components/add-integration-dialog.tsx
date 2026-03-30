@@ -368,14 +368,35 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                   )}
                 />
 
-                <FormField
-                  control={form.control}
-                  name="db"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Database</FormLabel>
-                      <FormControl>
-                        {dbFetchState === "done" && fetchedDatabases.length > 0 ? (
+                {/* Database field: hidden by default, shown when multiple DBs found or fetch failed */}
+                {dbFetchState === "failed" && (
+                  <FormField
+                    control={form.control}
+                    name="db"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Database</FormLabel>
+                        <FormControl>
+                          <Input
+                            placeholder="e.g. production"
+                            {...field}
+                            value={field.value ?? ""}
+                          />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
+
+                {dbFetchState === "done" && fetchedDatabases.length > 1 && (
+                  <FormField
+                    control={form.control}
+                    name="db"
+                    render={({ field }) => (
+                      <FormItem>
+                        <FormLabel>Database</FormLabel>
+                        <FormControl>
                           <Select
                             value={field.value}
                             onValueChange={(value) => field.onChange(value)}
@@ -391,21 +412,12 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                               ))}
                             </SelectContent>
                           </Select>
-                        ) : (
-                          <Input
-                            placeholder={
-                              dbFetchState === "loading" ? "Loading databases..." : "production"
-                            }
-                            disabled={dbFetchState === "loading"}
-                            {...field}
-                            value={field.value ?? ""}
-                          />
-                        )}
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
+                        </FormControl>
+                        <FormMessage />
+                      </FormItem>
+                    )}
+                  />
+                )}
 
                 {form.formState.errors.root && (
                   <p className="text-sm text-destructive">{form.formState.errors.root.message}</p>
