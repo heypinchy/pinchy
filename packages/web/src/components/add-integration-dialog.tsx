@@ -653,13 +653,16 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
 
               <div className="space-y-2">
                 <label htmlFor="connection-name" className="text-sm font-medium">
-                  Name
+                  Name this integration
                 </label>
                 <Input
                   id="connection-name"
                   value={connectionName}
                   onChange={(e) => setConnectionName(e.target.value)}
                 />
+                <p className="text-xs text-muted-foreground">
+                  This name helps you and your agents identify the connection.
+                </p>
               </div>
 
               <div className="flex justify-end">
@@ -670,7 +673,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                       Saving...
                     </>
                   ) : (
-                    "Done"
+                    "Save"
                   )}
                 </Button>
               </div>
