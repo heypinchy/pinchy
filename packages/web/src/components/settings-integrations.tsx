@@ -20,6 +20,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { MoreHorizontal, Plus, Plug, CheckCircle2 } from "lucide-react";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { OdooIcon } from "./integration-icons";
@@ -44,10 +45,12 @@ function formatRelativeTime(dateString: string): string {
   return date.toLocaleDateString();
 }
 
-function countAccessibleCategories(data: IntegrationConnection["data"]): number {
-  if (!data?.models) return 0;
+function getAccessibleCategories(data: IntegrationConnection["data"]): string[] {
+  if (!data?.models) return [];
   const modelNames = new Set(data.models.map((m: { model: string }) => m.model));
-  return MODEL_CATEGORIES.filter((cat) => cat.models.some((m) => modelNames.has(m.model))).length;
+  return MODEL_CATEGORIES.filter((cat) => cat.models.some((m) => modelNames.has(m.model))).map(
+    (cat) => cat.label
+  );
 }
 
 export function SettingsIntegrations() {
@@ -145,7 +148,7 @@ export function SettingsIntegrations() {
       </div>
 
       {connections.map((conn) => {
-        const categoryCount = countAccessibleCategories(conn.data);
+        const categories = getAccessibleCategories(conn.data);
         return (
           <Card key={conn.id}>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
@@ -182,22 +185,41 @@ export function SettingsIntegrations() {
               </DropdownMenu>
             </CardHeader>
             <CardContent className="pt-0">
-              <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                {conn.data?.lastSyncAt ? (
-                  <>
-                    <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
-                    <span>Connected</span>
-                    <span>&middot;</span>
-                    <span>
-                      {categoryCount} data {categoryCount === 1 ? "category" : "categories"}
-                    </span>
-                    <span>&middot;</span>
-                    <span>Synced {formatRelativeTime(conn.data.lastSyncAt)}</span>
-                  </>
-                ) : (
-                  <span>Not synced yet</span>
-                )}
-              </div>
+              <TooltipProvider>
+                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                  {conn.data?.lastSyncAt ? (
+                    <>
+                      <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+                      <span>Connected</span>
+                      <span>&middot;</span>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="cursor-default underline decoration-dotted underline-offset-4">
+                            {categories.length} data{" "}
+                            {categories.length === 1 ? "category" : "categories"}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>{categories.join(", ")}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                      <span>&middot;</span>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span className="cursor-default underline decoration-dotted underline-offset-4">
+                            Synced {formatRelativeTime(conn.data.lastSyncAt)}
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>{new Date(conn.data.lastSyncAt).toLocaleString()}</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </>
+                  ) : (
+                    <span>Not synced yet</span>
+                  )}
+                </div>
+              </TooltipProvider>
             </CardContent>
           </Card>
         );
