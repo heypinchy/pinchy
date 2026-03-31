@@ -236,8 +236,9 @@ describe("fetchProviderModels", () => {
       new Response(
         JSON.stringify({
           data: [
-            { id: "nemotron-3-nano:30b-cloud" },
+            { id: "gemini-3-flash-preview:cloud" },
             { id: "kimi-k2.5:cloud" },
+            { id: "nemotron-3-nano:30b-cloud" }, // not in allowed list, filtered out
           ],
         }),
         { status: 200 }

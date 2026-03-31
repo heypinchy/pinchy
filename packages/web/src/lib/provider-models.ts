@@ -94,18 +94,19 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
     url: () => "https://ollama.com/v1/models",
     headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}` }),
     transform: (data) => {
+      // IDs as returned by the Ollama Cloud API (already include :cloud or -cloud suffix)
       const ALLOWED_CLOUD_MODELS = [
-        "gemini-3-flash-preview",
-        "kimi-k2.5",
-        "mistral-large-3:675b",
-        "qwen3.5:397b",
+        "gemini-3-flash-preview:cloud",
+        "kimi-k2.5:cloud",
+        "mistral-large-3:675b-cloud",
+        "qwen3.5:397b-cloud",
       ];
       return (data.data as { id: string }[])
         .filter((m) => ALLOWED_CLOUD_MODELS.includes(m.id))
-        .map((m) => {
-          const cloudId = m.id.includes(":") ? `${m.id}-cloud` : `${m.id}:cloud`;
-          return { id: `ollama-cloud/${cloudId}`, name: m.id };
-        })
+        .map((m) => ({
+          id: `ollama-cloud/${m.id}`,
+          name: m.id.replace(/(-cloud|:cloud)$/, ""),
+        }))
         .sort((a, b) => a.name.localeCompare(b.name));
     },
   },
