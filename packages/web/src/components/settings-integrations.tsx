@@ -19,7 +19,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { MoreHorizontal, Plus, Plug, CheckCircle2 } from "lucide-react";
+import { MoreHorizontal, Plus, Plug, CheckCircle2, Loader2 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
 import { AddIntegrationDialog } from "./add-integration-dialog";
@@ -187,7 +187,17 @@ export function SettingsIntegrations() {
             <CardContent className="pt-0">
               <TooltipProvider>
                 <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                  {conn.data?.lastSyncAt ? (
+                  {testing === conn.id ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span>Testing connection...</span>
+                    </>
+                  ) : syncing === conn.id ? (
+                    <>
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                      <span>Syncing schema...</span>
+                    </>
+                  ) : conn.data?.lastSyncAt ? (
                     <>
                       <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
                       <span>Connected</span>
