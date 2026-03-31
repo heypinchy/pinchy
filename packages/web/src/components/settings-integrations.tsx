@@ -126,118 +126,114 @@ export function SettingsIntegrations() {
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-lg font-medium">Integrations</h3>
-          <p className="text-sm text-muted-foreground">
-            Connect external systems to give agents access to business data.
-          </p>
-        </div>
-        <Button onClick={() => setShowAddDialog(true)}>
-          <Plus className="mr-2 h-4 w-4" />
-          Add Integration
-        </Button>
-      </div>
-
-      {connections.map((conn) => {
-        const categories = getAccessibleCategoryLabels(conn.data);
-        return (
-          <Card key={conn.id}>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
-              <div className="flex items-center gap-3">
-                <OdooIcon className="h-6 w-12 shrink-0" />
-                <CardTitle className="text-base">{conn.name}</CardTitle>
-              </div>
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <Button variant="ghost" size="icon">
-                    <MoreHorizontal className="h-4 w-4" />
-                  </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    onClick={() => testConnection(conn.id)}
-                    disabled={testing === conn.id}
-                  >
-                    {testing === conn.id ? "Testing..." : "Test Connection"}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => syncSchema(conn.id)}
-                    disabled={syncing === conn.id}
-                  >
-                    {syncing === conn.id ? "Syncing..." : "Sync Schema"}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    className="text-destructive"
-                    onClick={() => setDeleteTarget(conn)}
-                  >
-                    Delete
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <TooltipProvider>
-                <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                  {testing === conn.id ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      <span>Testing connection...</span>
-                    </>
-                  ) : syncing === conn.id ? (
-                    <>
-                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                      <span>Syncing schema...</span>
-                    </>
-                  ) : conn.data?.lastSyncAt ? (
-                    <>
-                      <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
-                      <span>Connected</span>
-                      <span>&middot;</span>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span className="cursor-default underline decoration-dotted underline-offset-4">
-                            {categories.length} data{" "}
-                            {categories.length === 1 ? "category" : "categories"}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>{categories.join(", ")}</p>
-                        </TooltipContent>
-                      </Tooltip>
-                      <span>&middot;</span>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span className="cursor-default underline decoration-dotted underline-offset-4">
-                            Synced {formatRelativeTime(conn.data.lastSyncAt)}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                          <p>{new Date(conn.data.lastSyncAt).toLocaleString()}</p>
-                        </TooltipContent>
-                      </Tooltip>
-                    </>
-                  ) : (
-                    <span>Not synced yet</span>
-                  )}
-                </div>
-              </TooltipProvider>
-            </CardContent>
-          </Card>
-        );
-      })}
-
-      {connections.length === 0 && (
-        <Card>
-          <CardContent className="flex flex-col items-center justify-center py-12">
-            <Plug className="h-12 w-12 text-muted-foreground/50 mb-4" />
-            <p className="text-muted-foreground">No integrations configured yet.</p>
-            <Button variant="outline" className="mt-4" onClick={() => setShowAddDialog(true)}>
-              Add your first integration
-            </Button>
-          </CardContent>
-        </Card>
-      )}
+      <Card>
+        <CardHeader className="flex flex-row items-center justify-between">
+          <CardTitle>Integrations</CardTitle>
+          <Button onClick={() => setShowAddDialog(true)}>
+            <Plus className="mr-2 h-4 w-4" />
+            Add Integration
+          </Button>
+        </CardHeader>
+        <CardContent>
+          {connections.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-8">
+              <Plug className="h-12 w-12 text-muted-foreground/50 mb-4" />
+              <p className="text-muted-foreground">No integrations configured yet.</p>
+              <Button variant="outline" className="mt-4" onClick={() => setShowAddDialog(true)}>
+                Add your first integration
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {connections.map((conn) => {
+                const categories = getAccessibleCategoryLabels(conn.data);
+                return (
+                  <div key={conn.id} className="rounded-lg border p-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        <OdooIcon className="h-6 w-12 shrink-0" />
+                        <span className="text-sm font-medium">{conn.name}</span>
+                      </div>
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <MoreHorizontal className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => testConnection(conn.id)}
+                            disabled={testing === conn.id}
+                          >
+                            {testing === conn.id ? "Testing..." : "Test Connection"}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => syncSchema(conn.id)}
+                            disabled={syncing === conn.id}
+                          >
+                            {syncing === conn.id ? "Syncing..." : "Sync Schema"}
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            className="text-destructive"
+                            onClick={() => setDeleteTarget(conn)}
+                          >
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                    <TooltipProvider>
+                      <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                        {testing === conn.id ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            <span>Testing connection...</span>
+                          </>
+                        ) : syncing === conn.id ? (
+                          <>
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            <span>Syncing schema...</span>
+                          </>
+                        ) : conn.data?.lastSyncAt ? (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+                            <span>Connected</span>
+                            <span>&middot;</span>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="cursor-default underline decoration-dotted underline-offset-4">
+                                  {categories.length} data{" "}
+                                  {categories.length === 1 ? "category" : "categories"}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p>{categories.join(", ")}</p>
+                              </TooltipContent>
+                            </Tooltip>
+                            <span>&middot;</span>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <span className="cursor-default underline decoration-dotted underline-offset-4">
+                                  Synced {formatRelativeTime(conn.data.lastSyncAt)}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p>{new Date(conn.data.lastSyncAt).toLocaleString()}</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          </>
+                        ) : (
+                          <span>Not synced yet</span>
+                        )}
+                      </div>
+                    </TooltipProvider>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       <AddIntegrationDialog
         open={showAddDialog}
