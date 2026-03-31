@@ -39,6 +39,23 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
     { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
   ],
+  ollama: [
+    { id: "ollama-cloud/deepseek-v3.2:cloud", name: "DeepSeek V3.2" },
+    { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "Gemini 3 Flash Preview" },
+    { id: "ollama-cloud/glm-4.7:cloud", name: "GLM 4.7" },
+    { id: "ollama-cloud/glm-5:cloud", name: "GLM-5" },
+    { id: "ollama-cloud/gpt-oss:120b-cloud", name: "GPT-OSS 120B" },
+    { id: "ollama-cloud/kimi-k2.5:cloud", name: "Kimi K2.5" },
+    { id: "ollama-cloud/minimax-m2.5:cloud", name: "MiniMax M2.5" },
+    { id: "ollama-cloud/minimax-m2.7:cloud", name: "MiniMax M2.7" },
+    { id: "ollama-cloud/ministral-3:14b-cloud", name: "Ministral 3 14B" },
+    { id: "ollama-cloud/mistral-large-3:675b-cloud", name: "Mistral Large 3 675B" },
+    { id: "ollama-cloud/nemotron-3-nano:30b-cloud", name: "Nemotron 3 Nano 30B" },
+    { id: "ollama-cloud/nemotron-3-super:cloud", name: "Nemotron 3 Super" },
+    { id: "ollama-cloud/qwen3-coder-next:cloud", name: "Qwen3 Coder Next" },
+    { id: "ollama-cloud/qwen3-next:80b-cloud", name: "Qwen3 Next 80B" },
+    { id: "ollama-cloud/qwen3.5:397b-cloud", name: "Qwen 3.5 397B" },
+  ],
 };
 
 interface ProviderFetchConfig {
@@ -84,6 +101,17 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
           name: m.displayName,
         })),
   },
+  ollama: {
+    url: () => "https://ollama.com/v1/models",
+    headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}` }),
+    transform: (data) =>
+      (data.data as { id: string }[]).map((m) => {
+        // Cloud model IDs: append "-cloud" to tag (e.g. qwen3.5:397b → qwen3.5:397b-cloud)
+        // or ":cloud" if no tag (e.g. minimax-m2.7 → minimax-m2.7:cloud)
+        const cloudId = m.id.includes(":") ? `${m.id}-cloud` : `${m.id}:cloud`;
+        return { id: `ollama-cloud/${cloudId}`, name: m.id };
+      }),
+  },
 };
 
 async function fetchModelsForProvider(
@@ -107,6 +135,7 @@ const DEFAULT_MODEL_PATTERNS: Record<ProviderName, RegExp> = {
   anthropic: /haiku/,
   openai: /gpt-.*-mini/,
   google: /gemini-.*-flash/,
+  ollama: /nano.*cloud/,
 };
 
 const PREVIEW_PATTERN = /preview/i;

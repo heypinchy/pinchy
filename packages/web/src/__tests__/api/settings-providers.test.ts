@@ -42,6 +42,13 @@ vi.mock("@/lib/providers", () => ({
       defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
+    ollama: {
+      name: "Ollama",
+      settingsKey: "ollama_api_key",
+      envVar: "OLLAMA_API_KEY",
+      defaultModel: "ollama-cloud/nemotron-3-nano:30b-cloud",
+      placeholder: "sk-...",
+    },
   },
 }));
 
@@ -113,6 +120,7 @@ describe("GET /api/settings/providers", () => {
         anthropic: { configured: false },
         openai: { configured: false },
         google: { configured: false },
+        ollama: { configured: false },
       },
     });
   });

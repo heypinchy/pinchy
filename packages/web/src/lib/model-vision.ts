@@ -22,7 +22,7 @@ export function isModelVisionCapable(modelId: string): boolean {
     return true;
   }
 
-  if (provider === "ollama") {
+  if (provider === "ollama" || provider === "ollama-cloud") {
     return VISION_OLLAMA_MODELS.some((prefix) => modelName.startsWith(prefix));
   }
 

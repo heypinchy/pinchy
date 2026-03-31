@@ -23,6 +23,13 @@ vi.mock("@/lib/providers", () => ({
       defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
+    ollama: {
+      name: "Ollama",
+      settingsKey: "ollama_api_key",
+      envVar: "OLLAMA_API_KEY",
+      defaultModel: "ollama-cloud/nemotron-3-nano:30b-cloud",
+      placeholder: "sk-...",
+    },
   },
 }));
 
@@ -219,6 +226,33 @@ describe("fetchProviderModels", () => {
     expect(google!.models).toEqual([{ id: "google/gemini-2.5-flash", name: "Gemini 2.0 Flash" }]);
   });
 
+  it("fetches and transforms Ollama models from OpenAI-compatible endpoint", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: "nemotron-3-nano:30b-cloud" },
+            { id: "kimi-k2.5:cloud" },
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+
+    const result = await fetchProviderModels();
+    const ollama = result.find((p) => p.id === "ollama");
+    expect(ollama).toBeDefined();
+    expect(ollama!.models).toEqual([
+      { id: "ollama-cloud/nemotron-3-nano:30b-cloud", name: "nemotron-3-nano:30b" },
+      { id: "ollama-cloud/kimi-k2.5:cloud", name: "kimi-k2.5" },
+    ]);
+  });
+
   it("uses fallback models when API returns non-ok status", async () => {
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "openai_api_key") return "sk-openai-test";
@@ -309,6 +343,16 @@ describe("selectDefaultModel", () => {
     expect(selectDefaultModel("google", models)).toBe("google/gemini-2.5-flash");
   });
 
+  it("selects the nano Ollama cloud model (nano.*cloud pattern)", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    const models = [
+      { id: "ollama-cloud/kimi-k2.5:cloud", name: "Kimi K2.5" },
+      { id: "ollama-cloud/nemotron-3-nano:30b-cloud", name: "nemotron-3-nano:30b" },
+      { id: "ollama-cloud/deepseek-v3.2:cloud", name: "DeepSeek V3.2" },
+    ];
+    expect(selectDefaultModel("ollama", models)).toBe("ollama-cloud/nemotron-3-nano:30b-cloud");
+  });
+
   it("prefers stable versions over preview versions", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
@@ -388,12 +432,12 @@ describe("vision capability detection", () => {
     expect(isModelVisionCapable("google/gemini-2.5-flash")).toBe(true);
 
     // Unknown provider → not vision-capable (conservative default)
-    expect(isModelVisionCapable("ollama/llama3.1:8b")).toBe(false);
+    expect(isModelVisionCapable("ollama-cloud/llama3.1:8b")).toBe(false);
     expect(isModelVisionCapable("unknown/model")).toBe(false);
 
     // Known vision-capable Ollama models
-    expect(isModelVisionCapable("ollama/llava")).toBe(true);
-    expect(isModelVisionCapable("ollama/llama3.2-vision")).toBe(true);
-    expect(isModelVisionCapable("ollama/qwen2.5-vl:7b")).toBe(true);
+    expect(isModelVisionCapable("ollama-cloud/llava")).toBe(true);
+    expect(isModelVisionCapable("ollama-cloud/llama3.2-vision")).toBe(true);
+    expect(isModelVisionCapable("ollama-cloud/qwen2.5-vl:7b")).toBe(true);
   });
 });
