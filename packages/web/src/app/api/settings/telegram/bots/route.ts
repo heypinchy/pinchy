@@ -10,24 +10,14 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const userId = session.user.id;
-  const isAdmin = session.user.role === "admin";
+  // No visibility filtering — this endpoint answers "which Telegram bots exist?"
+  // for the pairing UI. All authenticated users need to see available bots to
+  // link their Telegram account, regardless of agent access permissions.
+  // Access control happens via allow-from stores, not here.
   const allAgents = await db.query.agents.findMany();
 
-  // Filter agents the user can access (admins see all)
-  const accessibleAgents = isAdmin
-    ? allAgents
-    : allAgents.filter((agent) => {
-        // Personal agents: only owner
-        if (agent.isPersonal) return agent.ownerId === userId;
-        // Restricted visibility: would need group check (skip for non-admin)
-        if (agent.visibility === "restricted") return false;
-        return true;
-      });
-
-  // Find agents with configured Telegram bots
   const bots: { agentId: string; agentName: string; botUsername: string }[] = [];
-  for (const agent of accessibleAgents) {
+  for (const agent of allAgents) {
     const botUsername = await getSetting(`telegram_bot_username:${agent.id}`);
     if (botUsername) {
       bots.push({

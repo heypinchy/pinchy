@@ -81,39 +81,30 @@ describe("GET /api/settings/telegram/bots", () => {
     ]);
   });
 
-  it("excludes personal agents of other users for members", async () => {
+  it("shows all bots to non-admin users (no visibility filtering for pairing)", async () => {
     mockGetSession.mockResolvedValueOnce(memberSession);
     vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
-      { id: "a1", name: "Smithers", isPersonal: false, visibility: "all" },
-      { id: "a2", name: "My Bot", isPersonal: true, ownerId: "user-1" },
+      // Admin's personal Smithers with bot — non-admin user needs to see this for pairing
+      { id: "a1", name: "Smithers", isPersonal: true, ownerId: "user-1" },
+      // Shared agent with restricted visibility
+      { id: "a2", name: "Support", isPersonal: false, visibility: "restricted" },
     ] as any);
     mockGetSetting.mockImplementation(async (key: string) => {
       if (key === "telegram_bot_username:a1") return "acme_smithers_bot";
-      if (key === "telegram_bot_username:a2") return "my_bot";
+      if (key === "telegram_bot_username:a2") return "support_bot";
       return null;
     });
 
     const response = await GET();
     const data = await response.json();
 
-    expect(data.bots).toEqual([
-      { agentId: "a1", agentName: "Smithers", botUsername: "acme_smithers_bot" },
-    ]);
-  });
-
-  it("includes personal agents of the current user", async () => {
-    mockGetSession.mockResolvedValueOnce(memberSession);
-    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
-      { id: "a2", name: "My Bot", isPersonal: true, ownerId: "user-2" },
-    ] as any);
-    mockGetSetting.mockImplementation(async (key: string) => {
-      if (key === "telegram_bot_username:a2") return "my_bot";
-      return null;
-    });
-
-    const response = await GET();
-    const data = await response.json();
-
-    expect(data.bots).toEqual([{ agentId: "a2", agentName: "My Bot", botUsername: "my_bot" }]);
+    // Both bots visible — this endpoint is for pairing, not for agent access
+    expect(data.bots).toHaveLength(2);
+    expect(data.bots).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ botUsername: "acme_smithers_bot" }),
+        expect.objectContaining({ botUsername: "support_bot" }),
+      ])
+    );
   });
 });
