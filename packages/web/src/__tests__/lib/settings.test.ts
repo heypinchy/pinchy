@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+const { fromMock } = vi.hoisted(() => ({
+  fromMock: vi.fn().mockResolvedValue([]),
+}));
+
 vi.mock("@/db", () => ({
   db: {
     query: {
@@ -16,7 +20,7 @@ vi.mock("@/db", () => ({
       where: vi.fn().mockResolvedValue(undefined),
     }),
     select: vi.fn().mockReturnValue({
-      from: vi.fn().mockResolvedValue([]),
+      from: fromMock,
     }),
   },
 }));
@@ -61,7 +65,16 @@ describe("getSetting", () => {
 });
 
 describe("setSetting", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    // Re-wire insert mock after clearAllMocks
+    vi.mocked(db.insert).mockReturnValue({
+      values: vi.fn().mockReturnValue({
+        onConflictDoUpdate: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as never);
+  });
 
   it("stores plain value when encrypted=false", async () => {
     await setSetting("default_provider", "openai", false);
@@ -72,6 +85,11 @@ describe("setSetting", () => {
   it("encrypts value when encrypted=true", async () => {
     await setSetting("anthropic_api_key", "sk-ant-secret", true);
     expect(encrypt).toHaveBeenCalledWith("sk-ant-secret");
+    // verify the encrypted value is what gets stored
+    const valuesMock = vi.mocked(db.insert("" as never).values);
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ value: "encrypted:sk-ant-secret" })
+    );
     expect(db.insert).toHaveBeenCalled();
   });
 
@@ -82,11 +100,20 @@ describe("setSetting", () => {
 });
 
 describe("deleteSetting", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+
+    // Re-wire delete mock after clearAllMocks
+    vi.mocked(db.delete).mockReturnValue({
+      where: vi.fn().mockResolvedValue(undefined),
+    } as never);
+  });
 
   it("calls db.delete with the correct key", async () => {
     await deleteSetting("anthropic_api_key");
+    const whereMock = vi.mocked(db.delete("" as never).where);
     expect(db.delete).toHaveBeenCalled();
+    expect(whereMock).toHaveBeenCalled();
   });
 });
 
@@ -98,7 +125,7 @@ describe("getAllSettings", () => {
       { key: "default_provider", value: "anthropic", encrypted: false },
       { key: "anthropic_api_key", value: "encrypted:...", encrypted: true },
     ];
-    vi.mocked(db.select().from).mockResolvedValueOnce(rows);
+    fromMock.mockResolvedValueOnce(rows);
     const result = await getAllSettings();
     expect(result).toEqual(rows);
   });
