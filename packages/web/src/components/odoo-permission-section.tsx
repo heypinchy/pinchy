@@ -110,18 +110,31 @@ export function OdooPermissionSection({ agentId, onChange }: OdooPermissionSecti
       {/* Connection selector */}
       <div className="space-y-2">
         <Label>Connection</Label>
-        <Select value={connectionId} onValueChange={setConnectionId}>
-          <SelectTrigger className="w-full max-w-sm">
-            <SelectValue placeholder="Select a connection..." />
-          </SelectTrigger>
-          <SelectContent>
-            {connections.map((conn) => (
-              <SelectItem key={conn.id} value={conn.id}>
-                {conn.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <div className="flex items-center gap-2">
+          <Select value={connectionId} onValueChange={setConnectionId}>
+            <SelectTrigger className="w-full max-w-sm">
+              <SelectValue placeholder="Select a connection..." />
+            </SelectTrigger>
+            <SelectContent>
+              {connections.map((conn) => (
+                <SelectItem key={conn.id} value={conn.id}>
+                  {conn.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {connectionId && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="h-9 w-9 shrink-0"
+              onClick={() => setConnectionId("")}
+              aria-label="Clear connection"
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
       </div>
 
       {/* Only show access level + models when a connection is selected */}
