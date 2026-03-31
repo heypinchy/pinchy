@@ -8,7 +8,7 @@ import { AgentSettingsPageContent as AgentSettingsPage } from "@/components/agen
 let capturedOnChangeGeneral: ((v: unknown, isDirty: boolean) => void) | undefined;
 let capturedOnChangePersonality: ((v: unknown, isDirty: boolean) => void) | undefined;
 let capturedOnChangeInstructions: ((v: string, isDirty: boolean) => void) | undefined;
-let capturedOnChangePermissions: ((v: unknown, isDirty: boolean) => void) | undefined;
+let _capturedOnChangePermissions: ((v: unknown, isDirty: boolean) => void) | undefined;
 
 vi.mock("@/components/agent-settings-general", () => ({
   AgentSettingsGeneral: (props: { onChange: (v: unknown, isDirty: boolean) => void }) => {
@@ -33,14 +33,8 @@ vi.mock("@/components/agent-settings-file", () => ({
 
 vi.mock("@/components/agent-settings-permissions", () => ({
   AgentSettingsPermissions: (props: { onChange: (v: unknown, isDirty: boolean) => void }) => {
-    capturedOnChangePermissions = props.onChange;
+    _capturedOnChangePermissions = props.onChange;
     return <div data-testid="permissions-tab">Permissions</div>;
-  },
-}));
-
-vi.mock("@/components/agent-integrations-tab", () => ({
-  AgentIntegrationsTab: (props: { onChange: (v: unknown, isDirty: boolean) => void }) => {
-    return <div data-testid="integrations-tab">Integrations</div>;
   },
 }));
 
@@ -110,7 +104,7 @@ describe("AgentSettingsPage", () => {
     capturedOnChangeGeneral = undefined;
     capturedOnChangePersonality = undefined;
     capturedOnChangeInstructions = undefined;
-    capturedOnChangePermissions = undefined;
+    _capturedOnChangePermissions = undefined;
     mockTriggerRestart.mockClear();
     fetchSpy = mockFetchResponses();
   });

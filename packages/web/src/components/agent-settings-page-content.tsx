@@ -23,8 +23,6 @@ import { AgentSettingsFile } from "@/components/agent-settings-file";
 import { AgentSettingsPersonality } from "@/components/agent-settings-personality";
 import { AgentSettingsPermissions } from "@/components/agent-settings-permissions";
 import { AgentSettingsAccess } from "@/components/agent-settings-access";
-import { AgentIntegrationsTab } from "@/components/agent-integrations-tab";
-import type { IntegrationsValues } from "@/components/agent-integrations-tab";
 import { useRestart } from "@/components/restart-provider";
 
 interface Agent {
@@ -78,9 +76,7 @@ interface AccessValues {
   groupIds: string[];
 }
 
-type DirtyTabs = Set<
-  "general" | "personality" | "instructions" | "permissions" | "integrations" | "access"
->;
+type DirtyTabs = Set<"general" | "personality" | "instructions" | "permissions" | "access">;
 
 function DirtyDot() {
   return (
@@ -114,7 +110,6 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   const personalityDraft = useRef<PersonalityValues | null>(null);
   const instructionsDraft = useRef<string | null>(null);
   const permissionsDraft = useRef<PermissionsValues | null>(null);
-  const integrationsDraft = useRef<IntegrationsValues | null>(null);
   const accessDraft = useRef<AccessValues | null>(null);
 
   const [dirtyTabs, setDirtyTabs] = useState<DirtyTabs>(new Set());
@@ -198,19 +193,6 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
     });
   }, []);
 
-  const handleIntegrationsChange = useCallback(
-    (values: IntegrationsValues | null, isDirty: boolean) => {
-      integrationsDraft.current = values;
-      setDirtyTabs((prev) => {
-        const next = new Set(prev);
-        if (isDirty) next.add("integrations");
-        else next.delete("integrations");
-        return next;
-      });
-    },
-    []
-  );
-
   const handleAccessChange = useCallback((values: AccessValues, isDirty: boolean) => {
     accessDraft.current = values;
     setDirtyTabs((prev) => {
@@ -221,8 +203,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
     });
   }, []);
 
-  const needsRestart =
-    dirtyTabs.has("general") || dirtyTabs.has("permissions") || dirtyTabs.has("integrations");
+  const needsRestart = dirtyTabs.has("general") || dirtyTabs.has("permissions");
   const hasDirtyTabs = dirtyTabs.size > 0;
 
   // Warn user before navigating away with unsaved changes
@@ -258,6 +239,17 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
       if (dirtyTabs.has("permissions") && permissionsDraft.current) {
         agentPatch.allowedTools = permissionsDraft.current.allowedTools;
         agentPatch.pluginConfig = { allowed_paths: permissionsDraft.current.allowedPaths };
+
+        // Also save integration permissions if configured
+        if (permissionsDraft.current.integrations) {
+          savePromises.push(
+            fetch(`/api/agents/${agentId}/integrations`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(permissionsDraft.current.integrations),
+            })
+          );
+        }
       }
       if (dirtyTabs.has("access") && accessDraft.current) {
         agentPatch.visibility = accessDraft.current.visibility;
@@ -290,16 +282,6 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
             method: "PUT",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ content: instructionsDraft.current }),
-          })
-        );
-      }
-
-      if (dirtyTabs.has("integrations") && integrationsDraft.current) {
-        savePromises.push(
-          fetch(`/api/agents/${agentId}/integrations`, {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(integrationsDraft.current),
           })
         );
       }
@@ -389,11 +371,6 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
               </TabsTrigger>
             )}
             {showPermissions && (
-              <TabsTrigger value="integrations">
-                Integrations {dirtyTabs.has("integrations") && <DirtyDot />}
-              </TabsTrigger>
-            )}
-            {showPermissions && (
               <TabsTrigger value="access">
                 Access {dirtyTabs.has("access") && <DirtyDot />}
               </TabsTrigger>
@@ -442,12 +419,6 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
           )}
 
           {showPermissions && (
-            <TabsContent value="integrations" keepMounted>
-              <AgentIntegrationsTab agentId={agentId} onChange={handleIntegrationsChange} />
-            </TabsContent>
-          )}
-
-          {showPermissions && (
             <TabsContent value="access" keepMounted>
               <AgentSettingsAccess
                 agent={{ visibility: agent.visibility }}
@@ -491,7 +462,6 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
                   {dirtyTabs.has("personality") && <li>Personality (avatar, soul)</li>}
                   {dirtyTabs.has("instructions") && <li>Instructions</li>}
                   {dirtyTabs.has("permissions") && <li>Permissions</li>}
-                  {dirtyTabs.has("integrations") && <li>Integration permissions</li>}
                   {dirtyTabs.has("access") && <li>Access</li>}
                 </ul>
                 <span className="block mt-3 text-muted-foreground">
