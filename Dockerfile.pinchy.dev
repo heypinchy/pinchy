@@ -21,4 +21,4 @@ ENV PORT=7777
 
 WORKDIR /app/packages/web
 
-CMD ["sh", "-c", "pnpm db:migrate && pnpm dev"]
+CMD ["sh", "-c", "rm -rf .next && pnpm db:migrate && pnpm dev"]
