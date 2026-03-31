@@ -271,12 +271,12 @@ describe("PATCH /api/agents/[agentId]", () => {
       id: "agent-1",
       name: "Shared Agent",
       model: "anthropic/claude-sonnet-4-20250514",
-      allowedTools: ["shell", "pinchy_ls"],
+      allowedTools: ["odoo_read", "pinchy_ls"],
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
-      body: JSON.stringify({ allowedTools: ["shell", "pinchy_ls"] }),
+      body: JSON.stringify({ allowedTools: ["odoo_read", "pinchy_ls"] }),
       headers: { "Content-Type": "application/json" },
     });
     const response = await PATCH(request, {
@@ -285,7 +285,7 @@ describe("PATCH /api/agents/[agentId]", () => {
     expect(response.status).toBe(200);
 
     expect(updateAgent).toHaveBeenCalledWith("agent-1", {
-      allowedTools: ["shell", "pinchy_ls"],
+      allowedTools: ["odoo_read", "pinchy_ls"],
     });
   });
 
@@ -304,7 +304,7 @@ describe("PATCH /api/agents/[agentId]", () => {
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
-      body: JSON.stringify({ allowedTools: ["shell"] }),
+      body: JSON.stringify({ allowedTools: ["odoo_read"] }),
       headers: { "Content-Type": "application/json" },
     });
     const response = await PATCH(request, {
@@ -331,7 +331,7 @@ describe("PATCH /api/agents/[agentId]", () => {
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
-      body: JSON.stringify({ allowedTools: ["shell"] }),
+      body: JSON.stringify({ allowedTools: ["odoo_read"] }),
       headers: { "Content-Type": "application/json" },
     });
     const response = await PATCH(request, {

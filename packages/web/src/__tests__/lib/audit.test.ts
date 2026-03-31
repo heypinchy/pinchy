@@ -130,7 +130,7 @@ describe("computeRowHmac", () => {
 
 describe("truncateDetail", () => {
   it("should return small objects unchanged", () => {
-    const detail = { tool: "shell", success: true };
+    const detail = { tool: "odoo_read", success: true };
     expect(truncateDetail(detail)).toEqual(detail);
   });
 

@@ -672,12 +672,12 @@ describe("PATCH /api/agents/[agentId] config regeneration", () => {
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
       name: "Test Agent",
-      allowedTools: ["shell"],
+      allowedTools: ["odoo_read"],
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
-      body: JSON.stringify({ allowedTools: ["shell"] }),
+      body: JSON.stringify({ allowedTools: ["odoo_read"] }),
       headers: { "Content-Type": "application/json" },
     });
 
