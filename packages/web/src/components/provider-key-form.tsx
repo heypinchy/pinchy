@@ -31,7 +31,7 @@ const providerKeySchema = z.object({
 
 type ProviderKeyFormValues = z.infer<typeof providerKeySchema>;
 
-type ProviderName = "anthropic" | "openai" | "google";
+type ProviderName = "anthropic" | "openai" | "google" | "ollama";
 
 interface ProviderStep {
   label: string;
@@ -98,6 +98,23 @@ const PROVIDERS: Record<
         },
         { label: "Click Get API key in the left sidebar" },
         { label: "Click Create API key and copy it" },
+      ],
+    },
+  },
+  ollama: {
+    name: "Ollama",
+    placeholder: "sk-...",
+    prefix: "sk-",
+    guide: {
+      keyUrl: "https://ollama.com/settings/keys",
+      steps: [
+        {
+          label: "Sign up at ollama.com",
+          optional: true,
+          link: { text: "ollama.com", url: "https://ollama.com" },
+        },
+        { label: "Go to Settings > API Keys" },
+        { label: "Click Create Key and copy it immediately" },
       ],
     },
   },
@@ -211,7 +228,7 @@ export function ProviderKeyForm({
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
         <div className="space-y-2">
           <Label>Provider</Label>
-          <div className="grid grid-cols-3 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
             {(Object.entries(PROVIDERS) as [ProviderName, (typeof PROVIDERS)[ProviderName]][]).map(
               ([key, config]) => (
                 <div key={key} className="flex flex-col items-center gap-1">

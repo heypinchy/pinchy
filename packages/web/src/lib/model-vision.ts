@@ -22,6 +22,10 @@ export function isModelVisionCapable(modelId: string): boolean {
     return true;
   }
 
+  if (provider === "ollama-cloud") {
+    return true;
+  }
+
   if (provider === "ollama") {
     return VISION_OLLAMA_MODELS.some((prefix) => modelName.startsWith(prefix));
   }

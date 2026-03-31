@@ -224,6 +224,27 @@ export async function regenerateOpenClawConfig() {
     config.plugins = { allow: allowedPlugins, entries };
   }
 
+  // Add Ollama cloud provider config when configured.
+  // Must match OpenClaw's expected format exactly: apiKey + api mode + explicit models.
+  const ollamaKey = await getSetting(PROVIDERS.ollama.settingsKey);
+  if (ollamaKey) {
+    (config as Record<string, unknown>).models = {
+      providers: {
+        "ollama-cloud": {
+          baseUrl: "https://ollama.com/v1",
+          apiKey: ollamaKey,
+          api: "openai-completions",
+          models: [
+            { id: "gemini-3-flash-preview:cloud", name: "Gemini 3 Flash Preview", contextWindow: 1048576, maxTokens: 65536 },
+            { id: "kimi-k2.5:cloud", name: "Kimi K2.5", contextWindow: 262144, maxTokens: 8192 },
+            { id: "mistral-large-3:675b-cloud", name: "Mistral Large 3 675B", contextWindow: 131072, maxTokens: 8192 },
+            { id: "qwen3.5:397b-cloud", name: "Qwen 3.5 397B", contextWindow: 262144, maxTokens: 8192 },
+          ],
+        },
+      },
+    };
+  }
+
   const dir = dirname(CONFIG_PATH);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });

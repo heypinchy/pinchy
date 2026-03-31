@@ -84,6 +84,13 @@ vi.mock("@/lib/providers", () => ({
       defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
+    ollama: {
+      name: "Ollama",
+      settingsKey: "ollama_api_key",
+      envVar: "OLLAMA_API_KEY",
+      defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+      placeholder: "sk-...",
+    },
   },
 }));
 
