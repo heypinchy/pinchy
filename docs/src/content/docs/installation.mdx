@@ -15,7 +15,7 @@ import { Aside } from "@astrojs/starlight/components";
 
 - Docker Engine 20.10+ and Docker Compose v2+
 - 4 GB RAM minimum (for Pinchy + OpenClaw + PostgreSQL)
-- An LLM provider API key (Anthropic, OpenAI, or Google)
+- An LLM provider API key (Anthropic, OpenAI, Google, or Ollama)
 
 ## Docker Compose (recommended)
 
@@ -135,11 +135,11 @@ For local development without Docker (except for the database and OpenClaw):
 # Install dependencies
 pnpm install
 
-# Start database and OpenClaw in Docker (dev override exposes port 5433)
+# Start database and OpenClaw in Docker (dev override exposes port 5434)
 docker compose -f docker-compose.yml -f docker-compose.dev.yml up db openclaw -d
 
 # Set database URL for local dev
-export DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5433/pinchy
+export DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5434/pinchy
 
 # Run database migrations
 pnpm db:migrate

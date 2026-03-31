@@ -39,6 +39,12 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
     { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
   ],
+  ollama: [
+    { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "Gemini 3 Flash Preview" },
+    { id: "ollama-cloud/kimi-k2.5:cloud", name: "Kimi K2.5" },
+    { id: "ollama-cloud/mistral-large-3:675b-cloud", name: "Mistral Large 3 675B" },
+    { id: "ollama-cloud/qwen3.5:397b-cloud", name: "Qwen 3.5 397B" },
+  ],
 };
 
 interface ProviderFetchConfig {
@@ -84,6 +90,26 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
           name: m.displayName,
         })),
   },
+  ollama: {
+    url: () => "https://ollama.com/v1/models",
+    headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}` }),
+    transform: (data) => {
+      // IDs as returned by the Ollama Cloud API (already include :cloud or -cloud suffix)
+      const ALLOWED_CLOUD_MODELS = [
+        "gemini-3-flash-preview:cloud",
+        "kimi-k2.5:cloud",
+        "mistral-large-3:675b-cloud",
+        "qwen3.5:397b-cloud",
+      ];
+      return (data.data as { id: string }[])
+        .filter((m) => ALLOWED_CLOUD_MODELS.includes(m.id))
+        .map((m) => ({
+          id: `ollama-cloud/${m.id}`,
+          name: m.id.replace(/(-cloud|:cloud)$/, ""),
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name));
+    },
+  },
 };
 
 async function fetchModelsForProvider(
@@ -107,6 +133,7 @@ const DEFAULT_MODEL_PATTERNS: Record<ProviderName, RegExp> = {
   anthropic: /haiku/,
   openai: /gpt-.*-mini/,
   google: /gemini-.*-flash/,
+  ollama: /flash.*cloud/,
 };
 
 const PREVIEW_PATTERN = /preview/i;

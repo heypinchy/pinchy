@@ -8,7 +8,7 @@ This guide walks you through getting Pinchy up and running — from cloning the 
 ## Prerequisites
 
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) (v2+)
-- An API key from an LLM provider (Anthropic, OpenAI, or Google)
+- An API key from an LLM provider (Anthropic, OpenAI, Google, or Ollama)
 
 ## 1. Clone the repository
 
@@ -41,13 +41,14 @@ Enter your name, email, and password. This creates the first admin user.
 
 After creating your account, Pinchy redirects you to the provider setup page. Choose your LLM provider and enter your API key:
 
-![Provider configuration — select Anthropic, OpenAI, or Google](/screenshots/provider-settings.png)
+![Provider configuration — select Anthropic, OpenAI, Google, or Ollama](/screenshots/provider-settings.png)
 
 | Provider  | Where to get a key                                          |
 | --------- | ----------------------------------------------------------- |
 | Anthropic | [console.anthropic.com](https://console.anthropic.com/)     |
 | OpenAI    | [platform.openai.com](https://platform.openai.com/api-keys) |
 | Google    | [aistudio.google.com](https://aistudio.google.com/apikey)   |
+| Ollama    | [ollama.com](https://ollama.com/settings/keys)              |
 
 Your API key is encrypted at rest using AES-256-GCM before being stored in the database.
 

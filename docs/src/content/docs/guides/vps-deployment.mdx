@@ -63,8 +63,8 @@ You also need:
 2. **Download and start Pinchy**
 
    ```bash
-   git clone https://github.com/heypinchy/pinchy.git
-   cd pinchy
+   git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
+   cd /opt/pinchy
    git checkout %%PINCHY_VERSION%%
    docker compose up --build -d
    ```
@@ -162,7 +162,7 @@ See the [Hardening Guide](/guides/hardening/#reverse-proxy-with-tls) for nginx e
 By default, Pinchy auto-generates secrets on first start and persists them in Docker volumes. For production, pin your own secrets so they don't depend on Docker volumes surviving. Add these lines to your `.env` file:
 
 ```bash
-nano /root/pinchy/.env
+nano /opt/pinchy/.env
 ```
 
 ```bash
@@ -185,7 +185,7 @@ openssl rand -hex 32
 Copy each output and paste it as the value in your `.env` file. Then restart:
 
 ```bash
-cd /root/pinchy
+cd /opt/pinchy
 docker compose down && docker compose up -d
 ```
 
@@ -235,7 +235,7 @@ The last line ensures swap is re-enabled after a server reboot.
 To update to a new release:
 
 ```bash
-cd /root/pinchy
+cd /opt/pinchy
 git fetch --tags
 git checkout v0.3.0   # replace with the new version
 docker compose up --build -d

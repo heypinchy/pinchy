@@ -6,12 +6,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
-
-concurrency:
-  group: pages
-  cancel-in-progress: false
 
 jobs:
   release:
@@ -27,47 +21,3 @@ jobs:
           files: |
             docs/public/installing.html
             docs/public/cloud-init.yml
-
-  docs-build:
-    name: Build Docs
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-          cache-dependency-path: docs/pnpm-lock.yaml
-
-      - name: Install dependencies
-        working-directory: docs
-        run: pnpm install --frozen-lockfile
-
-      - name: Build
-        working-directory: docs
-        run: pnpm build
-        env:
-          UMAMI_WEBSITE_ID: ${{ vars.UMAMI_DOCS_WEBSITE_ID }}
-
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: docs/dist
-
-  docs-deploy:
-    name: Deploy Docs
-    needs: docs-build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4

@@ -265,7 +265,7 @@ List all users.
 
 ### `DELETE /api/users/:id`
 
-Delete a user and cascade-delete their personal agents.
+Deactivate a user (soft delete — sets banned status). Their personal agents are removed from the shared view but the account record is retained and can be reactivated via `POST /api/users/:id/reactivate`.
 
 **Response:** `200 OK`
 

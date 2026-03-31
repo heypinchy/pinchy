@@ -23,6 +23,13 @@ vi.mock("@/lib/providers", () => ({
       defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
+    ollama: {
+      name: "Ollama",
+      settingsKey: "ollama_api_key",
+      envVar: "OLLAMA_API_KEY",
+      defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+      placeholder: "sk-...",
+    },
   },
 }));
 
@@ -219,6 +226,34 @@ describe("fetchProviderModels", () => {
     expect(google!.models).toEqual([{ id: "google/gemini-2.5-flash", name: "Gemini 2.0 Flash" }]);
   });
 
+  it("fetches and transforms Ollama models from OpenAI-compatible endpoint", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [
+            { id: "gemini-3-flash-preview:cloud" },
+            { id: "kimi-k2.5:cloud" },
+            { id: "nemotron-3-nano:30b-cloud" }, // not in allowed list, filtered out
+          ],
+        }),
+        { status: 200 }
+      )
+    );
+
+    const result = await fetchProviderModels();
+    const ollama = result.find((p) => p.id === "ollama");
+    expect(ollama).toBeDefined();
+    expect(ollama!.models).toEqual([
+      { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "gemini-3-flash-preview" },
+      { id: "ollama-cloud/kimi-k2.5:cloud", name: "kimi-k2.5" },
+    ]);
+  });
+
   it("uses fallback models when API returns non-ok status", async () => {
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "openai_api_key") return "sk-openai-test";
@@ -309,6 +344,16 @@ describe("selectDefaultModel", () => {
     expect(selectDefaultModel("google", models)).toBe("google/gemini-2.5-flash");
   });
 
+  it("falls back to hardcoded default when all flash candidates are preview versions (ollama)", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    const models = [
+      { id: "ollama-cloud/kimi-k2.5:cloud", name: "Kimi K2.5" },
+      { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "Gemini 3 Flash Preview" },
+      { id: "ollama-cloud/qwen3.5:397b-cloud", name: "Qwen 3.5 397B" },
+    ];
+    expect(selectDefaultModel("ollama", models)).toBe("ollama-cloud/gemini-3-flash-preview:cloud");
+  });
+
   it("prefers stable versions over preview versions", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
@@ -387,13 +432,16 @@ describe("vision capability detection", () => {
     expect(isModelVisionCapable("openai/gpt-4o")).toBe(true);
     expect(isModelVisionCapable("google/gemini-2.5-flash")).toBe(true);
 
+    // ollama-cloud provider → all models vision-capable
+    expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b-cloud")).toBe(true);
+    expect(isModelVisionCapable("ollama-cloud/kimi-k2.5:cloud")).toBe(true);
+
     // Unknown provider → not vision-capable (conservative default)
-    expect(isModelVisionCapable("ollama/llama3.1:8b")).toBe(false);
     expect(isModelVisionCapable("unknown/model")).toBe(false);
 
-    // Known vision-capable Ollama models
+    // Local ollama → per-model check
+    expect(isModelVisionCapable("ollama/llama3.1:8b")).toBe(false);
     expect(isModelVisionCapable("ollama/llava")).toBe(true);
     expect(isModelVisionCapable("ollama/llama3.2-vision")).toBe(true);
-    expect(isModelVisionCapable("ollama/qwen2.5-vl:7b")).toBe(true);
   });
 });
