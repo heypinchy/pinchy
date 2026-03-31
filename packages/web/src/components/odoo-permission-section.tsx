@@ -22,8 +22,9 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { useOdooPermissions, type Operation } from "@/hooks/use-odoo-permissions";
+import { useOdooPermissions, type Operation, type OdooModel } from "@/hooks/use-odoo-permissions";
 import type { OdooAccessLevel } from "@/lib/tool-registry";
+import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
 
 const OPERATIONS: readonly Operation[] = ["read", "create", "write", "delete"];
 
@@ -33,6 +34,31 @@ const ACCESS_LEVEL_OPTIONS: { value: OdooAccessLevel; label: string }[] = [
   { value: "full", label: "Full" },
   { value: "custom", label: "Custom" },
 ];
+
+/** Group models by their MODEL_CATEGORIES category. Uncategorized models go into "Other". */
+function groupModelsByCategory(models: OdooModel[]): Array<{ label: string; models: OdooModel[] }> {
+  const modelSet = new Set(models.map((m) => m.model));
+  const groups: Array<{ label: string; models: OdooModel[] }> = [];
+
+  for (const cat of MODEL_CATEGORIES) {
+    const catModels = cat.models
+      .filter((m) => modelSet.has(m.model))
+      .map((m) => models.find((am) => am.model === m.model)!)
+      .filter(Boolean);
+    if (catModels.length > 0) {
+      groups.push({ label: cat.label, models: catModels });
+    }
+  }
+
+  // Any models not in any category
+  const categorized = new Set(MODEL_CATEGORIES.flatMap((c) => c.models.map((m) => m.model)));
+  const uncategorized = models.filter((m) => !categorized.has(m.model));
+  if (uncategorized.length > 0) {
+    groups.push({ label: "Other", models: uncategorized });
+  }
+
+  return groups;
+}
 
 interface OdooPermissionSectionProps {
   agentId: string;
@@ -187,11 +213,14 @@ export function OdooPermissionSection({ agentId, onChange }: OdooPermissionSecti
                   {/* Rows */}
                   <div className="max-h-[400px] overflow-y-auto">
                     {Array.from(addedModels.entries()).map(([modelId, ops]) => {
-                      // Look up display name from connection models
+                      // Look up display name and category from connection models
                       const modelInfo = selectedConnection?.data?.models?.find(
                         (m) => m.model === modelId
                       );
                       const displayName = modelInfo?.name ?? modelId;
+                      const category = MODEL_CATEGORIES.find((c) =>
+                        c.models.some((m) => m.model === modelId)
+                      );
 
                       return (
                         <div
@@ -199,7 +228,14 @@ export function OdooPermissionSection({ agentId, onChange }: OdooPermissionSecti
                           className="grid grid-cols-[1fr_60px_60px_60px_60px_40px] gap-2 border-b px-4 py-2 last:border-b-0 items-center"
                         >
                           <div>
-                            <div className="text-sm font-medium">{displayName}</div>
+                            <div className="text-sm font-medium">
+                              {category && (
+                                <span className="text-muted-foreground font-normal">
+                                  {category.label}:{" "}
+                                </span>
+                              )}
+                              {displayName}
+                            </div>
                             <div className="text-xs text-muted-foreground">{modelId}</div>
                           </div>
                           {OPERATIONS.map((op) => (
@@ -244,23 +280,25 @@ export function OdooPermissionSection({ agentId, onChange }: OdooPermissionSecti
                       <CommandInput placeholder="Search models..." />
                       <CommandList>
                         <CommandEmpty>No models found.</CommandEmpty>
-                        <CommandGroup>
-                          {availableModels.map((m) => (
-                            <CommandItem
-                              key={m.model}
-                              value={`${m.name} ${m.model}`}
-                              onSelect={() => {
-                                addModel(m.model);
-                                setAddModelOpen(false);
-                              }}
-                            >
-                              <div>
-                                <div className="text-sm">{m.name}</div>
-                                <div className="text-xs text-muted-foreground">{m.model}</div>
-                              </div>
-                            </CommandItem>
-                          ))}
-                        </CommandGroup>
+                        {groupModelsByCategory(availableModels).map(({ label, models }) => (
+                          <CommandGroup key={label} heading={label}>
+                            {models.map((m) => (
+                              <CommandItem
+                                key={m.model}
+                                value={`${label} ${m.name} ${m.model}`}
+                                onSelect={() => {
+                                  addModel(m.model);
+                                  setAddModelOpen(false);
+                                }}
+                              >
+                                <div>
+                                  <div className="text-sm">{m.name}</div>
+                                  <div className="text-xs text-muted-foreground">{m.model}</div>
+                                </div>
+                              </CommandItem>
+                            ))}
+                          </CommandGroup>
+                        ))}
                       </CommandList>
                     </Command>
                   </PopoverContent>
