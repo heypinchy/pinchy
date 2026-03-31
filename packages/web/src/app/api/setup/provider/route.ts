@@ -9,7 +9,7 @@ import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
 
-const VALID_PROVIDERS: ProviderName[] = ["anthropic", "openai", "google", "ollama"];
+const VALID_PROVIDERS = Object.keys(PROVIDERS) as ProviderName[];
 
 export async function POST(request: NextRequest) {
   const sessionOrError = await requireAdmin();

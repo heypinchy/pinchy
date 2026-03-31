@@ -255,4 +255,18 @@ describe("POST /api/setup/provider", () => {
     const data = await response.json();
     expect(data.error).toBe("Forbidden");
   });
+
+  it("should accept ollama as a valid provider", async () => {
+    const response = await POST(
+      makeRequest({ provider: "ollama", apiKey: "sk-ollama-valid" }) as any
+    );
+    expect(response.status).not.toBe(400);
+  });
+
+  it("should accept any provider in PROVIDERS without manual list maintenance", async () => {
+    // This test ensures VALID_PROVIDERS is derived from PROVIDERS, not hardcoded.
+    const response = await POST(makeRequest({ provider: "google", apiKey: "AIza-valid" }) as any);
+    const body = await response.json();
+    expect(body.error).not.toBe("Invalid provider");
+  });
 });
