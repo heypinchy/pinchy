@@ -106,10 +106,17 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
     headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}` }),
     transform: (data) =>
       (data.data as { id: string }[]).map((m) => {
-        // Cloud model IDs: append "-cloud" to tag (e.g. qwen3.5:397b → qwen3.5:397b-cloud)
-        // or ":cloud" if no tag (e.g. minimax-m2.7 → minimax-m2.7:cloud)
-        const cloudId = m.id.includes(":") ? `${m.id}-cloud` : `${m.id}:cloud`;
-        return { id: `ollama-cloud/${cloudId}`, name: m.id };
+        // The Ollama Cloud API returns IDs with the cloud suffix already present
+        // (e.g. "nemotron-3-nano:30b-cloud", "kimi-k2.5:cloud").
+        // Strip the cloud suffix for the human-readable name:
+        //   "nemotron-3-nano:30b-cloud" → "nemotron-3-nano:30b"
+        //   "kimi-k2.5:cloud"          → "kimi-k2.5"
+        const name = m.id.endsWith(":cloud")
+          ? m.id.slice(0, -":cloud".length)
+          : m.id.endsWith("-cloud") && m.id.includes(":")
+            ? m.id.slice(0, -"-cloud".length)
+            : m.id;
+        return { id: `ollama-cloud/${m.id}`, name };
       }),
   },
 };
