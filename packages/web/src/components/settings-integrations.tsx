@@ -25,7 +25,7 @@ import { toast } from "sonner";
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { OdooIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
-import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
+import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
 
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
@@ -43,14 +43,6 @@ function formatRelativeTime(dateString: string): string {
   if (diffDays < 30) return `${diffDays}d ago`;
 
   return date.toLocaleDateString();
-}
-
-function getAccessibleCategories(data: IntegrationConnection["data"]): string[] {
-  if (!data?.models) return [];
-  const modelNames = new Set(data.models.map((m: { model: string }) => m.model));
-  return MODEL_CATEGORIES.filter((cat) => cat.models.some((m) => modelNames.has(m.model))).map(
-    (cat) => cat.label
-  );
 }
 
 export function SettingsIntegrations() {
@@ -148,7 +140,7 @@ export function SettingsIntegrations() {
       </div>
 
       {connections.map((conn) => {
-        const categories = getAccessibleCategories(conn.data);
+        const categories = getAccessibleCategoryLabels(conn.data);
         return (
           <Card key={conn.id}>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">

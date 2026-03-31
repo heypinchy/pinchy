@@ -10,7 +10,7 @@ vi.mock("odoo-node", () => {
   };
 });
 
-import { fetchOdooSchema } from "../odoo-sync";
+import { fetchOdooSchema, getAccessibleCategoryLabels } from "../odoo-sync";
 
 const creds = { url: "https://odoo.example.com", db: "test", uid: 2, apiKey: "key" };
 
@@ -110,7 +110,7 @@ describe("fetchOdooSchema", () => {
       expect(inaccessible.length).toBeGreaterThan(0);
     });
 
-    it("includes category label and model names", async () => {
+    it("includes category label and model names in sync result", async () => {
       mockFields.mockResolvedValue([
         { name: "name", string: "Name", type: "char", required: true, readonly: false },
       ]);
@@ -124,5 +124,41 @@ describe("fetchOdooSchema", () => {
       expect(sales!.label).toBe("Sales");
       expect(sales!.accessibleModels).toContain("Orders");
     });
+  });
+});
+
+describe("getAccessibleCategoryLabels", () => {
+  it("returns labels for categories that have matching models", () => {
+    const data = {
+      models: [
+        { model: "sale.order", name: "Orders", fields: [] },
+        { model: "res.partner", name: "Contacts", fields: [] },
+      ],
+      lastSyncAt: "2026-03-31T10:00:00Z",
+    };
+
+    const labels = getAccessibleCategoryLabels(data);
+    expect(labels).toContain("Sales");
+    expect(labels).toContain("Contacts");
+    expect(labels).not.toContain("CRM");
+    expect(labels).not.toContain("HR");
+  });
+
+  it("returns empty array for null data", () => {
+    expect(getAccessibleCategoryLabels(null)).toEqual([]);
+  });
+
+  it("returns empty array for data without models", () => {
+    expect(getAccessibleCategoryLabels({ lastSyncAt: "2026-03-31T10:00:00Z" } as never)).toEqual(
+      []
+    );
+  });
+
+  it("returns empty array when no models match any category", () => {
+    const data = {
+      models: [{ model: "unknown.model", name: "Unknown", fields: [] }],
+      lastSyncAt: "2026-03-31T10:00:00Z",
+    };
+    expect(getAccessibleCategoryLabels(data)).toEqual([]);
   });
 });

@@ -114,6 +114,20 @@ export const MODEL_CATEGORIES: ModelCategory[] = [
   },
 ];
 
+/**
+ * Given synced schema data, return the labels of categories that have at least one accessible model.
+ * Used by the integration card to show a summary.
+ */
+export function getAccessibleCategoryLabels(
+  data: { models?: Array<{ model: string }> } | null
+): string[] {
+  if (!data?.models) return [];
+  const modelNames = new Set(data.models.map((m) => m.model));
+  return MODEL_CATEGORIES.filter((cat) => cat.models.some((m) => modelNames.has(m.model))).map(
+    (cat) => cat.label
+  );
+}
+
 /** Flat list of all known models (derived from categories). */
 const ALL_KNOWN_MODELS = MODEL_CATEGORIES.flatMap((cat) =>
   cat.models.map((m) => ({ ...m, category: cat.id }))
