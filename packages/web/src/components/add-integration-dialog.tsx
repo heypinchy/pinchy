@@ -552,20 +552,20 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
 
             <StepIndicator current={2} total={3} label="Sync Schema" />
 
-            <div className="flex flex-col items-center gap-4 py-8">
+            <div className="space-y-4">
               {!syncError && (
-                <>
+                <div className="flex flex-col items-center gap-3 py-6">
                   <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
                   <p className="text-sm text-muted-foreground">
                     {syncPhase === "creating"
                       ? "Creating integration..."
                       : "Syncing models from Odoo..."}
                   </p>
-                </>
+                </div>
               )}
 
               {syncError && isPermissionError && (
-                <div className="w-full space-y-4">
+                <>
                   <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950">
                     <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
                     <div className="space-y-2">
@@ -588,7 +588,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                       </div>
                     </div>
                   </div>
-                  <div className="flex justify-center">
+                  <div className="flex justify-end">
                     <Button
                       onClick={() => {
                         setSyncError(null);
@@ -598,11 +598,11 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                       Retry
                     </Button>
                   </div>
-                </div>
+                </>
               )}
 
               {syncError && !isPermissionError && (
-                <div className="w-full space-y-4">
+                <>
                   <div className="flex items-start gap-3 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
                     <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
                     <div className="space-y-1">
@@ -610,7 +610,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                       <p className="text-sm text-muted-foreground">{syncError}</p>
                     </div>
                   </div>
-                  <div className="flex justify-center">
+                  <div className="flex justify-end">
                     <Button
                       onClick={() => {
                         setSyncError(null);
@@ -620,7 +620,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                       Retry
                     </Button>
                   </div>
-                </div>
+                </>
               )}
             </div>
           </>
