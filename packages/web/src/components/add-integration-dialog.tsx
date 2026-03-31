@@ -311,8 +311,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
         setSyncResult({ models: data.models, categories: data.categories ?? [] });
         setSyncData(data.data);
         setSyncPhase("idle");
-        setConnectionName(generateConnectionName(values.url));
-        setStep("done");
+        // Stay on sync step — user clicks "Continue" to proceed
       } else {
         setSyncError(data.error || "Schema sync failed");
         setSyncPhase("idle");
@@ -556,26 +555,85 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
           </>
         )}
 
-        {/* Step 2: Sync Schema */}
+        {/* Step 2: Sync Schema — shows loading, then results with category list */}
         {step === "sync" && (
           <>
             <DialogHeader>
               <DialogTitle>
                 Connect {INTEGRATION_TYPES.find((t) => t.id === selectedType)?.name}
               </DialogTitle>
-              <DialogDescription>Syncing schema from your Odoo instance.</DialogDescription>
+              <DialogDescription>
+                {syncResult
+                  ? "Here\u2019s what your agents can access."
+                  : "Checking which data your Odoo user can access\u2026"}
+              </DialogDescription>
             </DialogHeader>
 
-            <StepIndicator current={2} total={3} label="Sync Schema" />
+            <StepIndicator current={2} total={3} label="Available Data" />
 
             <div className="space-y-4">
-              {!syncError && (
+              {/* Loading */}
+              {!syncError && !syncResult && (
                 <div className="flex flex-col items-center gap-3 py-6">
                   <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
                   <p className="text-sm text-muted-foreground">Syncing models from Odoo...</p>
                 </div>
               )}
 
+              {/* Success — category grid */}
+              {syncResult?.categories && (
+                <>
+                  <div className="max-h-56 overflow-y-auto rounded-lg border">
+                    {syncResult.categories
+                      .filter((cat) => cat.accessible)
+                      .map((cat) => (
+                        <div
+                          key={cat.id}
+                          className="grid grid-cols-[auto_1fr] items-start gap-x-3 border-b px-3 py-2 last:border-b-0"
+                        >
+                          <div className="flex items-center gap-2 whitespace-nowrap">
+                            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-green-600 dark:text-green-400" />
+                            <span className="text-sm font-medium">{cat.label}</span>
+                          </div>
+                          <span className="text-xs leading-5 text-muted-foreground">
+                            {cat.accessibleModels.join(", ")}
+                          </span>
+                        </div>
+                      ))}
+                    {syncResult.categories
+                      .filter((cat) => !cat.accessible)
+                      .map((cat) => (
+                        <div
+                          key={cat.id}
+                          className="grid grid-cols-[auto_1fr] items-center gap-x-3 border-b px-3 py-2 opacity-40 last:border-b-0"
+                        >
+                          <div className="flex items-center gap-2 whitespace-nowrap">
+                            <span className="inline-block h-3.5 w-3.5 shrink-0 text-center text-xs leading-[14px] text-muted-foreground">
+                              &mdash;
+                            </span>
+                            <span className="text-sm text-muted-foreground">{cat.label}</span>
+                          </div>
+                          <span className="text-xs text-muted-foreground">No access</span>
+                        </div>
+                      ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Missing a module? Grant the API user access in Odoo, then re-sync.
+                  </p>
+                  <div className="flex justify-end">
+                    <Button
+                      onClick={() => {
+                        setConnectionName(generateConnectionName(form.getValues().url));
+                        setStep("done");
+                      }}
+                    >
+                      Continue
+                    </Button>
+                  </div>
+                </>
+              )}
+
+              {/* Permission error */}
               {syncError && isPermissionError && (
                 <>
                   <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950">
@@ -585,7 +643,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                         Permission Error
                       </p>
                       <p className="text-sm text-amber-700 dark:text-amber-300">
-                        Your Odoo user needs admin permissions to read model definitions.
+                        Your Odoo user needs module access rights to sync data.
                       </p>
                       <div className="text-sm text-amber-700 dark:text-amber-300">
                         <p className="font-medium">How to fix:</p>
@@ -593,8 +651,8 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                           <li>In Odoo, go to Settings &rarr; Users &amp; Companies &rarr; Users</li>
                           <li>Select the API user ({form.getValues().login})</li>
                           <li>
-                            On the &quot;Access Rights&quot; tab, set Role to
-                            &quot;Administrator&quot;
+                            On the &quot;Access Rights&quot; tab, enable the modules you need (e.g.
+                            Sales, Inventory, Contacts)
                           </li>
                           <li>Come back here and click &quot;Retry&quot;</li>
                         </ol>
@@ -614,6 +672,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                 </>
               )}
 
+              {/* Generic error */}
               {syncError && !isPermissionError && (
                 <>
                   <div className="flex items-start gap-3 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
@@ -639,65 +698,19 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
           </>
         )}
 
-        {/* Step 3: Done */}
+        {/* Step 3: Name & Save */}
         {step === "done" && (
           <>
             <DialogHeader>
               <DialogTitle>
                 Connect {INTEGRATION_TYPES.find((t) => t.id === selectedType)?.name}
               </DialogTitle>
-              <DialogDescription>Your integration is ready to use.</DialogDescription>
+              <DialogDescription>Almost done — give your integration a name.</DialogDescription>
             </DialogHeader>
 
-            <StepIndicator current={3} total={3} label="Ready" />
+            <StepIndicator current={3} total={3} label="Save" />
 
             <div className="space-y-4">
-              <div className="flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 px-4 py-3 dark:border-green-900 dark:bg-green-950">
-                <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
-                <p className="text-sm text-green-800 dark:text-green-200">
-                  Connected to Odoo {connectionResult?.version}
-                </p>
-              </div>
-
-              {syncResult?.categories && syncResult.categories.length > 0 && (
-                <div className="space-y-2">
-                  <p className="text-sm font-medium">Available data</p>
-                  <div className="max-h-48 overflow-y-auto rounded-lg border">
-                    {syncResult.categories
-                      .filter((cat) => cat.accessible)
-                      .map((cat) => (
-                        <div
-                          key={cat.id}
-                          className="flex items-center gap-2 border-b px-3 py-2 last:border-b-0"
-                        >
-                          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-green-600 dark:text-green-400" />
-                          <span className="text-sm font-medium">{cat.label}</span>
-                          <span className="text-xs text-muted-foreground">
-                            {cat.accessibleModels.join(", ")}
-                          </span>
-                        </div>
-                      ))}
-                    {syncResult.categories
-                      .filter((cat) => !cat.accessible)
-                      .map((cat) => (
-                        <div
-                          key={cat.id}
-                          className="flex items-center gap-2 border-b px-3 py-2 opacity-50 last:border-b-0"
-                        >
-                          <span className="h-3.5 w-3.5 shrink-0 text-center text-xs text-muted-foreground">
-                            &mdash;
-                          </span>
-                          <span className="text-sm text-muted-foreground">{cat.label}</span>
-                          <span className="text-xs text-muted-foreground">No access</span>
-                        </div>
-                      ))}
-                  </div>
-                  <p className="text-xs text-muted-foreground">
-                    Missing a module? Grant the API user access in Odoo, then re-sync.
-                  </p>
-                </div>
-              )}
-
               <div className="space-y-2">
                 <label htmlFor="connection-name" className="text-sm font-medium">
                   Name this integration
