@@ -581,10 +581,11 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                       <div className="text-sm text-amber-700 dark:text-amber-300">
                         <p className="font-medium">How to fix:</p>
                         <ol className="mt-1 list-decimal pl-5 space-y-1">
-                          <li>Open Odoo &rarr; Settings &rarr; Users</li>
+                          <li>In Odoo, go to Settings &rarr; Users &amp; Companies &rarr; Users</li>
                           <li>Select the API user ({form.getValues().login})</li>
                           <li>
-                            Under &quot;Administration&quot;, enable &quot;Access Rights&quot;
+                            On the &quot;Access Rights&quot; tab, set Role to
+                            &quot;Administrator&quot;
                           </li>
                           <li>Come back here and click &quot;Retry&quot;</li>
                         </ol>
