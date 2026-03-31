@@ -1,6 +1,5 @@
 import { test, expect } from "@playwright/test";
-
-const TEST_DB_URL = "postgresql://pinchy:pinchy_dev@localhost:5433/pinchy_test";
+import { seedProviderConfig } from "./helpers";
 
 test.describe("Provider configuration", () => {
   test("shows provider selection on first login", async ({ page }) => {
@@ -36,19 +35,7 @@ test.describe("Provider configuration", () => {
 
   test("app loads after provider is configured via DB", async ({ page }) => {
     // Seed provider config directly (simulates completed provider setup)
-    const { default: postgres } = await import("postgres");
-    const sql = postgres(TEST_DB_URL);
-    await sql`
-      INSERT INTO settings (key, value, encrypted)
-      VALUES ('default_provider', 'anthropic', false)
-      ON CONFLICT (key) DO UPDATE SET value = 'anthropic'
-    `;
-    await sql`
-      INSERT INTO settings (key, value, encrypted)
-      VALUES ('anthropic_api_key', 'sk-ant-fake-key', false)
-      ON CONFLICT (key) DO UPDATE SET value = 'sk-ant-fake-key', encrypted = false
-    `;
-    await sql.end();
+    await seedProviderConfig();
 
     // Login
     await page.goto("/login");
