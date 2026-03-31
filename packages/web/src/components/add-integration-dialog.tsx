@@ -584,41 +584,40 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
               {syncResult?.categories && (
                 <>
                   <div className="max-h-56 overflow-y-auto rounded-lg border">
-                    {syncResult.categories
-                      .filter((cat) => cat.accessible)
-                      .map((cat) => (
-                        <div
-                          key={cat.id}
-                          className="grid grid-cols-[auto_1fr] items-start gap-x-3 border-b px-3 py-2 last:border-b-0"
-                        >
-                          <div className="flex items-center gap-2 whitespace-nowrap">
-                            <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-green-600 dark:text-green-400" />
+                    <div className="grid grid-cols-[1.25rem_5.5rem_1fr] gap-x-2">
+                      {syncResult.categories
+                        .filter((cat) => cat.accessible)
+                        .map((cat) => (
+                          <div
+                            key={cat.id}
+                            className="col-span-3 grid grid-cols-subgrid items-baseline border-b px-3 py-2 last:border-b-0"
+                          >
+                            <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 text-green-600 dark:text-green-400" />
                             <span className="text-sm font-medium">{cat.label}</span>
+                            <span className="text-xs text-muted-foreground">
+                              {cat.accessibleModels.join(", ")}
+                            </span>
                           </div>
-                          <span className="text-xs leading-5 text-muted-foreground">
-                            {cat.accessibleModels.join(", ")}
-                          </span>
-                        </div>
-                      ))}
-                    {syncResult.categories
-                      .filter((cat) => !cat.accessible)
-                      .map((cat) => (
-                        <div
-                          key={cat.id}
-                          className="grid grid-cols-[auto_1fr] items-center gap-x-3 border-b px-3 py-2 opacity-40 last:border-b-0"
-                        >
-                          <div className="flex items-center gap-2 whitespace-nowrap">
-                            <span className="inline-block h-3.5 w-3.5 shrink-0 text-center text-xs leading-[14px] text-muted-foreground">
+                        ))}
+                      {syncResult.categories
+                        .filter((cat) => !cat.accessible)
+                        .map((cat) => (
+                          <div
+                            key={cat.id}
+                            className="col-span-3 grid grid-cols-subgrid items-baseline border-b px-3 py-2 opacity-40 last:border-b-0"
+                          >
+                            <span className="mt-0.5 text-center text-xs text-muted-foreground">
                               &mdash;
                             </span>
                             <span className="text-sm text-muted-foreground">{cat.label}</span>
+                            <span className="text-xs text-muted-foreground">No access</span>
                           </div>
-                          <span className="text-xs text-muted-foreground">No access</span>
-                        </div>
-                      ))}
+                        ))}
+                    </div>
                   </div>
                   <p className="text-xs text-muted-foreground">
-                    Missing a module? Grant the API user access in Odoo, then re-sync.
+                    These are the data types available to this connection. You can control which
+                    data each agent can access in the agent&apos;s settings.
                   </p>
                   <div className="flex justify-end">
                     <Button
