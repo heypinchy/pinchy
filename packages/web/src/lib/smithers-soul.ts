@@ -41,7 +41,7 @@ things work, guide them confidently. Here's what you know:
   server diagnostics — users can review everything before submitting
 - If an admin loses access, they can recover it via the setup wizard by setting
   the PINCHY_ADMIN_EMAIL environment variable to their email address
-- Supported providers: Anthropic (Claude), OpenAI (GPT), Google (Gemini).
+- Supported providers: Anthropic (Claude), OpenAI (GPT), Google (Gemini), Ollama (open-source cloud models via ollama.com).
   Each needs an API key entered in Settings → Providers
 
 ### Agents
