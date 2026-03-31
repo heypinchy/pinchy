@@ -12,6 +12,7 @@ import { eq } from "drizzle-orm";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
+const MAX_RETRIES = 2;
 
 interface ContentPart {
   type: string;
@@ -141,58 +142,29 @@ export class ClientRouter {
         chatOptions.extraSystemPrompt = extraPromptParts.join("\n\n");
       }
 
-      const stream = this.openclawClient.chat(text, chatOptions);
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        const result = await this.streamChat(clientWs, text, chatOptions, messageId, sessionKey, {
+          id: message.agentId,
+          name: agent.name,
+        });
 
-      for await (const chunk of stream) {
-        // Stop consuming the stream if the browser disconnected — frees
-        // server resources while letting OpenClaw finish on its side.
-        if (clientWs.readyState !== WS_OPEN) {
-          break;
-        }
+        if (result === "done") break;
 
-        if (chunk.type === "text") {
-          const cleaned = chunk.text.replace(/<\/?final>/g, "");
-          if (cleaned) {
-            this.sendToClient(clientWs, {
-              type: "chunk",
-              content: cleaned,
-              messageId,
-            });
+        if (result === "error") {
+          if (clientWs.readyState !== WS_OPEN) break;
+
+          if (attempt < MAX_RETRIES) {
+            console.log(`Retrying agent chat (attempt ${attempt + 2}/${MAX_RETRIES + 1})`);
+            messageId = crypto.randomUUID();
+            continue;
           }
-        }
-
-        if (chunk.type === "error") {
-          console.error("OpenClaw error chunk:", chunk.text);
+          // All retries exhausted — send error to user
           this.sendToClient(clientWs, {
             type: "error",
             message:
               "Something went wrong connecting to the agent. Try refreshing — if it persists, check the logs.",
             messageId,
           });
-        }
-
-        if (chunk.type === "done") {
-          this.sessionCache.add(sessionKey);
-          this.sendToClient(clientWs, {
-            type: "done",
-            messageId,
-          });
-
-          // Fire-and-forget usage tracking
-          recordUsage({
-            openclawClient: this.openclawClient,
-            userId: this.userId,
-            agentId: message.agentId,
-            agentName: agent.name,
-            sessionKey,
-          }).catch((err) => {
-            console.error("Usage tracking failed:", err);
-          });
-
-          // Next agent turn gets a fresh messageId so the browser
-          // creates a separate assistant message — consistent with
-          // how OpenClaw stores them in history.
-          messageId = crypto.randomUUID();
         }
       }
     } catch (err) {
@@ -264,6 +236,62 @@ export class ClientRouter {
       const greetingMessages = greeting ? [{ role: "assistant", content: greeting }] : [];
       this.sendToClient(clientWs, { type: "history", messages: greetingMessages });
     }
+  }
+
+  private async streamChat(
+    clientWs: WebSocket,
+    text: string,
+    chatOptions: Record<string, unknown>,
+    messageId: string,
+    sessionKey: string,
+    agent: { id: string; name: string }
+  ): Promise<"done" | "error"> {
+    const stream = this.openclawClient.chat(text, chatOptions);
+
+    for await (const chunk of stream) {
+      if (clientWs.readyState !== WS_OPEN) return "done";
+
+      if (chunk.type === "text") {
+        const cleaned = chunk.text.replace(/<\/?final>/g, "");
+        if (cleaned) {
+          this.sendToClient(clientWs, {
+            type: "chunk",
+            content: cleaned,
+            messageId,
+          });
+        }
+      }
+
+      if (chunk.type === "error") {
+        console.error("OpenClaw error chunk:", chunk.text);
+        return "error";
+      }
+
+      if (chunk.type === "done") {
+        this.sessionCache.add(sessionKey);
+        this.sendToClient(clientWs, {
+          type: "done",
+          messageId,
+        });
+
+        // Fire-and-forget usage tracking
+        recordUsage({
+          openclawClient: this.openclawClient,
+          userId: this.userId,
+          agentId: agent.id,
+          agentName: agent.name,
+          sessionKey,
+        }).catch((err) => {
+          console.error("Usage tracking failed:", err);
+        });
+
+        // Next agent turn gets a fresh messageId so the browser
+        // creates a separate assistant message — consistent with
+        // how OpenClaw stores them in history.
+        messageId = crypto.randomUUID();
+      }
+    }
+    return "done";
   }
 
   private waitForConnection(): Promise<void> {
