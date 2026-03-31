@@ -685,6 +685,37 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
+  it("should include ollama-cloud provider config when ollama_api_key is set", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.models).toBeDefined();
+    expect(config.models.providers["ollama-cloud"]).toBeDefined();
+    expect(config.models.providers["ollama-cloud"].baseUrl).toBe("https://ollama.com/v1");
+    expect(config.models.providers["ollama-cloud"].apiKey).toBe("sk-ollama-test");
+    expect(config.models.providers["ollama-cloud"].api).toBe("openai-completions");
+    expect(Array.isArray(config.models.providers["ollama-cloud"].models)).toBe(true);
+    expect(config.models.providers["ollama-cloud"].models.length).toBeGreaterThan(0);
+  });
+
+  it("should not include models block when ollama_api_key is not set", async () => {
+    mockedGetSetting.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.models).toBeUndefined();
+  });
+
   it("should omit pinchy-context and pinchy-files when no agents use them", async () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockResolvedValue([

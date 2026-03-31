@@ -228,28 +228,88 @@ export async function regenerateOpenClawConfig() {
   // Must match OpenClaw's expected format exactly: apiKey + api mode + explicit models.
   const ollamaKey = await getSetting(PROVIDERS.ollama.settingsKey);
   if (ollamaKey) {
-    (config as Record<string, unknown>).models = {
+    config.models = {
       providers: {
         "ollama-cloud": {
           baseUrl: "https://ollama.com/v1",
           apiKey: ollamaKey,
           api: "openai-completions",
           models: [
-            { id: "deepseek-v3.2:cloud", name: "DeepSeek V3.2", contextWindow: 131072, maxTokens: 8192 },
-            { id: "gemini-3-flash-preview:cloud", name: "Gemini 3 Flash Preview", contextWindow: 1048576, maxTokens: 65536 },
+            {
+              id: "deepseek-v3.2:cloud",
+              name: "DeepSeek V3.2",
+              contextWindow: 131072,
+              maxTokens: 8192,
+            },
+            {
+              id: "gemini-3-flash-preview:cloud",
+              name: "Gemini 3 Flash Preview",
+              contextWindow: 1048576,
+              maxTokens: 65536,
+            },
             { id: "glm-4.7:cloud", name: "GLM 4.7", contextWindow: 200000, maxTokens: 128000 },
             { id: "glm-5:cloud", name: "GLM-5", contextWindow: 200000, maxTokens: 128000 },
-            { id: "gpt-oss:120b-cloud", name: "GPT-OSS 120B", contextWindow: 131072, maxTokens: 8192 },
+            {
+              id: "gpt-oss:120b-cloud",
+              name: "GPT-OSS 120B",
+              contextWindow: 131072,
+              maxTokens: 8192,
+            },
             { id: "kimi-k2.5:cloud", name: "Kimi K2.5", contextWindow: 262144, maxTokens: 8192 },
-            { id: "minimax-m2.5:cloud", name: "MiniMax M2.5", contextWindow: 204800, maxTokens: 128000 },
-            { id: "minimax-m2.7:cloud", name: "MiniMax M2.7", contextWindow: 204800, maxTokens: 128000 },
-            { id: "ministral-3:14b-cloud", name: "Ministral 3 14B", contextWindow: 131072, maxTokens: 8192 },
-            { id: "mistral-large-3:675b-cloud", name: "Mistral Large 3 675B", contextWindow: 131072, maxTokens: 8192 },
-            { id: "nemotron-3-nano:30b-cloud", name: "Nemotron 3 Nano 30B", contextWindow: 131072, maxTokens: 8192 },
-            { id: "nemotron-3-super:cloud", name: "Nemotron 3 Super", contextWindow: 131072, maxTokens: 8192 },
-            { id: "qwen3-coder-next:cloud", name: "Qwen3 Coder Next", contextWindow: 262144, maxTokens: 8192 },
-            { id: "qwen3-next:80b-cloud", name: "Qwen3 Next 80B", contextWindow: 262144, maxTokens: 8192 },
-            { id: "qwen3.5:397b-cloud", name: "Qwen 3.5 397B", contextWindow: 262144, maxTokens: 8192 },
+            {
+              id: "minimax-m2.5:cloud",
+              name: "MiniMax M2.5",
+              contextWindow: 204800,
+              maxTokens: 128000,
+            },
+            {
+              id: "minimax-m2.7:cloud",
+              name: "MiniMax M2.7",
+              contextWindow: 204800,
+              maxTokens: 128000,
+            },
+            {
+              id: "ministral-3:14b-cloud",
+              name: "Ministral 3 14B",
+              contextWindow: 131072,
+              maxTokens: 8192,
+            },
+            {
+              id: "mistral-large-3:675b-cloud",
+              name: "Mistral Large 3 675B",
+              contextWindow: 131072,
+              maxTokens: 8192,
+            },
+            {
+              id: "nemotron-3-nano:30b-cloud",
+              name: "Nemotron 3 Nano 30B",
+              contextWindow: 131072,
+              maxTokens: 8192,
+            },
+            {
+              id: "nemotron-3-super:cloud",
+              name: "Nemotron 3 Super",
+              contextWindow: 131072,
+              maxTokens: 8192,
+            },
+            {
+              id: "qwen3-coder-next:cloud",
+              name: "Qwen3 Coder Next",
+              contextWindow: 262144,
+              maxTokens: 8192,
+            },
+            {
+              id: "qwen3-next:80b-cloud",
+              name: "Qwen3 Next 80B",
+              contextWindow: 262144,
+              maxTokens: 8192,
+            },
+            {
+              id: "qwen3.5:397b-cloud",
+              name: "Qwen 3.5 397B",
+              contextWindow: 262144,
+              maxTokens: 8192,
+            },
           ],
         },
       },
