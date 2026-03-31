@@ -562,17 +562,17 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
               {syncResult?.categories && (
                 <>
                   <div className="max-h-56 overflow-y-auto rounded-lg border">
-                    <div className="grid grid-cols-[1.25rem_5.5rem_1fr] gap-x-2">
+                    <div className="grid grid-cols-[1.5rem_6rem_1fr] gap-x-3">
                       {syncResult.categories
                         .filter((cat) => cat.accessible)
                         .map((cat) => (
                           <div
                             key={cat.id}
-                            className="col-span-3 grid grid-cols-subgrid items-baseline border-b px-3 py-2 last:border-b-0"
+                            className="col-span-3 grid grid-cols-subgrid items-first-baseline border-b px-3 py-2 last:border-b-0"
                           >
-                            <CheckCircle2 className="mt-0.5 h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+                            <CheckCircle2 className="h-4 w-4 translate-y-[1px] text-green-600 dark:text-green-400" />
                             <span className="text-sm font-medium">{cat.label}</span>
-                            <span className="text-xs text-muted-foreground">
+                            <span className="text-xs leading-5 text-muted-foreground">
                               {cat.accessibleModels.join(", ")}
                             </span>
                           </div>
@@ -582,9 +582,9 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                         .map((cat) => (
                           <div
                             key={cat.id}
-                            className="col-span-3 grid grid-cols-subgrid items-baseline border-b px-3 py-2 opacity-40 last:border-b-0"
+                            className="col-span-3 grid grid-cols-subgrid items-center border-b px-3 py-2 opacity-40 last:border-b-0"
                           >
-                            <span className="mt-0.5 text-center text-xs text-muted-foreground">
+                            <span className="text-center text-xs text-muted-foreground">
                               &mdash;
                             </span>
                             <span className="text-sm text-muted-foreground">{cat.label}</span>
