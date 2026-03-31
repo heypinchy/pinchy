@@ -6,11 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle } from "lucide-react";
 import { DirectoryPicker } from "@/components/directory-picker";
-import {
-  getToolsByCategory,
-  getOdooToolsForAccessLevel,
-  detectOdooAccessLevel,
-} from "@/lib/tool-registry";
+import { getToolsByCategory, getOdooToolsForAccessLevel } from "@/lib/tool-registry";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { OdooPermissionSection } from "@/components/odoo-permission-section";
 
@@ -71,15 +67,6 @@ export function AgentSettingsPermissions({
     ): string[] => {
       let odooToolIds: string[] = [];
       if (integration && integration.permissions.length > 0) {
-        const level = detectOdooAccessLevel(
-          // We need to figure out tools from the permissions reported
-          // Actually, detectOdooAccessLevel works on tool IDs, not permissions
-          // We need to use getOdooToolsForAccessLevel with the detected level
-          // But the OdooPermissionSection already manages access levels internally
-          // We should detect level from the operations granted
-          [] // placeholder
-        );
-        // Instead: map permissions to determine which tool categories are needed
         const ops = new Set(integration.permissions.map((p) => p.operation));
         const hasRead = ops.has("read");
         const hasCreate = ops.has("create");
