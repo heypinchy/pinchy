@@ -20,7 +20,6 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -31,7 +30,12 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { PasswordInput } from "@/components/password-input";
-import { normalizeOdooUrl, parseOdooSubdomainHint } from "@/lib/integrations/odoo-url";
+import {
+  normalizeOdooUrl,
+  parseOdooSubdomainHint,
+  generateConnectionName,
+} from "@/lib/integrations/odoo-url";
+import { Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
 
 // --- Integration type registry (extend here for future integrations) ---
 
@@ -73,18 +77,42 @@ const INTEGRATION_TYPES: IntegrationType[] = [
   // Future: { id: "shopify", name: "Shopify", description: "...", icon: ShopifyIcon },
 ];
 
-// --- Odoo credentials form ---
+// --- Wizard state ---
 
-const odooFormSchema = z.object({
-  name: z.string().min(1, "Name is required").max(100),
-  description: z.string().max(500),
+type WizardStep = "type" | "connect" | "sync" | "done";
+
+// --- Connect form schema (no name/description — auto-generated) ---
+
+const connectFormSchema = z.object({
   url: z.string().url("Must be a valid URL"),
-  db: z.string().min(1, "Database name is required"),
-  login: z.string().min(1, "Login is required"),
+  login: z.string().min(1, "Email is required"),
   apiKey: z.string().min(1, "API key is required"),
+  db: z.string().min(1, "Database is required"),
 });
 
-type OdooFormValues = z.infer<typeof odooFormSchema>;
+type ConnectFormValues = z.infer<typeof connectFormSchema>;
+
+// --- Step indicator ---
+
+function StepIndicator({
+  current,
+  total,
+  label,
+}: {
+  current: number;
+  total: number;
+  label: string;
+}) {
+  return (
+    <div className="flex items-center gap-2 text-sm text-muted-foreground mb-4">
+      <span>
+        Step {current} of {total}
+      </span>
+      <span>&mdash;</span>
+      <span>{label}</span>
+    </div>
+  );
+}
 
 // --- Dialog component ---
 
@@ -95,46 +123,79 @@ interface AddIntegrationDialogProps {
 }
 
 export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddIntegrationDialogProps) {
+  const [step, setStep] = useState<WizardStep>("type");
   const [selectedType, setSelectedType] = useState<string | null>(null);
 
-  const form = useForm<OdooFormValues>({
-    resolver: zodResolver(odooFormSchema),
+  // Connect step results
+  const [connectionResult, setConnectionResult] = useState<{
+    uid: number;
+    version: string;
+  } | null>(null);
+  const [connecting, setConnecting] = useState(false);
+
+  // Sync step results
+  const [createdId, setCreatedId] = useState<string | null>(null);
+  const [syncResult, setSyncResult] = useState<{ models: number } | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [syncPhase, setSyncPhase] = useState<"creating" | "syncing" | "idle">("idle");
+
+  // Done step
+  const [connectionName, setConnectionName] = useState("");
+
+  // DB detection
+  const [dbFetchState, setDbFetchState] = useState<"idle" | "loading" | "done" | "failed">("idle");
+  const [fetchedDatabases, setFetchedDatabases] = useState<string[]>([]);
+
+  const form = useForm<ConnectFormValues>({
+    resolver: zodResolver(connectFormSchema),
     defaultValues: {
-      name: "",
-      description: "",
       url: "",
-      db: "",
       login: "",
       apiKey: "",
+      db: "",
     },
   });
 
+  function resetAll() {
+    setStep("type");
+    setSelectedType(null);
+    setConnectionResult(null);
+    setConnecting(false);
+    setCreatedId(null);
+    setSyncResult(null);
+    setSyncError(null);
+    setSyncPhase("idle");
+    setConnectionName("");
+    setDbFetchState("idle");
+    setFetchedDatabases([]);
+    form.reset();
+  }
+
   function handleClose(isOpen: boolean) {
     if (!isOpen) {
-      setSelectedType(null);
-      form.reset();
-      setDbFetchState("idle");
-      setFetchedDatabases([]);
+      resetAll();
     }
     onOpenChange(isOpen);
   }
 
   function handleBack() {
-    setSelectedType(null);
-    form.reset();
-    setDbFetchState("idle");
-    setFetchedDatabases([]);
+    if (step === "connect") {
+      setSelectedType(null);
+      setConnectionResult(null);
+      setConnecting(false);
+      setDbFetchState("idle");
+      setFetchedDatabases([]);
+      form.reset();
+      setStep("type");
+    }
   }
 
-  const [submitPhase, setSubmitPhase] = useState<"idle" | "testing" | "creating">("idle");
-  const [dbFetchState, setDbFetchState] = useState<"idle" | "loading" | "done" | "failed">("idle");
-  const [fetchedDatabases, setFetchedDatabases] = useState<string[]>([]);
+  // --- URL blur: fetch databases ---
 
   async function handleUrlBlur(raw: string) {
     const url = normalizeOdooUrl(raw);
     if (!url) return;
 
-    // Update the form field to the normalized URL
     if (url !== raw) {
       form.setValue("url", url);
     }
@@ -154,7 +215,6 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
         setFetchedDatabases(data.databases);
         setDbFetchState("done");
 
-        // Auto-select if subdomain matches one of the databases
         const hint = parseOdooSubdomainHint(url);
         if (hint && data.databases.includes(hint)) {
           form.setValue("db", hint);
@@ -169,12 +229,13 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
     }
   }
 
-  async function onSubmit(values: OdooFormValues) {
+  // --- Step 1: Connect ---
+
+  async function onConnect(values: ConnectFormValues) {
     form.clearErrors("root");
+    setConnecting(true);
 
     try {
-      // Phase 1: Test credentials
-      setSubmitPhase("testing");
       const testRes = await fetch("/api/integrations/test-credentials", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -191,75 +252,116 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
 
       const testData = await testRes.json();
 
-      if (!testRes.ok) {
-        form.setError("root", { message: testData.error || "Connection test failed" });
-        setSubmitPhase("idle");
+      if (!testRes.ok || !testData.success) {
+        form.setError("root", {
+          message: testData.error || "Connection test failed",
+        });
+        setConnecting(false);
         return;
       }
 
-      if (!testData.success) {
-        form.setError("root", { message: testData.error || "Connection test failed" });
-        setSubmitPhase("idle");
-        return;
-      }
-
-      // Phase 2: Create integration with the real uid from test
-      setSubmitPhase("creating");
-      const res = await fetch("/api/integrations", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: selectedType,
-          name: values.name,
-          description: values.description,
-          credentials: {
-            url: values.url,
-            db: values.db,
-            login: values.login,
-            apiKey: values.apiKey,
-            uid: testData.uid,
-          },
-        }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        form.setError("root", { message: data.error || "Failed to create integration" });
-        setSubmitPhase("idle");
-        return;
-      }
-
-      const created = await res.json();
-
-      // Phase 3: Auto-sync schema in background (non-blocking)
-      toast.success("Integration created — syncing schema...");
-      form.reset();
-      setSelectedType(null);
-      setSubmitPhase("idle");
-      onSuccess();
-
-      // Fire-and-forget sync
-      fetch(`/api/integrations/${created.id}/sync`, { method: "POST" })
-        .then((r) => r.json())
-        .then((data) => {
-          if (data.success) {
-            toast.success(`Schema synced: ${data.models} models loaded`);
-          } else {
-            toast.error(`Schema sync failed: ${data.error}`);
-          }
-          onSuccess(); // refresh list to show sync status
-        })
-        .catch(() => toast.error("Schema sync failed"));
+      setConnectionResult({ uid: testData.uid, version: testData.version });
+      setConnecting(false);
+      setStep("sync");
+      // Trigger sync immediately — no useEffect needed
+      runSyncWithResult(testData.uid);
     } catch {
-      form.setError("root", { message: "Failed to create integration" });
-      setSubmitPhase("idle");
+      form.setError("root", { message: "Connection test failed" });
+      setConnecting(false);
     }
   }
+
+  // --- Step 2: Sync ---
+
+  async function runSyncWithResult(uid: number) {
+    setSyncError(null);
+    setSyncPhase("creating");
+
+    try {
+      const values = form.getValues();
+
+      // If we already created the integration (retry scenario), skip creation
+      let integrationId = createdId;
+
+      if (!integrationId) {
+        const res = await fetch("/api/integrations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            type: selectedType,
+            name: generateConnectionName(values.url),
+            description: "",
+            credentials: {
+              url: values.url,
+              db: values.db,
+              login: values.login,
+              apiKey: values.apiKey,
+              uid,
+            },
+          }),
+        });
+
+        if (!res.ok) {
+          const data = await res.json();
+          setSyncError(data.error || "Failed to create integration");
+          setSyncPhase("idle");
+          return;
+        }
+
+        const created = await res.json();
+        integrationId = created.id;
+        setCreatedId(created.id);
+      }
+
+      // Sync schema
+      setSyncPhase("syncing");
+      const syncRes = await fetch(`/api/integrations/${integrationId}/sync`, {
+        method: "POST",
+      });
+      const syncData = await syncRes.json();
+
+      if (syncData.success) {
+        setSyncResult({ models: syncData.models });
+        setSyncPhase("idle");
+        setConnectionName(generateConnectionName(values.url));
+        setStep("done");
+      } else {
+        setSyncError(syncData.error || "Schema sync failed");
+        setSyncPhase("idle");
+      }
+    } catch {
+      setSyncError("Schema sync failed");
+      setSyncPhase("idle");
+    }
+  }
+
+  // --- Step 3: Done ---
+
+  async function handleDone() {
+    if (createdId && connectionName) {
+      await fetch(`/api/integrations/${createdId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: connectionName }),
+      });
+    }
+    toast.success("Integration ready");
+    handleClose(false);
+    onSuccess();
+  }
+
+  // --- Permission error detection ---
+  const isPermissionError =
+    syncError &&
+    (syncError.includes("ir.model") ||
+      syncError.includes("Access") ||
+      syncError.includes("permission"));
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="sm:max-w-md">
-        {!selectedType ? (
+        {/* Step 0: Type Selection */}
+        {step === "type" && (
           <>
             <DialogHeader>
               <DialogTitle>Add Integration</DialogTitle>
@@ -274,7 +376,10 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                 return (
                   <button
                     key={type.id}
-                    onClick={() => setSelectedType(type.id)}
+                    onClick={() => {
+                      setSelectedType(type.id);
+                      setStep("connect");
+                    }}
                     className="flex items-center gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-accent"
                   >
                     <Icon className="h-8 w-16 shrink-0" />
@@ -287,7 +392,10 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
               })}
             </div>
           </>
-        ) : (
+        )}
+
+        {/* Step 1: Connect */}
+        {step === "connect" && (
           <>
             <DialogHeader>
               <DialogTitle>
@@ -299,41 +407,10 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
               </DialogDescription>
             </DialogHeader>
 
+            <StepIndicator current={1} total={3} label="Connect" />
+
             <Form {...form}>
-              <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-                <FormField
-                  control={form.control}
-                  name="name"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Name</FormLabel>
-                      <FormControl>
-                        <Input placeholder="e.g. Production Odoo" {...field} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="description"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Description (optional)</FormLabel>
-                      <FormControl>
-                        <Textarea
-                          placeholder="What is this integration used for?"
-                          className="resize-none"
-                          rows={2}
-                          {...field}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
+              <form onSubmit={form.handleSubmit(onConnect)} className="space-y-4">
                 <FormField
                   control={form.control}
                   name="url"
@@ -446,17 +523,147 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                     <Button type="button" variant="outline" onClick={() => handleClose(false)}>
                       Cancel
                     </Button>
-                    <Button type="submit" disabled={submitPhase !== "idle"}>
-                      {submitPhase === "testing"
-                        ? "Testing connection..."
-                        : submitPhase === "creating"
-                          ? "Creating..."
-                          : "Test & Create"}
+                    <Button type="submit" disabled={connecting}>
+                      {connecting ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Connecting...
+                        </>
+                      ) : (
+                        "Connect"
+                      )}
                     </Button>
                   </div>
                 </div>
               </form>
             </Form>
+          </>
+        )}
+
+        {/* Step 2: Sync Schema */}
+        {step === "sync" && (
+          <>
+            <DialogHeader>
+              <DialogTitle>
+                Connect {INTEGRATION_TYPES.find((t) => t.id === selectedType)?.name}
+              </DialogTitle>
+              <DialogDescription>Syncing schema from your Odoo instance.</DialogDescription>
+            </DialogHeader>
+
+            <StepIndicator current={2} total={3} label="Sync Schema" />
+
+            <div className="flex flex-col items-center gap-4 py-8">
+              {!syncError && (
+                <>
+                  <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+                  <p className="text-sm text-muted-foreground">
+                    {syncPhase === "creating"
+                      ? "Creating integration..."
+                      : "Syncing models from Odoo..."}
+                  </p>
+                </>
+              )}
+
+              {syncError && isPermissionError && (
+                <div className="w-full space-y-4">
+                  <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950">
+                    <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+                    <div className="space-y-2">
+                      <p className="font-medium text-amber-800 dark:text-amber-200">
+                        Permission Error
+                      </p>
+                      <p className="text-sm text-amber-700 dark:text-amber-300">
+                        Your Odoo user needs admin permissions to read model definitions.
+                      </p>
+                      <div className="text-sm text-amber-700 dark:text-amber-300">
+                        <p className="font-medium">How to fix:</p>
+                        <ol className="mt-1 list-decimal pl-5 space-y-1">
+                          <li>Open Odoo &rarr; Settings &rarr; Users</li>
+                          <li>Select the API user ({form.getValues().login})</li>
+                          <li>
+                            Under &quot;Administration&quot;, enable &quot;Access Rights&quot;
+                          </li>
+                          <li>Come back here and click &quot;Retry&quot;</li>
+                        </ol>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="flex justify-center">
+                    <Button
+                      onClick={() => {
+                        setSyncError(null);
+                        runSyncWithResult(connectionResult!.uid);
+                      }}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {syncError && !isPermissionError && (
+                <div className="w-full space-y-4">
+                  <div className="flex items-start gap-3 rounded-lg border border-destructive/50 bg-destructive/10 p-4">
+                    <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+                    <div className="space-y-1">
+                      <p className="font-medium text-destructive">Sync failed</p>
+                      <p className="text-sm text-muted-foreground">{syncError}</p>
+                    </div>
+                  </div>
+                  <div className="flex justify-center">
+                    <Button
+                      onClick={() => {
+                        setSyncError(null);
+                        runSyncWithResult(connectionResult!.uid);
+                      }}
+                    >
+                      Retry
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+
+        {/* Step 3: Done */}
+        {step === "done" && (
+          <>
+            <DialogHeader>
+              <DialogTitle>
+                Connect {INTEGRATION_TYPES.find((t) => t.id === selectedType)?.name}
+              </DialogTitle>
+              <DialogDescription>Your integration is ready to use.</DialogDescription>
+            </DialogHeader>
+
+            <StepIndicator current={3} total={3} label="Ready" />
+
+            <div className="space-y-6">
+              <div className="flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-900 dark:bg-green-950">
+                <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
+                <p className="text-sm text-green-800 dark:text-green-200">
+                  Connected to Odoo {connectionResult?.version} &mdash; {syncResult?.models} models
+                  synced
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <label htmlFor="connection-name" className="text-sm font-medium">
+                  Name
+                </label>
+                <Input
+                  id="connection-name"
+                  value={connectionName}
+                  onChange={(e) => setConnectionName(e.target.value)}
+                />
+              </div>
+
+              <div className="flex justify-end">
+                <Button onClick={handleDone} disabled={!connectionName.trim()}>
+                  Done
+                </Button>
+              </div>
+            </div>
           </>
         )}
       </DialogContent>
