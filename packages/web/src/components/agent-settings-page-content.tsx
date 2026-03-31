@@ -153,6 +153,14 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
     fetchData();
   }, [fetchData]);
 
+  // Non-admins cannot edit shared agents — redirect to chat
+  const canEdit = isAdmin || agent?.isPersonal;
+  useEffect(() => {
+    if (!isPending && agent && !canEdit) {
+      router.replace(`/chat/${agentId}`);
+    }
+  }, [isPending, agent, canEdit, router, agentId]);
+
   const handleGeneralChange = useCallback((values: GeneralValues, isDirty: boolean) => {
     generalDraft.current = values;
     setDirtyTabs((prev) => {
@@ -325,13 +333,11 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
     return <div className="p-8 text-muted-foreground">Agent not found.</div>;
   }
 
-  const canEdit = isAdmin || agent.isPersonal;
   const canDelete = isAdmin && !agent.isPersonal;
   const showPermissions = isAdmin && !agent.isPersonal;
 
-  // Non-admins cannot edit shared agents — redirect to chat
+  // Non-admins cannot edit shared agents — redirect handled by effect above
   if (!canEdit) {
-    router.replace(`/chat/${agentId}`);
     return <div className="p-8 text-muted-foreground">Redirecting...</div>;
   }
 
