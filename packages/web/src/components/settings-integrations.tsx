@@ -1,9 +1,8 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Card, CardHeader, CardTitle, CardDescription, CardContent } from "@/components/ui/card";
+import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -20,10 +19,12 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { MoreHorizontal, Plus, Plug } from "lucide-react";
+import { MoreHorizontal, Plus, Plug, CheckCircle2 } from "lucide-react";
 import { toast } from "sonner";
 import { AddIntegrationDialog } from "./add-integration-dialog";
+import { OdooIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
+import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
 
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
@@ -41,6 +42,12 @@ function formatRelativeTime(dateString: string): string {
   if (diffDays < 30) return `${diffDays}d ago`;
 
   return date.toLocaleDateString();
+}
+
+function countAccessibleCategories(data: IntegrationConnection["data"]): number {
+  if (!data?.models) return 0;
+  const modelNames = new Set(data.models.map((m: { model: string }) => m.model));
+  return MODEL_CATEGORIES.filter((cat) => cat.models.some((m) => modelNames.has(m.model))).length;
 }
 
 export function SettingsIntegrations() {
@@ -137,57 +144,64 @@ export function SettingsIntegrations() {
         </Button>
       </div>
 
-      {connections.map((conn) => (
-        <Card key={conn.id}>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0">
-            <div className="space-y-1">
-              <CardTitle className="text-base flex items-center gap-2">
-                {conn.name}
-                <Badge variant="secondary">{conn.type}</Badge>
-              </CardTitle>
-              {conn.description && <CardDescription>{conn.description}</CardDescription>}
-            </div>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="icon">
-                  <MoreHorizontal className="h-4 w-4" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end">
-                <DropdownMenuItem
-                  onClick={() => testConnection(conn.id)}
-                  disabled={testing === conn.id}
-                >
-                  {testing === conn.id ? "Testing..." : "Test Connection"}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  onClick={() => syncSchema(conn.id)}
-                  disabled={syncing === conn.id}
-                >
-                  {syncing === conn.id ? "Syncing..." : "Sync Schema"}
-                </DropdownMenuItem>
-                <DropdownMenuItem
-                  className="text-destructive"
-                  onClick={() => setDeleteTarget(conn)}
-                >
-                  Delete
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </CardHeader>
-          <CardContent>
-            <div className="text-sm text-muted-foreground">
-              {conn.credentials?.url} &middot; {conn.credentials?.db}
-              {conn.data?.lastSyncAt && (
-                <span className="ml-2">
-                  &middot; Last synced: {formatRelativeTime(conn.data.lastSyncAt)}
-                </span>
-              )}
-              {!conn.data?.lastSyncAt && <span className="ml-2">&middot; Not synced yet</span>}
-            </div>
-          </CardContent>
-        </Card>
-      ))}
+      {connections.map((conn) => {
+        const categoryCount = countAccessibleCategories(conn.data);
+        return (
+          <Card key={conn.id}>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-3">
+              <div className="flex items-center gap-3">
+                <OdooIcon className="h-6 w-12 shrink-0" />
+                <CardTitle className="text-base">{conn.name}</CardTitle>
+              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="ghost" size="icon">
+                    <MoreHorizontal className="h-4 w-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end">
+                  <DropdownMenuItem
+                    onClick={() => testConnection(conn.id)}
+                    disabled={testing === conn.id}
+                  >
+                    {testing === conn.id ? "Testing..." : "Test Connection"}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    onClick={() => syncSchema(conn.id)}
+                    disabled={syncing === conn.id}
+                  >
+                    {syncing === conn.id ? "Syncing..." : "Sync Schema"}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    className="text-destructive"
+                    onClick={() => setDeleteTarget(conn)}
+                  >
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </CardHeader>
+            <CardContent className="pt-0">
+              <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
+                {conn.data?.lastSyncAt ? (
+                  <>
+                    <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+                    <span>Connected</span>
+                    <span>&middot;</span>
+                    <span>
+                      {categoryCount} data {categoryCount === 1 ? "category" : "categories"}
+                    </span>
+                    <span>&middot;</span>
+                    <span>Synced {formatRelativeTime(conn.data.lastSyncAt)}</span>
+                  </>
+                ) : (
+                  <span>Not synced yet</span>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+        );
+      })}
 
       {connections.length === 0 && (
         <Card>
