@@ -134,10 +134,10 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
   const [connecting, setConnecting] = useState(false);
 
   // Sync step results
-  const [createdId, setCreatedId] = useState<string | null>(null);
   const [syncResult, setSyncResult] = useState<{ models: number } | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
-  const [syncPhase, setSyncPhase] = useState<"creating" | "syncing" | "idle">("idle");
+  const [syncPhase, setSyncPhase] = useState<"syncing" | "idle">("idle");
+  const [syncData, setSyncData] = useState<unknown>(null);
 
   // Done step
   const [connectionName, setConnectionName] = useState("");
@@ -161,10 +161,11 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
     setSelectedType(null);
     setConnectionResult(null);
     setConnecting(false);
-    setCreatedId(null);
     setSyncResult(null);
     setSyncError(null);
     setSyncPhase("idle");
+    setSyncData(null);
+    setSaving(false);
     setConnectionName("");
     setDbFetchState("idle");
     setFetchedDatabases([]);
@@ -264,69 +265,47 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
       setConnecting(false);
       setStep("sync");
       // Trigger sync immediately — no useEffect needed
-      runSyncWithResult(testData.uid);
+      runSyncPreview(testData.uid);
     } catch {
       form.setError("root", { message: "Connection test failed" });
       setConnecting(false);
     }
   }
 
-  // --- Step 2: Sync ---
+  // --- Step 2: Sync (preview only — nothing saved yet) ---
 
-  async function runSyncWithResult(uid: number) {
+  async function runSyncPreview(uid: number) {
     setSyncError(null);
-    setSyncPhase("creating");
+    setSyncPhase("syncing");
 
     try {
       const values = form.getValues();
 
-      // If we already created the integration (retry scenario), skip creation
-      let integrationId = createdId;
-
-      if (!integrationId) {
-        const res = await fetch("/api/integrations", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            type: selectedType,
-            name: generateConnectionName(values.url),
-            description: "",
-            credentials: {
-              url: values.url,
-              db: values.db,
-              login: values.login,
-              apiKey: values.apiKey,
-              uid,
-            },
-          }),
-        });
-
-        if (!res.ok) {
-          const data = await res.json();
-          setSyncError(data.error || "Failed to create integration");
-          setSyncPhase("idle");
-          return;
-        }
-
-        const created = await res.json();
-        integrationId = created.id;
-        setCreatedId(created.id);
-      }
-
-      // Sync schema
-      setSyncPhase("syncing");
-      const syncRes = await fetch(`/api/integrations/${integrationId}/sync`, {
+      const res = await fetch("/api/integrations/sync-preview", {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "odoo",
+          credentials: {
+            url: values.url,
+            db: values.db,
+            login: values.login,
+            apiKey: values.apiKey,
+            uid,
+          },
+        }),
       });
-      const syncData = await syncRes.json();
 
-      if (syncData.success) {
-        setSyncResult({ models: syncData.models });
+      const data = await res.json();
+
+      if (data.success) {
+        setSyncResult({ models: data.models });
+        setSyncData(data.data);
         setSyncPhase("idle");
         setConnectionName(generateConnectionName(values.url));
         setStep("done");
       } else {
-        setSyncError(syncData.error || "Schema sync failed");
+        setSyncError(data.error || "Schema sync failed");
         setSyncPhase("idle");
       }
     } catch {
@@ -335,19 +314,47 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
     }
   }
 
-  // --- Step 3: Done ---
+  // --- Step 3: Done (creates the integration with all data at once) ---
+
+  const [saving, setSaving] = useState(false);
 
   async function handleDone() {
-    if (createdId && connectionName) {
-      await fetch(`/api/integrations/${createdId}`, {
-        method: "PATCH",
+    setSaving(true);
+    try {
+      const values = form.getValues();
+
+      const res = await fetch("/api/integrations", {
+        method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: connectionName }),
+        body: JSON.stringify({
+          type: selectedType,
+          name: connectionName,
+          description: "",
+          credentials: {
+            url: values.url,
+            db: values.db,
+            login: values.login,
+            apiKey: values.apiKey,
+            uid: connectionResult!.uid,
+          },
+          data: syncData,
+        }),
       });
+
+      if (!res.ok) {
+        const err = await res.json();
+        toast.error(err.error || "Failed to save integration");
+        setSaving(false);
+        return;
+      }
+
+      toast.success("Integration ready");
+      handleClose(false);
+      onSuccess();
+    } catch {
+      toast.error("Failed to save integration");
+      setSaving(false);
     }
-    toast.success("Integration ready");
-    handleClose(false);
-    onSuccess();
   }
 
   // --- Permission error detection ---
@@ -556,11 +563,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
               {!syncError && (
                 <div className="flex flex-col items-center gap-3 py-6">
                   <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground">
-                    {syncPhase === "creating"
-                      ? "Creating integration..."
-                      : "Syncing models from Odoo..."}
-                  </p>
+                  <p className="text-sm text-muted-foreground">Syncing models from Odoo...</p>
                 </div>
               )}
 
@@ -592,7 +595,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                     <Button
                       onClick={() => {
                         setSyncError(null);
-                        runSyncWithResult(connectionResult!.uid);
+                        runSyncPreview(connectionResult!.uid);
                       }}
                     >
                       Retry
@@ -614,7 +617,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                     <Button
                       onClick={() => {
                         setSyncError(null);
-                        runSyncWithResult(connectionResult!.uid);
+                        runSyncPreview(connectionResult!.uid);
                       }}
                     >
                       Retry
@@ -659,8 +662,15 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
               </div>
 
               <div className="flex justify-end">
-                <Button onClick={handleDone} disabled={!connectionName.trim()}>
-                  Done
+                <Button onClick={handleDone} disabled={!connectionName.trim() || saving}>
+                  {saving ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Saving...
+                    </>
+                  ) : (
+                    "Done"
+                  )}
                 </Button>
               </div>
             </div>

@@ -1,13 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { eq } from "drizzle-orm";
-import { OdooClient } from "odoo-node";
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { decrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { appendAuditLog } from "@/lib/audit";
+import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -41,69 +41,14 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
       );
     }
 
-    const creds = parsed.data;
-    const client = new OdooClient({
-      url: creds.url,
-      db: creds.db,
-      uid: creds.uid,
-      apiKey: creds.apiKey,
-    });
-
-    // Fetch all models — requires admin/Access Rights permissions in Odoo
-    let allModels;
-    try {
-      allModels = await client.models();
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : "Unknown error";
-      if (msg.includes("ir.model") || msg.includes("Access")) {
-        return NextResponse.json({
-          success: false,
-          error:
-            "The Odoo user does not have permission to read model definitions (ir.model). " +
-            "Please grant the user 'Settings / Access Rights' permissions in Odoo.",
-        });
-      }
-      throw e;
+    const result = await fetchOdooSchema(parsed.data);
+    if (!result.success) {
+      return NextResponse.json(result);
     }
-
-    // Fetch fields for each model — only commonly used Odoo modules to keep it manageable
-    const RELEVANT_PREFIXES = [
-      "sale.",
-      "purchase.",
-      "stock.",
-      "product.",
-      "res.partner",
-      "res.company",
-      "account.",
-      "crm.",
-      "mail.",
-      "hr.",
-      "helpdesk.",
-      "note.",
-    ];
-
-    const relevantModels = allModels.filter((m) =>
-      RELEVANT_PREFIXES.some((prefix) => m.model.startsWith(prefix))
-    );
-
-    const models = await Promise.all(
-      relevantModels.map(async (m) => {
-        try {
-          const fields = await client.fields(m.model);
-          return { model: m.model, name: m.name, fields };
-        } catch {
-          // Some models may not be accessible — skip them
-          return { model: m.model, name: m.name, fields: [] };
-        }
-      })
-    );
-
-    const lastSyncAt = new Date().toISOString();
-    const data = { models, lastSyncAt };
 
     await db
       .update(integrationConnections)
-      .set({ data, updatedAt: new Date() })
+      .set({ data: result.data, updatedAt: new Date() })
       .where(eq(integrationConnections.id, connectionId));
 
     appendAuditLog({
@@ -114,14 +59,14 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
         action: "integration_schema_synced",
         id: connectionId,
         name: connection.name,
-        modelCount: models.length,
+        modelCount: result.models,
       },
     }).catch(() => {});
 
     return NextResponse.json({
       success: true,
-      models: models.length,
-      lastSyncAt,
+      models: result.models,
+      lastSyncAt: result.lastSyncAt,
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Sync failed";

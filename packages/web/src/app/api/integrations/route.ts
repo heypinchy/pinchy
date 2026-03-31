@@ -13,6 +13,7 @@ const createIntegrationSchema = z.object({
   name: z.string().min(1).max(100),
   description: z.string().max(500).default(""),
   credentials: odooCredentialsSchema,
+  data: z.unknown().optional(),
 });
 
 /** Strip sensitive fields from decrypted credentials for API responses. */
@@ -58,7 +59,7 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { type, name, description, credentials } = parsed.data;
+  const { type, name, description, credentials, data } = parsed.data;
   const encryptedCredentials = encrypt(JSON.stringify(credentials));
 
   const [connection] = await db
@@ -68,6 +69,7 @@ export async function POST(request: NextRequest) {
       name,
       description,
       credentials: encryptedCredentials,
+      data: data ?? null,
     })
     .returning();
 
