@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useIntegrationActions } from "@/hooks/use-integration-actions";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -23,7 +24,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { MoreHorizontal, Plus, Plug, CheckCircle2, Loader2 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { toast } from "sonner";
+// toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { OdooIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
@@ -54,8 +55,6 @@ export function SettingsIntegrations() {
   const [deleteTarget, setDeleteTarget] = useState<IntegrationConnection | null>(null);
   const [renameTarget, setRenameTarget] = useState<IntegrationConnection | null>(null);
   const [renameName, setRenameName] = useState("");
-  const [testing, setTesting] = useState<string | null>(null);
-  const [syncing, setSyncing] = useState<string | null>(null);
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -68,81 +67,23 @@ export function SettingsIntegrations() {
     }
   }, []);
 
+  const { testing, syncing, testConnection, syncSchema, renameConnection, deleteConnection } =
+    useIntegrationActions(fetchConnections);
+
   useEffect(() => {
     fetchConnections();
   }, [fetchConnections]);
 
-  async function testConnection(id: string) {
-    setTesting(id);
-    try {
-      const res = await fetch(`/api/integrations/${id}/test`, { method: "POST" });
-      const data = await res.json();
-      if (data.success) {
-        toast.success("Connection successful");
-      } else {
-        toast.error(data.error || "Connection test failed");
-      }
-    } catch {
-      toast.error("Failed to test connection");
-    } finally {
-      setTesting(null);
-    }
+  async function handleRename() {
+    if (!renameTarget) return;
+    await renameConnection(renameTarget.id, renameName);
+    setRenameTarget(null);
   }
 
-  async function syncSchema(id: string) {
-    setSyncing(id);
-    try {
-      const res = await fetch(`/api/integrations/${id}/sync`, { method: "POST" });
-      const data = await res.json();
-      if (data.success) {
-        toast.success("Schema synced successfully");
-        fetchConnections();
-      } else {
-        toast.error(data.error || "Schema sync failed");
-      }
-    } catch {
-      toast.error("Failed to sync schema");
-    } finally {
-      setSyncing(null);
-    }
-  }
-
-  async function renameConnection() {
-    if (!renameTarget || !renameName.trim()) return;
-    try {
-      const res = await fetch(`/api/integrations/${renameTarget.id}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: renameName.trim() }),
-      });
-      if (res.ok) {
-        toast.success("Integration renamed");
-        fetchConnections();
-      } else {
-        toast.error("Failed to rename integration");
-      }
-    } catch {
-      toast.error("Failed to rename integration");
-    } finally {
-      setRenameTarget(null);
-    }
-  }
-
-  async function deleteConnection() {
+  async function handleDelete() {
     if (!deleteTarget) return;
-    try {
-      const res = await fetch(`/api/integrations/${deleteTarget.id}`, { method: "DELETE" });
-      if (res.ok) {
-        toast.success("Integration deleted");
-        fetchConnections();
-      } else {
-        toast.error("Failed to delete integration");
-      }
-    } catch {
-      toast.error("Failed to delete integration");
-    } finally {
-      setDeleteTarget(null);
-    }
+    await deleteConnection(deleteTarget.id);
+    setDeleteTarget(null);
   }
 
   if (loading) {
@@ -287,7 +228,7 @@ export function SettingsIntegrations() {
               value={renameName}
               onChange={(e) => setRenameName(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === "Enter") renameConnection();
+                if (e.key === "Enter") handleRename();
               }}
               autoFocus
             />
@@ -295,7 +236,7 @@ export function SettingsIntegrations() {
               <Button variant="outline" onClick={() => setRenameTarget(null)}>
                 Cancel
               </Button>
-              <Button onClick={renameConnection} disabled={!renameName.trim()}>
+              <Button onClick={handleRename} disabled={!renameName.trim()}>
                 Save
               </Button>
             </div>
@@ -314,7 +255,7 @@ export function SettingsIntegrations() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction variant="destructive" onClick={deleteConnection}>
+            <AlertDialogAction variant="destructive" onClick={handleDelete}>
               Delete
             </AlertDialogAction>
           </AlertDialogFooter>
