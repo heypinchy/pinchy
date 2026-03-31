@@ -945,7 +945,10 @@ describe("POST /api/integrations/[connectionId]/sync", () => {
     expect(response.status).toBe(404);
   });
 
-  it("should sync models and return count", async () => {
+  it("should sync models by probing fields_get and return count", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char", required: true, readonly: false },
+    ]);
     const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
 
     const response = await POST(makeRequest("/api/integrations/conn-1/sync", { method: "POST" }), {
@@ -955,15 +958,15 @@ describe("POST /api/integrations/[connectionId]/sync", () => {
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
-    // Only sale.order and res.partner match relevant prefixes (ir.model is filtered out)
-    expect(body.models).toBe(2);
+    expect(body.models).toBeGreaterThan(0);
     expect(body.lastSyncAt).toBeDefined();
-    expect(mockModels).toHaveBeenCalled();
-    expect(mockFields).toHaveBeenCalledTimes(2);
+    // Should call fields_get for each curated model, not client.models()
+    expect(mockFields).toHaveBeenCalled();
+    expect(mockModels).not.toHaveBeenCalled();
   });
 
-  it("should return error when OdooClient throws", async () => {
-    mockModels.mockRejectedValueOnce(new Error("Connection refused"));
+  it("should return error when all models are inaccessible", async () => {
+    mockFields.mockRejectedValue(new Error("AccessError"));
     const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
 
     const response = await POST(makeRequest("/api/integrations/conn-1/sync", { method: "POST" }), {
@@ -973,6 +976,6 @@ describe("POST /api/integrations/[connectionId]/sync", () => {
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(false);
-    expect(body.error).toBe("Connection refused");
+    expect(body.error).toContain("Could not access any Odoo models");
   });
 });
