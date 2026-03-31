@@ -79,6 +79,11 @@ export async function POST(req: Request) {
       set: { channelUserId: telegramUserId, linkedAt: new Date() },
     });
 
+  // Clear the pairing request from OpenClaw's store so it doesn't retain
+  // any internal "approved" state. The allow-from stores (computed below)
+  // become the sole authority for Telegram access.
+  removePairingRequest(telegramUserId);
+
   // Recalculate per-account allow-from stores (permission-aware)
   await recalculateTelegramAllowStores();
 
