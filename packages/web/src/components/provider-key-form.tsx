@@ -13,6 +13,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Lock, ChevronDown, ExternalLink, CircleCheck, CircleX } from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
 import { ReportIssueLink } from "@/components/report-issue-link";
+import type { ProviderName } from "@/lib/providers";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,8 +31,6 @@ const providerKeySchema = z.object({
 });
 
 type ProviderKeyFormValues = z.infer<typeof providerKeySchema>;
-
-type ProviderName = "anthropic" | "openai" | "google" | "ollama";
 
 interface ProviderStep {
   label: string;
