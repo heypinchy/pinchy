@@ -1,4 +1,4 @@
-export type ProviderName = "anthropic" | "openai" | "google";
+export type ProviderName = "anthropic" | "openai" | "google" | "ollama";
 
 interface ProviderConfig {
   name: string;
@@ -29,6 +29,13 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     envVar: "GEMINI_API_KEY",
     defaultModel: "google/gemini-2.5-flash",
     placeholder: "AIza...",
+  },
+  ollama: {
+    name: "Ollama",
+    settingsKey: "ollama_api_key",
+    envVar: "OLLAMA_API_KEY",
+    defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+    placeholder: "sk-...",
   },
 };
 
@@ -63,6 +70,13 @@ export async function validateProviderKey(
           `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`,
           {}
         );
+        break;
+      case "ollama":
+        response = await fetch("https://ollama.com/v1/models", {
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+          },
+        });
         break;
     }
 
