@@ -4,6 +4,19 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentSettingsPermissions } from "@/components/agent-settings-permissions";
 
+vi.mock("@/components/odoo-permission-section", () => ({
+  OdooPermissionSection: ({
+    onChange,
+  }: {
+    agentId: string;
+    onChange: (v: unknown, d: boolean) => void;
+  }) => {
+    // Simple stub that calls onChange with null on mount (no connection selected)
+    void onChange;
+    return <div data-testid="odoo-section">Odoo Section</div>;
+  },
+}));
+
 describe("AgentSettingsPermissions", () => {
   const defaultAgent = {
     id: "agent-1",
@@ -19,7 +32,7 @@ describe("AgentSettingsPermissions", () => {
     { path: "/data/reports", name: "reports" },
   ];
 
-  it("should render Safe Tools heading with checkboxes for safe tools", () => {
+  it("should render Knowledge Base heading with checkboxes for KB tools", () => {
     render(
       <AgentSettingsPermissions
         agent={defaultAgent}
@@ -28,9 +41,24 @@ describe("AgentSettingsPermissions", () => {
       />
     );
 
-    expect(screen.getByText("Safe Tools")).toBeInTheDocument();
+    expect(screen.getByText("Knowledge Base")).toBeInTheDocument();
     expect(screen.getByLabelText("List approved directories")).toBeInTheDocument();
     expect(screen.getByLabelText("Read approved files")).toBeInTheDocument();
+  });
+
+  it("should not render odoo tools as checkboxes", () => {
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByLabelText("Odoo: Browse schema")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Odoo: Read data")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Odoo: Count records")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Odoo: Aggregate data")).not.toBeInTheDocument();
   });
 
   it("should not render Powerful Tools section (OpenClaw native tools removed)", () => {
@@ -95,6 +123,19 @@ describe("AgentSettingsPermissions", () => {
     );
 
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
+  });
+
+  it("should render Odoo section", () => {
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Odoo")).toBeInTheDocument();
+    expect(screen.getByTestId("odoo-section")).toBeInTheDocument();
   });
 
   describe("vision warning", () => {
@@ -174,13 +215,16 @@ describe("AgentSettingsPermissions", () => {
 
       await waitFor(() => {
         expect(onChange).toHaveBeenCalledWith(
-          expect.objectContaining({ allowedTools: expect.arrayContaining(["pinchy_ls"]) }),
+          expect.objectContaining({
+            allowedTools: expect.arrayContaining(["pinchy_ls"]),
+            integrations: null,
+          }),
           true
         );
       });
     });
 
-    it("should call onChange with isDirty=false on mount when no changes", () => {
+    it("should call onChange with isDirty=false and integrations=null on mount when no changes", () => {
       const onChange = vi.fn();
       render(
         <AgentSettingsPermissions
@@ -190,7 +234,10 @@ describe("AgentSettingsPermissions", () => {
         />
       );
 
-      expect(onChange).toHaveBeenCalledWith({ allowedTools: [], allowedPaths: [] }, false);
+      expect(onChange).toHaveBeenCalledWith(
+        { allowedTools: [], allowedPaths: [], integrations: null },
+        false
+      );
     });
   });
 });

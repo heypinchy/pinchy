@@ -67,6 +67,10 @@ interface PersonalityValues {
 interface PermissionsValues {
   allowedTools: string[];
   allowedPaths: string[];
+  integrations: {
+    connectionId: string;
+    permissions: Array<{ model: string; operation: string }>;
+  } | null;
 }
 
 interface AccessValues {
