@@ -19,6 +19,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { MoreHorizontal, Plus, Plug, CheckCircle2, Loader2 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { toast } from "sonner";
@@ -50,6 +52,8 @@ export function SettingsIntegrations() {
   const [loading, setLoading] = useState(true);
   const [showAddDialog, setShowAddDialog] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<IntegrationConnection | null>(null);
+  const [renameTarget, setRenameTarget] = useState<IntegrationConnection | null>(null);
+  const [renameName, setRenameName] = useState("");
   const [testing, setTesting] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<string | null>(null);
 
@@ -100,6 +104,27 @@ export function SettingsIntegrations() {
       toast.error("Failed to sync schema");
     } finally {
       setSyncing(null);
+    }
+  }
+
+  async function renameConnection() {
+    if (!renameTarget || !renameName.trim()) return;
+    try {
+      const res = await fetch(`/api/integrations/${renameTarget.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: renameName.trim() }),
+      });
+      if (res.ok) {
+        toast.success("Integration renamed");
+        fetchConnections();
+      } else {
+        toast.error("Failed to rename integration");
+      }
+    } catch {
+      toast.error("Failed to rename integration");
+    } finally {
+      setRenameTarget(null);
     }
   }
 
@@ -161,6 +186,14 @@ export function SettingsIntegrations() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            onClick={() => {
+                              setRenameTarget(conn);
+                              setRenameName(conn.name);
+                            }}
+                          >
+                            Rename
+                          </DropdownMenuItem>
                           <DropdownMenuItem
                             onClick={() => testConnection(conn.id)}
                             disabled={testing === conn.id}
@@ -243,6 +276,32 @@ export function SettingsIntegrations() {
           setShowAddDialog(false);
         }}
       />
+
+      <Dialog open={!!renameTarget} onOpenChange={(open) => !open && setRenameTarget(null)}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle>Rename Integration</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <Input
+              value={renameName}
+              onChange={(e) => setRenameName(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") renameConnection();
+              }}
+              autoFocus
+            />
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setRenameTarget(null)}>
+                Cancel
+              </Button>
+              <Button onClick={renameConnection} disabled={!renameName.trim()}>
+                Save
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>
