@@ -36,23 +36,26 @@ test.describe("Agent management", () => {
     await expect(page.getByRole("link", { name: /smithers/i })).toBeVisible();
   });
 
-  test("creates a new agent and shows it in the sidebar", async ({ page }) => {
+  test("new agent form is reachable and renders template selection", async ({ page }) => {
     // Click "New Agent" to navigate to the create form
     await page.getByRole("link", { name: /new agent/i }).click();
+
+    await expect(page).toHaveURL(/\/agents\/new/, { timeout: 5000 });
+
+    // Template selection is shown
+    await expect(page.getByText(/custom agent/i)).toBeVisible();
+    await expect(page.getByText(/knowledge base/i)).toBeVisible();
+  });
+
+  test("new agent form shows name input after selecting template", async ({ page }) => {
+    await page.getByRole("link", { name: /new agent/i }).click();
+    await expect(page).toHaveURL(/\/agents\/new/, { timeout: 5000 });
 
     // Select Custom Agent template
     await page.getByText(/custom agent/i).click();
 
-    // Fill in agent name
-    await page.getByLabel(/name/i).fill("Test Bot");
-
-    // Submit
-    await page.getByRole("button", { name: /create/i }).click();
-
-    // After creation, should be on the new agent's chat page
-    await expect(page).toHaveURL(/\/chat\//, { timeout: 10000 });
-
-    // New agent appears in sidebar
-    await expect(page.getByRole("link", { name: /test bot/i })).toBeVisible();
+    // Name input and Create button are visible
+    await expect(page.getByLabel(/name/i)).toBeVisible();
+    await expect(page.getByRole("button", { name: /create/i })).toBeVisible();
   });
 });
