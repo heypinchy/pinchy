@@ -29,7 +29,6 @@ describe("fetchOdooSchema", () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
 
-    // Should have probed known models, not called client.models()
     expect(mockFields).toHaveBeenCalled();
     expect(result.models).toBeGreaterThan(0);
   });
@@ -38,13 +37,12 @@ describe("fetchOdooSchema", () => {
     let callCount = 0;
     mockFields.mockImplementation(() => {
       callCount++;
-      // First call succeeds, second throws AccessError
       if (callCount === 1) {
         return Promise.resolve([
           { name: "id", string: "ID", type: "integer", required: true, readonly: true },
         ]);
       }
-      return Promise.reject(new Error("AccessError: no access to sale.order.line"));
+      return Promise.reject(new Error("AccessError: no access"));
     });
 
     const result = await fetchOdooSchema(creds);
@@ -52,8 +50,6 @@ describe("fetchOdooSchema", () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
 
-    // Should have at least 1 model (the one that succeeded)
-    // and less than total probed (some were skipped)
     expect(result.models).toBeGreaterThanOrEqual(1);
     expect(result.data.models.every((m) => m.fields.length > 0)).toBe(true);
   });
@@ -68,25 +64,7 @@ describe("fetchOdooSchema", () => {
     expect(result.error).toContain("Could not access any Odoo models");
   });
 
-  it("includes human-readable model names from curated list", async () => {
-    mockFields.mockResolvedValue([
-      { name: "name", string: "Name", type: "char", required: true, readonly: false },
-    ]);
-
-    const result = await fetchOdooSchema(creds);
-
-    expect(result.success).toBe(true);
-    if (!result.success) return;
-
-    const saleOrder = result.data.models.find((m) => m.model === "sale.order");
-    expect(saleOrder).toBeDefined();
-    expect(saleOrder!.name).toBe("Sales Order");
-  });
-
   it("returns lastSyncAt timestamp", async () => {
-    mockFields.mockResolvedValue([]);
-
-    // Will fail because all models return empty fields → skipped
     mockFields.mockResolvedValue([
       { name: "id", string: "ID", type: "integer", required: true, readonly: true },
     ]);
@@ -97,5 +75,54 @@ describe("fetchOdooSchema", () => {
     if (!result.success) return;
     expect(result.lastSyncAt).toBeTruthy();
     expect(new Date(result.lastSyncAt).getTime()).not.toBeNaN();
+  });
+
+  describe("category summary", () => {
+    it("returns categories with accessible status", async () => {
+      // Only first call succeeds (sale.order = "Sales" category)
+      let callCount = 0;
+      mockFields.mockImplementation(() => {
+        callCount++;
+        if (callCount <= 3) {
+          // First 3 calls are sale.order, sale.order.line, sale.order.template
+          return Promise.resolve([
+            { name: "name", string: "Name", type: "char", required: true, readonly: false },
+          ]);
+        }
+        return Promise.reject(new Error("AccessError"));
+      });
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+
+      expect(result.categories).toBeDefined();
+      expect(result.categories.length).toBeGreaterThan(0);
+
+      const sales = result.categories.find((c) => c.id === "sales");
+      expect(sales).toBeDefined();
+      expect(sales!.accessible).toBe(true);
+      expect(sales!.accessibleModels.length).toBeGreaterThan(0);
+
+      // Categories with no access should be marked as not accessible
+      const inaccessible = result.categories.filter((c) => !c.accessible);
+      expect(inaccessible.length).toBeGreaterThan(0);
+    });
+
+    it("includes category label and model names", async () => {
+      mockFields.mockResolvedValue([
+        { name: "name", string: "Name", type: "char", required: true, readonly: false },
+      ]);
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+
+      const sales = result.categories.find((c) => c.id === "sales");
+      expect(sales!.label).toBe("Sales");
+      expect(sales!.accessibleModels).toContain("Orders");
+    });
   });
 });

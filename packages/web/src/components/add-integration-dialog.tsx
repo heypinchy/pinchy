@@ -134,7 +134,16 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
   const [connecting, setConnecting] = useState(false);
 
   // Sync step results
-  const [syncResult, setSyncResult] = useState<{ models: number } | null>(null);
+  const [syncResult, setSyncResult] = useState<{
+    models: number;
+    categories: Array<{
+      id: string;
+      label: string;
+      accessible: boolean;
+      accessibleModels: string[];
+      totalModels: number;
+    }>;
+  } | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncPhase, setSyncPhase] = useState<"syncing" | "idle">("idle");
   const [syncData, setSyncData] = useState<unknown>(null);
@@ -299,7 +308,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
       const data = await res.json();
 
       if (data.success) {
-        setSyncResult({ models: data.models });
+        setSyncResult({ models: data.models, categories: data.categories ?? [] });
         setSyncData(data.data);
         setSyncPhase("idle");
         setConnectionName(generateConnectionName(values.url));
@@ -642,14 +651,52 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
 
             <StepIndicator current={3} total={3} label="Ready" />
 
-            <div className="space-y-6">
-              <div className="flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 p-4 dark:border-green-900 dark:bg-green-950">
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 rounded-lg border border-green-200 bg-green-50 px-4 py-3 dark:border-green-900 dark:bg-green-950">
                 <CheckCircle2 className="h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
                 <p className="text-sm text-green-800 dark:text-green-200">
-                  Connected to Odoo {connectionResult?.version} &mdash; {syncResult?.models} models
-                  synced
+                  Connected to Odoo {connectionResult?.version}
                 </p>
               </div>
+
+              {syncResult?.categories && syncResult.categories.length > 0 && (
+                <div className="space-y-2">
+                  <p className="text-sm font-medium">Available data</p>
+                  <div className="max-h-48 overflow-y-auto rounded-lg border">
+                    {syncResult.categories
+                      .filter((cat) => cat.accessible)
+                      .map((cat) => (
+                        <div
+                          key={cat.id}
+                          className="flex items-center gap-2 border-b px-3 py-2 last:border-b-0"
+                        >
+                          <CheckCircle2 className="h-3.5 w-3.5 shrink-0 text-green-600 dark:text-green-400" />
+                          <span className="text-sm font-medium">{cat.label}</span>
+                          <span className="text-xs text-muted-foreground">
+                            {cat.accessibleModels.join(", ")}
+                          </span>
+                        </div>
+                      ))}
+                    {syncResult.categories
+                      .filter((cat) => !cat.accessible)
+                      .map((cat) => (
+                        <div
+                          key={cat.id}
+                          className="flex items-center gap-2 border-b px-3 py-2 opacity-50 last:border-b-0"
+                        >
+                          <span className="h-3.5 w-3.5 shrink-0 text-center text-xs text-muted-foreground">
+                            &mdash;
+                          </span>
+                          <span className="text-sm text-muted-foreground">{cat.label}</span>
+                          <span className="text-xs text-muted-foreground">No access</span>
+                        </div>
+                      ))}
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Missing a module? Grant the API user access in Odoo, then re-sync.
+                  </p>
+                </div>
+              )}
 
               <div className="space-y-2">
                 <label htmlFor="connection-name" className="text-sm font-medium">
