@@ -4,6 +4,9 @@ import {
   getToolById,
   getToolsByCategory,
   computeDeniedGroups,
+  getOdooTools,
+  getOdooToolsForAccessLevel,
+  detectOdooAccessLevel,
 } from "@/lib/tool-registry";
 
 describe("TOOL_REGISTRY", () => {
@@ -104,5 +107,105 @@ describe("computeDeniedGroups", () => {
       "image",
       "image_generate",
     ]);
+  });
+});
+
+describe("Odoo access level helpers", () => {
+  it("all odoo tools have integration: 'odoo'", () => {
+    const odooTools = TOOL_REGISTRY.filter((t) => t.id.startsWith("odoo_"));
+    expect(odooTools.length).toBe(7);
+    for (const tool of odooTools) {
+      expect(tool.integration).toBe("odoo");
+    }
+  });
+
+  it("non-odoo tools don't have integration set", () => {
+    const nonOdooTools = TOOL_REGISTRY.filter((t) => !t.id.startsWith("odoo_"));
+    for (const tool of nonOdooTools) {
+      expect(tool.integration).toBeUndefined();
+    }
+  });
+
+  it("getOdooToolsForAccessLevel('read-only') returns exactly the 4 read tools", () => {
+    const tools = getOdooToolsForAccessLevel("read-only");
+    expect(tools).toEqual(["odoo_schema", "odoo_read", "odoo_count", "odoo_aggregate"]);
+  });
+
+  it("getOdooToolsForAccessLevel('read-write') returns 6 tools", () => {
+    const tools = getOdooToolsForAccessLevel("read-write");
+    expect(tools).toEqual([
+      "odoo_schema",
+      "odoo_read",
+      "odoo_count",
+      "odoo_aggregate",
+      "odoo_create",
+      "odoo_write",
+    ]);
+  });
+
+  it("getOdooToolsForAccessLevel('full') returns all 7 tools", () => {
+    const tools = getOdooToolsForAccessLevel("full");
+    expect(tools).toEqual([
+      "odoo_schema",
+      "odoo_read",
+      "odoo_count",
+      "odoo_aggregate",
+      "odoo_create",
+      "odoo_write",
+      "odoo_delete",
+    ]);
+  });
+
+  it("getOdooToolsForAccessLevel('custom') returns only schema", () => {
+    const tools = getOdooToolsForAccessLevel("custom");
+    expect(tools).toEqual(["odoo_schema"]);
+  });
+
+  it("getOdooTools() returns exactly 7 tools", () => {
+    const tools = getOdooTools();
+    expect(tools).toHaveLength(7);
+    expect(tools.every((t) => t.integration === "odoo")).toBe(true);
+  });
+
+  it("detectOdooAccessLevel correctly identifies read-only preset", () => {
+    expect(
+      detectOdooAccessLevel(["odoo_schema", "odoo_read", "odoo_count", "odoo_aggregate"])
+    ).toBe("read-only");
+  });
+
+  it("detectOdooAccessLevel correctly identifies read-write preset", () => {
+    expect(
+      detectOdooAccessLevel([
+        "odoo_schema",
+        "odoo_read",
+        "odoo_count",
+        "odoo_aggregate",
+        "odoo_create",
+        "odoo_write",
+      ])
+    ).toBe("read-write");
+  });
+
+  it("detectOdooAccessLevel correctly identifies full preset", () => {
+    expect(
+      detectOdooAccessLevel([
+        "odoo_schema",
+        "odoo_read",
+        "odoo_count",
+        "odoo_aggregate",
+        "odoo_create",
+        "odoo_write",
+        "odoo_delete",
+      ])
+    ).toBe("full");
+  });
+
+  it("detectOdooAccessLevel returns 'custom' for non-preset combinations", () => {
+    // Only schema + delete — not a standard preset
+    expect(detectOdooAccessLevel(["odoo_schema", "odoo_delete"])).toBe("custom");
+  });
+
+  it("detectOdooAccessLevel returns 'custom' when no odoo tools present", () => {
+    expect(detectOdooAccessLevel(["pinchy_ls", "pinchy_read"])).toBe("custom");
   });
 });

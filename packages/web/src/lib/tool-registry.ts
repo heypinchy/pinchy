@@ -4,6 +4,7 @@ export interface ToolDefinition {
   description: string;
   category: "safe" | "powerful";
   requiresDirectories?: boolean;
+  integration?: string;
 }
 
 export const TOOL_REGISTRY: readonly ToolDefinition[] = [
@@ -29,42 +30,49 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     label: "Odoo: Browse schema",
     description: "Discover available Odoo models and their fields",
     category: "safe",
+    integration: "odoo",
   },
   {
     id: "odoo_read",
     label: "Odoo: Read data",
     description: "Query records from Odoo with filters and field selection",
     category: "safe",
+    integration: "odoo",
   },
   {
     id: "odoo_count",
     label: "Odoo: Count records",
     description: "Count matching records in Odoo without transferring data",
     category: "safe",
+    integration: "odoo",
   },
   {
     id: "odoo_aggregate",
     label: "Odoo: Aggregate data",
     description: "Server-side sums, averages, and grouping in Odoo",
     category: "safe",
+    integration: "odoo",
   },
   {
     id: "odoo_create",
     label: "Odoo: Create records",
     description: "Create new records in Odoo",
     category: "powerful",
+    integration: "odoo",
   },
   {
     id: "odoo_write",
     label: "Odoo: Update records",
     description: "Modify existing records in Odoo",
     category: "powerful",
+    integration: "odoo",
   },
   {
     id: "odoo_delete",
     label: "Odoo: Delete records",
     description: "Delete records from Odoo",
     category: "powerful",
+    integration: "odoo",
   },
 ];
 
@@ -91,4 +99,51 @@ export function getToolsByCategory(category: "safe" | "powerful"): ToolDefinitio
  */
 export function computeDeniedGroups(_allowedToolIds: string[]): string[] {
   return [...ALL_GROUPS, ...STANDALONE_DENY];
+}
+
+// --- Odoo access level helpers ---
+
+export type OdooAccessLevel = "read-only" | "read-write" | "full" | "custom";
+
+const ODOO_READ_TOOLS = ["odoo_schema", "odoo_read", "odoo_count", "odoo_aggregate"] as const;
+const ODOO_WRITE_TOOLS = ["odoo_create", "odoo_write"] as const;
+const ODOO_DELETE_TOOLS = ["odoo_delete"] as const;
+
+/** Returns all Odoo tool definitions from the registry. */
+export function getOdooTools(): ToolDefinition[] {
+  return TOOL_REGISTRY.filter((t) => t.integration === "odoo");
+}
+
+/** Returns the odoo_* tool IDs that should be enabled for the given access level. */
+export function getOdooToolsForAccessLevel(level: OdooAccessLevel): string[] {
+  switch (level) {
+    case "read-only":
+      return [...ODOO_READ_TOOLS];
+    case "read-write":
+      return [...ODOO_READ_TOOLS, ...ODOO_WRITE_TOOLS];
+    case "full":
+      return [...ODOO_READ_TOOLS, ...ODOO_WRITE_TOOLS, ...ODOO_DELETE_TOOLS];
+    case "custom":
+      return ["odoo_schema"];
+  }
+}
+
+/** Given a set of allowed tool IDs, detect which OdooAccessLevel they correspond to. */
+export function detectOdooAccessLevel(allowedToolIds: string[]): OdooAccessLevel {
+  const odooIds = allowedToolIds.filter((id) => id.startsWith("odoo_"));
+  const odooSet = new Set(odooIds);
+
+  const presets: [OdooAccessLevel, readonly string[]][] = [
+    ["full", getOdooToolsForAccessLevel("full")],
+    ["read-write", getOdooToolsForAccessLevel("read-write")],
+    ["read-only", getOdooToolsForAccessLevel("read-only")],
+  ];
+
+  for (const [level, tools] of presets) {
+    if (odooSet.size === tools.length && tools.every((t) => odooSet.has(t))) {
+      return level;
+    }
+  }
+
+  return "custom";
 }
