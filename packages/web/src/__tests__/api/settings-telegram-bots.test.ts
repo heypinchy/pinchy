@@ -77,8 +77,27 @@ describe("GET /api/settings/telegram/bots", () => {
 
     expect(response.status).toBe(200);
     expect(data.bots).toEqual([
-      { agentId: "a1", agentName: "Smithers", botUsername: "acme_smithers_bot" },
+      { agentId: "a1", agentName: "Smithers", botUsername: "acme_smithers_bot", isPersonal: false },
     ]);
+  });
+
+  it("returns personal (Smithers) bots first for pairing priority", async () => {
+    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
+      { id: "a1", name: "Silvia", isPersonal: false, visibility: "all" },
+      { id: "a2", name: "Smithers", isPersonal: true, ownerId: "user-1" },
+    ] as any);
+    mockGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_username:a1") return "silvia_bot";
+      if (key === "telegram_bot_username:a2") return "smithers_bot";
+      return null;
+    });
+
+    const response = await GET();
+    const data = await response.json();
+
+    // Smithers (personal) should be first — the UI uses bots[0] for pairing QR code
+    expect(data.bots[0].botUsername).toBe("smithers_bot");
+    expect(data.bots[0].isPersonal).toBe(true);
   });
 
   it("shows all bots to non-admin users (no visibility filtering for pairing)", async () => {

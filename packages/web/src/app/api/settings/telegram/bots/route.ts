@@ -16,7 +16,8 @@ export async function GET() {
   // Access control happens via allow-from stores, not here.
   const allAgents = await db.query.agents.findMany();
 
-  const bots: { agentId: string; agentName: string; botUsername: string }[] = [];
+  const bots: { agentId: string; agentName: string; botUsername: string; isPersonal: boolean }[] =
+    [];
   for (const agent of allAgents) {
     const botUsername = await getSetting(`telegram_bot_username:${agent.id}`);
     if (botUsername) {
@@ -24,9 +25,15 @@ export async function GET() {
         agentId: agent.id,
         agentName: agent.name,
         botUsername,
+        isPersonal: agent.isPersonal,
       });
     }
   }
+
+  // Sort personal agents (Smithers) first — the pairing UI uses bots[0] as
+  // the primary bot for the QR code. Users should always pair via Smithers
+  // (the shared entry point), not via a restricted agent's bot.
+  bots.sort((a, b) => (a.isPersonal === b.isPersonal ? 0 : a.isPersonal ? -1 : 1));
 
   return NextResponse.json({ bots });
 }
