@@ -12,8 +12,8 @@ async function seedProviderConfig() {
   `;
   await sql`
     INSERT INTO settings (key, value, encrypted)
-    VALUES ('anthropic_api_key', 'sk-ant-fake-key', true)
-    ON CONFLICT (key) DO UPDATE SET value = 'sk-ant-fake-key'
+    VALUES ('anthropic_api_key', 'sk-ant-fake-key', false)
+    ON CONFLICT (key) DO UPDATE SET value = 'sk-ant-fake-key', encrypted = false
   `;
   await sql.end();
 }
