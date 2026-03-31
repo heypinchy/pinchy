@@ -344,7 +344,7 @@ describe("selectDefaultModel", () => {
     expect(selectDefaultModel("google", models)).toBe("google/gemini-2.5-flash");
   });
 
-  it("selects the flash Ollama cloud model (flash.*cloud pattern)", async () => {
+  it("falls back to hardcoded default when all flash candidates are preview versions (ollama)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
       { id: "ollama-cloud/kimi-k2.5:cloud", name: "Kimi K2.5" },

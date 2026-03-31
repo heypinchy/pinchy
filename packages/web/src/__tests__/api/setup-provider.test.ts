@@ -257,20 +257,14 @@ describe("POST /api/setup/provider", () => {
   });
 
   it("should accept ollama as a valid provider", async () => {
-    const request = new NextRequest("http://localhost/api/setup/provider", {
-      method: "POST",
-      body: JSON.stringify({ provider: "ollama", apiKey: "sk-ollama-valid" }),
-    });
-    const response = await POST(request);
+    const response = await POST(
+      makeRequest({ provider: "ollama", apiKey: "sk-ollama-valid" }) as any
+    );
     expect(response.status).toBe(200);
   });
 
   it("should accept google as a valid provider", async () => {
-    const request = new NextRequest("http://localhost/api/setup/provider", {
-      method: "POST",
-      body: JSON.stringify({ provider: "google", apiKey: "AIza-valid" }),
-    });
-    const response = await POST(request);
+    const response = await POST(makeRequest({ provider: "google", apiKey: "AIza-valid" }) as any);
     expect(response.status).toBe(200);
   });
 });
