@@ -157,10 +157,41 @@ export interface OdooSyncError {
   error: string;
 }
 
+const MAX_CONCURRENCY = 5;
+const MAX_RETRIES = 2;
+
+/** Returns true if the error is a permission/access issue (should not retry). */
+function isAccessError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const msg = error.message.toLowerCase();
+  return msg.includes("accesserror") || msg.includes("access") || msg.includes("permission");
+}
+
+/** Run async tasks with limited concurrency. */
+async function runWithConcurrency<T>(
+  tasks: (() => Promise<T>)[],
+  concurrency: number
+): Promise<T[]> {
+  const results: T[] = new Array(tasks.length);
+  let nextIndex = 0;
+
+  async function worker() {
+    while (nextIndex < tasks.length) {
+      const index = nextIndex++;
+      results[index] = await tasks[index]();
+    }
+  }
+
+  await Promise.all(Array.from({ length: Math.min(concurrency, tasks.length) }, () => worker()));
+  return results;
+}
+
 /**
  * Fetch schema from an Odoo instance by probing curated models via fields_get().
  * Does NOT require admin/ir.model access — only needs read access on individual models.
  * Models the user cannot access are silently skipped.
+ * Retries transient errors (timeouts, rate limits) up to MAX_RETRIES times.
+ * Limits concurrency to MAX_CONCURRENCY to avoid overwhelming the server.
  * Does NOT save anything — returns the data for the caller to handle.
  */
 export async function fetchOdooSchema(credentials: {
@@ -176,17 +207,35 @@ export async function fetchOdooSchema(credentials: {
     apiKey: credentials.apiKey,
   });
 
-  // Probe each known model via fields_get() — skip models without access
-  const results = await Promise.all(
-    ALL_KNOWN_MODELS.map(async ({ model, name, category }) => {
-      try {
-        const fields = await client.fields(model);
-        return { model, name, category, fields, accessible: true };
-      } catch {
-        return { model, name, category, fields: [] as unknown[], accessible: false };
+  type ProbeResult = {
+    model: string;
+    name: string;
+    category: string;
+    fields: unknown[];
+    accessible: boolean;
+  };
+
+  const tasks = ALL_KNOWN_MODELS.map(({ model, name, category }) => {
+    return async (): Promise<ProbeResult> => {
+      for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+          const fields = await client.fields(model);
+          return { model, name, category, fields, accessible: true };
+        } catch (error) {
+          if (isAccessError(error)) {
+            return { model, name, category, fields: [], accessible: false };
+          }
+          if (attempt === MAX_RETRIES) {
+            return { model, name, category, fields: [], accessible: false };
+          }
+          await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+        }
       }
-    })
-  );
+      return { model, name, category, fields: [], accessible: false };
+    };
+  });
+
+  const results = await runWithConcurrency(tasks, MAX_CONCURRENCY);
 
   const accessibleModels = results.filter((r) => r.accessible && r.fields.length > 0);
 

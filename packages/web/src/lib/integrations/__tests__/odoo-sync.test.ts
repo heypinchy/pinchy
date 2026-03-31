@@ -64,6 +64,60 @@ describe("fetchOdooSchema", () => {
     expect(result.error).toContain("Could not access any Odoo models");
   });
 
+  it("retries transient errors instead of treating them as no-access", async () => {
+    let callCount = 0;
+    mockFields.mockImplementation(() => {
+      callCount++;
+      // Simulate: first call for each model fails with timeout, second succeeds
+      if (callCount % 2 === 1) {
+        return Promise.reject(new Error("ETIMEDOUT"));
+      }
+      return Promise.resolve([
+        { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+      ]);
+    });
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    // Models should be accessible after retry
+    expect(result.models).toBeGreaterThan(0);
+  });
+
+  it("limits concurrency to avoid overwhelming the Odoo server", async () => {
+    let concurrentCalls = 0;
+    let maxConcurrent = 0;
+
+    mockFields.mockImplementation(() => {
+      concurrentCalls++;
+      maxConcurrent = Math.max(maxConcurrent, concurrentCalls);
+      return new Promise((resolve) => {
+        setTimeout(() => {
+          concurrentCalls--;
+          resolve([{ name: "id", string: "ID", type: "integer", required: true, readonly: true }]);
+        }, 10);
+      });
+    });
+
+    await fetchOdooSchema(creds);
+
+    // Should not fire all ~40 requests at once
+    expect(maxConcurrent).toBeLessThanOrEqual(5);
+  });
+
+  it("distinguishes access errors from transient errors", async () => {
+    mockFields.mockImplementation(() => {
+      // AccessError is a real permission issue — should not retry
+      return Promise.reject(new Error("AccessError: You do not have access to this resource"));
+    });
+
+    const result = await fetchOdooSchema(creds);
+
+    // All models should be inaccessible (not retried endlessly)
+    expect(result.success).toBe(false);
+  });
+
   it("returns lastSyncAt timestamp", async () => {
     mockFields.mockResolvedValue([
       { name: "id", string: "ID", type: "integer", required: true, readonly: true },
