@@ -49,8 +49,8 @@ test.describe("User management", () => {
     // Open invite dialog
     await page.getByRole("button", { name: "Invite User" }).click();
 
-    // Dialog appears
-    await expect(page.getByText("Invite User", { exact: false })).toBeVisible();
+    // Dialog appears — check for the email input which is unique to the dialog
+    await expect(page.getByLabel("Email (optional)")).toBeVisible();
 
     // Fill email (optional)
     await page.getByLabel("Email (optional)").fill("newuser@test.com");
