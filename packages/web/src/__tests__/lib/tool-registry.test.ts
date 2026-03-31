@@ -16,7 +16,31 @@ describe("TOOL_REGISTRY", () => {
 
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
-    expect(powerful.length).toBeGreaterThanOrEqual(5);
+    expect(powerful.length).toBe(3);
+    expect(powerful.map((t) => t.id)).toEqual(["odoo_create", "odoo_write", "odoo_delete"]);
+  });
+
+  it("does not contain any OpenClaw native tools", () => {
+    const nativeTools = [
+      "shell",
+      "fs_read",
+      "fs_write",
+      "pdf",
+      "image",
+      "image_generate",
+      "web_fetch",
+      "web_search",
+    ];
+    const ids = TOOL_REGISTRY.map((t) => t.id);
+    for (const native of nativeTools) {
+      expect(ids).not.toContain(native);
+    }
+  });
+
+  it("no tool has a group property", () => {
+    for (const tool of TOOL_REGISTRY) {
+      expect(tool).not.toHaveProperty("group");
+    }
   });
 
   it("every tool has id, label, description, and category", () => {
@@ -58,43 +82,27 @@ describe("getToolsByCategory", () => {
 });
 
 describe("computeDeniedGroups", () => {
-  it("returns empty deny list when no tools are allowed", () => {
+  it("always returns all groups and standalone tools", () => {
     const denied = computeDeniedGroups([]);
-    expect(denied).toContain("group:runtime");
-    expect(denied).toContain("group:fs");
-    expect(denied).toContain("group:web");
+    expect(denied).toEqual([
+      "group:runtime",
+      "group:fs",
+      "group:web",
+      "pdf",
+      "image",
+      "image_generate",
+    ]);
   });
 
-  it("removes group from deny list when a tool from that group is allowed", () => {
-    const denied = computeDeniedGroups(["shell"]);
-    expect(denied).not.toContain("group:runtime");
-    expect(denied).toContain("group:fs");
-    expect(denied).toContain("group:web");
-  });
-
-  it("removes fs group when any fs tool is allowed", () => {
-    const denied = computeDeniedGroups(["fs_read"]);
-    expect(denied).not.toContain("group:fs");
-  });
-
-  it("ignores safe tools for group computation", () => {
-    const denied = computeDeniedGroups(["pinchy_ls", "pinchy_read"]);
-    expect(denied).toContain("group:runtime");
-    expect(denied).toContain("group:fs");
-    expect(denied).toContain("group:web");
-  });
-
-  it("always denies standalone OpenClaw tools that bypass access control", () => {
-    const denied = computeDeniedGroups(["pinchy_ls", "pinchy_read"]);
-    expect(denied).toContain("pdf");
-    expect(denied).toContain("image");
-    expect(denied).toContain("image_generate");
-  });
-
-  it("denies standalone tools even when powerful tools are allowed", () => {
-    const denied = computeDeniedGroups(["shell", "fs_read", "web_fetch"]);
-    expect(denied).toContain("pdf");
-    expect(denied).toContain("image");
-    expect(denied).toContain("image_generate");
+  it("returns full deny list even when tool IDs are passed", () => {
+    const denied = computeDeniedGroups(["pinchy_ls", "odoo_create"]);
+    expect(denied).toEqual([
+      "group:runtime",
+      "group:fs",
+      "group:web",
+      "pdf",
+      "image",
+      "image_generate",
+    ]);
   });
 });

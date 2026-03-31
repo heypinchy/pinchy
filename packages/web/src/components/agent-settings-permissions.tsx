@@ -34,7 +34,6 @@ export function AgentSettingsPermissions({
   const initialAllowedPaths = useRef(agent.pluginConfig?.allowed_paths ?? []);
 
   const safeTools = getToolsByCategory("safe");
-  const powerfulTools = getToolsByCategory("powerful");
 
   const hasSafeToolChecked = safeTools.some((tool) => allowedTools.includes(tool.id));
 
@@ -101,30 +100,6 @@ export function AgentSettingsPermissions({
             </AlertDescription>
           </Alert>
         )}
-      </section>
-
-      <section className="space-y-4">
-        <h3 className="text-lg font-semibold">Powerful Tools</h3>
-        <p className="text-sm text-amber-600 dark:text-amber-400">
-          These tools give the agent direct access to your server. Only enable them if you
-          understand the risks.
-        </p>
-        <div className="space-y-3">
-          {powerfulTools.map((tool) => (
-            <div key={tool.id} className="flex items-center space-x-3">
-              <Checkbox
-                id={`tool-${tool.id}`}
-                checked={allowedTools.includes(tool.id)}
-                onCheckedChange={() => handleToolToggle(tool.id)}
-                aria-label={tool.label}
-              />
-              <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
-                <span className="font-medium">{tool.label}</span>
-                <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
-              </Label>
-            </div>
-          ))}
-        </div>
       </section>
     </div>
   );

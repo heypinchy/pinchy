@@ -33,7 +33,7 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByLabelText("Read approved files")).toBeInTheDocument();
   });
 
-  it("should render Powerful Tools heading with checkboxes for powerful tools", () => {
+  it("should not render Powerful Tools section (OpenClaw native tools removed)", () => {
     render(
       <AgentSettingsPermissions
         agent={defaultAgent}
@@ -42,29 +42,10 @@ describe("AgentSettingsPermissions", () => {
       />
     );
 
-    expect(screen.getByText("Powerful Tools")).toBeInTheDocument();
-    expect(screen.getByLabelText("Run shell commands")).toBeInTheDocument();
-    expect(screen.getByLabelText("Read any file")).toBeInTheDocument();
-    expect(screen.getByLabelText("Write any file")).toBeInTheDocument();
-    expect(screen.getByLabelText("Read any PDF")).toBeInTheDocument();
-    expect(screen.getByLabelText("Analyze any image")).toBeInTheDocument();
-    expect(screen.getByLabelText("Generate images")).toBeInTheDocument();
-    expect(screen.getByLabelText("Fetch web pages")).toBeInTheDocument();
-    expect(screen.getByLabelText("Search the web")).toBeInTheDocument();
-  });
-
-  it("should show a warning message in the Powerful Tools section", () => {
-    render(
-      <AgentSettingsPermissions
-        agent={defaultAgent}
-        directories={defaultDirectories}
-        onChange={vi.fn()}
-      />
-    );
-
+    expect(screen.queryByText("Powerful Tools")).not.toBeInTheDocument();
     expect(
-      screen.getByText(/these tools give the agent direct access to your server/i)
-    ).toBeInTheDocument();
+      screen.queryByText(/these tools give the agent direct access to your server/i)
+    ).not.toBeInTheDocument();
   });
 
   it("should show DirectoryPicker when a safe tool is checked", async () => {

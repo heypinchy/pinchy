@@ -445,32 +445,6 @@ describe("regenerateOpenClawConfig", () => {
     expect(customAgent.tools.deny).toContain("group:web");
   });
 
-  it("should not deny group:runtime when shell is allowed", async () => {
-    mockedDb.select.mockReturnValue({
-      from: mockFrom([
-        {
-          id: "power-agent-id",
-          name: "Power Agent",
-          model: "anthropic/claude-opus-4-6",
-          templateId: "custom",
-          pluginConfig: null,
-          allowedTools: ["shell", "pinchy_ls"],
-          createdAt: new Date(),
-        },
-      ]),
-    } as never);
-
-    await regenerateOpenClawConfig();
-
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
-    const config = JSON.parse(written);
-    const agent = config.agents.list.find((a: { id: string }) => a.id === "power-agent-id");
-
-    expect(agent.tools.deny).not.toContain("group:runtime");
-    expect(agent.tools.deny).toContain("group:fs");
-    expect(agent.tools.deny).toContain("group:web");
-  });
-
   it("should include pinchy-files plugin config for agents with safe tools", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([
