@@ -7,6 +7,7 @@ const mockReadGroup = vi.fn();
 const mockCreate = vi.fn();
 const mockWrite = vi.fn();
 const mockUnlink = vi.fn();
+const mockFields = vi.fn();
 
 vi.mock("odoo-node", () => ({
   OdooClient: vi.fn().mockImplementation(() => ({
@@ -16,9 +17,11 @@ vi.mock("odoo-node", () => ({
     create: mockCreate,
     write: mockWrite,
     unlink: mockUnlink,
+    fields: mockFields,
   })),
 }));
 
+import { OdooClient } from "odoo-node";
 import plugin from "../index";
 
 interface AgentTool {
@@ -42,29 +45,6 @@ const testConnection = {
   apiKey: "test-api-key",
 };
 
-const testSchema: Record<string, { name: string; fields: Array<{ name: string; string: string; type: string; required: boolean; readonly: boolean; relation?: string; selection?: [string, string][] }> }> = {
-  "sale.order": {
-    name: "Sales Order",
-    fields: [
-      { name: "name", string: "Order Reference", type: "char", required: true, readonly: true },
-      { name: "partner_id", string: "Customer", type: "many2one", required: true, readonly: false, relation: "res.partner" },
-      { name: "amount_total", string: "Total", type: "monetary", required: false, readonly: true },
-    ],
-  },
-  "res.partner": {
-    name: "Contact",
-    fields: [
-      { name: "name", string: "Name", type: "char", required: true, readonly: false },
-      { name: "email", string: "Email", type: "char", required: false, readonly: false },
-    ],
-  },
-  "account.move": {
-    name: "Journal Entry",
-    fields: [
-      { name: "name", string: "Number", type: "char", required: true, readonly: true },
-    ],
-  },
-};
 
 const testPermissions = {
   "sale.order": ["read"],
@@ -95,7 +75,11 @@ const agentId = "agent-1";
 const agentConfig = {
   connection: testConnection,
   permissions: testPermissions,
-  schema: testSchema,
+  modelNames: {
+    "sale.order": "Sales Order",
+    "res.partner": "Contact",
+    "account.move": "Journal Entry",
+  },
 };
 
 describe("tool registration", () => {
@@ -142,6 +126,13 @@ describe("odoo_schema", () => {
   });
 
   it("returns fields for a specific permitted model", async () => {
+    const expectedFields = [
+      { name: "name", string: "Order Reference", type: "char", required: true, readonly: true },
+      { name: "partner_id", string: "Customer", type: "many2one", required: true, readonly: false, relation: "res.partner" },
+      { name: "amount_total", string: "Total", type: "monetary", required: false, readonly: true },
+    ];
+    mockFields.mockResolvedValue(expectedFields);
+
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_schema", agentId)!;
 
@@ -150,6 +141,7 @@ describe("odoo_schema", () => {
     expect(data.name).toBe("Sales Order");
     expect(data.fields).toHaveLength(3);
     expect(data.fields[0].name).toBe("name");
+    expect(mockFields).toHaveBeenCalledWith("sale.order");
   });
 
   it("denies access to unpermitted model schema", async () => {
@@ -424,6 +416,35 @@ describe("error handling", () => {
     expect(result.content[0].text).toContain("Error: Connection refused");
   });
 
+  it("returns permission message for Odoo access errors", async () => {
+    mockSearchRead.mockRejectedValue(new Error("AccessError: no read access on sale.order"));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.content[0].text).toContain("denied permission");
+  });
+
+  it("does not treat 'Failed to access host' as a permission error", async () => {
+    mockSearchRead.mockRejectedValue(new Error("Failed to access host"));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
+
+    expect(result.content[0].text).not.toContain("denied permission");
+    expect(result.content[0].text).toContain("Error: Failed to access host");
+  });
+
   it("handles non-Error throws gracefully", async () => {
     mockSearchRead.mockRejectedValue("string error");
 
@@ -436,5 +457,45 @@ describe("error handling", () => {
     });
 
     expect(result.content[0].text).toContain("Error: Unknown error");
+  });
+});
+
+describe("client caching", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reuses the same OdooClient across multiple tool calls for the same agent", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
+    mockSearchCount.mockResolvedValue(0);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const readTool = findTool(tools, "odoo_read", agentId)!;
+    const countTool = findTool(tools, "odoo_count", agentId)!;
+
+    await readTool.execute("call-1", { model: "sale.order", filters: [] });
+    await readTool.execute("call-2", { model: "sale.order", filters: [] });
+    await countTool.execute("call-3", { model: "sale.order", filters: [] });
+
+    // OdooClient constructor should be called only once despite 3 tool calls
+    expect(OdooClient).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates separate clients for different agents", async () => {
+    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
+
+    const agent2Config = {
+      connection: { ...testConnection, url: "https://other.example.com" },
+      permissions: testPermissions,
+    };
+    const tools = createApi({ [agentId]: agentConfig, "agent-2": agent2Config });
+
+    const tool1 = findTool(tools, "odoo_read", agentId)!;
+    const tool2 = findTool(tools, "odoo_read", "agent-2")!;
+
+    await tool1.execute("call-1", { model: "sale.order", filters: [] });
+    await tool2.execute("call-2", { model: "sale.order", filters: [] });
+
+    expect(OdooClient).toHaveBeenCalledTimes(2);
   });
 });

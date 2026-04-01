@@ -75,7 +75,12 @@ function permissionDenied(operation: string, model: string): { content: ContentB
 function isOdooAccessError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const msg = error.message.toLowerCase();
-  return msg.includes("accesserror") || msg.includes("access") || msg.includes("permission");
+  return (
+    msg.includes("accesserror") ||
+    msg.includes("access denied") ||
+    msg.includes("not allowed") ||
+    msg.includes("permission denied")
+  );
 }
 
 function errorResult(error: unknown, context?: { operation?: string; model?: string }): { content: ContentBlock[] } {
@@ -101,6 +106,17 @@ const plugin = {
 
   register(api: PluginApi) {
     const agentConfigs = api.pluginConfig?.agents ?? {};
+
+    const clientCache = new Map<string, OdooClient>();
+
+    function getOrCreateClient(agentId: string, config: AgentOdooConfig): OdooClient {
+      let client = clientCache.get(agentId);
+      if (!client) {
+        client = createClient(config);
+        clientCache.set(agentId, client);
+      }
+      return client;
+    }
 
     // 1. odoo_schema
     api.registerTool(
@@ -150,7 +166,7 @@ const plugin = {
 
               // Fetch fields live from Odoo (lightweight call — the agent
               // caches the result in its conversation context naturally)
-              const client = createClient(config);
+              const client = getOrCreateClient(agentId, config);
               const fields = await client.fields(model);
 
               return {
@@ -214,7 +230,7 @@ const plugin = {
                 return permissionDenied("read", model);
               }
 
-              const client = createClient(config);
+              const client = getOrCreateClient(agentId, config);
               const result = await client.searchRead(model, params.filters as unknown[], {
                 fields: params.fields as string[] | undefined,
                 limit: params.limit as number | undefined,
@@ -264,7 +280,7 @@ const plugin = {
                 return permissionDenied("read", model);
               }
 
-              const client = createClient(config);
+              const client = getOrCreateClient(agentId, config);
               const count = await client.searchCount(model, params.filters as unknown[]);
 
               return { content: [{ type: "text", text: JSON.stringify({ count }) }] };
@@ -323,7 +339,7 @@ const plugin = {
                 return permissionDenied("read", model);
               }
 
-              const client = createClient(config);
+              const client = getOrCreateClient(agentId, config);
               const result = await client.readGroup(
                 model,
                 params.filters as unknown[],
@@ -373,7 +389,7 @@ const plugin = {
                 return permissionDenied("create", model);
               }
 
-              const client = createClient(config);
+              const client = getOrCreateClient(agentId, config);
               const id = await client.create(model, params.values as Record<string, unknown>);
 
               return { content: [{ type: "text", text: JSON.stringify({ id }) }] };
@@ -418,7 +434,7 @@ const plugin = {
                 return permissionDenied("write", model);
               }
 
-              const client = createClient(config);
+              const client = getOrCreateClient(agentId, config);
               const success = await client.write(
                 model,
                 params.ids as number[],
@@ -466,7 +482,7 @@ const plugin = {
                 return permissionDenied("delete", model);
               }
 
-              const client = createClient(config);
+              const client = getOrCreateClient(agentId, config);
               const success = await client.unlink(model, params.ids as number[]);
 
               return { content: [{ type: "text", text: JSON.stringify({ success }) }] };
