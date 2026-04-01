@@ -169,7 +169,12 @@ const MAX_RETRIES = 2;
 function isAccessError(error: unknown): boolean {
   if (!(error instanceof Error)) return false;
   const msg = error.message.toLowerCase();
-  return msg.includes("accesserror") || msg.includes("access") || msg.includes("permission");
+  return (
+    msg.includes("accesserror") ||
+    msg.includes("access denied") ||
+    msg.includes("not allowed") ||
+    msg.includes("permission denied")
+  );
 }
 
 /** Run async tasks with limited concurrency. */
@@ -235,7 +240,9 @@ export async function fetchOdooSchema(credentials: {
           const fields = await client.fields(model);
 
           // Check per-operation access rights
-          const safeCheck = async (op: string): Promise<boolean> => {
+          const safeCheck = async (
+            op: "read" | "create" | "write" | "unlink"
+          ): Promise<boolean> => {
             try {
               return await client.checkAccessRights(model, op);
             } catch {
