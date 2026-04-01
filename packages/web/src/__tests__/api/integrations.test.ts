@@ -31,16 +31,24 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
 }));
 
-const { mockAuthenticate, mockVersion, mockModels, mockFields } = vi.hoisted(() => ({
-  mockAuthenticate: vi.fn(),
-  mockVersion: vi.fn(),
-  mockModels: vi.fn(),
-  mockFields: vi.fn(),
-}));
+const { mockAuthenticate, mockVersion, mockModels, mockFields, mockCheckAccessRights } = vi.hoisted(
+  () => ({
+    mockAuthenticate: vi.fn(),
+    mockVersion: vi.fn(),
+    mockModels: vi.fn(),
+    mockFields: vi.fn(),
+    mockCheckAccessRights: vi.fn().mockResolvedValue(true),
+  })
+);
 
 vi.mock("odoo-node", () => {
   function OdooClient() {
-    return { version: mockVersion, models: mockModels, fields: mockFields };
+    return {
+      version: mockVersion,
+      models: mockModels,
+      fields: mockFields,
+      checkAccessRights: mockCheckAccessRights,
+    };
   }
   OdooClient.authenticate = mockAuthenticate;
   return { OdooClient };

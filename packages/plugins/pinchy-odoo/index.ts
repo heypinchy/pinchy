@@ -86,7 +86,24 @@ function permissionDenied(operation: string, model: string): { content: ContentB
   };
 }
 
-function errorResult(error: unknown): { content: ContentBlock[] } {
+function isOdooAccessError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const msg = error.message.toLowerCase();
+  return msg.includes("accesserror") || msg.includes("access") || msg.includes("permission");
+}
+
+function errorResult(error: unknown, context?: { operation?: string; model?: string }): { content: ContentBlock[] } {
+  if (isOdooAccessError(error) && context?.model) {
+    const op = context.operation ?? "access";
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Odoo denied permission to ${op} on ${context.model}. The Odoo user's permissions may have changed since the last sync. An admin can re-sync the connection in Settings > Integrations to update available permissions.`,
+        },
+      ],
+    };
+  }
   const message = error instanceof Error ? error.message : "Unknown error";
   return { content: [{ type: "text", text: `Error: ${message}` }] };
 }
@@ -219,7 +236,7 @@ const plugin = {
 
               return { content: [{ type: "text", text: JSON.stringify(result) }] };
             } catch (error) {
-              return errorResult(error);
+              return errorResult(error, { operation: "read", model: params.model as string });
             }
           },
         };
@@ -264,7 +281,7 @@ const plugin = {
 
               return { content: [{ type: "text", text: JSON.stringify({ count }) }] };
             } catch (error) {
-              return errorResult(error);
+              return errorResult(error, { operation: "count", model: params.model as string });
             }
           },
         };
@@ -333,7 +350,7 @@ const plugin = {
 
               return { content: [{ type: "text", text: JSON.stringify(result) }] };
             } catch (error) {
-              return errorResult(error);
+              return errorResult(error, { operation: "aggregate", model: params.model as string });
             }
           },
         };
@@ -373,7 +390,7 @@ const plugin = {
 
               return { content: [{ type: "text", text: JSON.stringify({ id }) }] };
             } catch (error) {
-              return errorResult(error);
+              return errorResult(error, { operation: "create", model: params.model as string });
             }
           },
         };
@@ -422,7 +439,7 @@ const plugin = {
 
               return { content: [{ type: "text", text: JSON.stringify({ success }) }] };
             } catch (error) {
-              return errorResult(error);
+              return errorResult(error, { operation: "write", model: params.model as string });
             }
           },
         };
@@ -466,7 +483,7 @@ const plugin = {
 
               return { content: [{ type: "text", text: JSON.stringify({ success }) }] };
             } catch (error) {
-              return errorResult(error);
+              return errorResult(error, { operation: "delete", model: params.model as string });
             }
           },
         };
