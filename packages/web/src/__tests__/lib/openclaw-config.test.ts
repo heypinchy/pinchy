@@ -38,6 +38,12 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
+vi.mock("@/lib/encryption", () => ({
+  decrypt: (val: string) => val,
+  encrypt: (val: string) => val,
+  getOrCreateSecret: vi.fn().mockReturnValue(Buffer.alloc(32)),
+}));
+
 vi.mock("@/server/restart-state", () => ({
   restartState: { notifyRestart: vi.fn() },
 }));
@@ -700,6 +706,102 @@ describe("regenerateOpenClawConfig", () => {
     // pinchy-audit is always enabled to capture tool usage at source
     expect(config.plugins.entries["pinchy-audit"].enabled).toBe(true);
     expect(config.plugins.allow).toContain("pinchy-audit");
+  });
+});
+
+describe("pinchy-odoo config size", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("should include only modelNames, not full schema with fields", async () => {
+    const agentsData = [
+      {
+        id: "odoo-agent",
+        name: "Odoo Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "odoo-agent",
+          connectionId: "conn-1",
+          model: "sale.order",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-1",
+          type: "odoo",
+          name: "Test Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://odoo.test",
+            db: "test",
+            uid: 2,
+            apiKey: "key",
+          }),
+          data: {
+            models: [
+              {
+                model: "sale.order",
+                name: "Sales Orders",
+                fields: [
+                  { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+                  { name: "name", string: "Name", type: "char", required: true, readonly: false },
+                  {
+                    name: "partner_id",
+                    string: "Partner",
+                    type: "many2one",
+                    required: false,
+                    readonly: false,
+                    relation: "res.partner",
+                  },
+                ],
+                access: { read: true, create: false, write: false, delete: false },
+              },
+            ],
+            lastSyncAt: "2026-04-01T00:00:00Z",
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const odooConfig = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents?.["odoo-agent"];
+    expect(odooConfig).toBeDefined();
+
+    // Should have modelNames (lightweight)
+    expect(odooConfig.modelNames).toEqual({ "sale.order": "Sales Orders" });
+
+    // Should NOT have full schema with fields
+    expect(odooConfig.schema).toBeUndefined();
+
+    // Config should be small (no field definitions bloating it)
+    const configSize = written.length;
+    expect(configSize).toBeLessThan(5000); // Without schema: ~2-3KB. With schema it would be 100KB+
   });
 });
 
