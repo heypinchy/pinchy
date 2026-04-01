@@ -121,6 +121,7 @@ export default defineConfig({
             { label: 'Enterprise Setup', slug: 'guides/enterprise-setup' },
             { label: 'Upgrading', slug: 'guides/upgrading' },
             { label: 'Hardening', slug: 'guides/hardening' },
+            { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
           ],
         },
         {
@@ -135,6 +136,7 @@ export default defineConfig({
             { label: 'User Roles', slug: 'concepts/user-roles' },
             { label: 'Groups', slug: 'concepts/groups' },
             { label: 'Audit Trail', slug: 'concepts/audit-trail' },
+            { label: 'Integrations', slug: 'concepts/integrations' },
           ],
         },
         {

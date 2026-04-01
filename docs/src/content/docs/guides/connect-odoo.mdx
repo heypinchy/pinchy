@@ -1,0 +1,76 @@
+---
+title: Connect Odoo
+description: Connect your Odoo ERP instance to Pinchy and give agents access to your business data.
+---
+
+This guide walks you through connecting your Odoo instance to Pinchy so your agents can query sales orders, contacts, inventory, and other business data — without giving them direct database access.
+
+## Prerequisites
+
+- Pinchy is running (see [Quick Start](/getting-started/))
+- An Odoo instance with API access enabled
+- You're logged in as an admin in Pinchy
+
+## 1. Create an API key in Odoo
+
+Pinchy connects to Odoo via its External API using a personal API key.
+
+1. Log in to your Odoo instance
+2. Go to **Settings → Users & Companies → Users**
+3. Click on your user
+4. Open the **API Keys** tab
+5. Click **New API Key**, give it a name (e.g. "Pinchy"), and confirm your password
+6. Copy the key — you won't see it again
+
+:::note
+The API key inherits the Odoo permissions of the user who created it. If you want agents to have read-only access, create the key from a user with read-only permissions in Odoo.
+:::
+
+## 2. Add the connection in Pinchy
+
+1. Go to **Settings → Integrations**
+2. Click **Add Integration** and select **Odoo**
+3. Enter:
+   - **URL** — your Odoo instance URL (e.g. `https://erp.yourcompany.com`)
+   - **Database** — auto-detected after you enter the URL, or enter it manually
+   - **Email** — the email of the Odoo user whose API key you created
+   - **API Key** — the key you copied in step 1
+4. Click **Test & Connect**
+
+Pinchy verifies the credentials and probes the available data models. If the connection fails, double-check the URL and API key.
+
+## 3. Review the sync
+
+After a successful connection, Pinchy shows which data categories are accessible — Sales, Inventory, Contacts, Accounting, and others. This depends on the Odoo modules you have installed and the permissions of the API user.
+
+Review the list and click **Save**.
+
+## 4. Grant agent access
+
+A connection alone doesn't give any agent access. You need to explicitly grant it.
+
+1. Open the agent you want to connect to Odoo
+2. Click the gear icon to open **Agent Settings**
+3. Select the **Permissions** tab
+4. In the **Odoo** section, select:
+   - **Connection** — pick the connection you just created
+   - **Access level** — Read-only, Read & Write, or Full
+   - **Models** — optionally restrict to specific models (e.g. only `sale.order` and `res.partner`)
+5. Click **Save**
+
+For details on access levels, see the [Integrations](/concepts/integrations/) concept page.
+
+## 5. Test it
+
+Open the agent's chat and try a few queries:
+
+- "List all sales orders from this month"
+- "How many contacts do we have in Germany?"
+- "Show me the inventory for product X"
+
+The agent uses the Odoo tools to query your data in real time. If something doesn't work, check that the Odoo user has the right permissions for the models you're querying.
+
+## What's next
+
+- [Integrations](/concepts/integrations/) — how connections and permissions work under the hood
+- [Agent Permissions](/concepts/agent-permissions/) — the full allow-list model and integration tools
