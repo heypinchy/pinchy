@@ -80,6 +80,37 @@ All new features require tests. We practice TDD — write the failing test first
 - Run `pnpm lint` and `pnpm format` before submitting
 - Pre-commit hook runs linting automatically via Husky
 
+## UI Conventions
+
+### Error Messages & Notifications
+
+We use two patterns for user feedback — **inline errors** and **toast notifications**. Using the right one matters for consistency.
+
+**Inline errors** (rendered below the input field):
+- Form validation failures — wrong password, invalid token, expired code
+- The user needs to correct something and retry
+- The form stays open
+
+```tsx
+const [error, setError] = useState("");
+// In the handler:
+setError("Invalid or expired pairing code");
+// In JSX:
+{error && <p className="text-sm text-destructive">{error}</p>}
+```
+
+**Toast notifications** (via [sonner](https://sonner.emilkowal.dev/)):
+- Success confirmations — "Settings saved", "Bot connected"
+- System errors not tied to a form field
+- Actions where the UI navigates away afterward
+
+```tsx
+toast.success("Telegram bot connected");
+toast.error("Failed to disconnect");
+```
+
+**Rule of thumb:** If there's an input field the user should fix → inline. Everything else → toast. Never use both for the same action.
+
 ## Code of Conduct
 
 By participating in this project, you agree to our [Code of Conduct](CODE_OF_CONDUCT.md). Be kind, be respectful, assume good intentions.
@@ -90,39 +121,29 @@ Pinchy uses [Semantic Versioning](https://semver.org/) and tags on `main`.
 
 ### Pre-release checklist
 
-Before tagging a release, verify every item:
+Before running the release script, complete these manual steps:
 
 **Code & dependencies**
 - [ ] All feature/fix PRs for this release are merged to `main`
-- [ ] CI is green on `main` (tests, lint, build, security audit)
-- [ ] Dependencies are up to date (`pnpm outdated` — no critical/security updates pending)
+- [ ] CI is green on `main` (the release script verifies this automatically)
+- [ ] Dependencies up to date (`pnpm outdated` — no critical/security updates pending)
 - [ ] If upgrading OpenClaw: version updated in `Dockerfile.openclaw`
 
-**Version bump**
-- [ ] `version` updated in root `package.json`
-- [ ] `version` updated in `packages/web/package.json`
-- [ ] `installation.mdx` references the new version (checkout tag + version note)
-
-**Testing**
-- [ ] Unit tests pass (`pnpm test`)
-- [ ] Production build succeeds (`pnpm build`)
-- [ ] Docker Compose smoke test: `docker compose up --build` — full stack starts, login works, agent chat works
-- [ ] Upgrade test: start from previous version, run `git checkout <new-version> && docker compose up --build`, verify migrations apply cleanly and existing data is intact
-
 **Documentation**
-- [ ] Docs build succeeds (`cd docs && pnpm build`)
-- [ ] Upgrade guide mentions any new environment variables or breaking changes
-- [ ] `smithers-soul.ts` updated if user-facing features changed (Smithers must know what's new)
+- [ ] `docs/src/content/docs/guides/upgrading.mdx` — add a section for the new version (breaking changes, new env vars, migration notes)
+- [ ] `packages/web/src/lib/smithers-soul.ts` — update if user-facing features changed
+
+Everything else (version bumps in `package.json`, commit, tag, push) is handled automatically by the release script.
 
 ### Release steps
 
-1. Create a `release/x.y.z` branch, complete the checklist above, and merge to `main`.
-2. Tag and push:
+1. Complete the manual checklist above on `main`.
+2. Run the release script:
    ```bash
-   git tag v0.2.0
-   git push origin v0.2.0
+   pnpm release 0.3.0
    ```
-3. The release workflow automatically creates a GitHub Release with auto-generated notes and deploys the docs.
+   The script checks: clean working tree, on `main`, CI green, tag not already taken — then bumps versions, commits, tags, and pushes.
+3. GitHub Actions creates the GitHub Release with auto-generated notes and deploys the docs automatically.
 4. Review the auto-generated release notes on GitHub — edit if needed to highlight breaking changes or upgrade steps.
 
 ## Questions?

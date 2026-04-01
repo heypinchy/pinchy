@@ -35,7 +35,7 @@ function extractAgentIdFromSessionKey(sessionKey?: string): string | undefined {
 
 function extractUserIdFromSessionKey(sessionKey?: string): string | undefined {
   if (!sessionKey) return undefined;
-  const match = /^agent:[^:]+:user-(.+)$/.exec(sessionKey);
+  const match = /^agent:[^:]+:direct:(.+)$/.exec(sessionKey);
   return match?.[1];
 }
 

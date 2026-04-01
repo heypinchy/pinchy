@@ -1,0 +1,77 @@
+---
+title: Set Up Telegram
+description: Connect your agents to Telegram so your team can chat with them from their phone.
+---
+
+Pinchy supports Telegram as a channel for your agents. Each agent can have its own Telegram bot, and users link their Telegram account once to access all bots they have permission to use.
+
+## Prerequisites
+
+- A running Pinchy instance with at least one agent
+- A Telegram account
+- Admin access to Pinchy
+
+## Step 1: Create a Telegram Bot
+
+1. Open [BotFather](https://t.me/BotFather) in Telegram (or use the desktop/web app for easy copy-paste)
+2. Send `/newbot`
+3. Choose a display name for your bot
+4. Choose a username ending in `bot` (must be unique on Telegram)
+5. Copy the bot token BotFather gives you
+
+:::tip
+Use [Telegram Web](https://web.telegram.org) or the desktop app to easily copy the token.
+:::
+
+## Step 2: Connect the Bot to Smithers
+
+1. Go to **Settings → Telegram**
+2. Click **Set up Telegram**
+3. Paste the bot token
+4. Click **Connect**
+
+Your bot token is encrypted at rest and never leaves your server.
+
+## Step 3: Link Your Telegram Account
+
+After an admin connects a bot, each team member links their own Telegram account:
+
+1. Go to **Settings → Telegram**
+2. Scan the QR code with your phone (or click "Open in Telegram")
+3. Send any message to the bot
+4. Copy the **pairing code** from the bot's response
+5. Paste it into Pinchy and click **Link**
+
+You're now linked. Messages you send to the bot are answered by the agent.
+
+## Connect Additional Agents
+
+Each agent can have its own Telegram bot. To connect a second agent:
+
+1. Create a new bot via BotFather (repeat Step 1)
+2. Go to **Agent Settings → Channels** for the agent you want to connect
+3. Paste the new bot token and click **Connect**
+
+:::note
+Each bot token can only be used by one agent. If you try to use the same token for two agents, Pinchy will reject it.
+:::
+
+## How Permissions Work
+
+Telegram access follows Pinchy's permission model:
+
+- **Agents with visibility "All"**: Every linked user can message the bot
+- **Restricted agents**: Only users in the agent's allowed groups (and admins) can message the bot
+- If a user messages a bot they don't have access to, they receive a pairing prompt instead of an agent response
+
+When group memberships or agent visibility change, Telegram access is updated automatically.
+
+## Unlinking and Removing
+
+- **Unlink your account**: Settings → Telegram → Unlink. You can re-link anytime.
+- **Disconnect an agent's bot**: Agent Settings → Channels → Disconnect (not available for Smithers)
+- **Remove Telegram for everyone**: Settings → Telegram → Remove Telegram for everyone. This disconnects all bots and unlinks all users.
+
+:::caution
+Smithers' bot cannot be disconnected individually. Use "Remove Telegram for everyone" to remove all Telegram integration at once.
+:::

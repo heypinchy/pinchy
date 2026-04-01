@@ -1,0 +1,40 @@
+# Test overlay: adds mock Telegram server for E2E testing.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.test.yml up --build
+#
+# OpenClaw resolves api.telegram.org to the mock server via DNS override.
+# Pinchy uses TELEGRAM_API_URL env var to reach the mock's control API.
+
+services:
+  telegram-mock:
+    build:
+      context: config/telegram-mock
+    ports:
+      - "9001:9001"
+    networks:
+      default:
+        ipv4_address: 172.28.0.10
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:9001/control/health').then(r => r.ok ? process.exit(0) : process.exit(1)).catch(() => process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  openclaw:
+    extra_hosts:
+      - "api.telegram.org:172.28.0.10"
+      - "api.anthropic.com:172.28.0.10"
+    environment:
+      - NODE_TLS_REJECT_UNAUTHORIZED=0
+      # Route LLM calls to mock server — Anthropic SDK respects ANTHROPIC_BASE_URL
+      - ANTHROPIC_BASE_URL=https://172.28.0.10
+
+  pinchy:
+    environment:
+      - TELEGRAM_API_URL=http://telegram-mock:9001
+
+networks:
+  default:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

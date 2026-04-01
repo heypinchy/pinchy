@@ -44,6 +44,11 @@ type PreflightState =
   | { status: "ready" }
   | { status: "error"; infrastructure: InfrastructureStatus };
 
+export const PREFLIGHT_CONFIG = {
+  maxRetries: 30,
+  retryIntervalMs: 3000,
+};
+
 function usePreflightCheck() {
   const [state, setState] = useState<PreflightState>({ status: "checking" });
 
@@ -51,22 +56,39 @@ function usePreflightCheck() {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/api/setup/status")
-      .then((res) => res.json())
-      .then((data) => {
-        if (cancelled) return;
-        const infra = data.infrastructure as InfrastructureStatus | undefined;
-        if (infra && (infra.database === "unreachable" || infra.openclaw === "unreachable")) {
-          setState({ status: "error", infrastructure: infra });
-        } else {
+
+    async function check() {
+      let attempt = 0;
+      while (!cancelled && attempt < PREFLIGHT_CONFIG.maxRetries) {
+        try {
+          const res = await fetch("/api/setup/status");
+          const data = await res.json();
+          if (cancelled) return;
+
+          const infra = data.infrastructure as InfrastructureStatus | undefined;
+          if (infra && (infra.database === "unreachable" || infra.openclaw === "unreachable")) {
+            attempt++;
+            if (attempt >= PREFLIGHT_CONFIG.maxRetries) {
+              setState({ status: "error", infrastructure: infra });
+              return;
+            }
+            // Wait before retrying — services may still be starting
+            await new Promise((resolve) => setTimeout(resolve, PREFLIGHT_CONFIG.retryIntervalMs));
+            continue;
+          }
+
           setState({ status: "ready" });
+          return;
+        } catch {
+          if (cancelled) return;
+          // If status check itself fails, show form anyway (graceful fallback)
+          setState({ status: "ready" });
+          return;
         }
-      })
-      .catch(() => {
-        if (cancelled) return;
-        // If status check itself fails, show form anyway (graceful fallback)
-        setState({ status: "ready" });
-      });
+      }
+    }
+
+    check();
     return () => {
       cancelled = true;
     };
@@ -120,6 +142,13 @@ export function SetupForm() {
     }
   }
 
+  // Auto-retry after showing the error — services may still be starting
+  useEffect(() => {
+    if (preflight.status !== "error") return;
+    const timer = setTimeout(retry, 10_000);
+    return () => clearTimeout(timer);
+  }, [preflight.status]); // eslint-disable-line react-hooks/exhaustive-deps
+
   if (preflight.status === "checking") {
     return (
       <Card className="w-full">
@@ -144,9 +173,9 @@ export function SetupForm() {
           <div className="flex justify-center mb-2">
             <AlertTriangle className="size-12 text-destructive" />
           </div>
-          <CardTitle>Infrastructure Problem</CardTitle>
+          <CardTitle>Waiting for services...</CardTitle>
           <CardDescription>
-            Pinchy can&apos;t start setup because required services are not available.
+            Some services are still starting up. This page will retry automatically.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">

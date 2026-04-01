@@ -1,12 +1,14 @@
 {
   "name": "pinchy",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Enterprise AI agent platform built on OpenClaw",
   "scripts": {
     "dev": "pnpm --filter @pinchy/web dev",
     "build": "pnpm --filter @pinchy/web build",
     "test": "pnpm --filter @pinchy/web test",
+    "test:release": "node --test scripts/lib/release-logic.test.mjs",
+    "release": "node scripts/release.mjs",
     "prepare": "husky"
   },
   "keywords": [],
@@ -22,7 +24,9 @@
       "rollup@>=4.0.0 <4.59.0": ">=4.59.0",
       "esbuild@<=0.24.2": ">=0.25.0",
       "undici@>=7.0.0 <7.24.0": ">=7.24.0",
-      "kysely@>=0.26.0 <=0.28.13": ">=0.28.14"
+      "kysely@>=0.26.0 <=0.28.13": ">=0.28.14",
+      "picomatch@>=4.0.0 <4.0.4": ">=4.0.4",
+      "yaml@>=2.0.0 <2.8.3": ">=2.8.3"
     }
   },
   "lint-staged": {
@@ -32,7 +36,7 @@
     "packages/web/**/*.{ts,tsx,js,mjs,cjs,json,css,md}": [
       "pnpm -C packages/web exec prettier --write"
     ],
-    "docs/src/**/*.{mdx,md}": [
+    "docs/src/**/*.md": [
       "pnpm -C packages/web exec prettier --write"
     ],
     ".github/**/*.yml": [

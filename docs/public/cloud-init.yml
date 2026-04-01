@@ -1,0 +1,57 @@
+#cloud-config
+# Pinchy %%PINCHY_VERSION%% -Automated VPS Setup
+# https://docs.heypinchy.com/guides/vps-deployment/
+#
+# This cloud-init script installs Docker, deploys Pinchy, configures
+# a firewall, and adds swap. Paste it into the "User Data" field when
+# creating your server.
+#
+# After boot, visit http://<your-server-ip>
+
+runcmd:
+  # Show loading page FIRST (python3 + curl are pre-installed on Ubuntu)
+  - mkdir -p /opt/pinchy-loading
+  - curl -fsSL https://github.com/heypinchy/pinchy/releases/download/%%PINCHY_VERSION%%/installing.html -o /opt/pinchy-loading/index.html
+  - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /opt/pinchy-loading/index.html
+  - cd /opt/pinchy-loading && python3 -m http.server 80 &
+  - echo $! > /tmp/loading-server.pid
+
+  # Now install packages (loading page is already visible)
+  - apt-get update -qq
+  - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+  - echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
+  - echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
+  - apt-get install -y -qq iptables-persistent
+
+  # Firewall
+  - ufw allow OpenSSH
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - ufw allow 7777/tcp
+  - ufw --force enable
+
+  # Docker
+  - systemctl enable docker
+  - systemctl start docker
+
+  # Swap (recommended for 4 GB servers)
+  - fallocate -l 2G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+  # Clone, build, and start Pinchy
+  - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
+  - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
+  - cd /opt/pinchy && docker compose up --build -d
+
+  # Wait for Pinchy to be healthy
+  - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
+
+  # Seamless switch -kill loading page, redirect port 80 to Pinchy
+  - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
+  - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
+  - iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
+  - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
+  - netfilter-persistent save

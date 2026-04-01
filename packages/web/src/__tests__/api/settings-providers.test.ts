@@ -42,6 +42,13 @@ vi.mock("@/lib/providers", () => ({
       defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
+    ollama: {
+      name: "Ollama",
+      settingsKey: "ollama_api_key",
+      envVar: "OLLAMA_API_KEY",
+      defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+      placeholder: "sk-...",
+    },
   },
 }));
 
@@ -52,7 +59,7 @@ vi.mock("@/lib/settings", () => ({
 }));
 
 vi.mock("@/lib/openclaw-config", () => ({
-  writeOpenClawConfig: vi.fn(),
+  regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
 vi.mock("@/lib/provider-models", () => ({
@@ -84,6 +91,7 @@ vi.mock("drizzle-orm", async (importOriginal) => {
 import { auth } from "@/lib/auth";
 import { getSetting, deleteSetting, setSetting } from "@/lib/settings";
 import { resetCache } from "@/lib/provider-models";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 
 describe("GET /api/settings/providers", () => {
@@ -113,6 +121,7 @@ describe("GET /api/settings/providers", () => {
         anthropic: { configured: false },
         openai: { configured: false },
         google: { configured: false },
+        ollama: { configured: false },
       },
     });
   });
@@ -324,5 +333,18 @@ describe("DELETE /api/settings/providers", () => {
     await DELETE(makeRequest({ provider: "openai" }));
 
     expect(db.update).not.toHaveBeenCalled();
+  });
+
+  it("should call regenerateOpenClawConfig after successful deletion", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "openai_api_key") return "sk-openai-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await DELETE(makeRequest({ provider: "openai" }));
+
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 });

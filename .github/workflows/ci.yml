@@ -75,6 +75,9 @@ jobs:
     services:
       postgres:
         image: postgres:16
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
         env:
           POSTGRES_DB: pinchy
           POSTGRES_USER: pinchy
@@ -113,6 +116,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Start production stack
         run: docker compose up --build -d
@@ -310,6 +319,95 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v
 
+  telegram-e2e:
+    name: Telegram E2E Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Start test stack with mock Telegram
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml up --build -d
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Wait for services
+        run: |
+          echo "Waiting for Pinchy..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7777/api/health >/dev/null 2>&1; then
+              echo "Pinchy healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy not healthy after 120s"
+              docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs pinchy
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for mock Telegram..."
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:9001/control/health >/dev/null 2>&1; then
+              echo "Mock Telegram healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "::error::Mock Telegram not healthy after 30s"
+              docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs telegram-mock
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for OpenClaw connection..."
+          for i in $(seq 1 60); do
+            if docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
+              echo "OpenClaw connected (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy never connected to OpenClaw"
+              docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs pinchy openclaw
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Run Telegram E2E tests
+        run: pnpm -C packages/web test:e2e:telegram
+        env:
+          CI: true
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Pinchy logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs pinchy 2>&1 | tail -50
+          echo "=== OpenClaw logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs openclaw 2>&1 | tail -50
+          echo "=== Mock Telegram logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs telegram-mock 2>&1 | tail -30
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml down -v
+
   links:
     name: Check links
     runs-on: ubuntu-latest
@@ -320,7 +418,7 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: "--no-progress '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'linkedin\\.com'"
+          args: "--no-progress '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev'"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

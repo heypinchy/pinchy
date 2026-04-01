@@ -39,7 +39,7 @@ graph TD
         WS --- ORM
     end
 
-    ORM --> DB["PostgreSQL 16"]
+    ORM --> DB["PostgreSQL 17"]
     ORM --> OC["OpenClaw Gateway<br/>(port 18789)"]
 ```
 
@@ -148,7 +148,7 @@ For the full details, see [Agent Permissions](/concepts/agent-permissions/).
 
 ## Database
 
-PostgreSQL 16, accessed via [Drizzle ORM](https://orm.drizzle.team/). The schema includes:
+PostgreSQL 17, accessed via [Drizzle ORM](https://orm.drizzle.team/). The schema includes:
 
 - **Auth tables** — `user`, `account`, `session`, `verification` (managed by Better Auth)
 - **`agents`** — Agent configuration (name, model, template, allowed tools, plugin config, owner)
@@ -217,7 +217,7 @@ Pinchy authenticates to OpenClaw Gateway using a bearer token. The token is auto
 | Frontend      | Next.js 16, React 19, Tailwind CSS v4, shadcn/ui |
 | Chat UI       | assistant-ui (React)                             |
 | Auth          | Better Auth (email/password, DB sessions)        |
-| Database      | PostgreSQL 16, Drizzle ORM                       |
+| Database      | PostgreSQL 17, Drizzle ORM                       |
 | Agent runtime | OpenClaw Gateway (WebSocket)                     |
 | Encryption    | AES-256-GCM (Node.js crypto)                     |
 | Testing       | Vitest, React Testing Library                    |

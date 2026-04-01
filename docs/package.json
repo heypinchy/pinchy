@@ -3,8 +3,8 @@
   "version": "0.0.1",
   "private": true,
   "scripts": {
-    "dev": "astro dev",
-    "build": "astro build",
+    "dev": "sh scripts/inject-version.sh && astro dev; sh scripts/restore-placeholders.sh",
+    "build": "sh scripts/inject-version.sh && astro build && sh scripts/restore-placeholders.sh",
     "preview": "astro preview"
   },
   "dependencies": {

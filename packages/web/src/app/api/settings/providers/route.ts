@@ -5,7 +5,7 @@ import { getSession } from "@/lib/auth";
 import { requireAdmin } from "@/lib/api-auth";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
-import { writeOpenClawConfig } from "@/lib/openclaw-config";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
@@ -85,21 +85,16 @@ export async function DELETE(request: Request) {
       }
     }
 
-    // If this was the default provider, switch default and update OpenClaw config
+    // If this was the default provider, switch to a remaining one
     const currentDefault = await getSetting("default_provider");
     if (currentDefault === provider) {
       await setSetting("default_provider", remaining.name, false);
-
-      const newApiKey = await getSetting(remaining.config.settingsKey);
-      if (newApiKey) {
-        writeOpenClawConfig({
-          provider: remaining.name,
-          apiKey: newApiKey,
-          model: remaining.config.defaultModel,
-        });
-      }
     }
   }
+
+  // Regenerate config to reflect removed provider key and migrated agent models.
+  // regenerateOpenClawConfig reads all state from DB and skips writing if unchanged.
+  await regenerateOpenClawConfig();
 
   return NextResponse.json({ success: true });
 }

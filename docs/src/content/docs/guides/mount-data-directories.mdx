@@ -9,21 +9,23 @@ Pinchy agents can only access files inside the `/data/` directory in the contain
 
 ![Agent permissions with directory picker — select which directories each agent can access](/screenshots/agent-settings-permissions.png)
 
-All agent-accessible files live under `/data/` inside the Pinchy container. This path is a Docker volume by default (`pinchy-data`), but you can bind-mount additional host directories as subdirectories.
+All agent-accessible files live under `/data/` inside the **OpenClaw** container. Pinchy's `pinchy-files` plugin runs inside OpenClaw and reads files from that path. The `pinchy-data` named volume is mounted there by default, but you can bind-mount additional host directories as subdirectories.
 
 This convention provides a clear boundary: anything under `/data/` is potentially accessible to agents (depending on their permissions), and nothing outside `/data/` is.
 
 ## Adding volumes in `docker-compose.yml`
 
-To mount a local folder, add a bind mount under the `pinchy` service's `volumes` section:
+To mount a local folder, add a bind mount under the **`openclaw`** service's `volumes` section:
 
 ```yaml
 services:
-  pinchy:
+  openclaw:
     volumes:
-      - openclaw-config:/openclaw-config
+      - openclaw-config:/root/.openclaw
+      - pinchy-workspaces:/root/.openclaw/workspaces
+      - openclaw-extensions:/root/.openclaw/extensions
       - pinchy-data:/data
-      - openclaw-extensions:/openclaw-extensions
+      - pinchy-pdf-cache:/var/cache/pinchy-files
       # Add your data directories here:
       - /path/on/host/hr-policies:/data/hr-policies:ro
       - /path/on/host/engineering-docs:/data/engineering-docs:ro
@@ -31,10 +33,10 @@ services:
 
 The `:ro` suffix mounts the directory as read-only, which is recommended since agents only need to read files.
 
-After updating `docker-compose.yml`, restart the stack:
+After updating `docker-compose.yml`, restart the OpenClaw container:
 
 ```bash
-docker compose down && docker compose up -d
+docker compose up -d --no-deps openclaw
 ```
 
 ## Examples
@@ -82,7 +84,7 @@ Only top-level subdirectories of `/data/` are listed. Nested directories within 
 To check that your directories are correctly mounted, you can exec into the running container:
 
 ```bash
-docker compose exec pinchy ls /data/
+docker compose exec openclaw ls /data/
 ```
 
 You should see your mounted directories listed.

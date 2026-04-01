@@ -5,6 +5,11 @@ import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
+import {
+  recalculateTelegramAllowStores,
+  clearAllowStoreForAccount,
+} from "@/lib/telegram-allow-store";
+import { deleteSetting } from "@/lib/settings";
 
 export interface UpdateAgentInput {
   name?: string;
@@ -27,7 +32,12 @@ export async function deleteAgent(id: string) {
 
   if (updated) {
     deleteWorkspace(id);
+    // Clean up Telegram bot settings if this agent had a bot
+    await deleteSetting(`telegram_bot_token:${id}`);
+    await deleteSetting(`telegram_bot_username:${id}`);
+    clearAllowStoreForAccount(id);
     await regenerateOpenClawConfig();
+    await recalculateTelegramAllowStores();
   }
 
   return updated;

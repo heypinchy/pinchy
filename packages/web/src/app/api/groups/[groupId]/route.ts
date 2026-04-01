@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { groups } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { appendAuditLog, type UpdateDetail } from "@/lib/audit";
+import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 
 export async function PATCH(
   request: NextRequest,
@@ -91,6 +92,8 @@ export async function DELETE(
     resource: `group:${groupId}`,
     detail: { name: deleted.name },
   }).catch(() => {});
+
+  await recalculateTelegramAllowStores();
 
   return NextResponse.json({ success: true });
 }

@@ -26,7 +26,7 @@ vi.mock("@/lib/provider-models", () => ({
 }));
 
 vi.mock("@/lib/providers", () => ({
-  validateProviderKey: vi.fn().mockResolvedValue(true),
+  validateProviderKey: vi.fn().mockResolvedValue({ valid: true }),
   PROVIDERS: {
     anthropic: {
       name: "Anthropic",
@@ -49,11 +49,17 @@ vi.mock("@/lib/providers", () => ({
       defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
+    ollama: {
+      name: "Ollama",
+      settingsKey: "ollama_api_key",
+      envVar: "OLLAMA_API_KEY",
+      defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+      placeholder: "sk-...",
+    },
   },
 }));
 
 vi.mock("@/lib/openclaw-config", () => ({
-  writeOpenClawConfig: vi.fn(),
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 

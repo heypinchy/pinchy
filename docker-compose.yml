@@ -8,7 +8,6 @@ services:
     environment:
       - DATABASE_URL=postgresql://pinchy:${DB_PASSWORD:-pinchy_dev}@db:5432/pinchy
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-}
-      - BETTER_AUTH_URL=${BETTER_AUTH_URL:-http://localhost:${PINCHY_PORT:-7777}}
       - OPENCLAW_WS_URL=ws://openclaw:18789
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
       - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY:-}

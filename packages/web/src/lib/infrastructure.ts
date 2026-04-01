@@ -19,7 +19,7 @@ export async function checkOpenClaw(): Promise<InfrastructureStatus> {
   try {
     const httpUrl = wsUrl.replace(/^ws/, "http");
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 2000);
+    const timeout = setTimeout(() => controller.abort(), 5000);
 
     await fetch(httpUrl, { signal: controller.signal });
     clearTimeout(timeout);

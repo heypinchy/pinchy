@@ -1,4 +1,4 @@
-export type ProviderName = "anthropic" | "openai" | "google";
+export type ProviderName = "anthropic" | "openai" | "google" | "ollama";
 
 interface ProviderConfig {
   name: string;
@@ -30,44 +30,71 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     defaultModel: "google/gemini-2.5-flash",
     placeholder: "AIza...",
   },
+  ollama: {
+    name: "Ollama",
+    settingsKey: "ollama_api_key",
+    envVar: "OLLAMA_API_KEY",
+    defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+    placeholder: "sk-...",
+  },
 };
+
+export type ValidationResult =
+  | { valid: true }
+  | { valid: false; error: "invalid_key" }
+  | { valid: false; error: "network_error" }
+  | { valid: false; error: "provider_error"; status: number };
+
+function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<Response> {
+  switch (provider) {
+    case "anthropic":
+      return fetch("https://api.anthropic.com/v1/models", {
+        headers: {
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+        },
+      });
+    case "openai":
+      return fetch("https://api.openai.com/v1/models", {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+      });
+    case "google":
+      return fetch(`https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`, {});
+    case "ollama":
+      return fetch("https://ollama.com/v1/models", {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+        },
+      });
+  }
+}
 
 export async function validateProviderKey(
   provider: ProviderName,
   apiKey: string
-): Promise<boolean> {
+): Promise<ValidationResult> {
   const config = PROVIDERS[provider];
   if (!config) throw new Error(`Unknown provider: ${provider}`);
 
   try {
-    let response: Response;
+    const response = await makeValidationRequest(provider, apiKey);
 
-    switch (provider) {
-      case "anthropic":
-        response = await fetch("https://api.anthropic.com/v1/models", {
-          headers: {
-            "x-api-key": apiKey,
-            "anthropic-version": "2023-06-01",
-          },
-        });
-        break;
-      case "openai":
-        response = await fetch("https://api.openai.com/v1/models", {
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-          },
-        });
-        break;
-      case "google":
-        response = await fetch(
-          `https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`,
-          {}
-        );
-        break;
+    if (response.ok) return { valid: true };
+
+    // 401/403 could be a genuinely invalid key, or a transient auth issue
+    // (observed with Claude Max OAuth tokens). Retry once before declaring invalid.
+    if (response.status === 401 || response.status === 403) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const retry = await makeValidationRequest(provider, apiKey);
+      if (retry.ok) return { valid: true };
+      return { valid: false, error: "invalid_key" };
     }
 
-    return response.ok;
+    // Anything else (429, 5xx, etc.) = provider issue, not necessarily a bad key
+    return { valid: false, error: "provider_error", status: response.status };
   } catch {
-    return false;
+    return { valid: false, error: "network_error" };
   }
 }

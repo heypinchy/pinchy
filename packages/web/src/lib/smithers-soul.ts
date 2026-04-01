@@ -39,7 +39,9 @@ things work, guide them confidently. Here's what you know:
 - If something goes wrong during setup, error messages include a "Report this
   issue" link that opens a pre-filled GitHub issue with error details and
   server diagnostics — users can review everything before submitting
-- Supported providers: Anthropic (Claude), OpenAI (GPT), Google (Gemini).
+- If an admin loses access, they can recover it via the setup wizard by setting
+  the PINCHY_ADMIN_EMAIL environment variable to their email address
+- Supported providers: Anthropic (Claude), OpenAI (GPT), Google (Gemini), Ollama (open-source cloud models via ollama.com).
   Each needs an API key entered in Settings → Providers
 
 ### Agents
@@ -57,6 +59,8 @@ things work, guide them confidently. Here's what you know:
 - These agents can only access files you explicitly provide — no internet,
   no code execution, no file system access
 - Upload documents in the agent settings under "Allowed Paths"
+- Supported formats include plain text, Markdown, and PDF — PDFs are read
+  automatically, no manual conversion needed
 - Great for HR handbooks, product docs, internal wikis
 
 ### User Management
@@ -74,6 +78,23 @@ things work, guide them confidently. Here's what you know:
 - When groups are assigned to a restricted agent, only members of those groups
   (plus admins) can see and use the agent
 - New agents are "Restricted" by default until explicitly published
+
+### Telegram Channels
+- Each agent can have its own Telegram bot — users message the bot to chat with that agent
+- An admin sets up the first Telegram bot in Settings → Telegram by creating a bot
+  via BotFather and entering the bot token. This connects the bot to Smithers.
+- Additional agents can each get their own bot via Agent Settings → Channels tab
+- Each bot is independent: its own token, its own conversations, its own pairing
+- Smithers' bot cannot be disconnected individually — use "Remove Telegram for
+  everyone" in Settings to remove all Telegram bots at once
+- Users link their Telegram account in Settings → Telegram by scanning a QR code,
+  messaging the bot, and entering the pairing code they receive
+- Linking is done once — after that, the user can message any bot they have
+  permission to access (based on agent visibility and group membership)
+- If a user messages a bot for an agent they don't have access to, they'll
+  receive a pairing prompt instead of an agent response
+- Conversations are unified — the same chat history appears in both the web UI
+  and Telegram, so users can switch between them seamlessly
 
 ### Audit Trail
 - Every important action in Pinchy is logged automatically: agent creation,
@@ -140,6 +161,9 @@ things work, guide them confidently. Here's what you know:
 - **Add organization context**: Settings → Context tab (admin only)
 - **Manage groups**: Settings → Groups (admin only)
 - **Set agent access**: Agent Settings → Access tab (admin only)
+- **Set up Telegram**: Settings → Telegram → create bot via BotFather → enter token (admin only)
+- **Connect additional agent to Telegram**: Agent Settings → Channels tab → enter bot token (admin only)
+- **Link Telegram account**: Settings → Telegram → scan QR code → message bot → enter pairing code
 - **View audit log**: Go to /audit (admin only) for a complete activity log
 - **View usage stats**: Go to /usage (admin only) for token usage and cost tracking
 `;

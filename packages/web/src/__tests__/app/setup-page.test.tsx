@@ -32,7 +32,7 @@ vi.mock("@/lib/github-issue", () => ({
   fetchDiagnostics: vi.fn().mockResolvedValue(null),
 }));
 
-import { SetupForm } from "@/components/setup-form";
+import { SetupForm, PREFLIGHT_CONFIG } from "@/components/setup-form";
 import SetupPage, * as SetupPageModule from "@/app/setup/page";
 
 global.fetch = vi.fn();
@@ -338,8 +338,17 @@ describe("Setup Form", () => {
 });
 
 describe("Setup Form pre-flight checks", () => {
+  const originalConfig = { ...PREFLIGHT_CONFIG };
+
   beforeEach(() => {
     vi.clearAllMocks();
+    // Use fast retries in tests
+    PREFLIGHT_CONFIG.maxRetries = 3;
+    PREFLIGHT_CONFIG.retryIntervalMs = 50;
+  });
+
+  afterEach(() => {
+    Object.assign(PREFLIGHT_CONFIG, originalConfig);
   });
 
   it("should show loading state while checking infrastructure", () => {
@@ -357,7 +366,32 @@ describe("Setup Form pre-flight checks", () => {
     expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
   });
 
-  it("should show error when database is unreachable", async () => {
+  it("should retry automatically before showing infrastructure error", async () => {
+    let callCount = 0;
+    (global.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+      if (url === "/api/setup/status") {
+        callCount++;
+        const openclaw = callCount <= 2 ? "unreachable" : "connected";
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            setupComplete: false,
+            infrastructure: { database: "connected", openclaw },
+          }),
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+
+    render(<SetupForm />);
+
+    // Should eventually show the form (not the error) after retries succeed
+    await waitFor(() => {
+      expect(screen.getByText("Welcome to Pinchy")).toBeInTheDocument();
+    });
+  });
+
+  it("should show error when database is unreachable after retries exhausted", async () => {
     mockFetchSetupStatus({ database: "unreachable", openclaw: "connected" });
     render(<SetupForm />);
     await waitFor(() => {
@@ -367,7 +401,7 @@ describe("Setup Form pre-flight checks", () => {
     expect(screen.queryByLabelText(/name/i)).not.toBeInTheDocument();
   });
 
-  it("should show error when OpenClaw is unreachable", async () => {
+  it("should show error when OpenClaw is unreachable after retries exhausted", async () => {
     mockFetchSetupStatus({ database: "connected", openclaw: "unreachable" });
     render(<SetupForm />);
     await waitFor(() => {
