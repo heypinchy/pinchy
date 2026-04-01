@@ -44,7 +44,7 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
 }));
 
-import { GET, PUT } from "@/app/api/agents/[agentId]/integrations/route";
+import { GET, PUT, DELETE } from "@/app/api/agents/[agentId]/integrations/route";
 import { NextRequest } from "next/server";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 
@@ -290,5 +290,98 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     expect(mockDeleteWhere).toHaveBeenCalled();
     // Should not insert when permissions are empty
     expect(mockInsertValues).not.toHaveBeenCalled();
+  });
+});
+
+describe("DELETE /api/agents/[agentId]/integrations", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDeleteWhere.mockResolvedValue(undefined);
+  });
+
+  it("returns 401 for unauthenticated request", async () => {
+    mockGetSession.mockResolvedValueOnce(null);
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "DELETE",
+    });
+    const res = await DELETE(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 403 for non-admin users", async () => {
+    mockGetSession.mockResolvedValueOnce({
+      user: { id: "user-1", email: "user@test.com", role: "member" },
+    });
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "DELETE",
+    });
+    const res = await DELETE(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(403);
+  });
+
+  it("deletes all integration permissions for the agent", async () => {
+    // Existing permissions for audit log
+    mockSelectFrom.mockImplementationOnce(() => ({
+      where: vi.fn().mockResolvedValue([
+        { model: "res.partner", operation: "read", connectionId: CONNECTION_ID },
+        { model: "sale.order", operation: "read", connectionId: CONNECTION_ID },
+      ]),
+    }));
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "DELETE",
+    });
+    const res = await DELETE(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(mockDeleteWhere).toHaveBeenCalled();
+  });
+
+  it("calls regenerateOpenClawConfig after deleting", async () => {
+    mockSelectFrom.mockImplementationOnce(() => ({
+      where: vi.fn().mockResolvedValue([]),
+    }));
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "DELETE",
+    });
+    await DELETE(req, makeParams(AGENT_ID));
+
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("writes audit log with removed permissions", async () => {
+    mockSelectFrom.mockImplementationOnce(() => ({
+      where: vi
+        .fn()
+        .mockResolvedValue([
+          { model: "res.partner", operation: "read", connectionId: CONNECTION_ID },
+        ]),
+    }));
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "DELETE",
+    });
+    await DELETE(req, makeParams(AGENT_ID));
+
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorType: "user",
+        actorId: "admin-1",
+        eventType: "config.changed",
+        resource: `agent:${AGENT_ID}`,
+        detail: expect.objectContaining({
+          action: "agent_integration_permissions_cleared",
+          agentId: AGENT_ID,
+          removed: [{ model: "res.partner", operation: "read" }],
+        }),
+      })
+    );
   });
 });

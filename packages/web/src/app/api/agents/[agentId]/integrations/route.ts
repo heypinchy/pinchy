@@ -180,3 +180,54 @@ export async function PUT(
 
   return NextResponse.json({ success: true });
 }
+
+/**
+ * DELETE /api/agents/[agentId]/integrations
+ *
+ * Remove ALL integration permissions for this agent (used when connection is cleared).
+ */
+export async function DELETE(
+  _request: NextRequest,
+  { params }: { params: Promise<{ agentId: string }> }
+) {
+  const session = await getSession({ headers: await headers() });
+  if (!session?.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (session.user.role !== "admin") {
+    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
+  }
+
+  const { agentId } = await params;
+
+  // Get existing permissions for audit log
+  const existingPerms = await db
+    .select()
+    .from(agentConnectionPermissions)
+    .where(eq(agentConnectionPermissions.agentId, agentId));
+
+  // Delete all permissions for this agent
+  await db
+    .delete(agentConnectionPermissions)
+    .where(eq(agentConnectionPermissions.agentId, agentId));
+
+  // Regenerate OpenClaw config
+  await regenerateOpenClawConfig();
+
+  // Audit log
+  const removed = existingPerms.map((p) => ({ model: p.model, operation: p.operation }));
+
+  appendAuditLog({
+    actorType: "user",
+    actorId: session.user.id!,
+    eventType: "config.changed",
+    resource: `agent:${agentId}`,
+    detail: {
+      action: "agent_integration_permissions_cleared",
+      agentId,
+      removed,
+    },
+  }).catch(() => {});
+
+  return NextResponse.json({ success: true });
+}

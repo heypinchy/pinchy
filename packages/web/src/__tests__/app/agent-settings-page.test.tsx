@@ -301,6 +301,89 @@ describe("AgentSettingsPage", () => {
     });
   });
 
+  it("should call DELETE on integrations endpoint when permissions dirty with null integrations", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
+
+    // Simulate permissions tab dirty with null integrations (connection removed)
+    act(() => {
+      _capturedOnChangePermissions?.(
+        { allowedTools: [], allowedPaths: [], integrations: null },
+        true
+      );
+    });
+
+    await waitFor(() => screen.getByRole("button", { name: /save & restart/i }));
+
+    fetchSpy.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: /save & restart/i }));
+
+    // Confirm in the dialog
+    await waitFor(() => screen.getByText(/apply changes and restart/i));
+    const confirmButtons = screen.getAllByRole("button", { name: /save & restart/i });
+    await userEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map(([url, opts]) => ({
+        url: typeof url === "string" ? url : url.toString(),
+        method: (opts as RequestInit)?.method,
+      }));
+
+      expect(
+        calls.some(
+          (c) => c.url.includes("/api/agents/agent-1/integrations") && c.method === "DELETE"
+        )
+      ).toBe(true);
+    });
+  });
+
+  it("should NOT call DELETE on integrations endpoint when permissions dirty with integrations set", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
+
+    // Simulate permissions tab dirty with integrations set (connection configured)
+    act(() => {
+      _capturedOnChangePermissions?.(
+        {
+          allowedTools: [],
+          allowedPaths: [],
+          integrations: {
+            connectionId: "conn-1",
+            permissions: [{ model: "res.partner", operation: "read" }],
+          },
+        },
+        true
+      );
+    });
+
+    await waitFor(() => screen.getByRole("button", { name: /save & restart/i }));
+
+    fetchSpy.mockClear();
+    await userEvent.click(screen.getByRole("button", { name: /save & restart/i }));
+
+    // Confirm in the dialog
+    await waitFor(() => screen.getByText(/apply changes and restart/i));
+    const confirmButtons = screen.getAllByRole("button", { name: /save & restart/i });
+    await userEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() => {
+      const calls = fetchSpy.mock.calls.map(([url, opts]) => ({
+        url: typeof url === "string" ? url : url.toString(),
+        method: (opts as RequestInit)?.method,
+      }));
+
+      // Should call PUT, not DELETE
+      expect(
+        calls.some((c) => c.url.includes("/api/agents/agent-1/integrations") && c.method === "PUT")
+      ).toBe(true);
+      expect(
+        calls.some(
+          (c) => c.url.includes("/api/agents/agent-1/integrations") && c.method === "DELETE"
+        )
+      ).toBe(false);
+    });
+  });
+
   it("should show nav warning dialog when clicking Back to Chat with dirty state", async () => {
     render(<AgentSettingsPage />);
     await waitFor(() => screen.getByText("Agent Settings"));

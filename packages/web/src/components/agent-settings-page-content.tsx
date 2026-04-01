@@ -248,13 +248,20 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
         agentPatch.allowedTools = permissionsDraft.current.allowedTools;
         agentPatch.pluginConfig = { allowed_paths: permissionsDraft.current.allowedPaths };
 
-        // Also save integration permissions if configured
+        // Save or clear integration permissions
         if (permissionsDraft.current.integrations) {
           savePromises.push(
             fetch(`/api/agents/${agentId}/integrations`, {
               method: "PUT",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify(permissionsDraft.current.integrations),
+            })
+          );
+        } else {
+          // Clear integration permissions when connection is removed
+          savePromises.push(
+            fetch(`/api/agents/${agentId}/integrations`, {
+              method: "DELETE",
             })
           );
         }
