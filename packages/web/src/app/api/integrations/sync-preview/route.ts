@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
+import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 
 const syncPreviewSchema = z.object({
@@ -35,6 +36,12 @@ export async function POST(request: NextRequest) {
   }
 
   const { credentials } = parsed.data;
+
+  const urlCheck = validateExternalUrl(credentials.url);
+  if (!urlCheck.valid) {
+    return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+  }
+
   const result = await fetchOdooSchema(credentials);
   return NextResponse.json(result);
 }

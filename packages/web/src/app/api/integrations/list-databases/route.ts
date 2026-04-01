@@ -3,6 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { z } from "zod";
 import { getSession } from "@/lib/auth";
+import { validateExternalUrl } from "@/lib/integrations/url-validation";
 
 const listDatabasesSchema = z.object({
   url: z.string().url(),
@@ -27,6 +28,11 @@ export async function POST(request: NextRequest) {
   }
 
   const { url } = parsed.data;
+
+  const urlCheck = validateExternalUrl(url);
+  if (!urlCheck.valid) {
+    return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+  }
 
   try {
     const response = await fetch(`${url}/web/database/list`, {

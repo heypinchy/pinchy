@@ -4,6 +4,7 @@ import { headers } from "next/headers";
 import { z } from "zod";
 import { OdooClient } from "odoo-node";
 import { getSession } from "@/lib/auth";
+import { validateExternalUrl } from "@/lib/integrations/url-validation";
 
 const testCredentialsSchema = z.object({
   type: z.literal("odoo"),
@@ -34,6 +35,11 @@ export async function POST(request: NextRequest) {
   }
 
   const { credentials } = parsed.data;
+
+  const urlCheck = validateExternalUrl(credentials.url);
+  if (!urlCheck.valid) {
+    return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+  }
 
   try {
     const url = credentials.url.trim();
