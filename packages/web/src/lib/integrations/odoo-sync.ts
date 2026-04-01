@@ -147,7 +147,12 @@ export interface OdooSyncResult {
   lastSyncAt: string;
   categories: CategorySummary[];
   data: {
-    models: Array<{ model: string; name: string; fields: unknown[] }>;
+    models: Array<{
+      model: string;
+      name: string;
+      fields: unknown[];
+      access: { read: boolean; create: boolean; write: boolean; delete: boolean };
+    }>;
     lastSyncAt: string;
   };
 }
@@ -207,12 +212,20 @@ export async function fetchOdooSchema(credentials: {
     apiKey: credentials.apiKey,
   });
 
+  type AccessRights = {
+    read: boolean;
+    create: boolean;
+    write: boolean;
+    delete: boolean;
+  };
+
   type ProbeResult = {
     model: string;
     name: string;
     category: string;
     fields: unknown[];
     accessible: boolean;
+    access?: AccessRights;
   };
 
   const tasks = ALL_KNOWN_MODELS.map(({ model, name, category }) => {
@@ -220,7 +233,31 @@ export async function fetchOdooSchema(credentials: {
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
           const fields = await client.fields(model);
-          return { model, name, category, fields, accessible: true };
+
+          // Check per-operation access rights
+          const safeCheck = async (op: string): Promise<boolean> => {
+            try {
+              return await client.checkAccessRights(model, op);
+            } catch {
+              return false;
+            }
+          };
+
+          const [read, create, write, unlink] = await Promise.all([
+            safeCheck("read"),
+            safeCheck("create"),
+            safeCheck("write"),
+            safeCheck("unlink"),
+          ]);
+
+          const access = { read, create, write, delete: unlink };
+
+          // Skip models without read access
+          if (!read) {
+            return { model, name, category, fields: [], accessible: false };
+          }
+
+          return { model, name, category, fields, accessible: true, access };
         } catch (error) {
           if (isAccessError(error)) {
             return { model, name, category, fields: [], accessible: false };
@@ -261,7 +298,12 @@ export async function fetchOdooSchema(credentials: {
     };
   });
 
-  const models = accessibleModels.map(({ model, name, fields }) => ({ model, name, fields }));
+  const models = accessibleModels.map(({ model, name, fields, access }) => ({
+    model,
+    name,
+    fields,
+    access: access!,
+  }));
   const lastSyncAt = new Date().toISOString();
   const data = { models, lastSyncAt };
 

@@ -72,8 +72,8 @@ importers:
         specifier: ^0.4.6
         version: 0.4.6(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       odoo-node:
-        specifier: 0.1.1
-        version: 0.1.1
+        specifier: 0.2.0
+        version: 0.2.0
       openclaw-node:
         specifier: 0.3.0
         version: 0.3.0
@@ -4107,8 +4107,8 @@ packages:
   obug@2.1.1:
     resolution: {integrity: sha512-uTqF9MuPraAQ+IsnPf366RG4cP9RtUi7MLO1N3KEc+wb0a6yKpeL0lmk2IB1jY5KHPAlTc6T/JRdC/YqxHNwkQ==}
 
-  odoo-node@0.1.1:
-    resolution: {integrity: sha512-EMO/Ln+w1TXR2ySXXWRiDdPl0FEB7tycF4zDqpiXxMuLaRo9aQKz4iI8RnqAP/m3srMGhmyGqkONmuWIRdySDw==}
+  odoo-node@0.2.0:
+    resolution: {integrity: sha512-ov7PNKyyR3YUqU0nrubjA+CuRO5ehzKMky3+WCtGanRxqMQAUOODFX/4kY+UTE1ygJlY+sF+IhZwc1Uf5Suu3w==}
     engines: {node: '>=20.0.0'}
 
   onetime@7.0.0:
@@ -8929,7 +8929,7 @@ snapshots:
 
   obug@2.1.1: {}
 
-  odoo-node@0.1.1: {}
+  odoo-node@0.2.0: {}
 
   onetime@7.0.0:
     dependencies:

@@ -24,6 +24,14 @@ const odooModelSchema = z.object({
   model: z.string(),
   name: z.string(),
   fields: z.array(odooFieldSchema),
+  access: z
+    .object({
+      read: z.boolean(),
+      create: z.boolean(),
+      write: z.boolean(),
+      delete: z.boolean(),
+    })
+    .optional(), // optional for backward compat with old syncs
 });
 
 export const odooConnectionDataSchema = z.object({

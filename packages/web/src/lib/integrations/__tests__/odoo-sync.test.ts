@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockFields = vi.fn();
+const mockCheckAccessRights = vi.fn();
 
 vi.mock("odoo-node", () => {
   return {
     OdooClient: class {
       fields = mockFields;
+      checkAccessRights = mockCheckAccessRights;
     },
   };
 });
@@ -17,6 +19,7 @@ const creds = { url: "https://odoo.example.com", db: "test", uid: 2, apiKey: "ke
 describe("fetchOdooSchema", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockCheckAccessRights.mockResolvedValue(true);
   });
 
   it("probes curated models via fields_get instead of ir.model", async () => {
@@ -129,6 +132,111 @@ describe("fetchOdooSchema", () => {
     if (!result.success) return;
     expect(result.lastSyncAt).toBeTruthy();
     expect(new Date(result.lastSyncAt).getTime()).not.toBeNaN();
+  });
+
+  describe("access rights", () => {
+    it("includes access rights in sync result", async () => {
+      mockFields.mockResolvedValue([
+        { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+      ]);
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+
+      expect(result.data.models.length).toBeGreaterThan(0);
+      for (const model of result.data.models) {
+        expect(model.access).toEqual({
+          read: true,
+          create: true,
+          write: true,
+          delete: true,
+        });
+      }
+    });
+
+    it("excludes models without read access", async () => {
+      mockFields.mockResolvedValue([
+        { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+      ]);
+      // All ops return true except read returns false
+      mockCheckAccessRights.mockImplementation((_model: string, op: string) => {
+        return Promise.resolve(op !== "read");
+      });
+
+      const result = await fetchOdooSchema(creds);
+
+      // No models should be accessible since read=false for all
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toContain("Could not access any Odoo models");
+    });
+
+    it("maps unlink to delete in access object", async () => {
+      mockFields.mockResolvedValue([
+        { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+      ]);
+      // read=true, create=true, write=true, unlink=true
+      mockCheckAccessRights.mockResolvedValue(true);
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+
+      const model = result.data.models[0];
+      expect(model.access).toHaveProperty("delete");
+      expect(model.access).not.toHaveProperty("unlink");
+    });
+
+    it("handles mixed access rights per model", async () => {
+      // Only first model succeeds with fields
+      let fieldsCallCount = 0;
+      mockFields.mockImplementation(() => {
+        fieldsCallCount++;
+        if (fieldsCallCount === 1) {
+          return Promise.resolve([
+            { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+          ]);
+        }
+        return Promise.reject(new Error("AccessError"));
+      });
+
+      // read=true, create=false, write=true, unlink=false
+      mockCheckAccessRights.mockImplementation((_model: string, op: string) => {
+        if (op === "read" || op === "write") return Promise.resolve(true);
+        return Promise.resolve(false);
+      });
+
+      const result = await fetchOdooSchema(creds);
+
+      expect(result.success).toBe(true);
+      if (!result.success) return;
+
+      expect(result.data.models.length).toBe(1);
+      expect(result.data.models[0].access).toEqual({
+        read: true,
+        create: false,
+        write: true,
+        delete: false,
+      });
+    });
+
+    it("handles checkAccessRights failure gracefully", async () => {
+      mockFields.mockResolvedValue([
+        { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+      ]);
+      // checkAccessRights throws for all operations
+      mockCheckAccessRights.mockRejectedValue(new Error("Network error"));
+
+      const result = await fetchOdooSchema(creds);
+
+      // All models should be excluded since read check fails (treated as false)
+      expect(result.success).toBe(false);
+      if (result.success) return;
+      expect(result.error).toContain("Could not access any Odoo models");
+    });
   });
 
   describe("category summary", () => {
