@@ -42,7 +42,21 @@ interface AgentOdooConfig {
     apiKey: string;
   };
   permissions: Permissions;
-  modelNames?: Record<string, string>;
+  schema?: Record<
+    string,
+    {
+      name: string;
+      fields: Array<{
+        name: string;
+        string: string;
+        type: string;
+        required: boolean;
+        readonly: boolean;
+        relation?: string;
+        selection?: [string, string][];
+      }>;
+    }
+  >;
 }
 
 function getAgentConfig(
@@ -127,15 +141,14 @@ const plugin = {
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               const model = params.model as string | undefined;
-              const names = config.modelNames ?? {};
+              const schema = config.schema ?? {};
 
               if (!model) {
-                // List all permitted models with human-readable names
+                // List all permitted models
                 const permittedModels = Object.keys(config.permissions);
-                const models = permittedModels.map((m) => ({
-                  model: m,
-                  name: names[m] ?? m,
-                }));
+                const models = permittedModels
+                  .filter((m) => schema[m])
+                  .map((m) => ({ model: m, name: schema[m].name }));
                 return { content: [{ type: "text", text: JSON.stringify(models) }] };
               }
 
@@ -148,17 +161,17 @@ const plugin = {
                 };
               }
 
-              // Fetch fields live from Odoo (lightweight call, not cached)
-              const client = createClient(config);
-              const fields = await client.fields(model);
+              const modelSchema = schema[model];
+              if (!modelSchema) {
+                return {
+                  content: [
+                    { type: "text", text: `No schema cached for model "${model}".` },
+                  ],
+                };
+              }
 
               return {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify({ name: names[model] ?? model, fields }),
-                  },
-                ],
+                content: [{ type: "text", text: JSON.stringify(modelSchema) }],
               };
             } catch (error) {
               return errorResult(error);

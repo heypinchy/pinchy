@@ -269,15 +269,15 @@ export async function regenerateOpenClawConfig() {
       permissions[model] = ops;
     }
 
-    // Build model name map from connection data (lightweight — no field schemas)
-    const modelNames: Record<string, string> = {};
+    // Parse schema from connection data
+    const schema: Record<string, unknown> = {};
     if (conn.data && typeof conn.data === "object") {
       const data = conn.data as {
-        models?: Array<{ model: string; name: string }>;
+        models?: Array<{ model: string; name: string; fields: unknown[] }>;
       };
       if (data.models) {
         for (const m of data.models) {
-          modelNames[m.model] = m.name;
+          schema[m.model] = { name: m.name, fields: m.fields };
         }
       }
     }
@@ -292,7 +292,7 @@ export async function regenerateOpenClawConfig() {
         apiKey: decryptedCreds.apiKey,
       },
       permissions,
-      modelNames,
+      schema,
     };
   }
 
