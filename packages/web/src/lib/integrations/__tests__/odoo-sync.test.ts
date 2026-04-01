@@ -109,6 +109,50 @@ describe("fetchOdooSchema", () => {
     expect(maxConcurrent).toBeLessThanOrEqual(5);
   });
 
+  it("retries errors containing 'access' that are not Odoo access errors", async () => {
+    const callCounts = new Map<string, number>();
+    mockFields.mockImplementation((model: string) => {
+      const count = (callCounts.get(model) ?? 0) + 1;
+      callCounts.set(model, count);
+      if (count === 1) {
+        return Promise.reject(new Error("Failed to access host"));
+      }
+      return Promise.resolve([
+        { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+      ]);
+    });
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.models).toBeGreaterThan(0);
+  });
+
+  it("does not retry 'access denied' errors", async () => {
+    mockFields.mockRejectedValue(new Error("access denied"));
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+  });
+
+  it("does not retry 'not allowed' errors", async () => {
+    mockFields.mockRejectedValue(new Error("You are not allowed to access this document"));
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+  });
+
+  it("does not retry 'permission denied' errors", async () => {
+    mockFields.mockRejectedValue(new Error("permission denied for table sale_order"));
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+  });
+
   it("distinguishes access errors from transient errors", async () => {
     mockFields.mockImplementation(() => {
       // AccessError is a real permission issue — should not retry

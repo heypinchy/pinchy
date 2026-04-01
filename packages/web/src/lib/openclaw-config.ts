@@ -269,8 +269,8 @@ export async function regenerateOpenClawConfig() {
       permissions[model] = ops;
     }
 
-    // Build lightweight model name map (no field schemas — those are fetched
-    // live by the plugin via fields_get() to keep the config small)
+    // Build lightweight model name map — only for models with permissions
+    // (no field schemas — those are fetched live by the plugin via fields_get())
     const modelNames: Record<string, string> = {};
     if (conn.data && typeof conn.data === "object") {
       const data = conn.data as {
@@ -278,7 +278,9 @@ export async function regenerateOpenClawConfig() {
       };
       if (data.models) {
         for (const m of data.models) {
-          modelNames[m.model] = m.name;
+          if (permissions[m.model]) {
+            modelNames[m.model] = m.name;
+          }
         }
       }
     }

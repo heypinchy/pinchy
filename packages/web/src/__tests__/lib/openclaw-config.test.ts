@@ -756,17 +756,16 @@ describe("pinchy-odoo config size", () => {
                 name: "Sales Orders",
                 fields: [
                   { name: "id", string: "ID", type: "integer", required: true, readonly: true },
-                  { name: "name", string: "Name", type: "char", required: true, readonly: false },
-                  {
-                    name: "partner_id",
-                    string: "Partner",
-                    type: "many2one",
-                    required: false,
-                    readonly: false,
-                    relation: "res.partner",
-                  },
                 ],
                 access: { read: true, create: false, write: false, delete: false },
+              },
+              {
+                model: "res.partner",
+                name: "Contacts",
+                fields: [
+                  { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+                ],
+                access: { read: true, create: true, write: true, delete: false },
               },
             ],
             lastSyncAt: "2026-04-01T00:00:00Z",
