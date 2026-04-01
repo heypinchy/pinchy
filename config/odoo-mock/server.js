@@ -257,6 +257,7 @@ function getDefaultRecords() {
 // In-memory data store
 let store = getDefaultRecords();
 let nextIds = {}; // per-model auto-increment counters
+let accessRights = {}; // { "sale.order": { read: true, create: false, ... } }
 
 function resetNextIds() {
   nextIds = {};
@@ -565,6 +566,19 @@ function handleJsonRpc(body) {
         return true;
       }
 
+      // check_access_rights
+      if (objMethod === "check_access_rights") {
+        const operation = positionalArgs[0]; // "read", "create", "write", "unlink"
+        const raiseException = kwArgs?.raise_exception !== false;
+        // Default: all rights true when not explicitly configured
+        const modelRights = accessRights[model];
+        const hasAccess = modelRights ? (modelRights[operation] ?? true) : true;
+        if (!hasAccess && raiseException) {
+          return { __jsonrpc_error: true, message: "AccessError: permission denied" };
+        }
+        return hasAccess;
+      }
+
       // unlink
       if (objMethod === "unlink") {
         const ids = positionalArgs[0] || [];
@@ -634,11 +648,19 @@ const jsonRpcServer = http.createServer(async (req, res) => {
     }
 
     const result = handleJsonRpc(body);
-    sendJson(res, 200, {
-      jsonrpc: "2.0",
-      id: body.id || null,
-      result: result,
-    });
+    if (result && result.__jsonrpc_error) {
+      sendJson(res, 200, {
+        jsonrpc: "2.0",
+        id: body.id || null,
+        error: { message: result.message, code: 200, data: { message: result.message } },
+      });
+    } else {
+      sendJson(res, 200, {
+        jsonrpc: "2.0",
+        id: body.id || null,
+        result: result,
+      });
+    }
     return;
   }
 
@@ -661,6 +683,7 @@ const controlServer = http.createServer(async (req, res) => {
   if (req.method === "POST" && path === "/control/reset") {
     store = getDefaultRecords();
     resetNextIds();
+    accessRights = {};
     authConfig = {
       db: "testdb",
       login: "admin",
@@ -711,6 +734,16 @@ const controlServer = http.createServer(async (req, res) => {
       return;
     }
     sendJson(res, 200, store[model] || []);
+    return;
+  }
+
+  // Configure access rights
+  if (req.method === "POST" && path === "/control/access-rights") {
+    const body = await readBody(req);
+    if (body && typeof body === "object") {
+      Object.assign(accessRights, body);
+    }
+    sendJson(res, 200, { status: "configured", accessRights });
     return;
   }
 
