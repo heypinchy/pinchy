@@ -60,7 +60,6 @@ vi.mock("@/lib/providers", () => ({
 }));
 
 vi.mock("@/lib/openclaw-config", () => ({
-  writeOpenClawConfig: vi.fn(),
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
