@@ -7,6 +7,7 @@ export type Operation = (typeof OPERATIONS)[number];
 export interface OdooModel {
   model: string;
   name: string;
+  access?: { read: boolean; create: boolean; write: boolean; delete: boolean };
 }
 
 export interface Connection {
@@ -22,6 +23,8 @@ export type OperationFlags = {
   write: boolean;
   delete: boolean;
 };
+
+const FULL_ACCESS: OperationFlags = { read: true, create: true, write: true, delete: true };
 
 /** Returns the default operation flags for a given access level. */
 export function operationsForAccessLevel(level: OdooAccessLevel): OperationFlags {
@@ -81,6 +84,7 @@ export interface UseOdooPermissionsReturn {
   removeModel: (modelId: string) => void;
   toggleOperation: (modelId: string, operation: Operation) => void;
 
+  getModelAccess: (modelId: string) => OperationFlags;
   getPermissions: () => Array<{ model: string; operation: string }>;
   isDirty: boolean;
 }
@@ -167,6 +171,27 @@ export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
     [connectionModels, addedModels]
   );
 
+  // --- Helpers ---
+
+  const getModelAccess = useCallback(
+    (modelId: string): OperationFlags => {
+      const model = connectionModels.find((m) => m.model === modelId);
+      if (!model?.access) return { ...FULL_ACCESS };
+      return { ...model.access };
+    },
+    [connectionModels]
+  );
+
+  /** Clamp desired operations to what the Odoo user can actually do. */
+  function clampToAccess(desired: OperationFlags, access: OperationFlags): OperationFlags {
+    return {
+      read: desired.read && access.read,
+      create: desired.create && access.create,
+      write: desired.write && access.write,
+      delete: desired.delete && access.delete,
+    };
+  }
+
   // --- Actions ---
 
   const setConnectionId = useCallback((id: string) => {
@@ -175,43 +200,50 @@ export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
     setAccessLevelState("read-only");
   }, []);
 
-  const setAccessLevel = useCallback((level: OdooAccessLevel) => {
-    setAccessLevelState(level);
-    // Update all existing models to match the new level
-    setAddedModels((prev) => {
-      const ops = operationsForAccessLevel(level);
-      const next = new Map<string, OperationFlags>();
-      for (const [model] of prev) {
-        next.set(model, { ...ops });
-      }
-      return next;
-    });
-  }, []);
+  const setAccessLevel = useCallback(
+    (level: OdooAccessLevel) => {
+      setAccessLevelState(level);
+      // Update all existing models to match the new level, clamped by access
+      setAddedModels((prev) => {
+        const desired = operationsForAccessLevel(level);
+        const next = new Map<string, OperationFlags>();
+        for (const [model] of prev) {
+          const access = getModelAccess(model);
+          next.set(model, clampToAccess(desired, access));
+        }
+        return next;
+      });
+    },
+    [getModelAccess]
+  );
 
   const addModel = useCallback(
     (modelId: string) => {
       setAddedModels((prev) => {
         if (prev.has(modelId)) return prev;
+        const desired = operationsForAccessLevel(accessLevel);
+        const access = getModelAccess(modelId);
         const next = new Map(prev);
-        next.set(modelId, { ...operationsForAccessLevel(accessLevel) });
+        next.set(modelId, clampToAccess(desired, access));
         return next;
       });
     },
-    [accessLevel]
+    [accessLevel, getModelAccess]
   );
 
   const addAllModels = useCallback(() => {
     setAddedModels((prev) => {
       const next = new Map(prev);
-      const ops = operationsForAccessLevel(accessLevel);
+      const desired = operationsForAccessLevel(accessLevel);
       for (const m of connectionModels) {
         if (!next.has(m.model)) {
-          next.set(m.model, { ...ops });
+          const access = getModelAccess(m.model);
+          next.set(m.model, clampToAccess(desired, access));
         }
       }
       return next;
     });
-  }, [connectionModels, accessLevel]);
+  }, [connectionModels, accessLevel, getModelAccess]);
 
   const removeModel = useCallback((modelId: string) => {
     setAddedModels((prev) => {
@@ -221,21 +253,31 @@ export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
     });
   }, []);
 
-  const toggleOperation = useCallback((modelId: string, operation: Operation) => {
-    setAddedModels((prev) => {
-      const flags = prev.get(modelId);
-      if (!flags) return prev;
-      const next = new Map(prev);
-      const updated = { ...flags, [operation]: !flags[operation] };
-      next.set(modelId, updated);
+  const toggleOperation = useCallback(
+    (modelId: string, operation: Operation) => {
+      setAddedModels((prev) => {
+        const flags = prev.get(modelId);
+        if (!flags) return prev;
 
-      // Re-detect access level
-      const detected = detectAccessLevelFromModels(next);
-      setAccessLevelState(detected);
+        // If trying to toggle ON but access doesn't allow it, no-op
+        if (!flags[operation]) {
+          const access = getModelAccess(modelId);
+          if (!access[operation]) return prev;
+        }
 
-      return next;
-    });
-  }, []);
+        const next = new Map(prev);
+        const updated = { ...flags, [operation]: !flags[operation] };
+        next.set(modelId, updated);
+
+        // Re-detect access level
+        const detected = detectAccessLevelFromModels(next);
+        setAccessLevelState(detected);
+
+        return next;
+      });
+    },
+    [getModelAccess]
+  );
 
   // --- Output ---
 
@@ -293,6 +335,7 @@ export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
     removeModel,
     toggleOperation,
 
+    getModelAccess,
     getPermissions,
     isDirty,
   };

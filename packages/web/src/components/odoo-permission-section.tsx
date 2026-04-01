@@ -22,6 +22,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { useOdooPermissions, type Operation, type OdooModel } from "@/hooks/use-odoo-permissions";
 import type { OdooAccessLevel } from "@/lib/tool-registry";
 import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
@@ -85,6 +86,7 @@ export function OdooPermissionSection({ agentId, onChange }: OdooPermissionSecti
     addAllModels,
     removeModel,
     toggleOperation,
+    getModelAccess,
     getPermissions,
     isDirty,
   } = useOdooPermissions(agentId);
@@ -221,6 +223,7 @@ export function OdooPermissionSection({ agentId, onChange }: OdooPermissionSecti
                       const category = MODEL_CATEGORIES.find((c) =>
                         c.models.some((m) => m.model === modelId)
                       );
+                      const modelAccess = getModelAccess(modelId);
 
                       return (
                         <div
@@ -238,15 +241,36 @@ export function OdooPermissionSection({ agentId, onChange }: OdooPermissionSecti
                             </div>
                             <div className="text-xs text-muted-foreground">{modelId}</div>
                           </div>
-                          {OPERATIONS.map((op) => (
-                            <div key={op} className="flex justify-center">
+                          {OPERATIONS.map((op) => {
+                            const restricted = !modelAccess[op];
+                            const checkbox = (
                               <Checkbox
                                 checked={ops[op]}
                                 onCheckedChange={() => toggleOperation(modelId, op)}
+                                disabled={restricted}
                                 aria-label={`${op} ${displayName}`}
                               />
-                            </div>
-                          ))}
+                            );
+
+                            return (
+                              <div key={op} className="flex justify-center">
+                                {restricted ? (
+                                  <TooltipProvider>
+                                    <Tooltip>
+                                      <TooltipTrigger asChild>
+                                        <span>{checkbox}</span>
+                                      </TooltipTrigger>
+                                      <TooltipContent>
+                                        Not available — Odoo user lacks this permission
+                                      </TooltipContent>
+                                    </Tooltip>
+                                  </TooltipProvider>
+                                ) : (
+                                  checkbox
+                                )}
+                              </div>
+                            );
+                          })}
                           <div className="flex justify-center">
                             <Button
                               variant="ghost"

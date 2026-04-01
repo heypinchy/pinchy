@@ -6,7 +6,15 @@ import { useOdooPermissions } from "../use-odoo-permissions";
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
-function makeConnection(id: string, name: string, models?: Array<{ model: string; name: string }>) {
+function makeConnection(
+  id: string,
+  name: string,
+  models?: Array<{
+    model: string;
+    name: string;
+    access?: { read: boolean; create: boolean; write: boolean; delete: boolean };
+  }>
+) {
   return {
     id,
     name,
@@ -16,9 +24,21 @@ function makeConnection(id: string, name: string, models?: Array<{ model: string
 }
 
 const SAMPLE_MODELS = [
-  { model: "sale.order", name: "Sale Orders" },
-  { model: "res.partner", name: "Contacts" },
-  { model: "account.move", name: "Invoices" },
+  {
+    model: "sale.order",
+    name: "Sale Orders",
+    access: { read: true, create: true, write: true, delete: false },
+  },
+  {
+    model: "res.partner",
+    name: "Contacts",
+    access: { read: true, create: true, write: true, delete: true },
+  },
+  {
+    model: "account.move",
+    name: "Invoices",
+    access: { read: true, create: false, write: false, delete: false },
+  },
 ];
 
 const CONNECTIONS = [
@@ -179,8 +199,9 @@ describe("useOdooPermissions", () => {
       result.current.setConnectionId("conn-1");
     });
 
+    // res.partner has full access rights, so full level works completely
     act(() => {
-      result.current.addModel("sale.order");
+      result.current.addModel("res.partner");
     });
 
     act(() => {
@@ -188,7 +209,7 @@ describe("useOdooPermissions", () => {
     });
 
     expect(result.current.accessLevel).toBe("full");
-    const ops = result.current.addedModels.get("sale.order");
+    const ops = result.current.addedModels.get("res.partner");
     expect(ops).toEqual({ read: true, create: true, write: true, delete: true });
   });
 
@@ -545,6 +566,137 @@ describe("useOdooPermissions", () => {
     expect(result.current.availableModels).toHaveLength(0);
   });
 
+  // --- Access restrictions ---
+
+  it("addModel respects access restrictions", async () => {
+    mockFetchResponses();
+    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    await act(async () => {});
+
+    act(() => {
+      result.current.setConnectionId("conn-1");
+    });
+
+    // access level read-write → wants read+create+write
+    act(() => {
+      result.current.setAccessLevel("read-write");
+    });
+
+    // sale.order has delete=false but that doesn't matter for read-write
+    // account.move has create=false, write=false → those should stay false
+    act(() => {
+      result.current.addModel("account.move");
+    });
+
+    const ops = result.current.addedModels.get("account.move");
+    expect(ops).toEqual({ read: true, create: false, write: false, delete: false });
+  });
+
+  it("setAccessLevel respects access restrictions", async () => {
+    mockFetchResponses();
+    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    await act(async () => {});
+
+    act(() => {
+      result.current.setConnectionId("conn-1");
+    });
+
+    act(() => {
+      result.current.addModel("sale.order");
+      result.current.addModel("res.partner");
+    });
+
+    // Set to full — sale.order has delete=false, so delete should stay false
+    act(() => {
+      result.current.setAccessLevel("full");
+    });
+
+    const saleOrder = result.current.addedModels.get("sale.order");
+    expect(saleOrder).toEqual({ read: true, create: true, write: true, delete: false });
+
+    // res.partner has full access, so all should be true
+    const partner = result.current.addedModels.get("res.partner");
+    expect(partner).toEqual({ read: true, create: true, write: true, delete: true });
+  });
+
+  it("toggleOperation is no-op for restricted operations", async () => {
+    mockFetchResponses();
+    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    await act(async () => {});
+
+    act(() => {
+      result.current.setConnectionId("conn-1");
+    });
+
+    act(() => {
+      result.current.addModel("account.move");
+    });
+
+    // account.move has create=false in access — toggling create should be no-op
+    act(() => {
+      result.current.toggleOperation("account.move", "create");
+    });
+
+    expect(result.current.addedModels.get("account.move")!.create).toBe(false);
+  });
+
+  it("addAllModels respects per-model access restrictions", async () => {
+    mockFetchResponses();
+    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    await act(async () => {});
+
+    act(() => {
+      result.current.setConnectionId("conn-1");
+    });
+
+    act(() => {
+      result.current.setAccessLevel("full");
+    });
+
+    act(() => {
+      result.current.addAllModels();
+    });
+
+    // sale.order: delete=false in access
+    expect(result.current.addedModels.get("sale.order")).toEqual({
+      read: true,
+      create: true,
+      write: true,
+      delete: false,
+    });
+
+    // res.partner: full access
+    expect(result.current.addedModels.get("res.partner")).toEqual({
+      read: true,
+      create: true,
+      write: true,
+      delete: true,
+    });
+
+    // account.move: only read allowed
+    expect(result.current.addedModels.get("account.move")).toEqual({
+      read: true,
+      create: false,
+      write: false,
+      delete: false,
+    });
+  });
+
+  it("getModelAccess returns full access for models without access field", async () => {
+    const modelsWithoutAccess = [{ model: "sale.order", name: "Sale Orders" }];
+    mockFetchResponses([makeConnection("conn-legacy", "Legacy", modelsWithoutAccess)]);
+
+    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    await act(async () => {});
+
+    act(() => {
+      result.current.setConnectionId("conn-legacy");
+    });
+
+    const access = result.current.getModelAccess("sale.order");
+    expect(access).toEqual({ read: true, create: true, write: true, delete: true });
+  });
+
   it("addAllModels does not re-add already existing models", async () => {
     mockFetchResponses();
     const { result } = renderHook(() => useOdooPermissions("agent-1"));
@@ -554,33 +706,33 @@ describe("useOdooPermissions", () => {
       result.current.setConnectionId("conn-1");
     });
 
-    // Set to full, add one model
+    // Set to full, add res.partner (which has full access rights)
     act(() => {
       result.current.setAccessLevel("full");
     });
 
     act(() => {
-      result.current.addModel("sale.order");
+      result.current.addModel("res.partner");
     });
 
     // Now toggle off delete on that model — access level re-detects as read-write
     act(() => {
-      result.current.toggleOperation("sale.order", "delete");
+      result.current.toggleOperation("res.partner", "delete");
     });
 
     expect(result.current.accessLevel).toBe("read-write");
 
-    // addAllModels should NOT overwrite the customized sale.order
+    // addAllModels should NOT overwrite the customized res.partner
     act(() => {
       result.current.addAllModels();
     });
 
-    // sale.order should still have custom ops (delete off)
-    const saleOrder = result.current.addedModels.get("sale.order");
-    expect(saleOrder!.delete).toBe(false);
-
-    // New models get operations based on current access level (read-write)
+    // res.partner should still have custom ops (delete off)
     const partner = result.current.addedModels.get("res.partner");
-    expect(partner).toEqual({ read: true, create: true, write: true, delete: false });
+    expect(partner!.delete).toBe(false);
+
+    // sale.order gets read-write ops clamped by its access (delete=false anyway)
+    const saleOrder = result.current.addedModels.get("sale.order");
+    expect(saleOrder).toEqual({ read: true, create: true, write: true, delete: false });
   });
 });
