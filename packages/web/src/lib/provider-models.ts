@@ -111,12 +111,20 @@ const DEFAULT_MODEL_PATTERNS: Record<ProviderName, RegExp> = {
 
 const PREVIEW_PATTERN = /preview/i;
 
+/** Extract the YYYYMMDD date suffix from a model ID, or 0 if none found. */
+function extractModelDate(modelId: string): number {
+  const match = /(\d{8})$/.exec(modelId);
+  return match ? parseInt(match[1], 10) : 0;
+}
+
 export function selectDefaultModel(provider: ProviderName, models: ModelInfo[]): string {
   const pattern = DEFAULT_MODEL_PATTERNS[provider];
   const candidates = models.filter((m) => pattern.test(m.id) && !PREVIEW_PATTERN.test(m.id));
 
   if (candidates.length > 0) {
-    return candidates[candidates.length - 1].id;
+    // Pick the most recent model by date suffix (YYYYMMDD)
+    candidates.sort((a, b) => extractModelDate(b.id) - extractModelDate(a.id));
+    return candidates[0].id;
   }
 
   return PROVIDERS[provider].defaultModel;
