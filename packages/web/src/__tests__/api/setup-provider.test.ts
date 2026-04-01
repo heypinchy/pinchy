@@ -48,7 +48,6 @@ vi.mock("@/lib/settings", () => ({
 }));
 
 vi.mock("@/lib/openclaw-config", () => ({
-  writeOpenClawConfig: vi.fn(),
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
@@ -77,7 +76,7 @@ vi.mock("@/db", () => ({
 
 import { validateProviderKey } from "@/lib/providers";
 import { getSetting, setSetting } from "@/lib/settings";
-import { writeOpenClawConfig, regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { requireAdmin } from "@/lib/api-auth";
 import { resetCache } from "@/lib/provider-models";

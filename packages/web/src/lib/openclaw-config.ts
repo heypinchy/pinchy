@@ -1,5 +1,4 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "fs";
-import { randomBytes } from "crypto";
 import { dirname } from "path";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
@@ -8,7 +7,6 @@ import { agents, channelLinks } from "@/db/schema";
 import { getSetting } from "@/lib/settings";
 import { computeDeniedGroups } from "@/lib/tool-registry";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
-import { restartState } from "@/server/restart-state";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
@@ -22,12 +20,6 @@ function writeConfigAtomic(content: string) {
   const tmpPath = CONFIG_PATH + ".tmp";
   writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o644 });
   renameSync(tmpPath, CONFIG_PATH);
-}
-
-interface OpenClawConfigParams {
-  provider: ProviderName;
-  apiKey: string;
-  model: string;
 }
 
 function readExistingConfig(): Record<string, unknown> {
@@ -61,35 +53,6 @@ function deepMerge(
     }
   }
   return result;
-}
-
-export function writeOpenClawConfig({ provider, apiKey, model }: OpenClawConfigParams) {
-  const existing = readExistingConfig();
-
-  // Generate auth token if none exists in the existing config
-  const existingGateway = (existing.gateway as Record<string, unknown>) || {};
-  const existingAuth = (existingGateway.auth as Record<string, unknown>) || {};
-  const token = (existingAuth.token as string) || randomBytes(24).toString("hex");
-
-  const pinchyFields = {
-    gateway: {
-      mode: "local",
-      bind: "lan",
-      auth: { mode: "token", token },
-    },
-    env: {
-      [PROVIDERS[provider].envVar]: apiKey,
-    },
-    agents: {
-      defaults: {
-        model: { primary: model },
-      },
-    },
-  };
-
-  const merged = deepMerge(existing, pinchyFields);
-  writeConfigAtomic(JSON.stringify(merged, null, 2));
-  restartState.notifyRestart();
 }
 
 export async function regenerateOpenClawConfig() {
