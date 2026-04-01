@@ -6,21 +6,19 @@ import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog } from "@/lib/audit";
-import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import {
+  odooCredentialsSchema,
+  odooConnectionDataSchema,
+  maskCredentials,
+} from "@/lib/integrations/odoo-schema";
 
 const createIntegrationSchema = z.object({
   type: z.literal("odoo"),
   name: z.string().min(1).max(100),
   description: z.string().max(500).default(""),
   credentials: odooCredentialsSchema,
-  data: z.unknown().optional(),
+  data: odooConnectionDataSchema.optional(),
 });
-
-/** Strip sensitive fields from decrypted credentials for API responses. */
-function maskCredentials(encryptedCredentials: string): { url: string; db: string; login: string } {
-  const parsed = JSON.parse(decrypt(encryptedCredentials));
-  return { url: parsed.url, db: parsed.db, login: parsed.login };
-}
 
 export async function GET() {
   const session = await getSession({ headers: await headers() });
@@ -35,7 +33,7 @@ export async function GET() {
 
   const masked = connections.map((conn) => ({
     ...conn,
-    credentials: maskCredentials(conn.credentials),
+    credentials: maskCredentials(conn.credentials, decrypt),
   }));
 
   return NextResponse.json(masked);

@@ -123,7 +123,6 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
     }>;
   } | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
-  const [syncPhase, setSyncPhase] = useState<"syncing" | "idle">("idle");
   const [syncData, setSyncData] = useState<unknown>(null);
 
   // Done step
@@ -150,7 +149,6 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
     setConnecting(false);
     setSyncResult(null);
     setSyncError(null);
-    setSyncPhase("idle");
     setSyncData(null);
     setSaving(false);
     setConnectionName("");
@@ -263,7 +261,6 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
 
   async function runSyncPreview(uid: number) {
     setSyncError(null);
-    setSyncPhase("syncing");
 
     try {
       const values = form.getValues();
@@ -288,15 +285,12 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
       if (data.success) {
         setSyncResult({ models: data.models, categories: data.categories ?? [] });
         setSyncData(data.data);
-        setSyncPhase("idle");
         // Stay on sync step — user clicks "Continue" to proceed
       } else {
         setSyncError(data.error || "Schema sync failed");
-        setSyncPhase("idle");
       }
     } catch {
       setSyncError("Schema sync failed");
-      setSyncPhase("idle");
     }
   }
 
@@ -321,7 +315,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
             db: values.db,
             login: values.login,
             apiKey: values.apiKey,
-            uid: connectionResult!.uid,
+            uid: connectionResult?.uid,
           },
           data: syncData,
         }),
@@ -639,8 +633,9 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                   <div className="flex justify-end">
                     <Button
                       onClick={() => {
+                        if (!connectionResult) return;
                         setSyncError(null);
-                        runSyncPreview(connectionResult!.uid);
+                        runSyncPreview(connectionResult.uid);
                       }}
                     >
                       Retry
@@ -662,8 +657,9 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                   <div className="flex justify-end">
                     <Button
                       onClick={() => {
+                        if (!connectionResult) return;
                         setSyncError(null);
-                        runSyncPreview(connectionResult!.uid);
+                        runSyncPreview(connectionResult.uid);
                       }}
                     >
                       Retry

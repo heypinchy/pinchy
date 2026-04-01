@@ -6,7 +6,7 @@ import { OdooClient } from "odoo-node";
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
-import { decrypt } from "@/lib/encryption";
+import { decrypt, encrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
@@ -57,7 +57,6 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
 
     // If uid changed (e.g. first connection with placeholder uid), update stored credentials
     if (uid !== creds.uid) {
-      const { encrypt } = await import("@/lib/encryption");
       await db
         .update(integrationConnections)
         .set({

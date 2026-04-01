@@ -40,3 +40,12 @@ export const odooConnectionDataSchema = z.object({
 });
 
 export type OdooConnectionData = z.infer<typeof odooConnectionDataSchema>;
+
+/** Strip sensitive fields from decrypted credentials for API responses. */
+export function maskCredentials(
+  encryptedCredentials: string,
+  decrypt: (ciphertext: string) => string
+): { url: string; db: string; login: string } {
+  const parsed = JSON.parse(decrypt(encryptedCredentials));
+  return { url: parsed.url, db: parsed.db, login: parsed.login };
+}

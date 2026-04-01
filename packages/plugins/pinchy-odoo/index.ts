@@ -147,7 +147,7 @@ const plugin = {
 
               if (!model) {
                 // List all permitted models with human-readable names
-                const permittedModels = Object.keys(config.permissions);
+                const permittedModels = getPermittedModels(config.permissions, "read");
                 const models = permittedModels.map((m) => ({
                   model: m,
                   name: names[m] ?? m,

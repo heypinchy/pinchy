@@ -6,7 +6,7 @@ import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog } from "@/lib/audit";
-import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import { odooCredentialsSchema, maskCredentials } from "@/lib/integrations/odoo-schema";
 import { z } from "zod";
 
 const updateIntegrationSchema = z.object({
@@ -14,12 +14,6 @@ const updateIntegrationSchema = z.object({
   description: z.string().max(500).optional(),
   credentials: odooCredentialsSchema.optional(),
 });
-
-/** Strip sensitive fields from decrypted credentials for API responses. */
-function maskCredentials(encryptedCredentials: string): { url: string; db: string; login: string } {
-  const parsed = JSON.parse(decrypt(encryptedCredentials));
-  return { url: parsed.url, db: parsed.db, login: parsed.login };
-}
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -44,7 +38,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 
   return NextResponse.json({
     ...connection,
-    credentials: maskCredentials(connection.credentials),
+    credentials: maskCredentials(connection.credentials, decrypt),
   });
 }
 
@@ -115,7 +109,7 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
 
   return NextResponse.json({
     ...updated,
-    credentials: maskCredentials(updated.credentials),
+    credentials: maskCredentials(updated.credentials, decrypt),
   });
 }
 
