@@ -305,7 +305,27 @@ export function OdooPermissionSection({ agentId, onChange }: OdooPermissionSecti
                       <CommandList>
                         <CommandEmpty>No models found.</CommandEmpty>
                         {groupModelsByCategory(availableModels).map(({ label, models }) => (
-                          <CommandGroup key={label} heading={label}>
+                          <CommandGroup
+                            key={label}
+                            heading={
+                              <span className="flex items-center justify-between">
+                                <span>{label}</span>
+                                {models.length > 1 && (
+                                  <button
+                                    type="button"
+                                    className="text-xs font-normal text-primary hover:underline"
+                                    onPointerDown={(e) => {
+                                      e.preventDefault();
+                                      for (const m of models) addModel(m.model);
+                                      setAddModelOpen(false);
+                                    }}
+                                  >
+                                    Add all
+                                  </button>
+                                )}
+                              </span>
+                            }
+                          >
                             {models.map((m) => (
                               <CommandItem
                                 key={m.model}
