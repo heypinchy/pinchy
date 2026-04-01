@@ -184,8 +184,12 @@ const plugin = {
               model: { type: "string", description: "Odoo model name, e.g. 'sale.order'" },
               filters: {
                 type: "array",
+                items: {
+                  type: "array",
+                  description: "A [field, operator, value] tuple, e.g. ['state', '=', 'sale']",
+                },
                 description:
-                  "Odoo domain filter. Array of [field, operator, value] tuples. Operators: =, !=, >, >=, <, <=, in, not in, like, ilike.",
+                  "Odoo domain filter. Array of [field, operator, value] tuples. Operators: =, !=, >, >=, <, <=, in, not in, like, ilike. Use [] for no filter.",
               },
               fields: {
                 type: "array",
@@ -240,7 +244,11 @@ const plugin = {
             type: "object",
             properties: {
               model: { type: "string", description: "Odoo model name" },
-              filters: { type: "array", description: "Odoo domain filter" },
+              filters: {
+                type: "array",
+                items: { type: "array", description: "A [field, operator, value] tuple" },
+                description: "Odoo domain filter. Use [] for no filter.",
+              },
             },
             required: ["model", "filters"],
           },
@@ -281,7 +289,11 @@ const plugin = {
             type: "object",
             properties: {
               model: { type: "string", description: "Odoo model name" },
-              filters: { type: "array", description: "Odoo domain filter" },
+              filters: {
+                type: "array",
+                items: { type: "array", description: "A [field, operator, value] tuple" },
+                description: "Odoo domain filter. Use [] for no filter.",
+              },
               fields: {
                 type: "array",
                 items: { type: "string" },
