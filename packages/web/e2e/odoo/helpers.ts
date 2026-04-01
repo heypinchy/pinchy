@@ -101,6 +101,17 @@ export async function pinchyPut(path: string, body: unknown, cookie: string): Pr
   });
 }
 
+export async function pinchyPatch(path: string, body: unknown, cookie: string): Promise<Response> {
+  return fetch(`${PINCHY_URL}${path}`, {
+    method: "PATCH",
+    headers: {
+      "Content-Type": "application/json",
+      Cookie: cookie,
+    },
+    body: JSON.stringify(body),
+  });
+}
+
 export async function pinchyDelete(path: string, cookie: string): Promise<Response> {
   return fetch(`${PINCHY_URL}${path}`, {
     method: "DELETE",
