@@ -1,5 +1,5 @@
-import { describe, it, expect } from "vitest";
-import { isModelVisionCapable } from "@/lib/model-vision";
+import { describe, it, expect, beforeEach } from "vitest";
+import { isModelVisionCapable, setOllamaLocalVisionModels } from "@/lib/model-vision";
 
 describe("isModelVisionCapable", () => {
   describe("full-vision providers (all models capable)", () => {
@@ -59,6 +59,31 @@ describe("isModelVisionCapable", () => {
       expect(isModelVisionCapable("ollama-cloud/deepseek-v3.2:cloud")).toBe(false);
       expect(isModelVisionCapable("ollama-cloud/glm-4.7:cloud")).toBe(false);
       expect(isModelVisionCapable("ollama-cloud/nemotron-3-nano:30b-cloud")).toBe(false);
+    });
+  });
+
+  describe("Ollama local vision detection with capabilities cache", () => {
+    beforeEach(() => {
+      // Reset cache before each test
+      setOllamaLocalVisionModels(null);
+    });
+
+    it("should use capabilities cache for local ollama models when available", () => {
+      setOllamaLocalVisionModels(new Set(["llama3.2-vision:latest", "custom-vision:7b"]));
+
+      expect(isModelVisionCapable("ollama/custom-vision:7b")).toBe(true);
+      expect(isModelVisionCapable("ollama/llama3:latest")).toBe(false);
+      // llava would be true with hardcoded list, but cache overrides
+      expect(isModelVisionCapable("ollama/llava:7b")).toBe(false);
+    });
+
+    it("should fall back to hardcoded list when no capabilities cached", () => {
+      setOllamaLocalVisionModels(null);
+
+      // llava is in the hardcoded list
+      expect(isModelVisionCapable("ollama/llava:7b")).toBe(true);
+      // unknown model — not in hardcoded list
+      expect(isModelVisionCapable("ollama/custom-vision:7b")).toBe(false);
     });
   });
 

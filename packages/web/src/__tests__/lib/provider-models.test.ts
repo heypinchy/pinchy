@@ -634,6 +634,7 @@ describe("vision capability detection", () => {
 
   it("detects vision capability from model ID", async () => {
     const { isModelVisionCapable } = await import("@/lib/provider-models");
+    const { setOllamaLocalVisionModels } = await import("@/lib/model-vision");
 
     // Cloud providers are vision-capable
     expect(isModelVisionCapable("anthropic/claude-sonnet-4-6")).toBe(true);
@@ -647,7 +648,8 @@ describe("vision capability detection", () => {
     // Unknown provider → not vision-capable (conservative default)
     expect(isModelVisionCapable("unknown/model")).toBe(false);
 
-    // Local ollama → per-model check
+    // Local ollama → per-model check (reset cache to use hardcoded fallback)
+    setOllamaLocalVisionModels(null);
     expect(isModelVisionCapable("ollama/llama3.1:8b")).toBe(false);
     expect(isModelVisionCapable("ollama/llava")).toBe(true);
     expect(isModelVisionCapable("ollama/llama3.2-vision")).toBe(true);

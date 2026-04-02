@@ -3,6 +3,7 @@ import { getSetting } from "@/lib/settings";
 
 // Re-export vision utilities for backwards compatibility
 export { VISION_CAPABLE_PROVIDERS, isModelVisionCapable } from "@/lib/model-vision";
+import { setOllamaLocalVisionModels } from "@/lib/model-vision";
 
 let cachedResult: ProviderModels[] | null = null;
 let cachedAt: number = 0;
@@ -292,6 +293,12 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
     try {
       const ollamaModels = await fetchOllamaLocalModels(ollamaUrl);
       lastOllamaLocalModels = ollamaModels;
+
+      const visionModels = new Set(
+        ollamaModels.filter((m) => m.capabilities.vision).map((m) => m.id.replace("ollama/", ""))
+      );
+      setOllamaLocalVisionModels(visionModels);
+
       results.push({
         id: "ollama-local" as ProviderName,
         name: PROVIDERS["ollama-local"].name,
