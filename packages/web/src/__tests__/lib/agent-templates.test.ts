@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { AGENT_TEMPLATES, getTemplate, generateAgentsMd } from "@/lib/agent-templates";
+import {
+  AGENT_TEMPLATES,
+  getTemplate,
+  getTemplateList,
+  generateAgentsMd,
+} from "@/lib/agent-templates";
 
 describe("agent-templates", () => {
   it("should have a knowledge-base template", () => {
@@ -102,5 +107,64 @@ describe("generateAgentsMd", () => {
     const template = AGENT_TEMPLATES["knowledge-base"];
     const content = generateAgentsMd(template, undefined);
     expect(content).toBe(template.defaultAgentsMd);
+  });
+});
+
+describe("Odoo templates", () => {
+  it("all 6 odoo templates exist", () => {
+    const ids = [
+      "odoo-sales-analyst",
+      "odoo-inventory-scout",
+      "odoo-finance-controller",
+      "odoo-crm-assistant",
+      "odoo-procurement-agent",
+      "odoo-customer-service",
+    ];
+    for (const id of ids) {
+      expect(getTemplate(id)).toBeDefined();
+    }
+  });
+
+  it("odoo templates have requiresOdooConnection flag", () => {
+    const t = getTemplate("odoo-sales-analyst");
+    expect(t!.requiresOdooConnection).toBe(true);
+  });
+
+  it("odoo templates have odooConfig with accessLevel and requiredModels", () => {
+    const t = getTemplate("odoo-sales-analyst");
+    expect(t!.odooConfig).toBeDefined();
+    expect(t!.odooConfig!.accessLevel).toBe("read-only");
+    expect(t!.odooConfig!.requiredModels.length).toBeGreaterThan(0);
+    expect(t!.odooConfig!.requiredModels[0]).toHaveProperty("model");
+    expect(t!.odooConfig!.requiredModels[0]).toHaveProperty("operations");
+  });
+
+  it("read-only templates have only read tools", () => {
+    const t = getTemplate("odoo-sales-analyst")!;
+    expect(t.allowedTools).toContain("odoo_schema");
+    expect(t.allowedTools).toContain("odoo_read");
+    expect(t.allowedTools).not.toContain("odoo_create");
+    expect(t.allowedTools).not.toContain("odoo_write");
+  });
+
+  it("read-write templates have read and write tools", () => {
+    const t = getTemplate("odoo-crm-assistant")!;
+    expect(t.allowedTools).toContain("odoo_read");
+    expect(t.allowedTools).toContain("odoo_create");
+    expect(t.allowedTools).toContain("odoo_write");
+    expect(t.allowedTools).not.toContain("odoo_delete");
+  });
+
+  it("getTemplateList includes all odoo templates", () => {
+    const list = getTemplateList();
+    expect(list.length).toBeGreaterThanOrEqual(8); // 2 existing + 6 new
+    expect(list.some((t) => t.id === "odoo-sales-analyst")).toBe(true);
+    expect(list.some((t) => t.id === "odoo-customer-service")).toBe(true);
+  });
+
+  it("existing templates are not affected", () => {
+    expect(getTemplate("knowledge-base")).toBeDefined();
+    expect(getTemplate("custom")).toBeDefined();
+    expect(getTemplate("knowledge-base")!.requiresOdooConnection).toBeFalsy();
   });
 });
