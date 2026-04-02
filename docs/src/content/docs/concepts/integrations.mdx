@@ -62,6 +62,14 @@ Integration credentials are handled with the same rigor as provider API keys:
 - **Audit trail** — every tool invocation is logged: which tool was called, with what parameters, and whether it succeeded or failed. The result data itself is **not** logged — only the operation metadata. All audit rows are HMAC-SHA256 signed.
 - **Least privilege** — the Odoo API key inherits the permissions of the Odoo user who created it. Create a dedicated Odoo user with minimal permissions for the best security posture.
 
+### Agent Templates
+
+Templates bundle permissions, tools, and instructions into a ready-to-use agent configuration. Instead of manually selecting access levels and models, you pick a template (e.g. "Sales Analyst" or "Procurement Agent") and Pinchy sets everything up for you.
+
+Templates are only visible when at least one Odoo connection exists. Once you remove all Odoo connections, the templates disappear from the agent creation screen.
+
+For the full list of available templates and setup instructions, see [Connect Odoo — Agent Templates](/guides/connect-odoo/#agent-templates).
+
 :::note
 For a step-by-step setup guide, see [Connect Odoo](/guides/connect-odoo/).
 :::

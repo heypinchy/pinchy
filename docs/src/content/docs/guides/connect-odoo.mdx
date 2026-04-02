@@ -70,6 +70,27 @@ Open the agent's chat and try a few queries:
 
 The agent uses the Odoo tools to query your data in real time. If something doesn't work, check that the Odoo user has the right permissions for the models you're querying.
 
+## Agent Templates
+
+Pinchy includes pre-configured agent templates for common Odoo use cases. Instead of building an agent from scratch and manually assigning permissions, you can pick a template and have everything set up in seconds.
+
+The following templates are available:
+
+- **Sales Analyst** — Revenue analysis, customer rankings, order trends
+- **Inventory Scout** — Stock monitoring, slow-mover detection, fulfillment tracking
+- **Finance Controller** — Invoice tracking, payment status, margin analysis
+- **CRM & Sales Assistant** — Pipeline management, lead follow-up, customer data
+- **Procurement Agent** — Supplier comparison, price tracking, reorder suggestions
+- **Customer Service** — Order status inquiries, ticket management, response drafting
+
+Each template auto-configures the agent's permissions, tools, and system instructions. All you need to do is select which Odoo connection the agent should use.
+
+During creation, templates validate the API user's access rights against the operations the agent needs. If some operations are unavailable (e.g. the API user lacks write access), Pinchy warns you so you can adjust the Odoo user's permissions or pick a different template.
+
+:::tip
+The read-only templates — **Sales Analyst**, **Inventory Scout**, and **Finance Controller** — are safe to deploy immediately since they only read data. The read-write templates — **CRM & Sales Assistant**, **Procurement Agent**, and **Customer Service** — can create or modify records, so review their permissions before deploying them to your team.
+:::
+
 ## What's next
 
 - [Integrations](/concepts/integrations/) — how connections and permissions work under the hood
