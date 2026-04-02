@@ -155,6 +155,34 @@ const DEFAULT_MODEL_PATTERNS: Record<ProviderName, RegExp> = {
   "ollama-local": /.*/,
 };
 
+function parseParameterSize(size: string): number {
+  const match = size.match(/^([\d.]+)([BMK]?)$/i);
+  if (!match) return 0;
+  const num = parseFloat(match[1]);
+  const unit = (match[2] || "").toUpperCase();
+  if (unit === "B") return num * 1_000_000_000;
+  if (unit === "M") return num * 1_000_000;
+  if (unit === "K") return num * 1_000;
+  return num;
+}
+
+export function selectOllamaLocalDefault(models: OllamaLocalModelInfo[]): string {
+  if (models.length === 0) return "";
+
+  // Prefer models with tool support, sorted by parameter size descending
+  const withTools = models
+    .filter((m) => m.capabilities.tools)
+    .sort((a, b) => parseParameterSize(b.parameterSize) - parseParameterSize(a.parameterSize));
+
+  if (withTools.length > 0) return withTools[0].id;
+
+  // Fallback: largest completion model
+  const sorted = [...models].sort(
+    (a, b) => parseParameterSize(b.parameterSize) - parseParameterSize(a.parameterSize)
+  );
+  return sorted[0].id;
+}
+
 let lastOllamaLocalModels: OllamaLocalModelInfo[] = [];
 
 export function getOllamaLocalModels(): OllamaLocalModelInfo[] {

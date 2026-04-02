@@ -573,6 +573,57 @@ describe("getDefaultModel", () => {
   });
 });
 
+describe("selectOllamaLocalDefault", () => {
+  it("selects the largest model with tool support", async () => {
+    const { selectOllamaLocalDefault } = await import("@/lib/provider-models");
+    const models = [
+      {
+        id: "ollama/llama3:latest",
+        name: "llama3:latest (8B)",
+        parameterSize: "8B",
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+      {
+        id: "ollama/qwen2.5:32b",
+        name: "qwen2.5:32b (32B)",
+        parameterSize: "32B",
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+      {
+        id: "ollama/phi3:mini",
+        name: "phi3:mini (3.8B)",
+        parameterSize: "3.8B",
+        capabilities: { tools: false, vision: false, completion: true, thinking: false },
+      },
+    ];
+    expect(selectOllamaLocalDefault(models)).toBe("ollama/qwen2.5:32b");
+  });
+
+  it("falls back to largest completion model when no model supports tools", async () => {
+    const { selectOllamaLocalDefault } = await import("@/lib/provider-models");
+    const models = [
+      {
+        id: "ollama/phi3:mini",
+        name: "phi3:mini (3.8B)",
+        parameterSize: "3.8B",
+        capabilities: { tools: false, vision: false, completion: true, thinking: false },
+      },
+      {
+        id: "ollama/llama2:7b",
+        name: "llama2:7b (7B)",
+        parameterSize: "7B",
+        capabilities: { tools: false, vision: false, completion: true, thinking: false },
+      },
+    ];
+    expect(selectOllamaLocalDefault(models)).toBe("ollama/llama2:7b");
+  });
+
+  it("returns empty string when no models available", async () => {
+    const { selectOllamaLocalDefault } = await import("@/lib/provider-models");
+    expect(selectOllamaLocalDefault([])).toBe("");
+  });
+});
+
 describe("vision capability detection", () => {
   it("marks anthropic, openai, google as vision-capable providers", async () => {
     const { VISION_CAPABLE_PROVIDERS } = await import("@/lib/provider-models");
