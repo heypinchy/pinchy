@@ -25,9 +25,11 @@ export async function GET() {
   const providers: Record<string, { configured: boolean; hint?: string }> = {};
   for (const [name, config] of Object.entries(PROVIDERS)) {
     const value = await getSetting(config.settingsKey);
+    const providerDef = PROVIDERS[name as ProviderName];
+    const isUrlProvider = providerDef?.authType === "url";
     providers[name] = {
       configured: value !== null,
-      ...(value && isAdmin ? { hint: value.slice(-4) } : {}),
+      ...(value && isAdmin ? { hint: isUrlProvider ? value : value.slice(-4) } : {}),
     };
   }
 
@@ -75,7 +77,9 @@ export async function DELETE(request: Request) {
   if (remaining) {
     // Migrate all agents using the removed provider to the remaining provider's default model
     const allAgents = await db.query.agents.findMany();
-    const providerPrefix = `${provider}/`;
+    // Provider name to model prefix mapping
+    // ollama-local uses "ollama/" as model prefix, not "ollama-local/"
+    const providerPrefix = provider === "ollama-local" ? "ollama/" : `${provider}/`;
     for (const agent of allAgents) {
       if (agent.model?.startsWith(providerPrefix)) {
         await db
