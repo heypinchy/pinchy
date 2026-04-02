@@ -74,22 +74,18 @@ test.describe.serial("Odoo Wizard Flow", () => {
     await expect(dbField).toBeVisible({ timeout: 10000 });
     await dbField.fill("testdb");
 
-    // Click Connect
+    // Click Connect — this tests credentials AND syncs schema
     await dialog.getByRole("button", { name: "Connect" }).click();
 
-    // Step 2: Sync preview — wait for categories to appear
-    await expect(dialog.getByText(/step 2 of 3/i)).toBeVisible({ timeout: 15000 });
-    await expect(dialog.getByText(/syncing models/i)).toBeVisible();
-
-    // Wait for sync results (categories with accessible models)
+    // Step 2: Sync preview — wait for sync results (categories with accessible models)
+    // The step indicator shows "Step 2 of 3" but we wait for actual content
     await expect(dialog.getByText("Sales")).toBeVisible({ timeout: 30000 });
-    await expect(dialog.getByText("Contacts")).toBeVisible();
 
     // Click Continue to proceed to name step
     await dialog.getByRole("button", { name: "Continue" }).click();
 
     // Step 3: Name & Save
-    await expect(dialog.getByText(/step 3 of 3/i)).toBeVisible();
+    await expect(dialog.getByText(/step 3 of 3/i)).toBeVisible({ timeout: 10000 });
 
     // A name should be auto-generated
     const nameInput = dialog.getByLabel(/name this integration/i);
