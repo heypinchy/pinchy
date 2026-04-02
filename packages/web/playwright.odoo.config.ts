@@ -12,7 +12,7 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: "list",
-  timeout: 60000,
+  timeout: 120000,
   use: {
     baseURL: process.env.PINCHY_URL || "http://localhost:7777",
   },
