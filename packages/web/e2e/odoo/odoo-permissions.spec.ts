@@ -267,6 +267,12 @@ test.describe.serial("Odoo Permission Setup", () => {
     await expect(page.getByRole("checkbox", { name: /create contacts/i })).toBeChecked();
     await expect(page.getByRole("checkbox", { name: /write contacts/i })).toBeChecked();
 
+    // Dismiss the enterprise badge if it overlaps the save button
+    const enterpriseBadge = page.locator("button[title='Disable enterprise']");
+    if (await enterpriseBadge.isVisible({ timeout: 1000 }).catch(() => false)) {
+      await enterpriseBadge.click();
+    }
+
     // Save — permissions change triggers "Save & Restart"
     const saveButton = page.getByRole("button", { name: /save/i }).last();
     await saveButton.click();
