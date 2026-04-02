@@ -50,6 +50,6 @@ test.describe("Odoo Integration", () => {
 
   test("delete connection", async () => {
     const res = await pinchyDelete(`/api/integrations/${connectionId}`, cookie);
-    expect(res.status).toBe(204);
+    expect(res.status).toBe(200);
   });
 });

@@ -1,9 +1,17 @@
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
 
-// Admin credentials — set by seedSetup, used by login
+// Admin credentials — set by seedSetup, used by login and loginViaUI
 let _adminEmail = "admin@test.local";
 const _adminPassword = "test-password-123";
+
+export function getAdminEmail(): string {
+  return _adminEmail;
+}
+
+export function getAdminPassword(): string {
+  return _adminPassword;
+}
 
 /**
  * Seed the initial admin account and provider config in DB.

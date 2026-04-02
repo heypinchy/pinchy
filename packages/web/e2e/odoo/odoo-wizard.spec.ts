@@ -8,6 +8,8 @@ import {
   pinchyDelete,
   login,
   createOdooConnection,
+  getAdminEmail,
+  getAdminPassword,
 } from "./helpers";
 
 // The URL the Pinchy container uses to reach the Odoo mock inside Docker
@@ -15,8 +17,8 @@ const ODOO_INTERNAL_URL = "http://odoo-mock:8069";
 
 async function loginViaUI(page: Page) {
   await page.goto("/login");
-  await page.getByLabel(/email/i).fill("admin@pinchy.test");
-  await page.getByLabel("Password", { exact: true }).fill("testpassword");
+  await page.getByLabel(/email/i).fill(getAdminEmail());
+  await page.getByLabel("Password", { exact: true }).fill(getAdminPassword());
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).not.toHaveURL(/\/login/, { timeout: 15000 });
 }

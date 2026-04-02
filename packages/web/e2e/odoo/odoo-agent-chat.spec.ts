@@ -32,13 +32,23 @@ test.describe("Odoo Agent Chat", () => {
     const connBody = await connRes.json();
     connectionId = connBody.id;
 
-    // Get the first shared agent
+    // Get the first shared agent, or create one if none exists (fresh CI DB)
     const agentsRes = await pinchyGet("/api/agents", cookie);
     expect(agentsRes.status).toBe(200);
     const agents = await agentsRes.json();
     const sharedAgent = agents.find((a: { isPersonal: boolean }) => !a.isPersonal);
-    expect(sharedAgent).toBeTruthy();
-    agentId = sharedAgent.id;
+    if (sharedAgent) {
+      agentId = sharedAgent.id;
+    } else {
+      const createRes = await pinchyPost(
+        "/api/agents",
+        { name: "Test Agent", templateId: "custom" },
+        cookie
+      );
+      expect(createRes.status).toBe(201);
+      const created = await createRes.json();
+      agentId = created.id;
+    }
   });
 
   test("agent permissions are correctly saved and returned", async () => {
