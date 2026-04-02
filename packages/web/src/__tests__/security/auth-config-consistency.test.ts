@@ -25,6 +25,7 @@ const LEGACY_PATTERNS = [
   { pattern: /NEXTAUTH_URL/g, replacement: "BETTER_AUTH_URL" },
   { pattern: /AUTH_TRUST_HOST/g, replacement: "N/A (not needed by Better Auth)" },
   { pattern: /(?<![A-Z_])AUTH_SECRET(?![A-Z_])/g, replacement: "BETTER_AUTH_SECRET" },
+  { pattern: /BETTER_AUTH_URL/g, replacement: "N/A (configure domain via Settings → Security)" },
 ];
 
 describe("auth config consistency", () => {

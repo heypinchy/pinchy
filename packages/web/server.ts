@@ -14,6 +14,13 @@ import { logCapture } from "./src/lib/log-capture";
 
 logCapture.install();
 
+if (process.env.BETTER_AUTH_URL) {
+  console.warn(
+    "⚠ BETTER_AUTH_URL is set but no longer used. " +
+      "Go to Settings → Security to lock your domain."
+  );
+}
+
 const dev = process.env.NODE_ENV !== "production";
 const app = next({ dev });
 const handle = app.getRequestHandler();
