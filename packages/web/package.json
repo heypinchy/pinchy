@@ -17,7 +17,8 @@
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:studio": "drizzle-kit studio",
-    "reset-admin": "node --import tsx scripts/reset-admin.ts"
+    "reset-admin": "node --import tsx scripts/reset-admin.ts",
+    "domain:reset": "node --import tsx scripts/domain-reset.ts"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.12.19",
