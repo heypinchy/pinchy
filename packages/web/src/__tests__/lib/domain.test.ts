@@ -4,8 +4,13 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn(),
 }));
 
-import { getDomain } from "@/lib/domain";
+vi.mock("@/lib/setup", () => ({
+  isSetupComplete: vi.fn(),
+}));
+
+import { getDomain, isInsecureMode } from "@/lib/domain";
 import { getSetting } from "@/lib/settings";
+import { isSetupComplete } from "@/lib/setup";
 
 describe("getDomain", () => {
   beforeEach(() => {
@@ -29,5 +34,30 @@ describe("getDomain", () => {
     vi.mocked(getSetting).mockResolvedValue("pinchy.example.com:8443");
     const result = await getDomain();
     expect(result).toBe("pinchy.example.com:8443");
+  });
+});
+
+describe("isInsecureMode", () => {
+  beforeEach(() => {
+    vi.mocked(getSetting).mockReset();
+    vi.mocked(isSetupComplete).mockReset();
+  });
+
+  it("should return false when setup is not complete", async () => {
+    vi.mocked(isSetupComplete).mockResolvedValue(false);
+    vi.mocked(getSetting).mockResolvedValue(null);
+    expect(await isInsecureMode()).toBe(false);
+  });
+
+  it("should return true when setup is complete and no domain is set", async () => {
+    vi.mocked(isSetupComplete).mockResolvedValue(true);
+    vi.mocked(getSetting).mockResolvedValue(null);
+    expect(await isInsecureMode()).toBe(true);
+  });
+
+  it("should return false when setup is complete and domain is set", async () => {
+    vi.mocked(isSetupComplete).mockResolvedValue(true);
+    vi.mocked(getSetting).mockResolvedValue("pinchy.example.com");
+    expect(await isInsecureMode()).toBe(false);
   });
 });
