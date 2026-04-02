@@ -167,4 +167,72 @@ describe("Odoo templates", () => {
     expect(getTemplate("custom")).toBeDefined();
     expect(getTemplate("knowledge-base")!.requiresOdooConnection).toBeFalsy();
   });
+
+  it("all odoo templates have non-empty AGENTS.md instructions", () => {
+    const ids = [
+      "odoo-sales-analyst",
+      "odoo-inventory-scout",
+      "odoo-finance-controller",
+      "odoo-crm-assistant",
+      "odoo-procurement-agent",
+      "odoo-customer-service",
+    ];
+    for (const id of ids) {
+      const t = getTemplate(id)!;
+      expect(t.defaultAgentsMd).toBeTruthy();
+      expect(t.defaultAgentsMd!.length).toBeGreaterThan(200);
+    }
+  });
+
+  it("sales analyst AGENTS.md mentions sale.order model", () => {
+    const t = getTemplate("odoo-sales-analyst")!;
+    expect(t.defaultAgentsMd).toContain("sale.order");
+    expect(t.defaultAgentsMd).toContain("res.partner");
+  });
+
+  it("inventory scout AGENTS.md mentions stock models", () => {
+    const t = getTemplate("odoo-inventory-scout")!;
+    expect(t.defaultAgentsMd).toContain("stock.quant");
+    expect(t.defaultAgentsMd).toContain("stock.picking");
+  });
+
+  it("finance controller AGENTS.md mentions account models", () => {
+    const t = getTemplate("odoo-finance-controller")!;
+    expect(t.defaultAgentsMd).toContain("account.move");
+    expect(t.defaultAgentsMd).toContain("account.payment");
+  });
+
+  it("CRM assistant AGENTS.md mentions crm.lead and write capabilities", () => {
+    const t = getTemplate("odoo-crm-assistant")!;
+    expect(t.defaultAgentsMd).toContain("crm.lead");
+    expect(t.defaultAgentsMd).toMatch(/create|CREATE/i);
+  });
+
+  it("procurement agent AGENTS.md mentions purchase.order", () => {
+    const t = getTemplate("odoo-procurement-agent")!;
+    expect(t.defaultAgentsMd).toContain("purchase.order");
+    expect(t.defaultAgentsMd).toContain("product.supplierinfo");
+  });
+
+  it("customer service AGENTS.md mentions helpdesk.ticket", () => {
+    const t = getTemplate("odoo-customer-service")!;
+    expect(t.defaultAgentsMd).toContain("helpdesk.ticket");
+    expect(t.defaultAgentsMd).toContain("sale.order");
+  });
+
+  it("all odoo AGENTS.md contain query instructions", () => {
+    const ids = [
+      "odoo-sales-analyst",
+      "odoo-inventory-scout",
+      "odoo-finance-controller",
+      "odoo-crm-assistant",
+      "odoo-procurement-agent",
+      "odoo-customer-service",
+    ];
+    for (const id of ids) {
+      const t = getTemplate(id)!;
+      expect(t.defaultAgentsMd).toContain("odoo_schema");
+      expect(t.defaultAgentsMd).toContain("odoo_read");
+    }
+  });
 });
