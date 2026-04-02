@@ -1,6 +1,65 @@
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
 
+// Admin credentials — set by seedSetup, used by login
+let _adminEmail = "admin@test.local";
+let _adminPassword = "test-password-123";
+
+/**
+ * Seed the initial admin account and provider config in DB.
+ * Mirrors the Telegram E2E seedSetup pattern.
+ */
+export async function seedSetup(): Promise<void> {
+  const dbUrl = process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
+  const { default: postgres } = await import("postgres");
+  const sql = postgres(dbUrl);
+
+  // Check if setup already done
+  const existing = await sql`SELECT id, email FROM "user" LIMIT 1`;
+  if (existing.length > 0) {
+    _adminEmail = existing[0].email;
+    await sql.end();
+    console.log(`[odoo-setup] Using existing admin: ${_adminEmail}`);
+    return;
+  }
+
+  // Create admin via Pinchy's setup API
+  const setupRes = await fetch(`${PINCHY_URL}/api/setup`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Origin: PINCHY_URL },
+    body: JSON.stringify({
+      name: "Test Admin",
+      email: _adminEmail,
+      password: _adminPassword,
+    }),
+  });
+
+  if (!setupRes.ok) {
+    const text = await setupRes.text();
+    await sql.end();
+    throw new Error(`Setup failed: ${setupRes.status} ${text}`);
+  }
+
+  await new Promise((r) => setTimeout(r, 2000));
+
+  // Seed provider config (needed for agent creation)
+  const testApiKey = process.env.TEST_ANTHROPIC_API_KEY || "sk-ant-fake-key-for-e2e-testing";
+  await sql`
+    INSERT INTO settings (key, value, encrypted)
+    VALUES ('default_provider', 'anthropic', false)
+    ON CONFLICT (key) DO UPDATE SET value = 'anthropic'
+  `;
+  await sql`
+    INSERT INTO settings (key, value, encrypted)
+    VALUES ('anthropic_api_key', ${testApiKey}, false)
+    ON CONFLICT (key) DO UPDATE SET value = ${testApiKey}
+  `;
+
+  await sql.end();
+  await new Promise((r) => setTimeout(r, 3000));
+  console.log(`[odoo-setup] Admin created: ${_adminEmail}`);
+}
+
 export async function resetOdooMock(): Promise<void> {
   const res = await fetch(`${MOCK_ODOO_URL}/control/reset`, {
     method: "POST",
@@ -54,10 +113,7 @@ export async function waitForPinchy(timeout = 30000): Promise<void> {
   throw new Error(`Pinchy not ready after ${timeout}ms`);
 }
 
-export async function login(
-  email = "admin@pinchy.test",
-  password = "testpassword"
-): Promise<string> {
+export async function login(email = _adminEmail, password = _adminPassword): Promise<string> {
   const res = await fetch(`${PINCHY_URL}/api/auth/sign-in/email`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

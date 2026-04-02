@@ -18,6 +18,12 @@ install_plugin_deps() {
     fi
 }
 
+# Fix plugin ownership — bind-mounted plugin files from the host may have
+# a different UID than root, causing OpenClaw to block them as "suspicious".
+if [ -d /root/.openclaw/extensions ]; then
+    chown -R root:root /root/.openclaw/extensions 2>/dev/null || true
+fi
+
 # Ensure gateway auth token exists before starting (prevents crash loop
 # when no token is configured yet, e.g. on first startup before setup wizard)
 node /ensure-gateway-token.js
