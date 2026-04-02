@@ -16,23 +16,42 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TemplateSelector } from "@/components/template-selector";
 import { DirectoryPicker } from "@/components/directory-picker";
 import { DocsLink } from "@/components/docs-link";
-import { ArrowLeft, ExternalLink, Info } from "lucide-react";
+import { ArrowLeft, ExternalLink, Info, AlertTriangle } from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
+import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
+import { getTemplate, type OdooTemplateConfig } from "@/lib/agent-templates";
+import { autoSelectConnection, type OdooConnection } from "@/lib/odoo-connection-selection";
 
 interface Template {
   id: string;
   name: string;
   description: string;
   requiresDirectories: boolean;
+  requiresOdooConnection: boolean;
+  odooAccessLevel?: string;
   defaultTagline: string | null;
 }
 
 interface Directory {
   path: string;
   name: string;
+}
+
+interface ValidationResult {
+  valid: boolean;
+  warnings: string[];
+  availableModels: Array<{ model: string; operations: string[] }>;
 }
 
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
@@ -57,6 +76,12 @@ export function NewAgentForm() {
   const [submitting, setSubmitting] = useState(false);
   const { triggerRestart } = useRestart();
 
+  // Odoo connection state
+  const [odooConnections, setOdooConnections] = useState<OdooConnection[]>([]);
+  const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
+  const [validationResult, setValidationResult] = useState<ValidationResult | null>(null);
+  const [loadingConnections, setLoadingConnections] = useState(false);
+
   const form = useForm<AgentFormValues>({
     resolver: zodResolver(agentFormSchema),
     defaultValues: { name: "", tagline: "" },
@@ -76,6 +101,7 @@ export function NewAgentForm() {
 
   const selectedTemplateObj = templates.find((t) => t.id === selectedTemplate);
   const requiresDirectories = selectedTemplateObj?.requiresDirectories ?? false;
+  const requiresOdooConnection = selectedTemplateObj?.requiresOdooConnection ?? false;
 
   // Fetch directories when a template requiring them is selected
   useEffect(() => {
@@ -92,10 +118,71 @@ export function NewAgentForm() {
     fetchDirectories();
   }, [requiresDirectories]);
 
+  // Fetch Odoo connections when an Odoo template is selected
+  useEffect(() => {
+    if (!requiresOdooConnection) {
+      setOdooConnections([]);
+      setSelectedConnectionId(null);
+      setValidationResult(null);
+      return;
+    }
+
+    async function fetchConnections() {
+      setLoadingConnections(true);
+      try {
+        const res = await fetch("/api/integrations");
+        if (res.ok) {
+          const data = await res.json();
+          const odoo = (data as OdooConnection[]).filter((c: OdooConnection) => c.type === "odoo");
+          setOdooConnections(odoo);
+
+          // Auto-select if only one connection
+          const autoSelected = autoSelectConnection(odoo);
+          if (autoSelected) {
+            setSelectedConnectionId(autoSelected);
+          }
+        }
+      } finally {
+        setLoadingConnections(false);
+      }
+    }
+
+    fetchConnections();
+  }, [requiresOdooConnection]);
+
+  // Validate template against selected connection
+  useEffect(() => {
+    if (!selectedConnectionId || !selectedTemplate) {
+      setValidationResult(null);
+      return;
+    }
+
+    const connection = odooConnections.find((c) => c.id === selectedConnectionId);
+    if (!connection?.data?.models) {
+      setValidationResult(null);
+      return;
+    }
+
+    const templateDef = getTemplate(selectedTemplate);
+    if (!templateDef?.odooConfig) {
+      setValidationResult(null);
+      return;
+    }
+
+    const result = validateOdooTemplate(
+      templateDef.odooConfig as OdooTemplateConfig,
+      connection.data.models
+    );
+    setValidationResult(result);
+  }, [selectedConnectionId, selectedTemplate, odooConnections]);
+
   // Reset directory selection and pre-fill tagline when switching templates
   useEffect(() => {
     setSelectedPaths([]);
     setDirectories([]);
+    setOdooConnections([]);
+    setSelectedConnectionId(null);
+    setValidationResult(null);
     if (selectedTemplateObj) {
       form.setValue("tagline", selectedTemplateObj.defaultTagline || "");
     }
@@ -114,6 +201,10 @@ export function NewAgentForm() {
 
       if (requiresDirectories && selectedPaths.length > 0) {
         body.pluginConfig = { allowed_paths: selectedPaths };
+      }
+
+      if (requiresOdooConnection && selectedConnectionId) {
+        body.connectionId = selectedConnectionId;
       }
 
       const res = await fetch("/api/agents", {
@@ -139,7 +230,10 @@ export function NewAgentForm() {
     }
   }
 
-  const createDisabled = submitting || (requiresDirectories && selectedPaths.length === 0);
+  const createDisabled =
+    submitting ||
+    (requiresDirectories && selectedPaths.length === 0) ||
+    (requiresOdooConnection && !selectedConnectionId);
 
   return (
     <div className="p-4 md:p-8 max-w-lg">
@@ -197,6 +291,52 @@ export function NewAgentForm() {
                       </FormItem>
                     )}
                   />
+
+                  {requiresOdooConnection && (
+                    <div className="space-y-3">
+                      <div>
+                        <label className="text-sm font-medium">Connection</label>
+                        {loadingConnections ? (
+                          <p className="text-sm text-muted-foreground mt-1">
+                            Loading connections...
+                          </p>
+                        ) : odooConnections.length === 0 ? (
+                          <p className="text-sm text-muted-foreground mt-1">
+                            No Odoo connections available.
+                          </p>
+                        ) : (
+                          <Select
+                            value={selectedConnectionId ?? undefined}
+                            onValueChange={setSelectedConnectionId}
+                          >
+                            <SelectTrigger className="mt-1">
+                              <SelectValue placeholder="Select a connection" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {odooConnections.map((conn) => (
+                                <SelectItem key={conn.id} value={conn.id}>
+                                  {conn.name}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        )}
+                      </div>
+
+                      {validationResult && validationResult.warnings.length > 0 && (
+                        <Alert>
+                          <AlertTriangle className="h-4 w-4" />
+                          <AlertDescription>
+                            <ul className="list-disc pl-4 space-y-1">
+                              {validationResult.warnings.map((warning) => (
+                                <li key={warning}>{warning}</li>
+                              ))}
+                            </ul>
+                          </AlertDescription>
+                        </Alert>
+                      )}
+                    </div>
+                  )}
 
                   {requiresDirectories && (
                     <div className="space-y-3">
