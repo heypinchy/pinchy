@@ -1,3 +1,183 @@
+"use client";
+
+import { useState, useEffect, useCallback } from "react";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { ShieldCheck, ShieldAlert } from "lucide-react";
+import { toast } from "sonner";
+
+interface DomainStatus {
+  domain: string | null;
+  currentHost: string | null;
+  isHttps: boolean;
+}
+
 export function SettingsSecurity() {
-  return <div>Domain &amp; HTTPS settings coming soon</div>;
+  const [status, setStatus] = useState<DomainStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [locking, setLocking] = useState(false);
+  const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
+  const [removing, setRemoving] = useState(false);
+
+  const fetchStatus = useCallback(async () => {
+    try {
+      const res = await fetch("/api/settings/domain");
+      if (res.ok) {
+        setStatus(await res.json());
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchStatus();
+  }, [fetchStatus]);
+
+  const handleLock = async () => {
+    setLocking(true);
+    try {
+      const res = await fetch("/api/settings/domain", { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setStatus((prev) => (prev ? { ...prev, domain: data.domain } : prev));
+        toast.success(`Domain locked to ${data.domain}`);
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to lock domain");
+      }
+    } catch {
+      toast.error("Failed to lock domain");
+    } finally {
+      setLocking(false);
+    }
+  };
+
+  const handleRemove = async () => {
+    setRemoving(true);
+    try {
+      const res = await fetch("/api/settings/domain", { method: "DELETE" });
+      if (res.ok) {
+        setStatus((prev) => (prev ? { ...prev, domain: null } : prev));
+        setShowRemoveConfirm(false);
+        toast.success("Domain lock removed");
+      } else {
+        const data = await res.json();
+        toast.error(data.error || "Failed to remove domain lock");
+      }
+    } catch {
+      toast.error("Failed to remove domain lock");
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  if (loading) return null;
+  if (!status) return null;
+
+  // State C: Domain is locked
+  if (status.domain) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ShieldCheck className="size-5 text-green-600" />
+            Domain & HTTPS
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Locked to <strong>{status.domain}</strong>. Secure cookies, HSTS, and origin restriction
+            are active.
+          </p>
+          {!showRemoveConfirm ? (
+            <Button variant="outline" size="sm" onClick={() => setShowRemoveConfirm(true)}>
+              Remove domain lock
+            </Button>
+          ) : (
+            <div className="space-y-3 rounded-md border p-4">
+              <p className="text-sm">
+                Removing the domain lock will disable secure cookies, HSTS, and origin restriction.
+                Pinchy will be accessible from any host over HTTP.
+              </p>
+              <p className="text-sm text-muted-foreground">
+                To change your domain, remove the current lock, then access Pinchy via your new
+                domain and lock it again.
+              </p>
+              <div className="flex gap-2">
+                <Button variant="destructive" size="sm" onClick={handleRemove} disabled={removing}>
+                  {removing ? "Removing\u2026" : "Yes, remove domain lock"}
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setShowRemoveConfirm(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // State B: Not locked, but on HTTPS + domain
+  if (status.isHttps && status.currentHost) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ShieldAlert className="size-5 text-amber-500" />
+            Domain & HTTPS
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm">
+            You&apos;re accessing Pinchy via <strong>{status.currentHost}</strong> over HTTPS.
+          </p>
+          <p className="text-sm text-muted-foreground">Locking this domain will:</p>
+          <ul className="list-disc pl-5 text-sm text-muted-foreground space-y-1">
+            <li>Restrict access to this domain only</li>
+            <li>Enable secure cookies and HSTS</li>
+            <li>Reject login attempts from other origins</li>
+          </ul>
+          <Button onClick={handleLock} disabled={locking}>
+            {locking ? "Locking\u2026" : `Lock ${status.currentHost}`}
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  // State A: Not locked, not on HTTPS
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2">
+          <ShieldAlert className="size-5 text-amber-500" />
+          Domain & HTTPS
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <p className="text-sm">Your instance is not secured with HTTPS. To lock your domain:</p>
+        <ol className="list-decimal pl-5 text-sm text-muted-foreground space-y-1">
+          <li>Set up a reverse proxy with HTTPS (e.g. Caddy)</li>
+          <li>Point your domain to this server</li>
+          <li>Open Pinchy via your domain over HTTPS</li>
+          <li>Come back to this page to confirm</li>
+        </ol>
+        <div className="flex items-center gap-3">
+          <Button disabled aria-label="Lock this domain">
+            Lock this domain
+          </Button>
+          <a
+            href="https://docs.heypinchy.com/guides/vps-deployment/#set-up-https-with-caddy"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm text-primary underline"
+          >
+            Read the setup guide →
+          </a>
+        </div>
+      </CardContent>
+    </Card>
+  );
 }
