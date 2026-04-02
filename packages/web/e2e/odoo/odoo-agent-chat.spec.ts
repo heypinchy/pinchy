@@ -1,5 +1,6 @@
 import { test, expect } from "@playwright/test";
 import {
+  seedSetup,
   waitForPinchy,
   waitForOdooMock,
   resetOdooMock,
@@ -19,6 +20,7 @@ test.describe("Odoo Agent Chat", () => {
   let agentId: string;
 
   test.beforeAll(async () => {
+    await seedSetup();
     await waitForPinchy();
     await waitForOdooMock();
     await resetOdooMock();

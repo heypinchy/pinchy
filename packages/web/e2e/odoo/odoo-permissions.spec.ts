@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
+  seedSetup,
   waitForPinchy,
   waitForOdooMock,
   resetOdooMock,
@@ -57,6 +58,7 @@ test.describe.serial("Odoo Permission Setup", () => {
   let agentId: string;
 
   test.beforeAll(async () => {
+    await seedSetup();
     await waitForPinchy();
     await waitForOdooMock();
     await resetOdooMock();

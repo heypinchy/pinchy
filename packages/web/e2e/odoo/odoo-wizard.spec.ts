@@ -1,5 +1,6 @@
 import { test, expect, type Page } from "@playwright/test";
 import {
+  seedSetup,
   waitForPinchy,
   waitForOdooMock,
   resetOdooMock,
@@ -33,6 +34,7 @@ test.describe.serial("Odoo Wizard Flow", () => {
   let cookie: string;
 
   test.beforeAll(async () => {
+    await seedSetup();
     await waitForPinchy();
     await waitForOdooMock();
     await resetOdooMock();
