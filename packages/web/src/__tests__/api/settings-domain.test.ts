@@ -75,6 +75,18 @@ describe("POST /api/settings/domain", () => {
     expect(response.status).toBe(400);
   });
 
+  it("should reject when hostname cannot be determined", async () => {
+    const response = await POST(
+      makeRequest("POST", {
+        "x-forwarded-proto": "https",
+      })
+    );
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toMatch(/hostname/i);
+    expect(mockSetDomainAndRefreshCache).not.toHaveBeenCalled();
+  });
+
   it("should save domain and return success when valid HTTPS request", async () => {
     mockGetSetting.mockResolvedValueOnce(null);
 

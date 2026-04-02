@@ -17,8 +17,16 @@ export async function POST(req: Request) {
   }
 
   const domain = req.headers.get("x-forwarded-host") || req.headers.get("host");
+
+  if (!domain) {
+    return NextResponse.json(
+      { error: "Could not determine hostname from request." },
+      { status: 400 }
+    );
+  }
+
   const previousDomain = await getSetting("domain");
-  await setDomainAndRefreshCache(domain!);
+  await setDomainAndRefreshCache(domain);
 
   appendAuditLog({
     actorType: "user",

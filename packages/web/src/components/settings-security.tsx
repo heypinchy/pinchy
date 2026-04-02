@@ -41,7 +41,9 @@ export function SettingsSecurity() {
       if (res.ok) {
         const data = await res.json();
         setStatus((prev) => (prev ? { ...prev, domain: data.domain } : prev));
-        toast.success(`Domain locked to ${data.domain}`);
+        toast.success(
+          `Domain locked to ${data.domain}. Restart the container to apply secure cookies.`
+        );
       } else {
         const data = await res.json();
         toast.error(data.error || "Failed to lock domain");
@@ -87,8 +89,8 @@ export function SettingsSecurity() {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Locked to <strong>{status.domain}</strong>. Secure cookies, HSTS, and origin restriction
-            are active.
+            Locked to <strong>{status.domain}</strong>. Secure cookies and origin restriction are
+            active. Configure HSTS in your reverse proxy.
           </p>
           {!showRemoveConfirm ? (
             <Button variant="outline" size="sm" onClick={() => setShowRemoveConfirm(true)}>
@@ -136,7 +138,7 @@ export function SettingsSecurity() {
           <p className="text-sm text-muted-foreground">Locking this domain will:</p>
           <ul className="list-disc pl-5 text-sm text-muted-foreground space-y-1">
             <li>Restrict access to this domain only</li>
-            <li>Enable secure cookies and HSTS</li>
+            <li>Enable secure cookies</li>
             <li>Reject login attempts from other origins</li>
           </ul>
           <Button onClick={handleLock} disabled={locking}>
