@@ -39,7 +39,7 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
     { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
   ],
-  ollama: [
+  "ollama-cloud": [
     { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "Gemini 3 Flash Preview" },
     { id: "ollama-cloud/kimi-k2.5:cloud", name: "Kimi K2.5" },
     { id: "ollama-cloud/mistral-large-3:675b-cloud", name: "Mistral Large 3 675B" },
@@ -90,7 +90,7 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
           name: m.displayName,
         })),
   },
-  ollama: {
+  "ollama-cloud": {
     url: () => "https://ollama.com/v1/models",
     headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}` }),
     transform: (data) => {
@@ -133,7 +133,7 @@ const DEFAULT_MODEL_PATTERNS: Record<ProviderName, RegExp> = {
   anthropic: /haiku/,
   openai: /gpt-.*-mini/,
   google: /gemini-.*-flash/,
-  ollama: /flash.*cloud/,
+  "ollama-cloud": /flash.*cloud/,
 };
 
 const PREVIEW_PATTERN = /preview/i;

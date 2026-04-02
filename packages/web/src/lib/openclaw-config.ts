@@ -215,7 +215,7 @@ export async function regenerateOpenClawConfig() {
 
   // Add Ollama cloud provider config when configured.
   // Must match OpenClaw's expected format exactly: apiKey + api mode + explicit models.
-  const ollamaKey = await getSetting(PROVIDERS.ollama.settingsKey);
+  const ollamaKey = await getSetting(PROVIDERS["ollama-cloud"].settingsKey);
   if (ollamaKey) {
     (config as Record<string, unknown>).models = {
       providers: {

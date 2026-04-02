@@ -79,7 +79,7 @@ describe("validateProviderKey", () => {
 
   it("should return valid for valid Ollama key", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 200 }));
-    const result = await validateProviderKey("ollama", "sk-ollama-valid");
+    const result = await validateProviderKey("ollama-cloud", "sk-ollama-valid");
     expect(result).toEqual({ valid: true });
     expect(fetch).toHaveBeenCalledWith(
       "https://ollama.com/v1/models",
@@ -93,7 +93,7 @@ describe("validateProviderKey", () => {
 
   it("should return invalid_key for invalid Ollama key", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 401 }));
-    const result = await validateProviderKey("ollama", "sk-ollama-invalid");
+    const result = await validateProviderKey("ollama-cloud", "sk-ollama-invalid");
     expect(result).toEqual({ valid: false, error: "invalid_key" });
   });
 
@@ -114,13 +114,15 @@ describe("PROVIDERS", () => {
     expect(PROVIDERS.anthropic.defaultModel).toBe("anthropic/claude-haiku-4-5-20251001");
     expect(PROVIDERS.openai.defaultModel).toBe("openai/gpt-4o-mini");
     expect(PROVIDERS.google.defaultModel).toBe("google/gemini-2.5-flash");
-    expect(PROVIDERS.ollama.defaultModel).toBe("ollama-cloud/gemini-3-flash-preview:cloud");
+    expect(PROVIDERS["ollama-cloud"].defaultModel).toBe(
+      "ollama-cloud/gemini-3-flash-preview:cloud"
+    );
   });
 
   it("should have settings keys for all providers", () => {
     expect(PROVIDERS.anthropic.settingsKey).toBe("anthropic_api_key");
     expect(PROVIDERS.openai.settingsKey).toBe("openai_api_key");
     expect(PROVIDERS.google.settingsKey).toBe("google_api_key");
-    expect(PROVIDERS.ollama.settingsKey).toBe("ollama_api_key");
+    expect(PROVIDERS["ollama-cloud"].settingsKey).toBe("ollama_cloud_api_key");
   });
 });

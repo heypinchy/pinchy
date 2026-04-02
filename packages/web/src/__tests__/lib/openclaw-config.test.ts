@@ -518,9 +518,9 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
-  it("should include ollama-cloud provider config when ollama_api_key is set", async () => {
+  it("should include ollama-cloud provider config when ollama_cloud_api_key is set", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
-      if (key === "ollama_api_key") return "sk-ollama-test";
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
       return null;
     });
 
@@ -538,7 +538,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama-cloud"].models.length).toBeGreaterThan(0);
   });
 
-  it("should not include models block when ollama_api_key is not set", async () => {
+  it("should not include models block when ollama_cloud_api_key is not set", async () => {
     mockedGetSetting.mockResolvedValue(null);
 
     await regenerateOpenClawConfig();

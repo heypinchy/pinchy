@@ -23,10 +23,10 @@ vi.mock("@/lib/providers", () => ({
       defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
-    ollama: {
-      name: "Ollama",
-      settingsKey: "ollama_api_key",
-      envVar: "OLLAMA_API_KEY",
+    "ollama-cloud": {
+      name: "Ollama Cloud",
+      settingsKey: "ollama_cloud_api_key",
+      envVar: "OLLAMA_CLOUD_API_KEY",
       defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
       placeholder: "sk-...",
     },
@@ -228,7 +228,7 @@ describe("fetchProviderModels", () => {
 
   it("fetches and transforms Ollama models from OpenAI-compatible endpoint", async () => {
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
-      if (key === "ollama_api_key") return "sk-ollama-test";
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
       return null;
     });
 
@@ -246,7 +246,7 @@ describe("fetchProviderModels", () => {
     );
 
     const result = await fetchProviderModels();
-    const ollama = result.find((p) => p.id === "ollama");
+    const ollama = result.find((p) => p.id === "ollama-cloud");
     expect(ollama).toBeDefined();
     expect(ollama!.models).toEqual([
       { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "gemini-3-flash-preview" },
@@ -351,7 +351,9 @@ describe("selectDefaultModel", () => {
       { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "Gemini 3 Flash Preview" },
       { id: "ollama-cloud/qwen3.5:397b-cloud", name: "Qwen 3.5 397B" },
     ];
-    expect(selectDefaultModel("ollama", models)).toBe("ollama-cloud/gemini-3-flash-preview:cloud");
+    expect(selectDefaultModel("ollama-cloud", models)).toBe(
+      "ollama-cloud/gemini-3-flash-preview:cloud"
+    );
   });
 
   it("prefers stable versions over preview versions", async () => {
