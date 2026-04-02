@@ -12,6 +12,7 @@ import { SettingsProfile } from "@/components/settings-profile";
 import { SettingsGroups } from "@/components/settings-groups";
 import { SettingsLicense } from "@/components/settings-license";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
+import { SettingsSecurity } from "@/components/settings-security";
 
 interface ProviderStatus {
   defaultProvider: string | null;
@@ -121,6 +122,7 @@ export function SettingsPageContent({
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <div className="overflow-x-auto">
             <TabsList>
+              {isAdmin && <TabsTrigger value="security">Security</TabsTrigger>}
               <TabsTrigger value="context">Context {contextDirty && <DirtyDot />}</TabsTrigger>
               <TabsTrigger value="profile">Profile {profileDirty && <DirtyDot />}</TabsTrigger>
               <TabsTrigger value="telegram">Telegram</TabsTrigger>
@@ -132,6 +134,12 @@ export function SettingsPageContent({
               {isAdmin && <TabsTrigger value="license">License</TabsTrigger>}
             </TabsList>
           </div>
+
+          {isAdmin && (
+            <TabsContent value="security">
+              <SettingsSecurity />
+            </TabsContent>
+          )}
 
           <TabsContent value="context" keepMounted>
             <SettingsContext

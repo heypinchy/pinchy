@@ -4,6 +4,7 @@ import { useCallback } from "react";
 import { useSearchParams, usePathname, useRouter } from "next/navigation";
 
 export const SETTINGS_TABS = [
+  "security",
   "context",
   "profile",
   "telegram",
