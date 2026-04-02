@@ -3,7 +3,7 @@ const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
 
 // Admin credentials — set by seedSetup, used by login
 let _adminEmail = "admin@test.local";
-let _adminPassword = "test-password-123";
+const _adminPassword = "test-password-123";
 
 /**
  * Seed the initial admin account and provider config in DB.
@@ -116,7 +116,10 @@ export async function waitForPinchy(timeout = 30000): Promise<void> {
 export async function login(email = _adminEmail, password = _adminPassword): Promise<string> {
   const res = await fetch(`${PINCHY_URL}/api/auth/sign-in/email`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Origin: PINCHY_URL,
+    },
     body: JSON.stringify({ email, password }),
     redirect: "manual",
   });
