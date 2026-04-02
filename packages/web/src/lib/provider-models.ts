@@ -18,6 +18,18 @@ export interface ModelInfo {
   name: string;
 }
 
+export interface OllamaModelCapabilities {
+  vision: boolean;
+  tools: boolean;
+  completion: boolean;
+  thinking: boolean;
+}
+
+export interface OllamaLocalModelInfo extends ModelInfo {
+  parameterSize: string;
+  capabilities: OllamaModelCapabilities;
+}
+
 export interface ProviderModels {
   id: ProviderName;
   name: string;
@@ -45,6 +57,7 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "ollama-cloud/mistral-large-3:675b-cloud", name: "Mistral Large 3 675B" },
     { id: "ollama-cloud/qwen3.5:397b-cloud", name: "Qwen 3.5 397B" },
   ],
+  "ollama-local": [],
 };
 
 interface ProviderFetchConfig {
@@ -110,6 +123,11 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
         .sort((a, b) => a.name.localeCompare(b.name));
     },
   },
+  "ollama-local": {
+    url: () => "",
+    headers: () => ({}),
+    transform: () => [],
+  },
 };
 
 async function fetchModelsForProvider(
@@ -134,7 +152,57 @@ const DEFAULT_MODEL_PATTERNS: Record<ProviderName, RegExp> = {
   openai: /gpt-.*-mini/,
   google: /gemini-.*-flash/,
   "ollama-cloud": /flash.*cloud/,
+  "ollama-local": /.*/,
 };
+
+let lastOllamaLocalModels: OllamaLocalModelInfo[] = [];
+
+export function getOllamaLocalModels(): OllamaLocalModelInfo[] {
+  return lastOllamaLocalModels;
+}
+
+async function fetchOllamaLocalModels(baseUrl: string): Promise<OllamaLocalModelInfo[]> {
+  const url = baseUrl.replace(/\/$/, "");
+  const tagsResponse = await fetch(`${url}/api/tags`);
+  if (!tagsResponse.ok) return [];
+
+  const tagsData = await tagsResponse.json();
+  const rawModels = tagsData.models as { name: string; details?: { parameter_size?: string } }[];
+
+  const models: OllamaLocalModelInfo[] = [];
+  for (const model of rawModels) {
+    const showResponse = await fetch(`${url}/api/show`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: model.name }),
+    });
+
+    if (!showResponse.ok) continue;
+
+    const showData = await showResponse.json();
+    const capabilities: string[] = showData.capabilities || [];
+
+    // Skip embedding-only models (no "completion" capability)
+    if (!capabilities.includes("completion")) continue;
+
+    const paramSize = showData.details?.parameter_size || model.details?.parameter_size || "";
+    const displayName = paramSize ? `${model.name} (${paramSize})` : model.name;
+
+    models.push({
+      id: `ollama/${model.name}`,
+      name: displayName,
+      parameterSize: paramSize,
+      capabilities: {
+        vision: capabilities.includes("vision"),
+        tools: capabilities.includes("tools"),
+        completion: capabilities.includes("completion"),
+        thinking: capabilities.includes("thinking"),
+      },
+    });
+  }
+
+  return models;
+}
 
 const PREVIEW_PATTERN = /preview/i;
 
@@ -170,6 +238,9 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
 
   for (const [providerName, providerConfig] of Object.entries(PROVIDERS)) {
     const provider = providerName as ProviderName;
+
+    if (provider === "ollama-local") continue;
+
     const apiKey = await getSetting(providerConfig.settingsKey);
 
     if (!apiKey) {
@@ -184,6 +255,25 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
         id: provider,
         name: providerConfig.name,
         models: FALLBACK_MODELS[provider],
+      });
+    }
+  }
+
+  const ollamaUrl = await getSetting(PROVIDERS["ollama-local"].settingsKey);
+  if (ollamaUrl) {
+    try {
+      const ollamaModels = await fetchOllamaLocalModels(ollamaUrl);
+      lastOllamaLocalModels = ollamaModels;
+      results.push({
+        id: "ollama-local" as ProviderName,
+        name: PROVIDERS["ollama-local"].name,
+        models: ollamaModels,
+      });
+    } catch {
+      results.push({
+        id: "ollama-local" as ProviderName,
+        name: PROVIDERS["ollama-local"].name,
+        models: [],
       });
     }
   }

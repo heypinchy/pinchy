@@ -91,6 +91,14 @@ vi.mock("@/lib/providers", () => ({
       defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
       placeholder: "sk-...",
     },
+    "ollama-local": {
+      name: "Ollama (Local)",
+      authType: "url",
+      settingsKey: "ollama_local_url",
+      envVar: "",
+      defaultModel: "",
+      placeholder: "http://host.docker.internal:11434",
+    },
   },
 }));
 

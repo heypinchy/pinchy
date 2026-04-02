@@ -30,6 +30,14 @@ vi.mock("@/lib/providers", () => ({
       defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
       placeholder: "sk-...",
     },
+    "ollama-local": {
+      name: "Ollama (Local)",
+      authType: "url",
+      settingsKey: "ollama_local_url",
+      envVar: "",
+      defaultModel: "",
+      placeholder: "http://host.docker.internal:11434",
+    },
   },
 }));
 
@@ -39,7 +47,7 @@ vi.mock("@/lib/settings", () => ({
 
 global.fetch = vi.fn();
 
-import { fetchProviderModels, resetCache } from "@/lib/provider-models";
+import { fetchProviderModels, resetCache, getOllamaLocalModels } from "@/lib/provider-models";
 import { getSetting } from "@/lib/settings";
 
 describe("fetchProviderModels", () => {
@@ -292,6 +300,153 @@ describe("fetchProviderModels", () => {
     await fetchProviderModels();
 
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches local Ollama models via /api/tags and /api/show", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      return null;
+    });
+
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(
+          JSON.stringify({
+            models: [
+              { name: "llama3:latest", details: { parameter_size: "8B" } },
+              { name: "mistral:7b", details: { parameter_size: "7B" } },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      if (urlStr.endsWith("/api/show")) {
+        return new Response(
+          JSON.stringify({
+            capabilities: ["completion", "tools"],
+            details: { parameter_size: "8B" },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+
+    const result = await fetchProviderModels();
+    const ollamaLocal = result.find((p) => p.id === "ollama-local");
+    expect(ollamaLocal).toBeDefined();
+    expect(ollamaLocal!.name).toBe("Ollama (Local)");
+    expect(ollamaLocal!.models).toHaveLength(2);
+    expect(ollamaLocal!.models[0]).toEqual(expect.objectContaining({ id: "ollama/llama3:latest" }));
+    expect(ollamaLocal!.models[1]).toEqual(expect.objectContaining({ id: "ollama/mistral:7b" }));
+  });
+
+  it("filters out embedding-only models from local Ollama", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      return null;
+    });
+
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(
+          JSON.stringify({
+            models: [
+              { name: "llama3:latest", details: { parameter_size: "8B" } },
+              { name: "nomic-embed-text:latest", details: { parameter_size: "137M" } },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      if (urlStr.endsWith("/api/show")) {
+        const body = JSON.parse((init as RequestInit)?.body as string);
+        if (body.name === "nomic-embed-text:latest") {
+          return new Response(
+            JSON.stringify({
+              capabilities: ["embedding"],
+              details: { parameter_size: "137M" },
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            capabilities: ["completion", "tools"],
+            details: { parameter_size: "8B" },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+
+    const result = await fetchProviderModels();
+    const ollamaLocal = result.find((p) => p.id === "ollama-local");
+    expect(ollamaLocal).toBeDefined();
+    const modelIds = ollamaLocal!.models.map((m) => m.id);
+    expect(modelIds).toContain("ollama/llama3:latest");
+    expect(modelIds).not.toContain("ollama/nomic-embed-text:latest");
+  });
+
+  it("returns empty models when local Ollama is unreachable", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      return null;
+    });
+
+    vi.mocked(fetch).mockRejectedValue(new Error("ECONNREFUSED"));
+
+    const result = await fetchProviderModels();
+    const ollamaLocal = result.find((p) => p.id === "ollama-local");
+    expect(ollamaLocal).toBeDefined();
+    expect(ollamaLocal!.models).toEqual([]);
+  });
+
+  it("does not include ollama-local when URL is not configured", async () => {
+    vi.mocked(getSetting).mockResolvedValue(null);
+
+    const result = await fetchProviderModels();
+    const ollamaLocal = result.find((p) => p.id === "ollama-local");
+    expect(ollamaLocal).toBeUndefined();
+  });
+
+  it("populates getOllamaLocalModels after fetching", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      return null;
+    });
+
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(
+          JSON.stringify({
+            models: [{ name: "llama3:latest", details: { parameter_size: "8B" } }],
+          }),
+          { status: 200 }
+        );
+      }
+      if (urlStr.endsWith("/api/show")) {
+        return new Response(
+          JSON.stringify({
+            capabilities: ["completion", "vision"],
+            details: { parameter_size: "8B" },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+
+    await fetchProviderModels();
+    const models = getOllamaLocalModels();
+    expect(models).toHaveLength(1);
+    expect(models[0].capabilities.vision).toBe(true);
+    expect(models[0].capabilities.completion).toBe(true);
+    expect(models[0].parameterSize).toBe("8B");
   });
 
   it("resetCache() causes next call to fetch fresh data", async () => {
