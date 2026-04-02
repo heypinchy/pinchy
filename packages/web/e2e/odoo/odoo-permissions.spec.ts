@@ -104,7 +104,7 @@ test.describe.serial("Odoo Permission Setup", () => {
     const odooSection = page
       .locator("section", { has: page.getByRole("heading", { name: "Odoo" }) })
       .first();
-    await expect(odooSection.getByText("Connection")).toBeVisible();
+    await expect(odooSection.locator("label", { hasText: "Connection" })).toBeVisible();
     await expect(page.getByText("Select a connection...")).toBeVisible();
   });
 

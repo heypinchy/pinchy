@@ -428,7 +428,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                     <FormItem>
                       <FormLabel>Email</FormLabel>
                       <FormControl>
-                        <Input type="email" placeholder="admin@example.com" {...field} />
+                        <Input placeholder="admin@example.com" {...field} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
