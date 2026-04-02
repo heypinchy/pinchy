@@ -11,12 +11,15 @@ vi.mock("@/lib/api-auth", () => ({
 }));
 
 const mockGetSetting = vi.fn();
-const mockSetSetting = vi.fn().mockResolvedValue(undefined);
-const mockDeleteSetting = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/settings", () => ({
   getSetting: (...args: unknown[]) => mockGetSetting(...args),
-  setSetting: (...args: unknown[]) => mockSetSetting(...args),
-  deleteSetting: (...args: unknown[]) => mockDeleteSetting(...args),
+}));
+
+const mockSetDomainAndRefreshCache = vi.fn().mockResolvedValue(undefined);
+const mockDeleteDomainAndRefreshCache = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/domain", () => ({
+  setDomainAndRefreshCache: (...args: unknown[]) => mockSetDomainAndRefreshCache(...args),
+  deleteDomainAndRefreshCache: (...args: unknown[]) => mockDeleteDomainAndRefreshCache(...args),
 }));
 
 const mockAppendAuditLog = vi.fn().mockResolvedValue(undefined);
@@ -84,7 +87,7 @@ describe("POST /api/settings/domain", () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.domain).toBe("pinchy.example.com");
-    expect(mockSetSetting).toHaveBeenCalledWith("domain", "pinchy.example.com");
+    expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("pinchy.example.com");
   });
 
   it("should use x-forwarded-host over host header", async () => {
@@ -168,7 +171,7 @@ describe("DELETE /api/settings/domain", () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.removed).toBe(true);
-    expect(mockDeleteSetting).toHaveBeenCalledWith("domain");
+    expect(mockDeleteDomainAndRefreshCache).toHaveBeenCalled();
   });
 
   it("should log an audit event on removal", async () => {

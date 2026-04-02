@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
+import { getSetting } from "@/lib/settings";
+import { setDomainAndRefreshCache, deleteDomainAndRefreshCache } from "@/lib/domain";
 import { appendAuditLog } from "@/lib/audit";
 
 export async function POST(req: Request) {
@@ -17,7 +18,7 @@ export async function POST(req: Request) {
 
   const domain = req.headers.get("x-forwarded-host") || req.headers.get("host");
   const previousDomain = await getSetting("domain");
-  await setSetting("domain", domain!);
+  await setDomainAndRefreshCache(domain!);
 
   appendAuditLog({
     actorType: "user",
@@ -41,7 +42,7 @@ export async function DELETE(_req: Request) {
     return NextResponse.json({ error: "No domain is locked" }, { status: 400 });
   }
 
-  await deleteSetting("domain");
+  await deleteDomainAndRefreshCache();
 
   appendAuditLog({
     actorType: "user",

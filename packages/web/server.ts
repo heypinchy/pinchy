@@ -76,6 +76,17 @@ app.prepare().then(async () => {
     // Non-critical — old sessions will just start fresh
   }
 
+  // Load domain cache before first request so auth config has the domain available.
+  try {
+    const { loadDomainCache } = await import("./src/lib/domain");
+    await loadDomainCache();
+  } catch (err) {
+    console.error(
+      "[pinchy] Failed to load domain cache:",
+      err instanceof Error ? err.message : err
+    );
+  }
+
   // Regenerate OpenClaw config on startup to ensure it's in sync with code changes.
   // This handles cases like new plugin configs or changed config structure after updates.
   try {
