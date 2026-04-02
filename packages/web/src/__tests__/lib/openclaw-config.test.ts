@@ -538,7 +538,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama-cloud"].models.length).toBeGreaterThan(0);
   });
 
-  it("should not include models block when ollama_cloud_api_key is not set", async () => {
+  it("should not include models block when neither ollama provider is configured", async () => {
     mockedGetSetting.mockResolvedValue(null);
 
     await regenerateOpenClawConfig();
@@ -547,6 +547,68 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written);
 
     expect(config.models).toBeUndefined();
+  });
+
+  it("should include local ollama provider config when ollama_local_url is set", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.models.providers["ollama"]).toBeDefined();
+    expect(config.models.providers["ollama"].baseUrl).toBe("http://host.docker.internal:11434");
+    expect(config.models.providers["ollama"].api).toBe("ollama");
+    expect(config.models.providers["ollama"].models).toBeUndefined();
+  });
+
+  it("should include both ollama providers when both are configured", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-cloud";
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.models.providers["ollama-cloud"]).toBeDefined();
+    expect(config.models.providers["ollama"]).toBeDefined();
+  });
+
+  it("should strip trailing slash from ollama local URL", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434/";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.models.providers["ollama"].baseUrl).toBe("http://host.docker.internal:11434");
+  });
+
+  it("should not add empty env var for ollama-local provider", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    // ollama-local has envVar: "" — should not appear as empty key in env
+    expect(config.env[""]).toBeUndefined();
   });
 
   it("should omit pinchy-context and pinchy-files when no agents use them", async () => {
