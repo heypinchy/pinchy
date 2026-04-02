@@ -57,7 +57,7 @@ test.describe.serial("Odoo Wizard Flow", () => {
     // Dialog opens — select Odoo type
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await dialog.getByText("Odoo").click();
+    await dialog.getByRole("button", { name: /Odoo/ }).click();
 
     // Step 1: Connect — fill credentials
     await expect(dialog.getByText(/step 1 of 3/i)).toBeVisible();
@@ -115,7 +115,7 @@ test.describe.serial("Odoo Wizard Flow", () => {
 
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
-    await dialog.getByText("Odoo").click();
+    await dialog.getByRole("button", { name: /Odoo/ }).click();
 
     // Fill with wrong API key
     await dialog.getByLabel("URL").fill(ODOO_INTERNAL_URL);

@@ -101,7 +101,10 @@ test.describe.serial("Odoo Permission Setup", () => {
     await expect(page.getByRole("heading", { name: "Odoo" })).toBeVisible({ timeout: 10000 });
 
     // The connection dropdown should be present
-    await expect(page.getByText("Connection")).toBeVisible();
+    const odooSection = page
+      .locator("section", { has: page.getByRole("heading", { name: "Odoo" }) })
+      .first();
+    await expect(odooSection.getByText("Connection")).toBeVisible();
     await expect(page.getByText("Select a connection...")).toBeVisible();
   });
 
