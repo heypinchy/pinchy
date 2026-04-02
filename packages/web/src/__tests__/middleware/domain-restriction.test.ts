@@ -1,12 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
 
-vi.mock("@/lib/domain", () => ({
+vi.mock("@/lib/domain-cache", () => ({
   getCachedDomain: vi.fn(),
 }));
 
 import { middleware } from "@/middleware";
-import { getCachedDomain } from "@/lib/domain";
+import { getCachedDomain } from "@/lib/domain-cache";
 
 describe("domain restriction middleware", () => {
   beforeEach(() => {

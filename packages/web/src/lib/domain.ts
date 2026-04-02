@@ -1,5 +1,9 @@
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { isSetupComplete } from "@/lib/setup";
+import { setCachedDomain } from "@/lib/domain-cache";
+
+// Re-export synchronous cache reader so existing consumers don't break.
+export { getCachedDomain, _resetCacheForTests } from "@/lib/domain-cache";
 
 export async function getDomain(): Promise<string | null> {
   return getSetting("domain");
@@ -12,30 +16,17 @@ export async function isInsecureMode(): Promise<boolean> {
   return domain === null;
 }
 
-// In-memory cache for synchronous access from auth config.
-// Updated at startup and whenever domain setting changes.
-let cachedDomain: string | null | undefined = undefined; // undefined = not loaded yet
-
 export async function loadDomainCache(): Promise<void> {
-  cachedDomain = await getSetting("domain");
-}
-
-export function getCachedDomain(): string | null {
-  // If cache hasn't been loaded yet, return null (safe default = insecure mode)
-  return cachedDomain ?? null;
+  const domain = await getSetting("domain");
+  setCachedDomain(domain);
 }
 
 export async function setDomainAndRefreshCache(domain: string): Promise<void> {
   await setSetting("domain", domain);
-  cachedDomain = domain;
+  setCachedDomain(domain);
 }
 
 export async function deleteDomainAndRefreshCache(): Promise<void> {
   await deleteSetting("domain");
-  cachedDomain = null;
-}
-
-/** Reset cache to unloaded state — only for tests. */
-export function _resetCacheForTests(): void {
-  cachedDomain = undefined;
+  setCachedDomain(null);
 }

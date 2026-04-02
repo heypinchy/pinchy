@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCachedDomain } from "@/lib/domain";
+import { getCachedDomain } from "@/lib/domain-cache";
 
 const EXEMPT_PATHS = ["/api/health", "/api/setup/status"];
 
