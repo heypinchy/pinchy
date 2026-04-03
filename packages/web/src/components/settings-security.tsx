@@ -43,9 +43,7 @@ export function SettingsSecurity() {
       if (res.ok) {
         const data = await res.json();
         setStatus((prev) => (prev ? { ...prev, domain: data.domain } : prev));
-        toast.success(
-          `Domain locked to ${data.domain}. Restart the container to apply secure cookies.`
-        );
+        toast.success(`Domain locked to ${data.domain}.`);
         router.refresh();
       } else {
         const data = await res.json();
@@ -93,8 +91,7 @@ export function SettingsSecurity() {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-sm text-muted-foreground">
-            Locked to <strong>{status.domain}</strong>. Secure cookies and origin restriction are
-            active. Configure HSTS in your reverse proxy.
+            Locked to <strong>{status.domain}</strong>. Your instance is secured.
           </p>
           {!showRemoveConfirm ? (
             <Button variant="outline" size="sm" onClick={() => setShowRemoveConfirm(true)}>
@@ -103,8 +100,8 @@ export function SettingsSecurity() {
           ) : (
             <div className="space-y-3 rounded-md border p-4">
               <p className="text-sm">
-                Removing the domain lock will disable secure cookies, HSTS, and origin restriction.
-                Pinchy will be accessible from any host over HTTP.
+                Removing the domain lock will make Pinchy accessible from any address again. Login
+                sessions will no longer be protected against interception.
               </p>
               <p className="text-sm text-muted-foreground">
                 To change your domain, remove the current lock, then access Pinchy via your new
@@ -141,9 +138,9 @@ export function SettingsSecurity() {
           </p>
           <p className="text-sm text-muted-foreground">Locking this domain will:</p>
           <ul className="list-disc pl-5 text-sm text-muted-foreground space-y-1">
-            <li>Restrict access to this domain only</li>
-            <li>Enable secure cookies</li>
-            <li>Reject login attempts from other origins</li>
+            <li>Only allow access through this domain</li>
+            <li>Protect login sessions from being intercepted</li>
+            <li>Block access from other addresses (e.g. direct IP)</li>
           </ul>
           <Button onClick={handleLock} disabled={locking}>
             {locking ? "Locking\u2026" : `Lock ${status.currentHost}`}
