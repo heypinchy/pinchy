@@ -55,8 +55,8 @@ test.describe.serial("Odoo Template Creation", () => {
     await expect(page.getByText("Sales Analyst")).toBeVisible({ timeout: 10000 });
     await page.getByText("Sales Analyst").click();
 
-    // Should see connection dropdown
-    await expect(page.getByText(/connection/i)).toBeVisible({ timeout: 5000 });
+    // Should see connection dropdown (use combobox role to avoid matching multiple "connection" texts)
+    await expect(page.getByRole("combobox")).toBeVisible({ timeout: 5000 });
 
     // Should see our test connection in the dropdown or auto-selected
     await expect(page.getByText("Template Test Odoo")).toBeVisible({ timeout: 5000 });
