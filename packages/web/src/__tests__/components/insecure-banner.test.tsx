@@ -25,7 +25,7 @@ describe("InsecureBanner", () => {
     const Component = await InsecureBanner({ isAdmin: true });
     render(Component);
     expect(screen.getByRole("alert")).toBeDefined();
-    expect(screen.getByText(/running without HTTPS/i)).toBeDefined();
+    expect(screen.getByText(/not secured/i)).toBeDefined();
   });
 
   it("should show settings link for admins", async () => {

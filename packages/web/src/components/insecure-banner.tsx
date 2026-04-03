@@ -12,7 +12,7 @@ export async function InsecureBanner({ isAdmin }: { isAdmin: boolean }) {
       className="flex items-center justify-center gap-2 bg-amber-500 px-4 py-2 text-sm text-white"
     >
       <ShieldAlert className="size-4 shrink-0" />
-      <span>Pinchy is running without HTTPS. Your data is transmitted unencrypted.</span>
+      <span>Your Pinchy instance is not secured. Lock your domain to enable HTTPS hardening.</span>
       {isAdmin ? (
         <Link href="/settings?tab=security" className="ml-1 font-medium underline">
           Secure your instance →
