@@ -2,6 +2,12 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
+
+const mockRefresh = vi.fn();
+vi.mock("next/navigation", () => ({
+  useRouter: () => ({ refresh: mockRefresh }),
+}));
+
 import { SettingsSecurity } from "@/components/settings-security";
 
 describe("SettingsSecurity", () => {
@@ -9,6 +15,7 @@ describe("SettingsSecurity", () => {
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
+    mockRefresh.mockReset();
   });
 
   afterEach(() => {
@@ -78,6 +85,34 @@ describe("SettingsSecurity", () => {
     });
     expect(screen.getByText(/pinchy\.example\.com/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /remove domain lock/i })).toBeInTheDocument();
+  });
+
+  it("refreshes the page after locking to update the banner", async () => {
+    fetchSpy
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            domain: null,
+            currentHost: "pinchy.example.com",
+            isHttps: true,
+          })
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ domain: "pinchy.example.com" })));
+
+    render(<SettingsSecurity />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /lock pinchy\.example\.com/i })
+      ).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /lock pinchy\.example\.com/i }));
+
+    await waitFor(() => {
+      expect(mockRefresh).toHaveBeenCalled();
+    });
   });
 
   it("calls POST on lock", async () => {

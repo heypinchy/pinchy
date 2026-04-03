@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ShieldCheck, ShieldAlert } from "lucide-react";
@@ -13,6 +14,7 @@ interface DomainStatus {
 }
 
 export function SettingsSecurity() {
+  const router = useRouter();
   const [status, setStatus] = useState<DomainStatus | null>(null);
   const [loading, setLoading] = useState(true);
   const [locking, setLocking] = useState(false);
@@ -44,6 +46,7 @@ export function SettingsSecurity() {
         toast.success(
           `Domain locked to ${data.domain}. Restart the container to apply secure cookies.`
         );
+        router.refresh();
       } else {
         const data = await res.json();
         toast.error(data.error || "Failed to lock domain");
@@ -63,6 +66,7 @@ export function SettingsSecurity() {
         setStatus((prev) => (prev ? { ...prev, domain: null } : prev));
         setShowRemoveConfirm(false);
         toast.success("Domain lock removed");
+        router.refresh();
       } else {
         const data = await res.json();
         toast.error(data.error || "Failed to remove domain lock");
