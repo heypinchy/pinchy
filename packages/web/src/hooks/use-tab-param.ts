@@ -4,7 +4,6 @@ import { useCallback } from "react";
 import { useSearchParams, usePathname, useRouter } from "next/navigation";
 
 export const SETTINGS_TABS = [
-  "security",
   "context",
   "profile",
   "telegram",
@@ -12,6 +11,7 @@ export const SETTINGS_TABS = [
   "users",
   "groups",
   "license",
+  "security",
 ] as const;
 
 export const AGENT_SETTINGS_TABS = [

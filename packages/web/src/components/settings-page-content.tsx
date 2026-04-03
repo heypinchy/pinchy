@@ -122,7 +122,6 @@ export function SettingsPageContent({
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <div className="overflow-x-auto">
             <TabsList>
-              {isAdmin && <TabsTrigger value="security">Security</TabsTrigger>}
               <TabsTrigger value="context">Context {contextDirty && <DirtyDot />}</TabsTrigger>
               <TabsTrigger value="profile">Profile {profileDirty && <DirtyDot />}</TabsTrigger>
               <TabsTrigger value="telegram">Telegram</TabsTrigger>
@@ -132,6 +131,7 @@ export function SettingsPageContent({
               {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
               {isAdmin && <TabsTrigger value="groups">Groups</TabsTrigger>}
               {isAdmin && <TabsTrigger value="license">License</TabsTrigger>}
+              {isAdmin && <TabsTrigger value="security">Security</TabsTrigger>}
             </TabsList>
           </div>
 

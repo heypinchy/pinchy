@@ -6,7 +6,7 @@ describe("Settings security tab", () => {
     expect(SETTINGS_TABS).toContain("security");
   });
 
-  it("should have 'security' as the first tab", () => {
-    expect(SETTINGS_TABS[0]).toBe("security");
+  it("should have 'security' as the last tab", () => {
+    expect(SETTINGS_TABS[SETTINGS_TABS.length - 1]).toBe("security");
   });
 });
