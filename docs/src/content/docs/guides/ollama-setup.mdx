@@ -1,0 +1,159 @@
+---
+title: Set Up Local Ollama
+description: Run AI agents with a local Ollama instance — fully air-gapped, no data leaves your server.
+---
+
+import { Aside, Steps, Tabs, TabItem } from "@astrojs/starlight/components";
+
+Ollama lets you run large language models locally. When you connect it to Pinchy, your agents run entirely on your own hardware — no API keys, no cloud calls, no data leaving your infrastructure.
+
+This is the setup for teams that need full air-gap compliance or simply want to keep everything in-house.
+
+## Prerequisites
+
+- A running Pinchy instance ([Installation](/installation/))
+- Ollama installed and running with at least one model pulled
+
+## Connect Ollama to Pinchy
+
+<Steps>
+1. Go to **Settings → LLM Provider**
+2. Click **Ollama (Local)**
+3. Enter the URL where Ollama is running (see [deployment options](#deployment-options) below)
+4. Click **Save** — Pinchy validates the connection and discovers your models
+</Steps>
+
+That's it. Your agents now use your local Ollama models.
+
+## Deployment Options
+
+Where you run Ollama depends on your setup. Here are the most common options.
+
+### A. Ollama on the host machine
+
+The simplest path. Install Ollama directly on the machine that runs Pinchy.
+
+```bash
+# Install Ollama
+curl -fsSL https://ollama.com/install.sh | sh
+
+# Pull a model
+ollama pull llama3
+```
+
+In Pinchy, set the URL to:
+
+```
+http://host.docker.internal:11434
+```
+
+<Aside type="tip">
+`host.docker.internal` is how Docker containers reach services running on the host machine. It works on macOS, Windows, and modern Linux Docker versions out of the box.
+</Aside>
+
+### B. Ollama as a Docker service
+
+Run Ollama alongside Pinchy in Docker. Create a `docker-compose.override.yml` in your project root:
+
+```yaml
+services:
+  ollama:
+    image: ollama/ollama
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  ollama_data:
+```
+
+Then restart:
+
+```bash
+docker compose up -d
+```
+
+In Pinchy, set the URL to:
+
+```
+http://ollama:11434
+```
+
+<Aside type="note">
+You'll still need to pull models inside the container: `docker compose exec ollama ollama pull llama3`
+</Aside>
+
+### C. Ollama with NVIDIA GPU (Docker)
+
+For GPU acceleration, install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html) first, then add GPU reservations to your override:
+
+```yaml
+services:
+  ollama:
+    image: ollama/ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+volumes:
+  ollama_data:
+```
+
+Everything else is the same — Pinchy URL is `http://ollama:11434`.
+
+### D. Ollama on a remote server
+
+Run Ollama on a dedicated GPU machine and point Pinchy at it over the network.
+
+On the Ollama server:
+
+```bash
+# Allow remote connections
+OLLAMA_HOST=0.0.0.0 ollama serve
+```
+
+In Pinchy, set the URL to:
+
+```
+http://<server-ip>:11434
+```
+
+<Aside type="caution">
+Ollama has no built-in authentication. If you expose it on a network, use a VPN or firewall to restrict access. Never expose Ollama directly to the internet.
+</Aside>
+
+## Recommended Models
+
+| Use Case | Model | Size | Why |
+|----------|-------|------|-----|
+| General agent | `llama3:latest` | 4.7 GB | Good balance of speed and quality |
+| Coding tasks | `qwen2.5-coder:32b` | 19 GB | Strong code generation |
+| Large context | `qwen3:32b` | 19 GB | 128k context, reliable tool calling |
+| Lightweight | `phi3:mini` | 2.3 GB | Fast, works on smaller hardware |
+
+Pull any model with:
+
+```bash
+ollama pull llama3
+```
+
+## Troubleshooting
+
+**"Could not connect to Ollama at this URL"**
+- Check that Ollama is running: `ollama list` should show your models
+- Verify the URL matches your deployment option (see above)
+- If Ollama runs on the host and Pinchy in Docker, use `http://host.docker.internal:11434` — not `http://localhost:11434`
+
+**No models appear after connecting**
+- Pull at least one model first: `ollama pull llama3`
+- If Ollama runs in Docker, pull from inside the container: `docker compose exec ollama ollama pull llama3`
+
+**Slow responses**
+- A GPU makes a big difference — even a modest one speeds up inference significantly
+- Try a smaller model like `phi3:mini` for faster responses on CPU-only machines
+- Quantized models (e.g., `llama3:8b-q4_0`) trade some quality for speed
