@@ -230,7 +230,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 PINCHY_ENTERPRISE_KEY=dev-enterprise docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 # Production (Docker)
-docker compose up --build
+docker compose pull && docker compose up -d
 
 # Common commands (run on host, not in container)
 pnpm test                # Run test suite
