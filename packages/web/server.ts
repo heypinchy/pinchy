@@ -103,7 +103,18 @@ app.prepare().then(async () => {
     );
   }
 
+  const { isHostAllowed } = await import("./src/server/host-check");
+
   const server = createServer((req, res) => {
+    const { pathname } = parse(req.url!, true);
+    const host = (req.headers["x-forwarded-host"] as string) || req.headers.host;
+    if (!isHostAllowed(host, pathname)) {
+      res.writeHead(403, { "Content-Type": "application/json" });
+      res.end(
+        JSON.stringify({ error: "Forbidden: request host does not match the configured domain" })
+      );
+      return;
+    }
     handle(req, res, parse(req.url!, true));
   });
 

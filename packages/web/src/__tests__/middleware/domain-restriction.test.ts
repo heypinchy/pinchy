@@ -1,5 +1,4 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { NextRequest, NextResponse } from "next/server";
 
 vi.mock("@/lib/domain-cache", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/domain-cache")>();
@@ -9,111 +8,61 @@ vi.mock("@/lib/domain-cache", async (importOriginal) => {
   };
 });
 
-import { middleware } from "@/middleware";
+import { isHostAllowed } from "@/server/host-check";
 import { getCachedDomain } from "@/lib/domain-cache";
 
-describe("domain restriction middleware", () => {
+describe("domain restriction host check", () => {
   beforeEach(() => {
     vi.mocked(getCachedDomain).mockReset();
   });
 
-  it("passes through when no domain is cached", () => {
+  it("allows all requests when no domain is cached", () => {
     vi.mocked(getCachedDomain).mockReturnValue(null);
-
-    const req = new NextRequest("http://anything.example.com/dashboard");
-    const res = middleware(req);
-
-    expect(res.status).not.toBe(403);
+    expect(isHostAllowed("anything.example.com", "/dashboard")).toBe(true);
   });
 
-  it("passes through when host matches cached domain", () => {
+  it("allows requests when host matches cached domain", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
-
-    const req = new NextRequest("http://pinchy.example.com/dashboard", {
-      headers: { host: "pinchy.example.com" },
-    });
-    const res = middleware(req);
-
-    expect(res.status).not.toBe(403);
+    expect(isHostAllowed("pinchy.example.com", "/dashboard")).toBe(true);
   });
 
-  it("returns 403 when host does not match cached domain", () => {
+  it("blocks requests when host does not match cached domain", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
-
-    const req = new NextRequest("http://evil.example.com/api/settings/domain", {
-      headers: { host: "evil.example.com" },
-    });
-    const res = middleware(req);
-
-    expect(res.status).toBe(403);
+    expect(isHostAllowed("evil.example.com", "/api/settings/domain")).toBe(false);
   });
 
-  it("passes through when x-forwarded-host matches cached domain", () => {
+  it("allows requests when x-forwarded-host matches (caller passes correct header)", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
-
-    const req = new NextRequest("http://proxy.internal/dashboard", {
-      headers: {
-        host: "proxy.internal",
-        "x-forwarded-host": "pinchy.example.com",
-      },
-    });
-    const res = middleware(req);
-
-    expect(res.status).not.toBe(403);
+    expect(isHostAllowed("pinchy.example.com", "/dashboard")).toBe(true);
   });
 
-  it("always passes /api/health regardless of host", () => {
+  it("always allows /api/health regardless of host", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
-
-    const req = new NextRequest("http://evil.example.com/api/health", {
-      headers: { host: "evil.example.com" },
-    });
-    const res = middleware(req);
-
-    expect(res.status).not.toBe(403);
+    expect(isHostAllowed("evil.example.com", "/api/health")).toBe(true);
   });
 
-  it("passes through when host has default port 443 and domain does not", () => {
+  it("always allows /api/setup/status regardless of host", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
-
-    const req = new NextRequest("https://pinchy.example.com/dashboard", {
-      headers: { host: "pinchy.example.com:443" },
-    });
-    const res = middleware(req);
-
-    expect(res.status).not.toBe(403);
+    expect(isHostAllowed("evil.example.com", "/api/setup/status")).toBe(true);
   });
 
-  it("passes through when host has default port 80 and domain does not", () => {
+  it("allows when host has default port 443 and domain does not", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(isHostAllowed("pinchy.example.com:443", "/dashboard")).toBe(true);
+  });
 
-    const req = new NextRequest("http://pinchy.example.com/dashboard", {
-      headers: { host: "pinchy.example.com:80" },
-    });
-    const res = middleware(req);
-
-    expect(res.status).not.toBe(403);
+  it("allows when host has default port 80 and domain does not", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(isHostAllowed("pinchy.example.com:80", "/dashboard")).toBe(true);
   });
 
   it("blocks when host has non-standard port not matching domain", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
-
-    const req = new NextRequest("http://pinchy.example.com:8443/dashboard", {
-      headers: { host: "pinchy.example.com:8443" },
-    });
-    const res = middleware(req);
-
-    expect(res.status).toBe(403);
+    expect(isHostAllowed("pinchy.example.com:8443", "/dashboard")).toBe(false);
   });
 
-  it("always passes /api/setup/status regardless of host", () => {
+  it("blocks when host is undefined", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
-
-    const req = new NextRequest("http://evil.example.com/api/setup/status", {
-      headers: { host: "evil.example.com" },
-    });
-    const res = middleware(req);
-
-    expect(res.status).not.toBe(403);
+    expect(isHostAllowed(undefined, "/dashboard")).toBe(false);
   });
 });
