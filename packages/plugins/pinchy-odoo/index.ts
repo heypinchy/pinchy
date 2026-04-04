@@ -107,6 +107,10 @@ const plugin = {
   register(api: PluginApi) {
     const agentConfigs = api.pluginConfig?.agents ?? {};
 
+    // Client cache per agent — avoids creating new connections per tool call.
+    // Limitation: If credentials are rotated, the cache holds stale clients until
+    // OpenClaw restarts. This is acceptable since credential rotation is rare and
+    // always accompanied by a config regeneration which triggers a restart.
     const clientCache = new Map<string, OdooClient>();
 
     function getOrCreateClient(agentId: string, config: AgentOdooConfig): OdooClient {

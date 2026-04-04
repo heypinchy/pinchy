@@ -7,6 +7,7 @@ import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog } from "@/lib/audit";
 import { odooCredentialsSchema, maskCredentials } from "@/lib/integrations/odoo-schema";
+import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { z } from "zod";
 
 const updateIntegrationSchema = z.object({
@@ -88,6 +89,10 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
     }
   }
   if (parsed.data.credentials !== undefined) {
+    const urlCheck = validateExternalUrl(parsed.data.credentials.url);
+    if (!urlCheck.valid) {
+      return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+    }
     updateData.credentials = encrypt(JSON.stringify(parsed.data.credentials));
     changes.credentials = { from: "[redacted]", to: "[redacted]" };
   }
@@ -103,6 +108,7 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
       actorType: "user",
       actorId: session.user.id!,
       eventType: "config.changed",
+      resource: `integration:${connectionId}`,
       detail: { action: "integration_updated", id: connectionId, changes },
     }).catch(() => {});
   }
@@ -140,6 +146,7 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
     actorType: "user",
     actorId: session.user.id!,
     eventType: "config.changed",
+    resource: `integration:${connectionId}`,
     detail: { action: "integration_deleted", type: existing.type, name: existing.name },
   }).catch(() => {});
 

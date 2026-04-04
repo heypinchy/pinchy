@@ -53,6 +53,9 @@ function isPrivateIPv6(hostname: string): boolean {
 
 /**
  * Returns true if the given URL string targets a private/internal address.
+ * Note: This checks the hostname string only, not DNS resolution. A hostname
+ * that resolves to a private IP (DNS rebinding) would pass this check. For a
+ * self-hosted product where admins control the network, this is acceptable.
  */
 export function isPrivateUrl(urlString: string): boolean {
   let url: URL;

@@ -11,6 +11,7 @@ import {
   odooConnectionDataSchema,
   maskCredentials,
 } from "@/lib/integrations/odoo-schema";
+import { validateExternalUrl } from "@/lib/integrations/url-validation";
 
 const createIntegrationSchema = z.object({
   type: z.literal("odoo"),
@@ -58,6 +59,12 @@ export async function POST(request: NextRequest) {
   }
 
   const { type, name, description, credentials, data } = parsed.data;
+
+  const urlCheck = validateExternalUrl(credentials.url);
+  if (!urlCheck.valid) {
+    return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+  }
+
   const encryptedCredentials = encrypt(JSON.stringify(credentials));
 
   const [connection] = await db
@@ -75,6 +82,7 @@ export async function POST(request: NextRequest) {
     actorType: "user",
     actorId: session.user.id!,
     eventType: "config.changed",
+    resource: `integration:${connection.id}`,
     detail: { action: "integration_created", type, name },
   }).catch(() => {});
 

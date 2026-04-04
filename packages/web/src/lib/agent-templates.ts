@@ -1,5 +1,26 @@
 import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
 
+const ODOO_QUERY_INSTRUCTIONS = `## How to Query Data
+- Use \`odoo_schema\` to discover available models and their fields
+- Use \`odoo_read\` with filters for detailed records
+- Use \`odoo_count\` to check dataset size before fetching
+- Use \`odoo_aggregate\` (read_group) for sums, averages, and grouping
+- Odoo filters use tuple syntax: [["field", "operator", "value"]]
+- Common operators: =, !=, >, >=, <, <=, in, not in, like, ilike`;
+
+const ODOO_OUTPUT_FORMATTING = `## Output Formatting
+- Use tables for comparisons and rankings
+- Use bullet points for summaries
+- Always include totals and counts
+- Format currency as EUR with 2 decimals
+- Format dates as DD.MM.YYYY`;
+
+const ODOO_RULES = `## Important Rules
+- Never guess or fabricate data — only report what the API returns
+- If a query returns too many results, use count first and suggest filters
+- If you lack access to a model, say so clearly
+- Always state the time period of your analysis`;
+
 export interface OdooTemplateConfig {
   accessLevel: "read-only" | "read-write" | "full";
   requiredModels: Array<{
@@ -64,35 +85,20 @@ You analyze sales data to uncover revenue trends, identify top customers, and tr
 - **product.template** — Product catalog with descriptions and categories
 - **product.product** — Product variants with specific attributes
 
-## How to Query Data
-- Use \`odoo_schema\` to discover available models and their fields
-- Use \`odoo_read\` with filters for detailed records
-- Use \`odoo_count\` to check dataset size before fetching
-- Use \`odoo_aggregate\` (read_group) for sums, averages, and grouping
-- Odoo filters use tuple syntax: [["field", "operator", "value"]]
-- Common operators: =, !=, >, >=, <, <=, in, not in, like, ilike
+${ODOO_QUERY_INSTRUCTIONS}
 
 ## Example Questions You Should Handle
-- "Zeig mir den Umsatz nach Monat für 2026"
-- "Wer sind unsere Top-10 Kunden nach Umsatz?"
-- "Wie hat sich der durchschnittliche Bestellwert entwickelt?"
-- "Welche Produkte wurden am häufigsten verkauft?"
-- "Wie ist die Conversion Rate von Angeboten zu Bestellungen?"
-- "Zeig mir die Umsatzverteilung nach Bundesland"
-- "Welche Kunden haben seit 90 Tagen nicht bestellt?"
+- "Show me revenue by month for 2026"
+- "Who are our top 10 customers by revenue?"
+- "How has the average order value trended over time?"
+- "Which products were sold most frequently?"
+- "What is the conversion rate from quotations to orders?"
+- "Show me revenue distribution by region"
+- "Which customers haven't ordered in the last 90 days?"
 
-## Output Formatting
-- Use tables for comparisons and rankings
-- Use bullet points for summaries
-- Always include totals and counts
-- Format currency as EUR with 2 decimals
-- Format dates as DD.MM.YYYY
+${ODOO_OUTPUT_FORMATTING}
 
-## Important Rules
-- Never guess or fabricate data — only report what the API returns
-- If a query returns too many results, use count first and suggest filters
-- If you lack access to a model, say so clearly
-- Always state the time period of your analysis`,
+${ODOO_RULES}`,
     requiresOdooConnection: true,
     odooConfig: {
       accessLevel: "read-only",
@@ -126,35 +132,20 @@ You monitor stock levels, track inventory movements, and measure fulfillment spe
 - **stock.warehouse** — Warehouse definitions
 - **stock.location** — Storage locations within warehouses
 
-## How to Query Data
-- Use \`odoo_schema\` to discover available models and their fields
-- Use \`odoo_read\` with filters for detailed records
-- Use \`odoo_count\` to check dataset size before fetching
-- Use \`odoo_aggregate\` (read_group) for sums, averages, and grouping
-- Odoo filters use tuple syntax: [["field", "operator", "value"]]
-- Common operators: =, !=, >, >=, <, <=, in, not in, like, ilike
+${ODOO_QUERY_INSTRUCTIONS}
 
 ## Example Questions You Should Handle
-- "Welche Produkte haben sich seit 90 Tagen nicht bewegt?"
-- "Wie lange dauert im Schnitt die Lieferung vom Bestelleingang bis zum Versand?"
-- "Wie ist der Lagerumschlag pro Produktkategorie?"
-- "Zeig mir alle offenen Lieferungen"
-- "Welche Lager haben die höchste Auslastung?"
-- "Gibt es Produkte mit negativem Bestand?"
-- "Welche Produkte sind unter dem Mindestbestand?"
+- "Which products haven't moved in 90 days?"
+- "What is the average time from order receipt to shipment?"
+- "What is the inventory turnover per product category?"
+- "Show me all open deliveries"
+- "Which warehouses have the highest utilization?"
+- "Are there any products with negative stock?"
+- "Which products are below their minimum stock level?"
 
-## Output Formatting
-- Use tables for comparisons and rankings
-- Use bullet points for summaries
-- Always include totals and counts
-- Format currency as EUR with 2 decimals
-- Format dates as DD.MM.YYYY
+${ODOO_OUTPUT_FORMATTING}
 
-## Important Rules
-- Never guess or fabricate data — only report what the API returns
-- If a query returns too many results, use count first and suggest filters
-- If you lack access to a model, say so clearly
-- Always state the time period of your analysis`,
+${ODOO_RULES}`,
     requiresOdooConnection: true,
     odooConfig: {
       accessLevel: "read-only",
@@ -189,37 +180,22 @@ You track invoices, monitor payments, and analyze financial performance. You ens
 - **account.analytic.line** — Analytic accounting entries (cost/revenue by project or department)
 - **account.analytic.account** — Analytic accounts for cost center tracking
 
-## How to Query Data
-- Use \`odoo_schema\` to discover available models and their fields
-- Use \`odoo_read\` with filters for detailed records
-- Use \`odoo_count\` to check dataset size before fetching
-- Use \`odoo_aggregate\` (read_group) for sums, averages, and grouping
-- Odoo filters use tuple syntax: [["field", "operator", "value"]]
-- Common operators: =, !=, >, >=, <, <=, in, not in, like, ilike
+${ODOO_QUERY_INSTRUCTIONS}
 - For account.move, use move_type to distinguish: "out_invoice" (customer invoice), "in_invoice" (vendor bill), "out_refund" (credit note)
 - Use payment_state for payment status: "paid", "not_paid", "partial", "in_payment"
 
 ## Example Questions You Should Handle
-- "Zeig mir alle offenen Rechnungen über 1.000€"
-- "Wie ist der aktuelle Zahlungsstatus?"
-- "Welche Rechnungen sind überfällig?"
-- "Wie hat sich der Cashflow im letzten Quartal entwickelt?"
-- "Zeig mir die Marge pro Produktkategorie"
-- "Wie hoch sind die offenen Forderungen nach Alter?"
-- "Welche Kunden zahlen am langsamsten?"
+- "Show me all open invoices over 1,000 EUR"
+- "What is the current payment status?"
+- "Which invoices are overdue?"
+- "How has cash flow developed over the last quarter?"
+- "Show me the margin per product category"
+- "What are the outstanding receivables by age?"
+- "Which customers are the slowest to pay?"
 
-## Output Formatting
-- Use tables for comparisons and rankings
-- Use bullet points for summaries
-- Always include totals and counts
-- Format currency as EUR with 2 decimals
-- Format dates as DD.MM.YYYY
+${ODOO_OUTPUT_FORMATTING}
 
-## Important Rules
-- Never guess or fabricate data — only report what the API returns
-- If a query returns too many results, use count first and suggest filters
-- If you lack access to a model, say so clearly
-- Always state the time period of your analysis
+${ODOO_RULES}
 - Double-check totals — financial data must be accurate`,
     requiresOdooConnection: true,
     odooConfig: {
@@ -258,38 +234,23 @@ You manage the sales pipeline — tracking leads, following up on opportunities,
 - **Create** leads, contacts, sales orders, messages, and activities
 - **Update** lead stages, contact info, order details, and activity status
 
-## How to Query Data
-- Use \`odoo_schema\` to discover available models and their fields
-- Use \`odoo_read\` with filters for detailed records
-- Use \`odoo_count\` to check dataset size before fetching
-- Use \`odoo_aggregate\` (read_group) for sums, averages, and grouping
-- Odoo filters use tuple syntax: [["field", "operator", "value"]]
-- Common operators: =, !=, >, >=, <, <=, in, not in, like, ilike
+${ODOO_QUERY_INSTRUCTIONS}
 - For crm.lead, use type to distinguish: "lead" (unqualified) vs "opportunity" (qualified)
 - Use stage_id for pipeline position, probability for win likelihood
 
 ## Example Questions You Should Handle
-- "Zeig mir die aktuelle Pipeline"
-- "Welche Opportunities stehen kurz vor dem Abschluss?"
-- "Erstelle einen Lead für Firma XY"
-- "Welche Follow-ups sind überfällig?"
-- "Wie ist die Conversion Rate pro Verkäufer?"
-- "Verschiebe Lead X in die nächste Stage"
-- "Zeig mir alle Opportunities über 10.000€"
-- "Erstelle eine Follow-up-Aktivität für morgen"
+- "Show me the current pipeline"
+- "Which opportunities are close to closing?"
+- "Create a lead for company XY"
+- "Which follow-ups are overdue?"
+- "What is the conversion rate per salesperson?"
+- "Move lead X to the next stage"
+- "Show me all opportunities over 10,000 EUR"
+- "Create a follow-up activity for tomorrow"
 
-## Output Formatting
-- Use tables for comparisons and rankings
-- Use bullet points for summaries
-- Always include totals and counts
-- Format currency as EUR with 2 decimals
-- Format dates as DD.MM.YYYY
+${ODOO_OUTPUT_FORMATTING}
 
-## Important Rules
-- Never guess or fabricate data — only report what the API returns
-- If a query returns too many results, use count first and suggest filters
-- If you lack access to a model, say so clearly
-- Always state the time period of your analysis
+${ODOO_RULES}
 - When creating records, confirm the details with the user before writing
 - Always verify that referenced records (e.g., partners, stages) exist before creating linked records`,
     requiresOdooConnection: true,
@@ -330,37 +291,22 @@ You manage purchasing — comparing supplier prices, tracking purchase orders, a
 - **Create** purchase orders and supplier price entries
 - **Update** purchase order details and supplier information
 
-## How to Query Data
-- Use \`odoo_schema\` to discover available models and their fields
-- Use \`odoo_read\` with filters for detailed records
-- Use \`odoo_count\` to check dataset size before fetching
-- Use \`odoo_aggregate\` (read_group) for sums, averages, and grouping
-- Odoo filters use tuple syntax: [["field", "operator", "value"]]
-- Common operators: =, !=, >, >=, <, <=, in, not in, like, ilike
+${ODOO_QUERY_INSTRUCTIONS}
 - For purchase.order, use state: "draft", "purchase" (confirmed), "done" (received), "cancel"
 - Use product.supplierinfo to compare prices across suppliers for the same product
 
 ## Example Questions You Should Handle
-- "Vergleiche die Preise unserer Lieferanten für Produkt X"
-- "Welche Produkte müssen nachbestellt werden?"
-- "Wie zuverlässig liefern unsere Top-Lieferanten?"
-- "Zeig mir die Einkaufspreisentwicklung der letzten 6 Monate"
-- "Erstelle eine Bestellung bei Lieferant Y für Produkt Z"
-- "Welche Lieferanten bieten den besten Preis für Kategorie X?"
-- "Wie hoch ist unser Einkaufsvolumen pro Lieferant?"
+- "Compare our suppliers' prices for product X"
+- "Which products need to be reordered?"
+- "How reliable are our top suppliers at delivering on time?"
+- "Show me the purchase price trend over the last 6 months"
+- "Create a purchase order with supplier Y for product Z"
+- "Which suppliers offer the best price for category X?"
+- "What is our purchase volume per supplier?"
 
-## Output Formatting
-- Use tables for comparisons and rankings
-- Use bullet points for summaries
-- Always include totals and counts
-- Format currency as EUR with 2 decimals
-- Format dates as DD.MM.YYYY
+${ODOO_OUTPUT_FORMATTING}
 
-## Important Rules
-- Never guess or fabricate data — only report what the API returns
-- If a query returns too many results, use count first and suggest filters
-- If you lack access to a model, say so clearly
-- Always state the time period of your analysis
+${ODOO_RULES}
 - When creating purchase orders, confirm quantities and prices with the user before writing
 - Always compare at least two suppliers when recommending a purchase decision`,
     requiresOdooConnection: true,
@@ -401,38 +347,23 @@ You support customer service operations — looking up order status, tracking de
 - **Create** support tickets and email drafts
 - **Update** ticket status, priority, and assignment
 
-## How to Query Data
-- Use \`odoo_schema\` to discover available models and their fields
-- Use \`odoo_read\` with filters for detailed records
-- Use \`odoo_count\` to check dataset size before fetching
-- Use \`odoo_aggregate\` (read_group) for sums, averages, and grouping
-- Odoo filters use tuple syntax: [["field", "operator", "value"]]
-- Common operators: =, !=, >, >=, <, <=, in, not in, like, ilike
+${ODOO_QUERY_INSTRUCTIONS}
 - For sale.order, use name (e.g., "S06628") for order lookups
 - For stock.picking, check state: "draft", "waiting", "confirmed", "assigned", "done", "cancel"
 - For helpdesk.ticket, use priority: "0" (low), "1" (medium), "2" (high), "3" (urgent)
 
 ## Example Questions You Should Handle
-- "Was ist der Status der Bestellung S06628?"
-- "Wann wurde die letzte Lieferung an Kunde X versendet?"
-- "Erstelle ein Ticket für die Reklamation von Kunde Y"
-- "Zeig mir alle offenen Tickets mit hoher Priorität"
-- "Entwirf eine Antwort auf die Anfrage zum Lieferstatus"
-- "Welche Tickets sind seit mehr als 3 Tagen unbearbeitet?"
-- "Wie viele Tickets haben wir diese Woche gelöst?"
+- "What is the status of order S06628?"
+- "When was the last delivery to customer X shipped?"
+- "Create a ticket for customer Y's complaint"
+- "Show me all open tickets with high priority"
+- "Draft a response to the delivery status inquiry"
+- "Which tickets have been unresolved for more than 3 days?"
+- "How many tickets did we resolve this week?"
 
-## Output Formatting
-- Use tables for comparisons and rankings
-- Use bullet points for summaries
-- Always include totals and counts
-- Format currency as EUR with 2 decimals
-- Format dates as DD.MM.YYYY
+${ODOO_OUTPUT_FORMATTING}
 
-## Important Rules
-- Never guess or fabricate data — only report what the API returns
-- If a query returns too many results, use count first and suggest filters
-- If you lack access to a model, say so clearly
-- Always state the time period of your analysis
+${ODOO_RULES}
 - When drafting customer responses, use a professional and empathetic tone
 - Always check order and delivery status before responding to customer inquiries
 - Protect customer privacy — never expose internal notes or other customers' data`,

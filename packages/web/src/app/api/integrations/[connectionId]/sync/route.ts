@@ -8,6 +8,7 @@ import { decrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { appendAuditLog } from "@/lib/audit";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
+import { validateExternalUrl } from "@/lib/integrations/url-validation";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -39,6 +40,11 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
         { success: false, error: "Invalid credentials format" },
         { status: 200 }
       );
+    }
+
+    const urlCheck = validateExternalUrl(parsed.data.url);
+    if (!urlCheck.valid) {
+      return NextResponse.json({ success: false, error: urlCheck.error }, { status: 200 });
     }
 
     const result = await fetchOdooSchema(parsed.data);
