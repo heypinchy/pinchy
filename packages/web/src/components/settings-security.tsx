@@ -21,13 +21,18 @@ export function SettingsSecurity() {
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [removing, setRemoving] = useState(false);
   const [restartNeeded, setRestartNeeded] = useState(false);
+  const [error, setError] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     try {
       const res = await fetch("/api/settings/domain");
       if (res.ok) {
         setStatus(await res.json());
+      } else {
+        setError(true);
       }
+    } catch {
+      setError(true);
     } finally {
       setLoading(false);
     }
@@ -80,7 +85,21 @@ export function SettingsSecurity() {
   };
 
   if (loading) return null;
-  if (!status) return null;
+  if (error || !status) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ShieldAlert className="size-5 text-amber-500" />
+            Domain & HTTPS
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <p className="text-sm text-destructive">Failed to load security settings.</p>
+        </CardContent>
+      </Card>
+    );
+  }
 
   const restartNotice = restartNeeded && (
     <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">

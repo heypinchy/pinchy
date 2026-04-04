@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCachedDomain, normalizeHost } from "@/lib/domain-cache";
 
+// Paths that bypass the domain-lock host check.
+// Health/status endpoints must remain accessible for monitoring and setup.
 const EXEMPT_PATHS = ["/api/health", "/api/setup/status"];
 
 export function middleware(request: NextRequest): NextResponse {

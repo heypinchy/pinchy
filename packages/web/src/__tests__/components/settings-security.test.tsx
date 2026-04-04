@@ -171,6 +171,16 @@ describe("SettingsSecurity", () => {
     });
   });
 
+  it("shows error message when fetch fails", async () => {
+    fetchSpy.mockResolvedValue(new Response(null, { status: 500 }));
+
+    render(<SettingsSecurity />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/failed to load/i)).toBeInTheDocument();
+    });
+  });
+
   it("calls POST on lock", async () => {
     fetchSpy
       .mockResolvedValueOnce(
