@@ -20,6 +20,7 @@ export function SettingsSecurity() {
   const [locking, setLocking] = useState(false);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [removing, setRemoving] = useState(false);
+  const [restartNeeded, setRestartNeeded] = useState(false);
 
   const fetchStatus = useCallback(async () => {
     try {
@@ -43,6 +44,7 @@ export function SettingsSecurity() {
       if (res.ok) {
         const data = await res.json();
         setStatus((prev) => (prev ? { ...prev, domain: data.domain } : prev));
+        setRestartNeeded(true);
         toast.success(`Domain locked to ${data.domain}.`);
         router.refresh();
       } else {
@@ -63,6 +65,7 @@ export function SettingsSecurity() {
       if (res.ok) {
         setStatus((prev) => (prev ? { ...prev, domain: null } : prev));
         setShowRemoveConfirm(false);
+        setRestartNeeded(true);
         toast.success("Domain lock removed");
         router.refresh();
       } else {
@@ -79,74 +82,94 @@ export function SettingsSecurity() {
   if (loading) return null;
   if (!status) return null;
 
+  const restartNotice = restartNeeded && (
+    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
+      <p className="text-sm">Restart the container to fully apply all security settings.</p>
+      <code className="mt-1 block text-xs text-muted-foreground">
+        docker compose restart pinchy
+      </code>
+    </div>
+  );
+
   // State C: Domain is locked
   if (status.domain) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ShieldCheck className="size-5 text-green-600" />
-            Domain & HTTPS
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-sm text-muted-foreground">
-            Locked to <strong>{status.domain}</strong>. Your instance is secured.
-          </p>
-          {!showRemoveConfirm ? (
-            <Button variant="outline" size="sm" onClick={() => setShowRemoveConfirm(true)}>
-              Remove domain lock
-            </Button>
-          ) : (
-            <div className="space-y-3 rounded-md border p-4">
-              <p className="text-sm">
-                Removing the domain lock will make Pinchy accessible from any address again. Login
-                sessions will no longer be protected against interception.
-              </p>
-              <p className="text-sm text-muted-foreground">
-                To change your domain, remove the current lock, then access Pinchy via your new
-                domain and lock it again.
-              </p>
-              <div className="flex gap-2">
-                <Button variant="destructive" size="sm" onClick={handleRemove} disabled={removing}>
-                  {removing ? "Removing\u2026" : "Yes, remove domain lock"}
-                </Button>
-                <Button variant="outline" size="sm" onClick={() => setShowRemoveConfirm(false)}>
-                  Cancel
-                </Button>
+      <>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ShieldCheck className="size-5 text-green-600" />
+              Domain & HTTPS
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm text-muted-foreground">
+              Locked to <strong>{status.domain}</strong>. Your instance is secured.
+            </p>
+            {!showRemoveConfirm ? (
+              <Button variant="outline" size="sm" onClick={() => setShowRemoveConfirm(true)}>
+                Remove domain lock
+              </Button>
+            ) : (
+              <div className="space-y-3 rounded-md border p-4">
+                <p className="text-sm">
+                  Removing the domain lock will make Pinchy accessible from any address again. Login
+                  sessions will no longer be protected against interception.
+                </p>
+                <p className="text-sm text-muted-foreground">
+                  To change your domain, remove the current lock, then access Pinchy via your new
+                  domain and lock it again.
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    onClick={handleRemove}
+                    disabled={removing}
+                  >
+                    {removing ? "Removing\u2026" : "Yes, remove domain lock"}
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setShowRemoveConfirm(false)}>
+                    Cancel
+                  </Button>
+                </div>
               </div>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+            )}
+          </CardContent>
+        </Card>
+        {restartNotice}
+      </>
     );
   }
 
   // State B: Not locked, but on HTTPS + domain
   if (status.isHttps && status.currentHost) {
     return (
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ShieldAlert className="size-5 text-amber-500" />
-            Domain & HTTPS
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-sm">
-            You&apos;re accessing Pinchy via <strong>{status.currentHost}</strong> over HTTPS.
-          </p>
-          <p className="text-sm text-muted-foreground">Locking this domain will:</p>
-          <ul className="list-disc pl-5 text-sm text-muted-foreground space-y-1">
-            <li>Only allow access through this domain</li>
-            <li>Protect login sessions from being intercepted</li>
-            <li>Block access from other addresses (e.g. direct IP)</li>
-          </ul>
-          <Button onClick={handleLock} disabled={locking}>
-            {locking ? "Locking\u2026" : `Lock ${status.currentHost}`}
-          </Button>
-        </CardContent>
-      </Card>
+      <>
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <ShieldAlert className="size-5 text-amber-500" />
+              Domain & HTTPS
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-sm">
+              You&apos;re accessing Pinchy via <strong>{status.currentHost}</strong> over HTTPS.
+            </p>
+            <p className="text-sm text-muted-foreground">Locking this domain will:</p>
+            <ul className="list-disc pl-5 text-sm text-muted-foreground space-y-1">
+              <li>Only allow access through this domain</li>
+              <li>Protect login sessions from being intercepted</li>
+              <li>Block access from other addresses (e.g. direct IP)</li>
+            </ul>
+            <Button onClick={handleLock} disabled={locking}>
+              {locking ? "Locking\u2026" : `Lock ${status.currentHost}`}
+            </Button>
+          </CardContent>
+        </Card>
+        {restartNotice}
+      </>
     );
   }
 

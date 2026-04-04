@@ -115,6 +115,62 @@ describe("SettingsSecurity", () => {
     });
   });
 
+  it("shows restart notice after locking domain", async () => {
+    fetchSpy
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            domain: null,
+            currentHost: "pinchy.example.com",
+            isHttps: true,
+          })
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ domain: "pinchy.example.com" })));
+
+    render(<SettingsSecurity />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /lock pinchy\.example\.com/i })
+      ).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /lock pinchy\.example\.com/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/restart the container/i)).toBeInTheDocument();
+    });
+  });
+
+  it("shows restart notice after removing domain lock", async () => {
+    fetchSpy
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            domain: "pinchy.example.com",
+            currentHost: "pinchy.example.com",
+            isHttps: true,
+          })
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true })));
+
+    render(<SettingsSecurity />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /remove domain lock/i })).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /remove domain lock/i }));
+
+    await userEvent.click(screen.getByRole("button", { name: /yes, remove domain lock/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/restart the container/i)).toBeInTheDocument();
+    });
+  });
+
   it("calls POST on lock", async () => {
     fetchSpy
       .mockResolvedValueOnce(
