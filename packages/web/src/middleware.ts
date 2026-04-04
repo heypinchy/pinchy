@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getCachedDomain } from "@/lib/domain-cache";
+import { getCachedDomain, normalizeHost } from "@/lib/domain-cache";
 
 const EXEMPT_PATHS = ["/api/health", "/api/setup/status"];
 
@@ -17,7 +17,7 @@ export function middleware(request: NextRequest): NextResponse {
 
   const host = request.headers.get("x-forwarded-host") || request.headers.get("host");
 
-  if (host === lockedDomain) {
+  if (host && normalizeHost(host) === normalizeHost(lockedDomain)) {
     return NextResponse.next();
   }
 

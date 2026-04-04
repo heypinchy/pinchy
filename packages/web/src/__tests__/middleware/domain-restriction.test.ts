@@ -1,9 +1,13 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { NextRequest, NextResponse } from "next/server";
 
-vi.mock("@/lib/domain-cache", () => ({
-  getCachedDomain: vi.fn(),
-}));
+vi.mock("@/lib/domain-cache", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/domain-cache")>();
+  return {
+    ...actual,
+    getCachedDomain: vi.fn(),
+  };
+});
 
 import { middleware } from "@/middleware";
 import { getCachedDomain } from "@/lib/domain-cache";
@@ -67,6 +71,39 @@ describe("domain restriction middleware", () => {
     const res = middleware(req);
 
     expect(res.status).not.toBe(403);
+  });
+
+  it("passes through when host has default port 443 and domain does not", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+
+    const req = new NextRequest("https://pinchy.example.com/dashboard", {
+      headers: { host: "pinchy.example.com:443" },
+    });
+    const res = middleware(req);
+
+    expect(res.status).not.toBe(403);
+  });
+
+  it("passes through when host has default port 80 and domain does not", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+
+    const req = new NextRequest("http://pinchy.example.com/dashboard", {
+      headers: { host: "pinchy.example.com:80" },
+    });
+    const res = middleware(req);
+
+    expect(res.status).not.toBe(403);
+  });
+
+  it("blocks when host has non-standard port not matching domain", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+
+    const req = new NextRequest("http://pinchy.example.com:8443/dashboard", {
+      headers: { host: "pinchy.example.com:8443" },
+    });
+    const res = middleware(req);
+
+    expect(res.status).toBe(403);
   });
 
   it("always passes /api/setup/status regardless of host", () => {

@@ -23,6 +23,11 @@ export function setCachedDomain(domain: string | null): void {
   cachedDomain = domain;
 }
 
+/** Strip default ports (:80, :443) from a host string for comparison. */
+export function normalizeHost(host: string): string {
+  return host.replace(/:(80|443)$/, "");
+}
+
 /** Reset cache to unloaded state — only for tests. */
 export function _resetCacheForTests(): void {
   cachedDomain = undefined;
