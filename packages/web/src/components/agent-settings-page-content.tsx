@@ -66,6 +66,10 @@ interface PersonalityValues {
 interface PermissionsValues {
   allowedTools: string[];
   allowedPaths: string[];
+  integrations: {
+    connectionId: string;
+    permissions: Array<{ model: string; operation: string }>;
+  } | null;
 }
 
 interface AccessValues {
@@ -149,6 +153,14 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   useEffect(() => {
     fetchData();
   }, [fetchData]);
+
+  // Non-admins cannot edit shared agents — redirect to chat
+  const canEdit = isAdmin || agent?.isPersonal;
+  useEffect(() => {
+    if (!isPending && agent && !canEdit) {
+      router.replace(`/chat/${agentId}`);
+    }
+  }, [isPending, agent, canEdit, router, agentId]);
 
   const handleGeneralChange = useCallback((values: GeneralValues, isDirty: boolean) => {
     generalDraft.current = values;
@@ -236,6 +248,24 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
       if (dirtyTabs.has("permissions") && permissionsDraft.current) {
         agentPatch.allowedTools = permissionsDraft.current.allowedTools;
         agentPatch.pluginConfig = { allowed_paths: permissionsDraft.current.allowedPaths };
+
+        // Save or clear integration permissions
+        if (permissionsDraft.current.integrations) {
+          savePromises.push(
+            fetch(`/api/agents/${agentId}/integrations`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(permissionsDraft.current.integrations),
+            })
+          );
+        } else {
+          // Clear integration permissions when connection is removed
+          savePromises.push(
+            fetch(`/api/agents/${agentId}/integrations`, {
+              method: "DELETE",
+            })
+          );
+        }
       }
       if (dirtyTabs.has("access") && accessDraft.current) {
         agentPatch.visibility = accessDraft.current.visibility;
@@ -311,13 +341,11 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
     return <div className="p-8 text-muted-foreground">Agent not found.</div>;
   }
 
-  const canEdit = isAdmin || agent.isPersonal;
   const canDelete = isAdmin && !agent.isPersonal;
   const showPermissions = isAdmin && !agent.isPersonal;
 
-  // Non-admins cannot edit shared agents — redirect to chat
+  // Non-admins cannot edit shared agents — redirect handled by effect above
   if (!canEdit) {
-    router.replace(`/chat/${agentId}`);
     return <div className="p-8 text-muted-foreground">Redirecting...</div>;
   }
 

@@ -4,6 +4,9 @@ import {
   getToolById,
   getToolsByCategory,
   computeDeniedGroups,
+  getOdooTools,
+  getOdooToolsForAccessLevel,
+  detectOdooAccessLevel,
 } from "@/lib/tool-registry";
 
 describe("TOOL_REGISTRY", () => {
@@ -16,7 +19,31 @@ describe("TOOL_REGISTRY", () => {
 
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
-    expect(powerful.length).toBeGreaterThanOrEqual(5);
+    expect(powerful.length).toBe(3);
+    expect(powerful.map((t) => t.id)).toEqual(["odoo_create", "odoo_write", "odoo_delete"]);
+  });
+
+  it("does not contain any OpenClaw native tools", () => {
+    const nativeTools = [
+      "shell",
+      "fs_read",
+      "fs_write",
+      "pdf",
+      "image",
+      "image_generate",
+      "web_fetch",
+      "web_search",
+    ];
+    const ids = TOOL_REGISTRY.map((t) => t.id);
+    for (const native of nativeTools) {
+      expect(ids).not.toContain(native);
+    }
+  });
+
+  it("no tool has a group property", () => {
+    for (const tool of TOOL_REGISTRY) {
+      expect(tool).not.toHaveProperty("group");
+    }
   });
 
   it("every tool has id, label, description, and category", () => {
@@ -58,43 +85,127 @@ describe("getToolsByCategory", () => {
 });
 
 describe("computeDeniedGroups", () => {
-  it("returns empty deny list when no tools are allowed", () => {
+  it("always returns all groups and standalone tools", () => {
     const denied = computeDeniedGroups([]);
-    expect(denied).toContain("group:runtime");
-    expect(denied).toContain("group:fs");
-    expect(denied).toContain("group:web");
+    expect(denied).toEqual([
+      "group:runtime",
+      "group:fs",
+      "group:web",
+      "pdf",
+      "image",
+      "image_generate",
+    ]);
   });
 
-  it("removes group from deny list when a tool from that group is allowed", () => {
-    const denied = computeDeniedGroups(["shell"]);
-    expect(denied).not.toContain("group:runtime");
-    expect(denied).toContain("group:fs");
-    expect(denied).toContain("group:web");
+  it("returns full deny list even when tool IDs are passed", () => {
+    const denied = computeDeniedGroups(["pinchy_ls", "odoo_create"]);
+    expect(denied).toEqual([
+      "group:runtime",
+      "group:fs",
+      "group:web",
+      "pdf",
+      "image",
+      "image_generate",
+    ]);
+  });
+});
+
+describe("Odoo access level helpers", () => {
+  it("all odoo tools have integration: 'odoo'", () => {
+    const odooTools = TOOL_REGISTRY.filter((t) => t.id.startsWith("odoo_"));
+    expect(odooTools.length).toBe(7);
+    for (const tool of odooTools) {
+      expect(tool.integration).toBe("odoo");
+    }
   });
 
-  it("removes fs group when any fs tool is allowed", () => {
-    const denied = computeDeniedGroups(["fs_read"]);
-    expect(denied).not.toContain("group:fs");
+  it("non-odoo tools don't have integration set", () => {
+    const nonOdooTools = TOOL_REGISTRY.filter((t) => !t.id.startsWith("odoo_"));
+    for (const tool of nonOdooTools) {
+      expect(tool.integration).toBeUndefined();
+    }
   });
 
-  it("ignores safe tools for group computation", () => {
-    const denied = computeDeniedGroups(["pinchy_ls", "pinchy_read"]);
-    expect(denied).toContain("group:runtime");
-    expect(denied).toContain("group:fs");
-    expect(denied).toContain("group:web");
+  it("getOdooToolsForAccessLevel('read-only') returns exactly the 4 read tools", () => {
+    const tools = getOdooToolsForAccessLevel("read-only");
+    expect(tools).toEqual(["odoo_schema", "odoo_read", "odoo_count", "odoo_aggregate"]);
   });
 
-  it("always denies standalone OpenClaw tools that bypass access control", () => {
-    const denied = computeDeniedGroups(["pinchy_ls", "pinchy_read"]);
-    expect(denied).toContain("pdf");
-    expect(denied).toContain("image");
-    expect(denied).toContain("image_generate");
+  it("getOdooToolsForAccessLevel('read-write') returns 6 tools", () => {
+    const tools = getOdooToolsForAccessLevel("read-write");
+    expect(tools).toEqual([
+      "odoo_schema",
+      "odoo_read",
+      "odoo_count",
+      "odoo_aggregate",
+      "odoo_create",
+      "odoo_write",
+    ]);
   });
 
-  it("denies standalone tools even when powerful tools are allowed", () => {
-    const denied = computeDeniedGroups(["shell", "fs_read", "web_fetch"]);
-    expect(denied).toContain("pdf");
-    expect(denied).toContain("image");
-    expect(denied).toContain("image_generate");
+  it("getOdooToolsForAccessLevel('full') returns all 7 tools", () => {
+    const tools = getOdooToolsForAccessLevel("full");
+    expect(tools).toEqual([
+      "odoo_schema",
+      "odoo_read",
+      "odoo_count",
+      "odoo_aggregate",
+      "odoo_create",
+      "odoo_write",
+      "odoo_delete",
+    ]);
+  });
+
+  it("getOdooToolsForAccessLevel('custom') returns only schema", () => {
+    const tools = getOdooToolsForAccessLevel("custom");
+    expect(tools).toEqual(["odoo_schema"]);
+  });
+
+  it("getOdooTools() returns exactly 7 tools", () => {
+    const tools = getOdooTools();
+    expect(tools).toHaveLength(7);
+    expect(tools.every((t) => t.integration === "odoo")).toBe(true);
+  });
+
+  it("detectOdooAccessLevel correctly identifies read-only preset", () => {
+    expect(
+      detectOdooAccessLevel(["odoo_schema", "odoo_read", "odoo_count", "odoo_aggregate"])
+    ).toBe("read-only");
+  });
+
+  it("detectOdooAccessLevel correctly identifies read-write preset", () => {
+    expect(
+      detectOdooAccessLevel([
+        "odoo_schema",
+        "odoo_read",
+        "odoo_count",
+        "odoo_aggregate",
+        "odoo_create",
+        "odoo_write",
+      ])
+    ).toBe("read-write");
+  });
+
+  it("detectOdooAccessLevel correctly identifies full preset", () => {
+    expect(
+      detectOdooAccessLevel([
+        "odoo_schema",
+        "odoo_read",
+        "odoo_count",
+        "odoo_aggregate",
+        "odoo_create",
+        "odoo_write",
+        "odoo_delete",
+      ])
+    ).toBe("full");
+  });
+
+  it("detectOdooAccessLevel returns 'custom' for non-preset combinations", () => {
+    // Only schema + delete — not a standard preset
+    expect(detectOdooAccessLevel(["odoo_schema", "odoo_delete"])).toBe("custom");
+  });
+
+  it("detectOdooAccessLevel returns 'custom' when no odoo tools present", () => {
+    expect(detectOdooAccessLevel(["pinchy_ls", "pinchy_read"])).toBe("custom");
   });
 });

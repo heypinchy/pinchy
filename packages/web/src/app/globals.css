@@ -121,4 +121,12 @@
     @apply bg-background text-foreground;
     font-family: var(--font-sans), Arial, Helvetica, sans-serif;
   }
+  /* Override password manager autofill styles (1Password, browser, etc.) */
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus {
+    -webkit-text-fill-color: var(--foreground);
+    -webkit-box-shadow: 0 0 0 1000px var(--background) inset;
+    transition: background-color 5000s ease-in-out 0s;
+  }
 }
