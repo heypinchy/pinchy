@@ -123,8 +123,13 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Build production images locally
+        run: |
+          docker build -t ghcr.io/heypinchy/pinchy:latest -f Dockerfile.pinchy .
+          docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
+
       - name: Start production stack
-        run: docker compose up --build -d
+        run: docker compose up -d
         env:
           BETTER_AUTH_SECRET: ci-test-secret-not-for-production
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
