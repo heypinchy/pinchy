@@ -87,7 +87,7 @@ describe("SettingsSecurity", () => {
     expect(screen.getByRole("button", { name: /remove domain lock/i })).toBeInTheDocument();
   });
 
-  it("refreshes the page after locking to update the banner", async () => {
+  it("shows restart overlay after locking domain", async () => {
     fetchSpy
       .mockResolvedValueOnce(
         new Response(
@@ -98,7 +98,9 @@ describe("SettingsSecurity", () => {
           })
         )
       )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ domain: "pinchy.example.com" })));
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ domain: "pinchy.example.com", restart: true }))
+      );
 
     render(<SettingsSecurity />);
 
@@ -111,39 +113,11 @@ describe("SettingsSecurity", () => {
     await userEvent.click(screen.getByRole("button", { name: /lock pinchy\.example\.com/i }));
 
     await waitFor(() => {
-      expect(mockRefresh).toHaveBeenCalled();
+      expect(screen.getByText(/applying security settings/i)).toBeInTheDocument();
     });
   });
 
-  it("shows restart notice after locking domain", async () => {
-    fetchSpy
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({
-            domain: null,
-            currentHost: "pinchy.example.com",
-            isHttps: true,
-          })
-        )
-      )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ domain: "pinchy.example.com" })));
-
-    render(<SettingsSecurity />);
-
-    await waitFor(() => {
-      expect(
-        screen.getByRole("button", { name: /lock pinchy\.example\.com/i })
-      ).toBeInTheDocument();
-    });
-
-    await userEvent.click(screen.getByRole("button", { name: /lock pinchy\.example\.com/i }));
-
-    await waitFor(() => {
-      expect(screen.getByText(/restart the container/i)).toBeInTheDocument();
-    });
-  });
-
-  it("shows restart notice after removing domain lock", async () => {
+  it("does not show restart overlay after removing domain lock", async () => {
     fetchSpy
       .mockResolvedValueOnce(
         new Response(
@@ -154,7 +128,7 @@ describe("SettingsSecurity", () => {
           })
         )
       )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true })));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ removed: true })));
 
     render(<SettingsSecurity />);
 
@@ -167,8 +141,9 @@ describe("SettingsSecurity", () => {
     await userEvent.click(screen.getByRole("button", { name: /yes, remove domain lock/i }));
 
     await waitFor(() => {
-      expect(screen.getByText(/restart the container/i)).toBeInTheDocument();
+      expect(mockRefresh).toHaveBeenCalled();
     });
+    expect(screen.queryByText(/applying security settings/i)).not.toBeInTheDocument();
   });
 
   it("shows error message when fetch fails", async () => {

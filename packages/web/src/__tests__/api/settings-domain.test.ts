@@ -87,7 +87,7 @@ describe("POST /api/settings/domain", () => {
     expect(mockSetDomainAndRefreshCache).not.toHaveBeenCalled();
   });
 
-  it("should save domain and return success when valid HTTPS request", async () => {
+  it("should save domain and return success with restart flag when valid HTTPS request", async () => {
     mockGetSetting.mockResolvedValueOnce(null);
 
     const response = await POST(
@@ -99,6 +99,7 @@ describe("POST /api/settings/domain", () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.domain).toBe("pinchy.example.com");
+    expect(data.restart).toBe(true);
     expect(mockSetDomainAndRefreshCache).toHaveBeenCalledWith("pinchy.example.com");
   });
 

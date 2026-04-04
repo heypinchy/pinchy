@@ -38,7 +38,13 @@ export async function POST(req: Request) {
     },
   }).catch(() => {});
 
-  return NextResponse.json({ domain });
+  // Schedule a restart so useSecureCookies picks up the new domain
+  setTimeout(() => {
+    console.log("Restarting to apply domain lock security settings...");
+    process.exit(0);
+  }, 500);
+
+  return NextResponse.json({ domain, restart: true });
 }
 
 export async function DELETE(_req: Request) {

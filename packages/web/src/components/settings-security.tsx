@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { ShieldCheck, ShieldAlert } from "lucide-react";
+import { ShieldCheck, ShieldAlert, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 
 interface DomainStatus {
@@ -20,7 +20,7 @@ export function SettingsSecurity() {
   const [locking, setLocking] = useState(false);
   const [showRemoveConfirm, setShowRemoveConfirm] = useState(false);
   const [removing, setRemoving] = useState(false);
-  const [restartNeeded, setRestartNeeded] = useState(false);
+  const [showRestarting, setShowRestarting] = useState(false);
   const [error, setError] = useState(false);
 
   const fetchStatus = useCallback(async () => {
@@ -42,6 +42,25 @@ export function SettingsSecurity() {
     fetchStatus();
   }, [fetchStatus]);
 
+  const waitForRestart = async () => {
+    // Wait for the server to actually go down
+    await new Promise((r) => setTimeout(r, 2000));
+
+    const poll = async () => {
+      try {
+        const res = await fetch("/api/health");
+        if (res.ok) {
+          window.location.reload();
+          return;
+        }
+      } catch {
+        // Server still down, retry
+      }
+      setTimeout(poll, 2000);
+    };
+    poll();
+  };
+
   const handleLock = async () => {
     setLocking(true);
     try {
@@ -49,9 +68,11 @@ export function SettingsSecurity() {
       if (res.ok) {
         const data = await res.json();
         setStatus((prev) => (prev ? { ...prev, domain: data.domain } : prev));
-        setRestartNeeded(true);
         toast.success(`Domain locked to ${data.domain}.`);
-        router.refresh();
+        if (data.restart) {
+          setShowRestarting(true);
+          waitForRestart();
+        }
       } else {
         const data = await res.json();
         toast.error(data.error || "Failed to lock domain");
@@ -70,7 +91,6 @@ export function SettingsSecurity() {
       if (res.ok) {
         setStatus((prev) => (prev ? { ...prev, domain: null } : prev));
         setShowRemoveConfirm(false);
-        setRestartNeeded(true);
         toast.success("Domain lock removed");
         router.refresh();
       } else {
@@ -100,15 +120,6 @@ export function SettingsSecurity() {
       </Card>
     );
   }
-
-  const restartNotice = restartNeeded && (
-    <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3">
-      <p className="text-sm">Restart the container to fully apply all security settings.</p>
-      <code className="mt-1 block text-xs text-muted-foreground">
-        docker compose restart pinchy
-      </code>
-    </div>
-  );
 
   // State C: Domain is locked
   if (status.domain) {
@@ -156,7 +167,15 @@ export function SettingsSecurity() {
             )}
           </CardContent>
         </Card>
-        {restartNotice}
+        {showRestarting && (
+          <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/95 backdrop-blur-sm">
+            <Loader2 className="size-8 animate-spin text-muted-foreground" />
+            <p className="mt-4 text-lg font-medium">Applying security settings...</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Pinchy is restarting. This takes a few seconds.
+            </p>
+          </div>
+        )}
       </>
     );
   }
@@ -187,7 +206,15 @@ export function SettingsSecurity() {
             </Button>
           </CardContent>
         </Card>
-        {restartNotice}
+        {showRestarting && (
+          <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-background/95 backdrop-blur-sm">
+            <Loader2 className="size-8 animate-spin text-muted-foreground" />
+            <p className="mt-4 text-lg font-medium">Applying security settings...</p>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Pinchy is restarting. This takes a few seconds.
+            </p>
+          </div>
+        )}
       </>
     );
   }
