@@ -68,7 +68,13 @@ export async function DELETE(_req: Request) {
     },
   }).catch(() => {});
 
-  return NextResponse.json({ removed: true });
+  // Schedule a restart so useSecureCookies picks up the removed domain
+  setTimeout(() => {
+    console.log("Restarting to apply domain unlock security settings...");
+    process.exit(0);
+  }, 500);
+
+  return NextResponse.json({ removed: true, restart: true });
 }
 
 export async function GET(req: Request) {

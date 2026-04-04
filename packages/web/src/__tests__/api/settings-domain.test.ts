@@ -177,13 +177,14 @@ describe("DELETE /api/settings/domain", () => {
     expect(data.error).toMatch(/no domain/i);
   });
 
-  it("should delete domain and return success", async () => {
+  it("should delete domain and return success with restart flag", async () => {
     mockGetSetting.mockResolvedValueOnce("pinchy.example.com");
 
     const response = await DELETE(makeRequest("DELETE"));
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.removed).toBe(true);
+    expect(data.restart).toBe(true);
     expect(mockDeleteDomainAndRefreshCache).toHaveBeenCalled();
   });
 

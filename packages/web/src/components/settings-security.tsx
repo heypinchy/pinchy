@@ -89,10 +89,16 @@ export function SettingsSecurity() {
     try {
       const res = await fetch("/api/settings/domain", { method: "DELETE" });
       if (res.ok) {
+        const data = await res.json();
         setStatus((prev) => (prev ? { ...prev, domain: null } : prev));
         setShowRemoveConfirm(false);
         toast.success("Domain lock removed");
-        router.refresh();
+        if (data.restart) {
+          setShowRestarting(true);
+          waitForRestart();
+        } else {
+          router.refresh();
+        }
       } else {
         const data = await res.json();
         toast.error(data.error || "Failed to remove domain lock");
@@ -157,7 +163,7 @@ export function SettingsSecurity() {
                     onClick={handleRemove}
                     disabled={removing}
                   >
-                    {removing ? "Removing\u2026" : "Yes, remove domain lock"}
+                    {removing ? "Removing\u2026" : "Remove lock & restart"}
                   </Button>
                   <Button variant="outline" size="sm" onClick={() => setShowRemoveConfirm(false)}>
                     Cancel
@@ -202,7 +208,7 @@ export function SettingsSecurity() {
               <li>Block access from other addresses (e.g. direct IP)</li>
             </ul>
             <Button onClick={handleLock} disabled={locking}>
-              {locking ? "Locking\u2026" : `Lock ${status.currentHost}`}
+              {locking ? "Locking\u2026" : `Lock ${status.currentHost} & restart`}
             </Button>
           </CardContent>
         </Card>

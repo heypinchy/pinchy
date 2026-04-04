@@ -37,7 +37,7 @@ describe("SettingsSecurity", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /lock pinchy\.example\.com/i })
+        screen.getByRole("button", { name: /lock pinchy\.example\.com & restart/i })
       ).toBeInTheDocument();
     });
     expect(screen.getByText(/accessing Pinchy via/)).toBeInTheDocument();
@@ -106,18 +106,20 @@ describe("SettingsSecurity", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /lock pinchy\.example\.com/i })
+        screen.getByRole("button", { name: /lock pinchy\.example\.com & restart/i })
       ).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole("button", { name: /lock pinchy\.example\.com/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /lock pinchy\.example\.com & restart/i })
+    );
 
     await waitFor(() => {
       expect(screen.getByText(/applying security settings/i)).toBeInTheDocument();
     });
   });
 
-  it("does not show restart overlay after removing domain lock", async () => {
+  it("shows restart overlay after removing domain lock", async () => {
     fetchSpy
       .mockResolvedValueOnce(
         new Response(
@@ -128,7 +130,7 @@ describe("SettingsSecurity", () => {
           })
         )
       )
-      .mockResolvedValueOnce(new Response(JSON.stringify({ removed: true })));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ removed: true, restart: true })));
 
     render(<SettingsSecurity />);
 
@@ -138,12 +140,11 @@ describe("SettingsSecurity", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /remove domain lock/i }));
 
-    await userEvent.click(screen.getByRole("button", { name: /yes, remove domain lock/i }));
+    await userEvent.click(screen.getByRole("button", { name: /remove lock & restart/i }));
 
     await waitFor(() => {
-      expect(mockRefresh).toHaveBeenCalled();
+      expect(screen.getByText(/applying security settings/i)).toBeInTheDocument();
     });
-    expect(screen.queryByText(/applying security settings/i)).not.toBeInTheDocument();
   });
 
   it("shows error message when fetch fails", async () => {
@@ -173,11 +174,13 @@ describe("SettingsSecurity", () => {
 
     await waitFor(() => {
       expect(
-        screen.getByRole("button", { name: /lock pinchy\.example\.com/i })
+        screen.getByRole("button", { name: /lock pinchy\.example\.com & restart/i })
       ).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole("button", { name: /lock pinchy\.example\.com/i }));
+    await userEvent.click(
+      screen.getByRole("button", { name: /lock pinchy\.example\.com & restart/i })
+    );
 
     await waitFor(() => {
       expect(fetchSpy).toHaveBeenCalledWith("/api/settings/domain", {
