@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { describePageImage } from "./pdf-vision-api";
+import { describePageImage, createVisionConfig } from "./pdf-vision-api";
 
 describe("describePageImage", () => {
   const originalFetch = globalThis.fetch;
@@ -39,7 +39,7 @@ describe("describePageImage", () => {
 
   it("returns null for unknown providers", async () => {
     const result = await describePageImage("base64data", {
-      model: "ollama/llama3.1:8b",
+      model: "unknown/some-model",
       resolveApiKey: async () => "key",
     });
 
@@ -150,5 +150,102 @@ describe("describePageImage", () => {
         resolveApiKey: async () => "test-key",
       }),
     ).rejects.toThrow("Invalid model ID");
+  });
+
+  describe("Ollama provider", () => {
+    it("calls Ollama API with OpenAI-compatible format at configured base URL", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "Extracted text from scanned page" } }],
+        }),
+      });
+
+      const result = await describePageImage("base64imagedata", {
+        model: "ollama/llava:7b",
+        ollamaBaseUrl: "http://localhost:11434",
+        resolveApiKey: async () => null,
+      });
+
+      expect(result).toBe("Extracted text from scanned page");
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        "http://localhost:11434/v1/chat/completions",
+        expect.objectContaining({
+          method: "POST",
+          headers: expect.objectContaining({
+            "content-type": "application/json",
+          }),
+        }),
+      );
+      // Verify no Authorization header
+      const callArgs = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+      const headers = (callArgs[1] as RequestInit).headers as Record<string, string>;
+      expect(headers).not.toHaveProperty("authorization");
+      expect(headers).not.toHaveProperty("Authorization");
+    });
+
+    it("returns null when ollamaBaseUrl is not configured", async () => {
+      globalThis.fetch = vi.fn();
+
+      const result = await describePageImage("base64data", {
+        model: "ollama/llava:7b",
+        resolveApiKey: async () => null,
+      });
+      expect(result).toBeNull();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it("returns null on API error", async () => {
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        text: async () => "Internal Server Error",
+      });
+
+      const result = await describePageImage("base64data", {
+        model: "ollama/llava:7b",
+        ollamaBaseUrl: "http://localhost:11434",
+        resolveApiKey: async () => null,
+      });
+      expect(result).toBeNull();
+    });
+
+    it("does not handle ollama-cloud models", async () => {
+      globalThis.fetch = vi.fn();
+
+      const result = await describePageImage("base64data", {
+        model: "ollama-cloud/gemini-3-flash-preview:cloud",
+        ollamaBaseUrl: "http://localhost:11434",
+        resolveApiKey: async () => null,
+      });
+      expect(result).toBeNull();
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("createVisionConfig", () => {
+  it("extracts ollamaBaseUrl from config", () => {
+    const config = createVisionConfig({
+      modelAuth: { resolveApiKeyForProvider: async () => null },
+      cfg: {
+        models: {
+          providers: {
+            ollama: { baseUrl: "http://host.docker.internal:11434", api: "ollama" },
+          },
+        },
+      },
+      model: "ollama/llava:7b",
+    });
+    expect(config.ollamaBaseUrl).toBe("http://host.docker.internal:11434");
+  });
+
+  it("sets ollamaBaseUrl to undefined when no ollama provider configured", () => {
+    const config = createVisionConfig({
+      modelAuth: { resolveApiKeyForProvider: async () => null },
+      cfg: {},
+      model: "anthropic/claude-haiku-4-5-20251001",
+    });
+    expect(config.ollamaBaseUrl).toBeUndefined();
   });
 });
