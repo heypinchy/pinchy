@@ -12,6 +12,9 @@ services:
       - /app/packages/web/node_modules
       - /app/packages/web/.next
   openclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile.openclaw
     volumes:
       - ./packages/plugins/pinchy-files:/root/.openclaw/extensions/pinchy-files
       - ./packages/plugins/pinchy-context:/root/.openclaw/extensions/pinchy-context

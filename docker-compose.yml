@@ -1,8 +1,6 @@
 services:
   pinchy:
-    build:
-      context: .
-      dockerfile: Dockerfile.pinchy
+    image: ghcr.io/heypinchy/pinchy:latest
     ports:
       - "${PINCHY_PORT:-7777}:7777"
     environment:
@@ -24,9 +22,7 @@ services:
         condition: service_started
 
   openclaw:
-    build:
-      context: .
-      dockerfile: Dockerfile.openclaw
+    image: ghcr.io/heypinchy/pinchy-openclaw:latest
     expose:
       - "18789"
     volumes:

@@ -22,10 +22,9 @@ import { Aside } from "@astrojs/starlight/components";
 The simplest way to run Pinchy. One command starts the full stack.
 
 ```bash
-git clone https://github.com/heypinchy/pinchy.git
-cd pinchy
-git checkout %%PINCHY_VERSION%%
-docker compose up --build
+mkdir -p pinchy && cd pinchy
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
 ```
 
 ### Services
