@@ -67,6 +67,15 @@ vi.mock("@/lib/openclaw-config", () => ({
 vi.mock("@/lib/provider-models", () => ({
   resetCache: vi.fn(),
   getDefaultModel: vi.fn().mockResolvedValue("ollama/llama3:latest"),
+  fetchOllamaLocalModelsFromUrl: vi.fn().mockResolvedValue([
+    {
+      id: "ollama/qwen2.5:7b",
+      name: "qwen2.5:7b",
+      parameterSize: "7B",
+      compatible: true,
+      capabilities: { tools: true, vision: false, completion: true, thinking: false },
+    },
+  ]),
 }));
 
 vi.mock("@/db", () => ({
@@ -93,7 +102,7 @@ import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { requireAdmin } from "@/lib/api-auth";
-import { resetCache, getDefaultModel } from "@/lib/provider-models";
+import { resetCache, getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 
 describe("POST /api/setup/provider", () => {
   beforeEach(() => {
@@ -357,6 +366,37 @@ describe("POST /api/setup/provider", () => {
     expect(response.status).toBe(502);
     const data = await response.json();
     expect(data.error).toContain("500");
+  });
+
+  it("should return 422 when ollama-local has no tool-capable models", async () => {
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+      {
+        id: "ollama/phi3:mini",
+        name: "phi3:mini",
+        parameterSize: "3.8B",
+        compatible: false,
+        incompatibleReason: "Not compatible",
+        capabilities: { tools: false, vision: false, completion: true, thinking: false },
+      },
+    ]);
+
+    const response = await POST(
+      makeRequest({ provider: "ollama-local", url: "http://host.docker.internal:11434" }) as any
+    );
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.error).toContain("qwen2.5");
+  });
+
+  it("should return 422 when ollama-local has zero models", async () => {
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([]);
+
+    const response = await POST(
+      makeRequest({ provider: "ollama-local", url: "http://host.docker.internal:11434" }) as any
+    );
+    expect(response.status).toBe(422);
+    const data = await response.json();
+    expect(data.error).toContain("No");
   });
 
   it("should set dynamically resolved default model for ollama-local as first provider", async () => {

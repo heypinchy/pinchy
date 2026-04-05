@@ -17,6 +17,8 @@ export function resetCache() {
 export interface ModelInfo {
   id: string;
   name: string;
+  compatible?: boolean;
+  incompatibleReason?: string;
 }
 
 export interface OllamaModelCapabilities {
@@ -190,7 +192,9 @@ export function getOllamaLocalModels(): OllamaLocalModelInfo[] {
   return lastOllamaLocalModels;
 }
 
-async function fetchOllamaLocalModels(baseUrl: string): Promise<OllamaLocalModelInfo[]> {
+export async function fetchOllamaLocalModelsFromUrl(
+  baseUrl: string
+): Promise<OllamaLocalModelInfo[]> {
   const url = baseUrl.replace(/\/$/, "");
   const tagsResponse = await fetch(`${url}/api/tags`);
   if (!tagsResponse.ok) return [];
@@ -216,11 +220,14 @@ async function fetchOllamaLocalModels(baseUrl: string): Promise<OllamaLocalModel
 
     const paramSize = showData.details?.parameter_size || model.details?.parameter_size || "";
     const displayName = paramSize ? `${model.name} (${paramSize})` : model.name;
+    const hasTools = capabilities.includes("tools");
 
     models.push({
       id: `ollama/${model.name}`,
       name: displayName,
       parameterSize: paramSize,
+      compatible: hasTools,
+      incompatibleReason: hasTools ? undefined : "Not compatible — does not support agent tools",
       capabilities: {
         vision: capabilities.includes("vision"),
         tools: capabilities.includes("tools"),
@@ -296,7 +303,7 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
   const ollamaUrl = await getSetting(PROVIDERS["ollama-local"].settingsKey);
   if (ollamaUrl) {
     try {
-      const ollamaModels = await fetchOllamaLocalModels(ollamaUrl);
+      const ollamaModels = await fetchOllamaLocalModelsFromUrl(ollamaUrl);
       lastOllamaLocalModels = ollamaModels;
 
       const visionModels = new Set(

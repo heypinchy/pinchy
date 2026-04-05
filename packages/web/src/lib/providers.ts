@@ -56,7 +56,8 @@ export type ValidationResult =
   | { valid: true }
   | { valid: false; error: "invalid_key" }
   | { valid: false; error: "network_error" }
-  | { valid: false; error: "provider_error"; status: number };
+  | { valid: false; error: "provider_error"; status: number }
+  | { valid: false; error: "no_compatible_models" };
 
 function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<Response> {
   switch (provider) {

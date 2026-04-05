@@ -172,6 +172,90 @@ describe("AgentSettingsGeneral", () => {
     });
   });
 
+  describe("model compatibility", () => {
+    it("should render incompatible Ollama models as disabled in dropdown", async () => {
+      const providersWithIncompat = [
+        {
+          id: "ollama-local",
+          name: "Ollama (Local)",
+          models: [
+            { id: "ollama/qwen2.5:7b", name: "qwen2.5:7b (7B)", compatible: true as const },
+            {
+              id: "ollama/phi3:mini",
+              name: "phi3:mini (3.8B)",
+              compatible: false as const,
+              incompatibleReason: "Not compatible — does not support agent tools",
+            },
+          ],
+        },
+      ];
+
+      render(
+        <AgentSettingsGeneral
+          agent={{ ...defaultAgent, model: "ollama/qwen2.5:7b" }}
+          providers={providersWithIncompat}
+          onChange={vi.fn()}
+        />
+      );
+
+      // Open the dropdown
+      await userEvent.click(screen.getByRole("combobox"));
+
+      // Find all option roles — incompatible model should be aria-disabled
+      const options = screen.getAllByRole("option");
+      const disabledOption = options.find((o) => o.textContent?.includes("phi3:mini"));
+      expect(disabledOption).toBeDefined();
+      expect(disabledOption).toHaveAttribute("aria-disabled", "true");
+    });
+
+    it("should show incompatibility reason for disabled models", async () => {
+      const providersWithIncompat = [
+        {
+          id: "ollama-local",
+          name: "Ollama (Local)",
+          models: [
+            { id: "ollama/qwen2.5:7b", name: "qwen2.5:7b (7B)", compatible: true as const },
+            {
+              id: "ollama/phi3:mini",
+              name: "phi3:mini (3.8B)",
+              compatible: false as const,
+              incompatibleReason: "Not compatible — does not support agent tools",
+            },
+          ],
+        },
+      ];
+
+      render(
+        <AgentSettingsGeneral
+          agent={{ ...defaultAgent, model: "ollama/qwen2.5:7b" }}
+          providers={providersWithIncompat}
+          onChange={vi.fn()}
+        />
+      );
+
+      await userEvent.click(screen.getByRole("combobox"));
+      expect(screen.getByText("Not compatible — does not support agent tools")).toBeInTheDocument();
+    });
+
+    it("should not disable cloud provider models without compatible field", async () => {
+      render(
+        <AgentSettingsGeneral
+          agent={defaultAgent}
+          providers={defaultProviders}
+          onChange={vi.fn()}
+        />
+      );
+
+      await userEvent.click(screen.getByRole("combobox"));
+
+      // Cloud provider models should not be disabled
+      const options = screen.getAllByRole("option");
+      const sonnetOption = options.find((o) => o.textContent?.includes("Claude Sonnet 4"));
+      expect(sonnetOption).toBeDefined();
+      expect(sonnetOption).not.toHaveAttribute("aria-disabled", "true");
+    });
+  });
+
   describe("onChange behavior", () => {
     it("should NOT render a Save button", () => {
       const onChange = vi.fn();

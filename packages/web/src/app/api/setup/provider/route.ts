@@ -8,7 +8,7 @@ import {
 } from "@/lib/providers";
 import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { resetCache, getDefaultModel } from "@/lib/provider-models";
+import { resetCache, getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -53,6 +53,18 @@ export async function POST(request: NextRequest) {
         },
         { status: 502 }
       );
+    }
+
+    // Check that at least one model supports tool calling
+    const ollamaModels = await fetchOllamaLocalModelsFromUrl(url);
+    const hasToolCapable = ollamaModels.some((m) => m.capabilities.tools);
+
+    if (!hasToolCapable) {
+      const message =
+        ollamaModels.length === 0
+          ? "No models found. Pull a compatible model first: ollama pull qwen2.5:7b"
+          : "No compatible models found. Pinchy agents require tool support. Pull a compatible model: ollama pull qwen2.5:7b";
+      return NextResponse.json({ error: message }, { status: 422 });
     }
 
     // Store URL unencrypted (not a secret)

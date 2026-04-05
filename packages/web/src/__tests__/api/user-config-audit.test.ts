@@ -23,6 +23,16 @@ vi.mock("@/lib/settings", () => ({
 
 vi.mock("@/lib/provider-models", () => ({
   resetCache: vi.fn(),
+  getDefaultModel: vi.fn().mockResolvedValue("anthropic/claude-haiku-4-5-20251001"),
+  fetchOllamaLocalModelsFromUrl: vi.fn().mockResolvedValue([
+    {
+      id: "ollama/qwen2.5:7b",
+      name: "qwen2.5:7b",
+      parameterSize: "7B",
+      compatible: true,
+      capabilities: { tools: true, vision: false, completion: true, thinking: false },
+    },
+  ]),
 }));
 
 vi.mock("@/lib/providers", () => ({

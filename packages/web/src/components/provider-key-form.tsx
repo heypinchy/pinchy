@@ -139,7 +139,7 @@ const PROVIDERS: Record<
           label: "Install Ollama from ollama.com",
           link: { text: "ollama.com", url: "https://ollama.com/download" },
         },
-        { label: "Pull a model: ollama pull llama3" },
+        { label: "Pull a model with tool support: ollama pull qwen2.5:7b" },
         { label: "Ensure Ollama is running" },
         {
           label: "Use host.docker.internal:11434 when Ollama runs on the host and Pinchy in Docker",

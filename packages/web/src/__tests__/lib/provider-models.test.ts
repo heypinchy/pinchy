@@ -405,6 +405,98 @@ describe("fetchProviderModels", () => {
     expect(ollamaLocal!.models).toEqual([]);
   });
 
+  it("marks Ollama models without tool support as incompatible", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      return null;
+    });
+
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(
+          JSON.stringify({
+            models: [{ name: "phi3:mini", details: { parameter_size: "3.8B" } }],
+          }),
+          { status: 200 }
+        );
+      }
+      if (urlStr.endsWith("/api/show")) {
+        return new Response(
+          JSON.stringify({
+            capabilities: ["completion"], // no "tools"
+            details: { parameter_size: "3.8B" },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+
+    const result = await fetchProviderModels();
+    const ollamaLocal = result.find((p) => p.id === "ollama-local");
+    expect(ollamaLocal).toBeDefined();
+    const model = ollamaLocal!.models[0];
+    expect(model.compatible).toBe(false);
+    expect(model.incompatibleReason).toContain("does not support agent tools");
+  });
+
+  it("marks Ollama models with tool support as compatible", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      return null;
+    });
+
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(
+          JSON.stringify({
+            models: [{ name: "qwen2.5:7b", details: { parameter_size: "7B" } }],
+          }),
+          { status: 200 }
+        );
+      }
+      if (urlStr.endsWith("/api/show")) {
+        return new Response(
+          JSON.stringify({
+            capabilities: ["completion", "tools"],
+            details: { parameter_size: "7B" },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+
+    const result = await fetchProviderModels();
+    const ollamaLocal = result.find((p) => p.id === "ollama-local");
+    const model = ollamaLocal!.models[0];
+    expect(model.compatible).toBe(true);
+    expect(model.incompatibleReason).toBeUndefined();
+  });
+
+  it("cloud provider models have no compatible field set", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      return null;
+    });
+
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          data: [{ id: "claude-opus-4-6", display_name: "Claude Opus 4.6" }],
+        }),
+        { status: 200 }
+      )
+    );
+
+    const result = await fetchProviderModels();
+    const anthropic = result.find((p) => p.id === "anthropic");
+    expect(anthropic!.models[0].compatible).toBeUndefined();
+    expect(anthropic!.models[0].incompatibleReason).toBeUndefined();
+  });
+
   it("does not include ollama-local when URL is not configured", async () => {
     vi.mocked(getSetting).mockResolvedValue(null);
 

@@ -38,7 +38,7 @@ The simplest path. Install Ollama directly on the machine that runs Pinchy.
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Pull a model
-ollama pull llama3
+ollama pull qwen2.5:7b
 ```
 
 In Pinchy, set the URL to:
@@ -82,7 +82,7 @@ http://ollama:11434
 
 <Aside type="note">
   You'll still need to pull models inside the container: `docker compose exec
-  ollama ollama pull llama3`
+  ollama ollama pull qwen2.5:7b`
 </Aside>
 
 ### C. Ollama with NVIDIA GPU (Docker)
@@ -134,17 +134,21 @@ http://<server-ip>:11434
 
 ## Recommended Models
 
-| Use Case      | Model               | Size   | Why                                 |
-| ------------- | ------------------- | ------ | ----------------------------------- |
-| General agent | `llama3:latest`     | 4.7 GB | Good balance of speed and quality   |
-| Coding tasks  | `qwen2.5-coder:32b` | 19 GB  | Strong code generation              |
-| Large context | `qwen3:32b`         | 19 GB  | 128k context, reliable tool calling |
-| Lightweight   | `phi3:mini`         | 2.3 GB | Fast, works on smaller hardware     |
+<Aside type="caution">
+  Pinchy agents require models with **tool calling support**. Models without tool support will appear as disabled in the model dropdown. If no compatible models are installed, provider setup will be blocked.
+</Aside>
+
+| Use Case      | Model               | Size   | Tool Support | Why                                 |
+| ------------- | ------------------- | ------ | ------------ | ----------------------------------- |
+| General agent | `qwen2.5:7b`        | 4.7 GB | Yes          | Best balance of speed, quality, and tool support |
+| Coding tasks  | `qwen2.5-coder:32b` | 19 GB  | Yes          | Strong code generation              |
+| Large context | `qwen3:32b`         | 19 GB  | Yes          | 128k context, reliable tool calling |
+| Lightweight   | `phi3:mini`         | 2.3 GB | No           | Fast, but no tool support — not compatible with Pinchy agents |
 
 Pull any model with:
 
 ```bash
-ollama pull llama3
+ollama pull qwen2.5:7b
 ```
 
 ## Troubleshooting
@@ -157,8 +161,14 @@ ollama pull llama3
 
 **No models appear after connecting**
 
-- Pull at least one model first: `ollama pull llama3`
-- If Ollama runs in Docker, pull from inside the container: `docker compose exec ollama ollama pull llama3`
+- Pull at least one model first: `ollama pull qwen2.5:7b`
+- If Ollama runs in Docker, pull from inside the container: `docker compose exec ollama ollama pull qwen2.5:7b`
+
+**"No compatible models found"**
+
+- Pinchy agents require models with tool calling support. Not all Ollama models support this.
+- Pull a compatible model: `ollama pull qwen2.5:7b`
+- You can check a model's capabilities with `ollama show <model>` — look for "tools" in the capabilities list.
 
 **Slow responses**
 

@@ -10,6 +10,20 @@ if (typeof window !== "undefined") {
     unobserve() {}
     disconnect() {}
   };
+
+  // Radix UI Select uses pointer capture APIs not available in jsdom
+  if (!HTMLElement.prototype.hasPointerCapture) {
+    HTMLElement.prototype.hasPointerCapture = vi.fn().mockReturnValue(false);
+  }
+  if (!HTMLElement.prototype.setPointerCapture) {
+    HTMLElement.prototype.setPointerCapture = vi.fn();
+  }
+  if (!HTMLElement.prototype.releasePointerCapture) {
+    HTMLElement.prototype.releasePointerCapture = vi.fn();
+  }
+  if (!HTMLElement.prototype.scrollIntoView) {
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+  }
 }
 
 // Only set up browser globals when running in jsdom environment
