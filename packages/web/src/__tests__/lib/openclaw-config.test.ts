@@ -563,7 +563,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama"]).toBeDefined();
     expect(config.models.providers["ollama"].baseUrl).toBe("http://host.docker.internal:11434");
     expect(config.models.providers["ollama"].api).toBe("ollama");
-    expect(config.models.providers["ollama"].models).toBeUndefined();
+    expect(config.models.providers["ollama"].models).toEqual([]);
   });
 
   it("should include both ollama providers when both are configured", async () => {

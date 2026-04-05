@@ -252,6 +252,7 @@ export async function regenerateOpenClawConfig() {
     modelProviders["ollama"] = {
       baseUrl: ollamaLocalUrl.replace(/\/$/, ""),
       api: "ollama",
+      models: [], // Empty array — OpenClaw requires it for config validation, auto-discovers models at runtime
     };
   }
 
