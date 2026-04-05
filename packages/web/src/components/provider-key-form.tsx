@@ -133,7 +133,7 @@ const PROVIDERS: Record<
     prefix: "",
     authType: "url" as const,
     guide: {
-      keyUrl: "https://ollama.com/download",
+      keyUrl: "https://docs.heypinchy.com/guides/ollama-setup/",
       steps: [
         {
           label: "Install Ollama from ollama.com",
@@ -141,6 +141,9 @@ const PROVIDERS: Record<
         },
         { label: "Pull a model: ollama pull llama3" },
         { label: "Ensure Ollama is running" },
+        {
+          label: "Use host.docker.internal:11434 when Ollama runs on the host and Pinchy in Docker",
+        },
       ],
     },
   },
@@ -374,7 +377,7 @@ export function ProviderKeyForm({
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
                   >
-                    Go to {PROVIDERS[provider].name}
+                    {isUrlProvider ? "Setup guide" : `Go to ${PROVIDERS[provider].name}`}
                     <ExternalLink className="size-3" />
                   </a>
                 </div>
