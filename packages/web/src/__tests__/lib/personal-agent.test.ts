@@ -84,12 +84,20 @@ vi.mock("@/lib/providers", () => ({
       defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
-    ollama: {
-      name: "Ollama",
-      settingsKey: "ollama_api_key",
-      envVar: "OLLAMA_API_KEY",
+    "ollama-cloud": {
+      name: "Ollama Cloud",
+      settingsKey: "ollama_cloud_api_key",
+      envVar: "OLLAMA_CLOUD_API_KEY",
       defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
       placeholder: "sk-...",
+    },
+    "ollama-local": {
+      name: "Ollama (Local)",
+      authType: "url",
+      settingsKey: "ollama_local_url",
+      envVar: "",
+      defaultModel: "",
+      placeholder: "http://host.docker.internal:11434",
     },
   },
 }));

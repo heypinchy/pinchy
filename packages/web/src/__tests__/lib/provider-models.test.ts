@@ -23,12 +23,20 @@ vi.mock("@/lib/providers", () => ({
       defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
-    ollama: {
-      name: "Ollama",
-      settingsKey: "ollama_api_key",
-      envVar: "OLLAMA_API_KEY",
+    "ollama-cloud": {
+      name: "Ollama Cloud",
+      settingsKey: "ollama_cloud_api_key",
+      envVar: "OLLAMA_CLOUD_API_KEY",
       defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
       placeholder: "sk-...",
+    },
+    "ollama-local": {
+      name: "Ollama (Local)",
+      authType: "url",
+      settingsKey: "ollama_local_url",
+      envVar: "",
+      defaultModel: "",
+      placeholder: "http://host.docker.internal:11434",
     },
   },
 }));
@@ -39,7 +47,7 @@ vi.mock("@/lib/settings", () => ({
 
 global.fetch = vi.fn();
 
-import { fetchProviderModels, resetCache } from "@/lib/provider-models";
+import { fetchProviderModels, resetCache, getOllamaLocalModels } from "@/lib/provider-models";
 import { getSetting } from "@/lib/settings";
 
 describe("fetchProviderModels", () => {
@@ -228,7 +236,7 @@ describe("fetchProviderModels", () => {
 
   it("fetches and transforms Ollama models from OpenAI-compatible endpoint", async () => {
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
-      if (key === "ollama_api_key") return "sk-ollama-test";
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
       return null;
     });
 
@@ -246,7 +254,7 @@ describe("fetchProviderModels", () => {
     );
 
     const result = await fetchProviderModels();
-    const ollama = result.find((p) => p.id === "ollama");
+    const ollama = result.find((p) => p.id === "ollama-cloud");
     expect(ollama).toBeDefined();
     expect(ollama!.models).toEqual([
       { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "gemini-3-flash-preview" },
@@ -292,6 +300,153 @@ describe("fetchProviderModels", () => {
     await fetchProviderModels();
 
     expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("fetches local Ollama models via /api/tags and /api/show", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      return null;
+    });
+
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(
+          JSON.stringify({
+            models: [
+              { name: "llama3:latest", details: { parameter_size: "8B" } },
+              { name: "mistral:7b", details: { parameter_size: "7B" } },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      if (urlStr.endsWith("/api/show")) {
+        return new Response(
+          JSON.stringify({
+            capabilities: ["completion", "tools"],
+            details: { parameter_size: "8B" },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+
+    const result = await fetchProviderModels();
+    const ollamaLocal = result.find((p) => p.id === "ollama-local");
+    expect(ollamaLocal).toBeDefined();
+    expect(ollamaLocal!.name).toBe("Ollama (Local)");
+    expect(ollamaLocal!.models).toHaveLength(2);
+    expect(ollamaLocal!.models[0]).toEqual(expect.objectContaining({ id: "ollama/llama3:latest" }));
+    expect(ollamaLocal!.models[1]).toEqual(expect.objectContaining({ id: "ollama/mistral:7b" }));
+  });
+
+  it("filters out embedding-only models from local Ollama", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      return null;
+    });
+
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(
+          JSON.stringify({
+            models: [
+              { name: "llama3:latest", details: { parameter_size: "8B" } },
+              { name: "nomic-embed-text:latest", details: { parameter_size: "137M" } },
+            ],
+          }),
+          { status: 200 }
+        );
+      }
+      if (urlStr.endsWith("/api/show")) {
+        const body = JSON.parse((init as RequestInit)?.body as string);
+        if (body.name === "nomic-embed-text:latest") {
+          return new Response(
+            JSON.stringify({
+              capabilities: ["embedding"],
+              details: { parameter_size: "137M" },
+            }),
+            { status: 200 }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            capabilities: ["completion", "tools"],
+            details: { parameter_size: "8B" },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+
+    const result = await fetchProviderModels();
+    const ollamaLocal = result.find((p) => p.id === "ollama-local");
+    expect(ollamaLocal).toBeDefined();
+    const modelIds = ollamaLocal!.models.map((m) => m.id);
+    expect(modelIds).toContain("ollama/llama3:latest");
+    expect(modelIds).not.toContain("ollama/nomic-embed-text:latest");
+  });
+
+  it("returns empty models when local Ollama is unreachable", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      return null;
+    });
+
+    vi.mocked(fetch).mockRejectedValue(new Error("ECONNREFUSED"));
+
+    const result = await fetchProviderModels();
+    const ollamaLocal = result.find((p) => p.id === "ollama-local");
+    expect(ollamaLocal).toBeDefined();
+    expect(ollamaLocal!.models).toEqual([]);
+  });
+
+  it("does not include ollama-local when URL is not configured", async () => {
+    vi.mocked(getSetting).mockResolvedValue(null);
+
+    const result = await fetchProviderModels();
+    const ollamaLocal = result.find((p) => p.id === "ollama-local");
+    expect(ollamaLocal).toBeUndefined();
+  });
+
+  it("populates getOllamaLocalModels after fetching", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      return null;
+    });
+
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(
+          JSON.stringify({
+            models: [{ name: "llama3:latest", details: { parameter_size: "8B" } }],
+          }),
+          { status: 200 }
+        );
+      }
+      if (urlStr.endsWith("/api/show")) {
+        return new Response(
+          JSON.stringify({
+            capabilities: ["completion", "vision"],
+            details: { parameter_size: "8B" },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+
+    await fetchProviderModels();
+    const models = getOllamaLocalModels();
+    expect(models).toHaveLength(1);
+    expect(models[0].capabilities.vision).toBe(true);
+    expect(models[0].capabilities.completion).toBe(true);
+    expect(models[0].parameterSize).toBe("8B");
   });
 
   it("resetCache() causes next call to fetch fresh data", async () => {
@@ -351,7 +506,9 @@ describe("selectDefaultModel", () => {
       { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "Gemini 3 Flash Preview" },
       { id: "ollama-cloud/qwen3.5:397b-cloud", name: "Qwen 3.5 397B" },
     ];
-    expect(selectDefaultModel("ollama", models)).toBe("ollama-cloud/gemini-3-flash-preview:cloud");
+    expect(selectDefaultModel("ollama-cloud", models)).toBe(
+      "ollama-cloud/gemini-3-flash-preview:cloud"
+    );
   });
 
   it("prefers stable versions over preview versions", async () => {
@@ -416,6 +573,57 @@ describe("getDefaultModel", () => {
   });
 });
 
+describe("selectOllamaLocalDefault", () => {
+  it("selects the largest model with tool support", async () => {
+    const { selectOllamaLocalDefault } = await import("@/lib/provider-models");
+    const models = [
+      {
+        id: "ollama/llama3:latest",
+        name: "llama3:latest (8B)",
+        parameterSize: "8B",
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+      {
+        id: "ollama/qwen2.5:32b",
+        name: "qwen2.5:32b (32B)",
+        parameterSize: "32B",
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+      {
+        id: "ollama/phi3:mini",
+        name: "phi3:mini (3.8B)",
+        parameterSize: "3.8B",
+        capabilities: { tools: false, vision: false, completion: true, thinking: false },
+      },
+    ];
+    expect(selectOllamaLocalDefault(models)).toBe("ollama/qwen2.5:32b");
+  });
+
+  it("falls back to largest completion model when no model supports tools", async () => {
+    const { selectOllamaLocalDefault } = await import("@/lib/provider-models");
+    const models = [
+      {
+        id: "ollama/phi3:mini",
+        name: "phi3:mini (3.8B)",
+        parameterSize: "3.8B",
+        capabilities: { tools: false, vision: false, completion: true, thinking: false },
+      },
+      {
+        id: "ollama/llama2:7b",
+        name: "llama2:7b (7B)",
+        parameterSize: "7B",
+        capabilities: { tools: false, vision: false, completion: true, thinking: false },
+      },
+    ];
+    expect(selectOllamaLocalDefault(models)).toBe("ollama/llama2:7b");
+  });
+
+  it("returns empty string when no models available", async () => {
+    const { selectOllamaLocalDefault } = await import("@/lib/provider-models");
+    expect(selectOllamaLocalDefault([])).toBe("");
+  });
+});
+
 describe("vision capability detection", () => {
   it("marks anthropic, openai, google as vision-capable providers", async () => {
     const { VISION_CAPABLE_PROVIDERS } = await import("@/lib/provider-models");
@@ -426,6 +634,7 @@ describe("vision capability detection", () => {
 
   it("detects vision capability from model ID", async () => {
     const { isModelVisionCapable } = await import("@/lib/provider-models");
+    const { setOllamaLocalVisionModels } = await import("@/lib/model-vision");
 
     // Cloud providers are vision-capable
     expect(isModelVisionCapable("anthropic/claude-sonnet-4-6")).toBe(true);
@@ -439,7 +648,8 @@ describe("vision capability detection", () => {
     // Unknown provider → not vision-capable (conservative default)
     expect(isModelVisionCapable("unknown/model")).toBe(false);
 
-    // Local ollama → per-model check
+    // Local ollama → per-model check (reset cache to use hardcoded fallback)
+    setOllamaLocalVisionModels(null);
     expect(isModelVisionCapable("ollama/llama3.1:8b")).toBe(false);
     expect(isModelVisionCapable("ollama/llava")).toBe(true);
     expect(isModelVisionCapable("ollama/llama3.2-vision")).toBe(true);

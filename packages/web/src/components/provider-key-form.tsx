@@ -10,7 +10,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Form, FormControl, FormField, FormItem, FormLabel } from "@/components/ui/form";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Lock, ChevronDown, ExternalLink, CircleCheck, CircleX } from "lucide-react";
+import { Lock, ChevronDown, ExternalLink, CircleCheck, CircleX, Globe } from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
 import { ReportIssueLink } from "@/components/report-issue-link";
 import type { ProviderName } from "@/lib/providers";
@@ -27,7 +27,7 @@ import {
 } from "@/components/ui/alert-dialog";
 
 const providerKeySchema = z.object({
-  apiKey: z.string().min(1, "API key is required"),
+  apiKey: z.string().min(1, "Required"),
 });
 
 type ProviderKeyFormValues = z.infer<typeof providerKeySchema>;
@@ -45,12 +45,19 @@ interface ProviderGuide {
 
 const PROVIDERS: Record<
   ProviderName,
-  { name: string; placeholder: string; prefix: string; guide: ProviderGuide }
+  {
+    name: string;
+    placeholder: string;
+    prefix: string;
+    authType: "api-key" | "url";
+    guide: ProviderGuide;
+  }
 > = {
   anthropic: {
     name: "Anthropic",
     placeholder: "sk-ant-...",
     prefix: "sk-ant-",
+    authType: "api-key" as const,
     guide: {
       keyUrl: "https://platform.claude.com/settings/keys",
       steps: [
@@ -69,6 +76,7 @@ const PROVIDERS: Record<
     name: "OpenAI",
     placeholder: "sk-...",
     prefix: "sk-",
+    authType: "api-key" as const,
     guide: {
       keyUrl: "https://platform.openai.com/api-keys",
       steps: [
@@ -87,6 +95,7 @@ const PROVIDERS: Record<
     name: "Google",
     placeholder: "AIza...",
     prefix: "AIza",
+    authType: "api-key" as const,
     guide: {
       keyUrl: "https://aistudio.google.com/apikey",
       steps: [
@@ -100,10 +109,11 @@ const PROVIDERS: Record<
       ],
     },
   },
-  ollama: {
-    name: "Ollama",
+  "ollama-cloud": {
+    name: "Ollama Cloud",
     placeholder: "sk-...",
     prefix: "sk-",
+    authType: "api-key" as const,
     guide: {
       keyUrl: "https://ollama.com/settings/keys",
       steps: [
@@ -114,6 +124,26 @@ const PROVIDERS: Record<
         },
         { label: "Go to Settings > API Keys" },
         { label: "Click Create Key and copy it immediately" },
+      ],
+    },
+  },
+  "ollama-local": {
+    name: "Ollama (Local)",
+    placeholder: "http://host.docker.internal:11434",
+    prefix: "",
+    authType: "url" as const,
+    guide: {
+      keyUrl: "https://docs.heypinchy.com/guides/ollama-setup/",
+      steps: [
+        {
+          label: "Install Ollama from ollama.com",
+          link: { text: "ollama.com", url: "https://ollama.com/download" },
+        },
+        { label: "Pull a model: ollama pull llama3" },
+        { label: "Ensure Ollama is running" },
+        {
+          label: "Use host.docker.internal:11434 when Ollama runs on the host and Pinchy in Docker",
+        },
       ],
     },
   },
@@ -175,6 +205,7 @@ export function ProviderKeyForm({
   }, [provider, apiKeyValue, onDirtyChange]);
 
   const isConfigured = provider ? configuredProviders?.[provider]?.configured === true : false;
+  const isUrlProvider = provider ? PROVIDERS[provider].authType === "url" : false;
   const hint = provider ? configuredProviders?.[provider]?.hint : undefined;
   const maskedPlaceholder =
     provider && isConfigured && hint
@@ -191,10 +222,14 @@ export function ProviderKeyForm({
     setValidationStatus("idle");
 
     try {
+      const body = isUrlProvider
+        ? { provider, url: values.apiKey }
+        : { provider, apiKey: values.apiKey };
+
       const res = await fetch("/api/setup/provider", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ provider, apiKey: values.apiKey }),
+        body: JSON.stringify(body),
       });
 
       if (!res.ok) {
@@ -215,7 +250,7 @@ export function ProviderKeyForm({
 
       setValidationStatus("success");
       form.reset();
-      toast.success("API key saved");
+      toast.success(isUrlProvider ? "URL saved" : "API key saved");
       triggerRestart();
       onSuccess();
     } catch (err) {
@@ -232,7 +267,7 @@ export function ProviderKeyForm({
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
         <div className="space-y-2">
           <Label>Provider</Label>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
             {(Object.entries(PROVIDERS) as [ProviderName, (typeof PROVIDERS)[ProviderName]][]).map(
               ([key, config]) => (
                 <div key={key} className="flex flex-col items-center gap-1">
@@ -268,11 +303,11 @@ export function ProviderKeyForm({
               name="apiKey"
               render={({ field }) => (
                 <FormItem className="space-y-2">
-                  <FormLabel>API Key</FormLabel>
+                  <FormLabel>{isUrlProvider ? "Ollama URL" : "API Key"}</FormLabel>
                   <div className="flex items-center gap-2">
                     <FormControl>
                       <Input
-                        type="password"
+                        type={isUrlProvider ? "text" : "password"}
                         placeholder={maskedPlaceholder}
                         className="flex-1"
                         {...field}
@@ -294,8 +329,17 @@ export function ProviderKeyForm({
                       )}
                   </div>
                   <p className="text-xs text-muted-foreground flex items-center gap-1">
-                    <Lock className="size-3" />
-                    Your API key is encrypted at rest and never leaves your server.
+                    {isUrlProvider ? (
+                      <>
+                        <Globe className="size-3" />
+                        Your URL is stored on your server. No data is sent to external services.
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="size-3" />
+                        Your API key is encrypted at rest and never leaves your server.
+                      </>
+                    )}
                   </p>
                 </FormItem>
               )}
@@ -313,7 +357,7 @@ export function ProviderKeyForm({
                 <ChevronDown
                   className={`size-4 transition-transform ${guideOpen ? "rotate-180" : ""}`}
                 />
-                Need help getting a key?
+                {isUrlProvider ? "Need help setting up?" : "Need help getting a key?"}
               </CollapsibleTrigger>
               <CollapsibleContent>
                 <div className="mt-3 space-y-3 rounded-md border p-3 text-sm">
@@ -333,7 +377,7 @@ export function ProviderKeyForm({
                     rel="noopener noreferrer"
                     className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
                   >
-                    Go to {PROVIDERS[provider].name}
+                    {isUrlProvider ? "Setup guide" : `Go to ${PROVIDERS[provider].name}`}
                     <ExternalLink className="size-3" />
                   </a>
                 </div>
@@ -358,16 +402,18 @@ export function ProviderKeyForm({
                     className="w-full text-destructive hover:text-destructive"
                     disabled={removing}
                   >
-                    {removing ? "Removing..." : "Remove key"}
+                    {removing ? "Removing..." : isUrlProvider ? "Remove URL" : "Remove key"}
                   </Button>
                 </AlertDialogTrigger>
                 <AlertDialogContent>
                   <AlertDialogHeader>
-                    <AlertDialogTitle>Remove API key?</AlertDialogTitle>
+                    <AlertDialogTitle>
+                      {isUrlProvider ? "Remove URL?" : "Remove API key?"}
+                    </AlertDialogTitle>
                     <AlertDialogDescription>
-                      This will remove your {provider ? PROVIDERS[provider].name : ""} API key. If
-                      this is the active provider, agents will be switched to another configured
-                      provider.
+                      This will remove your {provider ? PROVIDERS[provider].name : ""}{" "}
+                      {isUrlProvider ? "URL" : "API key"}. If this is the active provider, agents
+                      will be switched to another configured provider.
                     </AlertDialogDescription>
                   </AlertDialogHeader>
                   <AlertDialogFooter>

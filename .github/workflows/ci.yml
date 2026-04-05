@@ -408,6 +408,49 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml down -v
 
+  ollama-integration:
+    name: Ollama integration tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama
+        run: |
+          ollama serve &
+          # Wait for Ollama to be ready
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:11434/api/tags >/dev/null 2>&1; then
+              echo "Ollama ready (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "::error::Ollama failed to start"
+              exit 1
+            fi
+            sleep 1
+          done
+
+      - name: Pull test model
+        run: ollama pull qwen2.5:0.5b
+
+      - name: Run Ollama integration tests
+        run: pnpm --filter @pinchy/web exec vitest run src/__tests__/integration/ollama-provider.test.ts
+        env:
+          OLLAMA_URL: http://localhost:11434
+
   links:
     name: Check links
     runs-on: ubuntu-latest

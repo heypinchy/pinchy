@@ -10,9 +10,11 @@ vi.mock("@/lib/api-auth", () => ({
 
 vi.mock("@/lib/providers", () => ({
   validateProviderKey: vi.fn().mockResolvedValue({ valid: true }),
+  validateProviderUrl: vi.fn().mockResolvedValue({ valid: true }),
   PROVIDERS: {
     anthropic: {
       name: "Anthropic",
+      authType: "api-key",
       settingsKey: "anthropic_api_key",
       envVar: "ANTHROPIC_API_KEY",
       defaultModel: "anthropic/claude-haiku-4-5-20251001",
@@ -20,6 +22,7 @@ vi.mock("@/lib/providers", () => ({
     },
     openai: {
       name: "OpenAI",
+      authType: "api-key",
       settingsKey: "openai_api_key",
       envVar: "OPENAI_API_KEY",
       defaultModel: "openai/gpt-4o-mini",
@@ -27,17 +30,27 @@ vi.mock("@/lib/providers", () => ({
     },
     google: {
       name: "Google",
+      authType: "api-key",
       settingsKey: "google_api_key",
       envVar: "GEMINI_API_KEY",
       defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
-    ollama: {
-      name: "Ollama",
-      settingsKey: "ollama_api_key",
-      envVar: "OLLAMA_API_KEY",
+    "ollama-cloud": {
+      name: "Ollama Cloud",
+      authType: "api-key",
+      settingsKey: "ollama_cloud_api_key",
+      envVar: "OLLAMA_CLOUD_API_KEY",
       defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
       placeholder: "sk-...",
+    },
+    "ollama-local": {
+      name: "Ollama (Local)",
+      authType: "url",
+      settingsKey: "ollama_local_url",
+      envVar: "",
+      defaultModel: "",
+      placeholder: "http://host.docker.internal:11434",
     },
   },
 }));
@@ -74,7 +87,7 @@ vi.mock("@/db", () => ({
   },
 }));
 
-import { validateProviderKey } from "@/lib/providers";
+import { validateProviderKey, validateProviderUrl } from "@/lib/providers";
 import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
@@ -288,5 +301,60 @@ describe("POST /api/setup/provider", () => {
     expect(response.status).toBe(403);
     const data = await response.json();
     expect(data.error).toBe("Forbidden");
+  });
+
+  it("should accept ollama-local with URL instead of API key", async () => {
+    const response = await POST(
+      makeRequest({
+        provider: "ollama-local",
+        url: "http://host.docker.internal:11434",
+      }) as any
+    );
+    expect(response.status).toBe(200);
+    expect(setSetting).toHaveBeenCalledWith(
+      "ollama_local_url",
+      "http://host.docker.internal:11434",
+      false
+    );
+  });
+
+  it("should return 400 when ollama-local is missing URL", async () => {
+    const response = await POST(makeRequest({ provider: "ollama-local" }) as any);
+    expect(response.status).toBe(400);
+  });
+
+  it("should return 502 when ollama-local URL is unreachable", async () => {
+    vi.mocked(validateProviderUrl).mockResolvedValueOnce({
+      valid: false,
+      error: "network_error",
+    });
+
+    const response = await POST(
+      makeRequest({
+        provider: "ollama-local",
+        url: "http://bad-host:11434",
+      }) as any
+    );
+    expect(response.status).toBe(502);
+    const data = await response.json();
+    expect(data.error).toContain("Could not connect to Ollama");
+  });
+
+  it("should return 502 when ollama-local returns an error status", async () => {
+    vi.mocked(validateProviderUrl).mockResolvedValueOnce({
+      valid: false,
+      error: "provider_error",
+      status: 500,
+    });
+
+    const response = await POST(
+      makeRequest({
+        provider: "ollama-local",
+        url: "http://host.docker.internal:11434",
+      }) as any
+    );
+    expect(response.status).toBe(502);
+    const data = await response.json();
+    expect(data.error).toContain("500");
   });
 });
