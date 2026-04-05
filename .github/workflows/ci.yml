@@ -447,7 +447,7 @@ jobs:
         run: ollama pull qwen2.5:0.5b
 
       - name: Run Ollama integration tests
-        run: pnpm -C packages/web vitest run src/__tests__/integration/ollama-provider.test.ts
+        run: pnpm --filter @pinchy/web exec vitest run src/__tests__/integration/ollama-provider.test.ts
         env:
           OLLAMA_URL: http://localhost:11434
 
