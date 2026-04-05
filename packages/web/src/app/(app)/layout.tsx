@@ -8,6 +8,7 @@ import { AppShell } from "@/components/app-shell";
 import { AgentsProvider } from "@/components/agents-provider";
 import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { EnterpriseBanner } from "@/components/enterprise-banner";
+import { InsecureBanner } from "@/components/insecure-banner";
 import { DevToolbar } from "@/components/dev-toolbar";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
@@ -30,6 +31,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
       <SidebarProvider>
         <AppSidebar isAdmin={isAdmin} />
         <SidebarInset className="h-dvh overflow-hidden">
+          <InsecureBanner isAdmin={isAdmin} />
           <EnterpriseBanner isAdmin={isAdmin} />
           <AppShell isAdmin={isAdmin}>{children}</AppShell>
         </SidebarInset>

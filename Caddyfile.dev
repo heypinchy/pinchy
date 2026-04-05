@@ -1,0 +1,3 @@
+pinchy.local {
+	reverse_proxy pinchy:7777
+}
