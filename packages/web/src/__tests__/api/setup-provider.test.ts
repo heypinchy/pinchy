@@ -66,6 +66,7 @@ vi.mock("@/lib/openclaw-config", () => ({
 
 vi.mock("@/lib/provider-models", () => ({
   resetCache: vi.fn(),
+  getDefaultModel: vi.fn().mockResolvedValue("ollama/llama3:latest"),
 }));
 
 vi.mock("@/db", () => ({
@@ -92,7 +93,7 @@ import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { requireAdmin } from "@/lib/api-auth";
-import { resetCache } from "@/lib/provider-models";
+import { resetCache, getDefaultModel } from "@/lib/provider-models";
 
 describe("POST /api/setup/provider", () => {
   beforeEach(() => {
@@ -356,5 +357,19 @@ describe("POST /api/setup/provider", () => {
     expect(response.status).toBe(502);
     const data = await response.json();
     expect(data.error).toContain("500");
+  });
+
+  it("should set dynamically resolved default model for ollama-local as first provider", async () => {
+    vi.mocked(getDefaultModel).mockResolvedValueOnce("ollama/llama3:latest");
+
+    await POST(
+      makeRequest({
+        provider: "ollama-local",
+        url: "http://host.docker.internal:11434",
+      }) as any
+    );
+
+    expect(getDefaultModel).toHaveBeenCalledWith("ollama-local");
+    expect(db.update).toHaveBeenCalled();
   });
 });

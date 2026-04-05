@@ -254,6 +254,11 @@ export async function getDefaultModel(provider: ProviderName): Promise<string> {
     return PROVIDERS[provider].defaultModel;
   }
 
+  // Local Ollama uses capability-based heuristic (largest model with tool support)
+  if (provider === "ollama-local") {
+    return selectOllamaLocalDefault(lastOllamaLocalModels) || PROVIDERS[provider].defaultModel;
+  }
+
   return selectDefaultModel(provider, providerModels.models);
 }
 

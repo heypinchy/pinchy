@@ -267,7 +267,7 @@ export function ProviderKeyForm({
       <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
         <div className="space-y-2">
           <Label>Provider</Label>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-2">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
             {(Object.entries(PROVIDERS) as [ProviderName, (typeof PROVIDERS)[ProviderName]][]).map(
               ([key, config]) => (
                 <div key={key} className="flex flex-col items-center gap-1">

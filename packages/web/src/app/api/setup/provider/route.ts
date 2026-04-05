@@ -8,7 +8,7 @@ import {
 } from "@/lib/providers";
 import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { resetCache } from "@/lib/provider-models";
+import { resetCache, getDefaultModel } from "@/lib/provider-models";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -111,7 +111,8 @@ export async function POST(request: NextRequest) {
   if (isFirstProvider) {
     const smithers = await db.query.agents.findFirst();
     if (smithers) {
-      await db.update(agents).set({ model: config.defaultModel }).where(eq(agents.id, smithers.id));
+      const defaultModel = await getDefaultModel(provider as ProviderName);
+      await db.update(agents).set({ model: defaultModel }).where(eq(agents.id, smithers.id));
     }
   }
 
