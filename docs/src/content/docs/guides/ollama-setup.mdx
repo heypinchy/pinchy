@@ -135,14 +135,16 @@ http://<server-ip>:11434
 ## Recommended Models
 
 <Aside type="caution">
-  Pinchy agents require models with **tool calling support**. Models without tool support will appear as disabled in the model dropdown. If no compatible models are installed, provider setup will be blocked.
+  Pinchy agents require models with **tool calling support**. Models without
+  tool support will appear as disabled in the model dropdown. If no compatible
+  models are installed, provider setup will be blocked.
 </Aside>
 
-| Use Case      | Model               | Size   | Tool Support | Why                                 |
-| ------------- | ------------------- | ------ | ------------ | ----------------------------------- |
-| General agent | `qwen2.5:7b`        | 4.7 GB | Yes          | Best balance of speed, quality, and tool support |
-| Coding tasks  | `qwen2.5-coder:32b` | 19 GB  | Yes          | Strong code generation              |
-| Large context | `qwen3:32b`         | 19 GB  | Yes          | 128k context, reliable tool calling |
+| Use Case      | Model               | Size   | Tool Support | Why                                                           |
+| ------------- | ------------------- | ------ | ------------ | ------------------------------------------------------------- |
+| General agent | `qwen2.5:7b`        | 4.7 GB | Yes          | Best balance of speed, quality, and tool support              |
+| Coding tasks  | `qwen2.5-coder:32b` | 19 GB  | Yes          | Strong code generation                                        |
+| Large context | `qwen3:32b`         | 19 GB  | Yes          | 128k context, reliable tool calling                           |
 | Lightweight   | `phi3:mini`         | 2.3 GB | No           | Fast, but no tool support — not compatible with Pinchy agents |
 
 Pull any model with:
