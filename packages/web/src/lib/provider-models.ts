@@ -270,35 +270,44 @@ export async function getDefaultModel(provider: ProviderName): Promise<string> {
 }
 
 export async function fetchProviderModels(): Promise<ProviderModels[]> {
+  // Cache only cloud providers (their model lists rarely change).
+  // Ollama local is always fetched live — users expect newly pulled models immediately.
   const now = Date.now();
+  let cloudResults: ProviderModels[];
+
   if (cachedResult && now - cachedAt < CACHE_TTL_MS) {
-    return cachedResult;
-  }
+    cloudResults = cachedResult;
+  } else {
+    cloudResults = [];
 
-  const results: ProviderModels[] = [];
+    for (const [providerName, providerConfig] of Object.entries(PROVIDERS)) {
+      const provider = providerName as ProviderName;
 
-  for (const [providerName, providerConfig] of Object.entries(PROVIDERS)) {
-    const provider = providerName as ProviderName;
+      if (provider === "ollama-local") continue;
 
-    if (provider === "ollama-local") continue;
+      const apiKey = await getSetting(providerConfig.settingsKey);
 
-    const apiKey = await getSetting(providerConfig.settingsKey);
+      if (!apiKey) {
+        continue;
+      }
 
-    if (!apiKey) {
-      continue;
+      try {
+        const models = await fetchModelsForProvider(provider, apiKey);
+        cloudResults.push({ id: provider, name: providerConfig.name, models });
+      } catch {
+        cloudResults.push({
+          id: provider,
+          name: providerConfig.name,
+          models: FALLBACK_MODELS[provider],
+        });
+      }
     }
 
-    try {
-      const models = await fetchModelsForProvider(provider, apiKey);
-      results.push({ id: provider, name: providerConfig.name, models });
-    } catch {
-      results.push({
-        id: provider,
-        name: providerConfig.name,
-        models: FALLBACK_MODELS[provider],
-      });
-    }
+    cachedResult = cloudResults;
+    cachedAt = now;
   }
+
+  const results = [...cloudResults];
 
   const ollamaUrl = await getSetting(PROVIDERS["ollama-local"].settingsKey);
   if (ollamaUrl) {
@@ -325,7 +334,5 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
     }
   }
 
-  cachedResult = results;
-  cachedAt = now;
   return results;
 }
