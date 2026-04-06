@@ -710,6 +710,63 @@ describe("selectOllamaLocalDefault", () => {
     expect(selectOllamaLocalDefault(models)).toBe("ollama/llama2:7b");
   });
 
+  it("prefers qwen models over larger non-qwen models", async () => {
+    const { selectOllamaLocalDefault } = await import("@/lib/provider-models");
+    const models = [
+      {
+        id: "ollama/llama3.1:8b",
+        name: "llama3.1:8b (8B)",
+        parameterSize: "8B",
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b (7B)",
+        parameterSize: "7B",
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ];
+    expect(selectOllamaLocalDefault(models)).toBe("ollama/qwen2.5:7b");
+  });
+
+  it("prefers largest qwen model when multiple qwen models available", async () => {
+    const { selectOllamaLocalDefault } = await import("@/lib/provider-models");
+    const models = [
+      {
+        id: "ollama/qwen2.5:3b",
+        name: "qwen2.5:3b (3B)",
+        parameterSize: "3B",
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+      {
+        id: "ollama/qwen2.5:14b",
+        name: "qwen2.5:14b (14B)",
+        parameterSize: "14B",
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ];
+    expect(selectOllamaLocalDefault(models)).toBe("ollama/qwen2.5:14b");
+  });
+
+  it("falls back to largest tool-capable model when no qwen available", async () => {
+    const { selectOllamaLocalDefault } = await import("@/lib/provider-models");
+    const models = [
+      {
+        id: "ollama/llama3.1:8b",
+        name: "llama3.1:8b (8B)",
+        parameterSize: "8B",
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+      {
+        id: "ollama/mistral:7b",
+        name: "mistral:7b (7B)",
+        parameterSize: "7B",
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ];
+    expect(selectOllamaLocalDefault(models)).toBe("ollama/llama3.1:8b");
+  });
+
   it("returns empty string when no models available", async () => {
     const { selectOllamaLocalDefault } = await import("@/lib/provider-models");
     expect(selectOllamaLocalDefault([])).toBe("");

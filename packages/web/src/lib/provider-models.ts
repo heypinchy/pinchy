@@ -169,15 +169,28 @@ function parseParameterSize(size: string): number {
   return num;
 }
 
+const PREFERRED_MODEL_FAMILIES = [/^qwen/i];
+
 export function selectOllamaLocalDefault(models: OllamaLocalModelInfo[]): string {
   if (models.length === 0) return "";
 
-  // Prefer models with tool support, sorted by parameter size descending
-  const withTools = models
-    .filter((m) => m.capabilities.tools)
-    .sort((a, b) => parseParameterSize(b.parameterSize) - parseParameterSize(a.parameterSize));
+  const withTools = models.filter((m) => m.capabilities.tools);
 
-  if (withTools.length > 0) return withTools[0].id;
+  if (withTools.length > 0) {
+    // Prefer models from known-good families (qwen has best tool-calling reliability)
+    for (const pattern of PREFERRED_MODEL_FAMILIES) {
+      const preferred = withTools
+        .filter((m) => pattern.test(m.id.replace("ollama/", "")))
+        .sort((a, b) => parseParameterSize(b.parameterSize) - parseParameterSize(a.parameterSize));
+      if (preferred.length > 0) return preferred[0].id;
+    }
+
+    // Fallback: largest tool-capable model
+    const sorted = [...withTools].sort(
+      (a, b) => parseParameterSize(b.parameterSize) - parseParameterSize(a.parameterSize)
+    );
+    return sorted[0].id;
+  }
 
   // Fallback: largest completion model
   const sorted = [...models].sort(
