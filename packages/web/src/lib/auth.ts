@@ -7,6 +7,7 @@ import bcrypt from "bcryptjs";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
+import { getCachedDomain } from "@/lib/domain";
 
 /**
  * After-hook middleware for audit trail logging.
@@ -64,25 +65,23 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
   }
 });
 
-// Detect if HTTPS is configured (via BETTER_AUTH_URL or reverse proxy headers).
-// Without HTTPS, cookies must not have the Secure flag or browsers will reject them.
-const isHttps = process.env.BETTER_AUTH_URL?.startsWith("https://") ?? false;
-
 export const auth = betterAuth({
-  // Trust the origin from the request. Pinchy is self-hosted — the server
-  // itself is the trust boundary, not the origin header. This allows login
-  // to work whether accessed via IP, localhost, or custom domain without
-  // needing to configure BETTER_AUTH_URL upfront.
   trustedOrigins: (request) => {
+    const domain = getCachedDomain();
+    if (domain) {
+      // Domain is locked — only trust the locked domain over HTTPS
+      return [`https://${domain}`];
+    }
+    // No domain locked — trust the origin from the request (self-hosted trust model).
+    // This allows login to work whether accessed via IP, localhost, or custom domain.
     const host = request?.headers?.get("x-forwarded-host") ?? request?.headers?.get("host");
     const proto = request?.headers?.get("x-forwarded-proto") ?? "http";
     return host ? [`${proto}://${host}`] : [];
   },
   advanced: {
-    // In production (NODE_ENV=production), Better Auth defaults to Secure cookies.
-    // On plain HTTP (no BETTER_AUTH_URL with https://), browsers silently reject
-    // Secure cookies — causing login to appear to succeed but sessions to not persist.
-    useSecureCookies: isHttps,
+    // When a domain is cached, HTTPS is expected — enable Secure cookies.
+    // Without HTTPS, cookies must not have the Secure flag or browsers will reject them.
+    useSecureCookies: getCachedDomain() !== null,
   },
   database: drizzleAdapter(db, {
     provider: "pg",

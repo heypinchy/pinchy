@@ -22,3 +22,15 @@ services:
       - POSTGRES_PASSWORD=pinchy_dev
     ports:
       - "5434:5432"
+  caddy:
+    image: caddy:2
+    ports:
+      - "8443:443"
+    volumes:
+      - ./Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - caddy_data_dev:/data
+    depends_on:
+      - pinchy
+
+volumes:
+  caddy_data_dev:

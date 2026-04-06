@@ -14,6 +14,13 @@ import { logCapture } from "./src/lib/log-capture";
 
 logCapture.install();
 
+if (process.env.BETTER_AUTH_URL) {
+  console.warn(
+    "⚠ BETTER_AUTH_URL is set but no longer used. " +
+      "Go to Settings → Security to lock your domain."
+  );
+}
+
 const dev = process.env.NODE_ENV !== "production";
 const app = next({ dev });
 const handle = app.getRequestHandler();
@@ -69,6 +76,17 @@ app.prepare().then(async () => {
     // Non-critical — old sessions will just start fresh
   }
 
+  // Load domain cache before first request so auth config has the domain available.
+  try {
+    const { loadDomainCache } = await import("./src/lib/domain");
+    await loadDomainCache();
+  } catch (err) {
+    console.error(
+      "[pinchy] Failed to load domain cache:",
+      err instanceof Error ? err.message : err
+    );
+  }
+
   // Regenerate OpenClaw config on startup to ensure it's in sync with code changes.
   // This handles cases like new plugin configs or changed config structure after updates.
   try {
@@ -85,7 +103,35 @@ app.prepare().then(async () => {
     );
   }
 
+  const { isHostAllowed } = await import("./src/server/host-check");
+  const { getCachedDomain } = await import("./src/lib/domain-cache");
+
   const server = createServer((req, res) => {
+    const { pathname } = parse(req.url!, true);
+    const host = (req.headers["x-forwarded-host"] as string) || req.headers.host;
+    if (!isHostAllowed(host, pathname)) {
+      const accept = req.headers.accept || "";
+      if (accept.includes("text/html")) {
+        const domain = getCachedDomain();
+        res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
+        res.end(`<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Access Denied — Pinchy</title>
+<style>body{font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#0a0a0a;color:#e5e5e5}
+.card{max-width:420px;padding:2rem;text-align:center}.icon{font-size:2rem;margin-bottom:1rem}h1{font-size:1.25rem;margin:0 0 .75rem}
+p{color:#a3a3a3;font-size:.875rem;line-height:1.5;margin:0 0 1rem}a{color:#f59e0b;text-decoration:none}a:hover{text-decoration:underline}</style></head>
+<body><div class="card"><div class="icon">🔒</div><h1>Access Denied</h1>
+<p>This Pinchy instance is locked to a specific domain. You're accessing it from an address that isn't allowed.</p>
+${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
+</div></body></html>`);
+      } else {
+        res.writeHead(403, { "Content-Type": "application/json" });
+        res.end(
+          JSON.stringify({ error: "Forbidden: request host does not match the configured domain" })
+        );
+      }
+      return;
+    }
     handle(req, res, parse(req.url!, true));
   });
 
