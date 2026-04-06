@@ -94,12 +94,15 @@ export async function POST(request: NextRequest) {
         );
       }
       // provider_error (429, 5xx, etc.)
-      return NextResponse.json(
-        {
-          error: `The provider returned an error (HTTP ${validation.status}). The key may be valid — please try again in a moment.`,
-        },
-        { status: 502 }
-      );
+      if (validation.error === "provider_error") {
+        return NextResponse.json(
+          {
+            error: `The provider returned an error (HTTP ${validation.status}). The key may be valid — please try again in a moment.`,
+          },
+          { status: 502 }
+        );
+      }
+      return NextResponse.json({ error: "Validation failed" }, { status: 400 });
     }
 
     // Store encrypted key and default provider
