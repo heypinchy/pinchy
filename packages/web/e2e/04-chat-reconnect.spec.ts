@@ -26,20 +26,43 @@ test.describe("chat reconnect recovery", () => {
         historyRequests: number;
       } = { historyRequests: 0 };
 
+      const RealWebSocket = window.WebSocket;
+
       class MockWebSocket {
         static CONNECTING = 0;
         static OPEN = 1;
         static CLOSING = 2;
         static CLOSED = 3;
 
+        // Instance-level constants (real WebSocket exposes these on the prototype)
+        CONNECTING = 0;
+        OPEN = 1;
+        CLOSING = 2;
+        CLOSED = 3;
+
         onopen: (() => void) | null = null;
         onmessage: ((event: { data: string }) => void) | null = null;
         onclose: (() => void) | null = null;
         onerror: (() => void) | null = null;
         readyState = 1;
+        binaryType: string = "blob";
 
-        constructor(_url: string) {
+        constructor(url: string) {
+          // Pass through Next.js HMR / dev tooling sockets to the real WebSocket
+          // so hydration of the dev server isn't broken.
+          if (url.includes("/_next/")) {
+            return new RealWebSocket(url) as unknown as MockWebSocket;
+          }
           queueMicrotask(() => this.onopen?.());
+        }
+
+        addEventListener() {
+          // No-op: avoids TypeErrors from dev-tooling code that subscribes to
+          // 'close' / 'message' on the socket via addEventListener.
+        }
+
+        removeEventListener() {
+          // No-op
         }
 
         send(raw: string) {
