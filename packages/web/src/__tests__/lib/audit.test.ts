@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { computeRowHmac, computeRowHmacV1, computeRowHmacV2, truncateDetail } from "@/lib/audit";
+import {
+  computeRowHmac,
+  computeRowHmacV1,
+  computeRowHmacV2,
+  ROW_HMAC_VERIFIERS,
+  truncateDetail,
+} from "@/lib/audit";
 
 describe("computeRowHmac", () => {
   const secret = Buffer.from("a".repeat(64), "hex");
@@ -149,6 +155,25 @@ describe("computeRowHmac version dispatch", () => {
     // Captured 2026-04-07. NEVER change without reading VERSIONING.md.
     const fixture = computeRowHmacV1(secret, baseFields);
     expect(fixture).toEqual("bd87553fb579d4d219e901303ea9a2908b9dc641db799ab20cae7693bf53233f");
+  });
+
+  it("v2 hash matches the known-good regression fixture", () => {
+    // Captured 2026-04-07. NEVER change without reading VERSIONING.md.
+    const fixture = computeRowHmacV2(secret, { ...baseFields, outcome: "success", error: null });
+    expect(fixture).toEqual("793d4cfb759f62f8e09b8fe40bd18fa6fdad40ebe3f37d3cbb2052e54ee36b98");
+  });
+
+  it("ROW_HMAC_VERIFIERS[1] matches computeRowHmacV1 directly", () => {
+    expect(ROW_HMAC_VERIFIERS[1](secret, baseFields)).toEqual(computeRowHmacV1(secret, baseFields));
+  });
+
+  it("ROW_HMAC_VERIFIERS[2] matches computeRowHmacV2 directly", () => {
+    const v2Fields = { ...baseFields, outcome: "success" as const, error: null };
+    expect(ROW_HMAC_VERIFIERS[2](secret, v2Fields)).toEqual(computeRowHmacV2(secret, v2Fields));
+  });
+
+  it("ROW_HMAC_VERIFIERS returns undefined for unknown versions (verifier callers must handle this)", () => {
+    expect(ROW_HMAC_VERIFIERS[99]).toBeUndefined();
   });
 
   it("v2 hash differs from v1 given identical base fields", () => {

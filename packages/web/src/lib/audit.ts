@@ -107,12 +107,16 @@ export function computeRowHmacV2(secret: Buffer, fields: HmacFieldsV2): string {
   return createHmac("sha256", secret).update(payload).digest("hex");
 }
 
-// Dispatch table — never delete a version's function.
-export const ROW_HMAC_VERIFIERS: Record<number, (secret: Buffer, fields: HmacFieldsV2) => string> =
-  {
-    1: (secret, fields) => computeRowHmacV1(secret, fields),
-    2: (secret, fields) => computeRowHmacV2(secret, fields),
-  };
+// Per-version HMAC functions used for both writing (appendAuditLog) and verifying
+// (verifyIntegrity). v1 functions ignore v2-only fields by design — never delete
+// or modify a version's function: see VERSIONING.md (added in a follow-up task).
+export const ROW_HMAC_VERIFIERS: Record<
+  number,
+  (secret: Buffer, fields: HmacFieldsV1 | HmacFieldsV2) => string
+> = {
+  1: (secret, fields) => computeRowHmacV1(secret, fields),
+  2: (secret, fields) => computeRowHmacV2(secret, fields as HmacFieldsV2),
+};
 
 // Backward-compat alias for callers not yet migrated. Will be removed in Task 3.
 export const computeRowHmac = computeRowHmacV1;
