@@ -1,0 +1,53 @@
+---
+title: Usage & Costs Dashboard
+description: Track token consumption and estimated costs for every agent on your Pinchy instance.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Pinchy keeps a running tally of how many tokens each agent burns through and what they roughly cost. The Usage Dashboard at `/usage` is where admins go to answer "where is the money going" without leaving the platform or stitching together provider invoices.
+
+## Who can see it
+
+Admins only. Non-admin users get redirected to the home page if they try to open `/usage` directly.
+
+## What you see
+
+Open **Usage** from the sidebar (or visit `/usage`).
+
+- **Total Tokens** — sum of input and output tokens for the selected period and agent filter
+- **Estimated Cost** — running USD estimate based on the per-token prices in your provider's model config
+- **Daily Token Usage** chart — input vs output tokens over time
+- **Per-Agent Breakdown** — which agents consume what, sorted by cost
+- **Per-User Breakdown** — Enterprise only — same numbers split by who chatted with the agent
+
+### Filters
+
+- **Time period**: 7 days, 30 days, 90 days, or all time
+- **Agent**: drill down to a single agent, or look at the whole fleet
+
+Both filters apply to every card and tab on the page.
+
+## Where the numbers come from
+
+Every successful chat turn writes a usage record with the input/output tokens that the LLM provider reported. Pinchy multiplies those by the per-million-token prices configured for the model and stores the result in USD with six decimals.
+
+A few honest caveats:
+
+- **It's an estimate.** Provider invoices are the source of truth. Pinchy uses the prices baked into the OpenClaw model config, which can drift from a provider's current published rates.
+- **Local Ollama is free.** Local models record token counts but their cost is always zero — you're paying in electricity and hardware, not API fees.
+- **Tool execution time isn't tracked here.** Only the LLM tokens count. The Audit Trail at `/audit` is where you go for tool-use details.
+
+## Export
+
+<Aside type="note">
+  CSV export is an Enterprise feature.
+</Aside>
+
+With an active Enterprise license, the **Export CSV** button (top-right) downloads the current view — period and agent filter applied — as a CSV file. Useful for finance hand-offs or feeding the data into your own dashboards.
+
+Without a license, the button is disabled but stays visible so you know the feature exists.
+
+## What it can't do
+
+The dashboard answers "how much" and "by whom", not "for what". If you need to know which conversation burned through 50,000 tokens, that level of detail lives in the Audit Trail (`/audit`) — and even there, individual chat content is intentionally not logged. Pinchy treats chat messages as user data, not audit material.
