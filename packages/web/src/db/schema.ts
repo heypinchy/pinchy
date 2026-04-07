@@ -13,6 +13,7 @@ import {
   pgView,
   primaryKey,
 } from "drizzle-orm/pg-core";
+import { relations } from "drizzle-orm";
 
 // ── JSON Column Types ───────────────────────────────────────────────────
 //
@@ -194,6 +195,35 @@ export const inviteGroups = pgTable(
   },
   (table) => [primaryKey({ columns: [table.inviteId, table.groupId] })]
 );
+
+// ── Relations ───────────────────────────────────────────────────────────
+//
+// Declared so the Drizzle relational query builder (db.query.X.findMany)
+// can fetch nested data with `with: { ... }` instead of manual leftJoin +
+// post-hoc reshaping in route handlers.
+
+export const usersRelations = relations(users, ({ many }) => ({
+  userGroups: many(userGroups),
+}));
+
+export const groupsRelations = relations(groups, ({ many }) => ({
+  userGroups: many(userGroups),
+  inviteGroups: many(inviteGroups),
+}));
+
+export const userGroupsRelations = relations(userGroups, ({ one }) => ({
+  user: one(users, { fields: [userGroups.userId], references: [users.id] }),
+  group: one(groups, { fields: [userGroups.groupId], references: [groups.id] }),
+}));
+
+export const invitesRelations = relations(invites, ({ many }) => ({
+  inviteGroups: many(inviteGroups),
+}));
+
+export const inviteGroupsRelations = relations(inviteGroups, ({ one }) => ({
+  invite: one(invites, { fields: [inviteGroups.inviteId], references: [invites.id] }),
+  group: one(groups, { fields: [inviteGroups.groupId], references: [groups.id] }),
+}));
 
 export const channelLinks = pgTable(
   "channel_links",

@@ -33,6 +33,11 @@ vi.mock("@/lib/audit", () => ({
 
 vi.mock("@/db", () => ({
   db: {
+    query: {
+      users: {
+        findMany: vi.fn().mockResolvedValue([]),
+      },
+    },
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({
         where: vi.fn().mockResolvedValue([]),
@@ -101,21 +106,24 @@ describe("GET /api/users", () => {
     } as any);
 
     const fakeUsers = [
-      { id: "user-1", name: "Alice", email: "alice@test.com", role: "member" },
-      { id: "admin-1", name: "Bob", email: "bob@test.com", role: "admin" },
+      {
+        id: "user-1",
+        name: "Alice",
+        email: "alice@test.com",
+        role: "member",
+        banned: false,
+        userGroups: [],
+      },
+      {
+        id: "admin-1",
+        name: "Bob",
+        email: "bob@test.com",
+        role: "admin",
+        banned: false,
+        userGroups: [],
+      },
     ];
-
-    // First select: users
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockResolvedValueOnce(fakeUsers),
-    } as never);
-
-    // Second select: userGroups join groups
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        innerJoin: vi.fn().mockResolvedValue([]),
-      }),
-    } as never);
+    vi.mocked(db.query.users.findMany).mockResolvedValueOnce(fakeUsers as never);
 
     const response = await GET();
     expect(response.status).toBe(200);
@@ -127,7 +135,14 @@ describe("GET /api/users", () => {
     expect(body.users[0].email).toBe("alice@test.com");
     expect(body.users[0].role).toBe("member");
     // Ensure only selected fields are returned (no sensitive data leaks)
-    expect(Object.keys(body.users[0]).sort()).toEqual(["email", "groups", "id", "name", "role"]);
+    expect(Object.keys(body.users[0]).sort()).toEqual([
+      "banned",
+      "email",
+      "groups",
+      "id",
+      "name",
+      "role",
+    ]);
   });
 
   it("includes banned status in user list", async () => {
@@ -137,27 +152,24 @@ describe("GET /api/users", () => {
     } as any);
 
     const fakeUsers = [
-      { id: "user-1", name: "Alice", email: "alice@test.com", role: "member", banned: false },
+      {
+        id: "user-1",
+        name: "Alice",
+        email: "alice@test.com",
+        role: "member",
+        banned: false,
+        userGroups: [],
+      },
       {
         id: "user-2",
         name: "Bob",
         email: "bob@test.com",
         role: "admin",
         banned: true,
+        userGroups: [],
       },
     ];
-
-    // First select: users
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockResolvedValueOnce(fakeUsers),
-    } as never);
-
-    // Second select: userGroups join groups
-    vi.mocked(db.select).mockReturnValueOnce({
-      from: vi.fn().mockReturnValue({
-        innerJoin: vi.fn().mockResolvedValue([]),
-      }),
-    } as never);
+    vi.mocked(db.query.users.findMany).mockResolvedValueOnce(fakeUsers as never);
 
     const response = await GET();
     expect(response.status).toBe(200);
@@ -165,6 +177,37 @@ describe("GET /api/users", () => {
     const body = await response.json();
     expect(body.users[0].banned).toBe(false);
     expect(body.users[1].banned).toBe(true);
+  });
+
+  it("returns each user's groups via the relational query builder", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const fakeUsers = [
+      {
+        id: "user-1",
+        name: "Alice",
+        email: "alice@test.com",
+        role: "member",
+        banned: false,
+        userGroups: [
+          { group: { id: "g1", name: "Engineering" } },
+          { group: { id: "g2", name: "Design" } },
+        ],
+      },
+    ];
+    vi.mocked(db.query.users.findMany).mockResolvedValueOnce(fakeUsers as never);
+
+    const response = await GET();
+    expect(response.status).toBe(200);
+
+    const body = await response.json();
+    expect(body.users[0].groups).toEqual([
+      { id: "g1", name: "Engineering" },
+      { id: "g2", name: "Design" },
+    ]);
   });
 });
 
