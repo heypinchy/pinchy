@@ -127,8 +127,11 @@ export const auth = betterAuth({
   },
 });
 
-// Better Auth v1.5.3 doesn't infer admin plugin fields in $Infer.Session.
-// Manually extend the session type to include them.
+// Since Better Auth 1.5.6 the admin plugin fields (role, banned, banReason,
+// banExpires) ARE inferred on $Infer.Session["user"], but as optional
+// (string | null | undefined). Because Pinchy always runs the admin plugin,
+// we narrow them to required non-undefined here so call sites can pass
+// `session.user.role` directly into helpers expecting `string`.
 type InferredSession = typeof auth.$Infer.Session;
 export type Session = {
   session: InferredSession["session"];

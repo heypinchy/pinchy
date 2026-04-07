@@ -44,7 +44,7 @@ export function DirectoryPicker({ directories, selected, onChange }: DirectoryPi
             aria-label={dir.name}
           />
           <Label htmlFor={dir.path} className="flex items-center gap-2 cursor-pointer">
-            <Folder className="h-4 w-4 text-muted-foreground" />
+            <Folder className="size-4 text-muted-foreground" />
             <span>{dir.name}</span>
             <span className="text-xs text-muted-foreground">{dir.path}</span>
           </Label>

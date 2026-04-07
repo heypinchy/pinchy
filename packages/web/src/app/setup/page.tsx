@@ -1,9 +1,14 @@
+import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import Image from "next/image";
 import { isSetupComplete } from "@/lib/setup";
 import { SetupForm } from "@/components/setup-form";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = {
+  title: "Setup",
+};
 
 export default async function SetupPage() {
   const setupCompleted = await isSetupComplete();

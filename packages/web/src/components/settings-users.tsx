@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useOptimistic, useTransition } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -58,6 +58,19 @@ function GroupBadges({ groups }: { groups: UserGroup[] }) {
 
 export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps) {
   const [items, setItems] = useState<UserListItem[]>([]);
+  const [, startRevokeTransition] = useTransition();
+  // useOptimistic lets the invite row disappear immediately when Revoke is
+  // clicked, without waiting for the DELETE + refetch round-trip. The base
+  // `items` state catches up once fetchUsers() lands.
+  const [optimisticItems, applyOptimistic] = useOptimistic<
+    UserListItem[],
+    { type: "removeInvite"; id: string }
+  >(items, (current, action) => {
+    if (action.type === "removeInvite") {
+      return current.filter((i) => !(i.kind === "invite" && i.id === action.id));
+    }
+    return current;
+  });
   const [loading, setLoading] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [resetLink, setResetLink] = useState<string | null>(null);
@@ -101,9 +114,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
       .catch(() => {});
   }, [selectedUser, isEnterprise]);
 
-  async function handleRevoke(inviteId: string) {
-    await fetch(`/api/users/invites/${inviteId}`, { method: "DELETE" });
-    fetchUsers();
+  function handleRevoke(inviteId: string) {
+    startRevokeTransition(async () => {
+      applyOptimistic({ type: "removeInvite", id: inviteId });
+      await fetch(`/api/users/invites/${inviteId}`, { method: "DELETE" });
+      fetchUsers();
+    });
   }
 
   async function handleResend(item: UserListItem & { kind: "invite" }) {
@@ -156,7 +172,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
 
           {/* Mobile card view */}
           <div className="block lg:hidden space-y-3">
-            {items.map((item) => (
+            {optimisticItems.map((item) => (
               <div
                 key={`${item.kind}-${item.id}`}
                 className={`rounded border p-3 space-y-2 ${item.status === "deactivated" ? "opacity-50" : ""} ${item.kind === "user" ? "cursor-pointer hover:bg-muted/50" : ""}`}
@@ -213,7 +229,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {items.map((item) => (
+                {optimisticItems.map((item) => (
                   <TableRow
                     key={`${item.kind}-${item.id}`}
                     className={`${item.status === "deactivated" ? "opacity-50" : ""} ${item.kind === "user" ? "cursor-pointer hover:bg-muted/50" : ""}`}

@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
@@ -25,13 +25,15 @@ export async function POST(
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  appendAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "user.updated",
-    resource: `user:${userId}`,
-    detail: { changes: { status: { from: "deactivated", to: "active" } } },
-  }).catch(() => {});
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "user.updated",
+      resource: `user:${userId}`,
+      detail: { changes: { status: { from: "deactivated", to: "active" } } },
+    })
+  );
 
   return NextResponse.json({ success: true });
 }

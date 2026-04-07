@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
@@ -92,17 +92,19 @@ export async function PUT(
     await db.insert(userGroups).values(userIds.map((userId: string) => ({ userId, groupId })));
   }
 
-  appendAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "group.members_updated",
-    resource: `group:${groupId}`,
-    detail: {
-      added: addedIds.map((id) => ({ id, name: nameMap.get(id) ?? id })),
-      removed: removedIds.map((id) => ({ id, name: nameMap.get(id) ?? id })),
-      memberCount: userIds.length,
-    },
-  }).catch(() => {});
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "group.members_updated",
+      resource: `group:${groupId}`,
+      detail: {
+        added: addedIds.map((id) => ({ id, name: nameMap.get(id) ?? id })),
+        removed: removedIds.map((id) => ({ id, name: nameMap.get(id) ?? id })),
+        memberCount: userIds.length,
+      },
+    })
+  );
 
   await recalculateTelegramAllowStores();
 

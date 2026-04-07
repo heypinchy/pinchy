@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { createInvite } from "@/lib/invites";
 import { appendAuditLog } from "@/lib/audit";
@@ -29,16 +29,18 @@ export async function POST(request: NextRequest) {
     auditGroups = groupIds.map((id: string) => ({ id, name: nameMap.get(id) ?? id }));
   }
 
-  appendAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "user.invited",
-    detail: {
-      email,
-      role,
-      ...(auditGroups.length > 0 ? { groups: auditGroups } : {}),
-    },
-  }).catch(() => {});
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "user.invited",
+      detail: {
+        email,
+        role,
+        ...(auditGroups.length > 0 ? { groups: auditGroups } : {}),
+      },
+    })
+  );
 
   return NextResponse.json(invite, { status: 201 });
 }

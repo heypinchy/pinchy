@@ -22,8 +22,14 @@ vi.mock("@/lib/settings", () => ({
   setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { auth } from "@/lib/auth";
 import { getAllSettings } from "@/lib/settings";
+import { appendAuditLog } from "@/lib/audit";
+import { after } from "next/server";
 
 describe("GET /api/settings", () => {
   let GET: typeof import("@/app/api/settings/route").GET;
@@ -149,5 +155,33 @@ describe("POST /api/settings", () => {
     expect(response.status).toBe(200);
 
     expect(setSetting).toHaveBeenCalledWith("default_provider", "openai", false);
+  });
+
+  it("schedules the audit log write via after() instead of fire-and-forget", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const request = new NextRequest("http://localhost/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "default_provider", value: "openai" }),
+    });
+
+    await POST(request);
+
+    // The route must use next/server's after() so the audit log call is
+    // properly scheduled and any errors flow through Next's error handler
+    // instead of being swallowed by .catch(() => {}).
+    expect(after).toHaveBeenCalledTimes(1);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorType: "user",
+        actorId: "admin-1",
+        eventType: "config.changed",
+        detail: { key: "default_provider" },
+      })
+    );
   });
 });
