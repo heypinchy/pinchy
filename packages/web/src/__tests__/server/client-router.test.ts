@@ -343,7 +343,12 @@ describe("ClientRouter", () => {
     });
 
     const messages = clientWs.sent.map((s) => JSON.parse(s));
-    const messageIds = messages.map((m: any) => m.messageId);
+    // Stream terminators (complete) have no messageId — only turn-bound
+    // frames (thinking, chunk, done) carry one. They must all share the
+    // same messageId so the browser can merge chunks into one assistant
+    // message.
+    const turnFrames = messages.filter((m: any) => ["thinking", "chunk", "done"].includes(m.type));
+    const messageIds = turnFrames.map((m: any) => m.messageId);
     expect(new Set(messageIds).size).toBe(1);
     expect(messageIds[0]).toBeTruthy();
   });
@@ -387,6 +392,158 @@ describe("ClientRouter", () => {
     expect(turn2Chunks[0].messageId).toBeTruthy();
   });
 
+  it("should keep the browser WebSocket alive during long stream pauses by sending periodic thinking heartbeats", async () => {
+    vi.useFakeTimers();
+    try {
+      const clientWs = createMockClientWs();
+      let resolveFirstChunk: () => void = () => {};
+      let resolveSecondChunk: () => void = () => {};
+      const firstChunkArrived = new Promise<void>((r) => (resolveFirstChunk = r));
+      const secondChunkArrived = new Promise<void>((r) => (resolveSecondChunk = r));
+
+      async function* fakeStream() {
+        // First quick text chunk so the stream is past the initial thinking
+        yield { type: "text" as const, text: "Let me look that up." };
+        yield { type: "done" as const, text: "" };
+        resolveFirstChunk();
+        // Long pause: simulates local LLM doing inference for a follow-up turn
+        // — during this time the server must keep the browser socket alive.
+        await new Promise<void>((r) => setTimeout(r, 60_000));
+        yield { type: "text" as const, text: "Here is the answer." };
+        yield { type: "done" as const, text: "" };
+        resolveSecondChunk();
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      const handlePromise = router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      // Let the generator produce its first chunks
+      await vi.advanceTimersByTimeAsync(0);
+      await firstChunkArrived;
+
+      const sentBeforePause = clientWs.sent.length;
+
+      // Advance well past one heartbeat interval (15s) but before the
+      // generator's 60s sleep ends. The server must have sent at least one
+      // additional thinking frame in this window.
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      const sentDuringPause = clientWs.sent.slice(sentBeforePause).map((s) => JSON.parse(s));
+      const heartbeats = sentDuringPause.filter((m: any) => m.type === "thinking");
+      expect(heartbeats.length).toBeGreaterThanOrEqual(1);
+
+      // Drain the rest
+      await vi.advanceTimersByTimeAsync(60_000);
+      await secondChunkArrived;
+      await handlePromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should clear the heartbeat interval after the stream ends so no timer leaks", async () => {
+    vi.useFakeTimers();
+    try {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hi" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      const beforeTimers = vi.getTimerCount();
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+      // The heartbeat interval must be cleaned up — otherwise long-lived
+      // sessions would accumulate timers for every message sent.
+      expect(vi.getTimerCount()).toBe(beforeTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should clear the heartbeat interval when the client disconnects mid-stream", async () => {
+    vi.useFakeTimers();
+    try {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hi" };
+        // Simulate client close mid-stream
+        clientWs.readyState = 3; // CLOSED
+        yield { type: "text" as const, text: "more" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      const beforeTimers = vi.getTimerCount();
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+      expect(vi.getTimerCount()).toBe(beforeTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should clear the heartbeat interval when the stream throws", async () => {
+    vi.useFakeTimers();
+    try {
+      const clientWs = createMockClientWs();
+      mockChat.mockImplementation(async function* () {
+        yield { type: "text" as const, text: "part" };
+        throw new Error("upstream kaboom");
+      });
+
+      const beforeTimers = vi.getTimerCount();
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+      expect(vi.getTimerCount()).toBe(beforeTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should send a thinking message before consuming the stream so the UI can show a spinner", async () => {
+    const clientWs = createMockClientWs();
+    let firstSent: unknown = null;
+    let textChunkSeen = false;
+    async function* fakeStream() {
+      // Capture what was sent before the first text chunk arrived
+      firstSent = clientWs.sent.length > 0 ? JSON.parse(clientWs.sent[0]) : null;
+      textChunkSeen = true;
+      yield { type: "text" as const, text: "Hello" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    expect(textChunkSeen).toBe(true);
+    expect(firstSent).toMatchObject({ type: "thinking" });
+    // Thinking message must share the messageId with the chunks that follow
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const thinkingMsg = messages.find((m: any) => m.type === "thinking");
+    const chunkMsg = messages.find((m: any) => m.type === "chunk");
+    expect(thinkingMsg.messageId).toBeTruthy();
+    expect(chunkMsg.messageId).toBe(thinkingMsg.messageId);
+  });
+
   it("should send a done message after stream completes", async () => {
     const clientWs = createMockClientWs();
     async function* fakeStream() {
@@ -407,6 +564,49 @@ describe("ClientRouter", () => {
     expect(doneMsg.messageId).toBeTruthy();
   });
 
+  it("should send a single 'complete' message after the entire stream ends", async () => {
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      // Multi-turn: two intra-stream done events, but the stream as a whole
+      // only really ends when the iterator is exhausted.
+      yield { type: "text" as const, text: "Let me search..." };
+      yield { type: "done" as const, text: "" };
+      yield { type: "text" as const, text: "Found it." };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const completeMessages = messages.filter((m: any) => m.type === "complete");
+    expect(completeMessages).toHaveLength(1);
+    // The complete event must be the very last thing sent so the client can
+    // safely turn off the spinner only when no more chunks are coming.
+    expect(messages[messages.length - 1].type).toBe("complete");
+  });
+
+  it("should not send a 'complete' message when the stream errors", async () => {
+    const clientWs = createMockClientWs();
+    mockChat.mockImplementation(async function* () {
+      throw new Error("upstream failure");
+    });
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const completeMessages = messages.filter((m: any) => m.type === "complete");
+    expect(completeMessages).toHaveLength(0);
+  });
+
   it("should send error to browser on stream failure", async () => {
     const clientWs = createMockClientWs();
     mockChat.mockImplementation(async function* () {
@@ -420,9 +620,9 @@ describe("ClientRouter", () => {
     });
 
     const messages = clientWs.sent.map((s) => JSON.parse(s));
-    expect(messages).toHaveLength(1);
-    expect(messages[0].type).toBe("error");
-    expect(messages[0].message).toBe("Something went wrong. Please try again.");
+    const errorMessages = messages.filter((m: any) => m.type === "error");
+    expect(errorMessages).toHaveLength(1);
+    expect(errorMessages[0].message).toBe("Something went wrong. Please try again.");
   });
 
   it("should not send to client if WebSocket is not open", async () => {
@@ -886,10 +1086,11 @@ describe("ClientRouter", () => {
     });
 
     const messages = clientWs.sent.map((s) => JSON.parse(s));
-    expect(messages[0].type).toBe("error");
-    expect(messages[0].message).not.toContain("ECONNREFUSED");
-    expect(messages[0].message).not.toContain("127.0.0.1");
-    expect(messages[0].message).toBe("Something went wrong. Please try again.");
+    const errorMsg = messages.find((m: any) => m.type === "error");
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.message).not.toContain("ECONNREFUSED");
+    expect(errorMsg.message).not.toContain("127.0.0.1");
+    expect(errorMsg.message).toBe("Something went wrong. Please try again.");
   });
 
   it("should fall back to greeting when history fetch throws an error", async () => {

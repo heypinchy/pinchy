@@ -23,7 +23,6 @@ interface WsMessage {
   timestamp?: string;
 }
 
-const STREAM_DONE_DEBOUNCE_MS = 1500;
 const DELAY_HINT_MS = 15_000;
 
 function convertMessage(msg: WsMessage): ThreadMessageLike {
@@ -70,7 +69,6 @@ export function useWsRuntime(agentId: string): {
   const [isDelayed, setIsDelayed] = useState(false);
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
-  const debounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const mountedRef = useRef(true);
   const reconnectAttemptRef = useRef(0);
@@ -165,10 +163,15 @@ export function useWsRuntime(agentId: string): {
             return;
           }
 
+          if (data.type === "thinking") {
+            // Server keep-alive: defeats browser/proxy WebSocket idle
+            // timeouts during long pauses (e.g. local Ollama tool-use loops).
+            // No state change needed — we just don't want to drop the frame.
+            setIsRunning(true);
+            return;
+          }
+
           if (data.type === "chunk") {
-            // Ensure isRunning stays true when new chunks arrive —
-            // critical for multi-turn agent responses where a "done"
-            // event between turns briefly sets isRunning to false.
             setIsRunning(true);
 
             if (delayTimerRef.current) {
@@ -192,20 +195,16 @@ export function useWsRuntime(agentId: string): {
                 },
               ];
             });
-
-            // Reset debounce timer on each chunk
-            if (debounceTimerRef.current) {
-              clearTimeout(debounceTimerRef.current);
-            }
-            debounceTimerRef.current = setTimeout(() => {
-              setIsRunning(false);
-            }, STREAM_DONE_DEBOUNCE_MS);
           }
 
           if (data.type === "done") {
-            if (debounceTimerRef.current) {
-              clearTimeout(debounceTimerRef.current);
-            }
+            // Per-turn done: only marks the end of one assistant turn.
+            // The spinner is NOT cleared here — only "complete" terminates
+            // the entire stream. Tool-use loops produce one "done" per turn.
+            // Intentionally a no-op for isRunning.
+          }
+
+          if (data.type === "complete") {
             if (delayTimerRef.current) {
               clearTimeout(delayTimerRef.current);
               delayTimerRef.current = null;
@@ -215,9 +214,6 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "error") {
-            if (debounceTimerRef.current) {
-              clearTimeout(debounceTimerRef.current);
-            }
             if (delayTimerRef.current) {
               clearTimeout(delayTimerRef.current);
               delayTimerRef.current = null;
@@ -247,9 +243,6 @@ export function useWsRuntime(agentId: string): {
       mountedRef.current = false;
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
-      }
-      if (debounceTimerRef.current) {
-        clearTimeout(debounceTimerRef.current);
       }
       if (delayTimerRef.current) {
         clearTimeout(delayTimerRef.current);

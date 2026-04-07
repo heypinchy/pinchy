@@ -66,7 +66,7 @@ describe("useWsRuntime", () => {
     expect(result.current.isConnected).toBe(false);
   });
 
-  it("should stop running immediately when a done message is received", () => {
+  it("should stop running immediately when a complete message is received", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -95,14 +95,62 @@ describe("useWsRuntime", () => {
 
     expect(result.current.runtime.isRunning).toBe(true);
 
-    // Receive done message - should immediately stop running
+    // Per-turn done — must NOT stop the spinner. The agent might still be
+    // running another turn (tool-use loops), and only "complete" tells us
+    // the entire stream is over.
     act(() => {
       ws.onmessage?.({
         data: JSON.stringify({ type: "done", messageId: "msg-1" }),
       });
     });
 
+    expect(result.current.runtime.isRunning).toBe(true);
+
+    // Stream-terminating complete event — now the spinner can stop.
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({ type: "complete" }),
+      });
+    });
+
     expect(result.current.runtime.isRunning).toBe(false);
+  });
+
+  it("should keep running across long pauses between chunks (no debounce false-positive)", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "chunk",
+          content: "Let me think...",
+          messageId: "msg-1",
+        }),
+      });
+    });
+
+    expect(result.current.runtime.isRunning).toBe(true);
+
+    // Simulate a long pause where the local LLM is generating the next turn
+    // but no chunks arrive. The previous implementation debounced isRunning
+    // to false after 1.5s of silence — that was the bug.
+    act(() => {
+      vi.advanceTimersByTime(30_000);
+    });
+
+    expect(result.current.runtime.isRunning).toBe(true);
   });
 
   it("should stop running immediately when an error message is received", () => {
@@ -143,7 +191,7 @@ describe("useWsRuntime", () => {
     expect(errorMsg).toBeDefined();
   });
 
-  it("should clear debounce timer when done message arrives", () => {
+  it("should stay running when only done arrives (turn end), and stop on complete", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -158,7 +206,6 @@ describe("useWsRuntime", () => {
       });
     });
 
-    // Receive a chunk (starts debounce timer)
     act(() => {
       ws.onmessage?.({
         data: JSON.stringify({
@@ -169,21 +216,28 @@ describe("useWsRuntime", () => {
       });
     });
 
-    // Receive done immediately
+    // Per-turn done — does NOT terminate the spinner
     act(() => {
       ws.onmessage?.({
         data: JSON.stringify({ type: "done", messageId: "msg-1" }),
       });
     });
 
+    expect(result.current.runtime.isRunning).toBe(true);
+
+    // Stream-terminating complete — now spinner stops
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({ type: "complete" }),
+      });
+    });
+
     expect(result.current.runtime.isRunning).toBe(false);
 
-    // Advance past debounce time - should not cause any issues
+    // Advance past any old debounce window — must stay false
     act(() => {
       vi.advanceTimersByTime(2000);
     });
-
-    // Still false, no double-setting
     expect(result.current.runtime.isRunning).toBe(false);
   });
 
@@ -233,10 +287,19 @@ describe("useWsRuntime", () => {
     // isRunning should be true again when new chunks arrive
     expect(result.current.runtime.isRunning).toBe(true);
 
-    // Turn 2 done
+    // Turn 2 done — still not finished from the spinner's perspective
     act(() => {
       ws.onmessage?.({
         data: JSON.stringify({ type: "done", messageId: "turn-2" }),
+      });
+    });
+
+    expect(result.current.runtime.isRunning).toBe(true);
+
+    // Stream complete — spinner stops
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({ type: "complete" }),
       });
     });
 

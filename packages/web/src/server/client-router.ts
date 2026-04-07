@@ -12,6 +12,12 @@ import { eq } from "drizzle-orm";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
+// Browsers and intermediate proxies close idle WebSockets after ~30-60s of
+// silence. While the agent is in a slow tool-use loop (e.g. local Ollama
+// thinking for >60s between turns), the server must keep the socket alive
+// with periodic frames. We send a "thinking" heartbeat every 15s — frequent
+// enough to defeat any reasonable idle timer, sparse enough not to spam.
+const THINKING_HEARTBEAT_MS = 15_000;
 
 interface ContentPart {
   type: string;
@@ -143,57 +149,91 @@ export class ClientRouter {
 
       const stream = this.openclawClient.chat(text, chatOptions);
 
-      for await (const chunk of stream) {
-        // Stop consuming the stream if the browser disconnected — frees
-        // server resources while letting OpenClaw finish on its side.
-        if (clientWs.readyState !== WS_OPEN) {
-          break;
-        }
+      // Tell the client immediately that the request is in flight so the UI
+      // can render a thinking indicator. Without this, slow backends (e.g.
+      // local Ollama with tool-use loops) leave the user staring at a blank
+      // chat for tens of seconds.
+      this.sendToClient(clientWs, {
+        type: "thinking",
+        messageId,
+      });
 
-        if (chunk.type === "text") {
-          const cleaned = chunk.text.replace(/<\/?final>/g, "");
-          if (cleaned) {
+      // Periodic keep-alive: defeat browser/proxy idle timeouts during long
+      // pauses between agent turns (Ollama tool-use loops can take >60s).
+      // The interval is cleared in the finally block below.
+      const heartbeatInterval = setInterval(() => {
+        if (clientWs.readyState === WS_OPEN) {
+          this.sendToClient(clientWs, {
+            type: "thinking",
+            messageId,
+          });
+        }
+      }, THINKING_HEARTBEAT_MS);
+
+      try {
+        for await (const chunk of stream) {
+          // Stop consuming the stream if the browser disconnected — frees
+          // server resources while letting OpenClaw finish on its side.
+          if (clientWs.readyState !== WS_OPEN) {
+            break;
+          }
+
+          if (chunk.type === "text") {
+            const cleaned = chunk.text.replace(/<\/?final>/g, "");
+            if (cleaned) {
+              this.sendToClient(clientWs, {
+                type: "chunk",
+                content: cleaned,
+                messageId,
+              });
+            }
+          }
+
+          if (chunk.type === "error") {
+            console.error("OpenClaw error chunk:", chunk.text);
             this.sendToClient(clientWs, {
-              type: "chunk",
-              content: cleaned,
+              type: "error",
+              message:
+                "Something went wrong connecting to the agent. Try refreshing — if it persists, check the logs.",
               messageId,
             });
           }
+
+          if (chunk.type === "done") {
+            this.sessionCache.add(sessionKey);
+            this.sendToClient(clientWs, {
+              type: "done",
+              messageId,
+            });
+
+            // Fire-and-forget usage tracking
+            recordUsage({
+              openclawClient: this.openclawClient,
+              userId: this.userId,
+              agentId: message.agentId,
+              agentName: agent.name,
+              sessionKey,
+            }).catch((err) => {
+              console.error("Usage tracking failed:", err);
+            });
+
+            // Next agent turn gets a fresh messageId so the browser
+            // creates a separate assistant message — consistent with
+            // how OpenClaw stores them in history.
+            messageId = crypto.randomUUID();
+          }
         }
 
-        if (chunk.type === "error") {
-          console.error("OpenClaw error chunk:", chunk.text);
-          this.sendToClient(clientWs, {
-            type: "error",
-            message:
-              "Something went wrong connecting to the agent. Try refreshing — if it persists, check the logs.",
-            messageId,
-          });
-        }
-
-        if (chunk.type === "done") {
-          this.sessionCache.add(sessionKey);
-          this.sendToClient(clientWs, {
-            type: "done",
-            messageId,
-          });
-
-          // Fire-and-forget usage tracking
-          recordUsage({
-            openclawClient: this.openclawClient,
-            userId: this.userId,
-            agentId: message.agentId,
-            agentName: agent.name,
-            sessionKey,
-          }).catch((err) => {
-            console.error("Usage tracking failed:", err);
-          });
-
-          // Next agent turn gets a fresh messageId so the browser
-          // creates a separate assistant message — consistent with
-          // how OpenClaw stores them in history.
-          messageId = crypto.randomUUID();
-        }
+        // Tell the client the entire request is finished. Unlike "done" events
+        // (which fire between agent turns) this is sent exactly once after the
+        // iterator is exhausted, so the UI can confidently turn off the
+        // thinking indicator only when no more chunks will arrive.
+        // No messageId — this terminator is not tied to any specific turn.
+        this.sendToClient(clientWs, {
+          type: "complete",
+        });
+      } finally {
+        clearInterval(heartbeatInterval);
       }
     } catch (err) {
       this.sendToClient(clientWs, {
