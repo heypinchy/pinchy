@@ -118,9 +118,6 @@ export const ROW_HMAC_VERIFIERS: Record<
   2: (secret, fields) => computeRowHmacV2(secret, fields as HmacFieldsV2),
 };
 
-// Backward-compat alias for callers not yet migrated. Will be removed in Task 3.
-export const computeRowHmac = computeRowHmacV1;
-
 const MAX_DETAIL_BYTES = 2048;
 
 export function truncateDetail(detail: unknown): unknown {
@@ -173,9 +170,12 @@ export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
   const timestamp = new Date();
   const detail = truncateDetail(entry.detail ?? null);
 
-  const isV2 = "outcome" in entry && entry.outcome !== undefined;
+  const isV2 = entry.eventType.startsWith("tool.");
 
   if (isV2) {
+    if (!("outcome" in entry) || entry.outcome === undefined) {
+      throw new Error(`tool.* audit events must include outcome (got ${entry.eventType})`);
+    }
     const outcome = entry.outcome;
     const error = entry.error ?? null;
     const rowHmac = computeRowHmacV2(secret, {
@@ -246,13 +246,21 @@ export async function verifyIntegrity(fromId?: number, toId?: number): Promise<V
   const invalidIds: number[] = [];
 
   for (const entry of entries) {
-    const expectedHmac = computeRowHmac(secret, {
+    const verifier = ROW_HMAC_VERIFIERS[entry.version];
+    if (!verifier) {
+      invalidIds.push(entry.id);
+      continue;
+    }
+
+    const expectedHmac = verifier(secret, {
       timestamp: entry.timestamp,
       eventType: entry.eventType,
       actorType: entry.actorType,
       actorId: entry.actorId,
       resource: entry.resource,
       detail: entry.detail,
+      outcome: (entry.outcome ?? "success") as "success" | "failure",
+      error: entry.error as { message: string } | null,
     });
 
     if (expectedHmac !== entry.rowHmac) {

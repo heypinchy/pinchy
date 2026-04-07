@@ -18,7 +18,7 @@ vi.mock("@/lib/encryption", () => ({
   getOrCreateSecret: (...args: unknown[]) => mockGetOrCreateSecret(...args),
 }));
 
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { auditLog } from "@/db/schema";
 
 describe("appendAuditLog", () => {
@@ -111,6 +111,7 @@ describe("appendAuditLog", () => {
       actorId: "agent-1",
       eventType: "tool.execute",
       detail: largeDetail,
+      outcome: "success",
     });
 
     const insertedRow = mockValues.mock.calls[0][0];
@@ -126,6 +127,7 @@ describe("appendAuditLog", () => {
       eventType: "tool.denied",
       resource: "tool:shell",
       detail: { reason: "not allowed" },
+      outcome: "failure",
     });
 
     const insertedRow = mockValues.mock.calls[0][0];
@@ -181,6 +183,28 @@ describe("appendAuditLog", () => {
     const inserted = mockValues.mock.calls[0][0];
     expect(inserted.outcome).toBeUndefined();
     expect(inserted.error).toBeUndefined();
+  });
+
+  it("throws when a tool.* event is submitted without outcome", async () => {
+    await expect(
+      appendAuditLog({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "tool.web_search",
+        // no outcome — defends against `as any` casts at runtime
+      } as unknown as AuditLogEntry)
+    ).rejects.toThrow(/tool\.\* audit events must include outcome/);
+  });
+
+  it("type system requires outcome on tool.* events", () => {
+    // @ts-expect-error - tool.* events must include outcome
+    const _bad: AuditLogEntry = {
+      actorType: "user",
+      actorId: "u1",
+      eventType: "tool.web_search",
+      detail: {},
+    };
+    void _bad;
   });
 
   it("v2 rows are hashed with computeRowHmacV2 (rowHmac differs from v1 hash)", async () => {

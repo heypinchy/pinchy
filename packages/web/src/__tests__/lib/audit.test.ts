@@ -1,6 +1,5 @@
 import { describe, it, expect } from "vitest";
 import {
-  computeRowHmac,
   computeRowHmacV1,
   computeRowHmacV2,
   ROW_HMAC_VERIFIERS,
@@ -11,7 +10,7 @@ describe("computeRowHmac", () => {
   const secret = Buffer.from("a".repeat(64), "hex");
 
   it("should return a 64-char hex string", () => {
-    const hmac = computeRowHmac(secret, {
+    const hmac = computeRowHmacV1(secret, {
       timestamp: new Date("2026-02-21T10:00:00Z"),
       eventType: "agent.created",
       actorType: "user",
@@ -31,7 +30,7 @@ describe("computeRowHmac", () => {
       resource: "agent:abc",
       detail: { name: "Smithers" },
     };
-    expect(computeRowHmac(secret, fields)).toBe(computeRowHmac(secret, fields));
+    expect(computeRowHmacV1(secret, fields)).toBe(computeRowHmacV1(secret, fields));
   });
 
   it("should produce different HMAC for different input", () => {
@@ -43,8 +42,8 @@ describe("computeRowHmac", () => {
       resource: "agent:abc",
       detail: { name: "Smithers" },
     };
-    const hmac1 = computeRowHmac(secret, base);
-    const hmac2 = computeRowHmac(secret, { ...base, actorId: "user-2" });
+    const hmac1 = computeRowHmacV1(secret, base);
+    const hmac2 = computeRowHmacV1(secret, { ...base, actorId: "user-2" });
     expect(hmac1).not.toBe(hmac2);
   });
 
@@ -58,7 +57,7 @@ describe("computeRowHmac", () => {
       detail: null,
     };
     const secret2 = Buffer.from("b".repeat(64), "hex");
-    expect(computeRowHmac(secret, fields)).not.toBe(computeRowHmac(secret2, fields));
+    expect(computeRowHmacV1(secret, fields)).not.toBe(computeRowHmacV1(secret2, fields));
   });
 
   it("should produce the same HMAC regardless of detail key order (JSONB roundtrip)", () => {
@@ -71,13 +70,13 @@ describe("computeRowHmac", () => {
     };
 
     // Original JS insertion order
-    const hmacOriginal = computeRowHmac(secret, {
+    const hmacOriginal = computeRowHmacV1(secret, {
       ...base,
       detail: { email: "test@example.com", role: "member" },
     });
 
     // After PostgreSQL JSONB roundtrip (keys sorted by length, then alphabetically)
-    const hmacFromDb = computeRowHmac(secret, {
+    const hmacFromDb = computeRowHmacV1(secret, {
       ...base,
       detail: { role: "member", email: "test@example.com" },
     });
@@ -95,7 +94,7 @@ describe("computeRowHmac", () => {
     };
 
     // Original JS order: toolName, phase, source, params, result
-    const hmacOriginal = computeRowHmac(secret, {
+    const hmacOriginal = computeRowHmacV1(secret, {
       ...base,
       detail: {
         toolName: "pinchy_ls",
@@ -107,7 +106,7 @@ describe("computeRowHmac", () => {
     });
 
     // JSONB reordered: sorted by key length then alphabetically
-    const hmacFromDb = computeRowHmac(secret, {
+    const hmacFromDb = computeRowHmacV1(secret, {
       ...base,
       detail: {
         phase: "end",
@@ -122,7 +121,7 @@ describe("computeRowHmac", () => {
   });
 
   it("should handle null resource and detail", () => {
-    const hmac = computeRowHmac(secret, {
+    const hmac = computeRowHmacV1(secret, {
       timestamp: new Date("2026-02-21T10:00:00Z"),
       eventType: "auth.login",
       actorType: "user",

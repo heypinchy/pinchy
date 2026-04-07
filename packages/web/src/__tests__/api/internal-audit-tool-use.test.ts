@@ -89,7 +89,6 @@ describe("POST /api/internal/audit/tool-use", () => {
         sessionKey: "agent:agent-2:direct:user-1",
         sessionId: "session-2",
         result: { ok: true },
-        error: "none",
         durationMs: 123,
       })
     );
@@ -131,7 +130,6 @@ describe("POST /api/internal/audit/tool-use", () => {
         sessionKey: "agent:agent-2:direct:user-1",
         sessionId: "session-2",
         result: { ok: true },
-        error: "none",
         durationMs: 123,
       })
     );
@@ -150,11 +148,11 @@ describe("POST /api/internal/audit/tool-use", () => {
         sessionKey: "agent:agent-2:direct:user-1",
         sessionId: "session-2",
         result: { ok: true },
-        error: "none",
         durationMs: 123,
         source: "openclaw_hook",
       },
       outcome: "success",
+      error: null,
     });
   });
 
@@ -182,6 +180,7 @@ describe("POST /api/internal/audit/tool-use", () => {
         source: "openclaw_hook",
       },
       outcome: "success",
+      error: null,
     });
   });
 
@@ -209,7 +208,44 @@ describe("POST /api/internal/audit/tool-use", () => {
         source: "openclaw_hook",
       },
       outcome: "success",
+      error: null,
     });
+  });
+
+  it("derives outcome='success' and error=null when payload has no error", async () => {
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "web_search",
+        agentId: "agent-1",
+        result: { hits: 3 },
+      })
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "success",
+        error: null,
+      })
+    );
+  });
+
+  it("derives outcome='failure' and error.message from payload.error", async () => {
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "web_search",
+        agentId: "agent-1",
+        error: "Brave API key missing",
+      })
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "failure",
+        error: { message: "Brave API key missing" },
+      })
+    );
   });
 
   it("returns 500 with error message when appendAuditLog fails", async () => {
