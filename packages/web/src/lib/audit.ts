@@ -46,13 +46,18 @@ export type AuditEventType =
   | "channel.created"
   | "channel.deleted";
 
-interface HmacFields {
+interface HmacFieldsV1 {
   timestamp: Date;
   eventType: string;
   actorType: string;
   actorId: string;
   resource: string | null;
   detail: unknown;
+}
+
+interface HmacFieldsV2 extends HmacFieldsV1 {
+  outcome: "success" | "failure";
+  error: { message: string } | null;
 }
 
 /**
@@ -75,7 +80,7 @@ export function sortKeys(value: unknown): unknown {
   return sorted;
 }
 
-export function computeRowHmac(secret: Buffer, fields: HmacFields): string {
+export function computeRowHmacV1(secret: Buffer, fields: HmacFieldsV1): string {
   const payload = JSON.stringify([
     fields.timestamp.toISOString(),
     fields.eventType,
@@ -86,6 +91,31 @@ export function computeRowHmac(secret: Buffer, fields: HmacFields): string {
   ]);
   return createHmac("sha256", secret).update(payload).digest("hex");
 }
+
+export function computeRowHmacV2(secret: Buffer, fields: HmacFieldsV2): string {
+  const payload = JSON.stringify([
+    fields.timestamp.toISOString(),
+    fields.eventType,
+    fields.actorType,
+    fields.actorId,
+    fields.resource,
+    sortKeys(fields.detail),
+    2, // version — downgrade protection (see VERSIONING.md)
+    fields.outcome,
+    sortKeys(fields.error),
+  ]);
+  return createHmac("sha256", secret).update(payload).digest("hex");
+}
+
+// Dispatch table — never delete a version's function.
+export const ROW_HMAC_VERIFIERS: Record<number, (secret: Buffer, fields: HmacFieldsV2) => string> =
+  {
+    1: (secret, fields) => computeRowHmacV1(secret, fields),
+    2: (secret, fields) => computeRowHmacV2(secret, fields),
+  };
+
+// Backward-compat alias for callers not yet migrated. Will be removed in Task 3.
+export const computeRowHmac = computeRowHmacV1;
 
 const MAX_DETAIL_BYTES = 2048;
 

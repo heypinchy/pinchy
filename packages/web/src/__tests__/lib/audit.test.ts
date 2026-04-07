@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { computeRowHmac, truncateDetail } from "@/lib/audit";
+import { computeRowHmac, computeRowHmacV1, computeRowHmacV2, truncateDetail } from "@/lib/audit";
 
 describe("computeRowHmac", () => {
   const secret = Buffer.from("a".repeat(64), "hex");
@@ -125,6 +125,60 @@ describe("computeRowHmac", () => {
       detail: null,
     });
     expect(hmac).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("computeRowHmac version dispatch", () => {
+  const secret = Buffer.from("a".repeat(64), "hex");
+  const baseFields = {
+    timestamp: new Date("2026-01-01T00:00:00Z"),
+    eventType: "tool.web_search",
+    actorType: "user",
+    actorId: "user-1",
+    resource: "agent:abc",
+    detail: { toolName: "web_search" },
+  };
+
+  it("v1 hash is stable and does not include version/outcome/error", () => {
+    const hash = computeRowHmacV1(secret, baseFields);
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(hash).toEqual(computeRowHmacV1(secret, baseFields));
+  });
+
+  it("v1 hash matches the known-good regression fixture", () => {
+    // Captured 2026-04-07. NEVER change without reading VERSIONING.md.
+    const fixture = computeRowHmacV1(secret, baseFields);
+    expect(fixture).toEqual("bd87553fb579d4d219e901303ea9a2908b9dc641db799ab20cae7693bf53233f");
+  });
+
+  it("v2 hash differs from v1 given identical base fields", () => {
+    const v1 = computeRowHmacV1(secret, baseFields);
+    const v2 = computeRowHmacV2(secret, { ...baseFields, outcome: "success", error: null });
+    expect(v2).not.toEqual(v1);
+  });
+
+  it("v2 hash differs when outcome changes", () => {
+    const success = computeRowHmacV2(secret, { ...baseFields, outcome: "success", error: null });
+    const failure = computeRowHmacV2(secret, {
+      ...baseFields,
+      outcome: "failure",
+      error: { message: "boom" },
+    });
+    expect(success).not.toEqual(failure);
+  });
+
+  it("v2 hash differs when error message changes", () => {
+    const a = computeRowHmacV2(secret, {
+      ...baseFields,
+      outcome: "failure",
+      error: { message: "boom" },
+    });
+    const b = computeRowHmacV2(secret, {
+      ...baseFields,
+      outcome: "failure",
+      error: { message: "kaboom" },
+    });
+    expect(a).not.toEqual(b);
   });
 });
 
