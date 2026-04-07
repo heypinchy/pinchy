@@ -25,4 +25,10 @@ describe("audit log schema", () => {
     expect(columns).toContain("detail");
     expect(columns).toContain("rowHmac");
   });
+
+  it("should have version, outcome, and error columns", () => {
+    expect(schema.auditLog.version).toBeDefined();
+    expect(schema.auditLog.outcome).toBeDefined();
+    expect(schema.auditLog.error).toBeDefined();
+  });
 });

@@ -212,12 +212,16 @@ export const auditLog = pgTable(
     eventType: text("event_type").notNull(),
     resource: text("resource"),
     detail: jsonb("detail"),
+    version: integer("version").notNull().default(1),
+    outcome: text("outcome"), // 'success' | 'failure' | null (null only for v1)
+    error: jsonb("error"), // { message: string } | null, only when outcome='failure'
     rowHmac: text("row_hmac").notNull(),
   },
   (table) => [
     index("idx_audit_timestamp").on(table.timestamp),
     index("idx_audit_actor").on(table.actorId),
     index("idx_audit_event").on(table.eventType),
+    index("idx_audit_outcome").on(table.outcome),
   ]
 );
 
