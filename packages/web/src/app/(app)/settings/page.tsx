@@ -1,7 +1,12 @@
+import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { getLicenseStatus, isKeyFromEnv } from "@/lib/enterprise";
 import { SettingsPageContent } from "@/components/settings-page-content";
+
+export const metadata: Metadata = {
+  title: "Settings",
+};
 
 export default async function SettingsPage({
   searchParams,
