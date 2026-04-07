@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "node -r ./server-preload.cjs --import tsx server.ts",
-    "build": "next build",
+    "build": "next build --turbopack",
     "start": "NODE_ENV=production node -r ./server-preload.cjs --import tsx server.ts",
     "lint": "eslint",
     "format": "prettier --write .",
