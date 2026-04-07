@@ -17,8 +17,12 @@ export class WsRateLimiter {
   private ipUpgrades = new Map<string, IpUpgradeRecord>();
 
   constructor(options: WsRateLimiterOptions = {}) {
-    this.maxConnectionsPerUser = options.maxConnectionsPerUser ?? 5;
-    this.maxUpgradesPerIpPerMinute = options.maxUpgradesPerIpPerMinute ?? 10;
+    // Defaults are tuned to absorb legitimate UI behavior — exponential
+    // backoff reconnect loops, multi-tab usage, agent switching, brief
+    // network blips — without throttling real users. The limiter is a
+    // brute-force / DoS guard, not a UI throttle.
+    this.maxConnectionsPerUser = options.maxConnectionsPerUser ?? 10;
+    this.maxUpgradesPerIpPerMinute = options.maxUpgradesPerIpPerMinute ?? 60;
   }
 
   allowConnection(userId: string): boolean {

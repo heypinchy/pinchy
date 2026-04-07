@@ -2,6 +2,31 @@ import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { WsRateLimiter } from "@/server/ws-rate-limit";
 
 describe("WsRateLimiter", () => {
+  describe("default limits", () => {
+    it("uses defaults that comfortably accommodate legitimate reconnect loops", () => {
+      // The frontend reconnects with exponential backoff up to 10 times
+      // within ~42s. Single-tab page reloads, agent switches, and brief
+      // network blips can stack on top. Defaults must absorb this without
+      // tripping the brute-force guard.
+      const limiter = new WsRateLimiter();
+      const ip = "10.0.0.42";
+      // 30 upgrades inside one window must still be allowed by default
+      for (let i = 0; i < 30; i++) {
+        expect(limiter.allowUpgrade(ip)).toBe(true);
+      }
+    });
+
+    it("allows several concurrent connections per user by default", () => {
+      // Multiple tabs / brief overlap during reconnect must not be blocked
+      const limiter = new WsRateLimiter();
+      const userId = "user-1";
+      for (let i = 0; i < 8; i++) {
+        expect(limiter.allowConnection(userId)).toBe(true);
+        limiter.trackConnection(userId);
+      }
+    });
+  });
+
   describe("per-user connection limits", () => {
     it("allows connections up to the max per user", () => {
       const limiter = new WsRateLimiter({ maxConnectionsPerUser: 3 });

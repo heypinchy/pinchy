@@ -113,6 +113,8 @@ app.prepare().then(async () => {
       // Rate limit by IP before doing any auth work
       const ip = request.socket.remoteAddress ?? "unknown";
       if (!wsRateLimiter.allowUpgrade(ip)) {
+        // Logged so silent throttling cannot mask reconnect-loop bugs again.
+        console.warn(`[ws] rate-limited WebSocket upgrade from ip=${ip}`);
         socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
         socket.destroy();
         return;
@@ -128,6 +130,9 @@ app.prepare().then(async () => {
       // Limit concurrent connections per user
       const { userId, userRole } = sessionInfo;
       if (!wsRateLimiter.allowConnection(userId)) {
+        console.warn(
+          `[ws] rate-limited WebSocket connection for user=${userId} (max concurrent reached)`
+        );
         socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
         socket.destroy();
         return;
