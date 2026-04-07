@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users, agents } from "@/db/schema";
@@ -54,13 +54,15 @@ export async function PATCH(
   // Update role
   const [updated] = await db.update(users).set({ role }).where(eq(users.id, userId)).returning();
 
-  appendAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "user.role_updated",
-    resource: `user:${userId}`,
-    detail: { changes: { role: { from: user.role, to: role } }, userName: user.name },
-  }).catch(() => {});
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "user.role_updated",
+      resource: `user:${userId}`,
+      detail: { changes: { role: { from: user.role, to: role } }, userName: user.name },
+    })
+  );
 
   await recalculateTelegramAllowStores();
 
@@ -97,13 +99,15 @@ export async function DELETE(
     return NextResponse.json({ error: "User not found" }, { status: 404 });
   }
 
-  appendAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "user.deleted",
-    resource: `user:${userId}`,
-    detail: { name: deactivated.name, email: deactivated.email },
-  }).catch(() => {});
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "user.deleted",
+      resource: `user:${userId}`,
+      detail: { name: deactivated.name, email: deactivated.email },
+    })
+  );
 
   // Soft-delete personal agents + cleanup workspaces
   for (const agent of personalAgents) {

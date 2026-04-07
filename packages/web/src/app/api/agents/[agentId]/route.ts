@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { eq, inArray } from "drizzle-orm";
@@ -209,13 +209,15 @@ export async function PATCH(
   }
 
   if (Object.keys(changes).length > 0 || auditDetail.allowedGroups) {
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "agent.updated",
-      resource: `agent:${agentId}`,
-      detail: auditDetail,
-    }).catch(() => {});
+    after(() =>
+      appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "agent.updated",
+        resource: `agent:${agentId}`,
+        detail: auditDetail,
+      })
+    );
   }
 
   // Recalculate Telegram allow-from stores when visibility or groups change
@@ -250,13 +252,15 @@ export async function DELETE(
 
   await deleteAgent(agentId);
 
-  appendAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "agent.deleted",
-    resource: `agent:${agentId}`,
-    detail: { name: agent.name },
-  }).catch(() => {});
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "agent.deleted",
+      resource: `agent:${agentId}`,
+      detail: { name: agent.name },
+    })
+  );
 
   revalidatePath("/", "layout");
 
