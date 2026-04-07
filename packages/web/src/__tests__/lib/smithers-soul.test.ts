@@ -11,8 +11,11 @@ describe("SMITHERS_SOUL_MD", () => {
     expect(SMITHERS_SOUL_MD).toContain("## Personality");
   });
 
-  it("contains the platform knowledge section", () => {
+  it("contains the platform knowledge section pointing to docs tools", () => {
     expect(SMITHERS_SOUL_MD).toContain("## Platform Knowledge");
+    // Knowledge is now sourced on demand from docs via plugin tools.
+    expect(SMITHERS_SOUL_MD).toContain("docs_list");
+    expect(SMITHERS_SOUL_MD).toContain("docs_read");
   });
 
   it("does not contain gendered honorifics", () => {

@@ -176,6 +176,19 @@ export async function regenerateOpenClawConfig() {
     | undefined;
   const gatewayToken = (gatewayAuth?.token as string) || "";
 
+  // Enable pinchy-docs for all personal agents (Smithers) so they can read
+  // platform documentation on demand. The plugin scopes itself to listed agents.
+  const personalAgentIds = allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => a.id);
+  if (personalAgentIds.length > 0) {
+    entries["pinchy-docs"] = {
+      enabled: true,
+      config: {
+        docsPath: "/pinchy-docs",
+        agents: Object.fromEntries(personalAgentIds.map((id) => [id, {}])),
+      },
+    };
+  }
+
   // Only include pinchy-context when agents use it. Including disabled plugins
   // with config causes OpenClaw to spam "disabled in config but config is present".
   if (contextPluginAgents) {

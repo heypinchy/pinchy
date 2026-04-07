@@ -634,11 +634,51 @@ describe("regenerateOpenClawConfig", () => {
     // auto-discovery (restart loop) and "disabled but config present" spam
     expect(config.plugins.entries["pinchy-context"]).toBeUndefined();
     expect(config.plugins.entries["pinchy-files"]).toBeUndefined();
+    expect(config.plugins.entries["pinchy-docs"]).toBeUndefined();
     expect(config.plugins.allow).not.toContain("pinchy-context");
     expect(config.plugins.allow).not.toContain("pinchy-files");
+    expect(config.plugins.allow).not.toContain("pinchy-docs");
     // pinchy-audit is always enabled to capture tool usage at source
     expect(config.plugins.entries["pinchy-audit"].enabled).toBe(true);
     expect(config.plugins.allow).toContain("pinchy-audit");
+  });
+
+  it("enables pinchy-docs plugin with personal agent ids when personal agents exist", async () => {
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "smithers-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          isPersonal: true,
+          ownerId: "user-1",
+          allowedTools: ["pinchy_save_user_context", "docs_list", "docs_read"],
+          createdAt: new Date(),
+        },
+        {
+          id: "shared-1",
+          name: "Shared",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          isPersonal: false,
+          ownerId: null,
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-docs"]).toBeDefined();
+    expect(config.plugins.entries["pinchy-docs"].enabled).toBe(true);
+    expect(config.plugins.entries["pinchy-docs"].config.docsPath).toBe("/pinchy-docs");
+    expect(config.plugins.entries["pinchy-docs"].config.agents).toEqual({
+      "smithers-1": {},
+    });
+    expect(config.plugins.allow).toContain("pinchy-docs");
   });
 });
 

@@ -141,7 +141,7 @@ describe("createSmithersAgent", () => {
       avatarSeed: "__smithers__",
       personalityPresetId: "the-butler",
       greetingMessage: "Test onboarding greeting",
-      allowedTools: ["pinchy_save_user_context"],
+      allowedTools: ["pinchy_save_user_context", "docs_list", "docs_read"],
     });
     expect(agent).toEqual(fakeAgent);
   });
@@ -324,7 +324,7 @@ describe("createSmithersAgent", () => {
 
     expect(valuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: ["pinchy_save_user_context"],
+        allowedTools: ["pinchy_save_user_context", "docs_list", "docs_read"],
       })
     );
   });
@@ -351,7 +351,12 @@ describe("createSmithersAgent", () => {
 
     expect(valuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: ["pinchy_save_user_context", "pinchy_save_org_context"],
+        allowedTools: [
+          "pinchy_save_user_context",
+          "pinchy_save_org_context",
+          "docs_list",
+          "docs_read",
+        ],
       })
     );
   });
