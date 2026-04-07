@@ -38,7 +38,7 @@ The simplest path. Install Ollama directly on the machine that runs Pinchy.
 curl -fsSL https://ollama.com/install.sh | sh
 
 # Pull a model
-ollama pull qwen2.5:7b
+ollama pull qwen3.5:9b
 ```
 
 In Pinchy, set the URL to:
@@ -82,7 +82,7 @@ http://ollama:11434
 
 <Aside type="note">
   You'll still need to pull models inside the container: `docker compose exec
-  ollama ollama pull qwen2.5:7b`
+  ollama ollama pull qwen3.5:9b`
 </Aside>
 
 ### C. Ollama with NVIDIA GPU (Docker)
@@ -140,18 +140,44 @@ http://<server-ip>:11434
   models are installed, provider setup will be blocked.
 </Aside>
 
-| Use Case      | Model               | Size   | Tool Support | Why                                                           |
-| ------------- | ------------------- | ------ | ------------ | ------------------------------------------------------------- |
-| General agent | `qwen2.5:7b`        | 4.7 GB | Yes          | Best balance of speed, quality, and tool support              |
-| Coding tasks  | `qwen2.5-coder:32b` | 19 GB  | Yes          | Strong code generation                                        |
-| Large context | `qwen3:32b`         | 19 GB  | Yes          | 128k context, reliable tool calling                           |
-| Lightweight   | `phi3:mini`         | 2.3 GB | No           | Fast, but no tool support — not compatible with Pinchy agents |
+| Use Case      | Model               | Size    | Tool Support | Why                                                                                |
+| ------------- | ------------------- | ------- | ------------ | ---------------------------------------------------------------------------------- |
+| General agent | `qwen3.5:9b`        | 6.6 GB  | Yes          | Reliable tool calling, good multilingual quality, multimodal — recommended default |
+| Coding tasks  | `qwen2.5-coder:32b` | 19 GB   | Yes          | Strong code generation                                                             |
+| Large context | `qwen3.5:27b`       | 17 GB   | Yes          | 256k context, highest local quality                                                |
+| Lightweight   | `phi3:mini`         | 2.3 GB  | No           | Fast, but no tool support — not compatible with Pinchy agents                      |
 
-Pull any model with:
+Pull the recommended default with:
 
 ```bash
-ollama pull qwen2.5:7b
+ollama pull qwen3.5:9b
 ```
+
+<Aside type="note">
+  Smaller models like `qwen2.5:7b` will install and connect, but in our
+  testing they hallucinate tool names instead of actually calling them,
+  which makes Smithers unreliable for platform questions. Stick to 9B
+  parameters or larger for tool-using agents.
+</Aside>
+
+## Performance Expectations
+
+Local models are slower than cloud APIs — sometimes by an order of magnitude.
+Plan for the following on a modern Apple Silicon Mac or a single mid-range GPU:
+
+- **Simple chat reply**: 5–15 seconds
+- **Tool-using reply** (e.g. Smithers consulting documentation): 60–120 seconds
+- **First request after a long idle**: add 10–30 seconds for model load
+
+The reason tool-using replies are so much slower is that each tool round-trip
+forces a fresh inference pass over the *entire* growing context (system prompt
++ conversation + tool outputs). On cloud GPUs this is invisible; on local
+hardware the prefill phase dominates.
+
+Pinchy keeps the WebSocket alive and shows a thinking indicator the whole
+time, so the UI never looks stuck — but the wait is real. If responsiveness
+matters more than air-gap compliance, consider mixing local (privacy-sensitive
+agents) with cloud providers (interactive agents).
 
 ## Troubleshooting
 
@@ -174,6 +200,9 @@ ollama pull qwen2.5:7b
 
 **Slow responses**
 
+- See [Performance Expectations](#performance-expectations) above — tool-using
+  replies on local hardware genuinely take 1–2 minutes, this is not a bug
 - A GPU makes a big difference — even a modest one speeds up inference significantly
-- Try a smaller model like `phi3:mini` for faster responses on CPU-only machines
-- Quantized models (e.g., `llama3:8b-q4_0`) trade some quality for speed
+- Quantized models (e.g., `qwen3.5:9b-q4_0`) trade some quality for speed
+- For maximum responsiveness, use a cloud provider for interactive agents and
+  reserve local models for privacy-sensitive workloads
