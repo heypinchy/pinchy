@@ -24,6 +24,32 @@ Pinchy logs event types across six categories:
 
 Each tool execution produces **one audit entry** — logged when the tool call completes (end phase only). The detail includes the tool name, parameters, and result. Start events are received but not persisted.
 
+## Tool Call Status
+
+Each tool call recorded in the audit log shows whether it succeeded or failed:
+
+- A green check mark next to the entry indicates a successful tool call.
+- A red X indicates a failed tool call (e.g., a missing API key, a network
+  error, or a tool that returned an error).
+- Entries from before this feature was added do not show a status indicator —
+  the schema did not track success/failure at the time. This is normal and
+  not an integrity issue.
+
+You can filter the audit log by status using the **Status** dropdown above
+the table:
+
+- **All Statuses** — show every entry.
+- **Success only** — only successful tool calls. Legacy entries are excluded.
+- **Failures only** — only failed tool calls. Useful for spotting recurring
+  errors quickly.
+
+When viewing a failed tool call's detail, the error message is shown
+prominently above the raw event JSON, so you don't have to dig through the
+detail blob to find the cause.
+
+The **Status** column is also included in CSV exports, alongside an Error
+column with the failure message. Status filtering applies to exports too.
+
 ### Authentication
 
 | Event Type    | Description                                            |
