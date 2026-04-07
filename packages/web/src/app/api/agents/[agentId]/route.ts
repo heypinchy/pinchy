@@ -10,7 +10,7 @@ import type { UpdateDetail } from "@/lib/audit";
 import { isEnterprise } from "@/lib/enterprise";
 import { writeIdentityFile } from "@/lib/workspace";
 import { db } from "@/db";
-import { agentGroups, groups } from "@/db/schema";
+import { agentGroups, groups, type AgentPluginConfig } from "@/db/schema";
 import { getAgentGroupIds } from "@/lib/groups";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 
@@ -109,7 +109,7 @@ export async function PATCH(
     name?: string;
     model?: string;
     allowedTools?: string[];
-    pluginConfig?: unknown;
+    pluginConfig?: AgentPluginConfig | null;
     greetingMessage?: string | null;
     tagline?: string | null;
     avatarSeed?: string | null;

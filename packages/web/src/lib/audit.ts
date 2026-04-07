@@ -1,7 +1,7 @@
 import { createHmac } from "crypto";
 import { asc, gte, lte, and } from "drizzle-orm";
 import { db } from "@/db";
-import { auditLog } from "@/db/schema";
+import { auditLog, type AuditDetail } from "@/db/schema";
 import { getOrCreateSecret } from "@/lib/encryption";
 
 // ── Audit Detail Base Types ─────────────────────────────────────────────
@@ -89,7 +89,7 @@ export function computeRowHmac(secret: Buffer, fields: HmacFields): string {
 
 const MAX_DETAIL_BYTES = 2048;
 
-export function truncateDetail(detail: unknown): unknown {
+export function truncateDetail(detail: AuditDetail | null | undefined): AuditDetail | null {
   if (detail === null || detail === undefined) return null;
   const serialized = JSON.stringify(detail);
   if (serialized.length <= MAX_DETAIL_BYTES) return detail;
