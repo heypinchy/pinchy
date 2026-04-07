@@ -208,6 +208,7 @@ export function AuditLogTable() {
   async function handleExportCsv() {
     const params = new URLSearchParams();
     if (eventTypeFilter) params.set("eventType", eventTypeFilter);
+    if (statusFilter) params.set("status", statusFilter);
     if (dateFrom) params.set("from", localDateStart(dateFrom));
     if (dateTo) params.set("to", localDateEnd(dateTo));
     const res = await fetch(`/api/audit/export?${params.toString()}`);
