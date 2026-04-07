@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import { getTableConfig } from "drizzle-orm/pg-core";
 import * as schema from "@/db/schema";
 
 describe("audit log schema", () => {
@@ -30,5 +31,30 @@ describe("audit log schema", () => {
     expect(schema.auditLog.version).toBeDefined();
     expect(schema.auditLog.outcome).toBeDefined();
     expect(schema.auditLog.error).toBeDefined();
+  });
+
+  it("version column is notNull with default 1", () => {
+    expect(schema.auditLog.version.notNull).toBe(true);
+    expect(schema.auditLog.version.default).toBe(1);
+  });
+
+  it("outcome column is nullable", () => {
+    expect(schema.auditLog.outcome.notNull).toBe(false);
+  });
+
+  it("error column is nullable", () => {
+    expect(schema.auditLog.error.notNull).toBe(false);
+  });
+
+  it("should declare idx_audit_outcome index", () => {
+    const config = getTableConfig(schema.auditLog);
+    const indexNames = config.indexes.map((i) => i.config.name);
+    expect(indexNames).toContain("idx_audit_outcome");
+  });
+
+  it("should declare audit_log_v2_outcome_required check constraint", () => {
+    const config = getTableConfig(schema.auditLog);
+    const checkNames = config.checks.map((c) => c.name);
+    expect(checkNames).toContain("audit_log_v2_outcome_required");
   });
 });

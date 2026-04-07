@@ -12,8 +12,9 @@ import {
   pgEnum,
   pgView,
   primaryKey,
+  check,
 } from "drizzle-orm/pg-core";
-import { isNull } from "drizzle-orm";
+import { isNull, sql } from "drizzle-orm";
 
 // ── Better Auth tables ──────────────────────────────────────────────────
 
@@ -222,6 +223,10 @@ export const auditLog = pgTable(
     index("idx_audit_actor").on(table.actorId),
     index("idx_audit_event").on(table.eventType),
     index("idx_audit_outcome").on(table.outcome),
+    check(
+      "audit_log_v2_outcome_required",
+      sql`${table.version} = 1 OR ${table.outcome} IS NOT NULL`
+    ),
   ]
 );
 
