@@ -26,6 +26,9 @@ vi.mock("@/db/schema", () => ({
     resource: "resource",
     detail: "detail",
     rowHmac: "row_hmac",
+    version: "version",
+    outcome: "outcome",
+    error: "error",
   },
 }));
 
@@ -82,7 +85,9 @@ describe("GET /api/audit/export", () => {
     expect(response.headers.get("Content-Disposition")).toContain("audit-log-");
 
     const body = await response.text();
-    expect(body).toContain("id,timestamp,actorType,actorId,eventType,resource,detail");
+    expect(body).toContain(
+      "id,timestamp,actorType,actorId,eventType,resource,detail,version,outcome,error"
+    );
     expect(body).toContain("auth.login");
     expect(body).toContain("user-1");
   });
@@ -97,7 +102,9 @@ describe("GET /api/audit/export", () => {
     const body = await response.text();
     const lines = body.split("\n");
     expect(lines).toHaveLength(1); // header only
-    expect(lines[0]).toBe("id,timestamp,actorType,actorId,eventType,resource,detail");
+    expect(lines[0]).toBe(
+      "id,timestamp,actorType,actorId,eventType,resource,detail,version,outcome,error"
+    );
   });
 
   it("should handle null resource field in CSV", async () => {
@@ -135,6 +142,67 @@ describe("GET /api/audit/export", () => {
 
     expect(response.status).toBe(200);
     expect(eq).toHaveBeenCalledWith("event_type", "auth.login");
+  });
+
+  it("includes version/outcome/error columns with values for v2 failure row", async () => {
+    mockOrderBy.mockResolvedValue([
+      {
+        id: 1,
+        timestamp: new Date("2026-03-01T10:00:00Z"),
+        actorType: "agent",
+        actorId: "agent-1",
+        eventType: "tool.shell.exec",
+        resource: "agent:agent-1",
+        detail: {},
+        rowHmac: "h",
+        version: 2,
+        outcome: "failure",
+        error: { message: "boom" },
+      },
+    ]);
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(new Request("http://localhost/api/audit/export") as any);
+    const body = await response.text();
+    const lines = body.split("\n");
+    expect(lines[0]).toBe(
+      "id,timestamp,actorType,actorId,eventType,resource,detail,version,outcome,error"
+    );
+    expect(lines[1]).toContain(",2,failure,");
+    expect(lines[1]).toContain("boom");
+  });
+
+  it("leaves outcome/error empty for v1 rows in CSV", async () => {
+    mockOrderBy.mockResolvedValue([
+      {
+        id: 2,
+        timestamp: new Date("2026-03-01T10:00:00Z"),
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "auth.login",
+        resource: null,
+        detail: null,
+        rowHmac: "h",
+        version: 1,
+        outcome: null,
+        error: null,
+      },
+    ]);
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(new Request("http://localhost/api/audit/export") as any);
+    const body = await response.text();
+    const lines = body.split("\n");
+    expect(lines[1].endsWith(',1,,""')).toBe(true);
+  });
+
+  it("applies status=failure filter", async () => {
+    mockOrderBy.mockResolvedValue([]);
+    const { GET } = await import("@/app/api/audit/export/route");
+    const { eq } = await import("drizzle-orm");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export?status=failure") as any
+    );
+    expect(response.status).toBe(200);
+    expect(eq).toHaveBeenCalledWith("outcome", "failure");
   });
 
   it("should apply date range filters when provided", async () => {

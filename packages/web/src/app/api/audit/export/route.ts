@@ -13,10 +13,14 @@ export async function GET(request: NextRequest) {
   const actorId = url.searchParams.get("actorId");
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
+  const status = url.searchParams.get("status");
 
   const conditions = [];
   if (eventType) conditions.push(eq(auditLog.eventType, eventType));
   if (actorId) conditions.push(eq(auditLog.actorId, actorId));
+  if (status === "success" || status === "failure") {
+    conditions.push(eq(auditLog.outcome, status));
+  }
   if (from) conditions.push(gte(auditLog.timestamp, new Date(from)));
   if (to) {
     const toDate = new Date(to);
@@ -28,10 +32,12 @@ export async function GET(request: NextRequest) {
 
   const entries = await db.select().from(auditLog).where(where).orderBy(desc(auditLog.timestamp));
 
-  const header = "id,timestamp,actorType,actorId,eventType,resource,detail";
+  const header = "id,timestamp,actorType,actorId,eventType,resource,detail,version,outcome,error";
   const rows = entries.map((e) => {
     const detail = e.detail ? JSON.stringify(e.detail).replace(/"/g, '""') : "";
-    return `${e.id},${e.timestamp.toISOString()},${e.actorType},${e.actorId},${e.eventType},${e.resource ?? ""},"${detail}"`;
+    const error = e.error ? JSON.stringify(e.error).replace(/"/g, '""') : "";
+    const outcome = e.outcome ?? "";
+    return `${e.id},${e.timestamp.toISOString()},${e.actorType},${e.actorId},${e.eventType},${e.resource ?? ""},"${detail}",${e.version},${outcome},"${error}"`;
   });
 
   const csv = [header, ...rows].join("\n");
