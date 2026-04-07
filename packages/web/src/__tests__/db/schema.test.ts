@@ -1,7 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, expectTypeOf } from "vitest";
 import * as schema from "@/db/schema";
+import type { AgentPluginConfig, AuditDetail } from "@/db/schema";
 
-const { agents, settings, invites } = schema;
+const { agents, settings, invites, auditLog } = schema;
 
 describe("database schema", () => {
   it("should export agents table", () => {
@@ -109,5 +110,27 @@ describe("soft-delete columns", () => {
 describe("soft-delete views", () => {
   it("exports activeAgents view", () => {
     expect(schema.activeAgents).toBeDefined();
+  });
+});
+
+describe("JSON column types — compile-time contracts", () => {
+  // expectTypeOf is a compile-time assertion (no-op at runtime). These tests
+  // document the schema's type contracts and exist as regression guards
+  // alongside production code that imports and uses the same types.
+
+  it("agents.pluginConfig is typed AgentPluginConfig | null (not unknown)", () => {
+    type Row = typeof agents.$inferSelect;
+    expectTypeOf<Row["pluginConfig"]>().toEqualTypeOf<AgentPluginConfig | null>();
+  });
+
+  it("AgentPluginConfig describes the knowledge-base allowed_paths shape", () => {
+    expectTypeOf<AgentPluginConfig>().toMatchObjectType<{
+      allowed_paths?: string[];
+    }>();
+  });
+
+  it("auditLog.detail is typed AuditDetail | null (not unknown)", () => {
+    type Row = typeof auditLog.$inferSelect;
+    expectTypeOf<Row["detail"]>().toEqualTypeOf<AuditDetail | null>();
   });
 });

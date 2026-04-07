@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { validateProviderKey, PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getSetting, setSetting } from "@/lib/settings";
@@ -79,12 +79,14 @@ export async function POST(request: NextRequest) {
   await regenerateOpenClawConfig();
   resetCache();
 
-  appendAuditLog({
-    actorType: "user",
-    actorId: sessionOrError.user.id!,
-    eventType: "config.changed",
-    detail: { key: "provider", provider },
-  }).catch(() => {});
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: sessionOrError.user.id!,
+      eventType: "config.changed",
+      detail: { key: "provider", provider },
+    })
+  );
 
   return NextResponse.json({ success: true });
 }

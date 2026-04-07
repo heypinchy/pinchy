@@ -524,6 +524,55 @@ describe("SettingsUsers", () => {
       expect(cells[0].textContent).toBe("\u2014");
     });
 
+    it("should remove the invite row optimistically before the DELETE fetch resolves", async () => {
+      const user = userEvent.setup();
+      mockFetchForUsers(mockUsers, [pendingInvite]);
+      render(<SettingsUsers currentUserId="user-1" />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("pending@example.com").length).toBeGreaterThanOrEqual(1);
+      });
+
+      // Hold the DELETE response until we release it, so we can observe the
+      // intermediate optimistic state before the round-trip completes.
+      let releaseDelete: (value: Response) => void = () => {};
+      const deletePromise = new Promise<Response>((resolve) => {
+        releaseDelete = resolve;
+      });
+
+      vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+        if (String(url) === "/api/users/invites/inv-1" && init?.method === "DELETE") {
+          return deletePromise;
+        }
+        if (String(url) === "/api/users") {
+          return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+        }
+        if (String(url) === "/api/users/invites") {
+          return { ok: true, json: async () => ({ invites: [] }) } as Response;
+        }
+        if (String(url) === "/api/groups") {
+          return { ok: true, json: async () => [] } as Response;
+        }
+        if (String(url) === "/api/enterprise/status") {
+          return { ok: true, json: async () => ({ enterprise: false }) } as Response;
+        }
+        return { ok: false } as Response;
+      });
+
+      const table = screen.getByRole("table");
+      const inviteRow = within(table).getAllByText("pending@example.com")[0].closest("tr")!;
+      await user.click(within(inviteRow).getByRole("button", { name: "Revoke" }));
+
+      // The row should be gone immediately even though the DELETE request is
+      // still in-flight — this is the optimistic update contract.
+      await waitFor(() => {
+        expect(within(table).queryByText("pending@example.com")).not.toBeInTheDocument();
+      });
+
+      // Now let the DELETE resolve so React Testing Library can clean up.
+      releaseDelete({ ok: true, json: async () => ({ success: true }) } as Response);
+    });
+
     it("should call DELETE /api/users/invites/:id when Revoke is clicked", async () => {
       const user = userEvent.setup();
       mockFetchForUsers(mockUsers, [pendingInvite]);

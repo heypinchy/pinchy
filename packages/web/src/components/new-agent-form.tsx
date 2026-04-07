@@ -154,7 +154,7 @@ export function NewAgentForm() {
             onClick={() => setSelectedTemplate(null)}
             className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mb-6"
           >
-            <ArrowLeft className="h-4 w-4" /> Back to templates
+            <ArrowLeft className="size-4" /> Back to templates
           </button>
 
           <Form {...form}>
@@ -209,7 +209,7 @@ export function NewAgentForm() {
 
                       {directories.length === 0 && (
                         <div className="flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 p-3 dark:border-blue-800 dark:bg-blue-950">
-                          <Info className="h-4 w-4 mt-0.5 text-blue-600 dark:text-blue-400 shrink-0" />
+                          <Info className="size-4 mt-0.5 text-blue-600 dark:text-blue-400 shrink-0" />
                           <p className="text-sm text-blue-800 dark:text-blue-200">
                             You need to mount folders into <code>/data/</code> in your
                             docker-compose.yml to make them available here.{" "}
@@ -227,7 +227,7 @@ export function NewAgentForm() {
                         path="guides/create-knowledge-base-agent"
                         className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
                       >
-                        <ExternalLink className="h-3 w-3" />
+                        <ExternalLink className="size-3" />
                         Learn more about Knowledge Base agents
                       </DocsLink>
                     </div>

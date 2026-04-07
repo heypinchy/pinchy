@@ -337,7 +337,7 @@ export function AuditLogTable() {
             variant="ghost"
             size="sm"
             aria-label="Dismiss"
-            className="shrink-0 h-6 w-6 p-0 hover:bg-black/10 dark:hover:bg-white/10"
+            className="shrink-0 size-6 p-0 hover:bg-black/10 dark:hover:bg-white/10"
             onClick={() => setVerifyResult(null)}
           >
             ×

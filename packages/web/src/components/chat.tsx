@@ -90,7 +90,7 @@ export function Chat({
                     aria-label="Settings"
                     className="text-muted-foreground hover:text-foreground transition-colors"
                   >
-                    <Settings className="h-5 w-5" />
+                    <Settings className="size-5" />
                   </Link>
                 )}
                 <TooltipProvider>

@@ -1,39 +1,39 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { invites, inviteGroups, groups } from "@/db/schema";
 
 export async function GET() {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
-  const allInvites = await db
-    .select({
-      id: invites.id,
-      email: invites.email,
-      role: invites.role,
-      type: invites.type,
-      createdAt: invites.createdAt,
-      expiresAt: invites.expiresAt,
-      claimedAt: invites.claimedAt,
-    })
-    .from(invites);
+  const rows = await db.query.invites.findMany({
+    columns: {
+      id: true,
+      email: true,
+      role: true,
+      type: true,
+      createdAt: true,
+      expiresAt: true,
+      claimedAt: true,
+    },
+    with: {
+      inviteGroups: {
+        with: {
+          group: { columns: { id: true, name: true } },
+        },
+      },
+    },
+  });
 
-  const allInviteGroups = await db
-    .select({
-      inviteId: inviteGroups.inviteId,
-      groupId: inviteGroups.groupId,
-      groupName: groups.name,
-    })
-    .from(inviteGroups)
-    .innerJoin(groups, eq(inviteGroups.groupId, groups.id));
-
-  const invitesWithGroups = allInvites.map((invite) => ({
-    ...invite,
-    groups: allInviteGroups
-      .filter((ig) => ig.inviteId === invite.id)
-      .map((ig) => ({ id: ig.groupId, name: ig.groupName })),
+  const invitesWithGroups = rows.map((invite) => ({
+    id: invite.id,
+    email: invite.email,
+    role: invite.role,
+    type: invite.type,
+    createdAt: invite.createdAt,
+    expiresAt: invite.expiresAt,
+    claimedAt: invite.claimedAt,
+    groups: invite.inviteGroups.map((ig) => ({ id: ig.group.id, name: ig.group.name })),
   }));
 
   return NextResponse.json({ invites: invitesWithGroups });

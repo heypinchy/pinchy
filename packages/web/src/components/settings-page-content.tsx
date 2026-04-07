@@ -12,6 +12,7 @@ import { SettingsProfile } from "@/components/settings-profile";
 import { SettingsGroups } from "@/components/settings-groups";
 import { SettingsLicense } from "@/components/settings-license";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
+import { SettingsSecurity } from "@/components/settings-security";
 
 interface ProviderStatus {
   defaultProvider: string | null;
@@ -130,8 +131,15 @@ export function SettingsPageContent({
               {isAdmin && <TabsTrigger value="users">Users</TabsTrigger>}
               {isAdmin && <TabsTrigger value="groups">Groups</TabsTrigger>}
               {isAdmin && <TabsTrigger value="license">License</TabsTrigger>}
+              {isAdmin && <TabsTrigger value="security">Security</TabsTrigger>}
             </TabsList>
           </div>
+
+          {isAdmin && (
+            <TabsContent value="security">
+              <SettingsSecurity />
+            </TabsContent>
+          )}
 
           <TabsContent value="context" keepMounted>
             <SettingsContext

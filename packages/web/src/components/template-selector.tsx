@@ -15,8 +15,8 @@ interface TemplateSelectorProps {
 }
 
 const TEMPLATE_ICONS: Record<string, React.ReactNode> = {
-  "knowledge-base": <FileText className="h-8 w-8 mb-2 text-muted-foreground" />,
-  custom: <Bot className="h-8 w-8 mb-2 text-muted-foreground" />,
+  "knowledge-base": <FileText className="size-8 mb-2 text-muted-foreground" />,
+  custom: <Bot className="size-8 mb-2 text-muted-foreground" />,
 };
 
 export function TemplateSelector({ templates, onSelect }: TemplateSelectorProps) {
@@ -29,7 +29,7 @@ export function TemplateSelector({ templates, onSelect }: TemplateSelectorProps)
           onClick={() => onSelect(template.id)}
         >
           <CardContent className="flex flex-col items-center text-center p-6">
-            {TEMPLATE_ICONS[template.id] ?? <Bot className="h-8 w-8 mb-2 text-muted-foreground" />}
+            {TEMPLATE_ICONS[template.id] ?? <Bot className="size-8 mb-2 text-muted-foreground" />}
             <h3 className="font-semibold">{template.name}</h3>
             <p className="text-sm text-muted-foreground mt-1">{template.description}</p>
           </CardContent>

@@ -7,6 +7,10 @@ import { Input } from "@/components/ui/input";
 import { useFormField } from "@/components/ui/form";
 import { cn } from "@/lib/utils";
 
+type PasswordInputProps = Omit<React.ComponentProps<"input">, "type"> & {
+  ref?: React.Ref<HTMLInputElement>;
+};
+
 /**
  * Password input with show/hide toggle, designed to work inside shadcn/ui FormField.
  *
@@ -20,10 +24,7 @@ import { cn } from "@/lib/utils";
  * Note: Do NOT wrap in <FormControl> — PasswordInput wires up
  * the form field id and aria attributes internally via useFormField().
  */
-const PasswordInput = React.forwardRef<
-  HTMLInputElement,
-  Omit<React.ComponentProps<"input">, "type">
->(({ className, ...props }, ref) => {
+function PasswordInput({ className, ref, ...props }: PasswordInputProps) {
   const [showPassword, setShowPassword] = useState(false);
   const { formItemId, formDescriptionId, formMessageId, error } = useFormField();
 
@@ -48,7 +49,6 @@ const PasswordInput = React.forwardRef<
       </button>
     </div>
   );
-});
-PasswordInput.displayName = "PasswordInput";
+}
 
 export { PasswordInput };

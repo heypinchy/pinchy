@@ -36,6 +36,11 @@ vi.mock("@/db", () => {
   });
   return {
     db: {
+      query: {
+        invites: {
+          findMany: vi.fn().mockResolvedValue([]),
+        },
+      },
       select: vi.fn().mockReturnValue({
         from: mockFrom,
       }),
@@ -382,6 +387,7 @@ describe("GET /api/users/invites", () => {
         createdAt: new Date("2026-01-01"),
         expiresAt: new Date("2026-01-08"),
         claimedAt: null,
+        inviteGroups: [],
       },
       {
         id: "invite-2",
@@ -391,18 +397,11 @@ describe("GET /api/users/invites", () => {
         createdAt: new Date("2026-01-02"),
         expiresAt: new Date("2026-01-09"),
         claimedAt: null,
+        inviteGroups: [],
       },
     ];
 
-    vi.mocked(db.select)
-      .mockReturnValueOnce({
-        from: vi.fn().mockResolvedValueOnce(fakeInvites),
-      } as never)
-      .mockReturnValueOnce({
-        from: vi.fn().mockReturnValue({
-          innerJoin: vi.fn().mockResolvedValue([]),
-        }),
-      } as never);
+    vi.mocked(db.query.invites.findMany).mockResolvedValueOnce(fakeInvites as never);
 
     const response = await GET();
     expect(response.status).toBe(200);
@@ -413,6 +412,38 @@ describe("GET /api/users/invites", () => {
     expect(body.invites[0].email).toBe("user1@test.com");
     // Ensure tokenHash is NOT in the response
     expect(body.invites[0]).not.toHaveProperty("tokenHash");
+  });
+
+  it("returns each invite's groups via the relational query builder", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const fakeInvites = [
+      {
+        id: "invite-1",
+        email: "user1@test.com",
+        role: "member",
+        type: "invite",
+        createdAt: new Date("2026-01-01"),
+        expiresAt: new Date("2026-01-08"),
+        claimedAt: null,
+        inviteGroups: [
+          { group: { id: "g1", name: "Engineering" } },
+          { group: { id: "g2", name: "Design" } },
+        ],
+      },
+    ];
+
+    vi.mocked(db.query.invites.findMany).mockResolvedValueOnce(fakeInvites as never);
+
+    const response = await GET();
+    const body = await response.json();
+    expect(body.invites[0].groups).toEqual([
+      { id: "g1", name: "Engineering" },
+      { id: "g2", name: "Design" },
+    ]);
   });
 });
 

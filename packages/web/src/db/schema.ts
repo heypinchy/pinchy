@@ -13,6 +13,30 @@ import {
   pgView,
   primaryKey,
 } from "drizzle-orm/pg-core";
+import { relations } from "drizzle-orm";
+
+// ── JSON Column Types ───────────────────────────────────────────────────
+//
+// Defined inline (not imported from @/lib/audit) to avoid a circular import:
+// @/lib/audit imports the auditLog table from this file.
+
+/**
+ * Per-agent plugin configuration. Currently the only plugin that stores
+ * config is `pinchy-files` (knowledge-base agents), which uses
+ * `allowed_paths` to scope reads. Add new fields here as plugins evolve.
+ */
+export type AgentPluginConfig = {
+  allowed_paths?: string[];
+};
+
+/**
+ * Audit log detail payload. The shape varies per event type — the strict
+ * shape is enforced at the appendAuditLog() call boundary via the
+ * AuditLogEntry discriminated union in @/lib/audit. The base type here is
+ * intentionally loose so the schema does not need to know every event
+ * shape.
+ */
+export type AuditDetail = Record<string, unknown>;
 import { isNull } from "drizzle-orm";
 
 // ── Better Auth tables ──────────────────────────────────────────────────
@@ -91,7 +115,7 @@ export const agents = pgTable(
     name: text("name").notNull().default("Smithers"),
     model: text("model").notNull(),
     templateId: text("template_id"),
-    pluginConfig: jsonb("plugin_config"),
+    pluginConfig: jsonb("plugin_config").$type<AgentPluginConfig>(),
     allowedTools: jsonb("allowed_tools").$type<string[]>().notNull().default([]),
     ownerId: text("owner_id").references(() => users.id, { onDelete: "cascade" }),
     isPersonal: boolean("is_personal").notNull().default(false),
@@ -172,6 +196,35 @@ export const inviteGroups = pgTable(
   (table) => [primaryKey({ columns: [table.inviteId, table.groupId] })]
 );
 
+// ── Relations ───────────────────────────────────────────────────────────
+//
+// Declared so the Drizzle relational query builder (db.query.X.findMany)
+// can fetch nested data with `with: { ... }` instead of manual leftJoin +
+// post-hoc reshaping in route handlers.
+
+export const usersRelations = relations(users, ({ many }) => ({
+  userGroups: many(userGroups),
+}));
+
+export const groupsRelations = relations(groups, ({ many }) => ({
+  userGroups: many(userGroups),
+  inviteGroups: many(inviteGroups),
+}));
+
+export const userGroupsRelations = relations(userGroups, ({ one }) => ({
+  user: one(users, { fields: [userGroups.userId], references: [users.id] }),
+  group: one(groups, { fields: [userGroups.groupId], references: [groups.id] }),
+}));
+
+export const invitesRelations = relations(invites, ({ many }) => ({
+  inviteGroups: many(inviteGroups),
+}));
+
+export const inviteGroupsRelations = relations(inviteGroups, ({ one }) => ({
+  invite: one(invites, { fields: [inviteGroups.inviteId], references: [invites.id] }),
+  group: one(groups, { fields: [inviteGroups.groupId], references: [groups.id] }),
+}));
+
 export const channelLinks = pgTable(
   "channel_links",
   {
@@ -211,7 +264,7 @@ export const auditLog = pgTable(
     actorId: text("actor_id").notNull(),
     eventType: text("event_type").notNull(),
     resource: text("resource"),
-    detail: jsonb("detail"),
+    detail: jsonb("detail").$type<AuditDetail>(),
     rowHmac: text("row_hmac").notNull(),
   },
   (table) => [

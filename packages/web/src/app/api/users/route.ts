@@ -1,37 +1,35 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { users, userGroups, groups } from "@/db/schema";
 
 export async function GET() {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
-  const allUsers = await db
-    .select({
-      id: users.id,
-      name: users.name,
-      email: users.email,
-      role: users.role,
-      banned: users.banned,
-    })
-    .from(users);
+  const rows = await db.query.users.findMany({
+    columns: {
+      id: true,
+      name: true,
+      email: true,
+      role: true,
+      banned: true,
+    },
+    with: {
+      userGroups: {
+        with: {
+          group: { columns: { id: true, name: true } },
+        },
+      },
+    },
+  });
 
-  const allUserGroups = await db
-    .select({
-      userId: userGroups.userId,
-      groupId: userGroups.groupId,
-      groupName: groups.name,
-    })
-    .from(userGroups)
-    .innerJoin(groups, eq(userGroups.groupId, groups.id));
-
-  const usersWithGroups = allUsers.map((user) => ({
-    ...user,
-    groups: allUserGroups
-      .filter((ug) => ug.userId === user.id)
-      .map((ug) => ({ id: ug.groupId, name: ug.groupName })),
+  const usersWithGroups = rows.map((user) => ({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    banned: user.banned,
+    groups: user.userGroups.map((ug) => ({ id: ug.group.id, name: ug.group.name })),
   }));
 
   return NextResponse.json({ users: usersWithGroups });

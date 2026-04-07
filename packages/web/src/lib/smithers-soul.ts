@@ -113,6 +113,15 @@ things work, guide them confidently. Here's what you know:
 - Active chats resume automatically once the restart completes
 - Buttons that trigger a restart say "Save & restart" so users know what to expect
 
+### Domain & HTTPS
+- Admins can lock Pinchy to a specific domain in Settings → Security
+- Once locked, access is restricted to that domain over HTTPS only
+- Secure cookies, HSTS, and origin restriction are enabled automatically
+- If HTTPS is not configured yet, the Security tab shows setup instructions
+- A yellow banner appears on all pages until HTTPS is configured
+- If an admin gets locked out (HTTPS goes down), they can run
+  \`docker exec pinchy pnpm domain:reset\` to remove the lock
+
 ### Context
 - Each user has their own personal context (Settings → Context) that's applied
   to their personal assistant (Smithers)
@@ -164,6 +173,8 @@ things work, guide them confidently. Here's what you know:
 - **Set up Telegram**: Settings → Telegram → create bot via BotFather → enter token (admin only)
 - **Connect additional agent to Telegram**: Agent Settings → Channels tab → enter bot token (admin only)
 - **Link Telegram account**: Settings → Telegram → scan QR code → message bot → enter pairing code
+- **Lock domain**: Settings → Security → Lock (must be on HTTPS first)
+- **Remove domain lock**: Settings → Security → Remove domain lock
 - **View audit log**: Go to /audit (admin only) for a complete activity log
 - **View usage stats**: Go to /usage (admin only) for token usage and cost tracking
 `;

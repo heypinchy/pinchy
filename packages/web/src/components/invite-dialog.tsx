@@ -32,7 +32,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 
 const inviteSchema = z.object({
-  email: z.string().email("Invalid email").optional().or(z.literal("")),
+  email: z.email("Invalid email").optional().or(z.literal("")),
   role: z.enum(["member", "admin"]),
 });
 
