@@ -22,6 +22,8 @@ export async function GET(request: NextRequest) {
   if (eventType) conditions.push(eq(auditLog.eventType, eventType));
   if (actorId) conditions.push(eq(auditLog.actorId, actorId));
   if (status === "success" || status === "failure") {
+    // Note: this implicitly excludes v1 (legacy) rows, which have outcome=NULL.
+    // v1 rows predate status tracking — there's no honest "success" for them.
     conditions.push(eq(auditLog.outcome, status));
   }
   if (from) conditions.push(gte(auditLog.timestamp, new Date(from)));
