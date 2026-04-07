@@ -154,6 +154,7 @@ describe("POST /api/internal/audit/tool-use", () => {
         durationMs: 123,
         source: "openclaw_hook",
       },
+      outcome: "success",
     });
   });
 
@@ -180,6 +181,7 @@ describe("POST /api/internal/audit/tool-use", () => {
         result: "ok",
         source: "openclaw_hook",
       },
+      outcome: "success",
     });
   });
 
@@ -206,6 +208,7 @@ describe("POST /api/internal/audit/tool-use", () => {
         result: "done",
         source: "openclaw_hook",
       },
+      outcome: "success",
     });
   });
 

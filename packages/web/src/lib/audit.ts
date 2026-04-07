@@ -158,8 +158,14 @@ export type AuditLogEntry =
       detail: MembershipDetail;
     })
   | (AuditLogBase & {
-      eventType: `auth.${string}` | `tool.${string}`;
+      eventType: `auth.${string}`;
       detail?: Record<string, unknown>;
+    })
+  | (AuditLogBase & {
+      eventType: `tool.${string}`;
+      detail?: Record<string, unknown>;
+      outcome: "success" | "failure";
+      error?: { message: string } | null;
     });
 
 export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
@@ -167,7 +173,38 @@ export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
   const timestamp = new Date();
   const detail = truncateDetail(entry.detail ?? null);
 
-  const rowHmac = computeRowHmac(secret, {
+  const isV2 = "outcome" in entry && entry.outcome !== undefined;
+
+  if (isV2) {
+    const outcome = entry.outcome;
+    const error = entry.error ?? null;
+    const rowHmac = computeRowHmacV2(secret, {
+      timestamp,
+      eventType: entry.eventType,
+      actorType: entry.actorType,
+      actorId: entry.actorId,
+      resource: entry.resource ?? null,
+      detail,
+      outcome,
+      error,
+    });
+
+    await db.insert(auditLog).values({
+      timestamp,
+      actorType: entry.actorType,
+      actorId: entry.actorId,
+      eventType: entry.eventType,
+      resource: entry.resource ?? null,
+      detail,
+      version: 2,
+      outcome,
+      error,
+      rowHmac,
+    });
+    return;
+  }
+
+  const rowHmac = computeRowHmacV1(secret, {
     timestamp,
     eventType: entry.eventType,
     actorType: entry.actorType,

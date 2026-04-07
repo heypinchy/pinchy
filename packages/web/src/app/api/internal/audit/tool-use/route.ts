@@ -123,6 +123,8 @@ export async function POST(request: NextRequest) {
       eventType: `tool.${payload.toolName}`,
       resource: `agent:${payload.agentId}`,
       detail: sanitizedDetail,
+      // TODO(Task 5): derive outcome from payload.error
+      outcome: "success",
     });
   } catch {
     return NextResponse.json({ error: "Audit logging failed" }, { status: 500 });

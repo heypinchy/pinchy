@@ -135,4 +135,65 @@ describe("appendAuditLog", () => {
     expect(insertedRow.resource).toBe("tool:shell");
     expect(insertedRow.detail).toEqual({ reason: "not allowed" });
   });
+
+  it("should write a v2 row with outcome='success' when outcome is provided", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "tool.web_search",
+      resource: "agent:abc",
+      detail: { toolName: "web_search" },
+      outcome: "success",
+    });
+
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.version).toBe(2);
+    expect(inserted.outcome).toBe("success");
+    expect(inserted.error).toBeNull();
+  });
+
+  it("should write a v2 row with outcome='failure' and error when error is provided", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "tool.web_search",
+      resource: "agent:abc",
+      detail: { toolName: "web_search" },
+      outcome: "failure",
+      error: { message: "Brave API key missing" },
+    });
+
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.version).toBe(2);
+    expect(inserted.outcome).toBe("failure");
+    expect(inserted.error).toEqual({ message: "Brave API key missing" });
+  });
+
+  it("should write a v1 row (backward compat) when outcome is NOT provided", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "agent.created",
+      resource: "agent:abc",
+      detail: { name: "Smithers" },
+    });
+
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.outcome).toBeUndefined();
+    expect(inserted.error).toBeUndefined();
+  });
+
+  it("v2 rows are hashed with computeRowHmacV2 (rowHmac differs from v1 hash)", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "tool.web_search",
+      resource: "agent:abc",
+      detail: { toolName: "web_search" },
+      outcome: "success",
+    });
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.rowHmac).toMatch(/^[0-9a-f]{64}$/);
+    expect(inserted.version).toBe(2);
+  });
 });
