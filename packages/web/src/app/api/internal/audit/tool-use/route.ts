@@ -21,6 +21,20 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
+/**
+ * Extract the first text content entry from an MCP-style tool result.
+ * Returns null if the shape doesn't match.
+ */
+function extractFirstTextContent(result: Record<string, unknown>): string | null {
+  const content = result.content;
+  if (!Array.isArray(content) || content.length === 0) return null;
+  const first = content[0];
+  if (!isObject(first)) return null;
+  if (first.type !== "text") return null;
+  const text = first.text;
+  return typeof text === "string" && text.trim().length > 0 ? text : null;
+}
+
 function asNonEmptyString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -115,8 +129,27 @@ export async function POST(request: NextRequest) {
 
   const sanitizedDetail = sanitizeDetail(detail);
 
-  const outcome: "success" | "failure" = payload.error ? "failure" : "success";
-  const error = payload.error ? { message: payload.error } : null;
+  // Derive outcome from two signals:
+  //   1. payload.error (transport/dispatch-level failure from OpenClaw's hook)
+  //   2. result.isError (semantic failure — MCP convention for tools that
+  //      returned normally at the protocol level but reported an error
+  //      inside the result, e.g. ENOENT on pinchy_read)
+  // Transport errors take precedence because they're the more fundamental
+  // failure. For semantic errors, we try to lift the first text content
+  // entry as the error message.
+  const resultObj = isObject(payload.result) ? payload.result : null;
+  const resultIsError = resultObj?.isError === true;
+  const semanticErrorMessage =
+    resultIsError && resultObj
+      ? (extractFirstTextContent(resultObj) ?? "Tool returned an error")
+      : null;
+
+  const outcome: "success" | "failure" = payload.error || resultIsError ? "failure" : "success";
+  const error = payload.error
+    ? { message: payload.error }
+    : semanticErrorMessage
+      ? { message: semanticErrorMessage }
+      : null;
 
   try {
     await appendAuditLog({
