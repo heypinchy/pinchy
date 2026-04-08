@@ -162,7 +162,7 @@ const ThreadWelcome: FC<{ isHistoryLoaded?: boolean }> = ({ isHistoryLoaded = fa
         <div className="flex flex-col items-center gap-3">
           <div
             data-testid="loading-spinner"
-            className="h-8 w-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground"
+            className="size-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground"
           />
           <p className="text-sm font-medium text-muted-foreground">Starting agent...</p>
           <p

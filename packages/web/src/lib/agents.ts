@@ -1,7 +1,7 @@
 export { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
 
 import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { agents, type AgentPluginConfig } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
@@ -15,7 +15,7 @@ export interface UpdateAgentInput {
   name?: string;
   model?: string;
   allowedTools?: string[];
-  pluginConfig?: unknown;
+  pluginConfig?: AgentPluginConfig | null;
   greetingMessage?: string | null;
   tagline?: string | null;
   avatarSeed?: string | null;

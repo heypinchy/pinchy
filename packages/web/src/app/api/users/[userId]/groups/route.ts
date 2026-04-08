@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
@@ -79,19 +79,22 @@ export async function PUT(
     await db.insert(userGroups).values(groupIds.map((groupId: string) => ({ userId, groupId })));
   }
 
-  // 7. Append audit log
-  appendAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "user.groups_updated",
-    resource: `user:${userId}`,
-    detail: {
-      userName,
-      added,
-      removed,
-      memberCount: groupIds.length,
-    },
-  }).catch(() => {});
+  // 7. Schedule audit log via after() so the response isn't blocked and any
+  // errors flow through Next's error handler instead of being swallowed.
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "user.groups_updated",
+      resource: `user:${userId}`,
+      detail: {
+        userName,
+        added,
+        removed,
+        memberCount: groupIds.length,
+      },
+    })
+  );
 
   await recalculateTelegramAllowStores();
 

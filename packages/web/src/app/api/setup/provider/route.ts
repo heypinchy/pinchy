@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import {
   validateProviderKey,
@@ -139,7 +139,7 @@ export async function POST(request: NextRequest) {
   // provider name alongside its id, and never log secrets. For URL-based
   // providers, log only the host:port (not the full URL) so internal
   // hostnames don't leak verbatim into the audit trail.
-  const providerName = provider as ProviderName as ProviderName;
+  const providerName = provider as ProviderName;
   const detail: Record<string, unknown> = {
     provider: { id: providerName, name: PROVIDERS[providerName].name },
     authType: config.authType,
@@ -154,12 +154,14 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  appendAuditLog({
-    actorType: "user",
-    actorId: sessionOrError.user.id!,
-    eventType: "config.changed",
-    detail,
-  }).catch(() => {});
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: sessionOrError.user.id!,
+      eventType: "config.changed",
+      detail,
+    })
+  );
 
   return NextResponse.json({ success: true });
 }

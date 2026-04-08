@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
@@ -50,13 +50,15 @@ export async function POST(request: NextRequest) {
     .values({ name: name.trim(), description: description?.trim() || null })
     .returning();
 
-  appendAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "group.created",
-    resource: `group:${group.id}`,
-    detail: { name: group.name },
-  }).catch(() => {});
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "group.created",
+      resource: `group:${group.id}`,
+      detail: { name: group.name },
+    })
+  );
 
   return NextResponse.json(group, { status: 201 });
 }

@@ -1,7 +1,12 @@
+import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { redirect } from "next/navigation";
 import { AuditLogTable } from "@/components/audit-log-table";
+
+export const metadata: Metadata = {
+  title: "Audit Log",
+};
 
 export default async function AuditPage() {
   const session = await getSession({ headers: await headers() });

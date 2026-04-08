@@ -92,7 +92,7 @@ export function AgentSettingsPermissions({
 
         {allowedTools.includes("pinchy_read") && !isModelVisionCapable(agent.model) && (
           <Alert className="ml-6 border-amber-500/50 text-amber-700 dark:text-amber-400">
-            <AlertTriangle className="h-4 w-4" />
+            <AlertTriangle className="size-4" />
             <AlertTitle>Limited PDF support</AlertTitle>
             <AlertDescription>
               The selected model doesn&apos;t support vision. Scanned PDFs and embedded images
