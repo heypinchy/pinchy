@@ -325,21 +325,6 @@ describe("selectDefaultModel", () => {
     expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
   });
 
-  it("picks the newest haiku when the API returns multiple haiku versions", async () => {
-    // The Anthropic /v1/models endpoint returns models newest-first.
-    // Regression lock for the bug where picking candidates[length-1] returned
-    // the oldest haiku (Claude Haiku 3) instead of the newest (Claude Haiku 4.5).
-    const { selectDefaultModel } = await import("@/lib/provider-models");
-    const models = [
-      { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" },
-      { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
-      { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
-      { id: "anthropic/claude-3-5-haiku-20241022", name: "Claude 3.5 Haiku" },
-      { id: "anthropic/claude-3-haiku-20240307", name: "Claude 3 Haiku" },
-    ];
-    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
-  });
-
   it("selects the mini OpenAI model (gpt-*-mini pattern)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [

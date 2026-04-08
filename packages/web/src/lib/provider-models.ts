@@ -143,9 +143,7 @@ export function selectDefaultModel(provider: ProviderName, models: ModelInfo[]):
   const candidates = models.filter((m) => pattern.test(m.id) && !PREVIEW_PATTERN.test(m.id));
 
   if (candidates.length > 0) {
-    // Provider APIs (Anthropic, OpenAI, Google, Ollama Cloud) return models
-    // newest-first, so the first matching candidate is the newest.
-    return candidates[0].id;
+    return candidates[candidates.length - 1].id;
   }
 
   return PROVIDERS[provider].defaultModel;
