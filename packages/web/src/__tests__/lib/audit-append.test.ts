@@ -37,6 +37,7 @@ describe("appendAuditLog", () => {
       eventType: "agent.created",
       resource: "agent:abc",
       detail: { name: "Smithers" },
+      outcome: "success",
     });
 
     expect(mockInsert).toHaveBeenCalledWith(auditLog);
@@ -48,6 +49,7 @@ describe("appendAuditLog", () => {
       actorType: "user",
       actorId: "user-1",
       eventType: "auth.login",
+      outcome: "success",
     });
 
     expect(mockGetOrCreateSecret).toHaveBeenCalledWith("audit_hmac_secret");
@@ -60,6 +62,7 @@ describe("appendAuditLog", () => {
       eventType: "agent.created",
       resource: "agent:abc",
       detail: { name: "Smithers" },
+      outcome: "success",
     });
 
     const insertedRow = mockValues.mock.calls[0][0];
@@ -72,6 +75,8 @@ describe("appendAuditLog", () => {
       actorType: "system",
       actorId: "system",
       eventType: "config.changed",
+      detail: {},
+      outcome: "success",
     });
     const after = new Date();
 
@@ -86,6 +91,7 @@ describe("appendAuditLog", () => {
       actorType: "user",
       actorId: "user-1",
       eventType: "auth.login",
+      outcome: "success",
     });
 
     const insertedRow = mockValues.mock.calls[0][0];
@@ -97,6 +103,7 @@ describe("appendAuditLog", () => {
       actorType: "user",
       actorId: "user-1",
       eventType: "auth.logout",
+      outcome: "success",
     });
 
     const insertedRow = mockValues.mock.calls[0][0];
@@ -171,29 +178,84 @@ describe("appendAuditLog", () => {
     expect(inserted.error).toEqual({ message: "Brave API key missing" });
   });
 
-  it("should write a v1 row (backward compat) when outcome is NOT provided", async () => {
+  it("type system requires outcome on auth.* events", () => {
+    // @ts-expect-error - auth.login must include outcome
+    const _bad: AuditLogEntry = {
+      actorType: "user",
+      actorId: "u1",
+      eventType: "auth.login",
+      detail: {},
+    };
+    void _bad;
+  });
+
+  it("type system requires outcome on agent.created events", () => {
+    // @ts-expect-error - agent.created must include outcome
+    const _bad: AuditLogEntry = {
+      actorType: "user",
+      actorId: "u1",
+      eventType: "agent.created",
+      resource: "agent:abc",
+      detail: { name: "X" },
+    };
+    void _bad;
+  });
+
+  it("writes a v2 row for an auth.login with outcome='success'", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "auth.login",
+      detail: { email: "a@b.c" },
+      outcome: "success",
+    });
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.version).toBe(2);
+    expect(inserted.outcome).toBe("success");
+    expect(inserted.error).toBeNull();
+  });
+
+  it("writes a v2 row for an auth.failed with outcome='failure' and error", async () => {
+    await appendAuditLog({
+      actorType: "system",
+      actorId: "system",
+      eventType: "auth.failed",
+      detail: { email: "a@b.c", reason: "invalid_credentials" },
+      outcome: "failure",
+      error: { message: "Invalid credentials" },
+    });
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.version).toBe(2);
+    expect(inserted.outcome).toBe("failure");
+    expect(inserted.error).toEqual({ message: "Invalid credentials" });
+  });
+
+  it("writes a v2 row for an agent.created event", async () => {
     await appendAuditLog({
       actorType: "user",
       actorId: "user-1",
       eventType: "agent.created",
       resource: "agent:abc",
       detail: { name: "Smithers" },
+      outcome: "success",
     });
-
     const inserted = mockValues.mock.calls[0][0];
-    expect(inserted.outcome).toBeUndefined();
-    expect(inserted.error).toBeUndefined();
+    expect(inserted.version).toBe(2);
+    expect(inserted.outcome).toBe("success");
+    expect(inserted.error).toBeNull();
   });
 
-  it("throws when a tool.* event is submitted without outcome", async () => {
-    await expect(
-      appendAuditLog({
-        actorType: "user",
-        actorId: "user-1",
-        eventType: "tool.web_search",
-        // no outcome — defends against `as any` casts at runtime
-      } as unknown as AuditLogEntry)
-    ).rejects.toThrow(/tool\.\* audit events must include outcome/);
+  it("writes a v2 row for a config.changed event", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "config.changed",
+      detail: { key: "domain" },
+      outcome: "success",
+    });
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.version).toBe(2);
+    expect(inserted.outcome).toBe("success");
   });
 
   it("type system requires outcome on tool.* events", () => {

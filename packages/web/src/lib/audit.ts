@@ -135,6 +135,8 @@ type AuditLogBase = {
   actorType: "user" | "agent" | "system";
   actorId: string;
   resource?: string | null;
+  outcome: "success" | "failure";
+  error?: { message: string } | null;
 };
 
 export type AuditLogEntry =
@@ -161,56 +163,24 @@ export type AuditLogEntry =
   | (AuditLogBase & {
       eventType: `tool.${string}`;
       detail?: Record<string, unknown>;
-      outcome: "success" | "failure";
-      error?: { message: string } | null;
     });
 
 export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
   const secret = getOrCreateSecret("audit_hmac_secret");
   const timestamp = new Date();
   const detail = truncateDetail(entry.detail ?? null);
+  const outcome = entry.outcome;
+  const error = entry.error ?? null;
 
-  const isV2 = entry.eventType.startsWith("tool.");
-
-  if (isV2) {
-    if (!("outcome" in entry) || entry.outcome === undefined) {
-      throw new Error(`tool.* audit events must include outcome (got ${entry.eventType})`);
-    }
-    const outcome = entry.outcome;
-    const error = entry.error ?? null;
-    const rowHmac = computeRowHmacV2(secret, {
-      timestamp,
-      eventType: entry.eventType,
-      actorType: entry.actorType,
-      actorId: entry.actorId,
-      resource: entry.resource ?? null,
-      detail,
-      outcome,
-      error,
-    });
-
-    await db.insert(auditLog).values({
-      timestamp,
-      actorType: entry.actorType,
-      actorId: entry.actorId,
-      eventType: entry.eventType,
-      resource: entry.resource ?? null,
-      detail,
-      version: 2,
-      outcome,
-      error,
-      rowHmac,
-    });
-    return;
-  }
-
-  const rowHmac = computeRowHmacV1(secret, {
+  const rowHmac = computeRowHmacV2(secret, {
     timestamp,
     eventType: entry.eventType,
     actorType: entry.actorType,
     actorId: entry.actorId,
     resource: entry.resource ?? null,
     detail,
+    outcome,
+    error,
   });
 
   await db.insert(auditLog).values({
@@ -220,6 +190,9 @@ export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
     eventType: entry.eventType,
     resource: entry.resource ?? null,
     detail,
+    version: 2,
+    outcome,
+    error,
     rowHmac,
   });
 }
