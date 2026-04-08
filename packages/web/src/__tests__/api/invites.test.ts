@@ -287,6 +287,7 @@ describe("POST /api/users/invite", () => {
       actorType: "user",
       actorId: "admin-1",
       eventType: "user.invited",
+      outcome: "success",
       detail: {
         email: "grouped@test.com",
         role: "member",
@@ -330,6 +331,7 @@ describe("POST /api/users/invite", () => {
       actorType: "user",
       actorId: "admin-1",
       eventType: "user.invited",
+      outcome: "success",
       detail: {
         email: "solo@test.com",
         role: "member",

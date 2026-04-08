@@ -89,6 +89,7 @@ describe("auth audit logging (Better Auth hooks)", () => {
         actorType: "user",
         actorId: "user-123",
         eventType: "auth.login",
+        outcome: "success",
         detail: { email: "admin@example.com" },
       });
     });
@@ -108,6 +109,8 @@ describe("auth audit logging (Better Auth hooks)", () => {
         actorType: "system",
         actorId: "system",
         eventType: "auth.failed",
+        outcome: "failure",
+        error: { message: "Invalid credentials" },
         detail: { email: "unknown@example.com", reason: "invalid_credentials" },
       });
     });
@@ -127,6 +130,8 @@ describe("auth audit logging (Better Auth hooks)", () => {
         actorType: "system",
         actorId: "system",
         eventType: "auth.failed",
+        outcome: "failure",
+        error: { message: "Invalid credentials" },
         detail: { email: "unknown", reason: "invalid_credentials" },
       });
     });
@@ -185,6 +190,7 @@ describe("auth audit logging (Better Auth hooks)", () => {
         actorType: "user",
         actorId: "user-456",
         eventType: "auth.logout",
+        outcome: "success",
         detail: {},
       });
     });

@@ -147,6 +147,7 @@ describe("POST /api/settings/domain", () => {
       actorId: "admin-1",
       eventType: "settings.updated",
       resource: "settings:domain",
+      outcome: "success",
       detail: {
         changes: { domain: { from: "old.example.com", to: "new.example.com" } },
       },
@@ -198,6 +199,7 @@ describe("DELETE /api/settings/domain", () => {
       actorId: "admin-1",
       eventType: "settings.updated",
       resource: "settings:domain",
+      outcome: "success",
       detail: {
         changes: { domain: { from: "pinchy.example.com", to: null } },
       },
