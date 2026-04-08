@@ -51,7 +51,17 @@ interface AuditEntry {
 }
 
 function StatusCell({ outcome }: { outcome: "success" | "failure" | null }) {
-  if (outcome === null) return <span className="sr-only">Not tracked</span>;
+  if (outcome === null) {
+    return (
+      <span
+        aria-label="Not tracked"
+        title="Logged before status tracking"
+        className="text-muted-foreground"
+      >
+        —
+      </span>
+    );
+  }
   if (outcome === "success")
     return <CircleCheck aria-label="Success" className="h-4 w-4 text-green-600" />;
   return <CircleX aria-label="Failure" className="h-4 w-4 text-red-600" />;

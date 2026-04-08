@@ -728,7 +728,7 @@ describe("AuditLogTable", () => {
     });
   });
 
-  it("shows no status icon for v1 legacy entries", async () => {
+  it("shows a neutral 'Not tracked' indicator for v1 legacy entries", async () => {
     mockEventTypesThenEntries(undefined, {
       entries: [v1LegacyEntry],
       total: 1,
@@ -739,6 +739,7 @@ describe("AuditLogTable", () => {
     await waitFor(() => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
+    expect(screen.getAllByLabelText("Not tracked").length).toBeGreaterThan(0);
     expect(screen.queryByLabelText("Success")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Failure")).not.toBeInTheDocument();
   });
