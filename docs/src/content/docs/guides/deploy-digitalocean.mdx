@@ -86,7 +86,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
       - ufw --force enable
       - systemctl enable docker
       - systemctl start docker
-      - fallocate -l 1G /swapfile
+      - fallocate -l 2G /swapfile
       - chmod 600 /swapfile
       - mkswap /swapfile
       - swapon /swapfile

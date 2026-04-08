@@ -58,6 +58,22 @@ You don't need to worry about these — Pinchy handles them on every startup:
 - **New environment variables** — Check the release notes for any new variables. Pinchy won't crash if they're missing (features may just be disabled), but review them in your `.env` file.
 - **Docker Compose changes** — The `curl` command in step 2 downloads the latest `docker-compose.yml`. If new volumes or services were added, they're created automatically on first start.
 
+## Pinning to a specific version
+
+By default, `docker-compose.yml` uses `image: ghcr.io/heypinchy/pinchy:latest`. This means the next `docker compose pull` will fetch whatever `latest` currently points to — usually fine, but a surprise if you want predictable upgrades.
+
+To pin to a specific version, edit `docker-compose.yml` and replace `:latest` with the version tag for both services:
+
+```yaml
+services:
+  pinchy:
+    image: ghcr.io/heypinchy/pinchy:v0.4.0
+  openclaw:
+    image: ghcr.io/heypinchy/pinchy-openclaw:v0.4.0
+```
+
+Now `docker compose pull` only updates when you bump the tag manually. Recommended for production environments where you want to control exactly when upgrades happen.
+
 ## Restoring from backup
 
 If you need to roll back after an upgrade:

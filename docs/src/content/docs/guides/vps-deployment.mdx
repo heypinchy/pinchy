@@ -219,7 +219,7 @@ Everything else is blocked — including port 7777, which is now only reachable 
 Swap is disk space that your server can use as extra memory when RAM runs low. On servers with only 4 GB RAM, adding swap provides a safety net during heavy agent workloads:
 
 ```bash
-fallocate -l 1G /swapfile
+fallocate -l 2G /swapfile
 chmod 600 /swapfile
 mkswap /swapfile
 swapon /swapfile

@@ -97,7 +97,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
       - ufw --force enable
       - systemctl enable docker
       - systemctl start docker
-      - fallocate -l 1G /swapfile
+      - fallocate -l 2G /swapfile
       - chmod 600 /swapfile
       - mkswap /swapfile
       - swapon /swapfile
@@ -121,7 +121,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
     This is a **cloud-init** script — a standard way to configure servers on first boot. When your server starts, it automatically:
     1. Installs Docker and a firewall
     2. Opens only the ports needed (SSH, HTTP, HTTPS)
-    3. Adds 1 GB of swap space (extra memory from disk)
+    3. Adds 2 GB of swap space (a safety net for heavy agent workloads)
     4. Shows a loading page while Pinchy images are being downloaded
     5. Downloads and starts Pinchy from pre-built Docker images
 
