@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from "fs";
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 
@@ -175,6 +175,37 @@ describe("pinchy-docs plugin", () => {
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "../etc/passwd" });
     expect(result.content[0].text.toLowerCase()).toContain("invalid");
+  });
+
+  it("docs_read rejects symlinks that escape the docs root", async () => {
+    // Defense in depth: even if a symlink ends up inside the mounted docs
+    // directory (mistake, attack, or future write-mount), the plugin must
+    // refuse to follow it outside the docs root.
+    const outside = mkdtempSync(join(tmpdir(), "pinchy-docs-outside-"));
+    const secret = join(outside, "secret.mdx");
+    writeFileSync(secret, "---\ntitle: secret\n---\nshould not leak", "utf-8");
+    try {
+      symlinkSync(secret, join(docsRoot, "leak.mdx"));
+    } catch {
+      // Some CI environments disallow symlinks; skip rather than fail
+      rmSync(outside, { recursive: true, force: true });
+      return;
+    }
+
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_read"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", { path: "leak.mdx" });
+
+    expect(result.content[0].text.toLowerCase()).toContain("invalid");
+    expect(result.content[0].text).not.toContain("should not leak");
+
+    rmSync(outside, { recursive: true, force: true });
   });
 
   it("docs_read rejects absolute paths", async () => {

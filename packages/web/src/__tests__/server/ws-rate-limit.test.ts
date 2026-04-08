@@ -2,6 +2,51 @@ import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { WsRateLimiter } from "@/server/ws-rate-limit";
 
 describe("WsRateLimiter", () => {
+  describe("rejection callback", () => {
+    it("invokes onReject when an upgrade is denied so the host can log it", () => {
+      const onReject = vi.fn();
+      const limiter = new WsRateLimiter({
+        maxUpgradesPerIpPerMinute: 1,
+        onReject,
+      });
+
+      limiter.allowUpgrade("10.0.0.1");
+      expect(onReject).not.toHaveBeenCalled();
+
+      // Second upgrade in the same window — denied
+      const allowed = limiter.allowUpgrade("10.0.0.1");
+      expect(allowed).toBe(false);
+      expect(onReject).toHaveBeenCalledTimes(1);
+      expect(onReject).toHaveBeenCalledWith({
+        kind: "upgrade",
+        ip: "10.0.0.1",
+      });
+    });
+
+    it("invokes onReject when a per-user connection is denied", () => {
+      const onReject = vi.fn();
+      const limiter = new WsRateLimiter({
+        maxConnectionsPerUser: 1,
+        onReject,
+      });
+
+      limiter.trackConnection("user-1");
+      const allowed = limiter.allowConnection("user-1");
+      expect(allowed).toBe(false);
+      expect(onReject).toHaveBeenCalledTimes(1);
+      expect(onReject).toHaveBeenCalledWith({
+        kind: "connection",
+        userId: "user-1",
+      });
+    });
+
+    it("does not throw if no onReject is configured", () => {
+      const limiter = new WsRateLimiter({ maxUpgradesPerIpPerMinute: 1 });
+      limiter.allowUpgrade("10.0.0.1");
+      expect(() => limiter.allowUpgrade("10.0.0.1")).not.toThrow();
+    });
+  });
+
   describe("default limits", () => {
     it("uses defaults that comfortably accommodate legitimate reconnect loops", () => {
       // The frontend reconnects with exponential backoff up to 10 times

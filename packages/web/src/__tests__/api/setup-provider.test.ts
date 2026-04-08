@@ -64,6 +64,10 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/lib/provider-models", () => ({
   resetCache: vi.fn(),
   getDefaultModel: vi.fn().mockResolvedValue("ollama/llama3:latest"),
@@ -100,6 +104,7 @@ vi.mock("@/db", () => ({
 import { validateProviderKey, validateProviderUrl } from "@/lib/providers";
 import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
 import { requireAdmin } from "@/lib/api-auth";
 import { resetCache, getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
@@ -411,5 +416,46 @@ describe("POST /api/setup/provider", () => {
 
     expect(getDefaultModel).toHaveBeenCalledWith("ollama-local");
     expect(db.update).toHaveBeenCalled();
+  });
+
+  it("writes an audit log entry with named provider snapshot for an api-key provider", async () => {
+    await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-key",
+      }) as any
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    const call = vi.mocked(appendAuditLog).mock.calls[0][0];
+    expect(call.actorType).toBe("user");
+    expect(call.eventType).toBe("config.changed");
+    // CLAUDE.md convention: snapshot human-readable name + id, not just id
+    expect(call.detail).toMatchObject({
+      provider: { id: "anthropic", name: "Anthropic" },
+      authType: "api-key",
+    });
+  });
+
+  it("writes an audit log entry for a url-based provider without leaking the URL", async () => {
+    await POST(
+      makeRequest({
+        provider: "ollama-local",
+        url: "http://host.docker.internal:11434",
+      }) as any
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    const detail = vi.mocked(appendAuditLog).mock.calls[0][0].detail as Record<string, unknown>;
+    expect(detail).toMatchObject({
+      provider: { id: "ollama-local", name: "Ollama (Local)" },
+      authType: "url",
+    });
+    // The full URL must not appear in the audit log — it can leak internal
+    // hostnames. Host:port is fine for traceability.
+    const serialized = JSON.stringify(detail);
+    expect(serialized).not.toContain("http://host.docker.internal:11434");
+    // ...but the host:port is acceptable as a non-secret diagnostic
+    expect(detail).toMatchObject({ host: "host.docker.internal:11434" });
   });
 });

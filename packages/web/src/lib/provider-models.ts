@@ -205,11 +205,27 @@ export function getOllamaLocalModels(): OllamaLocalModelInfo[] {
   return lastOllamaLocalModels;
 }
 
+// Per-call timeout for Ollama discovery requests. Each `/api/show` call
+// runs sequentially today, so a hanging Ollama instance with many installed
+// models could otherwise wedge the setup wizard for minutes. Five seconds
+// per call is plenty for a healthy local Ollama on the same host.
+const OLLAMA_FETCH_TIMEOUT_MS = 5_000;
+
+function ollamaFetchSignal(): AbortSignal {
+  // AbortSignal.timeout exists in Node 20+, which Pinchy already requires.
+  return AbortSignal.timeout(OLLAMA_FETCH_TIMEOUT_MS);
+}
+
 export async function fetchOllamaLocalModelsFromUrl(
   baseUrl: string
 ): Promise<OllamaLocalModelInfo[]> {
   const url = baseUrl.replace(/\/$/, "");
-  const tagsResponse = await fetch(`${url}/api/tags`);
+  let tagsResponse: Response;
+  try {
+    tagsResponse = await fetch(`${url}/api/tags`, { signal: ollamaFetchSignal() });
+  } catch {
+    return [];
+  }
   if (!tagsResponse.ok) return [];
 
   const tagsData = await tagsResponse.json();
@@ -217,11 +233,19 @@ export async function fetchOllamaLocalModelsFromUrl(
 
   const models: OllamaLocalModelInfo[] = [];
   for (const model of rawModels) {
-    const showResponse = await fetch(`${url}/api/show`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: model.name }),
-    });
+    let showResponse: Response;
+    try {
+      showResponse = await fetch(`${url}/api/show`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: model.name }),
+        signal: ollamaFetchSignal(),
+      });
+    } catch {
+      // Per-model timeout — skip this model and keep going so a single
+      // hanging model can't poison the whole list.
+      continue;
+    }
 
     if (!showResponse.ok) continue;
 

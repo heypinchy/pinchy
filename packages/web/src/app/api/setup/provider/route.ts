@@ -135,11 +135,30 @@ export async function POST(request: NextRequest) {
   await regenerateOpenClawConfig();
   resetCache();
 
+  // Build a CLAUDE.md-compliant audit detail: snapshot the human-readable
+  // provider name alongside its id, and never log secrets. For URL-based
+  // providers, log only the host:port (not the full URL) so internal
+  // hostnames don't leak verbatim into the audit trail.
+  const providerName = provider as ProviderName as ProviderName;
+  const detail: Record<string, unknown> = {
+    provider: { id: providerName, name: PROVIDERS[providerName].name },
+    authType: config.authType,
+  };
+  if (config.authType === "url" && typeof body.url === "string") {
+    try {
+      const parsed = new URL(body.url);
+      detail.host = parsed.host;
+    } catch {
+      // Invalid URL — this would have been rejected by validateProviderUrl
+      // already, so this branch is only reached in tests.
+    }
+  }
+
   appendAuditLog({
     actorType: "user",
     actorId: sessionOrError.user.id!,
     eventType: "config.changed",
-    detail: { key: "provider", provider },
+    detail,
   }).catch(() => {});
 
   return NextResponse.json({ success: true });

@@ -95,7 +95,19 @@ app.prepare().then(async () => {
 
   const wss = new WebSocketServer({ noServer: true, maxPayload: 1 * 1024 * 1024 });
   const sessionMap = new Map<WebSocket, { userId: string; userRole: string }>();
-  const wsRateLimiter = new WsRateLimiter();
+  const wsRateLimiter = new WsRateLimiter({
+    onReject: (reason) => {
+      // Surface every limiter rejection at warn level so silent throttling
+      // cannot mask UI reconnect bugs (the reason this hook exists).
+      if (reason.kind === "upgrade") {
+        console.warn(`[ws] rate-limited WebSocket upgrade from ip=${reason.ip}`);
+      } else {
+        console.warn(
+          `[ws] rate-limited WebSocket connection for user=${reason.userId} (max concurrent reached)`
+        );
+      }
+    },
+  });
 
   function broadcastToClients(message: Record<string, unknown>) {
     const payload = JSON.stringify(message);
@@ -110,11 +122,10 @@ app.prepare().then(async () => {
   server.on("upgrade", async (request, socket, head) => {
     const { pathname } = parse(request.url!, true);
     if (pathname === "/api/ws") {
-      // Rate limit by IP before doing any auth work
+      // Rate limit by IP before doing any auth work. The limiter's onReject
+      // hook (configured above) takes care of warn-level logging.
       const ip = request.socket.remoteAddress ?? "unknown";
       if (!wsRateLimiter.allowUpgrade(ip)) {
-        // Logged so silent throttling cannot mask reconnect-loop bugs again.
-        console.warn(`[ws] rate-limited WebSocket upgrade from ip=${ip}`);
         socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
         socket.destroy();
         return;
@@ -130,9 +141,6 @@ app.prepare().then(async () => {
       // Limit concurrent connections per user
       const { userId, userRole } = sessionInfo;
       if (!wsRateLimiter.allowConnection(userId)) {
-        console.warn(
-          `[ws] rate-limited WebSocket connection for user=${userId} (max concurrent reached)`
-        );
         socket.write("HTTP/1.1 429 Too Many Requests\r\n\r\n");
         socket.destroy();
         return;

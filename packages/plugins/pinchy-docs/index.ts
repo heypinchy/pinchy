@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, statSync } from "fs";
+import { readdirSync, readFileSync, statSync, realpathSync } from "fs";
 import { join, sep, isAbsolute, normalize } from "path";
 
 interface PluginToolContext {
@@ -152,10 +152,25 @@ function resolveSafe(docsRoot: string, relPath: string): string | null {
   if (!relPath || typeof relPath !== "string") return null;
   if (isAbsolute(relPath)) return null;
   const normalized = normalize(relPath);
-  if (normalized.startsWith("..") || normalized.split(sep).includes("..")) return null;
+  if (normalized.startsWith("..")) return null;
   const resolved = join(docsRoot, normalized);
   const rootWithSep = docsRoot.endsWith(sep) ? docsRoot : docsRoot + sep;
   if (!resolved.startsWith(rootWithSep)) return null;
+  // Defense in depth: a symlink inside docsRoot could point outside it.
+  // Resolve the real path of both root and target and re-check containment.
+  // If the target doesn't exist yet, realpathSync throws — we treat that as
+  // "not a path that needs symlink protection" and let the caller's
+  // statSync decide the fate.
+  try {
+    const realRoot = realpathSync(docsRoot);
+    const realTarget = realpathSync(resolved);
+    const realRootWithSep = realRoot.endsWith(sep) ? realRoot : realRoot + sep;
+    if (realTarget !== realRoot && !realTarget.startsWith(realRootWithSep)) {
+      return null;
+    }
+  } catch {
+    // ENOENT — file doesn't exist; let the caller produce a not-found error
+  }
   return resolved;
 }
 

@@ -47,7 +47,12 @@ vi.mock("@/lib/settings", () => ({
 
 global.fetch = vi.fn();
 
-import { fetchProviderModels, resetCache, getOllamaLocalModels } from "@/lib/provider-models";
+import {
+  fetchProviderModels,
+  resetCache,
+  getOllamaLocalModels,
+  fetchOllamaLocalModelsFromUrl,
+} from "@/lib/provider-models";
 import { getSetting } from "@/lib/settings";
 
 describe("fetchProviderModels", () => {
@@ -802,5 +807,63 @@ describe("vision capability detection", () => {
     expect(isModelVisionCapable("ollama/llama3.1:8b")).toBe(false);
     expect(isModelVisionCapable("ollama/llava")).toBe(true);
     expect(isModelVisionCapable("ollama/llama3.2-vision")).toBe(true);
+  });
+});
+
+describe("fetchOllamaLocalModelsFromUrl timeout behavior", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("passes an AbortSignal to every fetch call so a hanging Ollama instance cannot wedge the request", async () => {
+    const signals: (AbortSignal | undefined)[] = [];
+
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      signals.push(init?.signal as AbortSignal | undefined);
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(
+          JSON.stringify({ models: [{ name: "qwen3.5:9b" }, { name: "llama3:8b" }] }),
+          { status: 200 }
+        );
+      }
+      if (urlStr.endsWith("/api/show")) {
+        return new Response(JSON.stringify({ capabilities: ["completion", "tools"] }), {
+          status: 200,
+        });
+      }
+      return new Response("{}", { status: 404 });
+    });
+
+    await fetchOllamaLocalModelsFromUrl("http://localhost:11434");
+
+    // 1 tags + 2 show calls
+    expect(signals).toHaveLength(3);
+    for (const signal of signals) {
+      expect(signal).toBeInstanceOf(AbortSignal);
+    }
+  });
+
+  it("returns (rather than hangs) when a per-model fetch is aborted", async () => {
+    // Tags response succeeds, but the show call rejects on abort — proves
+    // that the implementation passes a signal we can use to break out and
+    // that an aborted show call doesn't crash the loop.
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(JSON.stringify({ models: [{ name: "qwen3.5:9b" }] }), { status: 200 });
+      }
+      // Pretend the call was aborted immediately — the kind of error
+      // AbortSignal.timeout() raises in production.
+      const err = new DOMException("aborted", "AbortError");
+      // The signal was already passed in by the caller; we just need to
+      // throw something that fetch() would normally throw on abort.
+      throw err;
+    });
+
+    const result = await fetchOllamaLocalModelsFromUrl("http://localhost:11434");
+    // The aborted show call should be skipped, not propagated, leaving
+    // an empty model list rather than an unhandled exception.
+    expect(result).toEqual([]);
   });
 });
