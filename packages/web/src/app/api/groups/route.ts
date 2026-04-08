@@ -57,6 +57,7 @@ export async function POST(request: NextRequest) {
       eventType: "group.created",
       resource: `group:${group.id}`,
       detail: { name: group.name },
+      outcome: "success",
     })
   );
 

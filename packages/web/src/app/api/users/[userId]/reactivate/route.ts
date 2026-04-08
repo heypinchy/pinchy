@@ -32,6 +32,7 @@ export async function POST(
       eventType: "user.updated",
       resource: `user:${userId}`,
       detail: { changes: { status: { from: "deactivated", to: "active" } } },
+      outcome: "success",
     })
   );
 

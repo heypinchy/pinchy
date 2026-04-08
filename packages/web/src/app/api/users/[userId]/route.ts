@@ -61,6 +61,7 @@ export async function PATCH(
       eventType: "user.role_updated",
       resource: `user:${userId}`,
       detail: { changes: { role: { from: user.role, to: role } }, userName: user.name },
+      outcome: "success",
     })
   );
 
@@ -106,6 +107,7 @@ export async function DELETE(
       eventType: "user.deleted",
       resource: `user:${userId}`,
       detail: { name: deactivated.name, email: deactivated.email },
+      outcome: "success",
     })
   );
 

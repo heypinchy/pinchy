@@ -39,6 +39,7 @@ export async function POST(request: NextRequest) {
         role,
         ...(auditGroups.length > 0 ? { groups: auditGroups } : {}),
       },
+      outcome: "success",
     })
   );
 

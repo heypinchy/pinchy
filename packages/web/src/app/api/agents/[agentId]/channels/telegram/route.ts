@@ -93,6 +93,7 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
       channel: "telegram",
       botUsername: validation.botUsername,
     },
+    outcome: "success",
   });
 
   return NextResponse.json({
@@ -143,6 +144,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
       agent: { id: agentId, name: agent.name },
       channel: "telegram",
     },
+    outcome: "success",
   });
 
   return NextResponse.json({ success: true });

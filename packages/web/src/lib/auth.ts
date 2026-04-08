@@ -29,6 +29,7 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
           actorId: newSession.user.id,
           eventType: "auth.login",
           detail: { email },
+          outcome: "success",
         });
       } catch {
         // Don't break auth if audit logging fails
@@ -41,6 +42,8 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
           actorId: "system",
           eventType: "auth.failed",
           detail: { email, reason: "invalid_credentials" },
+          outcome: "failure",
+          error: { message: "Invalid credentials" },
         });
       } catch {
         // Don't break auth if audit logging fails
@@ -57,6 +60,7 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
           actorId: session.user.id,
           eventType: "auth.logout",
           detail: {},
+          outcome: "success",
         });
       } catch {
         // Don't break auth if audit logging fails

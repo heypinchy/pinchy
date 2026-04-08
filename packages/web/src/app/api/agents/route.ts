@@ -115,6 +115,7 @@ export async function POST(request: NextRequest) {
       eventType: "agent.created",
       resource: `agent:${agent.id}`,
       detail: { name: agent.name, model: agent.model, templateId },
+      outcome: "success",
     })
   );
 

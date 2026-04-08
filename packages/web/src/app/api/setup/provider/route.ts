@@ -85,6 +85,7 @@ export async function POST(request: NextRequest) {
       actorId: sessionOrError.user.id!,
       eventType: "config.changed",
       detail: { key: "provider", provider },
+      outcome: "success",
     })
   );
 
