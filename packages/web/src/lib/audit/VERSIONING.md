@@ -19,6 +19,14 @@ evolution without invalidating historical entries.
    row's extra fields would produce a non-matching hash anyway (the structure
    differs).
 
+## v2 is the only write path
+
+**As of PR #109**, application code always writes v2 rows. The write path
+has no v1 branch. Legacy v1 rows created before PR #109 remain in the
+database unchanged and stay verifiable via `computeRowHmacV1`. Never
+write a v1 row from application code — only the historical rows predating
+this PR are allowed to exist at v1.
+
 ## Adding a new version (e.g. v3)
 
 1. Add the new columns to the Drizzle schema with `DEFAULT` values for
@@ -55,3 +63,4 @@ evolution without invalidating historical entries.
 - Adding fallback logic for unknown versions in the dispatch table. Unknown
   versions MUST be reported as integrity failures, not silently treated as
   v1.
+- Writing a v1 row from application code. v2 is the only write path.

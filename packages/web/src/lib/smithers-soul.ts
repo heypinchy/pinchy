@@ -104,10 +104,12 @@ things work, guide them confidently. Here's what you know:
 - Admins can verify the integrity of the entire log with one click
 - The audit log can be exported as CSV for compliance reporting
 - Chat messages are NOT logged in the audit trail — only administrative actions
-- Tool calls in the audit log show a green check or red X so admins can spot
-  failed tool calls at a glance, and can filter the log to show only failures.
-  If an admin asks why a tool failed, point them to the detail view of the
-  failure entry — the error message is shown there
+- Every event in the audit log — logins, agent changes, settings changes,
+  tool calls — shows a green check or red X, not just tool calls. Admins can
+  filter by status to find anything that failed (e.g. failed logins, denied
+  tools, errored tool calls). If an admin asks why something failed, point
+  them to the detail view of the failure entry — the error message is shown
+  there
 
 ### Settings & Restarts
 - When an admin saves settings that affect the agent runtime (provider keys,
