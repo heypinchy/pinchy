@@ -103,6 +103,78 @@ describe("pinchy-context plugin", () => {
     expect(tool2).toBeNull();
   });
 
+  it("save_user_context marks HTTP errors with isError=true (MCP convention)", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_save_user_context"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+
+    global.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "Unauthorized" }), { status: 401 })
+    );
+
+    const result = await tool.execute("call-1", { content: "..." });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Failed to save");
+  });
+
+  it("save_user_context marks thrown errors with isError=true", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_save_user_context"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+
+    global.fetch = vi.fn().mockRejectedValueOnce(new Error("Network down"));
+
+    const result = await tool.execute("call-1", { content: "..." });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe("Network down");
+  });
+
+  it("save_org_context marks HTTP errors with isError=true", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_save_org_context"
+    )?.[0];
+    const tool = factory({ agentId: "agent-2" });
+
+    global.fetch = vi.fn().mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "Forbidden" }), { status: 403 })
+    );
+
+    const result = await tool.execute("call-1", { content: "..." });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Failed to save");
+  });
+
+  it("save_org_context marks thrown errors with isError=true", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_save_org_context"
+    )?.[0];
+    const tool = factory({ agentId: "agent-2" });
+
+    global.fetch = vi.fn().mockRejectedValueOnce(new Error("Timeout"));
+
+    const result = await tool.execute("call-1", { content: "..." });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toBe("Timeout");
+  });
+
   it("exports plugin definition with id and configSchema", async () => {
     const { default: plugin } = await import("./index");
     expect(plugin.id).toBe("pinchy-context");
