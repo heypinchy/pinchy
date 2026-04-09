@@ -24,6 +24,39 @@ Pinchy logs event types across six categories:
 
 Each tool execution produces **one audit entry** — logged when the tool call completes (end phase only). The detail includes the tool name, parameters, and result. Start events are received but not persisted.
 
+## Event Status
+
+Every entry in the audit log — not just tool calls — carries a status that
+shows whether the action succeeded or failed:
+
+- A green check mark indicates a successful event (a login, an agent
+  update, a tool call that returned cleanly, a config change, etc.).
+- A red X indicates a failure (e.g., a failed login, a denied tool, a tool
+  call that errored out, or any other event marked as a failure).
+- Legacy entries from before this feature was added show a neutral "—"
+  with a "Logged before status tracking" tooltip. The schema did not track
+  success/failure at the time. This is normal and not an integrity issue.
+
+You can filter the audit log by status using the **Status** dropdown above
+the table. Filtering applies to every event type, not just tool calls:
+
+- **All Statuses** — show every entry.
+- **Success only** — only successful events. Legacy entries are excluded.
+- **Failures only** — only failed events. This surfaces `auth.failed`
+  attempts, denied or errored tool calls, and anything else marked as a
+  failure — useful for spotting recurring problems quickly.
+
+The **Event Type** filter and **Status** filter are complementary. Combine
+them to answer questions like "all failed Auth events in the last 24
+hours" or "all failed tool calls for this agent".
+
+When viewing a failed event's detail, the error message is shown
+prominently above the raw event JSON, so you don't have to dig through the
+detail blob to find the cause.
+
+The **Status** column is also included in CSV exports, alongside an Error
+column with the failure message. Status filtering applies to exports too.
+
 ### Authentication
 
 | Event Type    | Description                                            |

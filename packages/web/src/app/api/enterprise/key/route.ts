@@ -47,6 +47,7 @@ export async function PUT(req: Request) {
       org: status.org,
       expiresAt: status.expiresAt?.toISOString(),
     },
+    outcome: "success",
   });
 
   return NextResponse.json({

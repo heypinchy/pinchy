@@ -12,8 +12,9 @@ import {
   pgEnum,
   pgView,
   primaryKey,
+  check,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { isNull, sql, relations } from "drizzle-orm";
 
 // ── JSON Column Types ───────────────────────────────────────────────────
 //
@@ -37,7 +38,6 @@ export type AgentPluginConfig = {
  * shape.
  */
 export type AuditDetail = Record<string, unknown>;
-import { isNull } from "drizzle-orm";
 
 // ── Better Auth tables ──────────────────────────────────────────────────
 
@@ -265,12 +265,20 @@ export const auditLog = pgTable(
     eventType: text("event_type").notNull(),
     resource: text("resource"),
     detail: jsonb("detail").$type<AuditDetail>(),
+    version: integer("version").notNull().default(1),
+    outcome: text("outcome"), // 'success' | 'failure' | null (null only for v1)
+    error: jsonb("error"), // { message: string } | null, only when outcome='failure'
     rowHmac: text("row_hmac").notNull(),
   },
   (table) => [
     index("idx_audit_timestamp").on(table.timestamp),
     index("idx_audit_actor").on(table.actorId),
     index("idx_audit_event").on(table.eventType),
+    index("idx_audit_outcome").on(table.outcome),
+    check(
+      "audit_log_v2_outcome_required",
+      sql`${table.version} = 1 OR ${table.outcome} IS NOT NULL`
+    ),
   ]
 );
 

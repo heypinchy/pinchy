@@ -93,6 +93,7 @@ export async function PUT(
         removed,
         memberCount: groupIds.length,
       },
+      outcome: "success",
     })
   );
 

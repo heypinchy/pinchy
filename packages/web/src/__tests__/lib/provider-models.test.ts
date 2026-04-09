@@ -363,6 +363,24 @@ describe("selectDefaultModel", () => {
     expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
   });
 
+  it("selects the most recent model when multiple versions match", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    const models = [
+      { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
+      { id: "anthropic/claude-3-haiku-20240307", name: "Claude 3 Haiku" },
+    ];
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
+  });
+
+  it("selects the most recent model regardless of list order", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    const models = [
+      { id: "anthropic/claude-3-haiku-20240307", name: "Claude 3 Haiku" },
+      { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
+    ];
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
+  });
+
   it("falls back to hardcoded default when no pattern matches", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [{ id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" }];

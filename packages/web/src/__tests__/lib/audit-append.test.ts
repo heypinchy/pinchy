@@ -18,7 +18,7 @@ vi.mock("@/lib/encryption", () => ({
   getOrCreateSecret: (...args: unknown[]) => mockGetOrCreateSecret(...args),
 }));
 
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, type AuditLogEntry } from "@/lib/audit";
 import { auditLog } from "@/db/schema";
 
 describe("appendAuditLog", () => {
@@ -37,6 +37,7 @@ describe("appendAuditLog", () => {
       eventType: "agent.created",
       resource: "agent:abc",
       detail: { name: "Smithers" },
+      outcome: "success",
     });
 
     expect(mockInsert).toHaveBeenCalledWith(auditLog);
@@ -48,6 +49,7 @@ describe("appendAuditLog", () => {
       actorType: "user",
       actorId: "user-1",
       eventType: "auth.login",
+      outcome: "success",
     });
 
     expect(mockGetOrCreateSecret).toHaveBeenCalledWith("audit_hmac_secret");
@@ -60,6 +62,7 @@ describe("appendAuditLog", () => {
       eventType: "agent.created",
       resource: "agent:abc",
       detail: { name: "Smithers" },
+      outcome: "success",
     });
 
     const insertedRow = mockValues.mock.calls[0][0];
@@ -72,6 +75,8 @@ describe("appendAuditLog", () => {
       actorType: "system",
       actorId: "system",
       eventType: "config.changed",
+      detail: {},
+      outcome: "success",
     });
     const after = new Date();
 
@@ -86,6 +91,7 @@ describe("appendAuditLog", () => {
       actorType: "user",
       actorId: "user-1",
       eventType: "auth.login",
+      outcome: "success",
     });
 
     const insertedRow = mockValues.mock.calls[0][0];
@@ -97,6 +103,7 @@ describe("appendAuditLog", () => {
       actorType: "user",
       actorId: "user-1",
       eventType: "auth.logout",
+      outcome: "success",
     });
 
     const insertedRow = mockValues.mock.calls[0][0];
@@ -111,6 +118,7 @@ describe("appendAuditLog", () => {
       actorId: "agent-1",
       eventType: "tool.execute",
       detail: largeDetail,
+      outcome: "success",
     });
 
     const insertedRow = mockValues.mock.calls[0][0];
@@ -126,6 +134,7 @@ describe("appendAuditLog", () => {
       eventType: "tool.denied",
       resource: "tool:shell",
       detail: { reason: "not allowed" },
+      outcome: "failure",
     });
 
     const insertedRow = mockValues.mock.calls[0][0];
@@ -134,5 +143,143 @@ describe("appendAuditLog", () => {
     expect(insertedRow.eventType).toBe("tool.denied");
     expect(insertedRow.resource).toBe("tool:shell");
     expect(insertedRow.detail).toEqual({ reason: "not allowed" });
+  });
+
+  it("should write a v2 row with outcome='success' when outcome is provided", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "tool.web_search",
+      resource: "agent:abc",
+      detail: { toolName: "web_search" },
+      outcome: "success",
+    });
+
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.version).toBe(2);
+    expect(inserted.outcome).toBe("success");
+    expect(inserted.error).toBeNull();
+  });
+
+  it("should write a v2 row with outcome='failure' and error when error is provided", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "tool.web_search",
+      resource: "agent:abc",
+      detail: { toolName: "web_search" },
+      outcome: "failure",
+      error: { message: "Brave API key missing" },
+    });
+
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.version).toBe(2);
+    expect(inserted.outcome).toBe("failure");
+    expect(inserted.error).toEqual({ message: "Brave API key missing" });
+  });
+
+  it("type system requires outcome on auth.* events", () => {
+    // @ts-expect-error - auth.login must include outcome
+    const _bad: AuditLogEntry = {
+      actorType: "user",
+      actorId: "u1",
+      eventType: "auth.login",
+      detail: {},
+    };
+    void _bad;
+  });
+
+  it("type system requires outcome on agent.created events", () => {
+    // @ts-expect-error - agent.created must include outcome
+    const _bad: AuditLogEntry = {
+      actorType: "user",
+      actorId: "u1",
+      eventType: "agent.created",
+      resource: "agent:abc",
+      detail: { name: "X" },
+    };
+    void _bad;
+  });
+
+  it("writes a v2 row for an auth.login with outcome='success'", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "auth.login",
+      detail: { email: "a@b.c" },
+      outcome: "success",
+    });
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.version).toBe(2);
+    expect(inserted.outcome).toBe("success");
+    expect(inserted.error).toBeNull();
+  });
+
+  it("writes a v2 row for an auth.failed with outcome='failure' and error", async () => {
+    await appendAuditLog({
+      actorType: "system",
+      actorId: "system",
+      eventType: "auth.failed",
+      detail: { email: "a@b.c", reason: "invalid_credentials" },
+      outcome: "failure",
+      error: { message: "Invalid credentials" },
+    });
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.version).toBe(2);
+    expect(inserted.outcome).toBe("failure");
+    expect(inserted.error).toEqual({ message: "Invalid credentials" });
+  });
+
+  it("writes a v2 row for an agent.created event", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "agent.created",
+      resource: "agent:abc",
+      detail: { name: "Smithers" },
+      outcome: "success",
+    });
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.version).toBe(2);
+    expect(inserted.outcome).toBe("success");
+    expect(inserted.error).toBeNull();
+  });
+
+  it("writes a v2 row for a config.changed event", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "config.changed",
+      detail: { key: "domain" },
+      outcome: "success",
+    });
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.version).toBe(2);
+    expect(inserted.outcome).toBe("success");
+  });
+
+  it("type system requires outcome on tool.* events", () => {
+    // @ts-expect-error - tool.* events must include outcome
+    const _bad: AuditLogEntry = {
+      actorType: "user",
+      actorId: "u1",
+      eventType: "tool.web_search",
+      detail: {},
+    };
+    void _bad;
+  });
+
+  it("v2 rows are hashed with computeRowHmacV2 (rowHmac differs from v1 hash)", async () => {
+    await appendAuditLog({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "tool.web_search",
+      resource: "agent:abc",
+      detail: { toolName: "web_search" },
+      outcome: "success",
+    });
+    const inserted = mockValues.mock.calls[0][0];
+    expect(inserted.rowHmac).toMatch(/^[0-9a-f]{64}$/);
+    expect(inserted.version).toBe(2);
   });
 });

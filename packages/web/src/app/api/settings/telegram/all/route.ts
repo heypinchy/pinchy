@@ -43,6 +43,7 @@ export async function DELETE() {
       scope: "all",
       botsRemoved: botTokenSettings.length,
     },
+    outcome: "success",
   });
 
   return NextResponse.json({ removed: true });

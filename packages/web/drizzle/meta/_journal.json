@@ -169,6 +169,20 @@
       "when": 1774902510386,
       "tag": "0023_gorgeous_red_ghost",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1775564953393,
+      "tag": "0024_dark_captain_marvel",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1775565123681,
+      "tag": "0025_eminent_randall_flagg",
+      "breakpoints": true
     }
   ]
 }

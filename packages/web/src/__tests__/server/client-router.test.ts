@@ -996,6 +996,7 @@ describe("ClientRouter", () => {
       eventType: "tool.denied",
       resource: "agent:agent-1",
       detail: { reason: "access_denied" },
+      outcome: "failure",
     });
   });
 

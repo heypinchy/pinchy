@@ -103,6 +103,7 @@ export async function PUT(
         removed: removedIds.map((id) => ({ id, name: nameMap.get(id) ?? id })),
         memberCount: userIds.length,
       },
+      outcome: "success",
     })
   );
 

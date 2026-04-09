@@ -89,7 +89,6 @@ describe("POST /api/internal/audit/tool-use", () => {
         sessionKey: "agent:agent-2:direct:user-1",
         sessionId: "session-2",
         result: { ok: true },
-        error: "none",
         durationMs: 123,
       })
     );
@@ -131,7 +130,6 @@ describe("POST /api/internal/audit/tool-use", () => {
         sessionKey: "agent:agent-2:direct:user-1",
         sessionId: "session-2",
         result: { ok: true },
-        error: "none",
         durationMs: 123,
       })
     );
@@ -150,10 +148,11 @@ describe("POST /api/internal/audit/tool-use", () => {
         sessionKey: "agent:agent-2:direct:user-1",
         sessionId: "session-2",
         result: { ok: true },
-        error: "none",
         durationMs: 123,
         source: "openclaw_hook",
       },
+      outcome: "success",
+      error: null,
     });
   });
 
@@ -180,6 +179,8 @@ describe("POST /api/internal/audit/tool-use", () => {
         result: "ok",
         source: "openclaw_hook",
       },
+      outcome: "success",
+      error: null,
     });
   });
 
@@ -206,7 +207,114 @@ describe("POST /api/internal/audit/tool-use", () => {
         result: "done",
         source: "openclaw_hook",
       },
+      outcome: "success",
+      error: null,
     });
+  });
+
+  it("derives outcome='success' and error=null when payload has no error", async () => {
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "web_search",
+        agentId: "agent-1",
+        result: { hits: 3 },
+      })
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "success",
+        error: null,
+      })
+    );
+  });
+
+  it("derives outcome='failure' and error.message from payload.error", async () => {
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "web_search",
+        agentId: "agent-1",
+        error: "Brave API key missing",
+      })
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "failure",
+        error: { message: "Brave API key missing" },
+      })
+    );
+  });
+
+  it("derives outcome='failure' when result.isError is true (MCP convention)", async () => {
+    // MCP tools signal semantic failures by returning isError: true on the
+    // result object instead of throwing. Example: pinchy_read returning
+    // { isError: true, content: [{ type: "text", text: "ENOENT: ..." }] }.
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "pinchy_read",
+        agentId: "agent-1",
+        result: {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: "ENOENT: no such file or directory, realpath '/data/holidays.md'",
+            },
+          ],
+        },
+      })
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "failure",
+        error: { message: "ENOENT: no such file or directory, realpath '/data/holidays.md'" },
+      })
+    );
+  });
+
+  it("payload.error takes precedence over result.isError", async () => {
+    // If OpenClaw's hook reports a transport-level error AND the result has
+    // isError, the transport error wins because it's the more fundamental
+    // failure.
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "pinchy_read",
+        agentId: "agent-1",
+        error: "Plugin crashed",
+        result: { isError: true, content: [{ type: "text", text: "inner" }] },
+      })
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "failure",
+        error: { message: "Plugin crashed" },
+      })
+    );
+  });
+
+  it("result.isError=true without content falls back to a generic message", async () => {
+    await POST(
+      makeRequest({
+        phase: "end",
+        toolName: "pinchy_read",
+        agentId: "agent-1",
+        result: { isError: true },
+      })
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        outcome: "failure",
+        error: { message: "Tool returned an error" },
+      })
+    );
   });
 
   it("returns 500 with error message when appendAuditLog fails", async () => {
