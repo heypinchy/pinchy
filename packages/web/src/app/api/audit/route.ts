@@ -16,10 +16,16 @@ export async function GET(request: NextRequest) {
   const actorId = url.searchParams.get("actorId");
   const from = url.searchParams.get("from");
   const to = url.searchParams.get("to");
+  const status = url.searchParams.get("status");
 
   const conditions = [];
   if (eventType) conditions.push(eq(auditLog.eventType, eventType));
   if (actorId) conditions.push(eq(auditLog.actorId, actorId));
+  if (status === "success" || status === "failure") {
+    // Note: this implicitly excludes v1 (legacy) rows, which have outcome=NULL.
+    // v1 rows predate status tracking — there's no honest "success" for them.
+    conditions.push(eq(auditLog.outcome, status));
+  }
   if (from) conditions.push(gte(auditLog.timestamp, new Date(from)));
   if (to) {
     const toDate = new Date(to);
@@ -44,6 +50,9 @@ export async function GET(request: NextRequest) {
         resource: auditLog.resource,
         detail: auditLog.detail,
         rowHmac: auditLog.rowHmac,
+        version: auditLog.version,
+        outcome: auditLog.outcome,
+        error: auditLog.error,
         actorName: actorUser.name,
         actorBanned: actorUser.banned,
         resourceAgentName: resourceAgent.name,
@@ -75,6 +84,9 @@ export async function GET(request: NextRequest) {
     resourceDeleted: !!(e.resourceAgentDeleted ?? e.resourceUserBanned ?? false),
     detail: e.detail,
     rowHmac: e.rowHmac,
+    version: e.version,
+    outcome: e.outcome,
+    error: e.error,
   }));
 
   return NextResponse.json({

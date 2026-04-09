@@ -1,11 +1,16 @@
 import { describe, it, expect } from "vitest";
-import { computeRowHmac, truncateDetail } from "@/lib/audit";
+import {
+  computeRowHmacV1,
+  computeRowHmacV2,
+  ROW_HMAC_VERIFIERS,
+  truncateDetail,
+} from "@/lib/audit";
 
 describe("computeRowHmac", () => {
   const secret = Buffer.from("a".repeat(64), "hex");
 
   it("should return a 64-char hex string", () => {
-    const hmac = computeRowHmac(secret, {
+    const hmac = computeRowHmacV1(secret, {
       timestamp: new Date("2026-02-21T10:00:00Z"),
       eventType: "agent.created",
       actorType: "user",
@@ -25,7 +30,7 @@ describe("computeRowHmac", () => {
       resource: "agent:abc",
       detail: { name: "Smithers" },
     };
-    expect(computeRowHmac(secret, fields)).toBe(computeRowHmac(secret, fields));
+    expect(computeRowHmacV1(secret, fields)).toBe(computeRowHmacV1(secret, fields));
   });
 
   it("should produce different HMAC for different input", () => {
@@ -37,8 +42,8 @@ describe("computeRowHmac", () => {
       resource: "agent:abc",
       detail: { name: "Smithers" },
     };
-    const hmac1 = computeRowHmac(secret, base);
-    const hmac2 = computeRowHmac(secret, { ...base, actorId: "user-2" });
+    const hmac1 = computeRowHmacV1(secret, base);
+    const hmac2 = computeRowHmacV1(secret, { ...base, actorId: "user-2" });
     expect(hmac1).not.toBe(hmac2);
   });
 
@@ -52,7 +57,7 @@ describe("computeRowHmac", () => {
       detail: null,
     };
     const secret2 = Buffer.from("b".repeat(64), "hex");
-    expect(computeRowHmac(secret, fields)).not.toBe(computeRowHmac(secret2, fields));
+    expect(computeRowHmacV1(secret, fields)).not.toBe(computeRowHmacV1(secret2, fields));
   });
 
   it("should produce the same HMAC regardless of detail key order (JSONB roundtrip)", () => {
@@ -65,13 +70,13 @@ describe("computeRowHmac", () => {
     };
 
     // Original JS insertion order
-    const hmacOriginal = computeRowHmac(secret, {
+    const hmacOriginal = computeRowHmacV1(secret, {
       ...base,
       detail: { email: "test@example.com", role: "member" },
     });
 
     // After PostgreSQL JSONB roundtrip (keys sorted by length, then alphabetically)
-    const hmacFromDb = computeRowHmac(secret, {
+    const hmacFromDb = computeRowHmacV1(secret, {
       ...base,
       detail: { role: "member", email: "test@example.com" },
     });
@@ -89,7 +94,7 @@ describe("computeRowHmac", () => {
     };
 
     // Original JS order: toolName, phase, source, params, result
-    const hmacOriginal = computeRowHmac(secret, {
+    const hmacOriginal = computeRowHmacV1(secret, {
       ...base,
       detail: {
         toolName: "pinchy_ls",
@@ -101,7 +106,7 @@ describe("computeRowHmac", () => {
     });
 
     // JSONB reordered: sorted by key length then alphabetically
-    const hmacFromDb = computeRowHmac(secret, {
+    const hmacFromDb = computeRowHmacV1(secret, {
       ...base,
       detail: {
         phase: "end",
@@ -116,7 +121,7 @@ describe("computeRowHmac", () => {
   });
 
   it("should handle null resource and detail", () => {
-    const hmac = computeRowHmac(secret, {
+    const hmac = computeRowHmacV1(secret, {
       timestamp: new Date("2026-02-21T10:00:00Z"),
       eventType: "auth.login",
       actorType: "user",
@@ -125,6 +130,79 @@ describe("computeRowHmac", () => {
       detail: null,
     });
     expect(hmac).toMatch(/^[0-9a-f]{64}$/);
+  });
+});
+
+describe("computeRowHmac version dispatch", () => {
+  const secret = Buffer.from("a".repeat(64), "hex");
+  const baseFields = {
+    timestamp: new Date("2026-01-01T00:00:00Z"),
+    eventType: "tool.web_search",
+    actorType: "user",
+    actorId: "user-1",
+    resource: "agent:abc",
+    detail: { toolName: "web_search" },
+  };
+
+  it("v1 hash is stable and does not include version/outcome/error", () => {
+    const hash = computeRowHmacV1(secret, baseFields);
+    expect(hash).toMatch(/^[0-9a-f]{64}$/);
+    expect(hash).toEqual(computeRowHmacV1(secret, baseFields));
+  });
+
+  it("v1 hash matches the known-good regression fixture", () => {
+    // Captured 2026-04-07. NEVER change without reading VERSIONING.md.
+    const fixture = computeRowHmacV1(secret, baseFields);
+    expect(fixture).toEqual("bd87553fb579d4d219e901303ea9a2908b9dc641db799ab20cae7693bf53233f");
+  });
+
+  it("v2 hash matches the known-good regression fixture", () => {
+    // Captured 2026-04-07. NEVER change without reading VERSIONING.md.
+    const fixture = computeRowHmacV2(secret, { ...baseFields, outcome: "success", error: null });
+    expect(fixture).toEqual("793d4cfb759f62f8e09b8fe40bd18fa6fdad40ebe3f37d3cbb2052e54ee36b98");
+  });
+
+  it("ROW_HMAC_VERIFIERS[1] matches computeRowHmacV1 directly", () => {
+    expect(ROW_HMAC_VERIFIERS[1](secret, baseFields)).toEqual(computeRowHmacV1(secret, baseFields));
+  });
+
+  it("ROW_HMAC_VERIFIERS[2] matches computeRowHmacV2 directly", () => {
+    const v2Fields = { ...baseFields, outcome: "success" as const, error: null };
+    expect(ROW_HMAC_VERIFIERS[2](secret, v2Fields)).toEqual(computeRowHmacV2(secret, v2Fields));
+  });
+
+  it("ROW_HMAC_VERIFIERS returns undefined for unknown versions (verifier callers must handle this)", () => {
+    expect(ROW_HMAC_VERIFIERS[99]).toBeUndefined();
+  });
+
+  it("v2 hash differs from v1 given identical base fields", () => {
+    const v1 = computeRowHmacV1(secret, baseFields);
+    const v2 = computeRowHmacV2(secret, { ...baseFields, outcome: "success", error: null });
+    expect(v2).not.toEqual(v1);
+  });
+
+  it("v2 hash differs when outcome changes", () => {
+    const success = computeRowHmacV2(secret, { ...baseFields, outcome: "success", error: null });
+    const failure = computeRowHmacV2(secret, {
+      ...baseFields,
+      outcome: "failure",
+      error: { message: "boom" },
+    });
+    expect(success).not.toEqual(failure);
+  });
+
+  it("v2 hash differs when error message changes", () => {
+    const a = computeRowHmacV2(secret, {
+      ...baseFields,
+      outcome: "failure",
+      error: { message: "boom" },
+    });
+    const b = computeRowHmacV2(secret, {
+      ...baseFields,
+      outcome: "failure",
+      error: { message: "kaboom" },
+    });
+    expect(a).not.toEqual(b);
   });
 });
 

@@ -149,6 +149,7 @@ describe("POST /api/agents audit logging", () => {
       actorId: "user-1",
       eventType: "agent.created",
       resource: "agent:new-agent-id",
+      outcome: "success",
       detail: {
         name: "Test Agent",
         model: "anthropic/claude-haiku-4-5-20251001",
@@ -205,6 +206,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
       actorId: "user-1",
       eventType: "agent.updated",
       resource: "agent:agent-1",
+      outcome: "success",
       detail: {
         changes: {
           name: { from: "Test Agent", to: "Updated Agent" },
@@ -301,6 +303,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
       actorId: "user-1",
       eventType: "agent.updated",
       resource: "agent:agent-1",
+      outcome: "success",
       detail: {
         changes: {},
         allowedGroups: {
@@ -354,6 +357,7 @@ describe("DELETE /api/agents/[agentId] audit logging", () => {
       actorId: "admin-1",
       eventType: "agent.deleted",
       resource: "agent:agent-1",
+      outcome: "success",
       detail: { name: "Shared Agent" },
     });
   });

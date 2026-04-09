@@ -35,6 +35,7 @@ interface AgentTool {
     signal?: AbortSignal
   ) => Promise<{
     content: Array<{ type: string; text: string }>;
+    isError?: boolean;
     details?: unknown;
   }>;
 }
@@ -131,6 +132,7 @@ const plugin = {
               if (!res.ok) {
                 const data = await res.json();
                 return {
+                  isError: true,
                   content: [
                     {
                       type: "text",
@@ -159,7 +161,10 @@ const plugin = {
             } catch (error) {
               const message =
                 error instanceof Error ? error.message : "Unknown error";
-              return { content: [{ type: "text", text: message }] };
+              return {
+                isError: true,
+                content: [{ type: "text", text: message }],
+              };
             }
           },
         };
@@ -214,6 +219,7 @@ const plugin = {
               if (!res.ok) {
                 const data = await res.json();
                 return {
+                  isError: true,
                   content: [
                     {
                       type: "text",
@@ -240,7 +246,10 @@ const plugin = {
             } catch (error) {
               const message =
                 error instanceof Error ? error.message : "Unknown error";
-              return { content: [{ type: "text", text: message }] };
+              return {
+                isError: true,
+                content: [{ type: "text", text: message }],
+              };
             }
           },
         };

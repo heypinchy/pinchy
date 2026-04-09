@@ -216,6 +216,7 @@ export async function PATCH(
         eventType: "agent.updated",
         resource: `agent:${agentId}`,
         detail: auditDetail,
+        outcome: "success",
       })
     );
   }
@@ -259,6 +260,7 @@ export async function DELETE(
       eventType: "agent.deleted",
       resource: `agent:${agentId}`,
       detail: { name: agent.name },
+      outcome: "success",
     })
   );
 

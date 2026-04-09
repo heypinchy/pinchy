@@ -60,6 +60,7 @@ export async function PATCH(
         eventType: "group.updated",
         resource: `group:${groupId}`,
         detail,
+        outcome: "success",
       })
     );
   }
@@ -94,6 +95,7 @@ export async function DELETE(
       eventType: "group.deleted",
       resource: `group:${groupId}`,
       detail: { name: deleted.name },
+      outcome: "success",
     })
   );
 

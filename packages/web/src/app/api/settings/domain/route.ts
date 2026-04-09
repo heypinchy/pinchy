@@ -37,6 +37,7 @@ export async function POST(req: Request) {
       detail: {
         changes: { domain: { from: previousDomain, to: domain } },
       },
+      outcome: "success",
     })
   );
 
@@ -69,6 +70,7 @@ export async function DELETE(_req: Request) {
       detail: {
         changes: { domain: { from: previousDomain, to: null } },
       },
+      outcome: "success",
     })
   );
 

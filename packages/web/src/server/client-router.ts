@@ -78,6 +78,7 @@ export class ClientRouter {
         eventType: "tool.denied",
         resource: `agent:${message.agentId}`,
         detail: { reason: "access_denied" },
+        outcome: "failure",
       }).catch((err) => {
         console.error("Failed to write audit log for tool.denied:", err);
       });

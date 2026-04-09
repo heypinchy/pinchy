@@ -132,6 +132,7 @@ pinchy/
 ### Audit Trail Guidelines
 Every admin action that changes state MUST be logged via `appendAuditLog()`. The `detail` JSON field must follow these rules:
 
+- **Every `appendAuditLog` call must specify `outcome: 'success' | 'failure'`.** TypeScript enforces this at the call site. For events that by construction represent a completed action (`*.created`, `*.updated`, `*.deleted`, `auth.login`, `auth.logout`, `config.changed`, etc.), pass `outcome: 'success'`. For intrinsic-failure events like `auth.failed` and `tool.denied`, pass `outcome: 'failure'` and an `error: { message }` object describing why.
 - **Snapshot human-readable names alongside IDs.** IDs alone are useless after an entity is deleted. Always include `{ id, name }` pairs for referenced entities (groups, users, agents).
 - **Log what changed, not just that something changed.** Bad: `{ changes: ["visibility"] }`. Good: `{ changes: { visibility: { from: "all", to: "restricted" }, allowedGroups: { added: [{ id, name }], removed: [{ id, name }] } } }`.
 - **Use added/removed diffs for membership changes.** Don't just log the final count — log who/what was added and removed with `{ id, name }` pairs.
@@ -159,6 +160,7 @@ When creating or modifying any POST/PUT/PATCH/DELETE endpoint:
 3. Detail payload uses the correct base type (`UpdateDetail` for `*.updated`, `DeleteDetail` for `*.deleted`, `MembershipDetail` for `*.members_updated`)?
 4. All referenced entities snapshotted as `{ id, name }` pairs (`EntityRef`)?
 5. Test exists that verifies the `appendAuditLog` call with correct payload?
+6. `outcome` field set correctly? `'success'` for the happy path (default), `'failure'` for error paths that still deserve an audit entry?
 
 ### Error & Notification Display Policy
 User feedback (errors, success confirmations) must use the correct display pattern. Using the wrong one creates inconsistent UX.

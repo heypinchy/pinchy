@@ -158,6 +158,7 @@ describe("audit: POST /api/users/invite", () => {
       actorType: "user",
       actorId: "admin-1",
       eventType: "user.invited",
+      outcome: "success",
       detail: { email: "newuser@test.com", role: "member" },
     });
   });
@@ -218,6 +219,7 @@ describe("audit: DELETE /api/users/[userId]", () => {
       actorId: "admin-1",
       eventType: "user.deleted",
       resource: "user:user-1",
+      outcome: "success",
       detail: { email: "deleted@test.com" },
     });
   });
@@ -284,6 +286,7 @@ describe("audit: POST /api/setup/provider", () => {
       actorType: "user",
       actorId: "admin-1",
       eventType: "config.changed",
+      outcome: "success",
       detail: {
         provider: { id: "anthropic", name: "Anthropic" },
         authType: "api-key",
@@ -334,6 +337,7 @@ describe("audit: POST /api/settings", () => {
       actorType: "user",
       actorId: "admin-1",
       eventType: "config.changed",
+      outcome: "success",
       detail: { key: "default_provider" },
     });
   });

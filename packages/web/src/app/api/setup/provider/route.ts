@@ -159,6 +159,7 @@ export async function POST(request: NextRequest) {
       actorType: "user",
       actorId: sessionOrError.user.id!,
       eventType: "config.changed",
+      outcome: "success",
       detail,
     })
   );

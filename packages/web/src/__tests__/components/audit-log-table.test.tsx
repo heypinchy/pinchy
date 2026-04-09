@@ -4,6 +4,20 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AuditLogTable } from "@/components/audit-log-table";
 
+// Radix UI Select uses pointer capture and scrollIntoView which jsdom doesn't support
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+}
+if (!Element.prototype.setPointerCapture) {
+  Element.prototype.setPointerCapture = () => {};
+}
+if (!Element.prototype.releasePointerCapture) {
+  Element.prototype.releasePointerCapture = () => {};
+}
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => {};
+}
+
 describe("AuditLogTable", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
@@ -632,6 +646,168 @@ describe("AuditLogTable", () => {
     expect(screen.queryByText(/2 tampered entries/)).not.toBeInTheDocument();
     // Row highlighting should be cleared
     expect(rows[1]).not.toHaveAttribute("data-tampered");
+  });
+
+  const v2SuccessEntry = {
+    id: 101,
+    timestamp: "2026-02-21T10:00:00.000Z",
+    actorType: "user",
+    actorId: "user-1",
+    actorName: "Alice Admin",
+    actorDeleted: false,
+    eventType: "tool.bash",
+    resource: null,
+    resourceName: null,
+    resourceDeleted: false,
+    detail: { cmd: "ls" },
+    rowHmac: "hmac-v2-success",
+    version: 2,
+    outcome: "success" as const,
+    error: null,
+  };
+
+  const v2FailureEntry = {
+    id: 102,
+    timestamp: "2026-02-21T11:00:00.000Z",
+    actorType: "user",
+    actorId: "user-1",
+    actorName: "Alice Admin",
+    actorDeleted: false,
+    eventType: "tool.bash",
+    resource: null,
+    resourceName: null,
+    resourceDeleted: false,
+    detail: { cmd: "rm -rf /" },
+    rowHmac: "hmac-v2-failure",
+    version: 2,
+    outcome: "failure" as const,
+    error: { message: "Permission denied: sandbox blocked" },
+  };
+
+  const v1LegacyEntry = {
+    id: 103,
+    timestamp: "2026-02-21T12:00:00.000Z",
+    actorType: "user",
+    actorId: "user-1",
+    actorName: "Alice Admin",
+    actorDeleted: false,
+    eventType: "auth.login",
+    resource: null,
+    resourceName: null,
+    resourceDeleted: false,
+    detail: {},
+    rowHmac: "hmac-v1",
+    version: 1,
+    outcome: null,
+    error: null,
+  };
+
+  it("shows a green check icon for v2 success entries", async () => {
+    mockEventTypesThenEntries(undefined, {
+      entries: [v2SuccessEntry],
+      total: 1,
+      page: 1,
+      limit: 50,
+    });
+    render(<AuditLogTable />);
+    await waitFor(() => {
+      expect(screen.getAllByLabelText("Success").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("shows a red X icon for v2 failure entries", async () => {
+    mockEventTypesThenEntries(undefined, {
+      entries: [v2FailureEntry],
+      total: 1,
+      page: 1,
+      limit: 50,
+    });
+    render(<AuditLogTable />);
+    await waitFor(() => {
+      expect(screen.getAllByLabelText("Failure").length).toBeGreaterThan(0);
+    });
+  });
+
+  it("shows a neutral 'Not tracked' indicator for v1 legacy entries", async () => {
+    mockEventTypesThenEntries(undefined, {
+      entries: [v1LegacyEntry],
+      total: 1,
+      page: 1,
+      limit: 50,
+    });
+    render(<AuditLogTable />);
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+    expect(screen.getAllByLabelText("Not tracked").length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText("Success")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Failure")).not.toBeInTheDocument();
+  });
+
+  it("renders a status filter Select with All/Success/Failures options", async () => {
+    renderWithEntriesLoaded();
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("combobox", { name: "Status" }));
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: "All Statuses" })).toBeInTheDocument();
+    });
+    expect(screen.getByRole("option", { name: "Success only" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "Failures only" })).toBeInTheDocument();
+  });
+
+  it("adds status=failure to the API request when 'Failures only' is selected", async () => {
+    renderWithEntriesLoaded();
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => mockAuditResponse,
+    } as Response);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("combobox", { name: "Status" }));
+    await user.click(await screen.findByRole("option", { name: "Failures only" }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("status=failure"));
+    });
+  });
+
+  it("renders a prominent error block in the detail sheet for failure entries", async () => {
+    mockEventTypesThenEntries(undefined, {
+      entries: [v2FailureEntry],
+      total: 1,
+      page: 1,
+      limit: 50,
+    });
+    render(<AuditLogTable />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("tool.bash").length).toBeGreaterThan(0);
+    });
+
+    const user = userEvent.setup();
+    const el = screen.getAllByText("tool.bash")[0];
+    const clickable = el.closest("tr") ?? el.closest("div.rounded");
+    await user.click(clickable!);
+
+    await waitFor(() => {
+      expect(screen.getByText("Entry Detail")).toBeInTheDocument();
+    });
+
+    const errorMsg = screen.getByText("Permission denied: sandbox blocked");
+    expect(errorMsg).toBeInTheDocument();
+
+    // Ensure error block appears before the Detail JSON block (DOM order)
+    const detailLabel = screen.getByText("Detail");
+    const position = errorMsg.compareDocumentPosition(detailLabel);
+    // DOCUMENT_POSITION_FOLLOWING = 4 → detailLabel comes AFTER errorMsg
+    expect(position & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("should show truncated actorId when actorName is null", async () => {

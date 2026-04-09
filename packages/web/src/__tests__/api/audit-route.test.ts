@@ -38,6 +38,9 @@ vi.mock("@/db/schema", () => ({
     resource: "resource",
     detail: "detail",
     rowHmac: "row_hmac",
+    version: "version",
+    outcome: "outcome",
+    error: "error",
   },
   users: {
     id: "id",
@@ -466,6 +469,85 @@ describe("GET /api/audit", () => {
     const body = await res.json();
     expect(body.entries[0].resourceName).toBe("Old Agent");
     expect(body.entries[0].resourceDeleted).toBe(true);
+  });
+
+  it("includes version, outcome, error in each entry of the response", async () => {
+    const entries = [
+      {
+        id: 10,
+        timestamp: new Date("2026-03-01T10:00:00.000Z"),
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "auth.login",
+        resource: null,
+        detail: null,
+        rowHmac: "h1",
+        version: 1,
+        outcome: null,
+        error: null,
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+      {
+        id: 11,
+        timestamp: new Date("2026-03-01T11:00:00.000Z"),
+        actorType: "agent",
+        actorId: "agent-1",
+        eventType: "tool.shell.exec",
+        resource: "agent:agent-1",
+        detail: {},
+        rowHmac: "h2",
+        version: 2,
+        outcome: "failure",
+        error: { message: "exit code 1" },
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ];
+    mockSelect.mockReturnValueOnce({ from: mockEntriesFrom });
+    mockEntriesOffset.mockResolvedValueOnce(entries);
+    mockSelect.mockReturnValueOnce({ from: mockCountFrom });
+    mockCountWhere.mockResolvedValueOnce([{ count: 2 }]);
+
+    const req = new NextRequest("http://localhost/api/audit");
+    const res = await GET(req);
+    const body = await res.json();
+    expect(body.entries[0]).toMatchObject({ version: 1, outcome: null, error: null });
+    expect(body.entries[1]).toMatchObject({
+      version: 2,
+      outcome: "failure",
+      error: { message: "exit code 1" },
+    });
+  });
+
+  it("filters by status=failure when query param is set", async () => {
+    setupMocks([], 0);
+    const req = new NextRequest("http://localhost/api/audit?status=failure");
+    await GET(req);
+    expect(eq).toHaveBeenCalledWith("outcome", "failure");
+  });
+
+  it("filters by status=success when query param is set", async () => {
+    setupMocks([], 0);
+    const req = new NextRequest("http://localhost/api/audit?status=success");
+    await GET(req);
+    expect(eq).toHaveBeenCalledWith("outcome", "success");
+  });
+
+  it("ignores invalid status values", async () => {
+    setupMocks([], 0);
+    const req = new NextRequest("http://localhost/api/audit?status=banana");
+    await GET(req);
+    expect(eq).not.toHaveBeenCalledWith("outcome", "banana");
+    expect(eq).not.toHaveBeenCalledWith("outcome", expect.anything());
   });
 
   it("sets resourceDeleted to true when user resource is banned", async () => {

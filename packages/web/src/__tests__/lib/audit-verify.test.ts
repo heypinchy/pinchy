@@ -21,7 +21,7 @@ vi.mock("@/db", () => ({
   },
 }));
 
-import { computeRowHmac, verifyIntegrity } from "@/lib/audit";
+import { computeRowHmacV1, computeRowHmacV2, verifyIntegrity } from "@/lib/audit";
 
 const secret = Buffer.from("a".repeat(64), "hex");
 
@@ -37,9 +37,37 @@ function makeEntry(id: number, overrides?: { tampered?: boolean }) {
 
   const rowHmac = overrides?.tampered
     ? "0000000000000000000000000000000000000000000000000000000000000000"
-    : computeRowHmac(secret, fields);
+    : computeRowHmacV1(secret, fields);
 
-  return { id, ...fields, rowHmac };
+  return { id, version: 1, outcome: null, error: null, ...fields, rowHmac };
+}
+
+function makeV2Entry(id: number, opts?: { tamperOutcome?: boolean; version?: number }) {
+  const fields = {
+    timestamp: new Date("2026-02-21T10:00:00Z"),
+    eventType: "tool.web_search",
+    actorType: "user" as const,
+    actorId: `user-${id}`,
+    resource: `agent:abc-${id}`,
+    detail: { toolName: "web_search" },
+    outcome: "failure" as "success" | "failure",
+    error: { message: "Brave API key missing" } as { message: string } | null,
+  };
+
+  const rowHmac = computeRowHmacV2(secret, fields);
+
+  // Simulate tampering: stored outcome was flipped from "failure" to "success"
+  // but the rowHmac was computed against "failure" — verifier recomputes with
+  // the stored (tampered) outcome and mismatch follows.
+  const storedOutcome = opts?.tamperOutcome ? "success" : fields.outcome;
+
+  return {
+    id,
+    version: opts?.version ?? 2,
+    ...fields,
+    outcome: storedOutcome,
+    rowHmac,
+  };
 }
 
 describe("verifyIntegrity", () => {
@@ -102,6 +130,34 @@ describe("verifyIntegrity", () => {
       totalChecked: 0,
       invalidIds: [],
     });
+  });
+
+  it("verifies a v1 row hashed with v1 as valid", async () => {
+    mockOrderBy.mockResolvedValue([makeEntry(1)]);
+    const result = await verifyIntegrity();
+    expect(result.valid).toBe(true);
+    expect(result.invalidIds).toEqual([]);
+  });
+
+  it("verifies a v2 row hashed with v2 as valid", async () => {
+    mockOrderBy.mockResolvedValue([makeV2Entry(1)]);
+    const result = await verifyIntegrity();
+    expect(result.valid).toBe(true);
+    expect(result.invalidIds).toEqual([]);
+  });
+
+  it("flags a v2 row with tampered outcome as invalid", async () => {
+    mockOrderBy.mockResolvedValue([makeV2Entry(7, { tamperOutcome: true })]);
+    const result = await verifyIntegrity();
+    expect(result.valid).toBe(false);
+    expect(result.invalidIds).toEqual([7]);
+  });
+
+  it("flags a row with an unknown version as invalid", async () => {
+    mockOrderBy.mockResolvedValue([makeV2Entry(9, { version: 99 })]);
+    const result = await verifyIntegrity();
+    expect(result.valid).toBe(false);
+    expect(result.invalidIds).toEqual([9]);
   });
 
   it("should detect multiple tampered entries", async () => {
