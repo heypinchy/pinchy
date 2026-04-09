@@ -140,12 +140,12 @@ http://<server-ip>:11434
   models are installed, provider setup will be blocked.
 </Aside>
 
-| Use Case      | Model               | Size    | Tool Support | Why                                                                                |
-| ------------- | ------------------- | ------- | ------------ | ---------------------------------------------------------------------------------- |
-| General agent | `qwen3.5:9b`        | 6.6 GB  | Yes          | Reliable tool calling, good multilingual quality, multimodal — recommended default |
-| Coding tasks  | `qwen2.5-coder:32b` | 19 GB   | Yes          | Strong code generation                                                             |
-| Large context | `qwen3.5:27b`       | 17 GB   | Yes          | 256k context, highest local quality                                                |
-| Lightweight   | `phi3:mini`         | 2.3 GB  | No           | Fast, but no tool support — not compatible with Pinchy agents                      |
+| Use Case      | Model               | Size   | Tool Support | Why                                                                                |
+| ------------- | ------------------- | ------ | ------------ | ---------------------------------------------------------------------------------- |
+| General agent | `qwen3.5:9b`        | 6.6 GB | Yes          | Reliable tool calling, good multilingual quality, multimodal — recommended default |
+| Coding tasks  | `qwen2.5-coder:32b` | 19 GB  | Yes          | Strong code generation                                                             |
+| Large context | `qwen3.5:27b`       | 17 GB  | Yes          | 256k context, highest local quality                                                |
+| Lightweight   | `phi3:mini`         | 2.3 GB | No           | Fast, but no tool support — not compatible with Pinchy agents                      |
 
 Pull the recommended default with:
 
@@ -154,10 +154,10 @@ ollama pull qwen3.5:9b
 ```
 
 <Aside type="note">
-  Smaller models like `qwen2.5:7b` will install and connect, but in our
-  testing they hallucinate tool names instead of actually calling them,
-  which makes Smithers unreliable for platform questions. Stick to 9B
-  parameters or larger for tool-using agents.
+  Smaller models like `qwen2.5:7b` will install and connect, but in our testing
+  they hallucinate tool names instead of actually calling them, which makes
+  Smithers unreliable for platform questions. Stick to 9B parameters or larger
+  for tool-using agents.
 </Aside>
 
 ## Performance Expectations
@@ -169,10 +169,7 @@ Plan for the following on a modern Apple Silicon Mac or a single mid-range GPU:
 - **Tool-using reply** (e.g. Smithers consulting documentation): 60–120 seconds
 - **First request after a long idle**: add 10–30 seconds for model load
 
-The reason tool-using replies are so much slower is that each tool round-trip
-forces a fresh inference pass over the *entire* growing context (system prompt
-+ conversation + tool outputs). On cloud GPUs this is invisible; on local
-hardware the prefill phase dominates.
+The reason tool-using replies are so much slower is that each tool round-trip forces a fresh inference pass over the _entire_ growing context — system prompt, conversation history, and previous tool outputs all get re-processed. On cloud GPUs this is invisible; on local hardware the prefill phase dominates.
 
 Pinchy keeps the WebSocket alive and shows a thinking indicator the whole
 time, so the UI never looks stuck — but the wait is real. If responsiveness
