@@ -518,9 +518,9 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
-  it("should include ollama-cloud provider config when ollama_api_key is set", async () => {
+  it("should include ollama-cloud provider config when ollama_cloud_api_key is set", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
-      if (key === "ollama_api_key") return "sk-ollama-test";
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
       return null;
     });
 
@@ -538,7 +538,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama-cloud"].models.length).toBeGreaterThan(0);
   });
 
-  it("should not include models block when ollama_api_key is not set", async () => {
+  it("should not include models block when neither ollama provider is configured", async () => {
     mockedGetSetting.mockResolvedValue(null);
 
     await regenerateOpenClawConfig();
@@ -547,6 +547,68 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written);
 
     expect(config.models).toBeUndefined();
+  });
+
+  it("should include local ollama provider config when ollama_local_url is set", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.models.providers["ollama"]).toBeDefined();
+    expect(config.models.providers["ollama"].baseUrl).toBe("http://host.docker.internal:11434");
+    expect(config.models.providers["ollama"].api).toBe("ollama");
+    expect(config.models.providers["ollama"].models).toEqual([]);
+  });
+
+  it("should include both ollama providers when both are configured", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-cloud";
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.models.providers["ollama-cloud"]).toBeDefined();
+    expect(config.models.providers["ollama"]).toBeDefined();
+  });
+
+  it("should strip trailing slash from ollama local URL", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434/";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.models.providers["ollama"].baseUrl).toBe("http://host.docker.internal:11434");
+  });
+
+  it("should not add empty env var for ollama-local provider", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    // ollama-local has envVar: "" — should not appear as empty key in env
+    expect(config.env[""]).toBeUndefined();
   });
 
   it("should omit pinchy-context and pinchy-files when no agents use them", async () => {
@@ -572,11 +634,51 @@ describe("regenerateOpenClawConfig", () => {
     // auto-discovery (restart loop) and "disabled but config present" spam
     expect(config.plugins.entries["pinchy-context"]).toBeUndefined();
     expect(config.plugins.entries["pinchy-files"]).toBeUndefined();
+    expect(config.plugins.entries["pinchy-docs"]).toBeUndefined();
     expect(config.plugins.allow).not.toContain("pinchy-context");
     expect(config.plugins.allow).not.toContain("pinchy-files");
+    expect(config.plugins.allow).not.toContain("pinchy-docs");
     // pinchy-audit is always enabled to capture tool usage at source
     expect(config.plugins.entries["pinchy-audit"].enabled).toBe(true);
     expect(config.plugins.allow).toContain("pinchy-audit");
+  });
+
+  it("enables pinchy-docs plugin with personal agent ids when personal agents exist", async () => {
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "smithers-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          isPersonal: true,
+          ownerId: "user-1",
+          allowedTools: ["pinchy_save_user_context", "docs_list", "docs_read"],
+          createdAt: new Date(),
+        },
+        {
+          id: "shared-1",
+          name: "Shared",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          isPersonal: false,
+          ownerId: null,
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-docs"]).toBeDefined();
+    expect(config.plugins.entries["pinchy-docs"].enabled).toBe(true);
+    expect(config.plugins.entries["pinchy-docs"].config.docsPath).toBe("/pinchy-docs");
+    expect(config.plugins.entries["pinchy-docs"].config.agents).toEqual({
+      "smithers-1": {},
+    });
+    expect(config.plugins.allow).toContain("pinchy-docs");
   });
 });
 

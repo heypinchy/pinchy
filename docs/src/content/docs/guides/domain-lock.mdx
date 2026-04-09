@@ -1,0 +1,62 @@
+---
+title: Lock Pinchy to a Domain (HTTPS)
+description: Restrict your Pinchy instance to a single HTTPS domain for production — secure cookies, HSTS, and origin checks are enabled automatically.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Out of the box Pinchy accepts requests on any host that reaches it. That's fine for local development but unsafe in production: CSRF tokens and auth cookies need a known origin to be fully effective. The **Domain Lock** feature pins a Pinchy instance to exactly one HTTPS domain and turns on the rest of the production security profile as a package.
+
+## What domain lock does
+
+Once you lock a domain:
+
+- Only requests whose `Host` header matches the locked domain reach the app. Everything else gets a `403 Access Denied` page.
+- Cookies are issued with `Secure` and `SameSite=Lax`.
+- HSTS is advertised so modern browsers refuse to connect over plain HTTP.
+- Origin checks are enforced on state-changing requests.
+- A warning banner on every page goes away once HTTPS is actually in place.
+
+You don't have to configure any of these individually — locking the domain flips them all on.
+
+## Prerequisites
+
+<Aside type="caution">
+  You must be reaching Pinchy over HTTPS *before* you lock the domain. If you
+  try to lock from a plain HTTP session, Pinchy will refuse — otherwise you'd
+  immediately lock yourself out.
+</Aside>
+
+Set up HTTPS first. For most deployments that means a reverse proxy (Caddy, Nginx, Traefik) terminating TLS in front of Pinchy. See [Deploy on Hetzner Cloud](/guides/deploy-hetzner/) or [Deploy on DigitalOcean](/guides/deploy-digitalocean/) for end-to-end setups that include TLS.
+
+## Lock the domain
+
+1. Sign in as an admin on the HTTPS domain you want to lock to
+2. Go to **Settings → Security**
+3. The page shows your current host and whether the connection is HTTPS
+4. Click **Lock to this domain**
+5. Pinchy restarts briefly to apply the new security profile — the page will reload automatically
+
+From this point on, only the locked domain can reach the app.
+
+## Remove the lock
+
+If the business needs change (different domain, temporary maintenance URL, etc.):
+
+1. Go to **Settings → Security**
+2. Click **Remove domain lock**
+3. Confirm — the restart happens the same way as on lock
+
+## Recover from a lockout
+
+If HTTPS goes down (expired certificate, proxy misconfiguration, DNS change) you can find yourself unable to reach the admin UI at all. Pinchy includes a last-resort CLI to clear the lock from inside the container:
+
+```bash
+docker exec pinchy pnpm domain:reset
+```
+
+The command needs shell access to the Pinchy container, so protect it like any other production admin credential. After it runs, Pinchy accepts any host again and you can reach the UI on the non-HTTPS or fallback URL to diagnose the underlying problem.
+
+## What about local development?
+
+Don't use domain lock in development. It is designed for a single deployed instance on a known domain, not for `localhost` or Docker dev stacks. The Security tab is still visible but it refuses to lock when the current connection is not HTTPS.

@@ -1,0 +1,78 @@
+---
+title: Manage LLM Providers
+description: Add, switch, or remove the LLM providers that power your Pinchy agents — Anthropic, OpenAI, Google, Ollama Cloud, and local Ollama.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Pinchy is model-agnostic. You bring the API key (or local URL) for whichever LLM provider you trust, and every agent picks a model from the providers you've enabled. This guide covers what to do **after** the initial setup wizard — adding more providers, switching models, removing keys.
+
+For the very first provider during the setup wizard, see [Installation](/installation/). For the air-gapped local Ollama setup, see the dedicated [Ollama (Local)](/guides/ollama-setup/) guide.
+
+## Supported providers
+
+| Provider           | Auth    | What you get                                                                 |
+| ------------------ | ------- | ---------------------------------------------------------------------------- |
+| **Anthropic**      | API key | Claude family — strongest tool calling and reasoning                         |
+| **OpenAI**         | API key | GPT-4o family, o-series reasoning models                                     |
+| **Google**         | API key | Gemini family — long context, fast and cheap                                 |
+| **Ollama Cloud**   | API key | Hosted open-source models (Kimi, Qwen, Mistral, Gemini Flash) via ollama.com |
+| **Ollama (Local)** | URL     | Fully air-gapped local inference — see [Ollama setup](/guides/ollama-setup/) |
+
+You can have any combination of providers configured at the same time. Each agent picks one model from one provider.
+
+## Add a provider
+
+<Aside type="note">Only admins can configure providers.</Aside>
+
+1. Go to **Settings → LLM Provider**
+2. Click the provider you want to add
+3. Paste your API key (or for local Ollama, enter the URL)
+4. Click **Save**
+
+Pinchy validates the credentials immediately by making a test call to the provider's `/models` endpoint. If the key works, the provider activates and its models become available in every agent's model dropdown within a few seconds.
+
+API keys are encrypted at rest with AES-256-GCM. They never appear in logs, audit events, or error messages.
+
+## Change an agent's model
+
+Each agent uses one model at a time. To change it:
+
+1. Open the agent's chat
+2. Click the gear icon next to the agent name → **General**
+3. Pick a new model from the **Model** dropdown
+4. Click **Save**
+
+The dropdown shows every model from every configured provider. Models are grouped by provider, so you can quickly compare options.
+
+<Aside type="caution">
+  Pinchy agents require models with **tool calling support**. Models without it
+  appear disabled in the dropdown with the reason shown inline. If a provider
+  has no compatible models, you can't select that provider for an agent at all.
+</Aside>
+
+## Switch the default provider
+
+The "default provider" is the one Pinchy reaches for when creating new agents. You can change it at **Settings → LLM Provider** by clicking **Set as default** on any configured provider. Existing agents keep their current model — only newly created agents pick up the new default.
+
+## Remove a provider
+
+1. Go to **Settings → LLM Provider**
+2. Find the provider in the list
+3. Click **Remove**
+
+If any agent currently uses a model from the removed provider, the chat will fail to start until you assign that agent a model from a still-configured provider. Pinchy will not silently re-assign agents.
+
+## How costs are tracked
+
+Tokens used through every provider are recorded in the [Usage Dashboard](/guides/usage-dashboard/) at `/usage`. Cost is estimated using the per-model prices baked into Pinchy's model config — provider invoices remain the source of truth. Local Ollama records token counts but always shows zero cost.
+
+## Troubleshooting
+
+**"Invalid API key"** — Double-check the key with the provider's own dashboard. Anthropic keys start with `sk-ant-`, OpenAI keys with `sk-`, Google keys are typically `AIza...`.
+
+**"Could not reach the provider"** — Network problem between your Pinchy instance and the provider. If you're running behind a strict firewall, allowlist the provider's API hostname.
+
+**"No compatible models found"** — The provider responded but none of its models support tool calling. For Ollama-local, pull a tool-capable model like `qwen3.5:9b`. For cloud providers, this should not happen — file an issue if it does.
+
+**The model dropdown is empty after adding a key** — Pinchy caches the model list for one hour for cloud providers. Try waiting a minute, or remove and re-add the provider to force a refresh. Local Ollama is always fetched live.

@@ -20,8 +20,8 @@ export async function migrateExistingSmithers(): Promise<void> {
 
     const isAdmin = user.role === "admin";
     const allowedTools = isAdmin
-      ? ["pinchy_save_user_context", "pinchy_save_org_context"]
-      : ["pinchy_save_user_context"];
+      ? ["pinchy_save_user_context", "pinchy_save_org_context", "docs_list", "docs_read"]
+      : ["pinchy_save_user_context", "docs_list", "docs_read"];
 
     await db.update(agents).set({ allowedTools }).where(eq(agents.id, agent.id));
 

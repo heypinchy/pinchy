@@ -23,6 +23,18 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     category: "safe",
     requiresDirectories: true,
   },
+  {
+    id: "docs_list",
+    label: "List Pinchy documentation",
+    description: "List Pinchy platform documentation files (Smithers only)",
+    category: "safe",
+  },
+  {
+    id: "docs_read",
+    label: "Read Pinchy documentation",
+    description: "Read a Pinchy platform documentation file (Smithers only)",
+    category: "safe",
+  },
 
   // Powerful tools — unrestricted access
   {

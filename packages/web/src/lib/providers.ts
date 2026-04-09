@@ -1,7 +1,8 @@
-export type ProviderName = "anthropic" | "openai" | "google" | "ollama";
+export type ProviderName = "anthropic" | "openai" | "google" | "ollama-cloud" | "ollama-local";
 
 interface ProviderConfig {
   name: string;
+  authType: "api-key" | "url";
   settingsKey: string;
   envVar: string;
   defaultModel: string;
@@ -11,6 +12,7 @@ interface ProviderConfig {
 export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
   anthropic: {
     name: "Anthropic",
+    authType: "api-key",
     settingsKey: "anthropic_api_key",
     envVar: "ANTHROPIC_API_KEY",
     defaultModel: "anthropic/claude-haiku-4-5-20251001",
@@ -18,6 +20,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
   },
   openai: {
     name: "OpenAI",
+    authType: "api-key",
     settingsKey: "openai_api_key",
     envVar: "OPENAI_API_KEY",
     defaultModel: "openai/gpt-4o-mini",
@@ -25,17 +28,27 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
   },
   google: {
     name: "Google",
+    authType: "api-key",
     settingsKey: "google_api_key",
     envVar: "GEMINI_API_KEY",
     defaultModel: "google/gemini-2.5-flash",
     placeholder: "AIza...",
   },
-  ollama: {
-    name: "Ollama",
-    settingsKey: "ollama_api_key",
-    envVar: "OLLAMA_API_KEY",
+  "ollama-cloud": {
+    name: "Ollama Cloud",
+    authType: "api-key",
+    settingsKey: "ollama_cloud_api_key",
+    envVar: "OLLAMA_CLOUD_API_KEY",
     defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
     placeholder: "sk-...",
+  },
+  "ollama-local": {
+    name: "Ollama (Local)",
+    authType: "url",
+    settingsKey: "ollama_local_url",
+    envVar: "",
+    defaultModel: "",
+    placeholder: "http://host.docker.internal:11434",
   },
 };
 
@@ -43,7 +56,8 @@ export type ValidationResult =
   | { valid: true }
   | { valid: false; error: "invalid_key" }
   | { valid: false; error: "network_error" }
-  | { valid: false; error: "provider_error"; status: number };
+  | { valid: false; error: "provider_error"; status: number }
+  | { valid: false; error: "no_compatible_models" };
 
 function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<Response> {
   switch (provider) {
@@ -62,12 +76,24 @@ function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<
       });
     case "google":
       return fetch(`https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`, {});
-    case "ollama":
+    case "ollama-cloud":
       return fetch("https://ollama.com/v1/models", {
         headers: {
           Authorization: `Bearer ${apiKey}`,
         },
       });
+    case "ollama-local":
+      throw new Error("Use validateProviderUrl for URL-based providers");
+  }
+}
+
+export async function validateProviderUrl(url: string): Promise<ValidationResult> {
+  try {
+    const response = await fetch(`${url.replace(/\/$/, "")}/api/tags`);
+    if (response.ok) return { valid: true };
+    return { valid: false, error: "provider_error", status: response.status };
+  } catch {
+    return { valid: false, error: "network_error" };
   }
 }
 

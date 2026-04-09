@@ -23,6 +23,14 @@ const VISION_OLLAMA_MODELS = [
   "qwen3.5",
 ];
 
+// Dynamic vision capability cache — populated by provider-models.ts when fetching local Ollama models.
+// null = not yet populated (use hardcoded fallback).
+let ollamaLocalVisionCache: Set<string> | null = null;
+
+export function setOllamaLocalVisionModels(models: Set<string> | null): void {
+  ollamaLocalVisionCache = models;
+}
+
 export function isModelVisionCapable(modelId: string): boolean {
   const [provider, ...rest] = modelId.split("/");
   const modelName = rest.join("/");
@@ -31,7 +39,16 @@ export function isModelVisionCapable(modelId: string): boolean {
     return true;
   }
 
-  if (provider === "ollama" || provider === "ollama-cloud") {
+  if (provider === "ollama") {
+    // If we have capability data from a recent fetch, use it
+    if (ollamaLocalVisionCache !== null) {
+      return ollamaLocalVisionCache.has(modelName);
+    }
+    // Fallback to hardcoded prefix list
+    return VISION_OLLAMA_MODELS.some((prefix) => modelName.startsWith(prefix));
+  }
+
+  if (provider === "ollama-cloud") {
     return VISION_OLLAMA_MODELS.some((prefix) => modelName.startsWith(prefix));
   }
 

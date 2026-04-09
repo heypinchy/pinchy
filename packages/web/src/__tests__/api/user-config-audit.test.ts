@@ -23,6 +23,16 @@ vi.mock("@/lib/settings", () => ({
 
 vi.mock("@/lib/provider-models", () => ({
   resetCache: vi.fn(),
+  getDefaultModel: vi.fn().mockResolvedValue("anthropic/claude-haiku-4-5-20251001"),
+  fetchOllamaLocalModelsFromUrl: vi.fn().mockResolvedValue([
+    {
+      id: "ollama/qwen2.5:7b",
+      name: "qwen2.5:7b",
+      parameterSize: "7B",
+      compatible: true,
+      capabilities: { tools: true, vision: false, completion: true, thinking: false },
+    },
+  ]),
 }));
 
 vi.mock("@/lib/providers", () => ({
@@ -30,6 +40,7 @@ vi.mock("@/lib/providers", () => ({
   PROVIDERS: {
     anthropic: {
       name: "Anthropic",
+      authType: "api-key",
       settingsKey: "anthropic_api_key",
       envVar: "ANTHROPIC_API_KEY",
       defaultModel: "anthropic/claude-haiku-4-5-20251001",
@@ -37,6 +48,7 @@ vi.mock("@/lib/providers", () => ({
     },
     openai: {
       name: "OpenAI",
+      authType: "api-key",
       settingsKey: "openai_api_key",
       envVar: "OPENAI_API_KEY",
       defaultModel: "openai/gpt-4o-mini",
@@ -44,15 +56,17 @@ vi.mock("@/lib/providers", () => ({
     },
     google: {
       name: "Google",
+      authType: "api-key",
       settingsKey: "google_api_key",
       envVar: "GEMINI_API_KEY",
       defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
-    ollama: {
-      name: "Ollama",
-      settingsKey: "ollama_api_key",
-      envVar: "OLLAMA_API_KEY",
+    "ollama-cloud": {
+      name: "Ollama Cloud",
+      authType: "api-key",
+      settingsKey: "ollama_cloud_api_key",
+      envVar: "OLLAMA_CLOUD_API_KEY",
       defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
       placeholder: "sk-...",
     },
@@ -266,12 +280,17 @@ describe("audit: POST /api/setup/provider", () => {
     const response = await POST(request as any);
     expect(response.status).toBe(200);
 
+    // CLAUDE.md convention: snapshot human-readable name + id, plus enough
+    // structure to know whether the change involved a key or a URL.
     expect(appendAuditLog).toHaveBeenCalledWith({
       actorType: "user",
       actorId: "admin-1",
       eventType: "config.changed",
       outcome: "success",
-      detail: { key: "provider", provider: "anthropic" },
+      detail: {
+        provider: { id: "anthropic", name: "Anthropic" },
+        authType: "api-key",
+      },
     });
   });
 
