@@ -110,6 +110,7 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
       eventType: "config.changed",
       resource: `integration:${connectionId}`,
       detail: { action: "integration_updated", id: connectionId, changes },
+      outcome: "success",
     }).catch(() => {});
   }
 
@@ -148,6 +149,7 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
     eventType: "config.changed",
     resource: `integration:${connectionId}`,
     detail: { action: "integration_deleted", type: existing.type, name: existing.name },
+    outcome: "success",
   }).catch(() => {});
 
   return NextResponse.json({ success: true });

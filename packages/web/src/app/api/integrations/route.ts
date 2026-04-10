@@ -84,6 +84,7 @@ export async function POST(request: NextRequest) {
     eventType: "config.changed",
     resource: `integration:${connection.id}`,
     detail: { action: "integration_created", type, name },
+    outcome: "success",
   }).catch(() => {});
 
   return NextResponse.json(

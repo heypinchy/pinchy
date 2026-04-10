@@ -176,6 +176,7 @@ export async function PUT(
       connectionId,
       changes: { added, removed },
     },
+    outcome: "success",
   }).catch(() => {});
 
   return NextResponse.json({ success: true });
@@ -227,6 +228,7 @@ export async function DELETE(
       agentId,
       removed,
     },
+    outcome: "success",
   }).catch(() => {});
 
   return NextResponse.json({ success: true });
