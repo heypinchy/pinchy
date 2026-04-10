@@ -638,7 +638,7 @@ describe("regenerateOpenClawConfig", () => {
 
   it("enables pinchy-docs plugin with personal agent ids when personal agents exist", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "smithers-1",
           name: "Smithers",

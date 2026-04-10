@@ -142,12 +142,7 @@ describe("POST /api/internal/audit/tool-use", () => {
       resource: "agent:agent-2",
       detail: {
         toolName: "browser",
-        phase: "end",
-        runId: "run-2",
-        toolCallId: "tool-2",
-        sessionKey: "agent:agent-2:direct:user-1",
-        sessionId: "session-2",
-        result: { ok: true },
+        success: true,
         durationMs: 123,
       },
       outcome: "success",
