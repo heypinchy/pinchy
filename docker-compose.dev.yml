@@ -12,14 +12,30 @@ services:
       - /app/packages/web/node_modules
       - /app/packages/web/.next
   openclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile.openclaw
     volumes:
       - ./packages/plugins/pinchy-files:/root/.openclaw/extensions/pinchy-files
       - ./packages/plugins/pinchy-context:/root/.openclaw/extensions/pinchy-context
       - ./packages/plugins/pinchy-audit:/root/.openclaw/extensions/pinchy-audit
       - ./packages/plugins/pinchy-odoo:/root/.openclaw/extensions/pinchy-odoo
+      - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
       - ./sample-data:/data/sample-docs
   db:
     environment:
       - POSTGRES_PASSWORD=pinchy_dev
     ports:
       - "5434:5432"
+  caddy:
+    image: caddy:2
+    ports:
+      - "8443:443"
+    volumes:
+      - ./Caddyfile.dev:/etc/caddy/Caddyfile:ro
+      - caddy_data_dev:/data
+    depends_on:
+      - pinchy
+
+volumes:
+  caddy_data_dev:

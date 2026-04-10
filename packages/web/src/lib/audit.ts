@@ -1,7 +1,7 @@
 import { createHmac } from "crypto";
 import { asc, gte, lte, and } from "drizzle-orm";
 import { db } from "@/db";
-import { auditLog } from "@/db/schema";
+import { auditLog, type AuditDetail } from "@/db/schema";
 import { getOrCreateSecret } from "@/lib/encryption";
 
 // ── Audit Detail Base Types ─────────────────────────────────────────────
@@ -46,13 +46,18 @@ export type AuditEventType =
   | "channel.created"
   | "channel.deleted";
 
-interface HmacFields {
+interface HmacFieldsV1 {
   timestamp: Date;
   eventType: string;
   actorType: string;
   actorId: string;
   resource: string | null;
   detail: unknown;
+}
+
+interface HmacFieldsV2 extends HmacFieldsV1 {
+  outcome: "success" | "failure";
+  error: { message: string } | null;
 }
 
 /**
@@ -75,7 +80,7 @@ export function sortKeys(value: unknown): unknown {
   return sorted;
 }
 
-export function computeRowHmac(secret: Buffer, fields: HmacFields): string {
+export function computeRowHmacV1(secret: Buffer, fields: HmacFieldsV1): string {
   const payload = JSON.stringify([
     fields.timestamp.toISOString(),
     fields.eventType,
@@ -87,9 +92,35 @@ export function computeRowHmac(secret: Buffer, fields: HmacFields): string {
   return createHmac("sha256", secret).update(payload).digest("hex");
 }
 
+export function computeRowHmacV2(secret: Buffer, fields: HmacFieldsV2): string {
+  const payload = JSON.stringify([
+    fields.timestamp.toISOString(),
+    fields.eventType,
+    fields.actorType,
+    fields.actorId,
+    fields.resource,
+    sortKeys(fields.detail),
+    2, // version — downgrade protection (see VERSIONING.md)
+    fields.outcome,
+    sortKeys(fields.error),
+  ]);
+  return createHmac("sha256", secret).update(payload).digest("hex");
+}
+
+// Per-version HMAC functions used for both writing (appendAuditLog) and verifying
+// (verifyIntegrity). v1 functions ignore v2-only fields by design — never delete
+// or modify a version's function: see VERSIONING.md (added in a follow-up task).
+export const ROW_HMAC_VERIFIERS: Record<
+  number,
+  (secret: Buffer, fields: HmacFieldsV1 | HmacFieldsV2) => string
+> = {
+  1: (secret, fields) => computeRowHmacV1(secret, fields),
+  2: (secret, fields) => computeRowHmacV2(secret, fields as HmacFieldsV2),
+};
+
 const MAX_DETAIL_BYTES = 2048;
 
-export function truncateDetail(detail: unknown): unknown {
+export function truncateDetail(detail: AuditDetail | null | undefined): AuditDetail | null {
   if (detail === null || detail === undefined) return null;
   const serialized = JSON.stringify(detail);
   if (serialized.length <= MAX_DETAIL_BYTES) return detail;
@@ -104,6 +135,8 @@ type AuditLogBase = {
   actorType: "user" | "agent" | "system";
   actorId: string;
   resource?: string | null;
+  outcome: "success" | "failure";
+  error?: { message: string } | null;
 };
 
 export type AuditLogEntry =
@@ -124,7 +157,11 @@ export type AuditLogEntry =
       detail: MembershipDetail;
     })
   | (AuditLogBase & {
-      eventType: `auth.${string}` | `tool.${string}`;
+      eventType: `auth.${string}`;
+      detail?: Record<string, unknown>;
+    })
+  | (AuditLogBase & {
+      eventType: `tool.${string}`;
       detail?: Record<string, unknown>;
     });
 
@@ -132,14 +169,18 @@ export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
   const secret = getOrCreateSecret("audit_hmac_secret");
   const timestamp = new Date();
   const detail = truncateDetail(entry.detail ?? null);
+  const outcome = entry.outcome;
+  const error = entry.error ?? null;
 
-  const rowHmac = computeRowHmac(secret, {
+  const rowHmac = computeRowHmacV2(secret, {
     timestamp,
     eventType: entry.eventType,
     actorType: entry.actorType,
     actorId: entry.actorId,
     resource: entry.resource ?? null,
     detail,
+    outcome,
+    error,
   });
 
   await db.insert(auditLog).values({
@@ -149,6 +190,9 @@ export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
     eventType: entry.eventType,
     resource: entry.resource ?? null,
     detail,
+    version: 2,
+    outcome,
+    error,
     rowHmac,
   });
 }
@@ -175,13 +219,21 @@ export async function verifyIntegrity(fromId?: number, toId?: number): Promise<V
   const invalidIds: number[] = [];
 
   for (const entry of entries) {
-    const expectedHmac = computeRowHmac(secret, {
+    const verifier = ROW_HMAC_VERIFIERS[entry.version];
+    if (!verifier) {
+      invalidIds.push(entry.id);
+      continue;
+    }
+
+    const expectedHmac = verifier(secret, {
       timestamp: entry.timestamp,
       eventType: entry.eventType,
       actorType: entry.actorType,
       actorId: entry.actorId,
       resource: entry.resource,
       detail: entry.detail,
+      outcome: (entry.outcome ?? "success") as "success" | "failure",
+      error: entry.error as { message: string } | null,
     });
 
     if (expectedHmac !== entry.rowHmac) {

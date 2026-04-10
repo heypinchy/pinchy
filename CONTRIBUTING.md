@@ -50,6 +50,17 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 Open [http://localhost:7777](http://localhost:7777). Code changes in `packages/web/` are reflected immediately in the browser.
 
+### HTTPS Testing (Optional)
+
+To test HTTPS-related features locally:
+
+1. Add `127.0.0.1 pinchy.local` to your `/etc/hosts` file
+2. Start the stack as usual — Caddy is included automatically
+3. Access Pinchy at `https://pinchy.local:8443`
+4. Your browser will warn about the self-signed certificate — accept it once
+
+Regular development at `http://localhost:7777` continues to work unchanged.
+
 ### Local development (without Docker for the app)
 
 ```bash

@@ -338,6 +338,25 @@
           "primaryKey": false,
           "notNull": false
         },
+        "version": {
+          "name": "version",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 1
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "error": {
+          "name": "error",
+          "type": "jsonb",
+          "primaryKey": false,
+          "notNull": false
+        },
         "row_hmac": {
           "name": "row_hmac",
           "type": "text",
@@ -381,6 +400,21 @@
           "columns": [
             {
               "expression": "event_type",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_audit_outcome": {
+          "name": "idx_audit_outcome",
+          "columns": [
+            {
+              "expression": "outcome",
               "isExpression": false,
               "asc": true,
               "nulls": "last"

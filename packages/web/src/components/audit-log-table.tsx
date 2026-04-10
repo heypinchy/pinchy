@@ -5,6 +5,7 @@ import Prism from "prismjs";
 import "prismjs/components/prism-json";
 import "./json-highlight.css";
 import Link from "next/link";
+import { CircleCheck, CircleX } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -44,6 +45,26 @@ interface AuditEntry {
   resourceDeleted: boolean;
   detail: Record<string, unknown>;
   rowHmac: string;
+  version: number;
+  outcome: "success" | "failure" | null;
+  error: { message: string } | null;
+}
+
+function StatusCell({ outcome }: { outcome: "success" | "failure" | null }) {
+  if (outcome === null) {
+    return (
+      <span
+        aria-label="Not tracked"
+        title="Logged before status tracking"
+        className="text-muted-foreground"
+      >
+        —
+      </span>
+    );
+  }
+  if (outcome === "success")
+    return <CircleCheck aria-label="Success" className="h-4 w-4 text-green-600" />;
+  return <CircleX aria-label="Failure" className="h-4 w-4 text-red-600" />;
 }
 
 interface AuditResponse {
@@ -143,6 +164,7 @@ export function AuditLogTable() {
   const [limit] = useState(50);
   const [loading, setLoading] = useState(true);
   const [eventTypeFilter, setEventTypeFilter] = useState<string>("");
+  const [statusFilter, setStatusFilter] = useState<"" | "success" | "failure">("");
   const [dateFrom, setDateFrom] = useState<string>("");
   const [dateTo, setDateTo] = useState<string>("");
   const [selectedEntry, setSelectedEntry] = useState<AuditEntry | null>(null);
@@ -167,6 +189,9 @@ export function AuditLogTable() {
       if (eventTypeFilter) {
         params.set("eventType", eventTypeFilter);
       }
+      if (statusFilter) {
+        params.set("status", statusFilter);
+      }
       if (dateFrom) {
         params.set("from", localDateStart(dateFrom));
       }
@@ -183,7 +208,7 @@ export function AuditLogTable() {
     } finally {
       setLoading(false);
     }
-  }, [page, limit, eventTypeFilter, dateFrom, dateTo]);
+  }, [page, limit, eventTypeFilter, statusFilter, dateFrom, dateTo]);
 
   useEffect(() => {
     setLoading(true);
@@ -193,6 +218,7 @@ export function AuditLogTable() {
   async function handleExportCsv() {
     const params = new URLSearchParams();
     if (eventTypeFilter) params.set("eventType", eventTypeFilter);
+    if (statusFilter) params.set("status", statusFilter);
     if (dateFrom) params.set("from", localDateStart(dateFrom));
     if (dateTo) params.set("to", localDateEnd(dateTo));
     const res = await fetch(`/api/audit/export?${params.toString()}`);
@@ -241,6 +267,11 @@ export function AuditLogTable() {
     setPage(1);
   }
 
+  function handleStatusChange(value: string) {
+    setStatusFilter(value === "all" ? "" : (value as "success" | "failure"));
+    setPage(1);
+  }
+
   function handleDateFromChange(e: React.ChangeEvent<HTMLInputElement>) {
     setDateFrom(e.target.value);
     setPage(1);
@@ -284,6 +315,17 @@ export function AuditLogTable() {
                   {type}
                 </SelectItem>
               ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={statusFilter || "all"} onValueChange={handleStatusChange}>
+            <SelectTrigger aria-label="Status" className="w-[160px]">
+              <SelectValue placeholder="All Statuses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Statuses</SelectItem>
+              <SelectItem value="success">Success only</SelectItem>
+              <SelectItem value="failure">Failures only</SelectItem>
             </SelectContent>
           </Select>
 
@@ -337,7 +379,7 @@ export function AuditLogTable() {
             variant="ghost"
             size="sm"
             aria-label="Dismiss"
-            className="shrink-0 h-6 w-6 p-0 hover:bg-black/10 dark:hover:bg-white/10"
+            className="shrink-0 size-6 p-0 hover:bg-black/10 dark:hover:bg-white/10"
             onClick={() => setVerifyResult(null)}
           >
             ×
@@ -369,7 +411,10 @@ export function AuditLogTable() {
                 }}
               >
                 <div className="flex items-center justify-between">
-                  <Badge variant="secondary">{entry.eventType}</Badge>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="secondary">{entry.eventType}</Badge>
+                    <StatusCell outcome={entry.outcome} />
+                  </div>
                   <span className="text-xs text-muted-foreground">
                     {new Date(entry.timestamp).toLocaleString()}
                   </span>
@@ -405,6 +450,7 @@ export function AuditLogTable() {
                     <TableHead>Timestamp</TableHead>
                     <TableHead>Actor</TableHead>
                     <TableHead>Event Type</TableHead>
+                    <TableHead>Status</TableHead>
                     <TableHead>Resource</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -435,6 +481,9 @@ export function AuditLogTable() {
                       </TableCell>
                       <TableCell>
                         <Badge variant="secondary">{entry.eventType}</Badge>
+                      </TableCell>
+                      <TableCell>
+                        <StatusCell outcome={entry.outcome} />
                       </TableCell>
                       <TableCell>
                         <ResourceCell
@@ -499,6 +548,17 @@ export function AuditLogTable() {
                   resourceDeleted={selectedEntry.resourceDeleted}
                 />
               </div>
+              {selectedEntry.outcome === "failure" && selectedEntry.error && (
+                <div className="rounded border border-red-500 bg-red-50 dark:bg-red-950 dark:text-red-200 p-3">
+                  <p className="text-sm font-medium text-red-800 dark:text-red-200 flex items-center gap-2">
+                    <CircleX className="h-4 w-4" />
+                    Tool call failed
+                  </p>
+                  <p className="mt-1 text-sm text-red-800 dark:text-red-200">
+                    {selectedEntry.error.message}
+                  </p>
+                </div>
+              )}
               <div>
                 <p className="text-sm font-medium text-muted-foreground">Detail</p>
                 <pre className="mt-1 rounded bg-muted p-3 text-sm overflow-auto json-highlight">

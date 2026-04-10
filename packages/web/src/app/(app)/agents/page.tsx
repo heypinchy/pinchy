@@ -1,8 +1,13 @@
+import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { headers } from "next/headers";
 import { requireAuth } from "@/lib/require-auth";
 import { getVisibleAgents } from "@/lib/visible-agents";
 import { AgentsPageContent } from "./agents-page-content";
+
+export const metadata: Metadata = {
+  title: "Agents",
+};
 
 const MOBILE_UA_PATTERN = /Mobile|Android|iPhone|iPad|iPod|webOS|BlackBerry|Opera Mini/i;
 

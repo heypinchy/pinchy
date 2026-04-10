@@ -118,7 +118,10 @@ export default defineConfig({
             { label: 'Mount Data Directories', slug: 'guides/mount-data-directories' },
             { label: 'User Management', slug: 'guides/user-management' },
             { label: 'Smithers Onboarding', slug: 'guides/smithers-onboarding' },
+            { label: 'Manage LLM Providers', slug: 'guides/llm-providers' },
             { label: 'Set Up Telegram', slug: 'guides/telegram-setup' },
+            { label: 'Set Up Local Ollama', slug: 'guides/ollama-setup' },
+            { label: 'Usage & Costs Dashboard', slug: 'guides/usage-dashboard' },
             { label: 'Enterprise Setup', slug: 'guides/enterprise-setup' },
             { label: 'VPS Deployment', slug: 'guides/vps-deployment' },
             { label: 'Deploy on Hetzner Cloud', slug: 'guides/deploy-hetzner' },
@@ -126,6 +129,7 @@ export default defineConfig({
             { label: 'Upgrading', slug: 'guides/upgrading' },
             { label: 'Hardening', slug: 'guides/hardening' },
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
+            { label: 'Lock Pinchy to a Domain (HTTPS)', slug: 'guides/domain-lock' },
           ],
         },
         {

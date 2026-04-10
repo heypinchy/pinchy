@@ -87,7 +87,12 @@ describe("migrateExistingSmithers", () => {
 
     const setFn = vi.mocked(db.update("" as never).set);
     expect(setFn).toHaveBeenCalledWith({
-      allowedTools: ["pinchy_save_user_context", "pinchy_save_org_context"],
+      allowedTools: [
+        "pinchy_save_user_context",
+        "pinchy_save_org_context",
+        "docs_list",
+        "docs_read",
+      ],
     });
   });
 

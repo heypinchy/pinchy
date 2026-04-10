@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
@@ -53,13 +53,16 @@ export async function PATCH(
 
   if (Object.keys(changes).length > 0) {
     const detail: UpdateDetail = { changes };
-    appendAuditLog({
-      actorType: "user",
-      actorId: session.user.id!,
-      eventType: "group.updated",
-      resource: `group:${groupId}`,
-      detail,
-    }).catch(() => {});
+    after(() =>
+      appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "group.updated",
+        resource: `group:${groupId}`,
+        detail,
+        outcome: "success",
+      })
+    );
   }
 
   return NextResponse.json(updated);
@@ -85,13 +88,16 @@ export async function DELETE(
     return NextResponse.json({ error: "Group not found" }, { status: 404 });
   }
 
-  appendAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "group.deleted",
-    resource: `group:${groupId}`,
-    detail: { name: deleted.name },
-  }).catch(() => {});
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "group.deleted",
+      resource: `group:${groupId}`,
+      detail: { name: deleted.name },
+      outcome: "success",
+    })
+  );
 
   await recalculateTelegramAllowStores();
 

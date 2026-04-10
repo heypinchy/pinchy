@@ -12,6 +12,7 @@ export const SETTINGS_TABS = [
   "groups",
   "integrations",
   "license",
+  "security",
 ] as const;
 
 export const AGENT_SETTINGS_TABS = [

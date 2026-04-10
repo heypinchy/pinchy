@@ -1,0 +1,1 @@
+ALTER TABLE "audit_log" ADD CONSTRAINT "audit_log_v2_outcome_required" CHECK ("audit_log"."version" = 1 OR "audit_log"."outcome" IS NOT NULL);

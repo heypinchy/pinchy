@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import { db } from "@/db";
 import { activeAgents } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -8,6 +9,21 @@ import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { isEnterprise } from "@/lib/enterprise";
 import { getAgentAvatarSvg } from "@/lib/avatar";
+
+export async function generateMetadata({
+  params,
+}: {
+  params: Promise<{ agentId: string }>;
+}): Promise<Metadata> {
+  const { agentId } = await params;
+  const agent = await db
+    .select({ name: activeAgents.name })
+    .from(activeAgents)
+    .where(eq(activeAgents.id, agentId))
+    .then((rows) => rows[0]);
+
+  return { title: agent?.name ?? "Chat" };
+}
 
 export default async function ChatPage({ params }: { params: Promise<{ agentId: string }> }) {
   const { agentId } = await params;

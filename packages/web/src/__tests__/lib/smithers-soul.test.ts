@@ -11,8 +11,24 @@ describe("SMITHERS_SOUL_MD", () => {
     expect(SMITHERS_SOUL_MD).toContain("## Personality");
   });
 
-  it("contains the platform knowledge section", () => {
+  it("contains the platform knowledge section pointing to docs tools", () => {
     expect(SMITHERS_SOUL_MD).toContain("## Platform Knowledge");
+    // Knowledge is now sourced on demand from docs via plugin tools.
+    expect(SMITHERS_SOUL_MD).toContain("docs_list");
+    expect(SMITHERS_SOUL_MD).toContain("docs_read");
+  });
+
+  it("instructs Smithers to admit when no doc covers the question instead of guessing", () => {
+    // Smaller local models drift into invention when docs_list returns no
+    // matching file. The SOUL must give them a concrete fall-through script
+    // ("don't guess, say you don't know") because generic instructions like
+    // "don't fabricate" are not strong enough on 7-9B models.
+    const lower = SMITHERS_SOUL_MD.toLowerCase();
+    expect(lower).toContain("never");
+    expect(lower).toMatch(/(do not guess|don't guess|never guess)/);
+    // The fall-through must point users somewhere actionable rather than
+    // leaving them with a dead-end "I don't know."
+    expect(lower).toMatch(/(github|issue|discussion|report)/);
   });
 
   it("does not contain gendered honorifics", () => {

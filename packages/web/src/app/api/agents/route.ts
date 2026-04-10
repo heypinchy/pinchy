@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextRequest, NextResponse, after } from "next/server";
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { getSession } from "@/lib/auth";
@@ -118,13 +118,16 @@ export async function POST(request: NextRequest) {
     })
     .returning();
 
-  appendAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "agent.created",
-    resource: `agent:${agent.id}`,
-    detail: { name: agent.name, model: agent.model, templateId },
-  }).catch(() => {});
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "agent.created",
+      resource: `agent:${agent.id}`,
+      detail: { name: agent.name, model: agent.model, templateId },
+      outcome: "success",
+    })
+  );
 
   // Auto-configure Odoo permissions when template has odooConfig
   if (template.odooConfig && connectionId) {

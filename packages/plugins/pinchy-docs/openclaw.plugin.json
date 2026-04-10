@@ -1,0 +1,21 @@
+{
+  "id": "pinchy-docs",
+  "name": "Pinchy Docs",
+  "description": "On-demand access to Pinchy platform documentation for personal assistants.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "docsPath": {
+        "type": "string"
+      },
+      "agents": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object"
+        }
+      }
+    },
+    "required": ["docsPath", "agents"]
+  }
+}

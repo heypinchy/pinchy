@@ -230,6 +230,7 @@ const plugin = {
               const message =
                 error instanceof Error ? error.message : "Unknown error";
               return {
+                isError: true,
                 content: [{ type: "text", text: message }],
               };
             }
@@ -277,6 +278,7 @@ const plugin = {
               const sizeLimit = isPdf ? MAX_PDF_FILE_SIZE : MAX_FILE_SIZE;
               if (stats.size > sizeLimit) {
                 return {
+                  isError: true,
                   content: [
                     {
                       type: "text",
@@ -314,6 +316,7 @@ const plugin = {
               const message =
                 error instanceof Error ? error.message : "Unknown error";
               return {
+                isError: true,
                 content: [{ type: "text", text: message }],
               };
             }

@@ -219,6 +219,23 @@ describe("pinchy-files plugin", () => {
     }
   });
 
+  it("pinchy_ls marks errors with isError=true (MCP convention)", async () => {
+    const api = createMockApi({ "agent-1": { allowed_paths: ["/nonexistent-dir-xyz/"] } });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const lsFactory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_ls"
+    )?.[0];
+    const tool = lsFactory({ agentId: "agent-1" });
+
+    const result = await tool.execute("call-1", { path: "/nonexistent-dir-xyz/" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].type).toBe("text");
+    expect(typeof result.content[0].text).toBe("string");
+  });
+
   it("pinchy_ls filters out system files (Thumbs.db, desktop.ini, .DS_Store)", async () => {
     // Create a temp directory with system files and a normal file
     const tmpDir = mkdtempSync(join(tmpdir(), "pinchy-sysfiles-test-"));
@@ -272,6 +289,17 @@ describe("pinchy_read PDF integration", () => {
     )?.[0];
     return readFactory({ agentId: "agent-1" });
   }
+
+  it("marks missing-file errors with isError=true (MCP convention)", async () => {
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: join(FIXTURES, "does-not-exist.md") });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].type).toBe("text");
+    expect(result.content[0].text).toMatch(/ENOENT|no such file/);
+  });
 
   it("returns XML-wrapped content for PDF files", async () => {
     const fixturePath = join(FIXTURES, "text-only.pdf");

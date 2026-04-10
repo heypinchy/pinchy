@@ -3,24 +3,25 @@ title: Quick Start
 description: Get Pinchy running in 5 minutes with Docker Compose.
 ---
 
-This guide walks you through getting Pinchy up and running — from cloning the repo to chatting with your first AI agent.
+This guide walks you through getting Pinchy up and running — from downloading Pinchy to chatting with your first AI agent.
 
 ## Prerequisites
 
-- [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) (v2+)
+- [Docker](https://docs.docker.com/get-docker/) (includes Docker Compose v2)
 - An API key from an LLM provider (Anthropic, OpenAI, Google, or Ollama)
 
-## 1. Clone the repository
+## 1. Download the Compose file
 
 ```bash
-git clone https://github.com/heypinchy/pinchy.git
-cd pinchy
+mkdir -p pinchy && cd pinchy
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/main/docker-compose.yml -o docker-compose.yml
 ```
 
 ## 2. Start the stack
 
 ```bash
-docker compose up --build
+docker compose pull
+docker compose up -d
 ```
 
 This starts three services:
@@ -29,7 +30,7 @@ This starts three services:
 - **OpenClaw** — the AI agent runtime (internal, not exposed)
 - **PostgreSQL** — the database
 
-Wait until you see `Pinchy ready on http://localhost:7777` in the logs.
+Wait until `docker compose logs pinchy` shows `Pinchy ready on http://localhost:7777`.
 
 ## 3. Create your admin account
 

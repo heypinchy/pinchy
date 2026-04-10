@@ -29,12 +29,14 @@ describe("ProviderKeyForm", () => {
     fetchSpy.mockRestore();
   });
 
-  it("should render three provider buttons", () => {
+  it("should render five provider buttons", () => {
     render(<ProviderKeyForm onSuccess={onSuccess} />);
 
     expect(screen.getByRole("button", { name: /anthropic/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /openai/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /google/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ollama cloud/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /ollama \(local\)/i })).toBeInTheDocument();
   });
 
   it("should show API key field when a provider is selected", () => {
@@ -486,6 +488,115 @@ describe("ProviderKeyForm", () => {
           "Cannot remove the last configured provider. Add another provider first."
         );
       });
+    });
+  });
+
+  describe("URL-based provider (ollama-local)", () => {
+    it("should show 'Ollama URL' label instead of 'API Key' when ollama-local is selected", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /ollama \(local\)/i }));
+
+      expect(screen.getByLabelText(/ollama url/i)).toBeInTheDocument();
+      expect(screen.queryByLabelText(/api key/i)).not.toBeInTheDocument();
+    });
+
+    it("should show text input instead of password input for URL providers", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /ollama \(local\)/i }));
+
+      const input = screen.getByLabelText(/ollama url/i);
+      expect(input).toHaveAttribute("type", "text");
+    });
+
+    it("should show URL-specific help text instead of encryption hint", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /ollama \(local\)/i }));
+
+      expect(screen.getByText(/your url is stored on your server/i)).toBeInTheDocument();
+      expect(screen.queryByText(/encrypted at rest/i)).not.toBeInTheDocument();
+    });
+
+    it("should send url field instead of apiKey for URL providers", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true }),
+      } as Response);
+
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /ollama \(local\)/i }));
+      fireEvent.change(screen.getByLabelText(/ollama url/i), {
+        target: { value: "http://host.docker.internal:11434" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+      await waitFor(() => {
+        expect(global.fetch).toHaveBeenCalledWith("/api/setup/provider", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            provider: "ollama-local",
+            url: "http://host.docker.internal:11434",
+          }),
+        });
+      });
+    });
+
+    it("should show success toast with 'URL saved' for URL providers", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ success: true }),
+      } as Response);
+
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /ollama \(local\)/i }));
+      fireEvent.change(screen.getByLabelText(/ollama url/i), {
+        target: { value: "http://host.docker.internal:11434" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+
+      await waitFor(() => {
+        expect(toast.success).toHaveBeenCalledWith("URL saved");
+      });
+    });
+
+    it("should show 'Remove URL' button for configured URL providers", () => {
+      const configuredProviders = {
+        "ollama-local": { configured: true, hint: "1434" },
+      };
+
+      render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /ollama \(local\)/i }));
+
+      expect(screen.getByRole("button", { name: /remove url/i })).toBeInTheDocument();
+    });
+
+    it("should show 'Remove URL?' in confirmation dialog for URL providers", () => {
+      const configuredProviders = {
+        "ollama-local": { configured: true, hint: "1434" },
+      };
+
+      render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /ollama \(local\)/i }));
+      fireEvent.click(screen.getByRole("button", { name: /remove url/i }));
+
+      expect(screen.getByText("Remove URL?")).toBeInTheDocument();
+    });
+
+    it("should show help guide text appropriate for URL providers", () => {
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+
+      fireEvent.click(screen.getByRole("button", { name: /ollama \(local\)/i }));
+      fireEvent.click(screen.getByText(/need help/i));
+
+      expect(screen.getByText(/install ollama/i)).toBeInTheDocument();
+      expect(screen.getByText(/pull a model/i)).toBeInTheDocument();
     });
   });
 });

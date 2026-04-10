@@ -17,6 +17,18 @@ describe("TOOL_REGISTRY", () => {
     expect(safe.map((t) => t.id)).toContain("pinchy_read");
   });
 
+  it("contains docs_list and docs_read as safe tools (no group, not denied)", () => {
+    const ids = TOOL_REGISTRY.map((t) => t.id);
+    expect(ids).toContain("docs_list");
+    expect(ids).toContain("docs_read");
+    const docsList = getToolById("docs_list");
+    const docsRead = getToolById("docs_read");
+    expect(docsList?.category).toBe("safe");
+    expect(docsRead?.category).toBe("safe");
+    expect(docsList?.group).toBeUndefined();
+    expect(docsRead?.group).toBeUndefined();
+  });
+
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
     expect(powerful.length).toBe(3);

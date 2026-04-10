@@ -16,7 +16,10 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Pinchy",
+  title: {
+    default: "Pinchy",
+    template: "%s · Pinchy",
+  },
   description: "Enterprise AI Agent Platform",
   icons: {
     icon: [

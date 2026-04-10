@@ -132,7 +132,7 @@ export function RestartProvider({ children }: { children: React.ReactNode }) {
               </>
             ) : (
               <>
-                <div className="h-8 w-8 animate-spin rounded-full border-4 border-muted-foreground border-t-transparent" />
+                <div className="size-8 animate-spin rounded-full border-4 border-muted-foreground border-t-transparent" />
                 <p className="text-lg font-medium">Applying changes</p>
                 <p className="text-sm text-muted-foreground">
                   Hang tight — it&apos;ll only take a moment.
@@ -154,7 +154,7 @@ function StatusRow({ label, status }: { label: string; status: string }) {
       <span
         className={`flex items-center gap-1.5 font-medium ${ok ? "text-green-600" : "text-red-600"}`}
       >
-        {ok ? <CircleCheck className="h-4 w-4" /> : <CircleX className="h-4 w-4" />}
+        {ok ? <CircleCheck className="size-4" /> : <CircleX className="size-4" />}
         {status}
       </span>
     </div>
