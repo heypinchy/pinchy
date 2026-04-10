@@ -75,7 +75,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
       - cd /opt/pinchy-loading && python3 -m http.server 80 &
       - echo $! > /tmp/loading-server.pid
       - apt-get update -qq
-      - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+      - apt-get install -y -qq docker.io docker-compose-v2 ufw
       - echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
       - echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
       - apt-get install -y -qq iptables-persistent
@@ -91,9 +91,10 @@ A "Droplet" is DigitalOcean's name for a virtual server.
       - mkswap /swapfile
       - swapon /swapfile
       - echo '/swapfile none swap sw 0 0' >> /etc/fstab
-      - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
-      - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
-      - cd /opt/pinchy && docker compose up --build -d
+      - mkdir -p /opt/pinchy
+      - curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o /opt/pinchy/docker-compose.yml
+      - cd /opt/pinchy && docker compose pull
+      - cd /opt/pinchy && docker compose up -d
       - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
       - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
       - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
@@ -104,7 +105,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
 7.  **Set the hostname and create the Droplet**
 
-    Under **Finalize Details**, change the hostname to `pinchy` (or whatever you prefer) and click **Create Droplet**. It'll be ready in about 30 seconds, but the setup script needs another **5–8 minutes** to finish installing everything (DigitalOcean builds tend to be a bit slower than other providers).
+    Under **Finalize Details**, change the hostname to `pinchy` (or whatever you prefer) and click **Create Droplet**. It'll be ready in about 30 seconds, but the setup script needs another **1-2 minutes** to pull the Pinchy images.
 
 8.  **Note the IP address**
 
@@ -112,7 +113,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
 9.  **Open Pinchy**
 
-    Visit `http://<your-droplet-ip>` in your browser. You'll see a loading page that tracks the installation progress. Once the build finishes (typically 5–8 minutes on DigitalOcean), it automatically redirects to the Pinchy setup wizard.
+    Visit `http://<your-droplet-ip>` in your browser. You'll see a loading page that tracks the installation progress. Once the images are pulled (typically 1-2 minutes), it automatically redirects to the Pinchy setup wizard.
 
     The setup wizard will guide you through creating your admin account and configuring your first LLM provider.
 

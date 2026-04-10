@@ -28,17 +28,17 @@ This guide walks you through getting Pinchy up and running — from cloning the 
 - [Docker](https://docs.docker.com/get-docker/) and [Docker Compose](https://docs.docker.com/compose/install/) (v2+)
 - An API key from an LLM provider (Anthropic, OpenAI, or Google)
 
-## 1. Clone the repository
+## 1. Download the Compose file
 
 ```bash
-git clone https://github.com/heypinchy/pinchy.git
-cd pinchy
+mkdir -p pinchy && cd pinchy
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/main/docker-compose.yml -o docker-compose.yml
 ```
 
 ## 2. Start the stack
 
 ```bash
-docker compose up --build
+docker compose pull && docker compose up -d
 ```
 
 This starts three services:
@@ -111,9 +111,9 @@ URL: https://docs.heypinchy.com/installation/
 The simplest way to run Pinchy. One command starts the full stack.
 
 ```bash
-git clone https://github.com/heypinchy/pinchy.git
-cd pinchy
-docker compose up --build
+mkdir -p pinchy && cd pinchy
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/main/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
 ```
 
 ### Services

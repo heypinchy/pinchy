@@ -3,6 +3,7 @@ import { getSetting } from "@/lib/settings";
 
 // Re-export vision utilities for backwards compatibility
 export { VISION_CAPABLE_PROVIDERS, isModelVisionCapable } from "@/lib/model-vision";
+import { setOllamaLocalVisionModels } from "@/lib/model-vision";
 
 let cachedResult: ProviderModels[] | null = null;
 let cachedAt: number = 0;
@@ -16,6 +17,20 @@ export function resetCache() {
 export interface ModelInfo {
   id: string;
   name: string;
+  compatible?: boolean;
+  incompatibleReason?: string;
+}
+
+export interface OllamaModelCapabilities {
+  vision: boolean;
+  tools: boolean;
+  completion: boolean;
+  thinking: boolean;
+}
+
+export interface OllamaLocalModelInfo extends ModelInfo {
+  parameterSize: string;
+  capabilities: OllamaModelCapabilities;
 }
 
 export interface ProviderModels {
@@ -39,12 +54,13 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
     { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
   ],
-  ollama: [
+  "ollama-cloud": [
     { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "Gemini 3 Flash Preview" },
     { id: "ollama-cloud/kimi-k2.5:cloud", name: "Kimi K2.5" },
     { id: "ollama-cloud/mistral-large-3:675b-cloud", name: "Mistral Large 3 675B" },
     { id: "ollama-cloud/qwen3.5:397b-cloud", name: "Qwen 3.5 397B" },
   ],
+  "ollama-local": [],
 };
 
 interface ProviderFetchConfig {
@@ -90,7 +106,7 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
           name: m.displayName,
         })),
   },
-  ollama: {
+  "ollama-cloud": {
     url: () => "https://ollama.com/v1/models",
     headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}` }),
     transform: (data) => {
@@ -109,6 +125,11 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
         }))
         .sort((a, b) => a.name.localeCompare(b.name));
     },
+  },
+  "ollama-local": {
+    url: () => "",
+    headers: () => ({}),
+    transform: () => [],
   },
 };
 
@@ -133,8 +154,128 @@ const DEFAULT_MODEL_PATTERNS: Record<ProviderName, RegExp> = {
   anthropic: /haiku/,
   openai: /gpt-.*-mini/,
   google: /gemini-.*-flash/,
-  ollama: /flash.*cloud/,
+  "ollama-cloud": /flash.*cloud/,
+  "ollama-local": /.*/,
 };
+
+function parseParameterSize(size: string): number {
+  const match = size.match(/^([\d.]+)([BMK]?)$/i);
+  if (!match) return 0;
+  const num = parseFloat(match[1]);
+  const unit = (match[2] || "").toUpperCase();
+  if (unit === "B") return num * 1_000_000_000;
+  if (unit === "M") return num * 1_000_000;
+  if (unit === "K") return num * 1_000;
+  return num;
+}
+
+const PREFERRED_MODEL_FAMILIES = [/^qwen/i];
+
+export function selectOllamaLocalDefault(models: OllamaLocalModelInfo[]): string {
+  if (models.length === 0) return "";
+
+  const withTools = models.filter((m) => m.capabilities.tools);
+
+  if (withTools.length > 0) {
+    // Prefer models from known-good families (qwen has best tool-calling reliability)
+    for (const pattern of PREFERRED_MODEL_FAMILIES) {
+      const preferred = withTools
+        .filter((m) => pattern.test(m.id.replace("ollama/", "")))
+        .sort((a, b) => parseParameterSize(b.parameterSize) - parseParameterSize(a.parameterSize));
+      if (preferred.length > 0) return preferred[0].id;
+    }
+
+    // Fallback: largest tool-capable model
+    const sorted = [...withTools].sort(
+      (a, b) => parseParameterSize(b.parameterSize) - parseParameterSize(a.parameterSize)
+    );
+    return sorted[0].id;
+  }
+
+  // Fallback: largest completion model
+  const sorted = [...models].sort(
+    (a, b) => parseParameterSize(b.parameterSize) - parseParameterSize(a.parameterSize)
+  );
+  return sorted[0].id;
+}
+
+let lastOllamaLocalModels: OllamaLocalModelInfo[] = [];
+
+export function getOllamaLocalModels(): OllamaLocalModelInfo[] {
+  return lastOllamaLocalModels;
+}
+
+// Per-call timeout for Ollama discovery requests. Each `/api/show` call
+// runs sequentially today, so a hanging Ollama instance with many installed
+// models could otherwise wedge the setup wizard for minutes. Five seconds
+// per call is plenty for a healthy local Ollama on the same host.
+const OLLAMA_FETCH_TIMEOUT_MS = 5_000;
+
+function ollamaFetchSignal(): AbortSignal {
+  // AbortSignal.timeout exists in Node 20+, which Pinchy already requires.
+  return AbortSignal.timeout(OLLAMA_FETCH_TIMEOUT_MS);
+}
+
+export async function fetchOllamaLocalModelsFromUrl(
+  baseUrl: string
+): Promise<OllamaLocalModelInfo[]> {
+  const url = baseUrl.replace(/\/$/, "");
+  let tagsResponse: Response;
+  try {
+    tagsResponse = await fetch(`${url}/api/tags`, { signal: ollamaFetchSignal() });
+  } catch {
+    return [];
+  }
+  if (!tagsResponse.ok) return [];
+
+  const tagsData = await tagsResponse.json();
+  const rawModels = tagsData.models as { name: string; details?: { parameter_size?: string } }[];
+
+  const models: OllamaLocalModelInfo[] = [];
+  for (const model of rawModels) {
+    let showResponse: Response;
+    try {
+      showResponse = await fetch(`${url}/api/show`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: model.name }),
+        signal: ollamaFetchSignal(),
+      });
+    } catch {
+      // Per-model timeout — skip this model and keep going so a single
+      // hanging model can't poison the whole list.
+      continue;
+    }
+
+    if (!showResponse.ok) continue;
+
+    const showData = await showResponse.json();
+    const capabilities: string[] = showData.capabilities || [];
+
+    // Skip embedding-only models (no "completion" capability)
+    if (!capabilities.includes("completion")) continue;
+
+    const paramSize = showData.details?.parameter_size || model.details?.parameter_size || "";
+    const displayName = paramSize ? `${model.name} (${paramSize})` : model.name;
+    const hasTools = capabilities.includes("tools");
+
+    models.push({
+      id: `ollama/${model.name}`,
+      name: displayName,
+      parameterSize: paramSize,
+      compatible: hasTools,
+      incompatibleReason: hasTools ? undefined : "Not compatible — does not support agent tools",
+      capabilities: {
+        vision: capabilities.includes("vision"),
+        tools: capabilities.includes("tools"),
+        completion: capabilities.includes("completion"),
+        thinking: capabilities.includes("thinking"),
+      },
+    });
+  }
+
+  return models;
+}
 
 const PREVIEW_PATTERN = /preview/i;
 
@@ -165,38 +306,78 @@ export async function getDefaultModel(provider: ProviderName): Promise<string> {
     return PROVIDERS[provider].defaultModel;
   }
 
+  // Local Ollama uses capability-based heuristic (largest model with tool support)
+  if (provider === "ollama-local") {
+    return selectOllamaLocalDefault(lastOllamaLocalModels) || PROVIDERS[provider].defaultModel;
+  }
+
   return selectDefaultModel(provider, providerModels.models);
 }
 
 export async function fetchProviderModels(): Promise<ProviderModels[]> {
+  // Cache only cloud providers (their model lists rarely change).
+  // Ollama local is always fetched live — users expect newly pulled models immediately.
   const now = Date.now();
+  let cloudResults: ProviderModels[];
+
   if (cachedResult && now - cachedAt < CACHE_TTL_MS) {
-    return cachedResult;
-  }
+    cloudResults = cachedResult;
+  } else {
+    cloudResults = [];
 
-  const results: ProviderModels[] = [];
+    for (const [providerName, providerConfig] of Object.entries(PROVIDERS)) {
+      const provider = providerName as ProviderName;
 
-  for (const [providerName, providerConfig] of Object.entries(PROVIDERS)) {
-    const provider = providerName as ProviderName;
-    const apiKey = await getSetting(providerConfig.settingsKey);
+      if (provider === "ollama-local") continue;
 
-    if (!apiKey) {
-      continue;
+      const apiKey = await getSetting(providerConfig.settingsKey);
+
+      if (!apiKey) {
+        continue;
+      }
+
+      try {
+        const models = await fetchModelsForProvider(provider, apiKey);
+        cloudResults.push({ id: provider, name: providerConfig.name, models });
+      } catch {
+        cloudResults.push({
+          id: provider,
+          name: providerConfig.name,
+          models: FALLBACK_MODELS[provider],
+        });
+      }
     }
 
+    cachedResult = cloudResults;
+    cachedAt = now;
+  }
+
+  const results = [...cloudResults];
+
+  const ollamaUrl = await getSetting(PROVIDERS["ollama-local"].settingsKey);
+  if (ollamaUrl) {
     try {
-      const models = await fetchModelsForProvider(provider, apiKey);
-      results.push({ id: provider, name: providerConfig.name, models });
+      const ollamaModels = await fetchOllamaLocalModelsFromUrl(ollamaUrl);
+      lastOllamaLocalModels = ollamaModels;
+
+      const visionModels = new Set(
+        ollamaModels.filter((m) => m.capabilities.vision).map((m) => m.id.replace("ollama/", ""))
+      );
+      setOllamaLocalVisionModels(visionModels);
+
+      results.push({
+        id: "ollama-local" as ProviderName,
+        name: PROVIDERS["ollama-local"].name,
+        models: ollamaModels,
+      });
     } catch {
       results.push({
-        id: provider,
-        name: providerConfig.name,
-        models: FALLBACK_MODELS[provider],
+        id: "ollama-local" as ProviderName,
+        name: PROVIDERS["ollama-local"].name,
+        models: [],
       });
     }
   }
 
-  cachedResult = results;
-  cachedAt = now;
   return results;
 }

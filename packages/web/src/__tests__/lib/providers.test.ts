@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { validateProviderKey, PROVIDERS } from "@/lib/providers";
+import { validateProviderKey, validateProviderUrl, PROVIDERS } from "@/lib/providers";
 
 global.fetch = vi.fn();
 
@@ -79,7 +79,7 @@ describe("validateProviderKey", () => {
 
   it("should return valid for valid Ollama key", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 200 }));
-    const result = await validateProviderKey("ollama", "sk-ollama-valid");
+    const result = await validateProviderKey("ollama-cloud", "sk-ollama-valid");
     expect(result).toEqual({ valid: true });
     expect(fetch).toHaveBeenCalledWith(
       "https://ollama.com/v1/models",
@@ -93,7 +93,7 @@ describe("validateProviderKey", () => {
 
   it("should return invalid_key for invalid Ollama key", async () => {
     vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 401 }));
-    const result = await validateProviderKey("ollama", "sk-ollama-invalid");
+    const result = await validateProviderKey("ollama-cloud", "sk-ollama-invalid");
     expect(result).toEqual({ valid: false, error: "invalid_key" });
   });
 
@@ -114,13 +114,62 @@ describe("PROVIDERS", () => {
     expect(PROVIDERS.anthropic.defaultModel).toBe("anthropic/claude-haiku-4-5-20251001");
     expect(PROVIDERS.openai.defaultModel).toBe("openai/gpt-4o-mini");
     expect(PROVIDERS.google.defaultModel).toBe("google/gemini-2.5-flash");
-    expect(PROVIDERS.ollama.defaultModel).toBe("ollama-cloud/gemini-3-flash-preview:cloud");
+    expect(PROVIDERS["ollama-cloud"].defaultModel).toBe(
+      "ollama-cloud/gemini-3-flash-preview:cloud"
+    );
   });
 
   it("should have settings keys for all providers", () => {
     expect(PROVIDERS.anthropic.settingsKey).toBe("anthropic_api_key");
     expect(PROVIDERS.openai.settingsKey).toBe("openai_api_key");
     expect(PROVIDERS.google.settingsKey).toBe("google_api_key");
-    expect(PROVIDERS.ollama.settingsKey).toBe("ollama_api_key");
+    expect(PROVIDERS["ollama-cloud"].settingsKey).toBe("ollama_cloud_api_key");
+  });
+
+  it("should have ollama-local provider with URL config", () => {
+    expect(PROVIDERS["ollama-local"]).toBeDefined();
+    expect(PROVIDERS["ollama-local"].name).toBe("Ollama (Local)");
+    expect(PROVIDERS["ollama-local"].settingsKey).toBe("ollama_local_url");
+    expect(PROVIDERS["ollama-local"].authType).toBe("url");
+  });
+
+  it("should have authType api-key for all API key providers", () => {
+    expect(PROVIDERS.anthropic.authType).toBe("api-key");
+    expect(PROVIDERS.openai.authType).toBe("api-key");
+    expect(PROVIDERS.google.authType).toBe("api-key");
+    expect(PROVIDERS["ollama-cloud"].authType).toBe("api-key");
+  });
+});
+
+describe("validateProviderUrl", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("should return valid when Ollama is reachable", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response(JSON.stringify({ models: [] }), { status: 200 })
+    );
+    const result = await validateProviderUrl("http://localhost:11434");
+    expect(result).toEqual({ valid: true });
+    expect(fetch).toHaveBeenCalledWith("http://localhost:11434/api/tags");
+  });
+
+  it("should strip trailing slash from URL", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 200 }));
+    await validateProviderUrl("http://localhost:11434/");
+    expect(fetch).toHaveBeenCalledWith("http://localhost:11434/api/tags");
+  });
+
+  it("should return network_error when Ollama is unreachable", async () => {
+    vi.mocked(fetch).mockRejectedValue(new Error("ECONNREFUSED"));
+    const result = await validateProviderUrl("http://localhost:11434");
+    expect(result).toEqual({ valid: false, error: "network_error" });
+  });
+
+  it("should return provider_error for non-ok status", async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 500 }));
+    const result = await validateProviderUrl("http://localhost:11434");
+    expect(result).toEqual({ valid: false, error: "provider_error", status: 500 });
   });
 });

@@ -1,5 +1,5 @@
 #cloud-config
-# Pinchy %%PINCHY_VERSION%% -Automated VPS Setup
+# Pinchy %%PINCHY_VERSION%% — Automated VPS Setup
 # https://docs.heypinchy.com/guides/vps-deployment/
 #
 # This cloud-init script installs Docker, deploys Pinchy, configures
@@ -18,7 +18,7 @@ runcmd:
 
   # Now install packages (loading page is already visible)
   - apt-get update -qq
-  - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+  - apt-get install -y -qq docker.io docker-compose-v2 ufw
   - echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
   - echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
   - apt-get install -y -qq iptables-persistent
@@ -41,15 +41,16 @@ runcmd:
   - swapon /swapfile
   - echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
-  # Clone, build, and start Pinchy
-  - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
-  - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
-  - cd /opt/pinchy && docker compose up --build -d
+  # Download compose file and start Pinchy
+  - mkdir -p /opt/pinchy
+  - curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o /opt/pinchy/docker-compose.yml
+  - cd /opt/pinchy && docker compose pull
+  - cd /opt/pinchy && docker compose up -d
 
   # Wait for Pinchy to be healthy
   - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
 
-  # Seamless switch -kill loading page, redirect port 80 to Pinchy
+  # Seamless switch — kill loading page, redirect port 80 to Pinchy
   - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
   - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
   - iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777

@@ -26,6 +26,7 @@ async function fetchWithRetry(url: string, init: RequestInit): Promise<Response>
 export interface VisionApiConfig {
   resolveApiKey: (provider: string) => Promise<string | null>;
   model: string; // e.g. "anthropic/claude-haiku-4-5-20251001"
+  ollamaBaseUrl?: string;
 }
 
 /** Internal config that carries the OpenClaw cfg object */
@@ -63,6 +64,8 @@ export async function describePageImage(
       return describeViaOpenAI(imageBase64, modelId, config);
     case "google":
       return describeViaGoogle(imageBase64, modelId, config);
+    case "ollama":
+      return describeViaOllama(imageBase64, modelId, config);
     default:
       return null;
   }
@@ -72,8 +75,13 @@ export async function describePageImage(
  * Create a VisionApiConfig from OpenClaw's internal runtime APIs.
  */
 export function createVisionConfig(internal: VisionApiInternalConfig): VisionApiConfig {
+  const ollamaBaseUrl = (internal.cfg as Record<string, unknown>)?.models
+    ? ((internal.cfg as any).models.providers?.ollama?.baseUrl as string | undefined)
+    : undefined;
+
   return {
     model: internal.model,
+    ollamaBaseUrl,
     resolveApiKey: async (provider: string) => {
       try {
         const result = await internal.modelAuth.resolveApiKeyForProvider({
@@ -233,4 +241,45 @@ async function describeViaGoogle(
       .map((p) => p.text)
       .join("\n") ?? null
   );
+}
+
+async function describeViaOllama(
+  imageBase64: string,
+  modelId: string,
+  config: VisionApiConfig,
+): Promise<string | null> {
+  if (!config.ollamaBaseUrl) return null;
+
+  const url = `${config.ollamaBaseUrl.replace(/\/$/, "")}/v1/chat/completions`;
+
+  const response = await fetchWithRetry(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: modelId,
+      messages: [
+        {
+          role: "user",
+          content: [
+            {
+              type: "image_url",
+              image_url: { url: `data:image/png;base64,${imageBase64}` },
+            },
+            { type: "text", text: PROMPT },
+          ],
+        },
+      ],
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.text().catch(() => "unknown error");
+    console.error(`[pinchy-files] Ollama vision API error (${response.status}):`, error);
+    return null;
+  }
+
+  const data = (await response.json()) as {
+    choices: Array<{ message: { content: string } }>;
+  };
+  return data.choices?.[0]?.message?.content ?? null;
 }

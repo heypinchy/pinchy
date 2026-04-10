@@ -23,6 +23,7 @@ vi.mock("@/lib/providers", () => ({
   PROVIDERS: {
     anthropic: {
       name: "Anthropic",
+      authType: "api-key",
       settingsKey: "anthropic_api_key",
       envVar: "ANTHROPIC_API_KEY",
       defaultModel: "anthropic/claude-haiku-4-5-20251001",
@@ -30,6 +31,7 @@ vi.mock("@/lib/providers", () => ({
     },
     openai: {
       name: "OpenAI",
+      authType: "api-key",
       settingsKey: "openai_api_key",
       envVar: "OPENAI_API_KEY",
       defaultModel: "openai/gpt-4o-mini",
@@ -37,17 +39,27 @@ vi.mock("@/lib/providers", () => ({
     },
     google: {
       name: "Google",
+      authType: "api-key",
       settingsKey: "google_api_key",
       envVar: "GEMINI_API_KEY",
       defaultModel: "google/gemini-2.5-flash",
       placeholder: "AIza...",
     },
-    ollama: {
-      name: "Ollama",
-      settingsKey: "ollama_api_key",
-      envVar: "OLLAMA_API_KEY",
+    "ollama-cloud": {
+      name: "Ollama Cloud",
+      authType: "api-key",
+      settingsKey: "ollama_cloud_api_key",
+      envVar: "OLLAMA_CLOUD_API_KEY",
       defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
       placeholder: "sk-...",
+    },
+    "ollama-local": {
+      name: "Ollama (Local)",
+      authType: "url",
+      settingsKey: "ollama_local_url",
+      envVar: "",
+      defaultModel: "",
+      placeholder: "http://host.docker.internal:11434",
     },
   },
 }));
@@ -121,7 +133,8 @@ describe("GET /api/settings/providers", () => {
         anthropic: { configured: false },
         openai: { configured: false },
         google: { configured: false },
-        ollama: { configured: false },
+        "ollama-cloud": { configured: false },
+        "ollama-local": { configured: false },
       },
     });
   });
@@ -184,6 +197,18 @@ describe("GET /api/settings/providers", () => {
     expect(response.status).toBe(200);
     const data = await response.json();
     expect(data.defaultProvider).toBe("anthropic");
+  });
+
+  it("should return full URL as hint for ollama-local", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+
+    const response = await GET();
+    const data = await response.json();
+    expect(data.providers["ollama-local"].configured).toBe(true);
+    expect(data.providers["ollama-local"].hint).toBe("http://host.docker.internal:11434");
   });
 });
 
@@ -346,5 +371,23 @@ describe("DELETE /api/settings/providers", () => {
     await DELETE(makeRequest({ provider: "openai" }));
 
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("should migrate agents with ollama/ prefix when deleting ollama-local", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://localhost:11434";
+      if (key === "anthropic_api_key") return "sk-ant-key";
+      if (key === "default_provider") return "ollama-local";
+      return null;
+    });
+    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
+      { id: "agent-1", model: "ollama/llama3:latest" },
+      { id: "agent-2", model: "anthropic/claude-haiku-4-5-20251001" },
+    ] as any[]);
+
+    await DELETE(makeRequest({ provider: "ollama-local" }));
+
+    // Only the ollama agent should be migrated, not the anthropic one
+    expect(db.update).toHaveBeenCalledTimes(1);
   });
 });

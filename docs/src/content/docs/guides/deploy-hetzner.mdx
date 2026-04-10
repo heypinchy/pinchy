@@ -86,7 +86,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
       - cd /opt/pinchy-loading && python3 -m http.server 80 &
       - echo $! > /tmp/loading-server.pid
       - apt-get update -qq
-      - apt-get install -y -qq docker.io docker-compose-v2 git ufw
+      - apt-get install -y -qq docker.io docker-compose-v2 ufw
       - echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
       - echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
       - apt-get install -y -qq iptables-persistent
@@ -102,9 +102,10 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
       - mkswap /swapfile
       - swapon /swapfile
       - echo '/swapfile none swap sw 0 0' >> /etc/fstab
-      - git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
-      - cd /opt/pinchy && git checkout %%PINCHY_VERSION%%
-      - cd /opt/pinchy && docker compose up --build -d
+      - mkdir -p /opt/pinchy
+      - curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o /opt/pinchy/docker-compose.yml
+      - cd /opt/pinchy && docker compose pull
+      - cd /opt/pinchy && docker compose up -d
       - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
       - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
       - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
@@ -118,11 +119,11 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
     <summary>What does this script do?</summary>
 
     This is a **cloud-init** script — a standard way to configure servers on first boot. When your server starts, it automatically:
-    1. Installs Docker, Git, and a firewall
+    1. Installs Docker and a firewall
     2. Opens only the ports needed (SSH, HTTP, HTTPS)
-    3. Adds 2 GB of swap space (extra memory from disk — important for 4 GB servers)
-    4. Shows a loading page while Pinchy is being built
-    5. Downloads, builds, and starts Pinchy
+    3. Adds 2 GB of swap space (a safety net for heavy agent workloads)
+    4. Shows a loading page while Pinchy images are being downloaded
+    5. Downloads and starts Pinchy from pre-built Docker images
 
     No manual setup required. You can also [download the script](/cloud-init.yml) separately.
 
@@ -130,7 +131,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
 9.  **Give your server a name and create it**
 
-    Scroll down to **Name**, enter `pinchy` (or whatever you prefer), and click **Create & Buy now**. Your server will be ready in about 20 seconds, but the setup script needs another **3–5 minutes** to finish installing everything.
+    Scroll down to **Name**, enter `pinchy` (or whatever you prefer), and click **Create & Buy now**. Your server will be ready in about 20 seconds, but the setup script needs another **about a minute** to pull the Pinchy images.
 
 10. **Note the IP address**
 
@@ -138,12 +139,11 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
 11. **Open Pinchy**
 
-    After about 5 minutes, visit `http://<your-server-ip>` in your browser (replace `<your-server-ip>` with the actual IP address). You should see the Pinchy setup wizard.
+    After about a minute, visit `http://<your-server-ip>` in your browser (replace `<your-server-ip>` with the actual IP address). You should see the Pinchy setup wizard.
 
     <Aside type="note">
-      If you see a connection error, wait another minute — the build might still
-      be running. The Hetzner console shows a CPU usage graph on your server's
-      page — when it drops back to idle, the build is done.
+      If you see a connection error, wait another 30 seconds — the images might
+      still be downloading.
     </Aside>
 
     The setup wizard will guide you through creating your admin account and configuring your first LLM provider.

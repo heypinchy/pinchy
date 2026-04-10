@@ -22,18 +22,18 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
 2. **Pull the new version**
 
    ```bash
-   cd pinchy
-   git fetch --tags
-   git checkout v0.2.0  # or the version you're upgrading to
+   cd /opt/pinchy
+   curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.0/docker-compose.yml -o docker-compose.yml
+   docker compose pull
    ```
 
-3. **Rebuild and start**
+3. **Restart**
 
    ```bash
-   docker compose up --build
+   docker compose up -d
    ```
 
-   This rebuilds the Docker images, applies any pending database migrations, regenerates the OpenClaw configuration, and restarts all services.
+   This applies any pending database migrations, regenerates the OpenClaw configuration, and restarts all services.
 
 4. **Verify**
 
@@ -56,7 +56,23 @@ You don't need to worry about these — Pinchy handles them on every startup:
 ## What you might need to check
 
 - **New environment variables** — Check the release notes for any new variables. Pinchy won't crash if they're missing (features may just be disabled), but review them in your `.env` file.
-- **Docker Compose changes** — If `docker-compose.yml` changed between versions (new volumes, new services), `git pull` picks those up automatically. New volumes are created on first start.
+- **Docker Compose changes** — The `curl` command in step 2 downloads the latest `docker-compose.yml`. If new volumes or services were added, they're created automatically on first start.
+
+## Pinning to a specific version
+
+By default, `docker-compose.yml` uses `image: ghcr.io/heypinchy/pinchy:latest`. This means the next `docker compose pull` will fetch whatever `latest` currently points to — usually fine, but a surprise if you want predictable upgrades.
+
+To pin to a specific version, edit `docker-compose.yml` and replace `:latest` with the version tag for both services:
+
+```yaml
+services:
+  pinchy:
+    image: ghcr.io/heypinchy/pinchy:v0.4.0
+  openclaw:
+    image: ghcr.io/heypinchy/pinchy-openclaw:v0.4.0
+```
+
+Now `docker compose pull` only updates when you bump the tag manually. Recommended for production environments where you want to control exactly when upgrades happen.
 
 ## Restoring from backup
 
@@ -77,16 +93,17 @@ If you need to roll back after an upgrade:
    docker compose exec -T db psql -U pinchy pinchy < backup-YYYYMMDD.sql
    ```
 
-3. **Check out the previous version**
+3. **Pull the previous version**
 
    ```bash
-   git checkout v0.1.0  # the version you were on before
+   curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.1.0/docker-compose.yml -o docker-compose.yml
+   docker compose pull
    ```
 
-4. **Rebuild and start**
+4. **Restart**
 
    ```bash
-   docker compose up --build
+   docker compose up -d
    ```
 
 </Steps>
@@ -102,9 +119,8 @@ If you need to roll back after an upgrade:
 Standard upgrade — no breaking changes, no new required environment variables.
 
 ```bash
-git fetch --tags
-git checkout v0.3.0
-docker compose up --build
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.3.0/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
 ```
 
 ### What's new in v0.3.0
@@ -131,7 +147,8 @@ This is optional — Pinchy works fine without it.
 This is a docs-only release — no code changes, no database migrations, no breaking changes. Just pull the new tag and rebuild:
 
 ```bash
-git checkout v0.2.1 && docker compose up --build
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.2.1/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
 ```
 
 ## Upgrading from v0.1.0 to v0.2.0
@@ -148,7 +165,7 @@ v0.2.0 introduces enterprise features (Groups, RBAC, agent access control). To e
 
 ### OpenClaw runtime updated
 
-The bundled OpenClaw runtime was updated from 2026.3.7 to 2026.3.13. This happens automatically when you rebuild with `docker compose up --build`.
+The bundled OpenClaw runtime was updated from 2026.3.7 to 2026.3.13. This happens automatically when you pull the new images with `docker compose pull`.
 
 ## Version history
 

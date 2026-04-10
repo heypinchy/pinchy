@@ -183,6 +183,13 @@
       "when": 1775565123681,
       "tag": "0025_eminent_randall_flagg",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1775884800000,
+      "tag": "0026_ollama_cloud_rename",
+      "breakpoints": true
     }
   ]
 }

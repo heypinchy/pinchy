@@ -50,8 +50,13 @@ jobs:
             --org "Acme Corp (Screenshots)" --type trial --days 14)
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
+      - name: Build production images locally
+        run: |
+          docker build -t ghcr.io/heypinchy/pinchy:latest -f Dockerfile.pinchy .
+          docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
+
       - name: Start Pinchy stack
-        run: docker compose up --build -d
+        run: docker compose up -d
         env:
           BETTER_AUTH_SECRET: screenshot-session-secret
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

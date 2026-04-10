@@ -42,7 +42,12 @@ interface AgentSettingsGeneralProps {
   providers: Array<{
     id: string;
     name: string;
-    models: Array<{ id: string; name: string }>;
+    models: Array<{
+      id: string;
+      name: string;
+      compatible?: boolean;
+      incompatibleReason?: string;
+    }>;
   }>;
   canDelete?: boolean;
   onChange: (values: AgentSettingsValues, isDirty: boolean) => void;
@@ -127,11 +132,19 @@ export function AgentSettingsGeneral({
                     {providersWithModels.map((provider) => (
                       <SelectGroup key={provider.id}>
                         <SelectLabel>{provider.name}</SelectLabel>
-                        {provider.models.map((m) => (
-                          <SelectItem key={m.id} value={m.id}>
-                            {m.name}
-                          </SelectItem>
-                        ))}
+                        {provider.models.map((m) => {
+                          const isDisabled = m.compatible === false;
+                          return (
+                            <SelectItem key={m.id} value={m.id} disabled={isDisabled}>
+                              {m.name}
+                              {isDisabled && m.incompatibleReason && (
+                                <span className="block text-xs font-normal text-muted-foreground">
+                                  {m.incompatibleReason}
+                                </span>
+                              )}
+                            </SelectItem>
+                          );
+                        })}
                       </SelectGroup>
                     ))}
                   </SelectContent>

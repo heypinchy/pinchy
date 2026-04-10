@@ -27,8 +27,8 @@ export async function createSmithersAgent({
   isAdmin = false,
 }: CreateSmithersOptions) {
   const allowedTools = isAdmin
-    ? ["pinchy_save_user_context", "pinchy_save_org_context"]
-    : ["pinchy_save_user_context"];
+    ? ["pinchy_save_user_context", "pinchy_save_org_context", "docs_list", "docs_read"]
+    : ["pinchy_save_user_context", "docs_list", "docs_read"];
 
   const [agent] = await db
     .insert(agents)

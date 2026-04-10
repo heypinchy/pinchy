@@ -120,8 +120,7 @@ pinchy/
 - One feature/fix per PR, small and focused
 - **Test-Driven Development (TDD)**: Write the failing test first, then the implementation. No exceptions.
 - Tests for all new features
-- Update docs when behavior changes
-- Update `packages/web/src/lib/smithers-soul.ts` when user-facing features change (Smithers must know the current platform)
+- Update docs when behavior changes — Smithers reads the docs on demand via the `pinchy-docs` plugin (`docs_list` / `docs_read`), so docs are the single source of truth for platform knowledge.
 
 ### Architecture Principles
 - **OpenClaw is the runtime** — don't reinvent what OpenClaw already does. Wrap it, extend it, govern it.
@@ -232,7 +231,7 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 PINCHY_ENTERPRISE_KEY=dev-enterprise docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
 
 # Production (Docker)
-docker compose up --build
+docker compose pull && docker compose up -d
 
 # Common commands (run on host, not in container)
 pnpm test                # Run test suite

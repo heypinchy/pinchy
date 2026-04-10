@@ -39,7 +39,7 @@ You also need:
 
    ```bash
    apt-get update
-   apt-get install -y docker.io docker-compose-v2 git
+   apt-get install -y docker.io docker-compose-v2
    ```
 
    Verify the installation:
@@ -57,28 +57,26 @@ You also need:
      the listed packages (`-y` means "yes, don't ask for confirmation"): -
      `docker.io` — Docker Engine, the tool that runs containers -
      `docker-compose-v2` — Docker Compose, which starts multiple containers
-     together - `git` — needed to download the Pinchy source code
+     together
    </details>
 
 2. **Download and start Pinchy**
 
    ```bash
-   git clone https://github.com/heypinchy/pinchy.git /opt/pinchy
+   mkdir -p /opt/pinchy
+   curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o /opt/pinchy/docker-compose.yml
    cd /opt/pinchy
-   git checkout %%PINCHY_VERSION%%
-   docker compose up --build -d
+   docker compose pull
+   docker compose up -d
    ```
 
-   The first build takes 3–5 minutes depending on your server's internet speed.
+   Pulling the pre-built images takes about 30 seconds.
 
    <details>
-     <summary>What do these commands do?</summary>- `git clone` — downloads the
-     Pinchy source code from GitHub - `cd pinchy` — enters the downloaded
-     directory - `git checkout %%PINCHY_VERSION%%` — switches to the
-     %%PINCHY_VERSION%% release - `docker compose up --build -d` — builds all
-     container images and starts them: - `--build` — build from source (needed
-     on first run and after updates) - `-d` — run in the background (you get
-     your terminal back)
+     <summary>What do these commands do?</summary>- `mkdir -p /opt/pinchy` —
+     creates the directory for Pinchy - `curl` — downloads the Docker Compose
+     file from GitHub - `docker compose pull` — downloads the pre-built Pinchy
+     images - `docker compose up -d` — starts all services in the background
    </details>
 
 3. **Verify all services are running**
@@ -218,7 +216,7 @@ Everything else is blocked — including port 7777, which is now only reachable 
 
 ### Add swap (recommended for 4 GB servers)
 
-Swap is disk space that your server can use as extra memory when RAM runs low. On servers with only 4 GB RAM, adding swap prevents crashes during Docker builds:
+Swap is disk space that your server can use as extra memory when RAM runs low. On servers with only 4 GB RAM, adding swap provides a safety net during heavy agent workloads:
 
 ```bash
 fallocate -l 2G /swapfile
@@ -236,9 +234,9 @@ To update to a new release:
 
 ```bash
 cd /opt/pinchy
-git fetch --tags
-git checkout v0.3.0   # replace with the new version
-docker compose up --build -d
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.3.0/docker-compose.yml -o docker-compose.yml
+docker compose pull
+docker compose up -d
 ```
 
 Pinchy runs database migrations automatically on startup — no manual steps needed. See the [Upgrade Guide](/guides/upgrading/) for version-specific notes.
@@ -257,14 +255,6 @@ Common causes:
 
 - **Database not ready** — wait a few seconds, the container will auto-restart
 - **Port already in use** — check with `ss -tlnp | grep 7777`
-
-### Build fails with out-of-memory errors
-
-Add swap (see above) or use a server with more RAM. The Docker build needs approximately 2 GB free memory for `pnpm install`.
-
-### "Corepack is about to download" on every restart
-
-Upgrade to the latest Pinchy version — this was fixed by caching pnpm at build time.
 
 ### WebSocket connection errors in the browser
 
