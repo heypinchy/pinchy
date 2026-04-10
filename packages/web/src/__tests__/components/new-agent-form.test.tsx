@@ -9,7 +9,9 @@ vi.mock("next/navigation", () => ({
     push: vi.fn(),
     back: vi.fn(),
     refresh: vi.fn(),
+    replace: vi.fn(),
   }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 const mockTemplates = [
@@ -60,6 +62,53 @@ describe("NewAgentForm — name max length", () => {
     await waitFor(() => {
       expect(screen.getByLabelText(/name/i)).toHaveAttribute("maxLength", "30");
     });
+  });
+});
+
+describe("NewAgentForm — cancel button", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "/api/templates") {
+        return {
+          ok: true,
+          json: async () => ({ templates: mockTemplates }),
+        } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("returns to template selection instead of navigating away", async () => {
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Custom Agent")).toBeInTheDocument();
+    });
+
+    // Select a template to get to the form
+    await userEvent.click(screen.getByText("Custom Agent"));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
+    });
+
+    // Click Cancel
+    await userEvent.click(screen.getByRole("button", { name: /cancel/i }));
+
+    // Should show the template selector again, not navigate away
+    await waitFor(() => {
+      expect(screen.getByText("Custom Agent")).toBeInTheDocument();
+      expect(screen.getByText("Knowledge Base")).toBeInTheDocument();
+    });
+
+    // The form should no longer be visible
+    expect(screen.queryByLabelText(/name/i)).not.toBeInTheDocument();
   });
 });
 

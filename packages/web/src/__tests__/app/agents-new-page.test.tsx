@@ -4,7 +4,10 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
 vi.mock("next/navigation", () => ({
-  useRouter: vi.fn().mockReturnValue({ push: vi.fn(), back: vi.fn(), refresh: vi.fn() }),
+  useRouter: vi
+    .fn()
+    .mockReturnValue({ push: vi.fn(), back: vi.fn(), refresh: vi.fn(), replace: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock("@/components/template-selector", () => ({

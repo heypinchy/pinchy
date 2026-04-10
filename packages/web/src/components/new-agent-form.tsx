@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -52,6 +52,7 @@ interface ValidationResult {
   valid: boolean;
   warnings: string[];
   availableModels: Array<{ model: string; operations: string[] }>;
+  missingModels: Array<{ model: string; name: string }>;
 }
 
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
@@ -68,8 +69,25 @@ type AgentFormValues = z.infer<typeof agentFormSchema>;
 
 export function NewAgentForm() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [templates, setTemplates] = useState<Template[]>([]);
-  const [selectedTemplate, setSelectedTemplate] = useState<string | null>(null);
+
+  const [selectedTemplate, setSelectedTemplateState] = useState<string | null>(
+    searchParams.get("template")
+  );
+  const setSelectedTemplate = useCallback(
+    (templateId: string | null) => {
+      setSelectedTemplateState(templateId);
+      const params = new URLSearchParams(searchParams.toString());
+      if (templateId) {
+        params.set("template", templateId);
+      } else {
+        params.delete("template");
+      }
+      router.replace(`/agents/new${params.toString() ? `?${params.toString()}` : ""}`);
+    },
+    [router, searchParams]
+  );
   const [directories, setDirectories] = useState<Directory[]>([]);
   const [selectedPaths, setSelectedPaths] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -230,13 +248,16 @@ export function NewAgentForm() {
     }
   }
 
+  const hasMissingModels = validationResult !== null && validationResult.missingModels.length > 0;
+
   const createDisabled =
     submitting ||
     (requiresDirectories && selectedPaths.length === 0) ||
-    (requiresOdooConnection && !selectedConnectionId);
+    (requiresOdooConnection && !selectedConnectionId) ||
+    hasMissingModels;
 
   return (
-    <div className="p-4 md:p-8 max-w-lg">
+    <div className={"p-4 md:p-8 " + (selectedTemplate ? "max-w-lg" : "max-w-3xl")}>
       <h1 className="text-2xl font-bold mb-6">Create New Agent</h1>
 
       {!selectedTemplate ? (
@@ -323,13 +344,19 @@ export function NewAgentForm() {
                         )}
                       </div>
 
-                      {validationResult && validationResult.warnings.length > 0 && (
-                        <Alert>
+                      {hasMissingModels && (
+                        <Alert variant="destructive">
                           <AlertTriangle className="h-4 w-4" />
                           <AlertDescription>
-                            <ul className="list-disc pl-4 space-y-1">
-                              {validationResult.warnings.map((warning) => (
-                                <li key={warning}>{warning}</li>
+                            <p className="font-medium mb-1">Missing Odoo modules</p>
+                            <p className="mb-2">
+                              This template requires modules that are not available in the selected
+                              connection. Install them in Odoo and re-sync, or choose a different
+                              template.
+                            </p>
+                            <ul className="list-disc pl-4 space-y-0.5 text-xs">
+                              {validationResult!.missingModels.map((m) => (
+                                <li key={m.model}>{m.name}</li>
                               ))}
                             </ul>
                           </AlertDescription>
@@ -376,7 +403,11 @@ export function NewAgentForm() {
                   {error && <p className="text-sm text-destructive">{error}</p>}
 
                   <div className="flex justify-end gap-2">
-                    <Button type="button" variant="outline" onClick={() => router.back()}>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => setSelectedTemplate(null)}
+                    >
                       Cancel
                     </Button>
                     <Button type="submit" disabled={createDisabled}>

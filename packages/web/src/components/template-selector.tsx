@@ -69,7 +69,7 @@ export function TemplateSelector({ templates, onSelect }: TemplateSelectorProps)
             <OdooIcon className="h-4 w-auto" />
             Odoo
           </h2>
-          <div className="grid grid-cols-3 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
             {odoo.map((template) => (
               <TemplateCard
                 key={template.id}

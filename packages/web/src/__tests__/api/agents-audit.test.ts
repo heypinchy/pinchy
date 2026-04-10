@@ -101,6 +101,10 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue("anthropic"),
 }));
 
+vi.mock("@/lib/provider-models", () => ({
+  getDefaultModel: vi.fn().mockResolvedValue("anthropic/claude-haiku-4-5-20251001"),
+}));
+
 import { auth } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
 import { deleteAgent, updateAgent } from "@/lib/agents";
