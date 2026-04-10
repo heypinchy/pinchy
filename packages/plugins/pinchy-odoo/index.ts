@@ -29,7 +29,7 @@ interface AgentTool {
     toolCallId: string,
     params: Record<string, unknown>,
     signal?: AbortSignal,
-  ) => Promise<{ content: ContentBlock[]; details?: unknown }>;
+  ) => Promise<{ content: ContentBlock[]; isError?: boolean; details?: unknown }>;
 }
 
 interface AgentOdooConfig {
@@ -61,8 +61,9 @@ function createClient(config: AgentOdooConfig): OdooClient {
   });
 }
 
-function permissionDenied(operation: string, model: string): { content: ContentBlock[] } {
+function permissionDenied(operation: string, model: string): { content: ContentBlock[]; isError: true } {
   return {
+    isError: true,
     content: [
       {
         type: "text",
@@ -83,10 +84,11 @@ function isOdooAccessError(error: unknown): boolean {
   );
 }
 
-function errorResult(error: unknown, context?: { operation?: string; model?: string }): { content: ContentBlock[] } {
+function errorResult(error: unknown, context?: { operation?: string; model?: string }): { content: ContentBlock[]; isError: true } {
   if (isOdooAccessError(error) && context?.model) {
     const op = context.operation ?? "access";
     return {
+      isError: true,
       content: [
         {
           type: "text",
@@ -96,7 +98,7 @@ function errorResult(error: unknown, context?: { operation?: string; model?: str
     };
   }
   const message = error instanceof Error ? error.message : "Unknown error";
-  return { content: [{ type: "text", text: `Error: ${message}` }] };
+  return { isError: true, content: [{ type: "text", text: `Error: ${message}` }] };
 }
 
 const plugin = {
@@ -162,6 +164,7 @@ const plugin = {
               // Check if model is in permissions
               if (!config.permissions[model]) {
                 return {
+                  isError: true,
                   content: [
                     { type: "text", text: `Model "${model}" is not available for this agent.` },
                   ],

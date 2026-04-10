@@ -9,17 +9,18 @@ const mockWrite = vi.fn();
 const mockUnlink = vi.fn();
 const mockFields = vi.fn();
 
-vi.mock("odoo-node", () => ({
-  OdooClient: vi.fn().mockImplementation(() => ({
-    searchRead: mockSearchRead,
-    searchCount: mockSearchCount,
-    readGroup: mockReadGroup,
-    create: mockCreate,
-    write: mockWrite,
-    unlink: mockUnlink,
-    fields: mockFields,
-  })),
-}));
+vi.mock("odoo-node", () => {
+  const MockOdooClient = vi.fn(function (this: Record<string, unknown>) {
+    this.searchRead = mockSearchRead;
+    this.searchCount = mockSearchCount;
+    this.readGroup = mockReadGroup;
+    this.create = mockCreate;
+    this.write = mockWrite;
+    this.unlink = mockUnlink;
+    this.fields = mockFields;
+  });
+  return { OdooClient: MockOdooClient };
+});
 
 import { OdooClient } from "odoo-node";
 import plugin from "../index";
@@ -33,7 +34,7 @@ interface AgentTool {
     toolCallId: string,
     params: Record<string, unknown>,
     signal?: AbortSignal,
-  ) => Promise<{ content: Array<{ type: string; text: string }>; details?: unknown }>;
+  ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean; details?: unknown }>;
 }
 
 const testConnection = {
@@ -150,6 +151,7 @@ describe("odoo_schema", () => {
 
     const result = await tool.execute("call-3", { model: "account.move" });
     expect(result.content[0].text).toContain("not available");
+    expect(result.isError).toBe(true);
   });
 });
 
@@ -200,6 +202,7 @@ describe("odoo_read", () => {
 
     expect(result.content[0].text).toContain("Permission denied");
     expect(result.content[0].text).toContain("account.move");
+    expect(result.isError).toBe(true);
     expect(mockSearchRead).not.toHaveBeenCalled();
   });
 });
@@ -235,6 +238,7 @@ describe("odoo_count", () => {
     });
 
     expect(result.content[0].text).toContain("Permission denied");
+    expect(result.isError).toBe(true);
   });
 });
 
@@ -281,6 +285,7 @@ describe("odoo_aggregate", () => {
     });
 
     expect(result.content[0].text).toContain("Permission denied");
+    expect(result.isError).toBe(true);
   });
 });
 
@@ -316,6 +321,7 @@ describe("odoo_create", () => {
 
     expect(result.content[0].text).toContain("Permission denied");
     expect(result.content[0].text).toContain("create");
+    expect(result.isError).toBe(true);
     expect(mockCreate).not.toHaveBeenCalled();
   });
 });
@@ -353,6 +359,7 @@ describe("odoo_write", () => {
     });
 
     expect(result.content[0].text).toContain("Permission denied");
+    expect(result.isError).toBe(true);
     expect(mockWrite).not.toHaveBeenCalled();
   });
 });
@@ -393,6 +400,7 @@ describe("odoo_delete", () => {
     });
 
     expect(result.content[0].text).toContain("Permission denied");
+    expect(result.isError).toBe(true);
     expect(mockUnlink).not.toHaveBeenCalled();
   });
 });
@@ -414,6 +422,7 @@ describe("error handling", () => {
     });
 
     expect(result.content[0].text).toContain("Error: Connection refused");
+    expect(result.isError).toBe(true);
   });
 
   it("returns permission message for Odoo access errors", async () => {
@@ -428,6 +437,7 @@ describe("error handling", () => {
     });
 
     expect(result.content[0].text).toContain("denied permission");
+    expect(result.isError).toBe(true);
   });
 
   it("does not treat 'Failed to access host' as a permission error", async () => {
@@ -443,6 +453,7 @@ describe("error handling", () => {
 
     expect(result.content[0].text).not.toContain("denied permission");
     expect(result.content[0].text).toContain("Error: Failed to access host");
+    expect(result.isError).toBe(true);
   });
 
   it("handles non-Error throws gracefully", async () => {
@@ -457,6 +468,7 @@ describe("error handling", () => {
     });
 
     expect(result.content[0].text).toContain("Error: Unknown error");
+    expect(result.isError).toBe(true);
   });
 });
 

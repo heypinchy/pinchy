@@ -8,6 +8,11 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test-setup.ts"],
     globals: true,
+    include: [
+      "src/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      "../plugins/pinchy-odoo/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      "../plugins/pinchy-docs/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+    ],
     exclude: ["node_modules", "e2e"],
   },
   resolve: {
