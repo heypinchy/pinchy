@@ -18,6 +18,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+      "odoo-node": path.resolve(__dirname, "./node_modules/odoo-node"),
     },
   },
 });
