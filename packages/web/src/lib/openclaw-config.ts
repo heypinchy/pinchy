@@ -18,6 +18,34 @@ import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 
+/**
+ * Remove stale Pinchy plugins from the allow list that have no matching entry.
+ * OpenClaw validates config schemas for allowed plugins — if a plugin is in
+ * `allow` but has no `entries` config, OpenClaw rejects the config and refuses
+ * to start. This can happen when an older config volume is reused with a fresh
+ * DB (e.g. after deleting pgdata). Runs before setup is complete (no DB needed).
+ */
+export function sanitizeOpenClawConfig(): boolean {
+  if (!existsSync(CONFIG_PATH)) return false;
+
+  const raw = readFileSync(CONFIG_PATH, "utf-8");
+  const config = JSON.parse(raw);
+  const plugins = config.plugins as Record<string, unknown> | undefined;
+  if (!plugins) return false;
+
+  const allow = plugins.allow as string[] | undefined;
+  const entries = (plugins.entries ?? {}) as Record<string, unknown>;
+  if (!allow) return false;
+
+  const cleaned = allow.filter((p) => !p.startsWith("pinchy-") || p in entries);
+
+  if (cleaned.length === allow.length) return false;
+
+  plugins.allow = cleaned;
+  writeConfigAtomic(JSON.stringify(config, null, 2));
+  return true;
+}
+
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
 function writeConfigAtomic(content: string) {
   const dir = dirname(CONFIG_PATH);
@@ -313,12 +341,17 @@ export async function regenerateOpenClawConfig() {
     };
   }
 
-  // Merge our plugin IDs into the existing allow list. OpenClaw adds its own
-  // plugins (e.g. "telegram") to plugins.allow — if we overwrite the list,
-  // OpenClaw sees a diff and triggers a full gateway restart every time.
+  // Build the allow list from: (1) plugins we have entries for, and (2)
+  // OpenClaw-managed plugins (e.g. "telegram") that were already in the list.
+  // We must NOT include Pinchy plugins without entries — OpenClaw validates
+  // their config schema and rejects missing required fields like "agents".
   const existingAllow = ((existing.plugins as Record<string, unknown>)?.allow as string[]) || [];
-  const ourPlugins = Object.keys(entries);
-  const allowedPlugins = [...new Set([...existingAllow, ...ourPlugins])];
+  const ourPlugins = new Set(Object.keys(entries));
+  const pinchyPluginPrefixes = ["pinchy-"];
+  const openClawPlugins = existingAllow.filter(
+    (p) => !pinchyPluginPrefixes.some((prefix) => p.startsWith(prefix))
+  );
+  const allowedPlugins = [...new Set([...openClawPlugins, ...ourPlugins])];
 
   if (allowedPlugins.length > 0 || Object.keys(entries).length > 0) {
     config.plugins = { allow: allowedPlugins, entries };

@@ -56,7 +56,11 @@ vi.mock("@/lib/migrate-onboarding", () => ({
 }));
 
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
-import { regenerateOpenClawConfig, updateIdentityLinks } from "@/lib/openclaw-config";
+import {
+  regenerateOpenClawConfig,
+  updateIdentityLinks,
+  sanitizeOpenClawConfig,
+} from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
 
@@ -636,6 +640,47 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.allow).toContain("pinchy-audit");
   });
 
+  it("strips stale pinchy-* plugins from allow list when they have no entries", async () => {
+    // Simulate a config that was written before some plugins were removed —
+    // e.g. pinchy-files and pinchy-odoo are in allow but no agent uses them.
+    // OpenClaw rejects plugins in allow without valid config, so we must clean up.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", auth: { mode: "token", token: "tok" } },
+        plugins: {
+          allow: ["pinchy-files", "pinchy-context", "pinchy-audit", "pinchy-odoo", "telegram"],
+          entries: {},
+        },
+      })
+    );
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Dev",
+          model: "anthropic/claude-opus-4-6",
+          templateId: "custom",
+          pluginConfig: null,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    // pinchy-files and pinchy-odoo have no entries → must be removed from allow
+    expect(config.plugins.allow).not.toContain("pinchy-files");
+    expect(config.plugins.allow).not.toContain("pinchy-odoo");
+    // Non-pinchy plugins (OpenClaw-managed) must be preserved
+    expect(config.plugins.allow).toContain("telegram");
+    // pinchy-audit is always enabled
+    expect(config.plugins.allow).toContain("pinchy-audit");
+  });
+
   it("enables pinchy-docs plugin with personal agent ids when personal agents exist", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([
@@ -672,6 +717,64 @@ describe("regenerateOpenClawConfig", () => {
       "smithers-1": {},
     });
     expect(config.plugins.allow).toContain("pinchy-docs");
+  });
+});
+
+describe("sanitizeOpenClawConfig", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+  });
+
+  it("removes stale pinchy-* plugins from allow that have no entries", () => {
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local" },
+        plugins: {
+          allow: ["pinchy-files", "pinchy-audit", "pinchy-odoo", "telegram"],
+          entries: {
+            "pinchy-audit": { enabled: true, config: {} },
+          },
+        },
+      })
+    );
+
+    const changed = sanitizeOpenClawConfig();
+
+    expect(changed).toBe(true);
+    const written = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(written.plugins.allow).toContain("pinchy-audit");
+    expect(written.plugins.allow).toContain("telegram");
+    expect(written.plugins.allow).not.toContain("pinchy-files");
+    expect(written.plugins.allow).not.toContain("pinchy-odoo");
+  });
+
+  it("returns false and does not write when allow list is already clean", () => {
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local" },
+        plugins: {
+          allow: ["pinchy-audit", "telegram"],
+          entries: {
+            "pinchy-audit": { enabled: true, config: {} },
+          },
+        },
+      })
+    );
+
+    const changed = sanitizeOpenClawConfig();
+
+    expect(changed).toBe(false);
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it("returns false when config file does not exist", () => {
+    mockedExistsSync.mockReturnValue(false);
+
+    const changed = sanitizeOpenClawConfig();
+
+    expect(changed).toBe(false);
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
   });
 });
 
