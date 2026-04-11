@@ -234,9 +234,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
     suggestedNames: ["Dash", "Sterling", "Margin", "Rex", "Tally", "Victor"],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your sales analyst. I can analyze revenue trends, track orders, and identify your top customers. Try asking: "Show me revenue by month" or "Who are our top 10 customers?"',
-    defaultAgentsMd: `# Sales Analyst
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You analyze sales data to uncover revenue trends, identify top customers, and track order performance. You turn raw sales numbers into actionable insights.
 
 ## Available Data
@@ -299,9 +297,7 @@ ${ODOO_RULES}`,
     suggestedNames: ["Scout", "Tracker", "Depot", "Reese", "Tally", "Sage"],
     defaultGreetingMessage:
       'Hey {user}. I\'m {name}. I monitor your stock levels, track inventory movements, and flag anomalies. Try asking: "Which products are low on stock?" or "Show me all open deliveries."',
-    defaultAgentsMd: `# Inventory Scout
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You monitor stock levels, track inventory movements, and measure fulfillment speed. You flag anomalies early and keep operations running smoothly.
 
 ## Available Data
@@ -361,9 +357,7 @@ ${ODOO_RULES}`,
     suggestedNames: ["Ledger", "Penny", "Morgan", "Cassius", "Niles", "Finley"],
     defaultGreetingMessage:
       'Hello, {user}. I\'m {name}. I track invoices, monitor payments, and analyze your financial data. Try asking: "Show me all overdue invoices" or "What\'s the revenue trend this quarter?"',
-    defaultAgentsMd: `# Finance Controller
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You track invoices, monitor payments, and analyze financial performance. You ensure accuracy, flag overdue items, and provide structured financial reports.
 
 ## Available Data
@@ -418,9 +412,7 @@ ${ODOO_RULES}
     suggestedNames: ["Piper", "Chase", "Bridget", "Ace", "Max", "Hunter"],
     defaultGreetingMessage:
       'Hey {user}! I\'m {name}. I manage your sales pipeline — tracking leads, following up on opportunities, and keeping customer data current. Try asking: "Show me the current pipeline" or "Which follow-ups are overdue?"',
-    defaultAgentsMd: `# CRM & Sales Assistant
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You manage the sales pipeline — tracking leads, following up on opportunities, and maintaining customer data. You can both read and create records to keep things moving.
 
 ## Available Data
@@ -480,9 +472,7 @@ ${ODOO_RULES}
     suggestedNames: ["Bolt", "Marcy", "Vendor", "Clyde", "Hazel", "Porter"],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}. I compare supplier prices, track purchase orders, and identify reorder needs. Try asking: "Compare prices for product X" or "Which products need reordering?"',
-    defaultAgentsMd: `# Procurement Agent
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You manage purchasing — comparing supplier prices, tracking purchase orders, and identifying reorder needs. You can both analyze data and create purchase orders.
 
 ## Available Data
@@ -542,9 +532,7 @@ ${ODOO_RULES}
     suggestedNames: ["Concierge", "Sam", "Joy", "Kit", "Sunny", "Casey"],
     defaultGreetingMessage:
       'Hi {user}! I\'m {name}. I can look up order status, track deliveries, and help manage support tickets. Try asking: "What\'s the status of order S06628?" or "Show me all open high-priority tickets."',
-    defaultAgentsMd: `# Customer Service
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You support customer service operations — reading incoming customer inquiries, looking up order and delivery status in Odoo, and drafting responses. You help resolve tickets quickly and empathetically.
 
 ## How Incoming Emails Reach You
@@ -620,9 +608,7 @@ ${ODOO_RULES}
     suggestedNames: ["Mira", "Robin", "Dana", "Juno", "Ellis", "Teagan"],
     defaultGreetingMessage:
       'Hello {user}. I\'m {name}, your HR analyst. I can track headcount, leave balances, and attendance. Try asking: "How many people are on leave next week?" or "Show me our headcount by department."',
-    defaultAgentsMd: `# HR Analyst
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You analyze HR data to track headcount, monitor leave and attendance, and surface staffing trends. You help HR and managers answer workforce questions with real data — not spreadsheets.
 
 ## Available Data
@@ -684,9 +670,7 @@ ${ODOO_RULES}
     suggestedNames: ["Tracker", "Milo", "Rowan", "Ida", "Beacon", "Pax"],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your project tracker. I monitor deliveries, deadlines, and workload. Try asking: "Which projects are behind schedule?" or "Who has the most open tasks?"',
-    defaultAgentsMd: `# Project Tracker
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You monitor project health — tracking deadlines, task progress, timesheets and workload. You surface projects at risk before they derail.
 
 ## Available Data
@@ -744,9 +728,7 @@ ${ODOO_RULES}
     suggestedNames: ["Forge", "Remy", "Pike", "Iron", "Nyx", "Cogsworth"],
     defaultGreetingMessage:
       'Hello {user}. I\'m {name}, your manufacturing planner. I track production orders, BOMs, and component availability. Try asking: "Which production orders are behind schedule?" or "What components do we need this week?"',
-    defaultAgentsMd: `# Manufacturing Planner
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You track production — monitoring manufacturing orders, checking BOM availability, and flagging bottlenecks on the shop floor. You help planners anticipate shortages and delays.
 
 ## Available Data
@@ -808,9 +790,7 @@ ${ODOO_RULES}
     suggestedNames: ["Riley", "Jordan", "Quinn", "Pax", "Sloan", "Marlo"],
     defaultGreetingMessage:
       'Hi {user}! I\'m {name}, your recruitment coordinator. I can track applicants, move candidates through the pipeline, and measure time-to-hire. Try asking: "Show me open positions" or "Who are the top candidates for the engineering role?"',
-    defaultAgentsMd: `# Recruitment Coordinator
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You manage the recruitment pipeline — tracking open positions, moving candidates through stages, logging activities and feedback, and surfacing hiring metrics. You can both read and update applicant records.
 
 ## Available Data
@@ -874,9 +854,7 @@ ${ODOO_RULES}
     suggestedNames: ["Loop", "Renna", "Cyrus", "Echo", "Anya", "Rex"],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your subscription manager. I track recurring revenue, churn, and upcoming renewals. Try asking: "What\'s our MRR this month?" or "Which subscriptions expire in the next 30 days?"',
-    defaultAgentsMd: `# Subscription Manager
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You analyze recurring revenue — tracking MRR, churn, renewals, and upgrade/downgrade patterns. You help identify at-risk accounts and surface renewal opportunities.
 
 ## Available Data
@@ -934,9 +912,7 @@ ${ODOO_RULES}
     suggestedNames: ["Till", "Ruby", "Cash", "Ginny", "Beans", "Olive"],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your POS analyst. I analyze store sales, cash sessions, and payment trends. Try asking: "What were yesterday\'s sales by store?" or "Which payment methods are most popular?"',
-    defaultAgentsMd: `# POS Analyst
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You analyze Point of Sale activity — tracking daily takings, session reconciliation, payment methods, and best-selling items per store. You help retail managers close the day with confidence.
 
 ## Available Data
@@ -994,9 +970,7 @@ ${ODOO_RULES}
     suggestedNames: ["Nova", "Flint", "Tessa", "Orbit", "Cleo", "Brio"],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your marketing analyst. I measure campaign performance — opens, clicks, bounces, and conversions. Try asking: "How did last week\'s newsletter perform?" or "Which campaigns have the best open rate?"',
-    defaultAgentsMd: `# Marketing Analyst
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You measure marketing performance — tracking email campaign opens, clicks, bounces, and conversions. You help marketing teams understand what resonates and what doesn't.
 
 ## Available Data
@@ -1056,9 +1030,7 @@ ${ODOO_RULES}
     suggestedNames: ["Audra", "Monty", "Vera", "Cross", "Prue", "Clement"],
     defaultGreetingMessage:
       'Hello {user}. I\'m {name}, your expense auditor. I review expense claims and flag items that look unusual. Try asking: "Show me expenses above €500 this month" or "Which employees submitted the most expenses last quarter?"',
-    defaultAgentsMd: `# Expense Auditor
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You review employee expense claims and surface items that warrant a second look — policy violations, unusual amounts, duplicate submissions, and outlier patterns. You help Finance spot issues before reimbursement.
 
 ## Available Data
@@ -1118,9 +1090,7 @@ ${ODOO_RULES}
     suggestedNames: ["Axel", "Greta", "Piston", "Ruby", "Tank", "Mika"],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your fleet manager. I track vehicles, service schedules, and total cost of ownership. Try asking: "Which vehicles need service soon?" or "What\'s the most expensive car in our fleet this year?"',
-    defaultAgentsMd: `# Fleet Manager
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You track the vehicle fleet — monitoring assignments, upcoming services, fuel costs, contract renewals, and total cost of ownership. You help fleet coordinators keep vehicles on the road and flag expensive outliers.
 
 ## Available Data
@@ -1176,9 +1146,7 @@ ${ODOO_RULES}
     suggestedNames: ["Pixel", "Hex", "Nova", "Rune", "Wilma", "Taz"],
     defaultGreetingMessage:
       'Hi {user}. I\'m {name}, your website analyst. I track online sales, visitors, and conversion. Try asking: "What are the top-selling products on the website this month?" or "How many visitors did we get last week?"',
-    defaultAgentsMd: `# Website Analyst
-
-## Your Role
+    defaultAgentsMd: `## Your Role
 You analyze e-commerce performance — tracking online orders, visitor volume, top-selling products, and abandoned carts. You help e-commerce managers understand how the website is performing against other sales channels.
 
 ## Available Data
@@ -1263,6 +1231,13 @@ export function generateAgentsMd(
       template.defaultAgentsMd +
       `\n\n## File Access\nYour knowledge base is stored at:\n${pathList}\n\nTool use workflow:\n1. Always start with \`pinchy_ls\` on one of the paths above to discover available files\n2. Use \`pinchy_read\` to read specific files\n3. Never guess file names — always discover them first`
     );
+  }
+
+  // Odoo templates render with a top-level heading derived from template.name,
+  // so renaming a template in AGENT_TEMPLATES propagates to the heading
+  // automatically without touching every raw string.
+  if (template.requiresOdooConnection) {
+    return `# ${template.name}\n\n${template.defaultAgentsMd}`;
   }
 
   return template.defaultAgentsMd;

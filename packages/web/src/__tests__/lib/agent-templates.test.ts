@@ -160,6 +160,43 @@ describe("generateAgentsMd", () => {
     const content = generateAgentsMd(template, undefined);
     expect(content).toBe(template.defaultAgentsMd);
   });
+
+  it("prepends a # name heading to Odoo template output", () => {
+    // The display name used to be hard-coded as `# Sales Analyst` (etc.) at
+    // the top of each Odoo template's raw defaultAgentsMd, duplicating
+    // template.name. The name is now derived at render time so renaming a
+    // template updates the heading automatically.
+    const template = AGENT_TEMPLATES["odoo-sales-analyst"];
+    const content = generateAgentsMd(template, undefined);
+    expect(content).not.toBeNull();
+    expect(content!.startsWith(`# ${template.name}\n`)).toBe(true);
+  });
+
+  it("no Odoo template hard-codes its display name as a top-level heading in raw defaultAgentsMd", () => {
+    const offenders: string[] = [];
+    for (const [id, template] of Object.entries(AGENT_TEMPLATES)) {
+      if (!template.requiresOdooConnection) continue;
+      if (!template.defaultAgentsMd) continue;
+      if (template.defaultAgentsMd.startsWith(`# ${template.name}`)) {
+        offenders.push(id);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("every Odoo template's generated output contains exactly one top-level name heading", () => {
+    for (const [id, template] of Object.entries(AGENT_TEMPLATES)) {
+      if (!template.requiresOdooConnection) continue;
+      const content = generateAgentsMd(template, undefined);
+      expect(content, `Template ${id} generated null`).not.toBeNull();
+      const escapedName = template.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const matches = content!.match(new RegExp(`^# ${escapedName}$`, "gm")) ?? [];
+      expect(
+        matches.length,
+        `Template ${id} has ${matches.length} top-level headings for "${template.name}" (expected 1)`
+      ).toBe(1);
+    }
+  });
 });
 
 describe("Document templates", () => {
