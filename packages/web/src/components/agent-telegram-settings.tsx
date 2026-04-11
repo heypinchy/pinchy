@@ -19,13 +19,15 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { CircleCheck, ChevronDown, Lock } from "lucide-react";
+import { CircleCheck, ChevronDown, Lock, ArrowRight } from "lucide-react";
+import Link from "next/link";
 import { useRestart } from "@/components/restart-provider";
 
 interface TelegramConfig {
   configured: boolean;
   hint?: string;
   botUsername?: string;
+  mainBotConfigured?: boolean;
 }
 
 interface AgentTelegramSettingsProps {
@@ -140,10 +142,27 @@ export function AgentTelegramSettings({
   }
 
   const isConfigured = config?.configured === true;
+  const mainBotMissing = config?.mainBotConfigured === false && !isConfigured;
 
   const content = (
     <div className="space-y-4">
-      {isConfigured ? (
+      {mainBotMissing ? (
+        <div className="space-y-4 text-center py-6">
+          <div className="space-y-2">
+            <p className="text-sm font-medium">Telegram isn&apos;t set up yet</p>
+            <p className="text-sm text-muted-foreground max-w-md mx-auto">
+              Before you can connect this agent to Telegram, Pinchy&apos;s main bot needs to be
+              configured first. That&apos;s the bot users message to link their account.
+            </p>
+          </div>
+          <Button asChild>
+            <Link href="/settings?tab=telegram">
+              Go to Telegram Settings
+              <ArrowRight className="size-4" />
+            </Link>
+          </Button>
+        </div>
+      ) : isConfigured ? (
         <>
           <div className="flex items-center gap-2">
             <CircleCheck className="size-5 text-green-600 shrink-0" />
