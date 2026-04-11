@@ -1,4 +1,5 @@
 import type { OpenClawClient } from "openclaw-node";
+import { isNull } from "drizzle-orm";
 import { recordUsage } from "@/lib/usage";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
@@ -62,7 +63,12 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
     if (sessions.length === 0) return;
 
     // Pre-fetch agent names to avoid one DB round-trip per session.
-    const allAgents = await db.select({ id: agents.id, name: agents.name }).from(agents);
+    // Skip soft-deleted agents — a stale session key should fall through
+    // to the agentId fallback instead of surfacing a deleted agent's name.
+    const allAgents = await db
+      .select({ id: agents.id, name: agents.name })
+      .from(agents)
+      .where(isNull(agents.deletedAt));
     const agentNameMap = new Map(allAgents.map((a) => [a.id, a.name]));
 
     for (const session of sessions) {
@@ -80,6 +86,13 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
         agentId: parsed.agentId,
         agentName,
         sessionKey: session.key,
+        sessionSnapshot: {
+          inputTokens: session.inputTokens,
+          outputTokens: session.outputTokens,
+          cacheReadTokens: session.cacheReadTokens,
+          cacheWriteTokens: session.cacheWriteTokens,
+          model: session.model,
+        },
       });
     }
   } catch (error) {

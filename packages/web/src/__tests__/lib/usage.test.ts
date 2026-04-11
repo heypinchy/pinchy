@@ -38,7 +38,12 @@ vi.mock("drizzle-orm", () => ({
   sum: vi.fn((col) => ({ _type: "sum", col })),
 }));
 
-import { recordUsage, _resetPricingCacheForTest } from "@/lib/usage";
+import {
+  recordUsage,
+  _resetPricingCacheForTest,
+  _resetPendingSessionsForTest,
+  _resetUsageWatermarksForTest,
+} from "@/lib/usage";
 import { usageRecords } from "@/db/schema";
 
 const emptyConfig = { config: { models: { providers: {} } } };
@@ -65,6 +70,8 @@ describe("recordUsage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetPricingCacheForTest();
+    _resetPendingSessionsForTest();
+    _resetUsageWatermarksForTest();
     mockValues.mockResolvedValue(undefined);
     // Default: no previous records
     mockWhere._result = [

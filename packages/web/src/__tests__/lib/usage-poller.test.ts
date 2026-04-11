@@ -8,6 +8,8 @@ vi.mock("@/lib/usage", () => ({
   recordUsage: (...args: unknown[]) => mockRecordUsage(...args),
 }));
 
+const mockWhere = vi.fn();
+
 vi.mock("@/db", () => ({
   db: {
     select: (...args: unknown[]) => {
@@ -15,7 +17,12 @@ vi.mock("@/db", () => ({
       return {
         from: (...fArgs: unknown[]) => {
           mockFrom(...fArgs);
-          return mockFrom._result;
+          return {
+            where: (...wArgs: unknown[]) => {
+              mockWhere(...wArgs);
+              return mockFrom._result;
+            },
+          };
         },
       };
     },
@@ -23,8 +30,13 @@ vi.mock("@/db", () => ({
 }));
 
 vi.mock("@/db/schema", () => ({
-  agents: { _table: "agents", id: "id", name: "name" },
+  agents: { _table: "agents", id: "id", name: "name", deletedAt: "deleted_at" },
   usageRecords: { _table: "usage_records" },
+}));
+
+const mockIsNull = vi.fn((col: unknown) => ({ _type: "isNull", col }));
+vi.mock("drizzle-orm", () => ({
+  isNull: (col: unknown) => mockIsNull(col),
 }));
 
 import {
@@ -95,6 +107,21 @@ describe("pollAllSessions", () => {
     mockFrom._result = [{ id: "agent-1", name: "Smithers" }];
   });
 
+  it("filters out soft-deleted agents from the name map", async () => {
+    // Soft-deleted agents should not contribute to the poller's agent-name
+    // resolution. If a soft-deleted agent's ID happens to match a
+    // still-active OpenClaw session (e.g. because deletion is in-flight),
+    // we should NOT surface its name via the poller — the DB query must
+    // filter on `deleted_at IS NULL`.
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 100, outputTokens: 50 },
+    ]);
+    await pollAllSessions(client);
+
+    // The poller must have called .where(isNull(agents.deletedAt)).
+    expect(mockIsNull).toHaveBeenCalledWith("deleted_at");
+  });
+
   it("handles empty sessions list gracefully", async () => {
     const client = makeOpenClawClient([]);
     await pollAllSessions(client);
@@ -124,12 +151,22 @@ describe("pollAllSessions", () => {
     await pollAllSessions(client);
 
     expect(mockRecordUsage).toHaveBeenCalledTimes(2);
+    // The poller MUST pass sessionSnapshot so recordUsage does not issue a
+    // second sessions.list() round-trip per session. Check the full shape
+    // including the forwarded snapshot fields.
     expect(mockRecordUsage).toHaveBeenCalledWith({
       openclawClient: client,
       userId: "user-1",
       agentId: "agent-1",
       agentName: "Smithers",
       sessionKey: "agent:agent-1:direct:user-1",
+      sessionSnapshot: {
+        inputTokens: 100,
+        outputTokens: 50,
+        cacheReadTokens: undefined,
+        cacheWriteTokens: undefined,
+        model: "claude",
+      },
     });
     expect(mockRecordUsage).toHaveBeenCalledWith({
       openclawClient: client,
@@ -137,6 +174,13 @@ describe("pollAllSessions", () => {
       agentId: "agent-2",
       agentName: "Burns",
       sessionKey: "agent:agent-2:direct:user-2",
+      sessionSnapshot: {
+        inputTokens: 200,
+        outputTokens: 80,
+        cacheReadTokens: undefined,
+        cacheWriteTokens: undefined,
+        model: "claude",
+      },
     });
   });
 
