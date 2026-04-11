@@ -5,22 +5,11 @@ import {
   resolveGreetingMessage,
 } from "@/lib/personality-presets";
 
-const EXPECTED_IDS = [
-  "the-butler",
-  "the-professor",
-  "the-pilot",
-  "the-coach",
-  "the-analyst",
-  "the-scout",
-  "the-controller",
-  "the-closer",
-  "the-buyer",
-  "the-concierge",
-];
+const EXPECTED_IDS = ["the-butler", "the-professor", "the-pilot", "the-coach"];
 
 describe("PERSONALITY_PRESETS", () => {
-  it("has exactly 10 presets", () => {
-    expect(Object.keys(PERSONALITY_PRESETS)).toHaveLength(10);
+  it("has exactly 4 presets", () => {
+    expect(Object.keys(PERSONALITY_PRESETS)).toHaveLength(4);
   });
 
   it.each(EXPECTED_IDS)("has preset '%s'", (id) => {
@@ -54,32 +43,8 @@ describe("PERSONALITY_PRESETS", () => {
     expect(PERSONALITY_PRESETS["the-coach"].suggestedAgentName).toBe("Maya");
   });
 
-  it("The Analyst suggests 'Quinn'", () => {
-    expect(PERSONALITY_PRESETS["the-analyst"].suggestedAgentName).toBe("Quinn");
-  });
-
-  it("The Scout suggests 'Scout'", () => {
-    expect(PERSONALITY_PRESETS["the-scout"].suggestedAgentName).toBe("Scout");
-  });
-
-  it("The Controller suggests 'Vera'", () => {
-    expect(PERSONALITY_PRESETS["the-controller"].suggestedAgentName).toBe("Vera");
-  });
-
-  it("The Closer suggests 'Blake'", () => {
-    expect(PERSONALITY_PRESETS["the-closer"].suggestedAgentName).toBe("Blake");
-  });
-
-  it("The Buyer suggests 'Morgan'", () => {
-    expect(PERSONALITY_PRESETS["the-buyer"].suggestedAgentName).toBe("Morgan");
-  });
-
-  it("The Concierge suggests 'Robin'", () => {
-    expect(PERSONALITY_PRESETS["the-concierge"].suggestedAgentName).toBe("Robin");
-  });
-
-  it("all odoo personality presets exist", () => {
-    const ids = [
+  it("does not contain role-specific presets (personality = tone only)", () => {
+    const rolePresets = [
       "the-analyst",
       "the-scout",
       "the-controller",
@@ -87,8 +52,8 @@ describe("PERSONALITY_PRESETS", () => {
       "the-buyer",
       "the-concierge",
     ];
-    for (const id of ids) {
-      expect(getPersonalityPreset(id)).toBeDefined();
+    for (const id of rolePresets) {
+      expect(getPersonalityPreset(id)).toBeUndefined();
     }
   });
 });
