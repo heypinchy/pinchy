@@ -16,11 +16,6 @@ vi.mock("@/db", () => ({
   },
 }));
 
-vi.mock("drizzle-orm", async (importOriginal) => {
-  const actual = await importOriginal();
-  return { ...(actual as object), eq: vi.fn() };
-});
-
 import { validateTelegramBotToken, hasMainTelegramBot } from "@/lib/telegram";
 
 const fetchMock = vi.fn();
@@ -146,5 +141,11 @@ describe("hasMainTelegramBot", () => {
     await expect(hasMainTelegramBot()).resolves.toBe(true);
     // Should not query the 2nd and 3rd agents once it found the first one
     expect(mockGetSetting).toHaveBeenCalledTimes(1);
+  });
+
+  it("treats an empty-string token as not configured", async () => {
+    mockFindMany.mockResolvedValueOnce([{ id: "smithers-1" }]);
+    mockGetSetting.mockResolvedValueOnce("");
+    await expect(hasMainTelegramBot()).resolves.toBe(false);
   });
 });
