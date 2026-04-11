@@ -119,7 +119,7 @@ If you need to roll back after an upgrade:
 Standard upgrade — no breaking changes, no new required environment variables.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.3.0/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
