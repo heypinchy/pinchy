@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   AGENT_TEMPLATES,
+  createOdooTemplate,
+  deriveOdooAccessLevel,
   getTemplate,
   getTemplateList,
   generateAgentsMd,
@@ -8,6 +10,7 @@ import {
 } from "@/lib/agent-templates";
 import { PERSONALITY_PRESETS } from "@/lib/personality-presets";
 import { TEMPLATE_ICON_COMPONENTS } from "@/lib/template-icons";
+import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
 
 describe("agent-templates", () => {
   it("should have a knowledge-base template", () => {
@@ -639,6 +642,161 @@ describe("Additional Odoo templates (10 new)", () => {
     for (const id of NEW_ODOO_TEMPLATE_IDS) {
       expect(list.some((t) => t.id === id)).toBe(true);
     }
+  });
+});
+
+describe("deriveOdooAccessLevel", () => {
+  it("returns 'read-only' when every operation is read", () => {
+    expect(deriveOdooAccessLevel([{ operations: ["read"] }, { operations: ["read"] }])).toBe(
+      "read-only"
+    );
+  });
+
+  it("returns 'read-write' when any model has create or write", () => {
+    expect(
+      deriveOdooAccessLevel([{ operations: ["read"] }, { operations: ["read", "write"] }])
+    ).toBe("read-write");
+
+    expect(deriveOdooAccessLevel([{ operations: ["read", "create"] }])).toBe("read-write");
+  });
+
+  it("returns 'full' when any model has delete", () => {
+    expect(deriveOdooAccessLevel([{ operations: ["read", "write", "delete"] }])).toBe("full");
+  });
+});
+
+describe("createOdooTemplate", () => {
+  const baseSpec = {
+    iconName: "TrendingUp" as const,
+    name: "Test Analyst",
+    description: "Analyze things",
+    defaultPersonality: "the-pilot" as const,
+    defaultTagline: "Analyze things",
+    suggestedNames: ["Alpha", "Beta", "Gamma", "Delta", "Epsilon"],
+    defaultGreetingMessage: "Hi. Let's analyze.",
+    defaultAgentsMd: "## Your Role\nTest role.",
+  };
+
+  it("sets requiresOdooConnection to true", () => {
+    const t = createOdooTemplate({
+      ...baseSpec,
+      requiredModels: [{ model: "sale.order", operations: ["read"] }],
+    });
+    expect(t.requiresOdooConnection).toBe(true);
+  });
+
+  it("sets pluginId to null", () => {
+    const t = createOdooTemplate({
+      ...baseSpec,
+      requiredModels: [{ model: "sale.order", operations: ["read"] }],
+    });
+    expect(t.pluginId).toBeNull();
+  });
+
+  it("derives accessLevel from the highest operation across all required models", () => {
+    const readOnly = createOdooTemplate({
+      ...baseSpec,
+      requiredModels: [{ model: "sale.order", operations: ["read"] }],
+    });
+    expect(readOnly.odooConfig?.accessLevel).toBe("read-only");
+
+    const readWrite = createOdooTemplate({
+      ...baseSpec,
+      requiredModels: [
+        { model: "sale.order", operations: ["read"] },
+        { model: "crm.lead", operations: ["read", "write"] },
+      ],
+    });
+    expect(readWrite.odooConfig?.accessLevel).toBe("read-write");
+  });
+
+  it("derives allowedTools from the computed access level", () => {
+    const readOnly = createOdooTemplate({
+      ...baseSpec,
+      requiredModels: [{ model: "sale.order", operations: ["read"] }],
+    });
+    expect(readOnly.allowedTools).toEqual(getOdooToolsForAccessLevel("read-only"));
+
+    const readWrite = createOdooTemplate({
+      ...baseSpec,
+      requiredModels: [{ model: "crm.lead", operations: ["read", "create", "write"] }],
+    });
+    expect(readWrite.allowedTools).toEqual(getOdooToolsForAccessLevel("read-write"));
+  });
+
+  it("exposes the requiredModels on odooConfig", () => {
+    const requiredModels = [
+      { model: "sale.order", operations: ["read"] as const },
+      { model: "res.partner", operations: ["read"] as const },
+    ];
+    const t = createOdooTemplate({ ...baseSpec, requiredModels });
+    expect(t.odooConfig?.requiredModels).toEqual(requiredModels);
+  });
+
+  it("preserves the caller-provided fields verbatim", () => {
+    const t = createOdooTemplate({
+      ...baseSpec,
+      requiredModels: [{ model: "sale.order", operations: ["read"] }],
+    });
+    expect(t.iconName).toBe(baseSpec.iconName);
+    expect(t.name).toBe(baseSpec.name);
+    expect(t.description).toBe(baseSpec.description);
+    expect(t.defaultPersonality).toBe(baseSpec.defaultPersonality);
+    expect(t.defaultTagline).toBe(baseSpec.defaultTagline);
+    expect(t.suggestedNames).toEqual(baseSpec.suggestedNames);
+    expect(t.defaultGreetingMessage).toBe(baseSpec.defaultGreetingMessage);
+    expect(t.defaultAgentsMd).toBe(baseSpec.defaultAgentsMd);
+  });
+});
+
+describe("Odoo template drift invariants", () => {
+  // These invariants catch a specific class of bug: the declared accessLevel
+  // drifting away from what the actual requiredModels operations demand. Before
+  // the createOdooTemplate factory existed, each template set accessLevel,
+  // allowedTools, and requiredModels manually — which made it trivially easy
+  // for a new "read-write" template to ship with only "read" ops on its
+  // models (or vice versa), silently granting the agent tools it should not
+  // have — or denying tools it needs.
+  const odooEntries = Object.entries(AGENT_TEMPLATES).filter(([, t]) => t.requiresOdooConnection);
+
+  it("every Odoo template's accessLevel is the minimal level its operations require", () => {
+    const drifted: Array<{ id: string; declared: string; derived: string }> = [];
+    for (const [id, t] of odooEntries) {
+      const derived = deriveOdooAccessLevel(t.odooConfig!.requiredModels);
+      if (t.odooConfig!.accessLevel !== derived) {
+        drifted.push({ id, declared: t.odooConfig!.accessLevel, derived });
+      }
+    }
+    expect(drifted).toEqual([]);
+  });
+
+  it("MUTATION CHECK: drift is actually detected when operations exceed accessLevel", () => {
+    // Mutation guard: fabricate an inconsistent template shape and verify the
+    // comparison above would have caught it. This proves the drift test isn't
+    // vacuously green — if deriveOdooAccessLevel ever returned the wrong
+    // level, the drift invariant above would silently pass with no signal.
+    const fabricated = {
+      odooConfig: {
+        accessLevel: "read-only" as const,
+        requiredModels: [{ model: "crm.lead", operations: ["read", "write"] as const }],
+      },
+    };
+    const derived = deriveOdooAccessLevel(fabricated.odooConfig.requiredModels);
+    expect(derived).toBe("read-write");
+    expect(fabricated.odooConfig.accessLevel).not.toBe(derived);
+  });
+
+  it("every Odoo template's allowedTools matches getOdooToolsForAccessLevel(accessLevel)", () => {
+    const drifted: Array<{ id: string }> = [];
+    for (const [id, t] of odooEntries) {
+      const expected = getOdooToolsForAccessLevel(t.odooConfig!.accessLevel);
+      const actual = [...t.allowedTools].sort();
+      const want = [...expected].sort();
+      if (actual.length !== want.length || !actual.every((v, i) => v === want[i])) {
+        drifted.push({ id });
+      }
+    }
+    expect(drifted).toEqual([]);
   });
 });
 

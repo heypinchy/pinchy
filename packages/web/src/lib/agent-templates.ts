@@ -56,11 +56,13 @@ const ODOO_RULES = `## Important Rules
 - If you lack access to a model, say so clearly
 - Always state the time period of your analysis`;
 
+export type OdooOperation = "read" | "create" | "write" | "delete";
+
 export interface OdooTemplateConfig {
   accessLevel: "read-only" | "read-write" | "full";
   requiredModels: Array<{
     model: string;
-    operations: ("read" | "create" | "write" | "delete")[];
+    operations: OdooOperation[];
   }>;
 }
 
@@ -82,6 +84,80 @@ export interface AgentTemplate {
    * template is the only exception — it renders as a standalone link.
    */
   iconName?: TemplateIconName;
+}
+
+/**
+ * Declarative spec for an Odoo-backed agent template. Fields that are invariant
+ * for every Odoo template (`pluginId`, `requiresOdooConnection`) are set by the
+ * factory. Fields that can drift if stated twice (`accessLevel`, `allowedTools`)
+ * are derived from the `requiredModels` operations — the operations list is
+ * the single source of truth for what the agent is allowed to do.
+ */
+export interface OdooAgentTemplateSpec {
+  iconName: TemplateIconName;
+  name: string;
+  description: string;
+  defaultPersonality: PersonalityPresetId;
+  defaultTagline: string;
+  suggestedNames: string[];
+  defaultGreetingMessage: string;
+  defaultAgentsMd: string;
+  requiredModels: ReadonlyArray<{
+    model: string;
+    operations: ReadonlyArray<OdooOperation>;
+  }>;
+}
+
+/**
+ * Derive the minimal Odoo access level that satisfies the given per-model
+ * operations. `delete` requires `full`, `create`/`write` require `read-write`,
+ * everything else is `read-only`. This is the inverse of
+ * `getOdooToolsForAccessLevel` and guarantees the template's declared level
+ * cannot drift from the operations it actually requests.
+ */
+export function deriveOdooAccessLevel(
+  requiredModels: ReadonlyArray<{ operations: ReadonlyArray<OdooOperation> }>
+): "read-only" | "read-write" | "full" {
+  let hasWrite = false;
+  for (const m of requiredModels) {
+    for (const op of m.operations) {
+      if (op === "delete") return "full";
+      if (op === "create" || op === "write") hasWrite = true;
+    }
+  }
+  return hasWrite ? "read-write" : "read-only";
+}
+
+/**
+ * Factory for Odoo-backed agent templates. Eliminates the four fields that
+ * used to be restated on every Odoo template (`pluginId`, `allowedTools`,
+ * `requiresOdooConnection`, `odooConfig.accessLevel`) by deriving them from
+ * the `requiredModels` operations — the only field that carries per-template
+ * information. Preserves every caller-provided field verbatim so the rendered
+ * AGENTS.md output is byte-identical to a hand-written template.
+ */
+export function createOdooTemplate(spec: OdooAgentTemplateSpec): AgentTemplate {
+  const accessLevel = deriveOdooAccessLevel(spec.requiredModels);
+  return {
+    iconName: spec.iconName,
+    name: spec.name,
+    description: spec.description,
+    allowedTools: getOdooToolsForAccessLevel(accessLevel),
+    pluginId: null,
+    defaultPersonality: spec.defaultPersonality,
+    defaultTagline: spec.defaultTagline,
+    suggestedNames: [...spec.suggestedNames],
+    defaultGreetingMessage: spec.defaultGreetingMessage,
+    defaultAgentsMd: spec.defaultAgentsMd,
+    requiresOdooConnection: true,
+    odooConfig: {
+      accessLevel,
+      requiredModels: spec.requiredModels.map((m) => ({
+        model: m.model,
+        operations: [...m.operations],
+      })),
+    },
+  };
 }
 
 export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
@@ -223,12 +299,10 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
     defaultTagline: null,
     defaultAgentsMd: null,
   },
-  "odoo-sales-analyst": {
+  "odoo-sales-analyst": createOdooTemplate({
     iconName: "TrendingUp",
     name: "Sales Analyst",
     description: "Analyze revenue, track orders, identify trends and top customers",
-    allowedTools: getOdooToolsForAccessLevel("read-only"),
-    pluginId: null,
     defaultPersonality: "the-pilot",
     defaultTagline: "Analyze revenue, track orders, identify trends and top customers",
     suggestedNames: ["Dash", "Sterling", "Margin", "Rex", "Tally", "Victor"],
@@ -274,24 +348,18 @@ Use \`odoo_count\` twice: once with \`[["state", "=", "draft"]]\` for quotations
 ${ODOO_OUTPUT_FORMATTING}
 
 ${ODOO_RULES}`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-only",
-      requiredModels: [
-        { model: "sale.order", operations: ["read"] },
-        { model: "sale.order.line", operations: ["read"] },
-        { model: "res.partner", operations: ["read"] },
-        { model: "product.template", operations: ["read"] },
-        { model: "product.product", operations: ["read"] },
-      ],
-    },
-  },
-  "odoo-inventory-scout": {
+    requiredModels: [
+      { model: "sale.order", operations: ["read"] },
+      { model: "sale.order.line", operations: ["read"] },
+      { model: "res.partner", operations: ["read"] },
+      { model: "product.template", operations: ["read"] },
+      { model: "product.product", operations: ["read"] },
+    ],
+  }),
+  "odoo-inventory-scout": createOdooTemplate({
     iconName: "Warehouse",
     name: "Inventory Scout",
     description: "Monitor stock levels, track movements, measure fulfillment speed",
-    allowedTools: getOdooToolsForAccessLevel("read-only"),
-    pluginId: null,
     defaultPersonality: "the-pilot",
     defaultTagline: "Monitor stock levels, track movements, measure fulfillment speed",
     suggestedNames: ["Scout", "Tracker", "Depot", "Reese", "Tally", "Sage"],
@@ -331,27 +399,21 @@ Use \`odoo_aggregate\` on \`stock.quant\` with \`groupby: ["product_id"]\`, \`fi
 ${ODOO_OUTPUT_FORMATTING}
 
 ${ODOO_RULES}`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-only",
-      requiredModels: [
-        { model: "stock.quant", operations: ["read"] },
-        { model: "stock.move", operations: ["read"] },
-        { model: "stock.move.line", operations: ["read"] },
-        { model: "stock.picking", operations: ["read"] },
-        { model: "product.product", operations: ["read"] },
-        { model: "product.category", operations: ["read"] },
-        { model: "stock.warehouse", operations: ["read"] },
-        { model: "stock.location", operations: ["read"] },
-      ],
-    },
-  },
-  "odoo-finance-controller": {
+    requiredModels: [
+      { model: "stock.quant", operations: ["read"] },
+      { model: "stock.move", operations: ["read"] },
+      { model: "stock.move.line", operations: ["read"] },
+      { model: "stock.picking", operations: ["read"] },
+      { model: "product.product", operations: ["read"] },
+      { model: "product.category", operations: ["read"] },
+      { model: "stock.warehouse", operations: ["read"] },
+      { model: "stock.location", operations: ["read"] },
+    ],
+  }),
+  "odoo-finance-controller": createOdooTemplate({
     iconName: "Calculator",
     name: "Finance Controller",
     description: "Track invoices, monitor payments, analyze margins",
-    allowedTools: getOdooToolsForAccessLevel("read-only"),
-    pluginId: null,
     defaultPersonality: "the-butler",
     defaultTagline: "Track invoices, monitor payments, analyze margins",
     suggestedNames: ["Ledger", "Penny", "Morgan", "Cassius", "Niles", "Finley"],
@@ -389,24 +451,18 @@ ${ODOO_OUTPUT_FORMATTING}
 
 ${ODOO_RULES}
 - Double-check totals — financial data must be accurate`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-only",
-      requiredModels: [
-        { model: "account.move", operations: ["read"] },
-        { model: "account.move.line", operations: ["read"] },
-        { model: "account.payment", operations: ["read"] },
-        { model: "account.analytic.line", operations: ["read"] },
-        { model: "account.analytic.account", operations: ["read"] },
-      ],
-    },
-  },
-  "odoo-crm-assistant": {
+    requiredModels: [
+      { model: "account.move", operations: ["read"] },
+      { model: "account.move.line", operations: ["read"] },
+      { model: "account.payment", operations: ["read"] },
+      { model: "account.analytic.line", operations: ["read"] },
+      { model: "account.analytic.account", operations: ["read"] },
+    ],
+  }),
+  "odoo-crm-assistant": createOdooTemplate({
     iconName: "Handshake",
     name: "CRM & Sales Assistant",
     description: "Manage leads, follow up on quotes, maintain customer data",
-    allowedTools: getOdooToolsForAccessLevel("read-write"),
-    pluginId: null,
     defaultPersonality: "the-coach",
     defaultTagline: "Manage leads, follow up on quotes, maintain customer data",
     suggestedNames: ["Piper", "Chase", "Bridget", "Ace", "Max", "Hunter"],
@@ -448,25 +504,19 @@ ${ODOO_OUTPUT_FORMATTING}
 ${ODOO_RULES}
 - When creating records, confirm the details with the user before writing
 - Always verify that referenced records (e.g., partners, stages) exist before creating linked records`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-write",
-      requiredModels: [
-        { model: "crm.lead", operations: ["read", "create", "write"] },
-        { model: "crm.stage", operations: ["read"] },
-        { model: "sale.order", operations: ["read", "create", "write"] },
-        { model: "res.partner", operations: ["read", "create", "write"] },
-        { model: "mail.message", operations: ["read", "create"] },
-        { model: "mail.activity", operations: ["read", "create", "write"] },
-      ],
-    },
-  },
-  "odoo-procurement-agent": {
+    requiredModels: [
+      { model: "crm.lead", operations: ["read", "create", "write"] },
+      { model: "crm.stage", operations: ["read"] },
+      { model: "sale.order", operations: ["read", "create", "write"] },
+      { model: "res.partner", operations: ["read", "create", "write"] },
+      { model: "mail.message", operations: ["read", "create"] },
+      { model: "mail.activity", operations: ["read", "create", "write"] },
+    ],
+  }),
+  "odoo-procurement-agent": createOdooTemplate({
     iconName: "ShoppingCart",
     name: "Procurement Agent",
     description: "Compare suppliers, track purchase prices, suggest reorders",
-    allowedTools: getOdooToolsForAccessLevel("read-write"),
-    pluginId: null,
     defaultPersonality: "the-pilot",
     defaultTagline: "Compare suppliers, track purchase prices, suggest reorders",
     suggestedNames: ["Bolt", "Marcy", "Vendor", "Clyde", "Hazel", "Porter"],
@@ -508,25 +558,19 @@ ${ODOO_OUTPUT_FORMATTING}
 ${ODOO_RULES}
 - When creating purchase orders, confirm quantities and prices with the user before writing
 - Always compare at least two suppliers when recommending a purchase decision`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-write",
-      requiredModels: [
-        { model: "purchase.order", operations: ["read", "create", "write"] },
-        { model: "purchase.order.line", operations: ["read", "create", "write"] },
-        { model: "product.supplierinfo", operations: ["read", "create", "write"] },
-        { model: "stock.quant", operations: ["read"] },
-        { model: "res.partner", operations: ["read"] },
-        { model: "product.product", operations: ["read"] },
-      ],
-    },
-  },
-  "odoo-customer-service": {
+    requiredModels: [
+      { model: "purchase.order", operations: ["read", "create", "write"] },
+      { model: "purchase.order.line", operations: ["read", "create", "write"] },
+      { model: "product.supplierinfo", operations: ["read", "create", "write"] },
+      { model: "stock.quant", operations: ["read"] },
+      { model: "res.partner", operations: ["read"] },
+      { model: "product.product", operations: ["read"] },
+    ],
+  }),
+  "odoo-customer-service": createOdooTemplate({
     iconName: "Headset",
     name: "Customer Service",
     description: "Answer order inquiries, check delivery status, draft responses",
-    allowedTools: getOdooToolsForAccessLevel("read-write"),
-    pluginId: null,
     defaultPersonality: "the-coach",
     defaultTagline: "Answer order inquiries, check delivery status, draft responses",
     suggestedNames: ["Concierge", "Sam", "Joy", "Kit", "Sunny", "Casey"],
@@ -585,24 +629,18 @@ ${ODOO_RULES}
 - Always check order and delivery status before drafting a response
 - Never send mail directly — always leave replies as drafts for a human to review
 - Protect customer privacy — never expose internal notes or other customers' data`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-write",
-      requiredModels: [
-        { model: "helpdesk.ticket", operations: ["read", "create", "write"] },
-        { model: "sale.order", operations: ["read"] },
-        { model: "stock.picking", operations: ["read"] },
-        { model: "res.partner", operations: ["read"] },
-        { model: "mail.message", operations: ["read", "create"] },
-      ],
-    },
-  },
-  "odoo-hr-analyst": {
+    requiredModels: [
+      { model: "helpdesk.ticket", operations: ["read", "create", "write"] },
+      { model: "sale.order", operations: ["read"] },
+      { model: "stock.picking", operations: ["read"] },
+      { model: "res.partner", operations: ["read"] },
+      { model: "mail.message", operations: ["read", "create"] },
+    ],
+  }),
+  "odoo-hr-analyst": createOdooTemplate({
     iconName: "UserCog",
     name: "HR Analyst",
     description: "Track headcount, leave balances, attendance and contracts",
-    allowedTools: getOdooToolsForAccessLevel("read-only"),
-    pluginId: null,
     defaultPersonality: "the-butler",
     defaultTagline: "Track headcount, leave balances, attendance and contracts",
     suggestedNames: ["Mira", "Robin", "Dana", "Juno", "Ellis", "Teagan"],
@@ -644,27 +682,21 @@ ${ODOO_OUTPUT_FORMATTING}
 ${ODOO_RULES}
 - Treat HR data as highly confidential — never expose individual salaries or disciplinary history unless explicitly asked by an authorized user
 - When aggregating, prefer department/job-level summaries over individual records`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-only",
-      requiredModels: [
-        { model: "hr.employee", operations: ["read"] },
-        { model: "hr.department", operations: ["read"] },
-        { model: "hr.job", operations: ["read"] },
-        { model: "hr.leave", operations: ["read"] },
-        { model: "hr.leave.type", operations: ["read"] },
-        { model: "hr.leave.allocation", operations: ["read"] },
-        { model: "hr.attendance", operations: ["read"] },
-        { model: "hr.contract", operations: ["read"] },
-      ],
-    },
-  },
-  "odoo-project-tracker": {
+    requiredModels: [
+      { model: "hr.employee", operations: ["read"] },
+      { model: "hr.department", operations: ["read"] },
+      { model: "hr.job", operations: ["read"] },
+      { model: "hr.leave", operations: ["read"] },
+      { model: "hr.leave.type", operations: ["read"] },
+      { model: "hr.leave.allocation", operations: ["read"] },
+      { model: "hr.attendance", operations: ["read"] },
+      { model: "hr.contract", operations: ["read"] },
+    ],
+  }),
+  "odoo-project-tracker": createOdooTemplate({
     iconName: "FolderKanban",
     name: "Project Tracker",
     description: "Monitor project progress, deadlines, task load and timesheets",
-    allowedTools: getOdooToolsForAccessLevel("read-only"),
-    pluginId: null,
     defaultPersonality: "the-pilot",
     defaultTagline: "Monitor project progress, deadlines, task load and timesheets",
     suggestedNames: ["Tracker", "Milo", "Rowan", "Ida", "Beacon", "Pax"],
@@ -705,24 +737,18 @@ ${ODOO_OUTPUT_FORMATTING}
 
 ${ODOO_RULES}
 - When surfacing at-risk projects, include the project manager's name so the user knows who to contact`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-only",
-      requiredModels: [
-        { model: "project.project", operations: ["read"] },
-        { model: "project.task", operations: ["read"] },
-        { model: "project.task.type", operations: ["read"] },
-        { model: "account.analytic.line", operations: ["read"] },
-        { model: "hr.employee", operations: ["read"] },
-      ],
-    },
-  },
-  "odoo-manufacturing-planner": {
+    requiredModels: [
+      { model: "project.project", operations: ["read"] },
+      { model: "project.task", operations: ["read"] },
+      { model: "project.task.type", operations: ["read"] },
+      { model: "account.analytic.line", operations: ["read"] },
+      { model: "hr.employee", operations: ["read"] },
+    ],
+  }),
+  "odoo-manufacturing-planner": createOdooTemplate({
     iconName: "Factory",
     name: "Manufacturing Planner",
     description: "Track production orders, BOMs, work orders and component needs",
-    allowedTools: getOdooToolsForAccessLevel("read-only"),
-    pluginId: null,
     defaultPersonality: "the-pilot",
     defaultTagline: "Track production orders, BOMs, work orders and component needs",
     suggestedNames: ["Forge", "Remy", "Pike", "Iron", "Nyx", "Cogsworth"],
@@ -765,26 +791,20 @@ ${ODOO_OUTPUT_FORMATTING}
 ${ODOO_RULES}
 - Always state the planning horizon (e.g., "this week", "next 14 days") when reporting
 - Flag components with \`available_quantity\` below required quantity as blocking`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-only",
-      requiredModels: [
-        { model: "mrp.production", operations: ["read"] },
-        { model: "mrp.bom", operations: ["read"] },
-        { model: "mrp.bom.line", operations: ["read"] },
-        { model: "mrp.workorder", operations: ["read"] },
-        { model: "mrp.workcenter", operations: ["read"] },
-        { model: "stock.move", operations: ["read"] },
-        { model: "stock.quant", operations: ["read"] },
-      ],
-    },
-  },
-  "odoo-recruitment-coordinator": {
+    requiredModels: [
+      { model: "mrp.production", operations: ["read"] },
+      { model: "mrp.bom", operations: ["read"] },
+      { model: "mrp.bom.line", operations: ["read"] },
+      { model: "mrp.workorder", operations: ["read"] },
+      { model: "mrp.workcenter", operations: ["read"] },
+      { model: "stock.move", operations: ["read"] },
+      { model: "stock.quant", operations: ["read"] },
+    ],
+  }),
+  "odoo-recruitment-coordinator": createOdooTemplate({
     iconName: "UserSearch",
     name: "Recruitment Coordinator",
     description: "Track applicants, manage job pipelines, measure time-to-hire",
-    allowedTools: getOdooToolsForAccessLevel("read-write"),
-    pluginId: null,
     defaultPersonality: "the-coach",
     defaultTagline: "Track applicants, manage job pipelines, measure time-to-hire",
     suggestedNames: ["Riley", "Jordan", "Quinn", "Pax", "Sloan", "Marlo"],
@@ -830,25 +850,19 @@ ${ODOO_RULES}
 - Treat candidate data as confidential — never share details across unrelated job postings
 - When creating interview activities, always confirm the date/time and interviewer with the user first
 - Never move a candidate to "refuse" or "hired" without explicit user approval`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-write",
-      requiredModels: [
-        { model: "hr.job", operations: ["read"] },
-        { model: "hr.applicant", operations: ["read", "create", "write"] },
-        { model: "hr.recruitment.stage", operations: ["read"] },
-        { model: "hr.recruitment.source", operations: ["read"] },
-        { model: "mail.activity", operations: ["read", "create", "write"] },
-        { model: "mail.message", operations: ["read", "create"] },
-      ],
-    },
-  },
-  "odoo-subscription-manager": {
+    requiredModels: [
+      { model: "hr.job", operations: ["read"] },
+      { model: "hr.applicant", operations: ["read", "create", "write"] },
+      { model: "hr.recruitment.stage", operations: ["read"] },
+      { model: "hr.recruitment.source", operations: ["read"] },
+      { model: "mail.activity", operations: ["read", "create", "write"] },
+      { model: "mail.message", operations: ["read", "create"] },
+    ],
+  }),
+  "odoo-subscription-manager": createOdooTemplate({
     iconName: "Repeat",
     name: "Subscription Manager",
     description: "Track MRR, churn, renewals and recurring revenue",
-    allowedTools: getOdooToolsForAccessLevel("read-only"),
-    pluginId: null,
     defaultPersonality: "the-pilot",
     defaultTagline: "Track MRR, churn, renewals and recurring revenue",
     suggestedNames: ["Loop", "Renna", "Cyrus", "Echo", "Anya", "Rex"],
@@ -890,23 +904,17 @@ ${ODOO_OUTPUT_FORMATTING}
 ${ODOO_RULES}
 - Verify with \`odoo_schema\` which subscription fields your Odoo version exposes before relying on them
 - When reporting MRR, annualize it (× 12) for ARR comparisons when useful`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-only",
-      requiredModels: [
-        { model: "sale.order", operations: ["read"] },
-        { model: "sale.order.line", operations: ["read"] },
-        { model: "account.move", operations: ["read"] },
-        { model: "res.partner", operations: ["read"] },
-      ],
-    },
-  },
-  "odoo-pos-analyst": {
+    requiredModels: [
+      { model: "sale.order", operations: ["read"] },
+      { model: "sale.order.line", operations: ["read"] },
+      { model: "account.move", operations: ["read"] },
+      { model: "res.partner", operations: ["read"] },
+    ],
+  }),
+  "odoo-pos-analyst": createOdooTemplate({
     iconName: "Store",
     name: "POS Analyst",
     description: "Analyze store sales, cash sessions and payment methods",
-    allowedTools: getOdooToolsForAccessLevel("read-only"),
-    pluginId: null,
     defaultPersonality: "the-pilot",
     defaultTagline: "Analyze store sales, cash sessions and payment methods",
     suggestedNames: ["Till", "Ruby", "Cash", "Ginny", "Beans", "Olive"],
@@ -946,25 +954,19 @@ ${ODOO_OUTPUT_FORMATTING}
 ${ODOO_RULES}
 - Always scope analyses to a specific date range — "all time" is rarely what the user wants
 - Treat cash variance flags as signals, not accusations`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-only",
-      requiredModels: [
-        { model: "pos.order", operations: ["read"] },
-        { model: "pos.order.line", operations: ["read"] },
-        { model: "pos.session", operations: ["read"] },
-        { model: "pos.config", operations: ["read"] },
-        { model: "pos.payment", operations: ["read"] },
-        { model: "pos.payment.method", operations: ["read"] },
-      ],
-    },
-  },
-  "odoo-marketing-analyst": {
+    requiredModels: [
+      { model: "pos.order", operations: ["read"] },
+      { model: "pos.order.line", operations: ["read"] },
+      { model: "pos.session", operations: ["read"] },
+      { model: "pos.config", operations: ["read"] },
+      { model: "pos.payment", operations: ["read"] },
+      { model: "pos.payment.method", operations: ["read"] },
+    ],
+  }),
+  "odoo-marketing-analyst": createOdooTemplate({
     iconName: "Megaphone",
     name: "Marketing Analyst",
     description: "Measure campaign performance, open rates and conversions",
-    allowedTools: getOdooToolsForAccessLevel("read-only"),
-    pluginId: null,
     defaultPersonality: "the-pilot",
     defaultTagline: "Measure campaign performance, open rates and conversions",
     suggestedNames: ["Nova", "Flint", "Tessa", "Orbit", "Cleo", "Brio"],
@@ -1005,26 +1007,20 @@ ${ODOO_OUTPUT_FORMATTING}
 ${ODOO_RULES}
 - Always compare ratios (opened_ratio, replied_ratio) rather than raw counts — volume is misleading
 - Flag campaigns with bounce_ratio > 5% as delivery issues`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-only",
-      requiredModels: [
-        { model: "mailing.mailing", operations: ["read"] },
-        { model: "mailing.list", operations: ["read"] },
-        { model: "mailing.contact", operations: ["read"] },
-        { model: "mailing.trace", operations: ["read"] },
-        { model: "utm.campaign", operations: ["read"] },
-        { model: "utm.source", operations: ["read"] },
-        { model: "utm.medium", operations: ["read"] },
-      ],
-    },
-  },
-  "odoo-expense-auditor": {
+    requiredModels: [
+      { model: "mailing.mailing", operations: ["read"] },
+      { model: "mailing.list", operations: ["read"] },
+      { model: "mailing.contact", operations: ["read"] },
+      { model: "mailing.trace", operations: ["read"] },
+      { model: "utm.campaign", operations: ["read"] },
+      { model: "utm.source", operations: ["read"] },
+      { model: "utm.medium", operations: ["read"] },
+    ],
+  }),
+  "odoo-expense-auditor": createOdooTemplate({
     iconName: "Receipt",
     name: "Expense Auditor",
     description: "Review expense claims, flag policy violations and unusual patterns",
-    allowedTools: getOdooToolsForAccessLevel("read-only"),
-    pluginId: null,
     defaultPersonality: "the-butler",
     defaultTagline: "Review expense claims, flag policy violations and unusual patterns",
     suggestedNames: ["Audra", "Monty", "Vera", "Cross", "Prue", "Clement"],
@@ -1067,24 +1063,18 @@ ${ODOO_RULES}
 - You are read-only — never approve or refuse expenses yourself; only surface candidates for a human reviewer
 - When flagging a policy violation, always include the reference amount so the reviewer can judge the severity
 - Respect employee privacy: aggregate where possible, and never speculate about intent`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-only",
-      requiredModels: [
-        { model: "hr.expense", operations: ["read"] },
-        { model: "hr.expense.sheet", operations: ["read"] },
-        { model: "hr.employee", operations: ["read"] },
-        { model: "product.product", operations: ["read"] },
-        { model: "account.analytic.account", operations: ["read"] },
-      ],
-    },
-  },
-  "odoo-fleet-manager": {
+    requiredModels: [
+      { model: "hr.expense", operations: ["read"] },
+      { model: "hr.expense.sheet", operations: ["read"] },
+      { model: "hr.employee", operations: ["read"] },
+      { model: "product.product", operations: ["read"] },
+      { model: "account.analytic.account", operations: ["read"] },
+    ],
+  }),
+  "odoo-fleet-manager": createOdooTemplate({
     iconName: "Car",
     name: "Fleet Manager",
     description: "Track vehicles, service schedules, fuel and total cost of ownership",
-    allowedTools: getOdooToolsForAccessLevel("read-only"),
-    pluginId: null,
     defaultPersonality: "the-pilot",
     defaultTagline: "Track vehicles, service schedules, fuel and total cost of ownership",
     suggestedNames: ["Axel", "Greta", "Piston", "Ruby", "Tank", "Mika"],
@@ -1123,24 +1113,18 @@ ${ODOO_OUTPUT_FORMATTING}
 ${ODOO_RULES}
 - Always state the comparison window (e.g., "year to date", "last 12 months")
 - Flag vehicles with service costs above the fleet average — they're candidates for replacement`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-only",
-      requiredModels: [
-        { model: "fleet.vehicle", operations: ["read"] },
-        { model: "fleet.vehicle.model", operations: ["read"] },
-        { model: "fleet.vehicle.log.services", operations: ["read"] },
-        { model: "fleet.vehicle.log.contract", operations: ["read"] },
-        { model: "fleet.service.type", operations: ["read"] },
-      ],
-    },
-  },
-  "odoo-website-analyst": {
+    requiredModels: [
+      { model: "fleet.vehicle", operations: ["read"] },
+      { model: "fleet.vehicle.model", operations: ["read"] },
+      { model: "fleet.vehicle.log.services", operations: ["read"] },
+      { model: "fleet.vehicle.log.contract", operations: ["read"] },
+      { model: "fleet.service.type", operations: ["read"] },
+    ],
+  }),
+  "odoo-website-analyst": createOdooTemplate({
     iconName: "Globe",
     name: "Website Analyst",
     description: "Analyze online sales, visitors, top products and conversion",
-    allowedTools: getOdooToolsForAccessLevel("read-only"),
-    pluginId: null,
     defaultPersonality: "the-pilot",
     defaultTagline: "Analyze online sales, visitors, top products and conversion",
     suggestedNames: ["Pixel", "Hex", "Nova", "Rune", "Wilma", "Taz"],
@@ -1185,19 +1169,15 @@ ${ODOO_OUTPUT_FORMATTING}
 ${ODOO_RULES}
 - Always filter by \`website_id != false\` when reporting "online sales" — otherwise you include every sales channel
 - Abandoned cart counts are indicative, not authoritative — some drafts are legitimate internal quotes`,
-    requiresOdooConnection: true,
-    odooConfig: {
-      accessLevel: "read-only",
-      requiredModels: [
-        { model: "sale.order", operations: ["read"] },
-        { model: "sale.order.line", operations: ["read"] },
-        { model: "website.visitor", operations: ["read"] },
-        { model: "website.track", operations: ["read"] },
-        { model: "product.template", operations: ["read"] },
-        { model: "website", operations: ["read"] },
-      ],
-    },
-  },
+    requiredModels: [
+      { model: "sale.order", operations: ["read"] },
+      { model: "sale.order.line", operations: ["read"] },
+      { model: "website.visitor", operations: ["read"] },
+      { model: "website.track", operations: ["read"] },
+      { model: "product.template", operations: ["read"] },
+      { model: "website", operations: ["read"] },
+    ],
+  }),
 };
 
 export function getTemplate(id: string): AgentTemplate | undefined {
