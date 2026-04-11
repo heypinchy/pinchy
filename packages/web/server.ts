@@ -11,6 +11,7 @@ import { restartState } from "./src/server/restart-state";
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { logCapture } from "./src/lib/log-capture";
+import { startUsagePoller } from "./src/lib/usage-poller";
 
 logCapture.install();
 
@@ -295,6 +296,10 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       // config file at Pinchy startup, and OpenClaw reads it on its own startup.
       // Pushing via config.patch would cause an unnecessary internal restart
       // that breaks Telegram polling (openclaw/openclaw#47458).
+
+      // Start global usage poller. Idempotent — a reconnect won't spawn a
+      // second poller. The poller handles sessions.list() failures gracefully.
+      startUsagePoller(openclawClient!);
     });
 
     openclawClient.on("disconnected", () => {

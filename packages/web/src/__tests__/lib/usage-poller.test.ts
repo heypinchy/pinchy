@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const mockRecordUsage = vi.fn();
 const mockSelect = vi.fn();
@@ -27,7 +27,13 @@ vi.mock("@/db/schema", () => ({
   usageRecords: { _table: "usage_records" },
 }));
 
-import { parseSessionKey, pollAllSessions } from "@/lib/usage-poller";
+import {
+  parseSessionKey,
+  pollAllSessions,
+  startUsagePoller,
+  stopUsagePoller,
+  _isPollerRunning,
+} from "@/lib/usage-poller";
 
 function makeOpenClawClient(sessions: unknown[] = []) {
   return {
@@ -189,7 +195,7 @@ describe("pollAllSessions", () => {
     expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
-  it("continues processing remaining sessions when one recordUsage call throws", async () => {
+  it("does not throw when a single recordUsage call rejects", async () => {
     mockFrom._result = [
       { id: "agent-1", name: "A1" },
       { id: "agent-2", name: "A2" },
@@ -201,10 +207,77 @@ describe("pollAllSessions", () => {
       { key: "agent:agent-2:direct:u2", inputTokens: 20, outputTokens: 8 },
     ]);
 
-    await pollAllSessions(client);
-    // First call throws — the second should still be skipped because the
-    // loop body awaits and error is caught at the top level. We only assert
-    // that no exception escapes pollAllSessions.
+    await expect(pollAllSessions(client)).resolves.toBeUndefined();
     expect(mockRecordUsage).toHaveBeenCalled();
+  });
+});
+
+describe("startUsagePoller / stopUsagePoller", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockRecordUsage.mockResolvedValue(undefined);
+    mockFrom._result = [{ id: "agent-1", name: "Smithers" }];
+    stopUsagePoller();
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    stopUsagePoller();
+    vi.useRealTimers();
+  });
+
+  it("is not running before start", () => {
+    expect(_isPollerRunning()).toBe(false);
+  });
+
+  it("starts polling on startUsagePoller and marks as running", () => {
+    const client = makeOpenClawClient([]);
+    startUsagePoller(client);
+    expect(_isPollerRunning()).toBe(true);
+  });
+
+  it("calls pollAllSessions after each interval tick", async () => {
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 10, outputTokens: 5 },
+    ]);
+    startUsagePoller(client);
+
+    expect(mockRecordUsage).not.toHaveBeenCalled();
+
+    // First tick at 60s
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+
+    // Second tick at 120s
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockRecordUsage).toHaveBeenCalledTimes(2);
+  });
+
+  it("stops polling on stopUsagePoller", async () => {
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 10, outputTokens: 5 },
+    ]);
+    startUsagePoller(client);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+
+    stopUsagePoller();
+    expect(_isPollerRunning()).toBe(false);
+
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(mockRecordUsage).toHaveBeenCalledTimes(1); // no more calls after stop
+  });
+
+  it("is idempotent — multiple starts don't create duplicate intervals", async () => {
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 10, outputTokens: 5 },
+    ]);
+    startUsagePoller(client);
+    startUsagePoller(client);
+    startUsagePoller(client);
+
+    await vi.advanceTimersByTimeAsync(60_000);
+    // Three start calls, one tick → still only one recordUsage call
+    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
   });
 });
