@@ -64,9 +64,9 @@ Integration credentials are handled with the same rigor as provider API keys:
 
 ### Agent Templates
 
-Templates bundle permissions, tools, and instructions into a ready-to-use agent configuration. Instead of manually selecting access levels and models, you pick a template (e.g. "Sales Analyst" or "Procurement Agent") and Pinchy sets everything up for you.
+Templates bundle permissions, tools, and instructions into a ready-to-use agent configuration. Instead of manually selecting access levels and models, you pick a template (e.g. "Sales Analyst" or "Fleet Manager") and Pinchy sets everything up for you.
 
-Templates are only visible when at least one Odoo connection exists. Once you remove all Odoo connections, the templates disappear from the agent creation screen.
+Pinchy ships with 16 Odoo templates spanning Sales, Inventory, Finance, HR, Marketing, and E-Commerce. Templates are only visible when at least one Odoo connection exists, and each template is validated against the connected instance — if required Odoo modules aren't installed, the template is dimmed and can't be selected until you install the missing modules and re-sync.
 
 For the full list of available templates and setup instructions, see [Connect Odoo — Agent Templates](/guides/connect-odoo/#agent-templates).
 

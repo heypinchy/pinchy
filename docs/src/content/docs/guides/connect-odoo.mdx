@@ -72,23 +72,47 @@ The agent uses the Odoo tools to query your data in real time. If something does
 
 ## Agent Templates
 
-Pinchy includes pre-configured agent templates for common Odoo use cases. Instead of building an agent from scratch and manually assigning permissions, you can pick a template and have everything set up in seconds.
+Pinchy ships with 16 pre-configured agent templates for common Odoo use cases. Instead of building an agent from scratch and manually assigning permissions, you can pick a template and have everything set up in seconds.
 
-The following templates are available:
+Each template auto-configures the agent's permissions, tools, and system instructions. All you need to do is select which Odoo connection the agent should use. During creation, Pinchy validates the API user's access rights against the models the agent needs. If some models are missing (e.g. the required Odoo module is not installed), Pinchy warns you so you can adjust the Odoo configuration or pick a different template.
 
-- **Sales Analyst** — Revenue analysis, customer rankings, order trends
-- **Inventory Scout** — Stock monitoring, slow-mover detection, fulfillment tracking
-- **Finance Controller** — Invoice tracking, payment status, margin analysis
-- **CRM & Sales Assistant** — Pipeline management, lead follow-up, customer data
-- **Procurement Agent** — Supplier comparison, price tracking, reorder suggestions
-- **Customer Service** — Order status inquiries, ticket management, response drafting
+### Sales & Customer Operations
 
-Each template auto-configures the agent's permissions, tools, and system instructions. All you need to do is select which Odoo connection the agent should use.
+- **Sales Analyst** _(read-only)_ — Revenue analysis, customer rankings, order trends, and product margin analysis using standard cost.
+- **CRM & Sales Assistant** _(read-write)_ — Pipeline management, lead follow-up, opportunity updates and customer data maintenance.
+- **Customer Service** _(read-write)_ — Answers order inquiries and drafts responses entirely through Odoo's mail alias and discussion thread, so agents never need external email access.
+- **Subscription Manager** _(read-only)_ — Tracks MRR, churn, renewal dates and recurring revenue across your subscription base.
 
-During creation, templates validate the API user's access rights against the operations the agent needs. If some operations are unavailable (e.g. the API user lacks write access), Pinchy warns you so you can adjust the Odoo user's permissions or pick a different template.
+### Inventory & Supply Chain
+
+- **Inventory Scout** _(read-only)_ — Stock monitoring, slow-mover detection, warehouse utilization and fulfillment speed.
+- **Procurement Agent** _(read-write)_ — Supplier comparison, price tracking, purchase order management and reorder suggestions.
+- **Manufacturing Planner** _(read-only)_ — Production order progress, BOM analysis, work center load and component shortages.
+- **Fleet Manager** _(read-only)_ — Vehicle tracking, service schedules, fuel consumption and total cost of ownership per vehicle.
+
+### Finance
+
+- **Finance Controller** _(read-only)_ — Invoice tracking, payment status, aging analysis and margin reporting.
+- **Expense Auditor** _(read-only)_ — Reviews expense claims, flags policy violations, detects duplicates and unusual spending patterns.
+
+### Human Resources
+
+- **HR Analyst** _(read-only)_ — Headcount reporting, leave balances, attendance tracking and contract overviews.
+- **Recruitment Coordinator** _(read-write)_ — Applicant tracking, job pipeline management, time-to-hire metrics and interview scheduling.
+- **Project Tracker** _(read-only)_ — Monitors project progress, deadlines, task load per employee and timesheet entries.
+
+### Marketing & E-Commerce
+
+- **Marketing Analyst** _(read-only)_ — Measures email campaign performance, open rates, click-throughs and UTM conversions.
+- **POS Analyst** _(read-only)_ — Analyzes point-of-sale revenue, cash sessions, payment methods and top-selling products.
+- **Website Analyst** _(read-only)_ — Tracks online sales, visitor behavior, top products and conversion funnels.
 
 :::tip
-The read-only templates — **Sales Analyst**, **Inventory Scout**, and **Finance Controller** — are safe to deploy immediately since they only read data. The read-write templates — **CRM & Sales Assistant**, **Procurement Agent**, and **Customer Service** — can create or modify records, so review their permissions before deploying them to your team.
+Read-only templates are safe to deploy immediately — they can't modify your data. Read-write templates (**CRM & Sales Assistant**, **Procurement Agent**, **Customer Service**, **Recruitment Coordinator**) can create or modify records, so review their permissions and test them in a sandbox before rolling them out to your team.
+:::
+
+:::note
+Templates depend on specific Odoo modules being installed. For example, **Fleet Manager** requires the Fleet module, **Manufacturing Planner** requires MRP, and **Subscription Manager** works best with the Subscriptions module. If a template can't be activated, check the missing models list shown during agent creation and install the corresponding module in Odoo.
 :::
 
 ## What's next
