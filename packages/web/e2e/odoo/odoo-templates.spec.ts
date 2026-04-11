@@ -46,6 +46,41 @@ test.describe.serial("Odoo Template Creation", () => {
     await expect(page.getByText("Sales Analyst")).toBeVisible();
   });
 
+  test("all 16 Odoo templates render in the template selector", async ({ page }) => {
+    // Smoke test — ensures every template from AGENT_TEMPLATES surfaces through
+    // /api/templates to the UI. Dimmed/unavailable templates still render, so
+    // this test doesn't depend on the mock exposing every model.
+    await loginViaUI(page);
+    await page.goto("/");
+    await page.getByText(/new agent/i).click();
+    await expect(page.getByText("Sales Analyst")).toBeVisible({ timeout: 10000 });
+
+    const expectedTemplates = [
+      // Original 6
+      "Sales Analyst",
+      "Inventory Scout",
+      "Finance Controller",
+      "CRM & Sales Assistant",
+      "Procurement Agent",
+      "Customer Service",
+      // 10 new templates
+      "HR Analyst",
+      "Project Tracker",
+      "Manufacturing Planner",
+      "Recruitment Coordinator",
+      "Subscription Manager",
+      "POS Analyst",
+      "Marketing Analyst",
+      "Expense Auditor",
+      "Fleet Manager",
+      "Website Analyst",
+    ];
+
+    for (const name of expectedTemplates) {
+      await expect(page.getByText(name, { exact: true })).toBeVisible();
+    }
+  });
+
   test("selecting Odoo template shows connection dropdown", async ({ page }) => {
     await loginViaUI(page);
     await page.goto("/");
