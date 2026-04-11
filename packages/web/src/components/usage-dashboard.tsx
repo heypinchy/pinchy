@@ -336,17 +336,19 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
 
           {summary?.totals && (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-xs font-medium text-muted-foreground">
-                    Chat Tokens
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="pt-0">
-                  <p className="text-lg font-semibold">{formatTokens(chatBucket.tokens)}</p>
-                  <p className="text-xs text-muted-foreground">{formatCost(chatBucket.cost)}</p>
-                </CardContent>
-              </Card>
+              {chatBucket.tokens > 0 && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs font-medium text-muted-foreground">
+                      Chat Tokens
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    <p className="text-lg font-semibold">{formatTokens(chatBucket.tokens)}</p>
+                    <p className="text-xs text-muted-foreground">{formatCost(chatBucket.cost)}</p>
+                  </CardContent>
+                </Card>
+              )}
               {systemBucket.tokens > 0 && (
                 <Card>
                   <CardHeader className="pb-2">

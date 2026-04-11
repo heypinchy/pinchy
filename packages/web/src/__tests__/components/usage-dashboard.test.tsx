@@ -216,6 +216,37 @@ describe("UsageDashboard", () => {
       expect(screen.getByText("Plugin Tokens")).toBeInTheDocument();
     });
 
+    it("hides chat card when chat tokens are zero (same rule as system/plugin cards)", async () => {
+      // The source breakdown must stay internally consistent: all three
+      // cards follow the same "hide when zero" rule. Previously Chat was
+      // always rendered, which created an empty placeholder for the
+      // (admittedly unusual) system-only / plugin-only scenarios.
+      mockBothEndpoints({
+        agents: mockSummaryResponse.agents,
+        totals: {
+          chat: { inputTokens: "0", outputTokens: "0", cost: "0" },
+          system: {
+            inputTokens: "50000",
+            outputTokens: "10000",
+            cost: "0.40",
+          },
+          plugin: {
+            inputTokens: "100000",
+            outputTokens: "20000",
+            cost: "0.92",
+          },
+        },
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getByText("System Tokens")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText("Chat Tokens")).not.toBeInTheDocument();
+      expect(screen.getByText("Plugin Tokens")).toBeInTheDocument();
+    });
+
     it("hides plugin card when plugin tokens are zero", async () => {
       mockBothEndpoints({
         agents: mockSummaryResponse.agents,
