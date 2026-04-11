@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { validateTelegramBotToken } from "@/lib/telegram";
+import { validateTelegramBotToken, hasMainTelegramBot } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
 import { updateTelegramChannelConfig } from "@/lib/openclaw-config";
@@ -17,13 +17,17 @@ export async function GET(req: Request, { params }: { params: Promise<{ agentId:
   if (admin instanceof NextResponse) return admin;
   const { agentId } = await params;
 
-  const botToken = await getSetting(`telegram_bot_token:${agentId}`);
+  const [botToken, mainBotConfigured] = await Promise.all([
+    getSetting(`telegram_bot_token:${agentId}`),
+    hasMainTelegramBot(),
+  ]);
+
   if (!botToken) {
-    return NextResponse.json({ configured: false });
+    return NextResponse.json({ configured: false, mainBotConfigured });
   }
 
   const hint = botToken.slice(-4);
-  return NextResponse.json({ configured: true, hint });
+  return NextResponse.json({ configured: true, hint, mainBotConfigured });
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ agentId: string }> }) {

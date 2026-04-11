@@ -10,8 +10,10 @@ vi.mock("@/lib/api-auth", () => ({
 }));
 
 const mockValidateTelegramBotToken = vi.fn();
+const mockHasMainTelegramBot = vi.fn().mockResolvedValue(true);
 vi.mock("@/lib/telegram", () => ({
   validateTelegramBotToken: (...args: unknown[]) => mockValidateTelegramBotToken(...args),
+  hasMainTelegramBot: (...args: unknown[]) => mockHasMainTelegramBot(...args),
 }));
 
 vi.mock("@/lib/settings", () => ({
@@ -97,7 +99,7 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
     const data = await response.json();
 
     expect(response.status).toBe(200);
-    expect(data).toEqual({ configured: false });
+    expect(data).toEqual({ configured: false, mainBotConfigured: true });
   });
 
   it("returns configured: true with hint when token exists", async () => {
@@ -109,7 +111,46 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
     const data = await response.json();
 
     expect(response.status).toBe(200);
-    expect(data).toEqual({ configured: true, hint: "xY9z" });
+    expect(data).toEqual({ configured: true, hint: "xY9z", mainBotConfigured: true });
+  });
+
+  it("returns mainBotConfigured: true when the main bot exists", async () => {
+    mockHasMainTelegramBot.mockResolvedValueOnce(true);
+    vi.mocked(getSetting).mockResolvedValueOnce(null);
+
+    const response = await GET(new Request("http://localhost"), {
+      params: mockParams,
+    });
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data).toEqual({ configured: false, mainBotConfigured: true });
+  });
+
+  it("returns mainBotConfigured: false when the main bot is missing", async () => {
+    mockHasMainTelegramBot.mockResolvedValueOnce(false);
+    vi.mocked(getSetting).mockResolvedValueOnce(null);
+
+    const response = await GET(new Request("http://localhost"), {
+      params: mockParams,
+    });
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data).toEqual({ configured: false, mainBotConfigured: false });
+  });
+
+  it("still returns hint and mainBotConfigured when agent has its own bot", async () => {
+    mockHasMainTelegramBot.mockResolvedValueOnce(true);
+    vi.mocked(getSetting).mockResolvedValueOnce("123456:ABC-some-token-xY9z");
+
+    const response = await GET(new Request("http://localhost"), {
+      params: mockParams,
+    });
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data).toEqual({ configured: true, hint: "xY9z", mainBotConfigured: true });
   });
 
   it("returns 401 when not authenticated", async () => {
