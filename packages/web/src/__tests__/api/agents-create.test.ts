@@ -117,6 +117,14 @@ vi.mock("@/lib/personality-presets", () => ({
         greetingMessage: "Good day. I'm {name}. How may I be of assistance?",
         soulMd: "# Butler SOUL.md",
       },
+      "the-pilot": {
+        greetingMessage: null,
+        soulMd: "# Pilot SOUL.md",
+      },
+      "the-coach": {
+        greetingMessage: "Hey, {user}! I'm {name}. What are you working on?",
+        soulMd: "# Coach SOUL.md",
+      },
     };
     return presets[id];
   }),
@@ -333,6 +341,34 @@ describe("POST /api/agents", () => {
           "Hello! I'm HR Knowledge Base, and I'm here to help you find answers in your documents.",
         personalityPresetId: "the-professor",
       })
+    );
+  });
+
+  it("should use template greeting when template defines defaultGreetingMessage", async () => {
+    mockValidateOdooTemplate.mockReturnValue({
+      valid: true,
+      warnings: [],
+      availableModels: [],
+      missingModels: [],
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Sales Bot",
+        templateId: "odoo-sales-analyst",
+        connectionId: "conn-1",
+      }),
+    });
+
+    await POST(request);
+
+    const insertedValues = insertValuesMock.mock.calls[0]?.[0];
+    // Template greeting should win over preset greeting
+    expect(insertedValues.greetingMessage).toContain("revenue");
+    // Should NOT be the generic analyst greeting
+    expect(insertedValues.greetingMessage).not.toBe(
+      "Hi. I'm Sales Bot, your data analyst. What numbers should we look at?"
     );
   });
 

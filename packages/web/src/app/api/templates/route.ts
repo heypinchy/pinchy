@@ -5,6 +5,8 @@ import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
+import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
+import { getConnectionModels } from "@/lib/integrations/odoo-connection-models";
 
 export async function GET(request: NextRequest) {
   const session = await auth.api.getSession({ headers: await headers() });
@@ -20,6 +22,9 @@ export async function GET(request: NextRequest) {
 
   const hasOdooConnection = odooConnections.length > 0;
 
+  // Load connection models for availability check
+  const connectionModels = hasOdooConnection ? await getConnectionModels() : null;
+
   const templates = Object.entries(AGENT_TEMPLATES)
     .filter(([, template]) => {
       if (template.requiresOdooConnection && !hasOdooConnection) {
@@ -27,15 +32,25 @@ export async function GET(request: NextRequest) {
       }
       return true;
     })
-    .map(([id, template]) => ({
-      id,
-      name: template.name,
-      description: template.description,
-      requiresDirectories: template.pluginId !== null,
-      requiresOdooConnection: template.requiresOdooConnection ?? false,
-      odooAccessLevel: template.odooConfig?.accessLevel,
-      defaultTagline: template.defaultTagline,
-    }));
+    .map(([id, template]) => {
+      let available = true;
+
+      if (template.odooConfig && connectionModels) {
+        const validation = validateOdooTemplate(template.odooConfig, connectionModels);
+        available = validation.valid;
+      }
+
+      return {
+        id,
+        name: template.name,
+        description: template.description,
+        requiresDirectories: template.pluginId !== null,
+        requiresOdooConnection: template.requiresOdooConnection ?? false,
+        odooAccessLevel: template.odooConfig?.accessLevel,
+        defaultTagline: template.defaultTagline,
+        available,
+      };
+    });
 
   return NextResponse.json({ templates });
 }

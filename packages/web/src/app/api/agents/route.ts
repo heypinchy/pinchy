@@ -114,7 +114,10 @@ export async function POST(request: NextRequest) {
       tagline: tagline || template.defaultTagline || null,
       avatarSeed: generateAvatarSeed(),
       personalityPresetId: template.defaultPersonality,
-      greetingMessage: resolveGreetingMessage(preset?.greetingMessage ?? null, name.trim()),
+      greetingMessage: resolveGreetingMessage(
+        template.defaultGreetingMessage ?? preset?.greetingMessage ?? null,
+        name.trim()
+      ),
     })
     .returning();
 

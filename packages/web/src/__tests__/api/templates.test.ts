@@ -35,7 +35,13 @@ vi.mock("@/db/schema", () => ({
   integrationConnections: {
     type: "type",
     id: "id",
+    data: "data",
   },
+}));
+
+const mockGetConnectionModels = vi.fn();
+vi.mock("@/lib/integrations/odoo-connection-models", () => ({
+  getConnectionModels: (...args: unknown[]) => mockGetConnectionModels(...args),
 }));
 
 import { GET } from "@/app/api/templates/route";
@@ -46,6 +52,7 @@ describe("GET /api/templates", () => {
     vi.clearAllMocks();
     // Default: no Odoo connections
     mockLimit.mockResolvedValue([]);
+    mockGetConnectionModels.mockResolvedValue(null);
   });
 
   it("should return available templates", async () => {
@@ -119,6 +126,75 @@ describe("GET /api/templates", () => {
       (t: { requiresOdooConnection: boolean }) => t.requiresOdooConnection
     );
     expect(odooTemplates).toHaveLength(0);
+  });
+
+  it("marks odoo templates as available when all required models exist", async () => {
+    mockLimit.mockResolvedValue([{ id: "conn-1" }]);
+    mockGetConnectionModels.mockResolvedValue([
+      {
+        model: "sale.order",
+        name: "Sales Order",
+        access: { read: true, create: true, write: true, delete: false },
+      },
+      {
+        model: "sale.order.line",
+        name: "Sales Order Line",
+        access: { read: true, create: false, write: false, delete: false },
+      },
+      {
+        model: "res.partner",
+        name: "Contact",
+        access: { read: true, create: true, write: true, delete: false },
+      },
+      {
+        model: "product.template",
+        name: "Product Template",
+        access: { read: true, create: false, write: false, delete: false },
+      },
+      {
+        model: "product.product",
+        name: "Product",
+        access: { read: true, create: false, write: false, delete: false },
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const salesAnalyst = body.templates.find((t: { id: string }) => t.id === "odoo-sales-analyst");
+    expect(salesAnalyst.available).toBe(true);
+  });
+
+  it("marks odoo templates as unavailable when required models are missing", async () => {
+    mockLimit.mockResolvedValue([{ id: "conn-1" }]);
+    // Only provide res.partner — sale.order etc. are missing
+    mockGetConnectionModels.mockResolvedValue([
+      {
+        model: "res.partner",
+        name: "Contact",
+        access: { read: true, create: true, write: true, delete: false },
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const salesAnalyst = body.templates.find((t: { id: string }) => t.id === "odoo-sales-analyst");
+    expect(salesAnalyst.available).toBe(false);
+  });
+
+  it("marks non-odoo templates as always available", async () => {
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const kb = body.templates.find((t: { id: string }) => t.id === "knowledge-base");
+    expect(kb.available).toBe(true);
+
+    const custom = body.templates.find((t: { id: string }) => t.id === "custom");
+    expect(custom.available).toBe(true);
   });
 
   it("always includes non-odoo templates", async () => {

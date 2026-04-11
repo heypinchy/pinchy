@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -30,7 +30,7 @@ import { DocsLink } from "@/components/docs-link";
 import { ArrowLeft, ExternalLink, Info, AlertTriangle } from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
-import { getTemplate, type OdooTemplateConfig } from "@/lib/agent-templates";
+import { getTemplate, pickSuggestedName, type OdooTemplateConfig } from "@/lib/agent-templates";
 import { autoSelectConnection, type OdooConnection } from "@/lib/odoo-connection-selection";
 
 interface Template {
@@ -75,16 +75,23 @@ export function NewAgentForm() {
   const [selectedTemplate, setSelectedTemplateState] = useState<string | null>(
     searchParams.get("template")
   );
+
+  // Sync local state with URL (handles browser Back/Forward)
+  useEffect(() => {
+    const urlTemplate = searchParams.get("template");
+    setSelectedTemplateState(urlTemplate);
+  }, [searchParams]);
+
   const setSelectedTemplate = useCallback(
     (templateId: string | null) => {
       setSelectedTemplateState(templateId);
-      const params = new URLSearchParams(searchParams.toString());
       if (templateId) {
+        const params = new URLSearchParams(searchParams.toString());
         params.set("template", templateId);
+        router.push(`/agents/new?${params.toString()}`);
       } else {
-        params.delete("template");
+        router.replace(`/agents/new`);
       }
-      router.replace(`/agents/new${params.toString() ? `?${params.toString()}` : ""}`);
     },
     [router, searchParams]
   );
@@ -104,6 +111,8 @@ export function NewAgentForm() {
     resolver: zodResolver(agentFormSchema),
     defaultValues: { name: "", tagline: "" },
   });
+
+  const nameInputRef = useRef<HTMLInputElement | null>(null);
 
   const fetchData = useCallback(async () => {
     const templatesRes = await fetch("/api/templates");
@@ -194,7 +203,7 @@ export function NewAgentForm() {
     setValidationResult(result);
   }, [selectedConnectionId, selectedTemplate, odooConnections]);
 
-  // Reset directory selection and pre-fill tagline when switching templates
+  // Reset directory selection and pre-fill tagline/name when switching templates
   useEffect(() => {
     setSelectedPaths([]);
     setDirectories([]);
@@ -203,6 +212,29 @@ export function NewAgentForm() {
     setValidationResult(null);
     if (selectedTemplateObj) {
       form.setValue("tagline", selectedTemplateObj.defaultTagline || "");
+    }
+
+    // Pre-fill name with a suggested name (except for custom template)
+    if (selectedTemplate && selectedTemplate !== "custom") {
+      (async () => {
+        try {
+          const res = await fetch("/api/agents");
+          const existingNames: string[] = res.ok
+            ? ((await res.json()) as Array<{ name: string }>).map((a) => a.name)
+            : [];
+          const suggested = pickSuggestedName(selectedTemplate, existingNames);
+          if (suggested) {
+            form.setValue("name", suggested);
+            // Select all text so users can overtype immediately.
+            // Defer past React's commit so the DOM reflects the new value.
+            setTimeout(() => nameInputRef.current?.select(), 0);
+          }
+        } catch {
+          // Ignore — user can still type a name manually
+        }
+      })();
+    } else if (selectedTemplate === "custom") {
+      form.setValue("name", "");
     }
   }, [selectedTemplate]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -287,9 +319,14 @@ export function NewAgentForm() {
                         <FormLabel>Name</FormLabel>
                         <FormControl>
                           <Input
-                            placeholder="e.g. HR Knowledge Base"
+                            placeholder="e.g. Smithers"
                             maxLength={AGENT_NAME_MAX_LENGTH}
+                            autoFocus
                             {...field}
+                            ref={(el) => {
+                              field.ref(el);
+                              nameInputRef.current = el;
+                            }}
                           />
                         </FormControl>
                         <FormMessage />

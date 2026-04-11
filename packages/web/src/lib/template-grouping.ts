@@ -6,24 +6,36 @@ export interface TemplateItem {
   requiresOdooConnection?: boolean;
   odooAccessLevel?: string;
   defaultTagline: string | null;
+  available?: boolean;
 }
 
 export interface GroupedTemplates {
-  standard: TemplateItem[];
+  documents: TemplateItem[];
   odoo: TemplateItem[];
+  custom: TemplateItem | null;
 }
 
 export function groupTemplates(templates: TemplateItem[]): GroupedTemplates {
-  const standard: TemplateItem[] = [];
+  const documents: TemplateItem[] = [];
   const odoo: TemplateItem[] = [];
+  let custom: TemplateItem | null = null;
 
   for (const template of templates) {
-    if (template.requiresOdooConnection) {
+    if (template.id === "custom") {
+      custom = template;
+    } else if (template.requiresOdooConnection) {
       odoo.push(template);
     } else {
-      standard.push(template);
+      documents.push(template);
     }
   }
 
-  return { standard, odoo };
+  // Sort: available templates first
+  odoo.sort((a, b) => {
+    const aAvail = a.available !== false ? 1 : 0;
+    const bAvail = b.available !== false ? 1 : 0;
+    return bAvail - aAvail;
+  });
+
+  return { documents, odoo, custom };
 }

@@ -4,6 +4,7 @@ import {
   getTemplate,
   getTemplateList,
   generateAgentsMd,
+  pickSuggestedName,
 } from "@/lib/agent-templates";
 
 describe("agent-templates", () => {
@@ -110,6 +111,89 @@ describe("generateAgentsMd", () => {
   });
 });
 
+describe("Document templates", () => {
+  const DOCUMENT_TEMPLATE_IDS = [
+    "contract-analyzer",
+    "resume-screener",
+    "proposal-comparator",
+    "compliance-checker",
+    "onboarding-guide",
+  ];
+
+  it("all 5 document templates exist", () => {
+    for (const id of DOCUMENT_TEMPLATE_IDS) {
+      expect(getTemplate(id)).toBeDefined();
+    }
+  });
+
+  it("all document templates use pinchy-files plugin", () => {
+    for (const id of DOCUMENT_TEMPLATE_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.pluginId).toBe("pinchy-files");
+      expect(t.allowedTools).toEqual(["pinchy_ls", "pinchy_read"]);
+    }
+  });
+
+  it("all document templates have non-null defaultAgentsMd", () => {
+    for (const id of DOCUMENT_TEMPLATE_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.defaultAgentsMd).toBeTruthy();
+      expect(t.defaultAgentsMd!.length).toBeGreaterThan(100);
+    }
+  });
+
+  it("all document templates have a defaultGreetingMessage", () => {
+    for (const id of DOCUMENT_TEMPLATE_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.defaultGreetingMessage).toBeTruthy();
+    }
+  });
+
+  it("all document templates have a defaultTagline", () => {
+    for (const id of DOCUMENT_TEMPLATE_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.defaultTagline).toBeTruthy();
+    }
+  });
+
+  it("contract-analyzer instructions mention contracts and clauses", () => {
+    const t = getTemplate("contract-analyzer")!;
+    expect(t.defaultAgentsMd).toMatch(/contract/i);
+    expect(t.defaultAgentsMd).toMatch(/clause/i);
+  });
+
+  it("resume-screener instructions mention candidates and qualifications", () => {
+    const t = getTemplate("resume-screener")!;
+    expect(t.defaultAgentsMd).toMatch(/candidate|applicant|resume/i);
+    expect(t.defaultAgentsMd).toMatch(/qualification|skill|experience/i);
+  });
+
+  it("proposal-comparator instructions mention proposals and comparison", () => {
+    const t = getTemplate("proposal-comparator")!;
+    expect(t.defaultAgentsMd).toMatch(/proposal|offer|bid/i);
+    expect(t.defaultAgentsMd).toMatch(/compar/i);
+  });
+
+  it("compliance-checker instructions mention regulations and compliance", () => {
+    const t = getTemplate("compliance-checker")!;
+    expect(t.defaultAgentsMd).toMatch(/compliance|regulation|policy/i);
+    expect(t.defaultAgentsMd).toMatch(/gap|violation|requirement/i);
+  });
+
+  it("onboarding-guide instructions mention onboarding and new employees", () => {
+    const t = getTemplate("onboarding-guide")!;
+    expect(t.defaultAgentsMd).toMatch(/onboarding|new (employee|team member|hire)/i);
+    expect(t.defaultAgentsMd).toMatch(/process|procedure|guide/i);
+  });
+
+  it("document templates do not require odoo connection", () => {
+    for (const id of DOCUMENT_TEMPLATE_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.requiresOdooConnection).toBeFalsy();
+    }
+  });
+});
+
 describe("Odoo templates", () => {
   it("all 6 odoo templates exist", () => {
     const ids = [
@@ -157,7 +241,7 @@ describe("Odoo templates", () => {
 
   it("getTemplateList includes all odoo templates", () => {
     const list = getTemplateList();
-    expect(list.length).toBeGreaterThanOrEqual(8); // 2 existing + 6 new
+    expect(list.length).toBeGreaterThanOrEqual(13); // 2 original + 5 document + 6 odoo
     expect(list.some((t) => t.id === "odoo-sales-analyst")).toBe(true);
     expect(list.some((t) => t.id === "odoo-customer-service")).toBe(true);
   });
@@ -190,6 +274,22 @@ describe("Odoo templates", () => {
     expect(t.defaultAgentsMd).toContain("res.partner");
   });
 
+  it("sales analyst AGENTS.md instructs on product margin calculation", () => {
+    const t = getTemplate("odoo-sales-analyst")!;
+    // Margin = list_price (sale) − standard_price (cost) per product
+    expect(t.defaultAgentsMd).toContain("standard_price");
+    expect(t.defaultAgentsMd).toContain("list_price");
+    expect(t.defaultAgentsMd).toMatch(/margin/i);
+  });
+
+  it("sales analyst requires product.template for margin analysis", () => {
+    const t = getTemplate("odoo-sales-analyst")!;
+    const hasProductTemplate = t.odooConfig!.requiredModels.some(
+      (m) => m.model === "product.template"
+    );
+    expect(hasProductTemplate).toBe(true);
+  });
+
   it("inventory scout AGENTS.md mentions stock models", () => {
     const t = getTemplate("odoo-inventory-scout")!;
     expect(t.defaultAgentsMd).toContain("stock.quant");
@@ -220,6 +320,24 @@ describe("Odoo templates", () => {
     expect(t.defaultAgentsMd).toContain("sale.order");
   });
 
+  it("customer service AGENTS.md explains that incoming emails arrive via Odoo mail alias", () => {
+    const t = getTemplate("odoo-customer-service")!;
+    // Make clear we rely on Odoo-native email routing, not external IMAP/Gmail
+    expect(t.defaultAgentsMd).toMatch(/mail alias/i);
+  });
+
+  it("customer service AGENTS.md does not imply external email integrations", () => {
+    const t = getTemplate("odoo-customer-service")!;
+    // Should not suggest we read from Gmail, IMAP, Outlook, etc.
+    expect(t.defaultAgentsMd).not.toMatch(/\b(gmail|imap|outlook|smtp inbox)\b/i);
+  });
+
+  it("customer service AGENTS.md documents the incoming-email workflow", () => {
+    const t = getTemplate("odoo-customer-service")!;
+    // Should document the flow: incoming mail → ticket/message → reply via Odoo
+    expect(t.defaultAgentsMd).toMatch(/incoming/i);
+  });
+
   it("all odoo AGENTS.md contain query instructions", () => {
     const ids = [
       "odoo-sales-analyst",
@@ -234,5 +352,213 @@ describe("Odoo templates", () => {
       expect(t.defaultAgentsMd).toContain("odoo_schema");
       expect(t.defaultAgentsMd).toContain("odoo_read");
     }
+  });
+});
+
+describe("suggestedNames", () => {
+  it("all templates except custom have suggestedNames", () => {
+    for (const [id, template] of Object.entries(AGENT_TEMPLATES)) {
+      if (id === "custom") {
+        expect(template.suggestedNames).toBeUndefined();
+      } else {
+        expect(template.suggestedNames).toBeDefined();
+        expect(template.suggestedNames!.length).toBeGreaterThanOrEqual(5);
+      }
+    }
+  });
+});
+
+describe("Additional Odoo templates (10 new)", () => {
+  const NEW_ODOO_TEMPLATE_IDS = [
+    "odoo-hr-analyst",
+    "odoo-project-tracker",
+    "odoo-manufacturing-planner",
+    "odoo-recruitment-coordinator",
+    "odoo-subscription-manager",
+    "odoo-pos-analyst",
+    "odoo-marketing-analyst",
+    "odoo-expense-auditor",
+    "odoo-fleet-manager",
+    "odoo-website-analyst",
+  ] as const;
+
+  it("all 10 new odoo templates exist", () => {
+    for (const id of NEW_ODOO_TEMPLATE_IDS) {
+      expect(getTemplate(id), `missing template: ${id}`).toBeDefined();
+    }
+  });
+
+  it("all new templates require an Odoo connection", () => {
+    for (const id of NEW_ODOO_TEMPLATE_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.requiresOdooConnection).toBe(true);
+    }
+  });
+
+  it("all new templates have a valid odooConfig with required models", () => {
+    for (const id of NEW_ODOO_TEMPLATE_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.odooConfig).toBeDefined();
+      expect(["read-only", "read-write"]).toContain(t.odooConfig!.accessLevel);
+      expect(t.odooConfig!.requiredModels.length).toBeGreaterThan(0);
+      for (const m of t.odooConfig!.requiredModels) {
+        expect(m).toHaveProperty("model");
+        expect(m).toHaveProperty("operations");
+        expect(m.operations.length).toBeGreaterThan(0);
+      }
+    }
+  });
+
+  it("all new templates have non-trivial AGENTS.md instructions", () => {
+    for (const id of NEW_ODOO_TEMPLATE_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.defaultAgentsMd).toBeTruthy();
+      expect(t.defaultAgentsMd!.length).toBeGreaterThan(200);
+      expect(t.defaultAgentsMd).toContain("odoo_schema");
+      expect(t.defaultAgentsMd).toContain("odoo_read");
+    }
+  });
+
+  it("all new templates have a defaultTagline and greeting message", () => {
+    for (const id of NEW_ODOO_TEMPLATE_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.defaultTagline).toBeTruthy();
+      expect(t.defaultGreetingMessage).toBeTruthy();
+    }
+  });
+
+  it("all new templates have suggestedNames with at least 5 entries", () => {
+    for (const id of NEW_ODOO_TEMPLATE_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.suggestedNames).toBeDefined();
+      expect(t.suggestedNames!.length).toBeGreaterThanOrEqual(5);
+    }
+  });
+
+  it("allowedTools respect the accessLevel", () => {
+    for (const id of NEW_ODOO_TEMPLATE_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.allowedTools).toContain("odoo_schema");
+      expect(t.allowedTools).toContain("odoo_read");
+      if (t.odooConfig!.accessLevel === "read-only") {
+        expect(t.allowedTools).not.toContain("odoo_create");
+        expect(t.allowedTools).not.toContain("odoo_write");
+      }
+      if (t.odooConfig!.accessLevel === "read-write") {
+        expect(t.allowedTools).toContain("odoo_create");
+        expect(t.allowedTools).toContain("odoo_write");
+      }
+      expect(t.allowedTools).not.toContain("odoo_delete");
+    }
+  });
+
+  // Domain-specific assertions: each template must mention its signature models
+  it("HR Analyst mentions hr.employee and hr.leave", () => {
+    const t = getTemplate("odoo-hr-analyst")!;
+    expect(t.defaultAgentsMd).toContain("hr.employee");
+    expect(t.defaultAgentsMd).toContain("hr.leave");
+  });
+
+  it("Project Tracker mentions project.project and project.task", () => {
+    const t = getTemplate("odoo-project-tracker")!;
+    expect(t.defaultAgentsMd).toContain("project.project");
+    expect(t.defaultAgentsMd).toContain("project.task");
+  });
+
+  it("Manufacturing Planner mentions mrp.production and mrp.bom", () => {
+    const t = getTemplate("odoo-manufacturing-planner")!;
+    expect(t.defaultAgentsMd).toContain("mrp.production");
+    expect(t.defaultAgentsMd).toContain("mrp.bom");
+  });
+
+  it("Recruitment Coordinator mentions hr.applicant and hr.job (read-write)", () => {
+    const t = getTemplate("odoo-recruitment-coordinator")!;
+    expect(t.defaultAgentsMd).toContain("hr.applicant");
+    expect(t.defaultAgentsMd).toContain("hr.job");
+    expect(t.odooConfig!.accessLevel).toBe("read-write");
+  });
+
+  it("Subscription Manager mentions sale.order with recurring/subscription context", () => {
+    const t = getTemplate("odoo-subscription-manager")!;
+    expect(t.defaultAgentsMd).toMatch(/sale\.order|sale\.subscription/);
+    expect(t.defaultAgentsMd).toMatch(/recurring|subscription|MRR|churn/i);
+  });
+
+  it("POS Analyst mentions pos.order and pos.session", () => {
+    const t = getTemplate("odoo-pos-analyst")!;
+    expect(t.defaultAgentsMd).toContain("pos.order");
+    expect(t.defaultAgentsMd).toContain("pos.session");
+  });
+
+  it("Marketing Analyst mentions mailing.mailing and mailing.trace", () => {
+    const t = getTemplate("odoo-marketing-analyst")!;
+    expect(t.defaultAgentsMd).toContain("mailing.mailing");
+    expect(t.defaultAgentsMd).toContain("mailing.trace");
+  });
+
+  it("Expense Auditor mentions hr.expense and policy/flag language", () => {
+    const t = getTemplate("odoo-expense-auditor")!;
+    expect(t.defaultAgentsMd).toContain("hr.expense");
+    expect(t.defaultAgentsMd).toMatch(/policy|flag|violat|suspicious|unusual/i);
+  });
+
+  it("Fleet Manager mentions fleet.vehicle and service log models", () => {
+    const t = getTemplate("odoo-fleet-manager")!;
+    expect(t.defaultAgentsMd).toContain("fleet.vehicle");
+    expect(t.defaultAgentsMd).toMatch(/fleet\.vehicle\.log/);
+  });
+
+  it("Website Analyst mentions website_id filter on sale.order", () => {
+    const t = getTemplate("odoo-website-analyst")!;
+    expect(t.defaultAgentsMd).toContain("sale.order");
+    expect(t.defaultAgentsMd).toContain("website_id");
+  });
+
+  it("getTemplateList returns at least 23 templates (2 + 5 docs + 16 odoo)", () => {
+    const list = getTemplateList();
+    expect(list.length).toBeGreaterThanOrEqual(23);
+    for (const id of NEW_ODOO_TEMPLATE_IDS) {
+      expect(list.some((t) => t.id === id)).toBe(true);
+    }
+  });
+});
+
+describe("pickSuggestedName", () => {
+  it("picks a name from the template's suggestedNames", () => {
+    const name = pickSuggestedName("knowledge-base", []);
+    const template = getTemplate("knowledge-base")!;
+    expect(template.suggestedNames).toContain(name);
+  });
+
+  it("avoids names already in use", () => {
+    const template = getTemplate("knowledge-base")!;
+    const allButLast = template.suggestedNames!.slice(0, -1);
+    const name = pickSuggestedName("knowledge-base", allButLast);
+    expect(name).toBe(template.suggestedNames!.at(-1));
+  });
+
+  it("appends number when all names are taken", () => {
+    const template = getTemplate("knowledge-base")!;
+    const allNames = [...template.suggestedNames!];
+    const name = pickSuggestedName("knowledge-base", allNames);
+    // Should be one of the suggested names with a number suffix
+    const baseName = name.replace(/ \d+$/, "");
+    expect(template.suggestedNames).toContain(baseName);
+  });
+
+  it("increments number until unique", () => {
+    const template = getTemplate("knowledge-base")!;
+    const firstName = template.suggestedNames![0];
+    const taken = [...template.suggestedNames!, `${firstName} 2`, `${firstName} 3`];
+    const name = pickSuggestedName("knowledge-base", taken);
+    expect(name).toBe(`${firstName} 4`);
+  });
+
+  it("returns empty string for unknown template", () => {
+    expect(pickSuggestedName("nonexistent", [])).toBe("");
+  });
+
+  it("returns empty string for custom template", () => {
+    expect(pickSuggestedName("custom", [])).toBe("");
   });
 });
