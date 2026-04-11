@@ -37,8 +37,21 @@ interface AgentSummary {
   totalCost: string | null;
 }
 
+interface SourceBucket {
+  inputTokens: string | null;
+  outputTokens: string | null;
+  cost: string | null;
+}
+
+interface SourceTotals {
+  chat: SourceBucket;
+  system: SourceBucket;
+  plugin: SourceBucket;
+}
+
 interface SummaryResponse {
   agents: AgentSummary[];
+  totals?: SourceTotals;
 }
 
 interface TimeseriesPoint {
@@ -192,6 +205,18 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
   );
   const totalCost = (summary?.agents ?? []).reduce((acc, a) => acc + Number(a.totalCost ?? 0), 0);
 
+  function bucketTotals(b: SourceBucket | undefined): { tokens: number; cost: number } {
+    if (!b) return { tokens: 0, cost: 0 };
+    return {
+      tokens: Number(b.inputTokens ?? 0) + Number(b.outputTokens ?? 0),
+      cost: Number(b.cost ?? 0),
+    };
+  }
+
+  const chatBucket = bucketTotals(summary?.totals?.chat);
+  const systemBucket = bucketTotals(summary?.totals?.system);
+  const pluginBucket = bucketTotals(summary?.totals?.plugin);
+
   const chartData = (timeseries?.data ?? []).map((p) => ({
     date: p.date,
     inputTokens: Number(p.inputTokens ?? 0),
@@ -308,6 +333,48 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
               </CardContent>
             </Card>
           </div>
+
+          {summary?.totals && (
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-xs font-medium text-muted-foreground">
+                    Chat Tokens
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="pt-0">
+                  <p className="text-lg font-semibold">{formatTokens(chatBucket.tokens)}</p>
+                  <p className="text-xs text-muted-foreground">{formatCost(chatBucket.cost)}</p>
+                </CardContent>
+              </Card>
+              {systemBucket.tokens > 0 && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs font-medium text-muted-foreground">
+                      System Tokens
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    <p className="text-lg font-semibold">{formatTokens(systemBucket.tokens)}</p>
+                    <p className="text-xs text-muted-foreground">{formatCost(systemBucket.cost)}</p>
+                  </CardContent>
+                </Card>
+              )}
+              {pluginBucket.tokens > 0 && (
+                <Card>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-xs font-medium text-muted-foreground">
+                      Plugin Tokens
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="pt-0">
+                    <p className="text-lg font-semibold">{formatTokens(pluginBucket.tokens)}</p>
+                    <p className="text-xs text-muted-foreground">{formatCost(pluginBucket.cost)}</p>
+                  </CardContent>
+                </Card>
+              )}
+            </div>
+          )}
 
           <Card>
             <CardHeader>
