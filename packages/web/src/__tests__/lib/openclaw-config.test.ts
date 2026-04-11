@@ -344,6 +344,41 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
+  it("should include apiBaseUrl and gatewayToken in pinchy-files config so the plugin can report vision token usage", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-files" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "kb-agent-id",
+          name: "HR Knowledge Base",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          templateId: "knowledge-base",
+          pluginConfig: { allowed_paths: ["/data/hr-docs/"] },
+          allowedTools: ["pinchy_ls", "pinchy_read"],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    // apiBaseUrl and gatewayToken live at the plugin-level config (alongside `agents`),
+    // matching how pinchy-context and pinchy-audit expose them.
+    expect(config.plugins.entries["pinchy-files"].config.apiBaseUrl).toBe("http://pinchy:7777");
+    expect(config.plugins.entries["pinchy-files"].config.gatewayToken).toBe("gw-token-files");
+    // Per-agent allowed_paths is still nested under .agents
+    expect(config.plugins.entries["pinchy-files"].config.agents["kb-agent-id"]).toEqual({
+      allowed_paths: ["/data/hr-docs/"],
+    });
+  });
+
   it("should not keep stale env vars from previous config", async () => {
     const existingConfig = {
       gateway: {

@@ -8,6 +8,7 @@ import { formatPdfResult } from "./pdf-format";
 import { PdfCache } from "./pdf-cache";
 import { createVisionConfig, type VisionApiConfig } from "./pdf-vision-api";
 import { runVisionTasks, type AggregatedVisionUsage } from "./pdf-vision-runner";
+import { reportUsage } from "./usage-reporter";
 
 interface PluginToolContext {
   agentId?: string;
@@ -21,6 +22,8 @@ interface ContentBlock {
 interface PluginApi {
   pluginConfig?: {
     agents?: Record<string, AgentFileConfig>;
+    apiBaseUrl?: string;
+    gatewayToken?: string;
   };
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
@@ -135,6 +138,8 @@ const plugin = {
 
   register(api: PluginApi) {
     const agentConfigs = api.pluginConfig?.agents ?? {};
+    const apiBaseUrl = api.pluginConfig?.apiBaseUrl;
+    const gatewayToken = api.pluginConfig?.gatewayToken;
 
     // Capture runtime APIs for vision (direct LLM API calls for scanned pages)
     const modelAuth = (api as any).runtime?.modelAuth as {
@@ -272,10 +277,25 @@ const plugin = {
                   }
                 }
                 const pdfResult = await readPdf(realPath, stats, visionConfig);
-                // visionUsage is captured here so Task 8 can report it to
-                // Pinchy's internal usage endpoint. Return only content
-                // to the OpenClaw tool runner.
-                void pdfResult.visionUsage;
+
+                // Fire-and-forget: report any vision API tokens to Pinchy's
+                // internal usage endpoint so they show up on the Usage
+                // Dashboard. We intentionally do not await — telemetry must
+                // never block or fail a PDF read.
+                if (apiBaseUrl && gatewayToken && visionConfig) {
+                  void reportUsage(
+                    {
+                      agentId,
+                      agentName: agentId,
+                      sessionKey: "plugin:pinchy-files",
+                      model: visionConfig.model,
+                      inputTokens: pdfResult.visionUsage.inputTokens,
+                      outputTokens: pdfResult.visionUsage.outputTokens,
+                    },
+                    { apiBaseUrl, gatewayToken },
+                  );
+                }
+
                 return { content: pdfResult.content };
               }
 
