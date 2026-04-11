@@ -48,6 +48,7 @@ export async function validateTelegramBotToken(token: string): Promise<TelegramV
 export async function hasMainTelegramBot(): Promise<boolean> {
   const personalAgents = await db.query.agents.findMany({
     where: eq(agents.isPersonal, true),
+    columns: { id: true },
   });
   for (const agent of personalAgents) {
     const token = await getSetting(`telegram_bot_token:${agent.id}`);
