@@ -127,7 +127,7 @@ describe("TelegramLinkSettings", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /Remove Telegram for everyone/i }));
 
-    expect(screen.getByText((content) => /these 2 agents/i.test(content))).toBeInTheDocument();
+    expect(screen.getByText(/these 2 agents/i)).toBeInTheDocument();
     expect(screen.getByText("Support Bot")).toBeInTheDocument();
     expect(screen.getByText("Sales Bot")).toBeInTheDocument();
   });

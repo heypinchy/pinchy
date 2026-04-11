@@ -183,6 +183,7 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
   }
 
   const primaryBot = bots[0];
+  const agentBots = bots.filter((b) => !b.isPersonal);
 
   // State 3: User is linked
   if (linkStatus?.linked) {
@@ -224,26 +225,24 @@ export function TelegramLinkSettings({ isAdmin }: TelegramLinkSettingsProps) {
                           This will disconnect Pinchy&apos;s main Telegram bot and unlink all users
                           from their Telegram accounts.
                         </p>
-                        {(() => {
-                          const agentBots = bots.filter((b) => !b.isPersonal);
-                          if (agentBots.length === 0) return null;
-                          const plural =
-                            agentBots.length === 1
-                              ? "this 1 agent"
-                              : `these ${agentBots.length} agents`;
-                          return (
-                            <div className="space-y-2">
-                              <p>It will also disconnect Telegram from {plural}:</p>
-                              <ul className="list-disc list-inside max-h-40 overflow-y-auto">
-                                {agentBots.map((b) => (
-                                  <li key={b.agentId}>{b.agentName}</li>
-                                ))}
-                              </ul>
-                            </div>
-                          );
-                        })()}
+                        {agentBots.length > 0 && (
+                          <div className="space-y-2">
+                            <p>
+                              It will also disconnect Telegram from{" "}
+                              {agentBots.length === 1
+                                ? "this 1 agent"
+                                : `these ${agentBots.length} agents`}
+                              :
+                            </p>
+                            <ul className="list-disc list-inside max-h-40 overflow-y-auto">
+                              {agentBots.map((b) => (
+                                <li key={b.agentId}>{b.agentName}</li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
                         <p>
-                          {bots.filter((b) => !b.isPersonal).length > 0
+                          {agentBots.length > 0
                             ? "You can set it up again later, but agent bots will need to be reconnected one by one."
                             : "You can set it up again later."}
                         </p>
