@@ -35,6 +35,14 @@ vi.mock("drizzle-orm", () => ({
   gte: vi.fn((col, val) => ({ col, val, op: "gte" })),
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...args) => args),
+  sql: Object.assign(
+    vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
+      __sql: true,
+      strings,
+      values,
+    })),
+    { raw: vi.fn() }
+  ),
 }));
 
 import { requireAdmin } from "@/lib/api-auth";
@@ -73,6 +81,9 @@ describe("GET /api/usage/summary", () => {
     mockSelect.mockReturnValue({ from: mockFrom });
     mockFrom.mockReturnValue({ where: mockWhere });
     mockWhere.mockReturnValue({ groupBy: mockGroupBy });
+    // Default for the source-breakdown query (second groupBy call).
+    // Tests that care about the totals override with mockResolvedValueOnce.
+    mockGroupBy.mockResolvedValue([]);
 
     const mod = await import("@/app/api/usage/summary/route");
     GET = mod.GET;
@@ -198,5 +209,101 @@ describe("GET /api/usage/summary", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.agents).toEqual([]);
+  });
+
+  describe("source breakdown (totals)", () => {
+    it("returns totals split into chat/system/plugin based on sessionKey", async () => {
+      mockGroupBy.mockResolvedValueOnce(sampleAgents).mockResolvedValueOnce([
+        {
+          source: "chat",
+          inputTokens: "5000",
+          outputTokens: "2000",
+          cost: "0.045000",
+        },
+        {
+          source: "system",
+          inputTokens: "1000",
+          outputTokens: "500",
+          cost: "0.010000",
+        },
+        {
+          source: "plugin",
+          inputTokens: "2000",
+          outputTokens: "300",
+          cost: "0.015000",
+        },
+      ]);
+
+      const request = new NextRequest("http://localhost:7777/api/usage/summary");
+      const response = await GET(request);
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.totals).toEqual({
+        chat: {
+          inputTokens: "5000",
+          outputTokens: "2000",
+          cost: "0.045000",
+        },
+        system: {
+          inputTokens: "1000",
+          outputTokens: "500",
+          cost: "0.010000",
+        },
+        plugin: {
+          inputTokens: "2000",
+          outputTokens: "300",
+          cost: "0.015000",
+        },
+      });
+    });
+
+    it("defaults missing sources to zero tokens/cost", async () => {
+      // Only chat tokens exist — system and plugin should be zero
+      mockGroupBy.mockResolvedValueOnce(sampleAgents).mockResolvedValueOnce([
+        {
+          source: "chat",
+          inputTokens: "5000",
+          outputTokens: "2000",
+          cost: "0.045000",
+        },
+      ]);
+
+      const request = new NextRequest("http://localhost:7777/api/usage/summary");
+      const response = await GET(request);
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.totals.chat).toEqual({
+        inputTokens: "5000",
+        outputTokens: "2000",
+        cost: "0.045000",
+      });
+      expect(body.totals.system).toEqual({
+        inputTokens: "0",
+        outputTokens: "0",
+        cost: "0",
+      });
+      expect(body.totals.plugin).toEqual({
+        inputTokens: "0",
+        outputTokens: "0",
+        cost: "0",
+      });
+    });
+
+    it("returns all-zero totals when there are no records at all", async () => {
+      mockGroupBy.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+      const request = new NextRequest("http://localhost:7777/api/usage/summary");
+      const response = await GET(request);
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.totals).toEqual({
+        chat: { inputTokens: "0", outputTokens: "0", cost: "0" },
+        system: { inputTokens: "0", outputTokens: "0", cost: "0" },
+        plugin: { inputTokens: "0", outputTokens: "0", cost: "0" },
+      });
+    });
   });
 });
