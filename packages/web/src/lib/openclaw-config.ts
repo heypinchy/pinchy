@@ -104,6 +104,10 @@ export async function regenerateOpenClawConfig() {
       name: agent.name,
       model: agent.model,
       workspace: getOpenClawWorkspacePath(agent.id),
+      // Disable heartbeat by default: it fires LLM calls in the background
+      // and racks up tokens even for idle agents. Set per-agent (NOT in
+      // agents.defaults) to avoid hot-reload races with Telegram (openclaw#47458).
+      heartbeat: { every: "0m" },
     };
 
     // Compute denied tool groups from allowed tools

@@ -80,6 +80,30 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
+  it("should disable heartbeat per agent in agents.list", async () => {
+    // Rationale: Heartbeat fires LLM calls in the background and racks up
+    // tokens for every agent, even idle ones. Pinchy disables it by default
+    // (`heartbeat: { every: "0m" }`). We set it per-agent, NOT on agents.defaults,
+    // to avoid hot-reload races with Telegram (openclaw#47458).
+    const agentsData = [
+      { id: "a1", name: "Smithers", model: "anthropic/claude-opus-4-6", createdAt: new Date() },
+      { id: "a2", name: "Jeeves", model: "openai/gpt-4o", createdAt: new Date() },
+    ];
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue(agentsData),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    for (const agent of config.agents.list) {
+      expect(agent.heartbeat).toEqual({ every: "0m" });
+    }
+    // Must NOT be in agents.defaults (would cause hot-reload loops)
+    expect(config.agents.defaults?.heartbeat).toBeUndefined();
+  });
+
   it("should write agents.list with all agents from DB", async () => {
     const agentsData = [
       {
@@ -113,6 +137,7 @@ describe("regenerateOpenClawConfig", () => {
       model: "anthropic/claude-opus-4-6",
       workspace: "/root/.openclaw/workspaces/uuid-agent-1",
       tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
+      heartbeat: { every: "0m" },
     });
     expect(config.agents.list[1]).toEqual({
       id: "uuid-agent-2",
@@ -120,6 +145,7 @@ describe("regenerateOpenClawConfig", () => {
       model: "openai/gpt-4o",
       workspace: "/root/.openclaw/workspaces/uuid-agent-2",
       tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
+      heartbeat: { every: "0m" },
     });
   });
 
