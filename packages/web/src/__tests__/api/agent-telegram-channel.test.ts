@@ -164,6 +164,23 @@ describe("GET /api/agents/[agentId]/channels/telegram", () => {
 
     expect(response.status).toBe(401);
   });
+
+  it("returns mainBotConfigured: true for personal agent even when global main bot is missing", async () => {
+    mockHasMainTelegramBot.mockResolvedValueOnce(false);
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      id: "agent-1",
+      isPersonal: true,
+    } as any);
+    vi.mocked(getSetting).mockResolvedValueOnce(null);
+
+    const response = await GET(new Request("http://localhost"), {
+      params: mockParams,
+    });
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data).toEqual({ configured: false, mainBotConfigured: true });
+  });
 });
 
 describe("POST /api/agents/[agentId]/channels/telegram", () => {
@@ -308,6 +325,23 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
     await POST(makeRequest({ botToken: "123456:ABC-token" }), { params: mockParams });
 
     expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("allows personal agent setup even when main bot is missing (first-time bootstrap)", async () => {
+    mockHasMainTelegramBot.mockResolvedValueOnce(false);
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      ...mockAgent,
+      isPersonal: true,
+    } as any);
+
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data).toEqual({ botUsername: "test_bot", botId: 123456 });
+    expect(mockValidateTelegramBotToken).toHaveBeenCalled();
   });
 });
 

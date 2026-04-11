@@ -83,4 +83,15 @@ describe("AgentTelegramSettings", () => {
     });
     expect(screen.queryByText(/Telegram isn't set up yet/i)).not.toBeInTheDocument();
   });
+
+  it("renders the setup form for Smithers even when main bot is not configured", async () => {
+    global.fetch = mockFetch({ configured: false, mainBotConfigured: false });
+
+    render(<AgentTelegramSettings agentId="smithers-1" isSmithers />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/Bot Token/i)).toBeInTheDocument();
+    });
+    expect(screen.queryByText(/Telegram isn't set up yet/i)).not.toBeInTheDocument();
+  });
 });

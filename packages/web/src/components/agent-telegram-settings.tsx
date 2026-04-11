@@ -142,7 +142,11 @@ export function AgentTelegramSettings({
   }
 
   const isConfigured = config?.configured === true;
-  const mainBotMissing = config?.mainBotConfigured === false && !isConfigured;
+  // Strict `=== false` (not `!config?.mainBotConfigured`) so missing/undefined
+  // doesn't trip the empty state on initial load or for older API responses.
+  // Smithers (`isSmithers`) is exempt because it IS the main bot being set up —
+  // otherwise first-time setup would show an empty state pointing to itself.
+  const mainBotMissing = config?.mainBotConfigured === false && !isConfigured && !isSmithers;
 
   const content = (
     <div className="space-y-4">
