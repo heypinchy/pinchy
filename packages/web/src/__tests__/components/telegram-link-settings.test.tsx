@@ -109,4 +109,80 @@ describe("TelegramLinkSettings", () => {
     });
     expect(screen.getByRole("button", { name: "Connect" })).toBeInTheDocument();
   });
+
+  it("confirmation dialog lists agent bot names when agent bots exist", async () => {
+    global.fetch = mockFetch({ linked: true }, [
+      { agentId: "smithers-1", agentName: "Smithers", botUsername: "pinchy_bot", isPersonal: true },
+      { agentId: "a-2", agentName: "Support Bot", botUsername: "support_bot", isPersonal: false },
+      { agentId: "a-3", agentName: "Sales Bot", botUsername: "sales_bot", isPersonal: false },
+    ]);
+
+    render(<TelegramLinkSettings isAdmin={true} />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Remove Telegram for everyone/i })
+      ).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /Remove Telegram for everyone/i }));
+
+    expect(screen.getByText((content) => /these 2 agents/i.test(content))).toBeInTheDocument();
+    expect(screen.getByText("Support Bot")).toBeInTheDocument();
+    expect(screen.getByText("Sales Bot")).toBeInTheDocument();
+  });
+
+  it("confirmation dialog omits the agent-bot block when only the main bot exists", async () => {
+    global.fetch = mockFetch({ linked: true }, [
+      {
+        agentId: "smithers-1",
+        agentName: "Smithers",
+        botUsername: "pinchy_bot",
+        isPersonal: true,
+      },
+    ]);
+
+    render(<TelegramLinkSettings isAdmin={true} />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Remove Telegram for everyone/i })
+      ).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /Remove Telegram for everyone/i }));
+
+    expect(screen.queryByText(/these \d+ agents?/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/You can set it up again later\./i)).toBeInTheDocument();
+  });
+
+  it("confirmation dialog shows singular 'this 1 agent' with one extra bot", async () => {
+    global.fetch = mockFetch({ linked: true }, [
+      {
+        agentId: "smithers-1",
+        agentName: "Smithers",
+        botUsername: "pinchy_bot",
+        isPersonal: true,
+      },
+      {
+        agentId: "a-2",
+        agentName: "Support Bot",
+        botUsername: "support_bot",
+        isPersonal: false,
+      },
+    ]);
+
+    render(<TelegramLinkSettings isAdmin={true} />);
+
+    await waitFor(() => {
+      expect(
+        screen.getByRole("button", { name: /Remove Telegram for everyone/i })
+      ).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /Remove Telegram for everyone/i }));
+
+    expect(screen.getByText(/this 1 agent:/i)).toBeInTheDocument();
+    expect(screen.getByText("Support Bot")).toBeInTheDocument();
+  });
 });
