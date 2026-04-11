@@ -1,3 +1,8 @@
+import { db } from "@/db";
+import { agents } from "@/db/schema";
+import { eq } from "drizzle-orm";
+import { getSetting } from "@/lib/settings";
+
 interface TelegramValidationSuccess {
   valid: true;
   botId: number;
@@ -32,4 +37,21 @@ export async function validateTelegramBotToken(token: string): Promise<TelegramV
       error: err instanceof Error ? err.message : "Unknown error",
     };
   }
+}
+
+/**
+ * True when Pinchy's main Telegram bot is configured — i.e. when at least
+ * one personal agent (Smithers) has a bot token set. Used as a precondition
+ * for per-agent Telegram bot setup: users can only pair via the main bot,
+ * so additional agent bots are unreachable without one.
+ */
+export async function hasMainTelegramBot(): Promise<boolean> {
+  const personalAgents = await db.query.agents.findMany({
+    where: eq(agents.isPersonal, true),
+  });
+  for (const agent of personalAgents) {
+    const token = await getSetting(`telegram_bot_token:${agent.id}`);
+    if (token) return true;
+  }
+  return false;
 }
