@@ -1,4 +1,5 @@
 import { test, expect, type Page } from "@playwright/test";
+import { AGENT_TEMPLATES } from "../../src/lib/agent-templates";
 import {
   seedSetup,
   login,
@@ -46,35 +47,23 @@ test.describe.serial("Odoo Template Creation", () => {
     await expect(page.getByText("Sales Analyst")).toBeVisible();
   });
 
-  test("all 16 Odoo templates render in the template selector", async ({ page }) => {
+  test("all Odoo templates render in the template selector", async ({ page }) => {
     // Smoke test — ensures every template from AGENT_TEMPLATES surfaces through
     // /api/templates to the UI. Dimmed/unavailable templates still render, so
     // this test doesn't depend on the mock exposing every model.
+    //
+    // Self-healing: iterate over AGENT_TEMPLATES entries with odoo- prefix so
+    // adding/renaming an Odoo template doesn't require touching this test.
+    const expectedTemplates = Object.entries(AGENT_TEMPLATES)
+      .filter(([id]) => id.startsWith("odoo-"))
+      .map(([, tpl]) => tpl.name);
+
+    expect(expectedTemplates.length).toBeGreaterThan(0);
+
     await loginViaUI(page);
     await page.goto("/");
     await page.getByText(/new agent/i).click();
-    await expect(page.getByText("Sales Analyst")).toBeVisible({ timeout: 10000 });
-
-    const expectedTemplates = [
-      // Original 6
-      "Sales Analyst",
-      "Inventory Scout",
-      "Finance Controller",
-      "CRM & Sales Assistant",
-      "Procurement Agent",
-      "Customer Service",
-      // 10 new templates
-      "HR Analyst",
-      "Project Tracker",
-      "Manufacturing Planner",
-      "Recruitment Coordinator",
-      "Subscription Manager",
-      "POS Analyst",
-      "Marketing Analyst",
-      "Expense Auditor",
-      "Fleet Manager",
-      "Website Analyst",
-    ];
+    await expect(page.getByText(expectedTemplates[0])).toBeVisible({ timeout: 10000 });
 
     for (const name of expectedTemplates) {
       await expect(page.getByText(name, { exact: true })).toBeVisible();

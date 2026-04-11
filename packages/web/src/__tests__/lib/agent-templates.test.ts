@@ -484,6 +484,26 @@ describe("Additional Odoo templates (10 new)", () => {
     expect(t.defaultAgentsMd).toMatch(/recurring|subscription|MRR|churn/i);
   });
 
+  it("Subscription Manager only references models that are in requiredModels (or guards them)", () => {
+    // The legacy sale.subscription / sale.subscription.plan models are NOT in
+    // requiredModels — modern Odoo (17+) uses sale.order with is_subscription
+    // instead. The AGENTS.md must not tell the agent to confidently query
+    // sale.subscription, otherwise it will get permission errors on every
+    // query in modern Odoo. Any mention must be guarded with conditional
+    // language ("if available", "may not exist", "check via odoo_schema first").
+    const t = getTemplate("odoo-subscription-manager")!;
+    const grantedModels = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(grantedModels).not.toContain("sale.subscription");
+    expect(grantedModels).not.toContain("sale.subscription.plan");
+
+    // If sale.subscription is mentioned at all, it must be guarded
+    if (/sale\.subscription/.test(t.defaultAgentsMd)) {
+      expect(t.defaultAgentsMd).toMatch(
+        /may not exist|if available|if (the )?model exists|check.*odoo_schema|not granted|legacy.*may/i
+      );
+    }
+  });
+
   it("POS Analyst mentions pos.order and pos.session", () => {
     const t = getTemplate("odoo-pos-analyst")!;
     expect(t.defaultAgentsMd).toContain("pos.order");
@@ -500,6 +520,17 @@ describe("Additional Odoo templates (10 new)", () => {
     const t = getTemplate("odoo-expense-auditor")!;
     expect(t.defaultAgentsMd).toContain("hr.expense");
     expect(t.defaultAgentsMd).toMatch(/policy|flag|violat|suspicious|unusual/i);
+  });
+
+  it("Expense Auditor frames list_price as an org convention, not a standard policy cap", () => {
+    // list_price is Odoo's standard "reference price" for a product. Some
+    // organizations repurpose it as an expense policy cap, but that is a
+    // local convention, not a built-in Odoo concept. The AGENTS.md must
+    // not present it as a fact, otherwise the agent will confidently flag
+    // false positives in orgs that use list_price for its actual purpose.
+    const t = getTemplate("odoo-expense-auditor")!;
+    expect(t.defaultAgentsMd).not.toMatch(/reference price \/ policy cap/i);
+    expect(t.defaultAgentsMd).toMatch(/some (orgs|organizations)|if your org|convention/i);
   });
 
   it("Fleet Manager mentions fleet.vehicle and service log models", () => {

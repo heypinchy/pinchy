@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
+import { Bot } from "lucide-react";
+import { isValidElement } from "react";
 import { TemplateSelector, TEMPLATE_ICONS } from "@/components/template-selector";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 
@@ -113,10 +115,21 @@ describe("TemplateSelector", () => {
     expect(unavailableCard).toHaveAttribute("data-available", "false");
   });
 
-  it("should have a dedicated icon for every Odoo template in AGENT_TEMPLATES", () => {
+  it("should have a dedicated non-fallback icon for every Odoo template in AGENT_TEMPLATES", () => {
     const odooTemplateIds = Object.keys(AGENT_TEMPLATES).filter((id) => id.startsWith("odoo-"));
+
+    // Every Odoo template must have an entry in TEMPLATE_ICONS...
     const missingIcons = odooTemplateIds.filter((id) => !TEMPLATE_ICONS[id]);
     expect(missingIcons).toEqual([]);
+
+    // ...and the entry must NOT be the generic Bot fallback. Using Bot here is
+    // indistinguishable from "no icon" in the UI and defeats the purpose of
+    // the mapping — catch it explicitly.
+    const usingBotFallback = odooTemplateIds.filter((id) => {
+      const icon = TEMPLATE_ICONS[id];
+      return isValidElement(icon) && icon.type === Bot;
+    });
+    expect(usingBotFallback).toEqual([]);
   });
 
   it("should still call onSelect for unavailable templates", () => {
