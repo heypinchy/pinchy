@@ -38,6 +38,18 @@ export interface VisionApiInternalConfig {
   model: string;
 }
 
+/** Token usage returned from a vision API call. */
+export interface VisionUsage {
+  inputTokens: number;
+  outputTokens: number;
+}
+
+/** Result of a successful vision API call: extracted text plus token usage. */
+export interface VisionResult {
+  text: string;
+  usage: VisionUsage;
+}
+
 /** Validate model ID to prevent URL injection (e.g. path traversal in Google API URL). */
 function validateModelId(modelId: string): void {
   if (!modelId || /\.\./.test(modelId) || !/^[a-zA-Z0-9._:/-]+$/.test(modelId)) {
@@ -47,12 +59,12 @@ function validateModelId(modelId: string): void {
 
 /**
  * Describe a scanned page image using the configured LLM's vision API.
- * Returns extracted text, or null if vision is not available.
+ * Returns extracted text plus token usage, or null if vision is not available.
  */
 export async function describePageImage(
   imageBase64: string,
   config: VisionApiConfig,
-): Promise<string | null> {
+): Promise<VisionResult | null> {
   const [provider, ...modelParts] = config.model.split("/");
   const modelId = modelParts.join("/");
   validateModelId(modelId);
@@ -101,7 +113,7 @@ async function describeViaAnthropic(
   imageBase64: string,
   modelId: string,
   config: VisionApiConfig,
-): Promise<string | null> {
+): Promise<VisionResult | null> {
   const apiKey = await config.resolveApiKey("anthropic");
   if (!apiKey) return null;
 
@@ -142,20 +154,28 @@ async function describeViaAnthropic(
 
   const data = (await response.json()) as {
     content: Array<{ type: string; text?: string }>;
+    usage?: { input_tokens?: number; output_tokens?: number };
   };
-  return (
+  const text =
     data.content
       ?.filter((b) => b.type === "text" && b.text)
       .map((b) => b.text)
-      .join("\n") ?? null
-  );
+      .join("\n") ?? null;
+  if (text === null) return null;
+  return {
+    text,
+    usage: {
+      inputTokens: data.usage?.input_tokens ?? 0,
+      outputTokens: data.usage?.output_tokens ?? 0,
+    },
+  };
 }
 
 async function describeViaOpenAI(
   imageBase64: string,
   modelId: string,
   config: VisionApiConfig,
-): Promise<string | null> {
+): Promise<VisionResult | null> {
   const apiKey = await config.resolveApiKey("openai");
   if (!apiKey) return null;
 
@@ -191,15 +211,24 @@ async function describeViaOpenAI(
 
   const data = (await response.json()) as {
     choices: Array<{ message: { content: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
-  return data.choices?.[0]?.message?.content ?? null;
+  const text = data.choices?.[0]?.message?.content ?? null;
+  if (text === null) return null;
+  return {
+    text,
+    usage: {
+      inputTokens: data.usage?.prompt_tokens ?? 0,
+      outputTokens: data.usage?.completion_tokens ?? 0,
+    },
+  };
 }
 
 async function describeViaGoogle(
   imageBase64: string,
   modelId: string,
   config: VisionApiConfig,
-): Promise<string | null> {
+): Promise<VisionResult | null> {
   const apiKey = await config.resolveApiKey("google");
   if (!apiKey) return null;
 
@@ -234,20 +263,28 @@ async function describeViaGoogle(
 
   const data = (await response.json()) as {
     candidates: Array<{ content: { parts: Array<{ text?: string }> } }>;
+    usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
   };
-  return (
+  const text =
     data.candidates?.[0]?.content?.parts
       ?.filter((p) => p.text)
       .map((p) => p.text)
-      .join("\n") ?? null
-  );
+      .join("\n") ?? null;
+  if (text === null) return null;
+  return {
+    text,
+    usage: {
+      inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
+      outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+    },
+  };
 }
 
 async function describeViaOllama(
   imageBase64: string,
   modelId: string,
   config: VisionApiConfig,
-): Promise<string | null> {
+): Promise<VisionResult | null> {
   if (!config.ollamaBaseUrl) return null;
 
   const url = `${config.ollamaBaseUrl.replace(/\/$/, "")}/v1/chat/completions`;
@@ -280,6 +317,15 @@ async function describeViaOllama(
 
   const data = (await response.json()) as {
     choices: Array<{ message: { content: string } }>;
+    usage?: { prompt_tokens?: number; completion_tokens?: number };
   };
-  return data.choices?.[0]?.message?.content ?? null;
+  const text = data.choices?.[0]?.message?.content ?? null;
+  if (text === null) return null;
+  return {
+    text,
+    usage: {
+      inputTokens: data.usage?.prompt_tokens ?? 0,
+      outputTokens: data.usage?.completion_tokens ?? 0,
+    },
+  };
 }

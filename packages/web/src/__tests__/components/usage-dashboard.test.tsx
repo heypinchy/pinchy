@@ -143,6 +143,153 @@ describe("UsageDashboard", () => {
     expect(screen.getByText("$4.82")).toBeInTheDocument();
   });
 
+  describe("source breakdown cards", () => {
+    it("renders chat/system/plugin cards when totals include all three", async () => {
+      mockBothEndpoints({
+        agents: mockSummaryResponse.agents,
+        totals: {
+          chat: {
+            inputTokens: "500000",
+            outputTokens: "700000",
+            cost: "3.50",
+          },
+          system: {
+            inputTokens: "50000",
+            outputTokens: "10000",
+            cost: "0.40",
+          },
+          plugin: {
+            inputTokens: "100000",
+            outputTokens: "20000",
+            cost: "0.92",
+          },
+        },
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Chat Tokens")).toBeInTheDocument();
+      });
+
+      expect(screen.getByText("System Tokens")).toBeInTheDocument();
+      expect(screen.getByText("Plugin Tokens")).toBeInTheDocument();
+
+      // Chat: 500k + 700k = 1.2M
+      expect(screen.getByText("1.2M")).toBeInTheDocument();
+      // Plugin: 100k + 20k = 120k -> 120.0k
+      expect(screen.getByText("120.0k")).toBeInTheDocument();
+      // System: 50k + 10k = 60k -> 60.0k
+      expect(screen.getByText("60.0k")).toBeInTheDocument();
+
+      // Costs per bucket — $3.50 also appears in the Smithers agent table row
+      // (getAllByText handles both occurrences). $0.40 and $0.92 are unique to
+      // the source-breakdown cards.
+      expect(screen.getAllByText("$3.50").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText("$0.40")).toBeInTheDocument();
+      expect(screen.getByText("$0.92")).toBeInTheDocument();
+    });
+
+    it("hides system card when system tokens are zero", async () => {
+      mockBothEndpoints({
+        agents: mockSummaryResponse.agents,
+        totals: {
+          chat: {
+            inputTokens: "500000",
+            outputTokens: "700000",
+            cost: "3.50",
+          },
+          system: { inputTokens: "0", outputTokens: "0", cost: "0" },
+          plugin: {
+            inputTokens: "100000",
+            outputTokens: "20000",
+            cost: "0.92",
+          },
+        },
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Chat Tokens")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText("System Tokens")).not.toBeInTheDocument();
+      expect(screen.getByText("Plugin Tokens")).toBeInTheDocument();
+    });
+
+    it("hides chat card when chat tokens are zero (same rule as system/plugin cards)", async () => {
+      // The source breakdown must stay internally consistent: all three
+      // cards follow the same "hide when zero" rule. Previously Chat was
+      // always rendered, which created an empty placeholder for the
+      // (admittedly unusual) system-only / plugin-only scenarios.
+      mockBothEndpoints({
+        agents: mockSummaryResponse.agents,
+        totals: {
+          chat: { inputTokens: "0", outputTokens: "0", cost: "0" },
+          system: {
+            inputTokens: "50000",
+            outputTokens: "10000",
+            cost: "0.40",
+          },
+          plugin: {
+            inputTokens: "100000",
+            outputTokens: "20000",
+            cost: "0.92",
+          },
+        },
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getByText("System Tokens")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText("Chat Tokens")).not.toBeInTheDocument();
+      expect(screen.getByText("Plugin Tokens")).toBeInTheDocument();
+    });
+
+    it("hides plugin card when plugin tokens are zero", async () => {
+      mockBothEndpoints({
+        agents: mockSummaryResponse.agents,
+        totals: {
+          chat: {
+            inputTokens: "500000",
+            outputTokens: "700000",
+            cost: "3.50",
+          },
+          system: {
+            inputTokens: "50000",
+            outputTokens: "10000",
+            cost: "0.40",
+          },
+          plugin: { inputTokens: "0", outputTokens: "0", cost: "0" },
+        },
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Chat Tokens")).toBeInTheDocument();
+      });
+
+      expect(screen.getByText("System Tokens")).toBeInTheDocument();
+      expect(screen.queryByText("Plugin Tokens")).not.toBeInTheDocument();
+    });
+
+    it("does not render any source cards when totals is missing from response", async () => {
+      // Backward compat: summary responses without `totals` should still render
+      mockBothEndpoints(mockSummaryResponse);
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        // Main summary cards still render
+        expect(screen.getByText("Total Tokens")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText("Chat Tokens")).not.toBeInTheDocument();
+      expect(screen.queryByText("System Tokens")).not.toBeInTheDocument();
+      expect(screen.queryByText("Plugin Tokens")).not.toBeInTheDocument();
+    });
+  });
+
   it("should display agent table with agent names and formatted values", async () => {
     mockBothEndpoints();
     render(<UsageDashboard />);

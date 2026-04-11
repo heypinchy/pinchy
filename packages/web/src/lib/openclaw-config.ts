@@ -104,6 +104,10 @@ export async function regenerateOpenClawConfig() {
       name: agent.name,
       model: agent.model,
       workspace: getOpenClawWorkspacePath(agent.id),
+      // Disable heartbeat by default: it fires LLM calls in the background
+      // and racks up tokens even for idle agents. Set per-agent (NOT in
+      // agents.defaults) to avoid hot-reload races with Telegram (openclaw#47458).
+      heartbeat: { every: "0m" },
     };
 
     // Compute denied tool groups from allowed tools
@@ -162,7 +166,33 @@ export async function regenerateOpenClawConfig() {
   }
 
   const entries: Record<string, unknown> = {};
+
+  const gatewayAuth = (gateway as Record<string, unknown>).auth as
+    | Record<string, unknown>
+    | undefined;
+  const gatewayToken = (gatewayAuth?.token as string) || "";
+
+  // pinchy-files needs apiBaseUrl/gatewayToken so it can report vision API
+  // token usage (from scanned-PDF processing) back to Pinchy via
+  // /api/internal/usage/record. Unlike pinchy-context which only exposes
+  // per-agent `agents`, pinchy-files adds the two top-level keys alongside.
+  if (pluginConfigs["pinchy-files"]) {
+    entries["pinchy-files"] = {
+      enabled: true,
+      config: {
+        apiBaseUrl:
+          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        gatewayToken,
+        agents: pluginConfigs["pinchy-files"],
+      },
+    };
+  }
+
+  // Any additional plugins collected via pluginConfigs get the generic
+  // shape (no apiBaseUrl/gatewayToken). Today this branch is empty; it
+  // exists to keep the pluginConfigs abstraction for future per-agent plugins.
   for (const [pluginId, agentConfigs] of Object.entries(pluginConfigs)) {
+    if (pluginId === "pinchy-files") continue;
     entries[pluginId] = {
       enabled: true,
       config: {
@@ -170,11 +200,6 @@ export async function regenerateOpenClawConfig() {
       },
     };
   }
-
-  const gatewayAuth = (gateway as Record<string, unknown>).auth as
-    | Record<string, unknown>
-    | undefined;
-  const gatewayToken = (gatewayAuth?.token as string) || "";
 
   // Enable pinchy-docs for all personal agents (Smithers) so they can read
   // platform documentation on demand. The plugin scopes itself to listed agents.

@@ -17,9 +17,20 @@ Open **Usage** from the sidebar (or visit `/usage`).
 
 - **Total Tokens** — sum of input and output tokens for the selected period and agent filter
 - **Estimated Cost** — running USD estimate based on the per-token prices in your provider's model config
+- **Source Breakdown** — how those tokens split across Chat, System, and Plugin use (see below)
 - **Daily Token Usage** chart — input vs output tokens over time
 - **Per-Agent Breakdown** — which agents consume what, sorted by cost
 - **Per-User Breakdown** — Enterprise only — same numbers split by who chatted with the agent
+
+### Token sources
+
+Not every token an agent burns comes from a user message. Pinchy labels each usage record with its source so you can see where the budget actually goes:
+
+- **Chat** — tokens spent on direct conversations with the agent (user messages and the agent's replies).
+- **System** — tokens spent on background work Pinchy triggers on the agent's behalf, such as onboarding interviews or scheduled jobs. No human sent these messages.
+- **Plugin** — tokens spent _inside_ a tool call. For example, when an agent asks the `pinchy-files` plugin to read a PDF, the plugin may call a vision model to extract text from scanned pages. Those vision calls are billed to the agent but show up under Plugin, not Chat.
+
+Cards for each bucket only appear when that bucket has non-zero usage, so a fresh instance only shows Chat until background or plugin work kicks in.
 
 ### Filters
 
@@ -30,7 +41,7 @@ Both filters apply to every card and tab on the page.
 
 ## Where the numbers come from
 
-Every successful chat turn writes a usage record with the input/output tokens that the LLM provider reported. Pinchy multiplies those by the per-million-token prices configured for the model and stores the result in USD with six decimals.
+Pinchy writes a usage record whenever an LLM call completes — both for chat turns (captured by a background poller that reads OpenClaw session snapshots) and for plugin-internal LLM calls (reported directly by the plugin). Each record carries the input/output tokens the provider reported. Pinchy multiplies those by the per-million-token prices configured for the model and stores the result in USD with six decimals.
 
 A few honest caveats:
 
