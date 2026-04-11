@@ -9,6 +9,7 @@ import { PdfCache } from "./pdf-cache";
 import { createVisionConfig, type VisionApiConfig } from "./pdf-vision-api";
 import { runVisionTasks, type AggregatedVisionUsage } from "./pdf-vision-runner";
 import { reportUsage } from "./usage-reporter";
+import { resolveAgentInfo } from "./resolve-agent-info";
 
 interface PluginToolContext {
   agentId?: string;
@@ -260,19 +261,20 @@ const plugin = {
 
               // PDF detection
               if (isPdf) {
-                // Build vision config from runtime APIs
+                // Resolve agent name + model from OpenClaw config in one walk.
+                // The model drives vision API calls; the name makes rows on
+                // the Usage Dashboard readable (agentId alone is opaque).
                 let visionConfig: VisionApiConfig | null = null;
+                let resolvedAgentName: string | undefined;
                 if (modelAuth && loadConfig) {
                   const cfg = loadConfig();
-                  const agents = (cfg as any)?.agents?.list as Array<{ id: string; model: string }> | undefined;
-                  const agentModel = agents?.find(
-                    (a) => a.id === agentId
-                  )?.model;
-                  if (agentModel) {
+                  const agentInfo = resolveAgentInfo(cfg, agentId);
+                  resolvedAgentName = agentInfo.name;
+                  if (agentInfo.model) {
                     visionConfig = createVisionConfig({
                       modelAuth,
                       cfg,
-                      model: agentModel,
+                      model: agentInfo.model,
                     });
                   }
                 }
@@ -286,7 +288,7 @@ const plugin = {
                   void reportUsage(
                     {
                       agentId,
-                      agentName: agentId,
+                      agentName: resolvedAgentName ?? agentId,
                       sessionKey: "plugin:pinchy-files",
                       model: visionConfig.model,
                       inputTokens: pdfResult.visionUsage.inputTokens,
