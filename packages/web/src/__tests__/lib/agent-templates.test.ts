@@ -7,6 +7,7 @@ import {
   pickSuggestedName,
 } from "@/lib/agent-templates";
 import { PERSONALITY_PRESETS } from "@/lib/personality-presets";
+import { TEMPLATE_ICON_COMPONENTS } from "@/lib/template-icons";
 
 describe("agent-templates", () => {
   it("should have a knowledge-base template", () => {
@@ -36,6 +37,41 @@ describe("agent-templates", () => {
 
   it("custom should use the-butler personality", () => {
     expect(AGENT_TEMPLATES["custom"].defaultPersonality).toBe("the-butler");
+  });
+
+  it("every non-custom template declares an iconName", () => {
+    // Icons used to live in a separate map in template-selector.tsx, which
+    // made it possible to ship a template without a matching icon entry. The
+    // iconName field co-locates the icon with the template definition so TSC
+    // enforces presence of the mapping.
+    const missing: string[] = [];
+    for (const [id, template] of Object.entries(AGENT_TEMPLATES)) {
+      if (id === "custom") continue;
+      if (!template.iconName) {
+        missing.push(id);
+      }
+    }
+    expect(missing).toEqual([]);
+  });
+
+  it("every template's iconName resolves to a real lucide icon component", () => {
+    const unresolved: Array<{ id: string; iconName: string }> = [];
+    for (const [id, template] of Object.entries(AGENT_TEMPLATES)) {
+      if (!template.iconName) continue;
+      if (!TEMPLATE_ICON_COMPONENTS[template.iconName]) {
+        unresolved.push({ id, iconName: template.iconName });
+      }
+    }
+    expect(unresolved).toEqual([]);
+  });
+
+  it("every Odoo template has a dedicated non-Bot icon", () => {
+    // Bot is the universal fallback — it means "no icon assigned". Catching
+    // Bot here prevents a new Odoo template from silently inheriting the
+    // generic bot avatar in the selector grid.
+    const odooIds = Object.keys(AGENT_TEMPLATES).filter((id) => id.startsWith("odoo-"));
+    const botFallback = odooIds.filter((id) => AGENT_TEMPLATES[id].iconName === "Bot");
+    expect(botFallback).toEqual([]);
   });
 
   it("every template's defaultPersonality references an existing preset", () => {

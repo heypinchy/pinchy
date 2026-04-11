@@ -49,6 +49,7 @@ export async function GET(request: NextRequest) {
         odooAccessLevel: template.odooConfig?.accessLevel,
         defaultTagline: template.defaultTagline,
         available,
+        iconName: template.iconName,
       };
     });
 

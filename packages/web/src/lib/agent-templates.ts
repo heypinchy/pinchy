@@ -1,5 +1,6 @@
 import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
 import type { PersonalityPresetId } from "@/lib/personality-presets";
+import type { TemplateIconName } from "@/lib/template-icons";
 
 const ODOO_QUERY_INSTRUCTIONS = `## Mandatory Workflow
 1. **Always call \`odoo_schema\` first** before querying any model. This gives you the exact field names and types. Never guess field names — they differ from what you might expect (e.g., \`product_uom_qty\` not \`quantity\`, \`amount_total\` not \`total\`).
@@ -75,10 +76,17 @@ export interface AgentTemplate {
   suggestedNames?: string[];
   requiresOdooConnection?: boolean;
   odooConfig?: OdooTemplateConfig;
+  /**
+   * Name of the lucide icon (key of TEMPLATE_ICON_COMPONENTS). Required for
+   * every template that renders as a card in the selector grid. The `custom`
+   * template is the only exception — it renders as a standalone link.
+   */
+  iconName?: TemplateIconName;
 }
 
 export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
   "knowledge-base": {
+    iconName: "FileText",
     name: "Knowledge Base",
     description: "Answer questions from your docs",
     allowedTools: ["pinchy_ls", "pinchy_read"],
@@ -95,6 +103,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
 - Structure longer answers with headings and bullet points`,
   },
   "contract-analyzer": {
+    iconName: "Scale",
     name: "Contract Analyzer",
     description: "Review contracts, extract key terms, and flag risks",
     allowedTools: ["pinchy_ls", "pinchy_read"],
@@ -116,6 +125,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
 - Highlight deadlines, notice periods, and important dates`,
   },
   "resume-screener": {
+    iconName: "Users",
     name: "Resume Screener",
     description: "Screen applications, rank candidates, and summarize qualifications",
     allowedTools: ["pinchy_ls", "pinchy_read"],
@@ -137,6 +147,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
 - When comparing candidates, use a consistent evaluation framework`,
   },
   "proposal-comparator": {
+    iconName: "GitCompareArrows",
     name: "Proposal Comparator",
     description: "Compare vendor proposals, score against requirements, and summarize differences",
     allowedTools: ["pinchy_ls", "pinchy_read"],
@@ -160,6 +171,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
 - Summarize with a clear recommendation when asked`,
   },
   "compliance-checker": {
+    iconName: "ShieldCheck",
     name: "Compliance Checker",
     description: "Check documents against regulations, flag gaps, and track requirements",
     allowedTools: ["pinchy_ls", "pinchy_read"],
@@ -181,6 +193,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
 - Track requirement coverage across multiple documents when asked`,
   },
   "onboarding-guide": {
+    iconName: "GraduationCap",
     name: "Onboarding Guide",
     description: "Guide new team members through internal docs, processes, and procedures",
     allowedTools: ["pinchy_ls", "pinchy_read"],
@@ -211,6 +224,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
     defaultAgentsMd: null,
   },
   "odoo-sales-analyst": {
+    iconName: "TrendingUp",
     name: "Sales Analyst",
     description: "Analyze revenue, track orders, identify trends and top customers",
     allowedTools: getOdooToolsForAccessLevel("read-only"),
@@ -275,6 +289,7 @@ ${ODOO_RULES}`,
     },
   },
   "odoo-inventory-scout": {
+    iconName: "Warehouse",
     name: "Inventory Scout",
     description: "Monitor stock levels, track movements, measure fulfillment speed",
     allowedTools: getOdooToolsForAccessLevel("read-only"),
@@ -336,6 +351,7 @@ ${ODOO_RULES}`,
     },
   },
   "odoo-finance-controller": {
+    iconName: "Calculator",
     name: "Finance Controller",
     description: "Track invoices, monitor payments, analyze margins",
     allowedTools: getOdooToolsForAccessLevel("read-only"),
@@ -392,6 +408,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-crm-assistant": {
+    iconName: "Handshake",
     name: "CRM & Sales Assistant",
     description: "Manage leads, follow up on quotes, maintain customer data",
     allowedTools: getOdooToolsForAccessLevel("read-write"),
@@ -453,6 +470,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-procurement-agent": {
+    iconName: "ShoppingCart",
     name: "Procurement Agent",
     description: "Compare suppliers, track purchase prices, suggest reorders",
     allowedTools: getOdooToolsForAccessLevel("read-write"),
@@ -514,6 +532,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-customer-service": {
+    iconName: "Headset",
     name: "Customer Service",
     description: "Answer order inquiries, check delivery status, draft responses",
     allowedTools: getOdooToolsForAccessLevel("read-write"),
@@ -591,6 +610,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-hr-analyst": {
+    iconName: "UserCog",
     name: "HR Analyst",
     description: "Track headcount, leave balances, attendance and contracts",
     allowedTools: getOdooToolsForAccessLevel("read-only"),
@@ -654,6 +674,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-project-tracker": {
+    iconName: "FolderKanban",
     name: "Project Tracker",
     description: "Monitor project progress, deadlines, task load and timesheets",
     allowedTools: getOdooToolsForAccessLevel("read-only"),
@@ -713,6 +734,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-manufacturing-planner": {
+    iconName: "Factory",
     name: "Manufacturing Planner",
     description: "Track production orders, BOMs, work orders and component needs",
     allowedTools: getOdooToolsForAccessLevel("read-only"),
@@ -776,6 +798,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-recruitment-coordinator": {
+    iconName: "UserSearch",
     name: "Recruitment Coordinator",
     description: "Track applicants, manage job pipelines, measure time-to-hire",
     allowedTools: getOdooToolsForAccessLevel("read-write"),
@@ -841,6 +864,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-subscription-manager": {
+    iconName: "Repeat",
     name: "Subscription Manager",
     description: "Track MRR, churn, renewals and recurring revenue",
     allowedTools: getOdooToolsForAccessLevel("read-only"),
@@ -900,6 +924,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-pos-analyst": {
+    iconName: "Store",
     name: "POS Analyst",
     description: "Analyze store sales, cash sessions and payment methods",
     allowedTools: getOdooToolsForAccessLevel("read-only"),
@@ -959,6 +984,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-marketing-analyst": {
+    iconName: "Megaphone",
     name: "Marketing Analyst",
     description: "Measure campaign performance, open rates and conversions",
     allowedTools: getOdooToolsForAccessLevel("read-only"),
@@ -1020,6 +1046,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-expense-auditor": {
+    iconName: "Receipt",
     name: "Expense Auditor",
     description: "Review expense claims, flag policy violations and unusual patterns",
     allowedTools: getOdooToolsForAccessLevel("read-only"),
@@ -1081,6 +1108,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-fleet-manager": {
+    iconName: "Car",
     name: "Fleet Manager",
     description: "Track vehicles, service schedules, fuel and total cost of ownership",
     allowedTools: getOdooToolsForAccessLevel("read-only"),
@@ -1138,6 +1166,7 @@ ${ODOO_RULES}
     },
   },
   "odoo-website-analyst": {
+    iconName: "Globe",
     name: "Website Analyst",
     description: "Analyze online sales, visitors, top products and conversion",
     allowedTools: getOdooToolsForAccessLevel("read-only"),

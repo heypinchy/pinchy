@@ -1,3 +1,5 @@
+import type { TemplateIconName } from "@/lib/template-icons";
+
 export interface TemplateItem {
   id: string;
   name: string;
@@ -7,6 +9,7 @@ export interface TemplateItem {
   odooAccessLevel?: string;
   defaultTagline: string | null;
   available?: boolean;
+  iconName?: TemplateIconName;
 }
 
 export interface GroupedTemplates {
