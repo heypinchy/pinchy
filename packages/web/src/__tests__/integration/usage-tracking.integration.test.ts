@@ -16,7 +16,7 @@
  * follow-up once the poller has been exercised in the dev environment.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, beforeAll, afterAll } from "vitest";
 import type { Server } from "http";
 import { startFakeLlmServer } from "./fake-llm-server";
 

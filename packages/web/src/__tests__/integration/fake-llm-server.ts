@@ -27,12 +27,9 @@ export interface FakeLlmConfig {
 export function startFakeLlmServer(config: FakeLlmConfig): Promise<Server> {
   return new Promise((resolve) => {
     const server = createServer((req, res) => {
-      // Consume the request body so the connection closes cleanly; we
-      // don't actually need it for the canned response.
-      let body = "";
-      req.on("data", (chunk) => {
-        body += chunk;
-      });
+      // Drain the request body so the connection closes cleanly; we
+      // don't actually need its contents for the canned response.
+      req.on("data", () => {});
       req.on("end", () => {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(
