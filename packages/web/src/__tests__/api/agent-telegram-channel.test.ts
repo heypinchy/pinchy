@@ -281,6 +281,34 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
     expect(response.status).toBe(200);
     expect(mockRecalculateTelegramAllowStores).toHaveBeenCalled();
   });
+
+  it("returns 409 when main bot is not configured", async () => {
+    mockHasMainTelegramBot.mockResolvedValueOnce(false);
+
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+    const data = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(data.error).toBe("telegram_not_configured");
+  });
+
+  it("does not call validateTelegramBotToken when main bot is missing", async () => {
+    mockHasMainTelegramBot.mockResolvedValueOnce(false);
+
+    await POST(makeRequest({ botToken: "123456:ABC-token" }), { params: mockParams });
+
+    expect(mockValidateTelegramBotToken).not.toHaveBeenCalled();
+  });
+
+  it("does not write audit log when main bot is missing", async () => {
+    mockHasMainTelegramBot.mockResolvedValueOnce(false);
+
+    await POST(makeRequest({ botToken: "123456:ABC-token" }), { params: mockParams });
+
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
 });
 
 describe("DELETE /api/agents/[agentId]/channels/telegram", () => {

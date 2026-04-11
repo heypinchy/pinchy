@@ -40,6 +40,13 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
     return NextResponse.json({ error: "Bot token is required" }, { status: 400 });
   }
 
+  // Guard: main Telegram bot must exist before additional agents can connect.
+  // Users can only link their Telegram account via the main bot — without it,
+  // per-agent bots have no way to reach any user.
+  if (!(await hasMainTelegramBot())) {
+    return NextResponse.json({ error: "telegram_not_configured" }, { status: 409 });
+  }
+
   const agent = await db.query.agents.findFirst({
     where: eq(agents.id, agentId),
   });
