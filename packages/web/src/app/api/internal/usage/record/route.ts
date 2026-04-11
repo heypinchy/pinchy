@@ -1,6 +1,7 @@
 // audit-exempt: internal telemetry sink for OpenClaw plugins reporting LLM token usage, not a user-facing action
 import { NextRequest, NextResponse } from "next/server";
 import { validateGatewayToken } from "@/lib/gateway-auth";
+import { tryAcquireUsageRecordSlot } from "@/lib/usage-record-rate-limiter";
 import { db } from "@/db";
 import { usageRecords } from "@/db/schema";
 
@@ -58,6 +59,13 @@ function parsePayload(value: unknown): UsagePayload | null {
 }
 
 export async function POST(request: NextRequest) {
+  // Defense-in-depth rate limit — runs BEFORE token validation so a brute
+  // forcer cannot guess the gateway token at line rate. See
+  // `src/lib/usage-record-rate-limiter.ts` for the window configuration.
+  if (!tryAcquireUsageRecordSlot()) {
+    return NextResponse.json({ error: "Too many requests" }, { status: 429 });
+  }
+
   if (!validateGatewayToken(request.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }

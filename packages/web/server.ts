@@ -11,7 +11,8 @@ import { restartState } from "./src/server/restart-state";
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { logCapture } from "./src/lib/log-capture";
-import { startUsagePoller } from "./src/lib/usage-poller";
+import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
+import { registerShutdownHandlers } from "./src/lib/shutdown";
 
 logCapture.install();
 
@@ -241,6 +242,18 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   server.listen(port, () => {
     console.log(`Pinchy ready on http://localhost:${port}`);
   });
+
+  // Graceful shutdown: stop the usage poller interval so Node can exit,
+  // then close the HTTP server. Without this, a SIGTERM (e.g. from Docker
+  // Compose) leaves the setInterval dangling and the process hangs until
+  // the container's kill-grace period expires.
+  registerShutdownHandlers([
+    () => stopUsagePoller(),
+    () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      }),
+  ]);
 
   // Connect to OpenClaw AFTER the server is listening so health checks pass
   // immediately and the setup wizard is available without waiting for OpenClaw.
