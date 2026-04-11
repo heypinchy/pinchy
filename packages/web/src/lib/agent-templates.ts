@@ -1,4 +1,5 @@
 import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
+import type { PersonalityPresetId } from "@/lib/personality-presets";
 
 const ODOO_QUERY_INSTRUCTIONS = `## Mandatory Workflow
 1. **Always call \`odoo_schema\` first** before querying any model. This gives you the exact field names and types. Never guess field names — they differ from what you might expect (e.g., \`product_uom_qty\` not \`quantity\`, \`amount_total\` not \`total\`).
@@ -67,7 +68,7 @@ export interface AgentTemplate {
   description: string;
   allowedTools: string[];
   pluginId: string | null;
-  defaultPersonality: string;
+  defaultPersonality: PersonalityPresetId;
   defaultTagline: string | null;
   defaultAgentsMd: string | null;
   defaultGreetingMessage?: string | null;

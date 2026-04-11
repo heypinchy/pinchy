@@ -6,6 +6,7 @@ import {
   generateAgentsMd,
   pickSuggestedName,
 } from "@/lib/agent-templates";
+import { PERSONALITY_PRESETS } from "@/lib/personality-presets";
 
 describe("agent-templates", () => {
   it("should have a knowledge-base template", () => {
@@ -35,6 +36,20 @@ describe("agent-templates", () => {
 
   it("custom should use the-butler personality", () => {
     expect(AGENT_TEMPLATES["custom"].defaultPersonality).toBe("the-butler");
+  });
+
+  it("every template's defaultPersonality references an existing preset", () => {
+    // Structural invariant: no template can ship with a typo'd personality id.
+    // The type system enforces this at compile time, but the runtime check
+    // catches drift if someone adds a raw-string template, and gives a clear
+    // error message pointing at the offending template.
+    const invalid: Array<{ id: string; personality: string }> = [];
+    for (const [id, tpl] of Object.entries(AGENT_TEMPLATES)) {
+      if (!PERSONALITY_PRESETS[tpl.defaultPersonality]) {
+        invalid.push({ id, personality: tpl.defaultPersonality });
+      }
+    }
+    expect(invalid).toEqual([]);
   });
 
   it("knowledge-base should have a defaultTagline", () => {
