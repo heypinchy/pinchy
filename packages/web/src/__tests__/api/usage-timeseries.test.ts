@@ -157,6 +157,74 @@ describe("GET /api/usage/timeseries", () => {
     expect(body.data).toEqual([]);
   });
 
+  it("zero-fills gaps between data points", async () => {
+    mockOrderBy.mockResolvedValueOnce([
+      {
+        date: "2026-03-01",
+        inputTokens: "5000",
+        outputTokens: "2000",
+        cacheReadTokens: "1000",
+        cacheWriteTokens: "500",
+        cost: "0.045000",
+      },
+      {
+        date: "2026-03-03",
+        inputTokens: "3000",
+        outputTokens: "1000",
+        cacheReadTokens: "800",
+        cacheWriteTokens: "200",
+        cost: "0.025000",
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/usage/timeseries");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toHaveLength(3);
+    expect(body.data[0].date).toBe("2026-03-01");
+    expect(body.data[1]).toEqual({
+      date: "2026-03-02",
+      inputTokens: "0",
+      outputTokens: "0",
+      cacheReadTokens: "0",
+      cacheWriteTokens: "0",
+      cost: null,
+    });
+    expect(body.data[2].date).toBe("2026-03-03");
+  });
+
+  it("does not add extra days beyond data range", async () => {
+    mockOrderBy.mockResolvedValueOnce([
+      {
+        date: "2026-03-01",
+        inputTokens: "5000",
+        outputTokens: "2000",
+        cacheReadTokens: "1000",
+        cacheWriteTokens: "500",
+        cost: "0.045000",
+      },
+      {
+        date: "2026-03-02",
+        inputTokens: "3000",
+        outputTokens: "1000",
+        cacheReadTokens: "800",
+        cacheWriteTokens: "200",
+        cost: "0.025000",
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/usage/timeseries");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toHaveLength(2);
+    expect(body.data[0].date).toBe("2026-03-01");
+    expect(body.data[1].date).toBe("2026-03-02");
+  });
+
   it("returns cache tokens per day", async () => {
     mockOrderBy.mockResolvedValueOnce([
       {
