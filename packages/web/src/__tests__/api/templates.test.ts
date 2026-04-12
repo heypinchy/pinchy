@@ -115,7 +115,7 @@ describe("GET /api/templates", () => {
     });
   });
 
-  it("excludes odoo templates when no odoo connection exists", async () => {
+  it("includes odoo templates when no odoo connection exists, marked unavailable", async () => {
     mockLimit.mockResolvedValue([]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
@@ -125,7 +125,10 @@ describe("GET /api/templates", () => {
     const odooTemplates = body.templates.filter(
       (t: { requiresOdooConnection: boolean }) => t.requiresOdooConnection
     );
-    expect(odooTemplates).toHaveLength(0);
+    expect(odooTemplates.length).toBeGreaterThan(0);
+    for (const t of odooTemplates) {
+      expect(t.available).toBe(false);
+    }
   });
 
   it("marks odoo templates as available when all required models exist", async () => {

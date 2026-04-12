@@ -300,6 +300,248 @@ describe("NewAgentForm — tagline field", () => {
   });
 });
 
+describe("NewAgentForm — intro text", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockSearchParams.current = new URLSearchParams();
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "/api/templates") {
+        return {
+          ok: true,
+          json: async () => ({ templates: mockTemplates }),
+        } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("shows subtitle under Create New Agent heading", async () => {
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/Pick a template to get started/)).toBeInTheDocument();
+    });
+  });
+});
+
+describe("NewAgentForm — tagline helper", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    mockSearchParams.current = new URLSearchParams();
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "/api/templates") {
+        return {
+          ok: true,
+          json: async () => ({ templates: mockTemplates }),
+        } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("shows helper text below tagline field", async () => {
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/start from scratch/i)).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText(/start from scratch/i));
+
+    await waitFor(() => {
+      expect(screen.getByText(/Shown below the agent name/)).toBeInTheDocument();
+    });
+  });
+});
+
+describe("NewAgentForm — permission preview", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  const odooTemplates = [
+    ...mockTemplates,
+    {
+      id: "odoo-crm-assistant",
+      name: "CRM Assistant",
+      description: "Manage leads",
+      requiresDirectories: false,
+      requiresOdooConnection: true,
+      odooAccessLevel: "read-write",
+      defaultTagline: "Manage leads",
+    },
+  ];
+
+  beforeEach(() => {
+    mockSearchParams.current = new URLSearchParams();
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "/api/templates") {
+        return {
+          ok: true,
+          json: async () => ({ templates: odooTemplates }),
+        } as Response;
+      }
+      if (String(url) === "/api/data-directories") {
+        return {
+          ok: true,
+          json: async () => ({ directories: [] }),
+        } as Response;
+      }
+      if (String(url) === "/api/integrations") {
+        return {
+          ok: true,
+          json: async () => ([{ id: "conn-1", name: "My Odoo", type: "odoo", data: {} }]),
+        } as Response;
+      }
+      if (String(url) === "/api/agents") {
+        return {
+          ok: true,
+          json: async () => [],
+        } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("shows read-only preview for documents template", async () => {
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Knowledge Base")).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText("Knowledge Base"));
+
+    await waitFor(() => {
+      expect(screen.getByText("What this agent can do")).toBeInTheDocument();
+      expect(screen.getByText("Read files in the selected directories")).toBeInTheDocument();
+      expect(screen.getByText("Cannot modify or delete files")).toBeInTheDocument();
+    });
+  });
+
+  it("shows read-write preview for Odoo read-write template", async () => {
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("CRM Assistant")).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText("CRM Assistant"));
+
+    await waitFor(() => {
+      expect(screen.getByText("What this agent can do")).toBeInTheDocument();
+      expect(screen.getByText("Read and write data in Odoo")).toBeInTheDocument();
+      expect(screen.getByText("This agent can modify data in Odoo")).toBeInTheDocument();
+    });
+  });
+
+  it("does not show preview for custom template", async () => {
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/start from scratch/i)).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText(/start from scratch/i));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
+
+    expect(screen.queryByText("What this agent can do")).not.toBeInTheDocument();
+  });
+
+  it("shows 'adjust permissions after creation' note", async () => {
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Knowledge Base")).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText("Knowledge Base"));
+
+    await waitFor(() => {
+      expect(screen.getByText(/adjust permissions after creation/)).toBeInTheDocument();
+    });
+  });
+});
+
+describe("NewAgentForm — no connections link", () => {
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  const odooTemplates = [
+    ...mockTemplates,
+    {
+      id: "odoo-sales-analyst",
+      name: "Sales Analyst",
+      description: "Analyze revenue",
+      requiresDirectories: false,
+      requiresOdooConnection: true,
+      odooAccessLevel: "read-only",
+      defaultTagline: "Analyze revenue",
+    },
+  ];
+
+  beforeEach(() => {
+    mockSearchParams.current = new URLSearchParams();
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "/api/templates") {
+        return {
+          ok: true,
+          json: async () => ({ templates: odooTemplates }),
+        } as Response;
+      }
+      if (String(url) === "/api/integrations") {
+        return {
+          ok: true,
+          json: async () => ([]),
+        } as Response;
+      }
+      if (String(url) === "/api/agents") {
+        return {
+          ok: true,
+          json: async () => [],
+        } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("shows setup link when no Odoo connections available", async () => {
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Sales Analyst")).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText("Sales Analyst"));
+
+    await waitFor(() => {
+      expect(screen.getByText(/No Odoo connections yet/)).toBeInTheDocument();
+    });
+
+    const link = screen.getByText(/Set up connection/);
+    expect(link).toBeInTheDocument();
+    expect(link.closest("a")).toHaveAttribute("href", "/settings?tab=integrations");
+  });
+});
+
 describe("NewAgentForm — suggested name", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 

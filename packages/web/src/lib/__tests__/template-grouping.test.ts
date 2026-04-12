@@ -1,162 +1,272 @@
 import { describe, expect, it } from "vitest";
-import { groupTemplates } from "../template-grouping";
+import {
+  groupTemplatesByCategory,
+  getAccessBadgeProps,
+  getPermissionPreviewItems,
+} from "../template-grouping";
 
-describe("groupTemplates", () => {
-  it("separates documents, odoo, and custom into three groups", () => {
-    const templates = [
-      {
-        id: "knowledge-base",
-        name: "Knowledge Base",
-        description: "Answer questions from your docs",
-        requiresDirectories: true,
-        requiresOdooConnection: false,
-        defaultTagline: "Answer questions from your docs",
-      },
-      {
-        id: "custom",
-        name: "Custom Agent",
-        description: "Start from scratch",
-        requiresDirectories: false,
-        requiresOdooConnection: false,
-        defaultTagline: null,
-      },
-      {
-        id: "contract-analyzer",
-        name: "Contract Analyzer",
-        description: "Review and analyze contracts",
-        requiresDirectories: true,
-        requiresOdooConnection: false,
-        defaultTagline: "Review and analyze contracts",
-      },
-      {
-        id: "odoo-sales-analyst",
-        name: "Sales Analyst",
-        description: "Analyze revenue",
-        requiresDirectories: false,
-        requiresOdooConnection: true,
-        odooAccessLevel: "read-only" as const,
-        defaultTagline: "Analyze revenue",
-      },
-    ];
+describe("getAccessBadgeProps", () => {
+  it("returns green 'Documents · Read-only' for a documents template", () => {
+    const result = getAccessBadgeProps({
+      id: "knowledge-base",
+      name: "Knowledge Base",
+      description: "Answer questions",
+      requiresDirectories: true,
+      defaultTagline: null,
+    });
+    expect(result).toEqual({ label: "Documents · Read-only", variant: "green" });
+  });
 
-    const result = groupTemplates(templates);
+  it("returns green 'Odoo · Read-only' for Odoo read-only template", () => {
+    const result = getAccessBadgeProps({
+      id: "odoo-sales-analyst",
+      name: "Sales Analyst",
+      description: "Analyze revenue",
+      requiresDirectories: false,
+      requiresOdooConnection: true,
+      odooAccessLevel: "read-only",
+      defaultTagline: null,
+    });
+    expect(result).toEqual({ label: "Odoo · Read-only", variant: "green" });
+  });
 
-    expect(result.documents).toEqual([
-      expect.objectContaining({ id: "knowledge-base" }),
-      expect.objectContaining({ id: "contract-analyzer" }),
+  it("returns amber 'Odoo · Read & Write' for Odoo read-write template", () => {
+    const result = getAccessBadgeProps({
+      id: "odoo-crm-assistant",
+      name: "CRM Assistant",
+      description: "Manage leads",
+      requiresDirectories: false,
+      requiresOdooConnection: true,
+      odooAccessLevel: "read-write",
+      defaultTagline: null,
+    });
+    expect(result).toEqual({ label: "Odoo · Read & Write", variant: "amber" });
+  });
+
+  it("returns red 'Odoo · Full Access' for Odoo full-access template", () => {
+    const result = getAccessBadgeProps({
+      id: "odoo-full",
+      name: "Full Agent",
+      description: "Full access",
+      requiresDirectories: false,
+      requiresOdooConnection: true,
+      odooAccessLevel: "full",
+      defaultTagline: null,
+    });
+    expect(result).toEqual({ label: "Odoo · Full Access", variant: "red" });
+  });
+
+  it("returns null for custom template", () => {
+    const result = getAccessBadgeProps({
+      id: "custom",
+      name: "Custom Agent",
+      description: "Start from scratch",
+      requiresDirectories: false,
+      defaultTagline: null,
+    });
+    expect(result).toBeNull();
+  });
+});
+
+describe("getPermissionPreviewItems", () => {
+  it("returns read-only capabilities for Odoo read-only template", () => {
+    const result = getPermissionPreviewItems({
+      requiresDirectories: false,
+      requiresOdooConnection: true,
+      odooAccessLevel: "read-only",
+    });
+    expect(result).toEqual([
+      { icon: "check", text: "Read data from Odoo" },
+      { icon: "cross", text: "Cannot create, modify, or delete records" },
     ]);
-    expect(result.odoo).toEqual([expect.objectContaining({ id: "odoo-sales-analyst" })]);
+  });
+
+  it("returns read-write capabilities for Odoo read-write template", () => {
+    const result = getPermissionPreviewItems({
+      requiresDirectories: false,
+      requiresOdooConnection: true,
+      odooAccessLevel: "read-write",
+    });
+    expect(result).toEqual([
+      { icon: "check", text: "Read and write data in Odoo" },
+      { icon: "check", text: "Create and update records" },
+      { icon: "warning", text: "This agent can modify data in Odoo" },
+    ]);
+  });
+
+  it("returns full-access capabilities for Odoo full template", () => {
+    const result = getPermissionPreviewItems({
+      requiresDirectories: false,
+      requiresOdooConnection: true,
+      odooAccessLevel: "full",
+    });
+    expect(result).toEqual([
+      { icon: "check", text: "Full access to Odoo data" },
+      { icon: "warning", text: "This agent has full access including record deletion" },
+    ]);
+  });
+
+  it("returns documents capabilities for documents template", () => {
+    const result = getPermissionPreviewItems({
+      requiresDirectories: true,
+      requiresOdooConnection: false,
+    });
+    expect(result).toEqual([
+      { icon: "check", text: "Read files in the selected directories" },
+      { icon: "cross", text: "Cannot modify or delete files" },
+    ]);
+  });
+
+  it("returns empty array for custom template", () => {
+    const result = getPermissionPreviewItems({
+      requiresDirectories: false,
+    });
+    expect(result).toEqual([]);
+  });
+});
+
+describe("groupTemplatesByCategory", () => {
+  const salesTemplate = {
+    id: "odoo-sales-analyst",
+    name: "Sales Analyst",
+    description: "Analyze revenue",
+    requiresDirectories: false,
+    requiresOdooConnection: true,
+    odooAccessLevel: "read-only" as const,
+    defaultTagline: "Analyze revenue",
+    available: true,
+  };
+
+  const crmTemplate = {
+    id: "odoo-crm-assistant",
+    name: "CRM Assistant",
+    description: "Manage leads",
+    requiresDirectories: false,
+    requiresOdooConnection: true,
+    odooAccessLevel: "read-write" as const,
+    defaultTagline: "Manage leads",
+    available: true,
+  };
+
+  const knowledgeBase = {
+    id: "knowledge-base",
+    name: "Knowledge Base",
+    description: "Answer questions",
+    requiresDirectories: true,
+    defaultTagline: "Answer questions",
+    available: true,
+  };
+
+  const resumeScreener = {
+    id: "resume-screener",
+    name: "Resume Screener",
+    description: "Screen candidates",
+    requiresDirectories: true,
+    defaultTagline: "Screen candidates",
+    available: true,
+  };
+
+  const onboardingGuide = {
+    id: "onboarding-guide",
+    name: "Onboarding Guide",
+    description: "Guide new members",
+    requiresDirectories: true,
+    defaultTagline: "Guide new members",
+    available: true,
+  };
+
+  const hrAnalyst = {
+    id: "odoo-hr-analyst",
+    name: "HR Analyst",
+    description: "Track headcount",
+    requiresDirectories: false,
+    requiresOdooConnection: true,
+    odooAccessLevel: "read-only" as const,
+    defaultTagline: "Track headcount",
+    available: true,
+  };
+
+  const customTemplate = {
+    id: "custom",
+    name: "Custom Agent",
+    description: "Start from scratch",
+    requiresDirectories: false,
+    defaultTagline: null,
+    available: true,
+  };
+
+  it("assigns odoo-sales-analyst to Sales & Customers", () => {
+    const result = groupTemplatesByCategory([salesTemplate]);
+    expect(result.categories).toHaveLength(1);
+    expect(result.categories[0].label).toBe("Sales & Customers");
+    expect(result.categories[0].templates[0].id).toBe("odoo-sales-analyst");
+  });
+
+  it("assigns knowledge-base to Knowledge & Compliance", () => {
+    const result = groupTemplatesByCategory([knowledgeBase]);
+    expect(result.categories).toHaveLength(1);
+    expect(result.categories[0].label).toBe("Knowledge & Compliance");
+  });
+
+  it("assigns resume-screener to HR & Recruiting", () => {
+    const result = groupTemplatesByCategory([resumeScreener]);
+    expect(result.categories).toHaveLength(1);
+    expect(result.categories[0].label).toBe("HR & Recruiting");
+  });
+
+  it("mixes Document and Odoo templates in HR & Recruiting", () => {
+    const result = groupTemplatesByCategory([onboardingGuide, hrAnalyst, resumeScreener]);
+    expect(result.categories).toHaveLength(1);
+    expect(result.categories[0].label).toBe("HR & Recruiting");
+    expect(result.categories[0].templates).toHaveLength(3);
+  });
+
+  it("extracts custom template separately, not in any category", () => {
+    const result = groupTemplatesByCategory([knowledgeBase, customTemplate]);
     expect(result.custom).toEqual(expect.objectContaining({ id: "custom" }));
+    const allCategoryTemplateIds = result.categories.flatMap((c) =>
+      c.templates.map((t) => t.id)
+    );
+    expect(allCategoryTemplateIds).not.toContain("custom");
   });
 
-  it("custom is null when no custom template exists", () => {
-    const templates = [
-      {
-        id: "knowledge-base",
-        name: "Knowledge Base",
-        description: "Answer questions from your docs",
-        requiresDirectories: true,
-        defaultTagline: "Answer questions from your docs",
-      },
-    ];
-
-    const result = groupTemplates(templates);
-
-    expect(result.documents).toHaveLength(1);
-    expect(result.custom).toBeNull();
+  it("sorts available templates before unavailable within each category", () => {
+    const unavailableSales = { ...salesTemplate, available: false };
+    const result = groupTemplatesByCategory([unavailableSales, crmTemplate]);
+    expect(result.categories[0].templates[0].id).toBe("odoo-crm-assistant");
+    expect(result.categories[0].templates[1].id).toBe("odoo-sales-analyst");
   });
 
-  it("returns empty odoo group when no Odoo templates exist", () => {
-    const templates = [
-      {
-        id: "knowledge-base",
-        name: "Knowledge Base",
-        description: "Answer questions from your docs",
-        requiresDirectories: true,
-        requiresOdooConnection: false,
-        defaultTagline: "Answer questions from your docs",
-      },
-    ];
-
-    const result = groupTemplates(templates);
-
-    expect(result.documents).toHaveLength(1);
-    expect(result.odoo).toEqual([]);
+  it("returns categories in stable order: Sales, Finance, HR, Operations, Marketing, Knowledge", () => {
+    // Provide templates from different categories in reverse order
+    const result = groupTemplatesByCategory([knowledgeBase, resumeScreener, salesTemplate]);
+    const labels = result.categories.map((c) => c.label);
+    expect(labels).toEqual(["Sales & Customers", "HR & Recruiting", "Knowledge & Compliance"]);
   });
 
-  it("handles all Odoo templates", () => {
-    const templates = [
-      {
-        id: "odoo-sales-analyst",
-        name: "Sales Analyst",
-        description: "Analyze revenue",
-        requiresDirectories: false,
-        requiresOdooConnection: true,
-        odooAccessLevel: "read-only" as const,
-        defaultTagline: "Analyze revenue",
-      },
-      {
-        id: "odoo-inventory-scout",
-        name: "Inventory Scout",
-        description: "Monitor stock",
-        requiresDirectories: false,
-        requiresOdooConnection: true,
-        odooAccessLevel: "read-only" as const,
-        defaultTagline: "Monitor stock",
-      },
-    ];
-
-    const result = groupTemplates(templates);
-
-    expect(result.documents).toEqual([]);
-    expect(result.odoo).toHaveLength(2);
+  it("omits categories with no matching templates in the input", () => {
+    const result = groupTemplatesByCategory([knowledgeBase]);
+    expect(result.categories).toHaveLength(1);
+    expect(result.categories[0].label).toBe("Knowledge & Compliance");
   });
 
-  it("sorts available templates before unavailable ones within odoo group", () => {
-    const templates = [
-      {
-        id: "odoo-unavailable",
-        name: "Unavailable Agent",
-        description: "Missing modules",
-        requiresDirectories: false,
-        requiresOdooConnection: true,
-        odooAccessLevel: "read-only" as const,
-        defaultTagline: "N/A",
-        available: false,
-      },
-      {
-        id: "odoo-available",
-        name: "Available Agent",
-        description: "All modules present",
-        requiresDirectories: false,
-        requiresOdooConnection: true,
-        odooAccessLevel: "read-only" as const,
-        defaultTagline: "OK",
-        available: true,
-      },
-    ];
-
-    const result = groupTemplates(templates);
-
-    expect(result.odoo[0].id).toBe("odoo-available");
-    expect(result.odoo[1].id).toBe("odoo-unavailable");
+  it("gracefully ignores unknown template IDs", () => {
+    const unknown = {
+      id: "unknown-template",
+      name: "Unknown",
+      description: "Mystery",
+      requiresDirectories: false,
+      defaultTagline: null,
+      available: true,
+    };
+    const result = groupTemplatesByCategory([unknown, knowledgeBase]);
+    expect(result.categories).toHaveLength(1);
+    const allIds = result.categories.flatMap((c) => c.templates.map((t) => t.id));
+    expect(allIds).not.toContain("unknown-template");
   });
 
-  it("puts document templates (requiresDirectories) into documents group, not custom", () => {
-    const templates = [
-      {
-        id: "resume-screener",
-        name: "Resume Screener",
-        description: "Screen candidates",
-        requiresDirectories: true,
-        requiresOdooConnection: false,
-        defaultTagline: "Screen candidates",
-      },
-    ];
-
-    const result = groupTemplates(templates);
-
-    expect(result.documents).toHaveLength(1);
+  it("returns null custom when no custom template exists", () => {
+    const result = groupTemplatesByCategory([salesTemplate]);
     expect(result.custom).toBeNull();
   });
 });

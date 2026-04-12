@@ -25,17 +25,12 @@ export async function GET(request: NextRequest) {
   // Load connection models for availability check
   const connectionModels = hasOdooConnection ? await getConnectionModels() : null;
 
-  const templates = Object.entries(AGENT_TEMPLATES)
-    .filter(([, template]) => {
-      if (template.requiresOdooConnection && !hasOdooConnection) {
-        return false;
-      }
-      return true;
-    })
-    .map(([id, template]) => {
+  const templates = Object.entries(AGENT_TEMPLATES).map(([id, template]) => {
       let available = true;
 
-      if (template.odooConfig && connectionModels) {
+      if (template.requiresOdooConnection && !hasOdooConnection) {
+        available = false;
+      } else if (template.odooConfig && connectionModels) {
         const validation = validateOdooTemplate(template.odooConfig, connectionModels);
         available = validation.valid;
       }

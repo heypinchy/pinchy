@@ -11,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import {
   Form,
   FormControl,
+  FormDescription,
   FormField,
   FormItem,
   FormLabel,
@@ -27,11 +28,13 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { TemplateSelector } from "@/components/template-selector";
 import { DirectoryPicker } from "@/components/directory-picker";
 import { DocsLink } from "@/components/docs-link";
-import { ArrowLeft, ExternalLink, Info, AlertTriangle } from "lucide-react";
+import { ArrowLeft, Check, ExternalLink, Info, AlertTriangle, X } from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 import { getTemplate, pickSuggestedName, type OdooTemplateConfig } from "@/lib/agent-templates";
 import { autoSelectConnection, type OdooConnection } from "@/lib/odoo-connection-selection";
+import { getPermissionPreviewItems } from "@/lib/template-grouping";
+import Link from "next/link";
 
 interface Template {
   id: string;
@@ -66,6 +69,33 @@ const agentFormSchema = z.object({
 });
 
 type AgentFormValues = z.infer<typeof agentFormSchema>;
+
+function PermissionPreview({ template }: { template?: Template }) {
+  if (!template) return null;
+  const items = getPermissionPreviewItems(template);
+  if (items.length === 0) return null;
+
+  return (
+    <div className="space-y-2">
+      <h4 className="text-sm font-medium">What this agent can do</h4>
+      <ul className="space-y-1">
+        {items.map((item) => (
+          <li key={item.text} className="flex items-center gap-2 text-sm text-muted-foreground">
+            {item.icon === "check" && <Check className="size-4 text-green-600 shrink-0" />}
+            {item.icon === "cross" && <X className="size-4 text-muted-foreground/50 shrink-0" />}
+            {item.icon === "warning" && (
+              <AlertTriangle className="size-4 text-yellow-600 shrink-0" />
+            )}
+            {item.text}
+          </li>
+        ))}
+      </ul>
+      <p className="text-xs text-muted-foreground">
+        You can adjust permissions after creation.
+      </p>
+    </div>
+  );
+}
 
 export function NewAgentForm() {
   const router = useRouter();
@@ -290,10 +320,15 @@ export function NewAgentForm() {
 
   return (
     <div className={"p-4 md:p-8 " + (selectedTemplate ? "max-w-lg" : "max-w-3xl")}>
-      <h1 className="text-2xl font-bold mb-6">Create New Agent</h1>
+      <h1 className="text-2xl font-bold mb-2">Create New Agent</h1>
 
       {!selectedTemplate ? (
+        <>
+        <p className="text-sm text-muted-foreground mb-6">
+          Pick a template to get started — you can adjust all settings after creation.
+        </p>
         <TemplateSelector templates={templates} onSelect={setSelectedTemplate} />
+        </>
       ) : (
         <>
           <button
@@ -346,6 +381,9 @@ export function NewAgentForm() {
                             {...field}
                           />
                         </FormControl>
+                        <FormDescription>
+                          Shown below the agent name in the sidebar
+                        </FormDescription>
                       </FormItem>
                     )}
                   />
@@ -360,7 +398,10 @@ export function NewAgentForm() {
                           </p>
                         ) : odooConnections.length === 0 ? (
                           <p className="text-sm text-muted-foreground mt-1">
-                            No Odoo connections available.
+                            No Odoo connections yet.{" "}
+                            <Link href="/settings?tab=integrations" className="underline hover:text-foreground">
+                              Set up connection →
+                            </Link>
                           </p>
                         ) : (
                           <Select
@@ -436,6 +477,8 @@ export function NewAgentForm() {
                       </DocsLink>
                     </div>
                   )}
+
+                  <PermissionPreview template={selectedTemplateObj} />
 
                   {error && <p className="text-sm text-destructive">{error}</p>}
 

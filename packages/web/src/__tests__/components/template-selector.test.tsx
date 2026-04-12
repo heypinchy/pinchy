@@ -28,22 +28,20 @@ describe("TemplateSelector", () => {
     },
   ];
 
-  it("should render document templates in Documents section", () => {
+  it("renders templates in thematic categories", () => {
     render(<TemplateSelector templates={templates} onSelect={vi.fn()} />);
-    expect(screen.getByText("Documents")).toBeInTheDocument();
+    expect(screen.getByText("Knowledge & Compliance")).toBeInTheDocument();
     expect(screen.getByText("Knowledge Base")).toBeInTheDocument();
     expect(screen.getByText("Contract Analyzer")).toBeInTheDocument();
   });
 
-  it("should render Custom Agent as standalone link, not as a card in the grid", () => {
+  it("renders Custom Agent as standalone link, not in any category", () => {
     render(<TemplateSelector templates={templates} onSelect={vi.fn()} />);
-    // Custom should appear as a text link/button, not inside the Documents grid
     const customLink = screen.getByText(/start from scratch/i);
     expect(customLink).toBeInTheDocument();
-    // Should NOT be inside the Documents section grid
-    const documentsHeading = screen.getByText("Documents");
-    const documentsSection = documentsHeading.closest("div");
-    expect(documentsSection).not.toContainElement(customLink);
+    const categoryHeading = screen.getByText("Knowledge & Compliance");
+    const categorySection = categoryHeading.closest("div");
+    expect(categorySection).not.toContainElement(customLink);
   });
 
   it("should call onSelect with 'custom' when clicking the standalone custom link", () => {
@@ -53,7 +51,7 @@ describe("TemplateSelector", () => {
     expect(onSelect).toHaveBeenCalledWith("custom");
   });
 
-  it("should call onSelect when a document template is clicked", () => {
+  it("should call onSelect when a template is clicked", () => {
     const onSelect = vi.fn();
     render(<TemplateSelector templates={templates} onSelect={onSelect} />);
     fireEvent.click(screen.getByText("Knowledge Base"));
@@ -65,7 +63,7 @@ describe("TemplateSelector", () => {
     expect(screen.getByText("Answer questions from your docs")).toBeInTheDocument();
   });
 
-  it("should render Odoo section when Odoo templates exist", () => {
+  it("renders Odoo template in its thematic category, not in separate Odoo section", () => {
     const withOdoo = [
       ...templates,
       {
@@ -74,31 +72,113 @@ describe("TemplateSelector", () => {
         description: "Analyze revenue",
         requiresDirectories: false,
         requiresOdooConnection: true,
+        odooAccessLevel: "read-only",
         available: true,
       },
     ];
 
     render(<TemplateSelector templates={withOdoo} onSelect={vi.fn()} />);
-    expect(screen.getByText("Documents")).toBeInTheDocument();
+    expect(screen.getByText("Sales & Customers")).toBeInTheDocument();
     expect(screen.getByText("Sales Analyst")).toBeInTheDocument();
+    expect(screen.queryByText("Documents")).not.toBeInTheDocument();
+  });
+
+  it("renders access badge on read-only Odoo template card", () => {
+    const odooTemplates = [
+      {
+        id: "odoo-sales-analyst",
+        name: "Sales Analyst",
+        description: "Analyze revenue",
+        requiresDirectories: false,
+        requiresOdooConnection: true,
+        odooAccessLevel: "read-only",
+        available: true,
+      },
+    ];
+
+    render(<TemplateSelector templates={odooTemplates} onSelect={vi.fn()} />);
+    expect(screen.getByText("Odoo · Read-only")).toBeInTheDocument();
+  });
+
+  it("renders access badge on read-write Odoo template card", () => {
+    const odooTemplates = [
+      {
+        id: "odoo-crm-assistant",
+        name: "CRM Assistant",
+        description: "Manage leads",
+        requiresDirectories: false,
+        requiresOdooConnection: true,
+        odooAccessLevel: "read-write",
+        available: true,
+      },
+    ];
+
+    render(<TemplateSelector templates={odooTemplates} onSelect={vi.fn()} />);
+    expect(screen.getByText("Odoo · Read & Write")).toBeInTheDocument();
+  });
+
+  it("renders access badge on documents template card", () => {
+    const docTemplates = [
+      {
+        id: "knowledge-base",
+        name: "Knowledge Base",
+        description: "Answer questions",
+        requiresDirectories: true,
+        available: true,
+      },
+    ];
+
+    render(<TemplateSelector templates={docTemplates} onSelect={vi.fn()} />);
+    expect(screen.getByText("Documents · Read-only")).toBeInTheDocument();
+  });
+
+  it("shows teaser when all category templates are unavailable", () => {
+    const unavailableTemplates = [
+      {
+        id: "odoo-sales-analyst",
+        name: "Sales Analyst",
+        description: "Analyze revenue",
+        requiresDirectories: false,
+        requiresOdooConnection: true,
+        odooAccessLevel: "read-only",
+        available: false,
+      },
+      {
+        id: "odoo-crm-assistant",
+        name: "CRM Assistant",
+        description: "Manage leads",
+        requiresDirectories: false,
+        requiresOdooConnection: true,
+        odooAccessLevel: "read-write",
+        available: false,
+      },
+    ];
+
+    render(<TemplateSelector templates={unavailableTemplates} onSelect={vi.fn()} />);
+    expect(screen.getByText(/2 templates available with Odoo/)).toBeInTheDocument();
+    const link = screen.getByText(/Set up connection/);
+    expect(link).toBeInTheDocument();
+    expect(link.closest("a")).toHaveAttribute("href", "/settings?tab=integrations");
   });
 
   it("should dim unavailable templates with reduced opacity", () => {
     const mixedTemplates = [
       {
-        id: "odoo-available",
+        id: "odoo-sales-analyst",
         name: "Available Agent",
         description: "Works fine",
         requiresOdooConnection: true,
         requiresDirectories: false,
+        odooAccessLevel: "read-only",
         available: true,
       },
       {
-        id: "odoo-unavailable",
+        id: "odoo-crm-assistant",
         name: "Unavailable Agent",
         description: "Missing modules",
         requiresOdooConnection: true,
         requiresDirectories: false,
+        odooAccessLevel: "read-write",
         available: false,
       },
     ];
@@ -112,21 +192,31 @@ describe("TemplateSelector", () => {
     expect(unavailableCard).toHaveAttribute("data-available", "false");
   });
 
-  it("should still call onSelect for unavailable templates", () => {
+  it("should still call onSelect for unavailable templates in mixed categories", () => {
     const onSelect = vi.fn();
     const mixedTemplates = [
       {
-        id: "odoo-unavailable",
+        id: "odoo-sales-analyst",
+        name: "Available Agent",
+        description: "Works",
+        requiresOdooConnection: true,
+        requiresDirectories: false,
+        odooAccessLevel: "read-only",
+        available: true,
+      },
+      {
+        id: "odoo-crm-assistant",
         name: "Unavailable Agent",
         description: "Missing modules",
         requiresOdooConnection: true,
         requiresDirectories: false,
+        odooAccessLevel: "read-write",
         available: false,
       },
     ];
 
     render(<TemplateSelector templates={mixedTemplates} onSelect={onSelect} />);
     fireEvent.click(screen.getByText("Unavailable Agent"));
-    expect(onSelect).toHaveBeenCalledWith("odoo-unavailable");
+    expect(onSelect).toHaveBeenCalledWith("odoo-crm-assistant");
   });
 });
