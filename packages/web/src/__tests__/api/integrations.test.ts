@@ -973,6 +973,20 @@ describe("POST /api/integrations/[connectionId]/sync", () => {
     expect(mockModels).not.toHaveBeenCalled();
   });
 
+  it("should include resource field in audit log on sync", async () => {
+    const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
+
+    await POST(makeRequest("/api/integrations/conn-1/sync", { method: "POST" }), {
+      params: Promise.resolve({ connectionId: "conn-1" }),
+    });
+
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resource: "integration:conn-1",
+      })
+    );
+  });
+
   it("should return error when all models are inaccessible", async () => {
     mockFields.mockRejectedValue(new Error("AccessError"));
     const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");

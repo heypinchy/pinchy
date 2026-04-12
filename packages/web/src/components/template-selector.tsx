@@ -39,10 +39,20 @@ function TemplateCard({
 
   return (
     <Card
+      role="button"
+      tabIndex={0}
       className={
         "cursor-pointer transition-colors" + (isAvailable ? " hover:border-primary" : " opacity-50")
       }
       onClick={() => onSelect(template.id)}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === " ") e.preventDefault();
+      }}
+      onKeyUp={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") onSelect(template.id);
+      }}
       data-available={isAvailable}
     >
       <CardContent className="flex flex-col items-center text-center p-6">

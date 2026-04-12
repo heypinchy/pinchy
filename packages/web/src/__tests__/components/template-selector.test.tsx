@@ -58,6 +58,28 @@ describe("TemplateSelector", () => {
     expect(onSelect).toHaveBeenCalledWith("knowledge-base");
   });
 
+  it("should call onSelect when Enter is pressed on a template card", () => {
+    const onSelect = vi.fn();
+    render(<TemplateSelector templates={templates} onSelect={onSelect} />);
+    const card = screen.getByText("Knowledge Base").closest("[role='button']")!;
+    fireEvent.keyUp(card, { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledWith("knowledge-base");
+  });
+
+  it("should call onSelect when Space is pressed on a template card", () => {
+    const onSelect = vi.fn();
+    render(<TemplateSelector templates={templates} onSelect={onSelect} />);
+    const card = screen.getByText("Knowledge Base").closest("[role='button']")!;
+    fireEvent.keyUp(card, { key: " " });
+    expect(onSelect).toHaveBeenCalledWith("knowledge-base");
+  });
+
+  it("template cards are focusable via tabIndex", () => {
+    render(<TemplateSelector templates={templates} onSelect={vi.fn()} />);
+    const card = screen.getByText("Knowledge Base").closest("[role='button']")!;
+    expect(card).toHaveAttribute("tabindex", "0");
+  });
+
   it("should show template descriptions", () => {
     render(<TemplateSelector templates={templates} onSelect={vi.fn()} />);
     expect(screen.getByText("Answer questions from your docs")).toBeInTheDocument();

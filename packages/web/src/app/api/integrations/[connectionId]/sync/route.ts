@@ -61,6 +61,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
       actorType: "user",
       actorId: session.user.id!,
       eventType: "config.changed",
+      resource: `integration:${connectionId}`,
       detail: {
         action: "integration_schema_synced",
         id: connectionId,
