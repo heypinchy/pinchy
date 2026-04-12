@@ -686,6 +686,97 @@ describe("UsageDashboard", () => {
     });
   });
 
+  describe("null cost vs $0.00", () => {
+    it("displays dash when all agent costs are null", async () => {
+      mockBothEndpoints({
+        agents: [
+          {
+            agentId: "agent-1",
+            agentName: "Ollama Bot",
+            totalInputTokens: "100000",
+            totalOutputTokens: "200000",
+            totalCost: null,
+          },
+        ],
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Ollama Bot").length).toBeGreaterThan(0);
+      });
+
+      // The Estimated Cost card should show em dash, not "$0.00"
+      const costCard = screen.getByText("Estimated Cost").closest("[data-slot='card']")!;
+      expect(costCard).toHaveTextContent("\u2014");
+      expect(costCard).not.toHaveTextContent("$0.00");
+    });
+
+    it("displays $0.00 when agent cost is explicitly zero", async () => {
+      mockBothEndpoints({
+        agents: [
+          {
+            agentId: "agent-1",
+            agentName: "Zero Cost Bot",
+            totalInputTokens: "100000",
+            totalOutputTokens: "200000",
+            totalCost: "0",
+          },
+        ],
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Zero Cost Bot").length).toBeGreaterThan(0);
+      });
+
+      const costCard = screen.getByText("Estimated Cost").closest("[data-slot='card']")!;
+      expect(costCard).toHaveTextContent("$0.00");
+    });
+
+    it("displays dash for individual agent cost when null", async () => {
+      mockBothEndpoints({
+        agents: [
+          {
+            agentId: "agent-1",
+            agentName: "Ollama Bot",
+            totalInputTokens: "100000",
+            totalOutputTokens: "200000",
+            totalCost: null,
+          },
+          {
+            agentId: "agent-2",
+            agentName: "Claude Bot",
+            totalInputTokens: "50000",
+            totalOutputTokens: "80000",
+            totalCost: "2.50",
+          },
+        ],
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Ollama Bot").length).toBeGreaterThan(0);
+      });
+
+      // Find the Ollama Bot row via its table cell and check the cost cell shows em dash
+      const ollamaCells = screen.getAllByText("Ollama Bot");
+      const ollamaCell = ollamaCells.find((el) => el.tagName === "TD")!;
+      const ollamaRow = ollamaCell.closest("tr")!;
+      const ollamaCostCells = ollamaRow.querySelectorAll("td");
+      const ollamaCostCell = ollamaCostCells[ollamaCostCells.length - 1];
+      expect(ollamaCostCell).toHaveTextContent("\u2014");
+      expect(ollamaCostCell).not.toHaveTextContent("$0.00");
+
+      // Claude Bot should still show its cost
+      const claudeCells = screen.getAllByText("Claude Bot");
+      const claudeCell = claudeCells.find((el) => el.tagName === "TD")!;
+      const claudeRow = claudeCell.closest("tr")!;
+      const claudeCostCells = claudeRow.querySelectorAll("td");
+      const claudeCostCell = claudeCostCells[claudeCostCells.length - 1];
+      expect(claudeCostCell).toHaveTextContent("$2.50");
+    });
+  });
+
   it("shows error message when API fetch fails", async () => {
     vi.mocked(global.fetch).mockImplementation((url) => {
       const urlStr = String(url);

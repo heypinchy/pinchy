@@ -87,7 +87,8 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-function formatCost(n: number): string {
+function formatCost(n: number | null): string {
+  if (n === null) return "\u2014";
   return `$${n.toFixed(2)}`;
 }
 
@@ -213,13 +214,19 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
     (acc, a) => acc + Number(a.totalInputTokens ?? 0) + Number(a.totalOutputTokens ?? 0),
     0
   );
-  const totalCost = (summary?.agents ?? []).reduce((acc, a) => acc + Number(a.totalCost ?? 0), 0);
+  const totalCost = (() => {
+    const agents = summary?.agents ?? [];
+    if (agents.length === 0) return null;
+    const allNull = agents.every((a) => a.totalCost === null);
+    if (allNull) return null;
+    return agents.reduce((acc, a) => acc + Number(a.totalCost ?? 0), 0);
+  })();
 
-  function bucketTotals(b: SourceBucket | undefined): { tokens: number; cost: number } {
-    if (!b) return { tokens: 0, cost: 0 };
+  function bucketTotals(b: SourceBucket | undefined): { tokens: number; cost: number | null } {
+    if (!b) return { tokens: 0, cost: null };
     return {
       tokens: Number(b.inputTokens ?? 0) + Number(b.outputTokens ?? 0),
-      cost: Number(b.cost ?? 0),
+      cost: b.cost !== null ? Number(b.cost) : null,
     };
   }
 
@@ -506,7 +513,9 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                               {formatTokens(Number(agent.totalOutputTokens ?? 0))}
                             </TableCell>
                             <TableCell className="text-right">
-                              {formatCost(Number(agent.totalCost ?? 0))}
+                              {formatCost(
+                                agent.totalCost !== null ? Number(agent.totalCost) : null
+                              )}
                             </TableCell>
                           </TableRow>
                         ))}
@@ -556,7 +565,9 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                                   {formatTokens(Number(user.totalOutputTokens ?? 0))}
                                 </TableCell>
                                 <TableCell className="text-right">
-                                  {formatCost(Number(user.totalCost ?? 0))}
+                                  {formatCost(
+                                    user.totalCost !== null ? Number(user.totalCost) : null
+                                  )}
                                 </TableCell>
                               </TableRow>
                             ))}
