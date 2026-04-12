@@ -620,6 +620,55 @@ describe("UsageDashboard", () => {
       expect(screen.getByText("$1.05")).toBeInTheDocument();
     });
 
+    it("shows error message when by-user API fails", async () => {
+      vi.mocked(global.fetch).mockImplementation((url) => {
+        const urlStr = String(url);
+        if (urlStr.includes("/api/enterprise/status")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ enterprise: true }),
+          } as Response);
+        }
+        if (urlStr.includes("/api/usage/summary")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => mockSummaryResponse,
+          } as Response);
+        }
+        if (urlStr.includes("/api/usage/timeseries")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => mockTimeseriesResponse,
+          } as Response);
+        }
+        if (urlStr.includes("/api/usage/by-user")) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: async () => ({}),
+          } as Response);
+        }
+        return Promise.resolve({ ok: false, json: async () => ({}) } as Response);
+      });
+
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const user = userEvent.setup();
+      render(<UsageDashboard isEnterprise />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      await user.click(screen.getByRole("tab", { name: "By User" }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/failed to load user data/i)).toBeInTheDocument();
+      });
+      expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+
+      consoleSpy.mockRestore();
+    });
+
     it("should show 'By User' tab even when not enterprise", async () => {
       mockBothEndpoints();
       render(<UsageDashboard />);

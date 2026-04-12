@@ -126,6 +126,8 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
   const [activeTab, setActiveTab] = useState("by-agent");
   const [error, setError] = useState<string | null>(null);
   const [retryKey, setRetryKey] = useState(0);
+  const [byUserError, setByUserError] = useState<string | null>(null);
+  const [byUserRetryKey, setByUserRetryKey] = useState(0);
 
   // Fetch fresh enterprise status client-side (server value may be stale after dev toggle)
   useEffect(() => {
@@ -196,19 +198,33 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
         return r.json();
       })
       .then((data) => {
-        if (!cancelled) setByUser(data);
+        if (!cancelled) {
+          setByUserError(null);
+          setByUser(data);
+        }
       })
       .catch((err) => {
         console.error("[usage] Failed to fetch by-user data:", err);
+        if (!cancelled) {
+          setByUserError("Failed to load user data.");
+          setByUser(null);
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [enterprise, activeTab, days, selectedAgent]);
+  }, [enterprise, activeTab, days, selectedAgent, byUserRetryKey]);
+
+  function handleByUserRetry() {
+    setByUserError(null);
+    setByUser(null);
+    setByUserRetryKey((k) => k + 1);
+  }
 
   function handleDaysChange(value: DaysOption) {
     setError(null);
+    setByUserError(null);
     setSummary(null);
     setTimeseries(null);
     setByUser(null);
@@ -217,6 +233,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
 
   function handleAgentChange(value: string) {
     setError(null);
+    setByUserError(null);
     setSummary(null);
     setTimeseries(null);
     setByUser(null);
@@ -581,7 +598,14 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                     <CardTitle>Per-User Breakdown</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    {byUser === null ? (
+                    {byUserError ? (
+                      <div className="text-center py-8">
+                        <p className="text-muted-foreground mb-3">{byUserError}</p>
+                        <Button variant="outline" onClick={handleByUserRetry}>
+                          Retry
+                        </Button>
+                      </div>
+                    ) : byUser === null ? (
                       <p>Loading...</p>
                     ) : (
                       <Table>
