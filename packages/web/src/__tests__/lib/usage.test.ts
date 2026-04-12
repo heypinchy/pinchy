@@ -256,6 +256,91 @@ describe("recordUsage", () => {
     );
   });
 
+  it("includes cache read tokens at 10% of input price in cost estimation", async () => {
+    const configWithPricing = {
+      config: {
+        models: {
+          providers: {
+            anthropic: {
+              models: [
+                {
+                  id: "claude-sonnet-4-20250514",
+                  cost: { input: 3.0, output: 15.0 },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const client = makeOpenClawClient(
+      [
+        {
+          key: "agent:agent-1:user-user-1",
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheReadTokens: 2000,
+          cacheWriteTokens: 0,
+          model: "claude-sonnet-4-20250514",
+        },
+      ],
+      configWithPricing
+    );
+
+    await recordUsage({ openclawClient: client, ...baseParams });
+
+    // cost = (1000*3.0 + 500*15.0 + 2000*0.3) / 1_000_000
+    //      = (3000 + 7500 + 600) / 1_000_000 = 0.011100
+    expect(mockValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        estimatedCostUsd: "0.011100",
+      })
+    );
+  });
+
+  it("includes cache write tokens at 125% of input price in cost estimation", async () => {
+    const configWithPricing = {
+      config: {
+        models: {
+          providers: {
+            anthropic: {
+              models: [
+                {
+                  id: "claude-sonnet-4-20250514",
+                  cost: { input: 3.0, output: 15.0 },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const client = makeOpenClawClient(
+      [
+        {
+          key: "agent:agent-1:user-user-1",
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 1000,
+          model: "claude-sonnet-4-20250514",
+        },
+      ],
+      configWithPricing
+    );
+
+    await recordUsage({ openclawClient: client, ...baseParams });
+
+    // cost = (1000 * 3.75) / 1_000_000 = 0.003750
+    expect(mockValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        estimatedCostUsd: "0.003750",
+      })
+    );
+  });
+
   it("sets estimatedCostUsd to null when no pricing configured for model", async () => {
     const configWithOtherModel = {
       config: {

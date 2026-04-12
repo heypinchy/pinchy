@@ -221,8 +221,15 @@ async function recordUsageImpl(params: RecordUsageParams, normalizedKey: string)
       if (model) {
         const pricing = await getModelPricing(openclawClient, model);
         if (pricing) {
+          // Cache pricing defaults: Anthropic-style ratios (OpenClaw config lacks cache-specific pricing)
+          const cacheReadPrice = pricing.input * 0.1;
+          const cacheWritePrice = pricing.input * 1.25;
           const cost =
-            (deltaInput * pricing.input) / 1_000_000 + (deltaOutput * pricing.output) / 1_000_000;
+            (deltaInput * pricing.input +
+              deltaOutput * pricing.output +
+              deltaCacheRead * cacheReadPrice +
+              deltaCacheWrite * cacheWritePrice) /
+            1_000_000;
           estimatedCostUsd = cost.toFixed(6);
         }
       }
