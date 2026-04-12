@@ -31,17 +31,24 @@ vi.mock("@/db/schema", () => ({
   },
 }));
 
-vi.mock("drizzle-orm", () => ({
-  sql: vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
+vi.mock("drizzle-orm", () => {
+  const sqlFn = vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
     _tag: "sql",
     strings,
     values,
-  })),
-  sum: vi.fn((col) => `sum(${col})`),
-  gte: vi.fn((col, val) => ({ col, val, op: "gte" })),
-  eq: vi.fn((col, val) => ({ col, val })),
-  and: vi.fn((...args) => args),
-}));
+  }));
+  (sqlFn as unknown as Record<string, unknown>).raw = (s: string) => ({
+    _tag: "sql.raw",
+    value: s,
+  });
+  return {
+    sql: sqlFn,
+    sum: vi.fn((col) => `sum(${col})`),
+    gte: vi.fn((col, val) => ({ col, val, op: "gte" })),
+    eq: vi.fn((col, val) => ({ col, val })),
+    and: vi.fn((...args) => args),
+  };
+});
 
 import { requireAdmin } from "@/lib/api-auth";
 import { eq, gte } from "drizzle-orm";

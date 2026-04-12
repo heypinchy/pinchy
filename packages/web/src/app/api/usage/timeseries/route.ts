@@ -36,8 +36,13 @@ export async function GET(request: NextRequest) {
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
+  // Use sql.raw for the timezone identifier — it's already validated above via
+  // Intl.DateTimeFormat and only contains [A-Za-z/_+-] characters. A parameterised
+  // ${tz} would create a fresh $N placeholder each time dateExpr is referenced
+  // (SELECT, GROUP BY, ORDER BY), making PostgreSQL see three different expressions
+  // and reject the query with "must appear in the GROUP BY clause".
   const dateExpr = tz
-    ? sql<string>`date_trunc('day', ${usageRecords.timestamp} AT TIME ZONE ${tz})::date`
+    ? sql<string>`date_trunc('day', ${usageRecords.timestamp} AT TIME ZONE '${sql.raw(tz)}')::date`
     : sql<string>`date_trunc('day', ${usageRecords.timestamp})::date`;
 
   const data = await db
