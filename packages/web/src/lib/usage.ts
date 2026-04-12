@@ -201,19 +201,16 @@ async function recordUsageImpl(params: RecordUsageParams, normalizedKey: string)
     const deltaCacheRead = Math.max(0, currentCacheRead - watermark.cacheRead);
     const deltaCacheWrite = Math.max(0, currentCacheWrite - watermark.cacheWrite);
 
-    // Update the watermark BEFORE any early return. We always follow
-    // OpenClaw's counter, even when it drops (compaction/reset): if we
-    // left the watermark frozen at the pre-reset value, the next growth
-    // would still read `current < watermark` and clamp to 0 forever.
-    sessionWatermarks.set(normalizedKey, {
-      input: currentInput,
-      output: currentOutput,
-      cacheRead: currentCacheRead,
-      cacheWrite: currentCacheWrite,
-    });
-
     // Skip if no axis grew — nothing new to record.
+    // Still follow OpenClaw's counter downward on compaction/reset so
+    // the next growth is detected correctly.
     if (deltaInput === 0 && deltaOutput === 0 && deltaCacheRead === 0 && deltaCacheWrite === 0) {
+      sessionWatermarks.set(normalizedKey, {
+        input: currentInput,
+        output: currentOutput,
+        cacheRead: currentCacheRead,
+        cacheWrite: currentCacheWrite,
+      });
       return;
     }
 
@@ -244,6 +241,15 @@ async function recordUsageImpl(params: RecordUsageParams, normalizedKey: string)
       cacheReadTokens: deltaCacheRead,
       cacheWriteTokens: deltaCacheWrite,
       estimatedCostUsd,
+    });
+
+    // Advance watermark only AFTER successful DB insert. If the insert
+    // failed, the next call re-attempts with the same delta — no tokens lost.
+    sessionWatermarks.set(normalizedKey, {
+      input: currentInput,
+      output: currentOutput,
+      cacheRead: currentCacheRead,
+      cacheWrite: currentCacheWrite,
     });
   } catch (error) {
     console.error("[usage] Failed to record usage:", error);
