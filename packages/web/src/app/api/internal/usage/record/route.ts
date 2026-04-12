@@ -41,8 +41,10 @@ function parsePayload(value: unknown): UsagePayload | null {
     !sessionKey ||
     typeof inputTokens !== "number" ||
     !Number.isFinite(inputTokens) ||
+    inputTokens < 0 ||
     typeof outputTokens !== "number" ||
-    !Number.isFinite(outputTokens)
+    !Number.isFinite(outputTokens) ||
+    outputTokens < 0
   ) {
     return null;
   }
