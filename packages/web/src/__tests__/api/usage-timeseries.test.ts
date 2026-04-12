@@ -225,6 +225,30 @@ describe("GET /api/usage/timeseries", () => {
     expect(body.data[1].date).toBe("2026-03-02");
   });
 
+  it("accepts tz parameter", async () => {
+    mockOrderBy.mockResolvedValueOnce(sampleTimeseries);
+
+    const request = new NextRequest(
+      "http://localhost:7777/api/usage/timeseries?tz=Europe/Vienna&days=30"
+    );
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data).toHaveLength(2);
+  });
+
+  it("rejects invalid timezone", async () => {
+    const request = new NextRequest(
+      "http://localhost:7777/api/usage/timeseries?tz=../../etc/passwd"
+    );
+    const response = await GET(request);
+
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("Invalid timezone");
+  });
+
   it("returns cache tokens per day", async () => {
     mockOrderBy.mockResolvedValueOnce([
       {

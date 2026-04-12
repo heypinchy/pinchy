@@ -142,12 +142,17 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
     if (selectedAgent !== "all") params.set("agentId", selectedAgent);
     const qs = params.toString() ? `?${params.toString()}` : "";
 
+    const tsParams = new URLSearchParams(params);
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz) tsParams.set("tz", tz);
+    const tsQs = tsParams.toString() ? `?${tsParams.toString()}` : "";
+
     Promise.all([
       fetch(`/api/usage/summary${qs}`).then((r) => {
         if (!r.ok) throw new Error(`Summary API error: ${r.status}`);
         return r.json();
       }),
-      fetch(`/api/usage/timeseries${qs}`).then((r) => {
+      fetch(`/api/usage/timeseries${tsQs}`).then((r) => {
         if (!r.ok) throw new Error(`Timeseries API error: ${r.status}`);
         return r.json();
       }),

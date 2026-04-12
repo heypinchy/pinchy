@@ -14,6 +14,15 @@ export async function GET(request: NextRequest) {
   if (daysOrError instanceof NextResponse) return daysOrError;
   const days = daysOrError;
   const agentId = url.searchParams.get("agentId");
+  const tz = url.searchParams.get("tz");
+
+  if (tz) {
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: tz });
+    } catch {
+      return NextResponse.json({ error: "Invalid timezone" }, { status: 400 });
+    }
+  }
 
   const conditions = [];
   if (days > 0) {
@@ -27,7 +36,9 @@ export async function GET(request: NextRequest) {
 
   const where = conditions.length > 0 ? and(...conditions) : undefined;
 
-  const dateExpr = sql<string>`date_trunc('day', ${usageRecords.timestamp})::date`;
+  const dateExpr = tz
+    ? sql<string>`date_trunc('day', ${usageRecords.timestamp} AT TIME ZONE ${tz})::date`
+    : sql<string>`date_trunc('day', ${usageRecords.timestamp})::date`;
 
   const data = await db
     .select({

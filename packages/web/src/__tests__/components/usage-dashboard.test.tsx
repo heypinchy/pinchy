@@ -120,7 +120,9 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=30");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=30");
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/usage/timeseries?days=30")
+      );
     });
   });
 
@@ -370,7 +372,9 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=7");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=7");
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/usage/timeseries?days=7")
+      );
     });
   });
 
@@ -390,7 +394,9 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=0");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=0");
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/usage/timeseries?days=0")
+      );
     });
   });
 
@@ -729,7 +735,9 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=30&agentId=agent-1");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=30&agentId=agent-1");
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringMatching(/\/api\/usage\/timeseries\?days=30&agentId=agent-1/)
+      );
     });
   });
 
@@ -756,7 +764,9 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=30");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=30");
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/usage/timeseries?days=30")
+      );
     });
   });
 
@@ -779,7 +789,21 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=7");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=7");
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/usage/timeseries?days=7")
+      );
+    });
+  });
+
+  it("sends tz parameter in timeseries fetch", async () => {
+    mockBothEndpoints();
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      const calls = vi.mocked(global.fetch).mock.calls.map((c) => String(c[0]));
+      const tsCalls = calls.filter((u) => u.includes("/api/usage/timeseries"));
+      expect(tsCalls.length).toBeGreaterThan(0);
+      expect(tsCalls[0]).toMatch(/tz=.+/);
     });
   });
 
