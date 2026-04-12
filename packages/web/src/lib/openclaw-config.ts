@@ -2,14 +2,49 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "
 import { dirname } from "path";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
+import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { agents, channelLinks } from "@/db/schema";
+import {
+  agents,
+  agentConnectionPermissions,
+  integrationConnections,
+  channelLinks,
+} from "@/db/schema";
 import { getSetting } from "@/lib/settings";
+import { decrypt } from "@/lib/encryption";
 import { computeDeniedGroups } from "@/lib/tool-registry";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
+
+/**
+ * Remove stale Pinchy plugins from the allow list that have no matching entry.
+ * OpenClaw validates config schemas for allowed plugins — if a plugin is in
+ * `allow` but has no `entries` config, OpenClaw rejects the config and refuses
+ * to start. This can happen when an older config volume is reused with a fresh
+ * DB (e.g. after deleting pgdata). Runs before setup is complete (no DB needed).
+ */
+export function sanitizeOpenClawConfig(): boolean {
+  if (!existsSync(CONFIG_PATH)) return false;
+
+  const raw = readFileSync(CONFIG_PATH, "utf-8");
+  const config = JSON.parse(raw);
+  const plugins = config.plugins as Record<string, unknown> | undefined;
+  if (!plugins) return false;
+
+  const allow = plugins.allow as string[] | undefined;
+  const entries = (plugins.entries ?? {}) as Record<string, unknown>;
+  if (!allow) return false;
+
+  const cleaned = allow.filter((p) => !p.startsWith("pinchy-") || p in entries);
+
+  if (cleaned.length === allow.length) return false;
+
+  plugins.allow = cleaned;
+  writeConfigAtomic(JSON.stringify(config, null, 2));
+  return true;
+}
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
 function writeConfigAtomic(content: string) {
@@ -215,12 +250,108 @@ export async function regenerateOpenClawConfig() {
 
   // Note: pinchy-files is only included when agents use it (via pluginConfigs loop above).
 
-  // Merge our plugin IDs into the existing allow list. OpenClaw adds its own
-  // plugins (e.g. "telegram") to plugins.allow — if we overwrite the list,
-  // OpenClaw sees a diff and triggers a full gateway restart every time.
+  // Collect Odoo integration configs for agents with integration permissions
+  const allPermissions = await db
+    .select()
+    .from(agentConnectionPermissions)
+    .innerJoin(
+      integrationConnections,
+      eq(agentConnectionPermissions.connectionId, integrationConnections.id)
+    );
+
+  const odooAgentConfigs: Record<string, Record<string, unknown>> = {};
+  const permsByAgent = new Map<
+    string,
+    Map<
+      string,
+      { connection: typeof integrationConnections.$inferSelect; ops: Map<string, string[]> }
+    >
+  >();
+
+  for (const row of allPermissions) {
+    const perm = row.agent_connection_permissions;
+    const conn = row.integration_connections;
+
+    if (conn.type !== "odoo") continue;
+
+    if (!permsByAgent.has(perm.agentId)) {
+      permsByAgent.set(perm.agentId, new Map());
+    }
+    const agentPerms = permsByAgent.get(perm.agentId)!;
+
+    if (!agentPerms.has(perm.connectionId)) {
+      agentPerms.set(perm.connectionId, { connection: conn, ops: new Map() });
+    }
+    const connPerms = agentPerms.get(perm.connectionId)!;
+
+    if (!connPerms.ops.has(perm.model)) {
+      connPerms.ops.set(perm.model, []);
+    }
+    connPerms.ops.get(perm.model)!.push(perm.operation);
+  }
+
+  // Build plugin config per agent (using first connection — single connection per agent for now)
+  for (const [agentId, connections] of permsByAgent) {
+    const [firstConnection] = connections.values();
+    if (!firstConnection) continue;
+
+    const conn = firstConnection.connection;
+    const decryptedCreds = JSON.parse(decrypt(conn.credentials));
+    const permissions: Record<string, string[]> = {};
+    for (const [model, ops] of firstConnection.ops) {
+      permissions[model] = ops;
+    }
+
+    // Build lightweight model name map — only for models with permissions
+    // (no field schemas — those are fetched live by the plugin via fields_get())
+    const modelNames: Record<string, string> = {};
+    if (conn.data && typeof conn.data === "object") {
+      const data = conn.data as {
+        models?: Array<{ model: string; name: string }>;
+      };
+      if (data.models) {
+        for (const m of data.models) {
+          if (permissions[m.model]) {
+            modelNames[m.model] = m.name;
+          }
+        }
+      }
+    }
+
+    odooAgentConfigs[agentId] = {
+      connection: {
+        name: conn.name,
+        description: conn.description,
+        url: decryptedCreds.url,
+        db: decryptedCreds.db,
+        uid: decryptedCreds.uid,
+        apiKey: decryptedCreds.apiKey,
+      },
+      permissions,
+      modelNames,
+    };
+  }
+
+  if (Object.keys(odooAgentConfigs).length > 0) {
+    entries["pinchy-odoo"] = {
+      enabled: true,
+      config: {
+        agents: odooAgentConfigs,
+      },
+    };
+  }
+
+  // Build the allow list from: (1) plugins we have entries for, and (2)
+  // OpenClaw-managed plugins (e.g. "telegram") that were already in the list.
+  // We must NOT include Pinchy plugins without entries — OpenClaw validates
+  // their config schema and rejects missing required fields like "agents".
   const existingAllow = ((existing.plugins as Record<string, unknown>)?.allow as string[]) || [];
-  const ourPlugins = Object.keys(entries);
-  const allowedPlugins = [...new Set([...existingAllow, ...ourPlugins])];
+  const ourPlugins = new Set(Object.keys(entries));
+  const pinchyPluginPrefixes = ["pinchy-"];
+  const openClawPlugins = existingAllow.filter(
+    (p) => !pinchyPluginPrefixes.some((prefix) => p.startsWith(prefix))
+  );
+  const allowedPlugins = [...new Set([...openClawPlugins, ...ourPlugins])];
 
   if (allowedPlugins.length > 0 || Object.keys(entries).length > 0) {
     config.plugins = { allow: allowedPlugins, entries };

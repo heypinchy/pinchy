@@ -1,5 +1,7 @@
+export type PersonalityPresetId = "the-butler" | "the-professor" | "the-pilot" | "the-coach";
+
 export interface PersonalityPreset {
-  id: string;
+  id: PersonalityPresetId;
   name: string;
   suggestedAgentName: string;
   tagline: string;
@@ -9,7 +11,7 @@ export interface PersonalityPreset {
   avatarSeed: string;
 }
 
-export const PERSONALITY_PRESETS: Record<string, PersonalityPreset> = {
+export const PERSONALITY_PRESETS: Record<PersonalityPresetId, PersonalityPreset> = {
   "the-butler": {
     id: "the-butler",
     name: "The Butler",
@@ -148,7 +150,7 @@ Always respond in the same language the user writes in.`,
 };
 
 export function getPersonalityPreset(id: string): PersonalityPreset | undefined {
-  return PERSONALITY_PRESETS[id];
+  return (PERSONALITY_PRESETS as Record<string, PersonalityPreset | undefined>)[id];
 }
 
 export function resolveGreetingMessage(greeting: string | null, agentName: string): string | null {

@@ -3,8 +3,8 @@ export interface ToolDefinition {
   label: string;
   description: string;
   category: "safe" | "powerful";
-  group?: string;
   requiresDirectories?: boolean;
+  integration?: string;
 }
 
 export const TOOL_REGISTRY: readonly ToolDefinition[] = [
@@ -36,59 +36,55 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     category: "safe",
   },
 
-  // Powerful tools — unrestricted access
+  // Odoo integration tools (safe = read-only, powerful = write operations)
   {
-    id: "shell",
-    label: "Run shell commands",
-    description: "Execute any command on the server",
-    category: "powerful",
-    group: "group:runtime",
+    id: "odoo_schema",
+    label: "Odoo: Browse schema",
+    description: "Discover available Odoo models and their fields",
+    category: "safe",
+    integration: "odoo",
   },
   {
-    id: "fs_read",
-    label: "Read any file",
-    description: "Read any file on the server, ignoring directory restrictions",
-    category: "powerful",
-    group: "group:fs",
+    id: "odoo_read",
+    label: "Odoo: Read data",
+    description: "Query records from Odoo with filters and field selection",
+    category: "safe",
+    integration: "odoo",
   },
   {
-    id: "fs_write",
-    label: "Write any file",
-    description: "Create and modify any file on the server",
-    category: "powerful",
-    group: "group:fs",
+    id: "odoo_count",
+    label: "Odoo: Count records",
+    description: "Count matching records in Odoo without transferring data",
+    category: "safe",
+    integration: "odoo",
   },
   {
-    id: "pdf",
-    label: "Read any PDF",
-    description: "Read and analyze any PDF on the server with built-in vision",
-    category: "powerful",
+    id: "odoo_aggregate",
+    label: "Odoo: Aggregate data",
+    description: "Server-side sums, averages, and grouping in Odoo",
+    category: "safe",
+    integration: "odoo",
   },
   {
-    id: "image",
-    label: "Analyze any image",
-    description: "Analyze any image file on the server using vision",
+    id: "odoo_create",
+    label: "Odoo: Create records",
+    description: "Create new records in Odoo",
     category: "powerful",
+    integration: "odoo",
   },
   {
-    id: "image_generate",
-    label: "Generate images",
-    description: "Create images using AI image generation",
+    id: "odoo_write",
+    label: "Odoo: Update records",
+    description: "Modify existing records in Odoo",
     category: "powerful",
+    integration: "odoo",
   },
   {
-    id: "web_fetch",
-    label: "Fetch web pages",
-    description: "Download and read content from URLs",
+    id: "odoo_delete",
+    label: "Odoo: Delete records",
+    description: "Delete records from Odoo",
     category: "powerful",
-    group: "group:web",
-  },
-  {
-    id: "web_search",
-    label: "Search the web",
-    description: "Run web searches and read results",
-    category: "powerful",
-    group: "group:web",
+    integration: "odoo",
   },
 ];
 
@@ -108,31 +104,58 @@ export function getToolsByCategory(category: "safe" | "powerful"): ToolDefinitio
 }
 
 /**
- * Given a list of allowed tool IDs, compute which OpenClaw tool groups and
- * standalone tools to deny.
- * Any group that has at least one allowed tool is NOT denied.
- * Safe tools (pinchy_*) are ignored — they're managed via the plugin system.
- * Standalone tools (e.g. `pdf`) are always denied since Pinchy manages them
- * through its own plugin system with proper access control.
+ * Compute which OpenClaw tool groups and standalone tools to deny.
+ * Since no Pinchy-managed tool maps to an OpenClaw group or standalone tool,
+ * this always returns the full deny list. The parameter is kept for forward
+ * compatibility.
  */
-export function computeDeniedGroups(allowedToolIds: string[]): string[] {
-  const allowedGroups = new Set<string>();
+export function computeDeniedGroups(_allowedToolIds: string[]): string[] {
+  return [...ALL_GROUPS, ...STANDALONE_DENY];
+}
 
-  for (const toolId of allowedToolIds) {
-    const tool = getToolById(toolId);
-    if (tool?.group) {
-      allowedGroups.add(tool.group);
+// --- Odoo access level helpers ---
+
+export type OdooAccessLevel = "read-only" | "read-write" | "full" | "custom";
+
+const ODOO_READ_TOOLS = ["odoo_schema", "odoo_read", "odoo_count", "odoo_aggregate"] as const;
+const ODOO_WRITE_TOOLS = ["odoo_create", "odoo_write"] as const;
+const ODOO_DELETE_TOOLS = ["odoo_delete"] as const;
+
+/** Returns all Odoo tool definitions from the registry. */
+export function getOdooTools(): ToolDefinition[] {
+  return TOOL_REGISTRY.filter((t) => t.integration === "odoo");
+}
+
+/** Returns the odoo_* tool IDs that should be enabled for the given access level. */
+export function getOdooToolsForAccessLevel(level: OdooAccessLevel): string[] {
+  switch (level) {
+    case "read-only":
+      return [...ODOO_READ_TOOLS];
+    case "read-write":
+      return [...ODOO_READ_TOOLS, ...ODOO_WRITE_TOOLS];
+    case "full":
+      return [...ODOO_READ_TOOLS, ...ODOO_WRITE_TOOLS, ...ODOO_DELETE_TOOLS];
+    case "custom":
+      return ["odoo_schema"];
+  }
+}
+
+/** Given a set of allowed tool IDs, detect which OdooAccessLevel they correspond to. */
+export function detectOdooAccessLevel(allowedToolIds: string[]): OdooAccessLevel {
+  const odooIds = allowedToolIds.filter((id) => id.startsWith("odoo_"));
+  const odooSet = new Set(odooIds);
+
+  const presets: [OdooAccessLevel, readonly string[]][] = [
+    ["full", getOdooToolsForAccessLevel("full")],
+    ["read-write", getOdooToolsForAccessLevel("read-write")],
+    ["read-only", getOdooToolsForAccessLevel("read-only")],
+  ];
+
+  for (const [level, tools] of presets) {
+    if (odooSet.size === tools.length && tools.every((t) => odooSet.has(t))) {
+      return level;
     }
   }
 
-  const denied: string[] = ALL_GROUPS.filter((g) => !allowedGroups.has(g));
-
-  // Always deny standalone tools that Pinchy replaces with its own implementation
-  for (const tool of STANDALONE_DENY) {
-    if (!allowedToolIds.includes(tool)) {
-      denied.push(tool);
-    }
-  }
-
-  return denied;
+  return "custom";
 }

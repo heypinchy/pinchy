@@ -3,8 +3,21 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 
+const mockSearchParams = { current: new URLSearchParams() };
+
+const updateSearchParams = (url: string) => {
+  const u = new URL(url, "http://localhost");
+  mockSearchParams.current = u.searchParams;
+};
+
 vi.mock("next/navigation", () => ({
-  useRouter: vi.fn().mockReturnValue({ push: vi.fn(), back: vi.fn(), refresh: vi.fn() }),
+  useRouter: vi.fn().mockReturnValue({
+    push: vi.fn((url: string) => updateSearchParams(url)),
+    back: vi.fn(),
+    refresh: vi.fn(),
+    replace: vi.fn((url: string) => updateSearchParams(url)),
+  }),
+  useSearchParams: () => mockSearchParams.current,
 }));
 
 vi.mock("@/components/template-selector", () => ({
@@ -61,6 +74,7 @@ describe("NewAgentForm", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    mockSearchParams.current = new URLSearchParams();
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
     vi.clearAllMocks();
     mockFetch();

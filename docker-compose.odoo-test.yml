@@ -1,0 +1,20 @@
+# Test overlay: adds mock Odoo server for E2E testing.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.odoo-test.yml up --build -d
+
+services:
+  odoo-mock:
+    build:
+      context: config/odoo-mock
+    ports:
+      - "9002:9002"
+      - "8069:8069"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:9002/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  pinchy:
+    environment:
+      # Allow private URLs so the integration wizard can reach the mock Odoo server
+      - ALLOW_PRIVATE_URLS=1

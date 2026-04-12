@@ -42,6 +42,20 @@ describe("PERSONALITY_PRESETS", () => {
   it("The Coach suggests 'Maya'", () => {
     expect(PERSONALITY_PRESETS["the-coach"].suggestedAgentName).toBe("Maya");
   });
+
+  it("does not contain role-specific presets (personality = tone only)", () => {
+    const rolePresets = [
+      "the-analyst",
+      "the-scout",
+      "the-controller",
+      "the-closer",
+      "the-buyer",
+      "the-concierge",
+    ];
+    for (const id of rolePresets) {
+      expect(getPersonalityPreset(id)).toBeUndefined();
+    }
+  });
 });
 
 describe("getPersonalityPreset", () => {

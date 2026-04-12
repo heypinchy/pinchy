@@ -22,31 +22,58 @@ vi.mock("@/lib/auth", () => {
   };
 });
 
-const { insertValuesMock } = vi.hoisted(() => ({
-  insertValuesMock: vi.fn(),
-}));
-vi.mock("@/db", () => ({
-  db: {
-    insert: vi.fn().mockReturnValue({
-      values: insertValuesMock.mockReturnValue({
-        returning: vi.fn().mockResolvedValue([
-          {
-            id: "new-agent-id",
-            name: "HR Knowledge Base",
-            model: "anthropic/claude-haiku-4-5-20251001",
-            templateId: "knowledge-base",
-            pluginConfig: { allowed_paths: ["/data/hr-docs/"] },
-            ownerId: "1",
-            tagline: "Answer questions from your docs",
-          },
-        ]),
+const { insertValuesMock, permissionsInsertValuesMock, dbInsertMock, dbSelectFromMock } =
+  vi.hoisted(() => ({
+    insertValuesMock: vi.fn(),
+    permissionsInsertValuesMock: vi.fn().mockReturnValue(Promise.resolve()),
+    dbInsertMock: vi.fn(),
+    dbSelectFromMock: vi.fn(),
+  }));
+vi.mock("@/db", () => {
+  const agentsInsertChain = {
+    values: insertValuesMock.mockReturnValue({
+      returning: vi.fn().mockResolvedValue([
+        {
+          id: "new-agent-id",
+          name: "HR Knowledge Base",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          templateId: "knowledge-base",
+          pluginConfig: { allowed_paths: ["/data/hr-docs/"] },
+          ownerId: "1",
+          tagline: "Answer questions from your docs",
+        },
+      ]),
+    }),
+  };
+  const permissionsInsertChain = {
+    values: permissionsInsertValuesMock,
+  };
+
+  const drizzleName = Symbol.for("drizzle:Name");
+  dbInsertMock.mockImplementation((table: Record<symbol, string>) => {
+    if (
+      table &&
+      typeof table === "object" &&
+      drizzleName in table &&
+      table[drizzleName] === "agent_connection_permissions"
+    ) {
+      return permissionsInsertChain;
+    }
+    return agentsInsertChain;
+  });
+
+  const whereMock = vi.fn().mockResolvedValue([]);
+  dbSelectFromMock.mockReturnValue({ where: whereMock });
+
+  return {
+    db: {
+      insert: dbInsertMock,
+      select: vi.fn().mockReturnValue({
+        from: dbSelectFromMock,
       }),
-    }),
-    select: vi.fn().mockReturnValue({
-      from: vi.fn().mockResolvedValue([]),
-    }),
-  },
-}));
+    },
+  };
+});
 
 vi.mock("@/lib/workspace", () => ({
   ensureWorkspace: vi.fn(),
@@ -90,6 +117,14 @@ vi.mock("@/lib/personality-presets", () => ({
         greetingMessage: "Good day. I'm {name}. How may I be of assistance?",
         soulMd: "# Butler SOUL.md",
       },
+      "the-pilot": {
+        greetingMessage: null,
+        soulMd: "# Pilot SOUL.md",
+      },
+      "the-coach": {
+        greetingMessage: "Hey, {user}! I'm {name}. What are you working on?",
+        soulMd: "# Coach SOUL.md",
+      },
     };
     return presets[id];
   }),
@@ -99,6 +134,15 @@ vi.mock("@/lib/personality-presets", () => ({
 
 vi.mock("@/lib/avatar", () => ({
   generateAvatarSeed: vi.fn().mockReturnValue("mock-seed-uuid"),
+}));
+
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
+
+const mockValidateOdooTemplate = vi.fn();
+vi.mock("@/lib/integrations/odoo-template-validation", () => ({
+  validateOdooTemplate: (...args: unknown[]) => mockValidateOdooTemplate(...args),
 }));
 
 import { POST } from "@/app/api/agents/route";
@@ -113,6 +157,7 @@ import {
   writeIdentityFile,
 } from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { appendAuditLog } from "@/lib/audit";
 
 describe("POST /api/agents", () => {
   beforeEach(() => {
@@ -296,6 +341,34 @@ describe("POST /api/agents", () => {
           "Hello! I'm HR Knowledge Base, and I'm here to help you find answers in your documents.",
         personalityPresetId: "the-professor",
       })
+    );
+  });
+
+  it("should use template greeting when template defines defaultGreetingMessage", async () => {
+    mockValidateOdooTemplate.mockReturnValue({
+      valid: true,
+      warnings: [],
+      availableModels: [],
+      missingModels: [],
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Sales Bot",
+        templateId: "odoo-sales-analyst",
+        connectionId: "conn-1",
+      }),
+    });
+
+    await POST(request);
+
+    const insertedValues = insertValuesMock.mock.calls[0]?.[0];
+    // Template greeting should win over preset greeting
+    expect(insertedValues.greetingMessage).toContain("revenue");
+    // Should NOT be the generic analyst greeting
+    expect(insertedValues.greetingMessage).not.toBe(
+      "Hi. I'm Sales Bot, your data analyst. What numbers should we look at?"
     );
   });
 
@@ -562,5 +635,122 @@ describe("POST /api/agents", () => {
         tagline: "Answer questions from your docs",
       })
     );
+  });
+
+  it("creates Odoo permissions when using Odoo template with connectionId", async () => {
+    // Mock connection lookup: select().from().where() returns a connection
+    const connectionData = {
+      models: [
+        {
+          model: "sale.order",
+          name: "Sales Order",
+          access: { read: true, create: false, write: false, delete: false },
+        },
+        {
+          model: "sale.order.line",
+          name: "Sales Order Line",
+          access: { read: true, create: false, write: false, delete: false },
+        },
+        {
+          model: "res.partner",
+          name: "Contact",
+          access: { read: true, create: false, write: false, delete: false },
+        },
+        {
+          model: "product.template",
+          name: "Product Template",
+          access: { read: true, create: false, write: false, delete: false },
+        },
+        {
+          model: "product.product",
+          name: "Product",
+          access: { read: true, create: false, write: false, delete: false },
+        },
+      ],
+    };
+    dbSelectFromMock.mockReturnValueOnce({
+      where: vi
+        .fn()
+        .mockResolvedValue([{ id: "conn-1", name: "My Odoo", type: "odoo", data: connectionData }]),
+    });
+
+    mockValidateOdooTemplate.mockReturnValue({
+      valid: true,
+      warnings: [],
+      availableModels: [
+        { model: "sale.order", operations: ["read"] },
+        { model: "sale.order.line", operations: ["read"] },
+        { model: "res.partner", operations: ["read"] },
+        { model: "product.template", operations: ["read"] },
+        { model: "product.product", operations: ["read"] },
+      ],
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Sales Analyst",
+        templateId: "odoo-sales-analyst",
+        connectionId: "conn-1",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    // Verify permissions were inserted
+    expect(permissionsInsertValuesMock).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          agentId: "new-agent-id",
+          connectionId: "conn-1",
+          model: "sale.order",
+          operation: "read",
+        }),
+        expect.objectContaining({
+          agentId: "new-agent-id",
+          connectionId: "conn-1",
+          model: "sale.order.line",
+          operation: "read",
+        }),
+        expect.objectContaining({
+          agentId: "new-agent-id",
+          connectionId: "conn-1",
+          model: "res.partner",
+          operation: "read",
+        }),
+      ])
+    );
+
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("returns 400 when Odoo template used without connectionId", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Sales Analyst",
+        templateId: "odoo-sales-analyst",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/connection/i);
+  });
+
+  it("does not create Odoo permissions for non-Odoo templates", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Dev Assistant",
+        templateId: "custom",
+      }),
+    });
+
+    await POST(request);
+
+    expect(permissionsInsertValuesMock).not.toHaveBeenCalled();
   });
 });

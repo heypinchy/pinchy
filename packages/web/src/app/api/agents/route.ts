@@ -2,8 +2,9 @@ import { NextRequest, NextResponse, after } from "next/server";
 import { headers } from "next/headers";
 import { revalidatePath } from "next/cache";
 import { getSession } from "@/lib/auth";
+import { eq } from "drizzle-orm";
 import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { agents, agentConnectionPermissions, integrationConnections } from "@/db/schema";
 import { getTemplate, generateAgentsMd } from "@/lib/agent-templates";
 import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-presets";
 import { generateAvatarSeed } from "@/lib/avatar";
@@ -22,6 +23,7 @@ import { type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
 import { appendAuditLog } from "@/lib/audit";
 import { getVisibleAgents } from "@/lib/visible-agents";
+import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 
 export async function GET() {
   const session = await getSession({ headers: await headers() });
@@ -44,7 +46,7 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json();
-  const { name, templateId, tagline, pluginConfig } = body;
+  const { name, templateId, tagline, pluginConfig, connectionId } = body;
 
   if (!name || typeof name !== "string") {
     return NextResponse.json({ error: "Name is required" }, { status: 400 });
@@ -83,6 +85,14 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Odoo templates require a connection
+  if (template.requiresOdooConnection && !connectionId) {
+    return NextResponse.json(
+      { error: "An Odoo connection is required for this template" },
+      { status: 400 }
+    );
+  }
+
   // Resolve personality preset from template
   const preset = getPersonalityPreset(template.defaultPersonality);
 
@@ -104,7 +114,10 @@ export async function POST(request: NextRequest) {
       tagline: tagline || template.defaultTagline || null,
       avatarSeed: generateAvatarSeed(),
       personalityPresetId: template.defaultPersonality,
-      greetingMessage: resolveGreetingMessage(preset?.greetingMessage ?? null, name.trim()),
+      greetingMessage: resolveGreetingMessage(
+        template.defaultGreetingMessage ?? preset?.greetingMessage ?? null,
+        name.trim()
+      ),
     })
     .returning();
 
@@ -118,6 +131,54 @@ export async function POST(request: NextRequest) {
       outcome: "success",
     })
   );
+
+  // Auto-configure Odoo permissions when template has odooConfig
+  if (template.odooConfig && connectionId) {
+    const connRows = await db
+      .select()
+      .from(integrationConnections)
+      .where(eq(integrationConnections.id, connectionId));
+
+    if (connRows.length > 0) {
+      const connectionData = connRows[0].data as {
+        models?: Array<{
+          model: string;
+          name: string;
+          access?: { read: boolean; create: boolean; write: boolean; delete: boolean };
+        }>;
+      } | null;
+      const models = connectionData?.models ?? [];
+
+      const validation = validateOdooTemplate(template.odooConfig, models);
+
+      if (validation.availableModels.length > 0) {
+        const permissionRows = validation.availableModels.flatMap((m) =>
+          m.operations.map((op) => ({
+            agentId: agent.id,
+            connectionId,
+            model: m.model,
+            operation: op,
+          }))
+        );
+
+        await db.insert(agentConnectionPermissions).values(permissionRows);
+
+        appendAuditLog({
+          actorType: "user",
+          actorId: session.user.id!,
+          eventType: "config.changed",
+          resource: `agent:${agent.id}`,
+          detail: {
+            action: "agent_integration_permissions_auto_configured",
+            agentId: agent.id,
+            connectionId,
+            permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
+          },
+          outcome: "success",
+        }).catch(() => {});
+      }
+    }
+  }
 
   // Create workspace with personality preset's SOUL.md
   ensureWorkspace(agent.id);

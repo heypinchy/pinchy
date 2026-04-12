@@ -87,6 +87,21 @@ app.prepare().then(async () => {
     );
   }
 
+  // Sanitize OpenClaw config before anything else — remove stale plugin entries
+  // from the allow list that would prevent OpenClaw from starting. This runs
+  // even before setup is complete (no DB access needed).
+  try {
+    const { sanitizeOpenClawConfig } = await import("./src/lib/openclaw-config");
+    if (sanitizeOpenClawConfig()) {
+      console.log("[pinchy] Sanitized OpenClaw config (removed stale plugin allow entries)");
+    }
+  } catch (err) {
+    console.error(
+      "[pinchy] Failed to sanitize OpenClaw config:",
+      err instanceof Error ? err.message : err
+    );
+  }
+
   // Regenerate OpenClaw config on startup to ensure it's in sync with code changes.
   // This handles cases like new plugin configs or changed config structure after updates.
   try {

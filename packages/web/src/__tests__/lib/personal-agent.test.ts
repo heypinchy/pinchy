@@ -60,6 +60,20 @@ vi.mock("@/lib/onboarding-prompt", () => ({
   ONBOARDING_GREETING: "Test onboarding greeting",
 }));
 
+// ── Mock @/lib/provider-models ──────────────────────────────────────────────
+vi.mock("@/lib/provider-models", () => {
+  const defaults: Record<string, string> = {
+    anthropic: "anthropic/claude-haiku-4-5-20251001",
+    openai: "openai/gpt-4o-mini",
+    google: "google/gemini-2.5-flash",
+    "ollama-cloud": "ollama-cloud/gemini-3-flash-preview:cloud",
+    "ollama-local": "",
+  };
+  return {
+    getDefaultModel: vi.fn(async (provider: string) => defaults[provider] ?? ""),
+  };
+});
+
 // ── Mock @/lib/providers ─────────────────────────────────────────────────────
 vi.mock("@/lib/providers", () => ({
   PROVIDERS: {
