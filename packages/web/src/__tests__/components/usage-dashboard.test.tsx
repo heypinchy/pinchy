@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
-import { UsageDashboard } from "@/components/usage-dashboard";
+import { UsageDashboard, shouldShowDots } from "@/components/usage-dashboard";
 
 // recharts uses ResponsiveContainer which needs dimensions — mock it
 vi.mock("recharts", async () => {
@@ -354,6 +354,46 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(screen.getByTestId("chart-container")).toBeInTheDocument();
+    });
+  });
+
+  it("renders chart when only one data point exists", async () => {
+    const singlePointTimeseries = {
+      data: [
+        {
+          date: "2026-03-20",
+          inputTokens: "200000",
+          outputTokens: "300000",
+          cost: "1.50",
+        },
+      ],
+    };
+    mockBothEndpoints(undefined, singlePointTimeseries);
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Daily Token Usage")).toBeInTheDocument();
+    });
+
+    // The chart renders (not stuck in empty/loading state) with a single data point
+    expect(screen.getByTestId("chart-container")).toBeInTheDocument();
+  });
+
+  describe("shouldShowDots", () => {
+    it("returns true for zero data points", () => {
+      expect(shouldShowDots(0)).toBe(true);
+    });
+
+    it("returns true for exactly one data point", () => {
+      expect(shouldShowDots(1)).toBe(true);
+    });
+
+    it("returns false for two data points", () => {
+      expect(shouldShowDots(2)).toBe(false);
+    });
+
+    it("returns false for many data points", () => {
+      expect(shouldShowDots(30)).toBe(false);
     });
   });
 

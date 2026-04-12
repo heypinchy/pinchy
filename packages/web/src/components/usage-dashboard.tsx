@@ -101,6 +101,11 @@ const PERIOD_OPTIONS: { label: string; value: DaysOption }[] = [
   { label: "All", value: "all" },
 ];
 
+/** Show dots on chart lines when there is at most one data point (otherwise the single point is invisible). */
+export function shouldShowDots(dataLength: number): boolean {
+  return dataLength <= 1;
+}
+
 export function UsageDashboard({ isEnterprise: initialEnterprise = false }: UsageDashboardProps) {
   const [enterprise, setEnterprise] = useState(initialEnterprise);
   const [days, setDays] = useState<DaysOption>(30);
@@ -455,7 +460,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                     dataKey="inputTokens"
                     stroke="oklch(0.65 0.195 50)"
                     strokeWidth={2}
-                    dot={false}
+                    dot={shouldShowDots(chartData.length)}
                     name="Input Tokens"
                   />
                   <Line
@@ -463,7 +468,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                     dataKey="outputTokens"
                     stroke="oklch(0.62 0.1 230)"
                     strokeWidth={2}
-                    dot={false}
+                    dot={shouldShowDots(chartData.length)}
                     name="Output Tokens"
                   />
                 </LineChart>
