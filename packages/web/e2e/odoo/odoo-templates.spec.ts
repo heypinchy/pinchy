@@ -79,9 +79,11 @@ test.describe.serial("Odoo Template Creation", () => {
 
     // Click any Odoo template that appears as a card (not in a teaser).
     // Use the first card with an Odoo badge as indicator.
-    const odooCard = page.locator("[role='button']", {
-      has: page.locator("text=/Odoo · /"),
-    }).first();
+    const odooCard = page
+      .locator("[role='button']", {
+        has: page.locator("text=/Odoo · /"),
+      })
+      .first();
 
     // If no Odoo card is available (all teasers), click the teaser link
     // to verify it navigates correctly
