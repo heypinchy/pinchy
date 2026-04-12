@@ -109,6 +109,8 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
   const [knownAgents, setKnownAgents] = useState<AgentSummary[]>([]);
   const [byUser, setByUser] = useState<ByUserResponse | null>(null);
   const [activeTab, setActiveTab] = useState("by-agent");
+  const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
 
   // Fetch fresh enterprise status client-side (server value may be stale after dev toggle)
   useEffect(() => {
@@ -137,6 +139,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
     ])
       .then(([summaryData, timeseriesData]) => {
         if (!cancelled) {
+          setError(null);
           setSummary(summaryData);
           setTimeseries(timeseriesData);
           // Only update agent list when not filtering by agent (to keep full list)
@@ -147,12 +150,17 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
       })
       .catch((err) => {
         console.error("[usage] Failed to fetch usage data:", err);
+        if (!cancelled) {
+          setError("Failed to load usage data.");
+          setSummary(null);
+          setTimeseries(null);
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [days, selectedAgent]);
+  }, [days, selectedAgent, retryKey]);
 
   useEffect(() => {
     if (!enterprise || activeTab !== "by-user") return;
@@ -180,6 +188,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
   }, [enterprise, activeTab, days, selectedAgent]);
 
   function handleDaysChange(value: DaysOption) {
+    setError(null);
     setSummary(null);
     setTimeseries(null);
     setByUser(null);
@@ -187,6 +196,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
   }
 
   function handleAgentChange(value: string) {
+    setError(null);
     setSummary(null);
     setTimeseries(null);
     setByUser(null);
@@ -224,6 +234,13 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
   }));
 
   const hasData = (summary?.agents?.length ?? 0) > 0;
+
+  function handleRetry() {
+    setError(null);
+    setSummary(null);
+    setTimeseries(null);
+    setRetryKey((k) => k + 1);
+  }
 
   return (
     <div className="space-y-6">
@@ -305,7 +322,14 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
         </div>
       </div>
 
-      {loading ? (
+      {error ? (
+        <div className="text-center py-8">
+          <p className="text-muted-foreground mb-3">{error}</p>
+          <Button variant="outline" onClick={handleRetry}>
+            Retry
+          </Button>
+        </div>
+      ) : loading ? (
         <p>Loading...</p>
       ) : !hasData ? (
         <p>No usage data available.</p>

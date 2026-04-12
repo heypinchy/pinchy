@@ -686,7 +686,7 @@ describe("UsageDashboard", () => {
     });
   });
 
-  it("should handle fetch errors gracefully and show no-data message", async () => {
+  it("shows error message when API fetch fails", async () => {
     vi.mocked(global.fetch).mockImplementation((url) => {
       const urlStr = String(url);
       if (urlStr.includes("/api/enterprise/status")) {
@@ -717,21 +717,72 @@ describe("UsageDashboard", () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     render(<UsageDashboard />);
 
-    // The component should not crash — it stays in loading state since the
-    // catch handler does not set summary/timeseries, so it will keep showing
-    // Loading... (which means it didn't crash). Eventually nothing is rendered
-    // as data — verify no crash by checking the heading still renders.
-    expect(screen.getByText("Usage & Costs")).toBeInTheDocument();
-
     await waitFor(() => {
-      expect(consoleSpy).toHaveBeenCalledWith(
-        "[usage] Failed to fetch usage data:",
-        expect.any(Error)
-      );
+      expect(screen.getByText(/failed to load/i)).toBeInTheDocument();
     });
 
-    // After error, summary remains null so Loading... is shown (graceful degradation)
-    expect(screen.getByText("Loading...")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+
+    consoleSpy.mockRestore();
+  });
+
+  it("retries fetch when Retry button is clicked", async () => {
+    const user = userEvent.setup();
+
+    // First call: summary fails
+    let callCount = 0;
+    vi.mocked(global.fetch).mockImplementation((url) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/api/enterprise/status")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ enterprise: false }),
+        } as Response);
+      }
+      if (urlStr.includes("/api/usage/summary")) {
+        callCount++;
+        if (callCount <= 1) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: async () => ({}),
+          } as Response);
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => mockSummaryResponse,
+        } as Response);
+      }
+      if (urlStr.includes("/api/usage/timeseries")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => mockTimeseriesResponse,
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        json: async () => ({}),
+      } as Response);
+    });
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<UsageDashboard />);
+
+    // Wait for error state
+    await waitFor(() => {
+      expect(screen.getByText(/failed to load/i)).toBeInTheDocument();
+    });
+
+    // Click retry
+    await user.click(screen.getByRole("button", { name: /retry/i }));
+
+    // After retry, data should render (agent name appears in both dropdown and data area)
+    await waitFor(() => {
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThanOrEqual(1);
+    });
+
+    expect(screen.queryByText(/failed to load/i)).not.toBeInTheDocument();
 
     consoleSpy.mockRestore();
   });
