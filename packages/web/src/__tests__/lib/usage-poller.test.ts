@@ -280,21 +280,39 @@ describe("startUsagePoller / stopUsagePoller", () => {
     expect(_isPollerRunning()).toBe(true);
   });
 
+  it("runs an immediate poll on startup before the interval fires", async () => {
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:direct:user-1", inputTokens: 10, outputTokens: 5 },
+    ]);
+
+    startUsagePoller(client);
+
+    // The immediate poll is fire-and-forget — flush its microtask
+    await vi.advanceTimersByTimeAsync(0);
+
+    // Should have polled once already (immediate), without waiting 60s
+    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+
+    stopUsagePoller();
+  });
+
   it("calls pollAllSessions after each interval tick", async () => {
     const client = makeOpenClawClient([
       { key: "agent:agent-1:direct:user-1", inputTokens: 10, outputTokens: 5 },
     ]);
     startUsagePoller(client);
 
-    expect(mockRecordUsage).not.toHaveBeenCalled();
-
-    // First tick at 60s
-    await vi.advanceTimersByTimeAsync(60_000);
+    // Immediate poll fires on startup (fire-and-forget)
+    await vi.advanceTimersByTimeAsync(0);
     expect(mockRecordUsage).toHaveBeenCalledTimes(1);
 
-    // Second tick at 120s
+    // First interval tick at 60s
     await vi.advanceTimersByTimeAsync(60_000);
     expect(mockRecordUsage).toHaveBeenCalledTimes(2);
+
+    // Second interval tick at 120s
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(mockRecordUsage).toHaveBeenCalledTimes(3);
   });
 
   it("stops polling on stopUsagePoller", async () => {
@@ -302,14 +320,15 @@ describe("startUsagePoller / stopUsagePoller", () => {
       { key: "agent:agent-1:direct:user-1", inputTokens: 10, outputTokens: 5 },
     ]);
     startUsagePoller(client);
+    await vi.advanceTimersByTimeAsync(0); // flush immediate poll
     await vi.advanceTimersByTimeAsync(60_000);
-    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+    expect(mockRecordUsage).toHaveBeenCalledTimes(2); // immediate + first tick
 
     stopUsagePoller();
     expect(_isPollerRunning()).toBe(false);
 
     await vi.advanceTimersByTimeAsync(120_000);
-    expect(mockRecordUsage).toHaveBeenCalledTimes(1); // no more calls after stop
+    expect(mockRecordUsage).toHaveBeenCalledTimes(2); // no more calls after stop
   });
 
   it("is idempotent — multiple starts don't create duplicate intervals", async () => {
@@ -320,8 +339,9 @@ describe("startUsagePoller / stopUsagePoller", () => {
     startUsagePoller(client);
     startUsagePoller(client);
 
+    await vi.advanceTimersByTimeAsync(0); // flush immediate poll
     await vi.advanceTimersByTimeAsync(60_000);
-    // Three start calls, one tick → still only one recordUsage call
-    expect(mockRecordUsage).toHaveBeenCalledTimes(1);
+    // Three start calls but only one immediate poll + one tick = 2
+    expect(mockRecordUsage).toHaveBeenCalledTimes(2);
   });
 });
