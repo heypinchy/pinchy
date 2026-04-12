@@ -15,12 +15,16 @@ vi.mock("@/db", () => ({
     select: (...args: unknown[]) => {
       mockSelect(...args);
       return {
-        from: (...fArgs: unknown[]) => {
-          mockFrom(...fArgs);
+        from: (table: { _table?: string }) => {
+          mockFrom(table);
+          if (table?._table === "users") {
+            // users query has no .where() — returns all users directly
+            return Promise.resolve(mockFrom._userResult);
+          }
           return {
             where: (...wArgs: unknown[]) => {
               mockWhere(...wArgs);
-              return mockFrom._result;
+              return mockFrom._agentResult;
             },
           };
         },
@@ -32,6 +36,7 @@ vi.mock("@/db", () => ({
 vi.mock("@/db/schema", () => ({
   agents: { _table: "agents", id: "id", name: "name", deletedAt: "deleted_at" },
   usageRecords: { _table: "usage_records" },
+  users: { _table: "users", id: "id" },
 }));
 
 const mockIsNull = vi.fn((col: unknown) => ({ _type: "isNull", col }));
@@ -104,7 +109,8 @@ describe("pollAllSessions", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRecordUsage.mockResolvedValue(undefined);
-    mockFrom._result = [{ id: "agent-1", name: "Smithers" }];
+    mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
+    mockFrom._userResult = [{ id: "user-1" }, { id: "user-2" }];
   });
 
   it("filters out soft-deleted agents from the name map", async () => {
@@ -129,7 +135,7 @@ describe("pollAllSessions", () => {
   });
 
   it("calls recordUsage for each session with tokens", async () => {
-    mockFrom._result = [
+    mockFrom._agentResult = [
       { id: "agent-1", name: "Smithers" },
       { id: "agent-2", name: "Burns" },
     ];
@@ -215,7 +221,7 @@ describe("pollAllSessions", () => {
   });
 
   it("falls back to agentId when agent name is not in DB", async () => {
-    mockFrom._result = []; // empty agents table
+    mockFrom._agentResult = []; // empty agents table
     const client = makeOpenClawClient([
       { key: "agent:ghost-agent:direct:user-1", inputTokens: 100, outputTokens: 50 },
     ]);
@@ -239,8 +245,49 @@ describe("pollAllSessions", () => {
     expect(mockRecordUsage).not.toHaveBeenCalled();
   });
 
+  it("resolves lowercased userId from session key to original-case DB id", async () => {
+    mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
+    mockFrom._userResult = [{ id: "zLGhGKUwYqZeQfA4IMwG2oIDSxoYJVqz" }];
+
+    const client = makeOpenClawClient([
+      {
+        // Session key has lowercase userId (as OpenClaw normalizes)
+        key: "agent:agent-1:direct:zlghgkuwyqzeqfa4imwg2oidsxoyjvqz",
+        inputTokens: 100,
+        outputTokens: 50,
+        model: "test-model",
+      },
+    ]);
+
+    await pollAllSessions(client);
+
+    expect(mockRecordUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        // userId should be the original-case DB id, not the lowercase from the key
+        userId: "zLGhGKUwYqZeQfA4IMwG2oIDSxoYJVqz",
+      })
+    );
+  });
+
+  it("does not resolve system userId through user lookup", async () => {
+    mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
+    mockFrom._userResult = [{ id: "zLGhGKUwYqZeQfA4IMwG2oIDSxoYJVqz" }];
+
+    const client = makeOpenClawClient([
+      { key: "agent:agent-1:main", inputTokens: 100, outputTokens: 50 },
+    ]);
+
+    await pollAllSessions(client);
+
+    expect(mockRecordUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: "system",
+      })
+    );
+  });
+
   it("does not throw when a single recordUsage call rejects", async () => {
-    mockFrom._result = [
+    mockFrom._agentResult = [
       { id: "agent-1", name: "A1" },
       { id: "agent-2", name: "A2" },
     ];
@@ -260,7 +307,7 @@ describe("startUsagePoller / stopUsagePoller", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockRecordUsage.mockResolvedValue(undefined);
-    mockFrom._result = [{ id: "agent-1", name: "Smithers" }];
+    mockFrom._agentResult = [{ id: "agent-1", name: "Smithers" }];
     stopUsagePoller();
     vi.useFakeTimers();
   });

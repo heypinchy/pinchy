@@ -2,7 +2,7 @@ import type { OpenClawClient } from "openclaw-node";
 import { isNull } from "drizzle-orm";
 import { recordUsage } from "@/lib/usage";
 import { db } from "@/db";
-import { agents } from "@/db/schema";
+import { agents, users } from "@/db/schema";
 
 const POLL_INTERVAL_MS = 60_000;
 
@@ -71,6 +71,13 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
       .where(isNull(agents.deletedAt));
     const agentNameMap = new Map(allAgents.map((a) => [a.id, a.name]));
 
+    // Pre-fetch user IDs to resolve lowercased session-key IDs back to
+    // the original-case DB ID. OpenClaw lowercases session keys, so
+    // parseSessionKey extracts a lowercase userId that won't match the
+    // users table on a case-sensitive join.
+    const allUsers = await db.select({ id: users.id }).from(users);
+    const userIdMap = new Map(allUsers.map((u) => [u.id.toLowerCase(), u.id]));
+
     for (const session of sessions) {
       const hasTokens = (session.inputTokens ?? 0) > 0 || (session.outputTokens ?? 0) > 0;
       if (!hasTokens) continue;
@@ -79,10 +86,14 @@ export async function pollAllSessions(openclawClient: OpenClawClient): Promise<v
       if (!parsed) continue;
 
       const agentName = agentNameMap.get(parsed.agentId) ?? parsed.agentId;
+      const userId =
+        parsed.type === "chat"
+          ? (userIdMap.get(parsed.userId.toLowerCase()) ?? parsed.userId)
+          : parsed.userId; // "system" stays as-is
 
       await recordUsage({
         openclawClient,
-        userId: parsed.userId,
+        userId,
         agentId: parsed.agentId,
         agentName,
         sessionKey: session.key,

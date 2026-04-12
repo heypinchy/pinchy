@@ -97,6 +97,11 @@ vi.mock("@/db", () => ({
               },
             };
           }
+          if (table?._table === "users") {
+            // pollAllSessions fetches all user IDs to resolve lowercased
+            // session-key IDs back to original-case DB IDs.
+            return Promise.resolve([{ id: "user-1" }]);
+          }
           // usageRecords — chainable with where() to read the running sum
           return {
             where: (...wArgs: unknown[]) => {
@@ -120,6 +125,7 @@ vi.mock("@/db", () => ({
 vi.mock("@/db/schema", () => ({
   usageRecords: { _table: "usage_records" },
   agents: { _table: "agents", id: "id", name: "name" },
+  users: { _table: "users", id: "id" },
 }));
 
 vi.mock("drizzle-orm", () => ({
