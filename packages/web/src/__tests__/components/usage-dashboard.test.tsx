@@ -142,7 +142,7 @@ describe("UsageDashboard", () => {
       expect(screen.getByText("1.6M")).toBeInTheDocument();
     });
 
-    expect(screen.getByText("$4.82")).toBeInTheDocument();
+    expect(screen.getAllByText("$4.82").length).toBeGreaterThanOrEqual(1);
   });
 
   describe("source breakdown cards", () => {

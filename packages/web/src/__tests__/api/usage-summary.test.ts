@@ -332,14 +332,14 @@ describe("GET /api/usage/summary", () => {
         outputTokens: "0",
         cacheReadTokens: "0",
         cacheWriteTokens: "0",
-        cost: "0",
+        cost: null,
       });
       expect(body.totals.plugin).toEqual({
         inputTokens: "0",
         outputTokens: "0",
         cacheReadTokens: "0",
         cacheWriteTokens: "0",
-        cost: "0",
+        cost: null,
       });
     });
 
@@ -357,21 +357,21 @@ describe("GET /api/usage/summary", () => {
           outputTokens: "0",
           cacheReadTokens: "0",
           cacheWriteTokens: "0",
-          cost: "0",
+          cost: null,
         },
         system: {
           inputTokens: "0",
           outputTokens: "0",
           cacheReadTokens: "0",
           cacheWriteTokens: "0",
-          cost: "0",
+          cost: null,
         },
         plugin: {
           inputTokens: "0",
           outputTokens: "0",
           cacheReadTokens: "0",
           cacheWriteTokens: "0",
-          cost: "0",
+          cost: null,
         },
       });
     });
@@ -397,6 +397,29 @@ describe("GET /api/usage/summary", () => {
     const body = await response.json();
     expect(body.agents[0].totalCacheReadTokens).toBe("50000");
     expect(body.agents[0].totalCacheWriteTokens).toBe("10000");
+  });
+
+  it("preserves null cost in source breakdown when pricing is unavailable", async () => {
+    mockGroupBy.mockResolvedValueOnce(sampleAgents).mockResolvedValueOnce([
+      {
+        source: "chat",
+        inputTokens: "5000",
+        outputTokens: "2000",
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+        cost: null,
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/usage/summary");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.totals.chat.cost).toBeNull();
+    // Token fields should still default to "0" when null
+    expect(body.totals.chat.inputTokens).toBe("5000");
+    expect(body.totals.chat.outputTokens).toBe("2000");
   });
 
   it("includes cache tokens in source breakdown totals", async () => {

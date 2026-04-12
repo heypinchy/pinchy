@@ -96,9 +96,11 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-function formatCost(n: number | null): string {
-  if (n === null) return "\u2014";
-  return `$${n.toFixed(2)}`;
+const NO_PRICING_HINT = "No pricing data available for this model";
+
+function FormattedCost({ value }: { value: number | null }) {
+  if (value === null) return <span title={NO_PRICING_HINT}>{"\u2014"}</span>;
+  return <>{`$${value.toFixed(2)}`}</>;
 }
 
 type DaysOption = 7 | 30 | 90 | "all";
@@ -113,6 +115,30 @@ const PERIOD_OPTIONS: { label: string; value: DaysOption }[] = [
 /** Show dots on chart lines when there is at most one data point (otherwise the single point is invisible). */
 export function shouldShowDots(dataLength: number): boolean {
   return dataLength <= 1;
+}
+
+function StatCard({
+  label,
+  value,
+  subtitle,
+}: {
+  label: string;
+  value: React.ReactNode;
+  subtitle?: React.ReactNode;
+}) {
+  return (
+    <Card>
+      <CardHeader className="p-3 pb-1 sm:p-4 sm:pb-1">
+        <CardTitle className="text-[10px] sm:text-xs font-medium text-muted-foreground">
+          {label}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-3 pt-0 sm:p-4 sm:pt-0">
+        <p className="text-base sm:text-xl font-bold truncate">{value}</p>
+        {subtitle && <p className="text-[10px] sm:text-xs text-muted-foreground">{subtitle}</p>}
+      </CardContent>
+    </Card>
+  );
 }
 
 export function UsageDashboard({ isEnterprise: initialEnterprise = false }: UsageDashboardProps) {
@@ -290,10 +316,10 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <h2 className="text-2xl font-bold">Usage & Costs</h2>
-        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+        <div className="flex flex-wrap items-center gap-2 lg:gap-3">
           <select
             aria-label="Select time period"
             value={String(days)}
@@ -301,7 +327,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
               const v = e.target.value;
               handleDaysChange(v === "all" ? "all" : (Number(v) as 7 | 30 | 90));
             }}
-            className="border-input bg-transparent text-sm rounded-md border px-3 py-1.5 h-8 sm:hidden"
+            className="border-input bg-transparent text-sm rounded-md border px-3 py-1.5 h-8 lg:hidden"
           >
             {PERIOD_OPTIONS.map((opt) => (
               <option key={opt.label} value={String(opt.value)}>
@@ -309,7 +335,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
               </option>
             ))}
           </select>
-          <div className="hidden sm:flex gap-1">
+          <div className="hidden lg:flex gap-1">
             {PERIOD_OPTIONS.map((opt) => (
               <Button
                 key={opt.label}
@@ -383,91 +409,45 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
         <p>No usage data available.</p>
       ) : (
         <>
-          <div className={`grid gap-4 ${totalCacheTokens > 0 ? "grid-cols-3" : "grid-cols-2"}`}>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Total Tokens
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold">{formatTokens(totalTokens)}</p>
-              </CardContent>
-            </Card>
+          <div className="grid grid-cols-3 gap-2 sm:gap-3">
+            <StatCard
+              label="Total Tokens"
+              value={formatTokens(totalTokens)}
+              subtitle={<FormattedCost value={totalCost} />}
+            />
+            <StatCard label="Estimated Cost" value={<FormattedCost value={totalCost} />} />
             {totalCacheTokens > 0 && (
-              <Card>
-                <CardHeader>
-                  <CardTitle className="text-sm font-medium text-muted-foreground">
-                    Cache Tokens
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-bold">{formatTokens(totalCacheTokens)}</p>
-                </CardContent>
-              </Card>
+              <StatCard label="Cache Tokens" value={formatTokens(totalCacheTokens)} />
             )}
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Estimated Cost
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold">{formatCost(totalCost)}</p>
-              </CardContent>
-            </Card>
+            {summary?.totals && chatBucket.tokens > 0 && (
+              <StatCard
+                label="Chat Tokens"
+                value={formatTokens(chatBucket.tokens)}
+                subtitle={<FormattedCost value={chatBucket.cost} />}
+              />
+            )}
+            {summary?.totals && systemBucket.tokens > 0 && (
+              <StatCard
+                label="System Tokens"
+                value={formatTokens(systemBucket.tokens)}
+                subtitle={<FormattedCost value={systemBucket.cost} />}
+              />
+            )}
+            {summary?.totals && pluginBucket.tokens > 0 && (
+              <StatCard
+                label="Plugin Tokens"
+                value={formatTokens(pluginBucket.tokens)}
+                subtitle={<FormattedCost value={pluginBucket.cost} />}
+              />
+            )}
           </div>
 
-          {summary?.totals && (
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              {chatBucket.tokens > 0 && (
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-xs font-medium text-muted-foreground">
-                      Chat Tokens
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="pt-0">
-                    <p className="text-lg font-semibold">{formatTokens(chatBucket.tokens)}</p>
-                    <p className="text-xs text-muted-foreground">{formatCost(chatBucket.cost)}</p>
-                  </CardContent>
-                </Card>
-              )}
-              {systemBucket.tokens > 0 && (
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-xs font-medium text-muted-foreground">
-                      System Tokens
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="pt-0">
-                    <p className="text-lg font-semibold">{formatTokens(systemBucket.tokens)}</p>
-                    <p className="text-xs text-muted-foreground">{formatCost(systemBucket.cost)}</p>
-                  </CardContent>
-                </Card>
-              )}
-              {pluginBucket.tokens > 0 && (
-                <Card>
-                  <CardHeader className="pb-2">
-                    <CardTitle className="text-xs font-medium text-muted-foreground">
-                      Plugin Tokens
-                    </CardTitle>
-                  </CardHeader>
-                  <CardContent className="pt-0">
-                    <p className="text-lg font-semibold">{formatTokens(pluginBucket.tokens)}</p>
-                    <p className="text-xs text-muted-foreground">{formatCost(pluginBucket.cost)}</p>
-                  </CardContent>
-                </Card>
-              )}
-            </div>
-          )}
-
           <Card>
-            <CardHeader>
+            <CardHeader className="pb-2">
               <CardTitle>Daily Token Usage</CardTitle>
             </CardHeader>
-            <CardContent className="px-2 sm:px-6">
-              <ResponsiveContainer width="100%" height={250} className="sm:!h-[300px]">
+            <CardContent className="px-2 pb-2 sm:px-6 sm:pb-3">
+              <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={chartData} margin={{ left: -10, right: 5, top: 5, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.9 0 0)" />
                   <XAxis
@@ -580,9 +560,9 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                               </TableCell>
                             )}
                             <TableCell className="text-right">
-                              {formatCost(
-                                agent.totalCost !== null ? Number(agent.totalCost) : null
-                              )}
+                              <FormattedCost
+                                value={agent.totalCost !== null ? Number(agent.totalCost) : null}
+                              />
                             </TableCell>
                           </TableRow>
                         ))}
@@ -650,9 +630,9 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                                   </TableCell>
                                 )}
                                 <TableCell className="text-right">
-                                  {formatCost(
-                                    user.totalCost !== null ? Number(user.totalCost) : null
-                                  )}
+                                  <FormattedCost
+                                    value={user.totalCost !== null ? Number(user.totalCost) : null}
+                                  />
                                 </TableCell>
                               </TableRow>
                             ))}

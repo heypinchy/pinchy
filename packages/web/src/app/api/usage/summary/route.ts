@@ -11,7 +11,7 @@ type SourceBucket = {
   outputTokens: string;
   cacheReadTokens: string;
   cacheWriteTokens: string;
-  cost: string;
+  cost: string | null;
 };
 
 const ZERO_BUCKET: SourceBucket = {
@@ -19,7 +19,7 @@ const ZERO_BUCKET: SourceBucket = {
   outputTokens: "0",
   cacheReadTokens: "0",
   cacheWriteTokens: "0",
-  cost: "0",
+  cost: null,
 };
 
 export async function GET(request: NextRequest) {
@@ -97,7 +97,7 @@ export async function GET(request: NextRequest) {
       outputTokens: row.outputTokens ?? "0",
       cacheReadTokens: row.cacheReadTokens ?? "0",
       cacheWriteTokens: row.cacheWriteTokens ?? "0",
-      cost: row.cost ?? "0",
+      cost: row.cost ?? null,
     };
   }
 
