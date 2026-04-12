@@ -307,6 +307,52 @@ describe("UsageDashboard", () => {
     expect(screen.getByText("$1.32")).toBeInTheDocument();
   });
 
+  it("shows (deleted) label for deleted agents in dropdown and table", async () => {
+    mockBothEndpoints({
+      agents: [
+        {
+          agentId: "agent-1",
+          agentName: "Smithers",
+          totalInputTokens: "500000",
+          totalOutputTokens: "700000",
+          totalCost: "3.50",
+          deleted: false,
+        },
+        {
+          agentId: "agent-2",
+          agentName: "Old Bot",
+          totalInputTokens: "150000",
+          totalOutputTokens: "250000",
+          totalCost: "1.32",
+          deleted: true,
+        },
+      ],
+    });
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+    });
+
+    // Agent filter dropdown should show "(deleted)" suffix
+    const agentSelect = screen.getByLabelText("Filter by agent");
+    const options = agentSelect.querySelectorAll("option");
+    expect(options[1]).toHaveTextContent("Smithers");
+    expect(options[1]).not.toHaveTextContent("(deleted)");
+    expect(options[2]).toHaveTextContent("Old Bot (deleted)");
+
+    // Agent table should show "(deleted)" suffix with muted styling
+    const oldBotCells = screen.getAllByText(/Old Bot/);
+    const oldBotTableCell = oldBotCells.find((el) => el.tagName === "TD")!;
+    expect(oldBotTableCell).toHaveTextContent("Old Bot (deleted)");
+    expect(oldBotTableCell).toHaveClass("text-muted-foreground");
+
+    // Smithers table cell should NOT have muted styling
+    const smithersCells = screen.getAllByText("Smithers");
+    const smithersTableCell = smithersCells.find((el) => el.tagName === "TD")!;
+    expect(smithersTableCell).not.toHaveClass("text-muted-foreground");
+  });
+
   it("should change fetch parameters when time period buttons are clicked", async () => {
     mockBothEndpoints();
     const user = userEvent.setup();

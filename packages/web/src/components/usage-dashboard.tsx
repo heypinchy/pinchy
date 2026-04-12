@@ -35,6 +35,7 @@ interface AgentSummary {
   totalInputTokens: string | null;
   totalOutputTokens: string | null;
   totalCost: string | null;
+  deleted?: boolean;
 }
 
 interface SourceBucket {
@@ -297,6 +298,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
               {knownAgents.map((a) => (
                 <option key={a.agentId} value={a.agentId}>
                   {a.agentName}
+                  {a.deleted ? " (deleted)" : ""}
                 </option>
               ))}
             </select>
@@ -510,7 +512,10 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                         })
                         .map((agent) => (
                           <TableRow key={agent.agentId}>
-                            <TableCell>{agent.agentName}</TableCell>
+                            <TableCell className={agent.deleted ? "text-muted-foreground" : ""}>
+                              {agent.agentName}
+                              {agent.deleted ? " (deleted)" : ""}
+                            </TableCell>
                             <TableCell className="text-right">
                               {formatTokens(Number(agent.totalInputTokens ?? 0))}
                             </TableCell>

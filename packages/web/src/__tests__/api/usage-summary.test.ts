@@ -7,10 +7,11 @@ vi.mock("@/lib/api-auth", () => ({
   requireAdmin: vi.fn(),
 }));
 
-// Build chainable mock: select().from().where().groupBy()
+// Build chainable mock: select().from().leftJoin().where().groupBy()
 const mockGroupBy = vi.fn();
 const mockWhere = vi.fn().mockReturnValue({ groupBy: mockGroupBy });
-const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
+const mockLeftJoin = vi.fn().mockReturnValue({ where: mockWhere });
+const mockFrom = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin, where: mockWhere });
 
 const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
 
@@ -27,6 +28,10 @@ vi.mock("@/db/schema", () => ({
     estimatedCostUsd: "estimated_cost_usd",
     timestamp: "timestamp",
   },
+  agents: {
+    id: "id",
+    deletedAt: "deleted_at",
+  },
 }));
 
 vi.mock("drizzle-orm", () => ({
@@ -40,6 +45,7 @@ vi.mock("drizzle-orm", () => ({
       __sql: true,
       strings,
       values,
+      as: vi.fn().mockReturnThis(),
     })),
     { raw: vi.fn() }
   ),
@@ -79,7 +85,8 @@ describe("GET /api/usage/summary", () => {
 
     // Reset chainable mock defaults
     mockSelect.mockReturnValue({ from: mockFrom });
-    mockFrom.mockReturnValue({ where: mockWhere });
+    mockFrom.mockReturnValue({ leftJoin: mockLeftJoin, where: mockWhere });
+    mockLeftJoin.mockReturnValue({ where: mockWhere });
     mockWhere.mockReturnValue({ groupBy: mockGroupBy });
     // Default for the source-breakdown query (second groupBy call).
     // Tests that care about the totals override with mockResolvedValueOnce.
@@ -209,6 +216,36 @@ describe("GET /api/usage/summary", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.agents).toEqual([]);
+  });
+
+  it("returns deleted flag for soft-deleted agents", async () => {
+    mockGroupBy.mockResolvedValueOnce([
+      {
+        agentId: "a1",
+        agentName: "Smithers",
+        totalInputTokens: "5000",
+        totalOutputTokens: "2000",
+        totalCost: "0.045000",
+        deleted: false,
+      },
+      {
+        agentId: "a2",
+        agentName: "Old Bot",
+        totalInputTokens: "3000",
+        totalOutputTokens: "1000",
+        totalCost: "0.025000",
+        deleted: true,
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/usage/summary");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.agents).toHaveLength(2);
+    expect(body.agents[0].deleted).toBe(false);
+    expect(body.agents[1].deleted).toBe(true);
   });
 
   describe("source breakdown (totals)", () => {

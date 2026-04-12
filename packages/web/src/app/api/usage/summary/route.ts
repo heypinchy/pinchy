@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { parseDays } from "@/lib/usage-params";
 import { db } from "@/db";
-import { usageRecords } from "@/db/schema";
+import { usageRecords, agents } from "@/db/schema";
 import { max, sum, gte, eq, and, sql } from "drizzle-orm";
 import type { UsageSource } from "@/lib/usage-source";
 
@@ -43,15 +43,17 @@ export async function GET(request: NextRequest) {
   // max(agentName) returns the lexicographically greatest name.
   // If an agent is renamed, this may show either old or new name
   // until all old records age out. Acceptable trade-off for simplicity.
-  const agents = await db
+  const agentResults = await db
     .select({
       agentId: usageRecords.agentId,
       agentName: max(usageRecords.agentName),
       totalInputTokens: sum(usageRecords.inputTokens),
       totalOutputTokens: sum(usageRecords.outputTokens),
       totalCost: sum(usageRecords.estimatedCostUsd),
+      deleted: sql<boolean>`bool_or(${agents.deletedAt} IS NOT NULL)`.as("deleted"),
     })
     .from(usageRecords)
+    .leftJoin(agents, eq(agents.id, usageRecords.agentId))
     .where(where)
     .groupBy(usageRecords.agentId);
 
@@ -89,5 +91,5 @@ export async function GET(request: NextRequest) {
     };
   }
 
-  return NextResponse.json({ agents, totals });
+  return NextResponse.json({ agents: agentResults, totals });
 }
