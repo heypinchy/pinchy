@@ -168,4 +168,3 @@ export function groupTemplatesByCategory(templates: TemplateItem[]): Categorized
 
   return { categories, custom };
 }
-

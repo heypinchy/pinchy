@@ -26,27 +26,27 @@ export async function GET(request: NextRequest) {
   const connectionModels = hasOdooConnection ? await getConnectionModels() : null;
 
   const templates = Object.entries(AGENT_TEMPLATES).map(([id, template]) => {
-      let available = true;
+    let available = true;
 
-      if (template.requiresOdooConnection && !hasOdooConnection) {
-        available = false;
-      } else if (template.odooConfig && connectionModels) {
-        const validation = validateOdooTemplate(template.odooConfig, connectionModels);
-        available = validation.valid;
-      }
+    if (template.requiresOdooConnection && !hasOdooConnection) {
+      available = false;
+    } else if (template.odooConfig && connectionModels) {
+      const validation = validateOdooTemplate(template.odooConfig, connectionModels);
+      available = validation.valid;
+    }
 
-      return {
-        id,
-        name: template.name,
-        description: template.description,
-        requiresDirectories: template.pluginId !== null,
-        requiresOdooConnection: template.requiresOdooConnection ?? false,
-        odooAccessLevel: template.odooConfig?.accessLevel,
-        defaultTagline: template.defaultTagline,
-        available,
-        iconName: template.iconName,
-      };
-    });
+    return {
+      id,
+      name: template.name,
+      description: template.description,
+      requiresDirectories: template.pluginId !== null,
+      requiresOdooConnection: template.requiresOdooConnection ?? false,
+      odooAccessLevel: template.odooConfig?.accessLevel,
+      defaultTagline: template.defaultTagline,
+      available,
+      iconName: template.iconName,
+    };
+  });
 
   return NextResponse.json({ templates });
 }

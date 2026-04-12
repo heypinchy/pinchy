@@ -40,8 +40,8 @@ test.describe.serial("Odoo Template Creation", () => {
     // Click "New Agent"
     await page.getByText(/new agent/i).click();
 
-    // Should see the Odoo section
-    await expect(page.getByText("Odoo")).toBeVisible({ timeout: 10000 });
+    // Should see Odoo templates in thematic categories (e.g. Sales & Customers)
+    await expect(page.getByText("Sales & Customers")).toBeVisible({ timeout: 10000 });
 
     // Should see at least Sales Analyst template
     await expect(page.getByText("Sales Analyst")).toBeVisible();
@@ -75,7 +75,7 @@ test.describe.serial("Odoo Template Creation", () => {
     await page.goto("/");
     await page.getByText(/new agent/i).click();
 
-    // Wait for Odoo section to load, then click Sales Analyst template
+    // Wait for templates to load, then click Sales Analyst template
     await expect(page.getByText("Sales Analyst")).toBeVisible({ timeout: 10000 });
     await page.getByText("Sales Analyst").click();
 

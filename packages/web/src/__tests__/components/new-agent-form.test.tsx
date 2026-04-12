@@ -398,7 +398,7 @@ describe("NewAgentForm — permission preview", () => {
       if (String(url) === "/api/integrations") {
         return {
           ok: true,
-          json: async () => ([{ id: "conn-1", name: "My Odoo", type: "odoo", data: {} }]),
+          json: async () => [{ id: "conn-1", name: "My Odoo", type: "odoo", data: {} }],
         } as Response;
       }
       if (String(url) === "/api/agents") {
@@ -506,7 +506,7 @@ describe("NewAgentForm — no connections link", () => {
       if (String(url) === "/api/integrations") {
         return {
           ok: true,
-          json: async () => ([]),
+          json: async () => [],
         } as Response;
       }
       if (String(url) === "/api/agents") {

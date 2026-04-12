@@ -90,9 +90,7 @@ function PermissionPreview({ template }: { template?: Template }) {
           </li>
         ))}
       </ul>
-      <p className="text-xs text-muted-foreground">
-        You can adjust permissions after creation.
-      </p>
+      <p className="text-xs text-muted-foreground">You can adjust permissions after creation.</p>
     </div>
   );
 }
@@ -324,10 +322,10 @@ export function NewAgentForm() {
 
       {!selectedTemplate ? (
         <>
-        <p className="text-sm text-muted-foreground mb-6">
-          Pick a template to get started — you can adjust all settings after creation.
-        </p>
-        <TemplateSelector templates={templates} onSelect={setSelectedTemplate} />
+          <p className="text-sm text-muted-foreground mb-6">
+            Pick a template to get started — you can adjust all settings after creation.
+          </p>
+          <TemplateSelector templates={templates} onSelect={setSelectedTemplate} />
         </>
       ) : (
         <>
@@ -381,9 +379,7 @@ export function NewAgentForm() {
                             {...field}
                           />
                         </FormControl>
-                        <FormDescription>
-                          Shown below the agent name in the sidebar
-                        </FormDescription>
+                        <FormDescription>Shown below the agent name in the sidebar</FormDescription>
                       </FormItem>
                     )}
                   />
@@ -399,7 +395,10 @@ export function NewAgentForm() {
                         ) : odooConnections.length === 0 ? (
                           <p className="text-sm text-muted-foreground mt-1">
                             No Odoo connections yet.{" "}
-                            <Link href="/settings?tab=integrations" className="underline hover:text-foreground">
+                            <Link
+                              href="/settings?tab=integrations"
+                              className="underline hover:text-foreground"
+                            >
                               Set up connection →
                             </Link>
                           </p>

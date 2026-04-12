@@ -18,7 +18,7 @@ test.describe("Agent management", () => {
     await expect(page).toHaveURL(/\/agents\/new/, { timeout: 5000 });
 
     // Template selection is shown
-    await expect(page.getByText(/custom agent/i)).toBeVisible();
+    await expect(page.getByText(/start from scratch/i)).toBeVisible();
     await expect(page.getByText(/knowledge base/i)).toBeVisible();
   });
 
@@ -26,8 +26,8 @@ test.describe("Agent management", () => {
     await page.getByRole("link", { name: /new agent/i }).click();
     await expect(page).toHaveURL(/\/agents\/new/, { timeout: 5000 });
 
-    // Select Custom Agent template
-    await page.getByText(/custom agent/i).click();
+    // Select Custom Agent template via "start from scratch" link
+    await page.getByText(/start from scratch/i).click();
 
     // Name input and Create button are visible
     await expect(page.getByLabel(/name/i)).toBeVisible();

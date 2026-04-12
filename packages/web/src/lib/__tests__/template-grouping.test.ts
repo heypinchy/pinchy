@@ -224,9 +224,7 @@ describe("groupTemplatesByCategory", () => {
   it("extracts custom template separately, not in any category", () => {
     const result = groupTemplatesByCategory([knowledgeBase, customTemplate]);
     expect(result.custom).toEqual(expect.objectContaining({ id: "custom" }));
-    const allCategoryTemplateIds = result.categories.flatMap((c) =>
-      c.templates.map((t) => t.id)
-    );
+    const allCategoryTemplateIds = result.categories.flatMap((c) => c.templates.map((t) => t.id));
     expect(allCategoryTemplateIds).not.toContain("custom");
   });
 
