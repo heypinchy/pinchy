@@ -452,6 +452,57 @@ describe("UsageDashboard", () => {
     });
   });
 
+  it("displays cache tokens column in agent table and summary card", async () => {
+    mockBothEndpoints({
+      agents: [
+        {
+          agentId: "agent-1",
+          agentName: "Smithers",
+          totalInputTokens: "500000",
+          totalOutputTokens: "700000",
+          totalCacheReadTokens: "50000",
+          totalCacheWriteTokens: "10000",
+          totalCost: "3.50",
+        },
+      ],
+    });
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+    });
+
+    // "Cache Tokens" appears in both summary card and table header
+    const cacheTokensElements = screen.getAllByText("Cache Tokens");
+    expect(cacheTokensElements.length).toBe(2);
+    // 50000 + 10000 = 60000 -> "60.0k" appears in both summary card and table cell
+    expect(screen.getAllByText("60.0k").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("hides cache tokens summary card when no cache tokens", async () => {
+    mockBothEndpoints({
+      agents: [
+        {
+          agentId: "agent-1",
+          agentName: "Smithers",
+          totalInputTokens: "500000",
+          totalOutputTokens: "700000",
+          totalCacheReadTokens: "0",
+          totalCacheWriteTokens: "0",
+          totalCost: "3.50",
+        },
+      ],
+    });
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+    });
+
+    // "Cache Tokens" should NOT appear (no column header, no summary card)
+    expect(screen.queryByText("Cache Tokens")).not.toBeInTheDocument();
+  });
+
   it("should render all time period buttons", () => {
     mockBothEndpoints();
     render(<UsageDashboard />);

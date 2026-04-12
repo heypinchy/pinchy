@@ -34,6 +34,8 @@ export async function GET(request: NextRequest) {
       date: dateExpr,
       inputTokens: sum(usageRecords.inputTokens),
       outputTokens: sum(usageRecords.outputTokens),
+      cacheReadTokens: sum(usageRecords.cacheReadTokens),
+      cacheWriteTokens: sum(usageRecords.cacheWriteTokens),
       cost: sum(usageRecords.estimatedCostUsd),
     })
     .from(usageRecords)

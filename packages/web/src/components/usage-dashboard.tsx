@@ -34,6 +34,8 @@ interface AgentSummary {
   agentName: string;
   totalInputTokens: string | null;
   totalOutputTokens: string | null;
+  totalCacheReadTokens: string | null;
+  totalCacheWriteTokens: string | null;
   totalCost: string | null;
   deleted?: boolean;
 }
@@ -41,6 +43,8 @@ interface AgentSummary {
 interface SourceBucket {
   inputTokens: string | null;
   outputTokens: string | null;
+  cacheReadTokens: string | null;
+  cacheWriteTokens: string | null;
   cost: string | null;
 }
 
@@ -59,6 +63,8 @@ interface TimeseriesPoint {
   date: string;
   inputTokens: string | null;
   outputTokens: string | null;
+  cacheReadTokens: string | null;
+  cacheWriteTokens: string | null;
   cost: string | null;
 }
 
@@ -67,6 +73,8 @@ interface UserSummary {
   userName: string;
   totalInputTokens: string | null;
   totalOutputTokens: string | null;
+  totalCacheReadTokens: string | null;
+  totalCacheWriteTokens: string | null;
   totalCost: string | null;
 }
 
@@ -227,6 +235,10 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
     if (allNull) return null;
     return agents.reduce((acc, a) => acc + Number(a.totalCost ?? 0), 0);
   })();
+  const totalCacheTokens = (summary?.agents ?? []).reduce(
+    (acc, a) => acc + Number(a.totalCacheReadTokens ?? 0) + Number(a.totalCacheWriteTokens ?? 0),
+    0
+  );
 
   function bucketTotals(b: SourceBucket | undefined): { tokens: number; cost: number | null } {
     if (!b) return { tokens: 0, cost: null };
@@ -349,7 +361,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
         <p>No usage data available.</p>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-4">
+          <div className={`grid gap-4 ${totalCacheTokens > 0 ? "grid-cols-3" : "grid-cols-2"}`}>
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -360,6 +372,18 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                 <p className="text-2xl font-bold">{formatTokens(totalTokens)}</p>
               </CardContent>
             </Card>
+            {totalCacheTokens > 0 && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-sm font-medium text-muted-foreground">
+                    Cache Tokens
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-bold">{formatTokens(totalCacheTokens)}</p>
+                </CardContent>
+              </Card>
+            )}
             <Card>
               <CardHeader>
                 <CardTitle className="text-sm font-medium text-muted-foreground">
@@ -495,6 +519,9 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                         <TableHead>Agent</TableHead>
                         <TableHead className="text-right">Input Tokens</TableHead>
                         <TableHead className="text-right">Output Tokens</TableHead>
+                        {totalCacheTokens > 0 && (
+                          <TableHead className="text-right">Cache Tokens</TableHead>
+                        )}
                         <TableHead className="text-right">Cost</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -522,6 +549,14 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                             <TableCell className="text-right">
                               {formatTokens(Number(agent.totalOutputTokens ?? 0))}
                             </TableCell>
+                            {totalCacheTokens > 0 && (
+                              <TableCell className="text-right">
+                                {formatTokens(
+                                  Number(agent.totalCacheReadTokens ?? 0) +
+                                    Number(agent.totalCacheWriteTokens ?? 0)
+                                )}
+                              </TableCell>
+                            )}
                             <TableCell className="text-right">
                               {formatCost(
                                 agent.totalCost !== null ? Number(agent.totalCost) : null
@@ -550,6 +585,9 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                             <TableHead>User</TableHead>
                             <TableHead className="text-right">Input Tokens</TableHead>
                             <TableHead className="text-right">Output Tokens</TableHead>
+                            {totalCacheTokens > 0 && (
+                              <TableHead className="text-right">Cache Tokens</TableHead>
+                            )}
                             <TableHead className="text-right">Cost</TableHead>
                           </TableRow>
                         </TableHeader>
@@ -574,6 +612,14 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                                 <TableCell className="text-right">
                                   {formatTokens(Number(user.totalOutputTokens ?? 0))}
                                 </TableCell>
+                                {totalCacheTokens > 0 && (
+                                  <TableCell className="text-right">
+                                    {formatTokens(
+                                      Number(user.totalCacheReadTokens ?? 0) +
+                                        Number(user.totalCacheWriteTokens ?? 0)
+                                    )}
+                                  </TableCell>
+                                )}
                                 <TableCell className="text-right">
                                   {formatCost(
                                     user.totalCost !== null ? Number(user.totalCost) : null

@@ -9,12 +9,16 @@ import type { UsageSource } from "@/lib/usage-source";
 type SourceBucket = {
   inputTokens: string;
   outputTokens: string;
+  cacheReadTokens: string;
+  cacheWriteTokens: string;
   cost: string;
 };
 
 const ZERO_BUCKET: SourceBucket = {
   inputTokens: "0",
   outputTokens: "0",
+  cacheReadTokens: "0",
+  cacheWriteTokens: "0",
   cost: "0",
 };
 
@@ -49,6 +53,8 @@ export async function GET(request: NextRequest) {
       agentName: max(usageRecords.agentName),
       totalInputTokens: sum(usageRecords.inputTokens),
       totalOutputTokens: sum(usageRecords.outputTokens),
+      totalCacheReadTokens: sum(usageRecords.cacheReadTokens),
+      totalCacheWriteTokens: sum(usageRecords.cacheWriteTokens),
       totalCost: sum(usageRecords.estimatedCostUsd),
       deleted: sql<boolean>`bool_or(${agents.deletedAt} IS NOT NULL)`.as("deleted"),
     })
@@ -72,6 +78,8 @@ export async function GET(request: NextRequest) {
       source: sourceExpr,
       inputTokens: sum(usageRecords.inputTokens),
       outputTokens: sum(usageRecords.outputTokens),
+      cacheReadTokens: sum(usageRecords.cacheReadTokens),
+      cacheWriteTokens: sum(usageRecords.cacheWriteTokens),
       cost: sum(usageRecords.estimatedCostUsd),
     })
     .from(usageRecords)
@@ -87,6 +95,8 @@ export async function GET(request: NextRequest) {
     totals[row.source] = {
       inputTokens: row.inputTokens ?? "0",
       outputTokens: row.outputTokens ?? "0",
+      cacheReadTokens: row.cacheReadTokens ?? "0",
+      cacheWriteTokens: row.cacheWriteTokens ?? "0",
       cost: row.cost ?? "0",
     };
   }

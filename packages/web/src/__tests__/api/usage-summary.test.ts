@@ -25,8 +25,11 @@ vi.mock("@/db/schema", () => ({
     agentName: "agent_name",
     inputTokens: "input_tokens",
     outputTokens: "output_tokens",
+    cacheReadTokens: "cache_read_tokens",
+    cacheWriteTokens: "cache_write_tokens",
     estimatedCostUsd: "estimated_cost_usd",
     timestamp: "timestamp",
+    sessionKey: "session_key",
   },
   agents: {
     id: "id",
@@ -280,16 +283,22 @@ describe("GET /api/usage/summary", () => {
         chat: {
           inputTokens: "5000",
           outputTokens: "2000",
+          cacheReadTokens: "0",
+          cacheWriteTokens: "0",
           cost: "0.045000",
         },
         system: {
           inputTokens: "1000",
           outputTokens: "500",
+          cacheReadTokens: "0",
+          cacheWriteTokens: "0",
           cost: "0.010000",
         },
         plugin: {
           inputTokens: "2000",
           outputTokens: "300",
+          cacheReadTokens: "0",
+          cacheWriteTokens: "0",
           cost: "0.015000",
         },
       });
@@ -314,16 +323,22 @@ describe("GET /api/usage/summary", () => {
       expect(body.totals.chat).toEqual({
         inputTokens: "5000",
         outputTokens: "2000",
+        cacheReadTokens: "0",
+        cacheWriteTokens: "0",
         cost: "0.045000",
       });
       expect(body.totals.system).toEqual({
         inputTokens: "0",
         outputTokens: "0",
+        cacheReadTokens: "0",
+        cacheWriteTokens: "0",
         cost: "0",
       });
       expect(body.totals.plugin).toEqual({
         inputTokens: "0",
         outputTokens: "0",
+        cacheReadTokens: "0",
+        cacheWriteTokens: "0",
         cost: "0",
       });
     });
@@ -337,10 +352,74 @@ describe("GET /api/usage/summary", () => {
       expect(response.status).toBe(200);
       const body = await response.json();
       expect(body.totals).toEqual({
-        chat: { inputTokens: "0", outputTokens: "0", cost: "0" },
-        system: { inputTokens: "0", outputTokens: "0", cost: "0" },
-        plugin: { inputTokens: "0", outputTokens: "0", cost: "0" },
+        chat: {
+          inputTokens: "0",
+          outputTokens: "0",
+          cacheReadTokens: "0",
+          cacheWriteTokens: "0",
+          cost: "0",
+        },
+        system: {
+          inputTokens: "0",
+          outputTokens: "0",
+          cacheReadTokens: "0",
+          cacheWriteTokens: "0",
+          cost: "0",
+        },
+        plugin: {
+          inputTokens: "0",
+          outputTokens: "0",
+          cacheReadTokens: "0",
+          cacheWriteTokens: "0",
+          cost: "0",
+        },
       });
     });
+  });
+
+  it("returns cache token totals per agent", async () => {
+    mockGroupBy.mockResolvedValueOnce([
+      {
+        agentId: "a1",
+        agentName: "Smithers",
+        totalInputTokens: "5000",
+        totalOutputTokens: "2000",
+        totalCacheReadTokens: "50000",
+        totalCacheWriteTokens: "10000",
+        totalCost: "0.045000",
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/usage/summary");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.agents[0].totalCacheReadTokens).toBe("50000");
+    expect(body.agents[0].totalCacheWriteTokens).toBe("10000");
+  });
+
+  it("includes cache tokens in source breakdown totals", async () => {
+    mockGroupBy.mockResolvedValueOnce(sampleAgents).mockResolvedValueOnce([
+      {
+        source: "chat",
+        inputTokens: "5000",
+        outputTokens: "2000",
+        cacheReadTokens: "30000",
+        cacheWriteTokens: "5000",
+        cost: "0.045000",
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/usage/summary");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.totals.chat.cacheReadTokens).toBe("30000");
+    expect(body.totals.chat.cacheWriteTokens).toBe("5000");
+    // Missing sources default to zero
+    expect(body.totals.system.cacheReadTokens).toBe("0");
+    expect(body.totals.system.cacheWriteTokens).toBe("0");
   });
 });

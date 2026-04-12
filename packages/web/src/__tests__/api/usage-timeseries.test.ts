@@ -24,6 +24,8 @@ vi.mock("@/db/schema", () => ({
     agentName: "agent_name",
     inputTokens: "input_tokens",
     outputTokens: "output_tokens",
+    cacheReadTokens: "cache_read_tokens",
+    cacheWriteTokens: "cache_write_tokens",
     estimatedCostUsd: "estimated_cost_usd",
     timestamp: "timestamp",
   },
@@ -153,5 +155,26 @@ describe("GET /api/usage/timeseries", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.data).toEqual([]);
+  });
+
+  it("returns cache tokens per day", async () => {
+    mockOrderBy.mockResolvedValueOnce([
+      {
+        date: "2026-03-01",
+        inputTokens: "5000",
+        outputTokens: "2000",
+        cacheReadTokens: "40000",
+        cacheWriteTokens: "8000",
+        cost: "0.045000",
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/usage/timeseries");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.data[0].cacheReadTokens).toBe("40000");
+    expect(body.data[0].cacheWriteTokens).toBe("8000");
   });
 });
