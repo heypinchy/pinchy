@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
-import { validateTelegramBotToken } from "@/lib/telegram";
+import { validateTelegramBotToken, hasMainTelegramBot } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
 import { updateTelegramChannelConfig } from "@/lib/openclaw-config";
@@ -17,13 +17,26 @@ export async function GET(req: Request, { params }: { params: Promise<{ agentId:
   if (admin instanceof NextResponse) return admin;
   const { agentId } = await params;
 
-  const botToken = await getSetting(`telegram_bot_token:${agentId}`);
+  const [agent, botToken, globalMainBot] = await Promise.all([
+    db.query.agents.findFirst({
+      where: eq(agents.id, agentId),
+      columns: { isPersonal: true },
+    }),
+    getSetting(`telegram_bot_token:${agentId}`),
+    hasMainTelegramBot(),
+  ]);
+
+  // Personal agents (Smithers) are themselves the main bot — the prerequisite
+  // is trivially satisfied from their perspective, otherwise first-time setup
+  // would hit an unresolvable chicken-and-egg.
+  const mainBotConfigured = agent?.isPersonal ? true : globalMainBot;
+
   if (!botToken) {
-    return NextResponse.json({ configured: false });
+    return NextResponse.json({ configured: false, mainBotConfigured });
   }
 
   const hint = botToken.slice(-4);
-  return NextResponse.json({ configured: true, hint });
+  return NextResponse.json({ configured: true, hint, mainBotConfigured });
 }
 
 export async function POST(req: Request, { params }: { params: Promise<{ agentId: string }> }) {
@@ -41,6 +54,14 @@ export async function POST(req: Request, { params }: { params: Promise<{ agentId
   });
   if (!agent) {
     return NextResponse.json({ error: "Agent not found" }, { status: 404 });
+  }
+
+  // Guard: main Telegram bot must exist before additional agents can connect.
+  // Users can only link their Telegram account via the main bot — without it,
+  // per-agent bots have no way to reach any user. Personal agents (Smithers)
+  // are exempt because they ARE the main bot being set up.
+  if (!agent.isPersonal && !(await hasMainTelegramBot())) {
+    return NextResponse.json({ error: "telegram_not_configured" }, { status: 409 });
   }
 
   // Validate token via Telegram API first (gives us the botId for duplicate check)

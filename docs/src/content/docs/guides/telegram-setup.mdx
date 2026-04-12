@@ -48,8 +48,12 @@ You're now linked. Messages you send to the bot are answered by the agent.
 
 Each agent can have its own Telegram bot. To connect a second agent:
 
+:::caution[Before you start]
+Pinchy's main Telegram bot must already be set up in **Settings → Telegram** (Steps 1 and 2 above). Users link their Telegram account via the main bot; without it, additional agent bots have no way to receive messages. If you see a "Telegram isn't set up yet" message in the agent's Telegram tab, go to Settings → Telegram first.
+:::
+
 1. Create a new bot via BotFather (repeat Step 1)
-2. Go to **Agent Settings → Channels** for the agent you want to connect
+2. Go to **Agent Settings → Telegram** for the agent you want to connect
 3. Paste the new bot token and click **Connect**
 
 :::note
@@ -69,7 +73,7 @@ When group memberships or agent visibility change, Telegram access is updated au
 ## Unlinking and Removing
 
 - **Unlink your account**: Settings → Telegram → Unlink. You can re-link anytime.
-- **Disconnect an agent's bot**: Agent Settings → Channels → Disconnect (not available for Smithers)
+- **Disconnect an agent's bot**: Agent Settings → Telegram → Disconnect (not available for Smithers)
 - **Remove Telegram for everyone**: Settings → Telegram → Remove Telegram for everyone. This disconnects all bots and unlinks all users.
 
 :::caution
