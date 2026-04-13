@@ -26,9 +26,21 @@ import { MoreHorizontal, Plus, Plug, CheckCircle2, Loader2 } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 // toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
-import { OdooIcon } from "./integration-icons";
+import { OdooIcon, PipedriveIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
-import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
+import { getAccessibleCategoryLabels as getOdooCategoryLabels } from "@/lib/integrations/odoo-sync";
+import { getAccessibleCategoryLabels as getPipedriveCategoryLabels } from "@/lib/integrations/pipedrive-sync";
+
+function IntegrationIcon({ type, className }: { type: string; className?: string }) {
+  switch (type) {
+    case "odoo":
+      return <OdooIcon className={className} />;
+    case "pipedrive":
+      return <PipedriveIcon className={className} />;
+    default:
+      return <Plug className={className} />;
+  }
+}
 
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
@@ -112,12 +124,15 @@ export function SettingsIntegrations() {
           ) : (
             <div className="space-y-3">
               {connections.map((conn) => {
-                const categories = getAccessibleCategoryLabels(conn.data);
+                const categories =
+                  conn.type === "pipedrive"
+                    ? getPipedriveCategoryLabels(conn.data)
+                    : getOdooCategoryLabels(conn.data);
                 return (
                   <div key={conn.id} className="rounded-lg border p-4 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <OdooIcon className="h-6 w-12 shrink-0" />
+                        <IntegrationIcon type={conn.type} className="h-6 w-12 shrink-0" />
                         <span className="text-sm font-medium">{conn.name}</span>
                       </div>
                       <DropdownMenu>
