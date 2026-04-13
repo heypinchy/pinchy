@@ -3,7 +3,7 @@ import {
   ComposerAttachments,
   UserMessageAttachments,
 } from "@/components/assistant-ui/attachment";
-import { ChatErrorMessage } from "@/components/assistant-ui/chat-error-message";
+import { ChatErrorMessage, type ChatError } from "@/components/assistant-ui/chat-error-message";
 import { ChatImage } from "@/components/assistant-ui/chat-image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
@@ -277,15 +277,7 @@ const MessageError: FC = () => {
 
 const AssistantErrorOrContent: FC = () => {
   const error = useMessage(
-    (s) =>
-      s.metadata?.custom?.error as
-        | {
-            agentName?: string;
-            providerError?: string;
-            hint?: string | null;
-            message?: string;
-          }
-        | undefined
+    (s) => s.metadata?.custom?.error as ChatError | undefined
   );
 
   if (error) {
@@ -305,6 +297,19 @@ const AssistantErrorOrContent: FC = () => {
   );
 };
 
+const AssistantFooter: FC = () => {
+  const isError = useMessage((s) => !!s.metadata?.custom?.error);
+
+  if (isError) return null;
+
+  return (
+    <div className="aui-assistant-message-footer mt-1 ml-2 flex items-center gap-2">
+      <MessageTimestamp />
+      <AssistantActionBar />
+    </div>
+  );
+};
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -315,10 +320,7 @@ const AssistantMessage: FC = () => {
         <AssistantErrorOrContent />
       </div>
 
-      <div className="aui-assistant-message-footer mt-1 ml-2 flex items-center gap-2">
-        <MessageTimestamp />
-        <AssistantActionBar />
-      </div>
+      <AssistantFooter />
     </MessagePrimitive.Root>
   );
 };
