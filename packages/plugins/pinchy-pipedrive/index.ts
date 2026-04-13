@@ -175,7 +175,7 @@ const plugin = {
                 return { content: [{ type: "text", text: JSON.stringify(entities) }] };
               }
 
-              if (!config.permissions[entity]) {
+              if (!checkPermission(config.permissions, entity, "read")) {
                 return {
                   isError: true,
                   content: [
