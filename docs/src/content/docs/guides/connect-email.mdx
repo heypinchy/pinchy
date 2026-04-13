@@ -12,7 +12,7 @@ This guide walks you through connecting a Google account to Pinchy so your agent
 - You have access to a [Google Cloud Console](https://console.cloud.google.com/) project
 
 :::caution
-Google OAuth requires HTTPS. The "Connect Google Account" button is disabled when Pinchy runs without HTTPS.
+Google OAuth requires HTTPS. The Add Integration wizard shows a warning and blocks the Google flow when Pinchy runs without HTTPS.
 :::
 
 ## 1. Create a Google Cloud OAuth app
@@ -43,30 +43,30 @@ Before Pinchy can connect to Google, you need to create an OAuth 2.0 application
 If you chose "External" user type, your OAuth app starts in "Testing" mode. Only users you add as test users can authorize. To remove this restriction, submit the app for Google's verification process.
 :::
 
-## 2. Configure OAuth in Pinchy
-
-1. Go to **Settings → OAuth Providers**
-2. In the **Google** section, enter:
-   - **Client ID** — the client ID from step 1
-   - **Client Secret** — the client secret from step 1
-3. Click **Save**
-
-The credentials are encrypted at rest and never leave your server. A green checkmark appears once saved.
-
-## 3. Connect a Google account
+## 2. Add a Google connection in Pinchy
 
 1. Go to **Settings → Integrations**
 2. Click **Add Integration** and select **Google**
-3. Click **Connect Google Account**
-4. Google's consent screen opens — sign in with the Google account whose email the agent should access
-5. Grant the requested permissions
-6. You're redirected back to Pinchy — the connection appears in the integration list, showing the connected email address
+3. If this is your first Google connection, Pinchy asks you to configure OAuth credentials:
+   - Copy the **Redirect URI** shown in the wizard and add it to your Google Cloud app (under **Authorized redirect URIs**)
+   - Enter the **Client ID** and **Client Secret** from step 1
+   - Click **Save & Continue**
+4. Click **Connect Google Account**
+5. Google's consent screen opens — sign in with the Google account whose email the agent should access
+6. Grant the requested permissions
+7. You're redirected back to Pinchy — the connection appears in the integration list, showing the connected email address
+
+The OAuth credentials are encrypted at rest and never leave your server. For subsequent Google connections, step 3 is skipped — you go straight to "Connect Google Account".
 
 :::tip
 Use a shared mailbox or functional account (e.g. `invoices@yourcompany.com`) rather than a personal account. The agent will have access to all email in this account.
 :::
 
-## 4. Grant agent email permissions
+:::note
+To update your OAuth credentials later (e.g. for secret rotation), open the dropdown menu on any Google connection in the integrations list and select **Edit OAuth Credentials**. Changes apply to all Google connections.
+:::
+
+## 3. Grant agent email permissions
 
 A connection alone doesn't give any agent access. You must explicitly grant it.
 
@@ -89,7 +89,7 @@ A connection alone doesn't give any agent access. You must explicitly grant it.
 **Send messages** is a powerful permission. The agent can send email from the connected account without human review. Consider using **Create drafts** instead and having a human review and send drafts manually.
 :::
 
-## 5. Test it
+## 4. Test it
 
 Open the agent's chat and try a few queries:
 
