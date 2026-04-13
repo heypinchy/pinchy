@@ -77,4 +77,17 @@ describe("ChatErrorMessage", () => {
 
     expect(screen.getByTestId("error-warning-icon")).toBeInTheDocument();
   });
+
+  it("should have alert role for screen readers", () => {
+    const { container } = render(
+      <ChatErrorMessage
+        error={{
+          agentName: "Smithers",
+          providerError: "Error text",
+        }}
+      />
+    );
+
+    expect(container.firstElementChild).toHaveAttribute("role", "alert");
+  });
 });

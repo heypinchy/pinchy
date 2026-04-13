@@ -12,7 +12,10 @@ export const ChatErrorMessage: FC<{ error: ChatError }> = ({ error }) => {
   const isProviderError = !!error.providerError;
 
   return (
-    <div className="rounded-md border border-destructive bg-destructive/10 p-3 text-sm dark:bg-destructive/5">
+    <div
+      role="alert"
+      className="rounded-md border border-destructive bg-destructive/10 p-3 text-sm dark:bg-destructive/5"
+    >
       {isProviderError ? (
         <>
           <div className="flex items-center gap-2 font-medium text-destructive dark:text-red-200">
