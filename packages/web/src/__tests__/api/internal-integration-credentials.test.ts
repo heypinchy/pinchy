@@ -89,6 +89,17 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
     expect(data.error).toBe("Connection not found");
   });
 
+  it("returns 500 when decryption fails", async () => {
+    vi.mocked(decrypt).mockImplementation(() => {
+      throw new Error("Decryption failed");
+    });
+
+    const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
+    expect(res.status).toBe(500);
+    const data = await res.json();
+    expect(data.error).toBe("Failed to decrypt credentials");
+  });
+
   it("returns 200 with decrypted credentials for valid connection", async () => {
     const res = await GET(makeRequest("conn-1"), makeParams("conn-1"));
 

@@ -27,7 +27,13 @@ export async function GET(
   }
 
   const connection = rows[0];
-  const credentials = JSON.parse(decrypt(connection.credentials));
+
+  let credentials;
+  try {
+    credentials = JSON.parse(decrypt(connection.credentials));
+  } catch {
+    return NextResponse.json({ error: "Failed to decrypt credentials" }, { status: 500 });
+  }
 
   return NextResponse.json({ type: connection.type, credentials });
 }
