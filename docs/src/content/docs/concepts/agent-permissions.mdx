@@ -68,13 +68,29 @@ See the [Mount Data Directories](/guides/mount-data-directories/) guide for inst
 
 ## How permissions reach OpenClaw
 
-OpenClaw uses a **deny-list** model internally: by default every tool group is available, and you block what you don't want. Pinchy's allow-list is the opposite — nothing is available until enabled.
+Pinchy controls what tools an agent can use. OpenClaw's native tools (shell, file system, web) are not exposed directly — Pinchy replaces them with its own sandboxed tools and integration tools. This gives Pinchy full control over what each agent can do.
 
-To bridge these two models, Pinchy converts the allow-list into a deny-list at config generation time using `computeDeniedGroups()`. This function takes the list of tool IDs an admin has enabled and returns all tool groups that should be blocked. The result is written into each agent's `tools.deny` array in the OpenClaw config.
-
-For example, if an admin enables only `pinchy_ls` and `pinchy_read` (safe tools), `computeDeniedGroups` returns all powerful tool groups (`computer`, `files`, `web_search`, `web_fetch`) so that OpenClaw blocks those capabilities for this agent.
+Under the hood, Pinchy converts its allow-list into a deny-list at config generation time using `computeDeniedGroups()`. This function takes the list of tool IDs an admin has enabled and returns all tool groups that should be blocked. The result is written into each agent's `tools.deny` array in the OpenClaw config.
 
 This conversion runs automatically whenever the OpenClaw config is regenerated — admins never interact with the deny-list directly.
+
+## Integration tools
+
+When you connect an external system (like Odoo) and grant an agent access to it, Pinchy automatically enables the appropriate tools based on the access level you choose. You don't need to enable these tools manually — they're managed through the Permissions tab.
+
+| Tool          | What it does                               | Access level required |
+| ------------- | ------------------------------------------ | --------------------- |
+| **schema**    | Discover available models and their fields | Read-only             |
+| **read**      | Read records from a model                  | Read-only             |
+| **count**     | Count records matching a filter            | Read-only             |
+| **aggregate** | Run aggregations (sum, average, group by)  | Read-only             |
+| **create**    | Create new records                         | Read & Write          |
+| **write**     | Update existing records                    | Read & Write          |
+| **delete**    | Delete records                             | Full                  |
+
+For example, setting an agent to "Read-only" for an Odoo connection enables schema, read, count, and aggregate. Upgrading to "Read & Write" adds create and write. "Full" adds delete.
+
+For details on setting up connections and access levels, see [Integrations](/concepts/integrations/).
 
 ## Agent templates and default permissions
 

@@ -128,6 +128,7 @@ export default defineConfig({
             { label: 'Deploy on DigitalOcean', slug: 'guides/deploy-digitalocean' },
             { label: 'Upgrading', slug: 'guides/upgrading' },
             { label: 'Hardening', slug: 'guides/hardening' },
+            { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
             { label: 'Lock Pinchy to a Domain (HTTPS)', slug: 'guides/domain-lock' },
           ],
         },
@@ -143,6 +144,7 @@ export default defineConfig({
             { label: 'User Roles', slug: 'concepts/user-roles' },
             { label: 'Groups', slug: 'concepts/groups' },
             { label: 'Audit Trail', slug: 'concepts/audit-trail' },
+            { label: 'Integrations', slug: 'concepts/integrations' },
           ],
         },
         {

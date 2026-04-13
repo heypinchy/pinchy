@@ -1,40 +1,121 @@
 "use client";
 
+import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
-import { FileText, Bot } from "lucide-react";
-
-interface Template {
-  id: string;
-  name: string;
-  description: string;
-}
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { ArrowRight, Bot, ChevronRight } from "lucide-react";
+import {
+  groupTemplatesByCategory,
+  getAccessBadgeProps,
+  type TemplateItem,
+} from "@/lib/template-grouping";
+import { TEMPLATE_ICON_COMPONENTS } from "@/lib/template-icons";
 
 interface TemplateSelectorProps {
-  templates: Template[];
+  templates: TemplateItem[];
   onSelect: (templateId: string) => void;
 }
 
-const TEMPLATE_ICONS: Record<string, React.ReactNode> = {
-  "knowledge-base": <FileText className="size-8 mb-2 text-muted-foreground" />,
-  custom: <Bot className="size-8 mb-2 text-muted-foreground" />,
-};
+function TemplateCard({
+  template,
+  onSelect,
+}: {
+  template: TemplateItem;
+  onSelect: (id: string) => void;
+}) {
+  const IconComponent = template.iconName ? TEMPLATE_ICON_COMPONENTS[template.iconName] : Bot;
+  const badge = getAccessBadgeProps(template);
+
+  return (
+    <Card
+      role="button"
+      tabIndex={0}
+      className="cursor-pointer transition-colors hover:border-primary"
+      onClick={() => onSelect(template.id)}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === " ") e.preventDefault();
+      }}
+      onKeyUp={(e) => {
+        if (e.target !== e.currentTarget) return;
+        if (e.key === "Enter" || e.key === " ") onSelect(template.id);
+      }}
+    >
+      <CardContent className="flex flex-col items-center text-center p-4">
+        <IconComponent className="size-6 mb-1 text-muted-foreground" />
+        <h3 className="font-semibold">{template.name}</h3>
+        <p className="text-sm text-muted-foreground mt-1">{template.description}</p>
+        {badge && <span className="mt-2 text-[11px] text-muted-foreground">{badge.label}</span>}
+      </CardContent>
+    </Card>
+  );
+}
+
+function UnavailableTriggerText({ templates }: { templates: TemplateItem[] }) {
+  const hasNoConnection = templates.some((t) => t.unavailableReason === "no-connection");
+  if (hasNoConnection) {
+    return (
+      <>
+        {templates.length} templates available with Odoo ·{" "}
+        <Link href="/settings?tab=integrations" className="underline hover:text-foreground">
+          Set up connection →
+        </Link>
+      </>
+    );
+  }
+  return <>{templates.length} more with additional Odoo modules</>;
+}
 
 export function TemplateSelector({ templates, onSelect }: TemplateSelectorProps) {
+  const { categories, custom } = groupTemplatesByCategory(templates);
+
   return (
-    <div className="grid grid-cols-2 gap-4">
-      {templates.map((template) => (
-        <Card
-          key={template.id}
-          className="cursor-pointer hover:border-primary transition-colors"
-          onClick={() => onSelect(template.id)}
-        >
-          <CardContent className="flex flex-col items-center text-center p-6">
-            {TEMPLATE_ICONS[template.id] ?? <Bot className="size-8 mb-2 text-muted-foreground" />}
-            <h3 className="font-semibold">{template.name}</h3>
-            <p className="text-sm text-muted-foreground mt-1">{template.description}</p>
-          </CardContent>
-        </Card>
-      ))}
+    <div className="space-y-8">
+      {categories.map((category) => {
+        const available = category.templates.filter((t) => t.available !== false);
+        const unavailable = category.templates.filter((t) => t.available === false);
+
+        return (
+          <div key={category.id}>
+            <h2 className="text-base font-semibold mb-3">{category.label}</h2>
+            {available.length > 0 && (
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
+                {available.map((template) => (
+                  <TemplateCard key={template.id} template={template} onSelect={onSelect} />
+                ))}
+              </div>
+            )}
+            {unavailable.length > 0 && (
+              <Collapsible>
+                <CollapsibleTrigger className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mt-3 cursor-pointer">
+                  <ChevronRight className="size-4" />
+                  <UnavailableTriggerText templates={unavailable} />
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-3">
+                    {unavailable.map((template) => (
+                      <TemplateCard key={template.id} template={template} onSelect={onSelect} />
+                    ))}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
+          </div>
+        );
+      })}
+
+      {custom && (
+        <div className="border-t pt-6">
+          <button
+            type="button"
+            onClick={() => onSelect(custom.id)}
+            className="flex items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          >
+            Or start from scratch
+            <ArrowRight className="size-4" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

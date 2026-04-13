@@ -175,6 +175,7 @@ describe("pinchy-docs plugin", () => {
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "../etc/passwd" });
     expect(result.content[0].text.toLowerCase()).toContain("invalid");
+    expect(result.isError).toBe(true);
   });
 
   it("docs_read rejects symlinks that escape the docs root", async () => {
@@ -203,6 +204,7 @@ describe("pinchy-docs plugin", () => {
     const result = await tool.execute("call-1", { path: "leak.mdx" });
 
     expect(result.content[0].text.toLowerCase()).toContain("invalid");
+    expect(result.isError).toBe(true);
     expect(result.content[0].text).not.toContain("should not leak");
 
     rmSync(outside, { recursive: true, force: true });
@@ -219,6 +221,23 @@ describe("pinchy-docs plugin", () => {
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "/etc/passwd" });
     expect(result.content[0].text.toLowerCase()).toContain("invalid");
+    expect(result.isError).toBe(true);
+  });
+
+  it("docs_read marks directory-instead-of-file as error", async () => {
+    mkdirSync(join(docsRoot, "subdir"), { recursive: true });
+
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_read"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", { path: "subdir" });
+    expect(result.content[0].text.toLowerCase()).toContain("not a file");
+    expect(result.isError).toBe(true);
   });
 
   it("docs_read returns error for nonexistent file", async () => {
@@ -232,6 +251,7 @@ describe("pinchy-docs plugin", () => {
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", { path: "nonexistent.mdx" });
     expect(result.content[0].text.toLowerCase()).toMatch(/not found|no such/);
+    expect(result.isError).toBe(true);
   });
 
   it("docs_read factory returns null for non-allowed agent", async () => {

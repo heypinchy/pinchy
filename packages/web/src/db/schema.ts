@@ -282,6 +282,48 @@ export const auditLog = pgTable(
   ]
 );
 
+// ── Integration Connections ──────────────────────────────────────────
+
+export const integrationConnections = pgTable("integration_connections", {
+  id: text("id")
+    .primaryKey()
+    .$defaultFn(() => crypto.randomUUID()),
+  type: text("type").notNull(), // 'odoo', future: 'shopify', 'datev'
+  name: text("name").notNull(),
+  description: text("description").notNull().default(""),
+  credentials: text("credentials").notNull(), // AES-256-GCM encrypted JSON
+  data: jsonb("data"), // Type-specific, Zod-validated (schema cache)
+  createdAt: timestamp("created_at").defaultNow(),
+  updatedAt: timestamp("updated_at").defaultNow(),
+});
+
+export const agentConnectionPermissions = pgTable(
+  "agent_connection_permissions",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    connectionId: text("connection_id")
+      .notNull()
+      .references(() => integrationConnections.id, { onDelete: "cascade" }),
+    model: text("model").notNull(),
+    operation: text("operation").notNull(),
+  },
+  (table) => [
+    uniqueIndex("uq_agent_conn_model_op").on(
+      table.agentId,
+      table.connectionId,
+      table.model,
+      table.operation
+    ),
+    index("idx_agent_conn_perms_agent").on(table.agentId),
+    index("idx_agent_conn_perms_conn").on(table.connectionId),
+  ]
+);
+
 // ── Usage Tracking ───────────────────────────────────────────────────
 
 export const usageRecords = pgTable(

@@ -27,14 +27,24 @@ vi.mock("fs", async (importOriginal) => {
 
 vi.mock("@/db", () => ({
   db: {
-    select: vi.fn().mockReturnValue({
-      from: vi.fn().mockResolvedValue([]),
-    }),
+    select: vi.fn().mockImplementation(() => ({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve([]), {
+          innerJoin: vi.fn().mockResolvedValue([]),
+        })
+      ),
+    })),
   },
 }));
 
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("@/lib/encryption", () => ({
+  decrypt: (val: string) => val,
+  encrypt: (val: string) => val,
+  getOrCreateSecret: vi.fn().mockReturnValue(Buffer.alloc(32)),
 }));
 
 vi.mock("@/server/restart-state", () => ({
@@ -45,8 +55,25 @@ vi.mock("@/lib/migrate-onboarding", () => ({
   migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/provider-models", () => {
+  const defaults: Record<string, string> = {
+    anthropic: "anthropic/claude-haiku-4-5-20251001",
+    openai: "openai/gpt-4o-mini",
+    google: "google/gemini-2.5-flash",
+    "ollama-cloud": "ollama-cloud/gemini-3-flash-preview:cloud",
+    "ollama-local": "",
+  };
+  return {
+    getDefaultModel: vi.fn(async (provider: string) => defaults[provider] ?? ""),
+  };
+});
+
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
-import { regenerateOpenClawConfig, updateIdentityLinks } from "@/lib/openclaw-config";
+import {
+  regenerateOpenClawConfig,
+  updateIdentityLinks,
+  sanitizeOpenClawConfig,
+} from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
 
@@ -58,6 +85,15 @@ const mockedMkdirSync = vi.mocked(mkdirSync);
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
 
+/** Helper: create a mock `from()` that returns a thenable with `.innerJoin()` */
+function mockFrom(data: unknown[] = []) {
+  return vi.fn().mockImplementation(() =>
+    Object.assign(Promise.resolve(data), {
+      innerJoin: vi.fn().mockResolvedValue([]),
+    })
+  );
+}
+
 describe("regenerateOpenClawConfig", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -66,7 +102,7 @@ describe("regenerateOpenClawConfig", () => {
       throw new Error("ENOENT: no such file or directory");
     });
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([]),
+      from: mockFrom(),
     } as never);
     mockedGetSetting.mockResolvedValue(null);
   });
@@ -90,7 +126,7 @@ describe("regenerateOpenClawConfig", () => {
       { id: "a2", name: "Jeeves", model: "openai/gpt-4o", createdAt: new Date() },
     ];
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue(agentsData),
+      from: mockFrom(agentsData),
     } as never);
     mockedGetSetting.mockResolvedValue(null);
 
@@ -120,7 +156,7 @@ describe("regenerateOpenClawConfig", () => {
       },
     ];
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue(agentsData),
+      from: mockFrom(agentsData),
     } as never);
 
     mockedGetSetting.mockResolvedValue(null);
@@ -213,7 +249,7 @@ describe("regenerateOpenClawConfig", () => {
 
   it("should handle empty agents list", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([]),
+      from: mockFrom(),
     } as never);
 
     await regenerateOpenClawConfig();
@@ -238,7 +274,7 @@ describe("regenerateOpenClawConfig", () => {
 
   it("should deny all groups for agents with only safe tools", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "kb-agent-id",
           name: "HR Knowledge Base",
@@ -266,7 +302,7 @@ describe("regenerateOpenClawConfig", () => {
 
   it("should deny all groups for agents with empty allowedTools", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "custom-agent-id",
           name: "Dev Assistant",
@@ -291,35 +327,9 @@ describe("regenerateOpenClawConfig", () => {
     expect(customAgent.tools.deny).toContain("group:web");
   });
 
-  it("should not deny group:runtime when shell is allowed", async () => {
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
-        {
-          id: "power-agent-id",
-          name: "Power Agent",
-          model: "anthropic/claude-opus-4-6",
-          templateId: "custom",
-          pluginConfig: null,
-          allowedTools: ["shell", "pinchy_ls"],
-          createdAt: new Date(),
-        },
-      ]),
-    } as never);
-
-    await regenerateOpenClawConfig();
-
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
-    const config = JSON.parse(written);
-    const agent = config.agents.list.find((a: { id: string }) => a.id === "power-agent-id");
-
-    expect(agent.tools.deny).not.toContain("group:runtime");
-    expect(agent.tools.deny).toContain("group:fs");
-    expect(agent.tools.deny).toContain("group:web");
-  });
-
   it("should include pinchy-files plugin config for agents with safe tools", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "kb-agent-id",
           name: "HR Knowledge Base",
@@ -351,7 +361,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
 
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "kb-agent-id",
           name: "HR Knowledge Base",
@@ -417,7 +427,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
 
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "smithers-1",
           name: "Smithers",
@@ -477,7 +487,7 @@ describe("regenerateOpenClawConfig", () => {
 
     try {
       mockedDb.select.mockReturnValue({
-        from: vi.fn().mockResolvedValue([
+        from: mockFrom([
           {
             id: "smithers-1",
             name: "Smithers",
@@ -514,7 +524,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
 
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "smithers-1",
           name: "Smithers",
@@ -554,7 +564,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
 
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "admin-smithers",
           name: "Smithers",
@@ -674,7 +684,7 @@ describe("regenerateOpenClawConfig", () => {
 
   it("should omit pinchy-context and pinchy-files when no agents use them", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "custom-agent-id",
           name: "Dev Assistant",
@@ -704,9 +714,50 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.allow).toContain("pinchy-audit");
   });
 
+  it("strips stale pinchy-* plugins from allow list when they have no entries", async () => {
+    // Simulate a config that was written before some plugins were removed —
+    // e.g. pinchy-files and pinchy-odoo are in allow but no agent uses them.
+    // OpenClaw rejects plugins in allow without valid config, so we must clean up.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", auth: { mode: "token", token: "tok" } },
+        plugins: {
+          allow: ["pinchy-files", "pinchy-context", "pinchy-audit", "pinchy-odoo", "telegram"],
+          entries: {},
+        },
+      })
+    );
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Dev",
+          model: "anthropic/claude-opus-4-6",
+          templateId: "custom",
+          pluginConfig: null,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    // pinchy-files and pinchy-odoo have no entries → must be removed from allow
+    expect(config.plugins.allow).not.toContain("pinchy-files");
+    expect(config.plugins.allow).not.toContain("pinchy-odoo");
+    // Non-pinchy plugins (OpenClaw-managed) must be preserved
+    expect(config.plugins.allow).toContain("telegram");
+    // pinchy-audit is always enabled
+    expect(config.plugins.allow).toContain("pinchy-audit");
+  });
+
   it("enables pinchy-docs plugin with personal agent ids when personal agents exist", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "smithers-1",
           name: "Smithers",
@@ -743,6 +794,159 @@ describe("regenerateOpenClawConfig", () => {
   });
 });
 
+describe("sanitizeOpenClawConfig", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+  });
+
+  it("removes stale pinchy-* plugins from allow that have no entries", () => {
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local" },
+        plugins: {
+          allow: ["pinchy-files", "pinchy-audit", "pinchy-odoo", "telegram"],
+          entries: {
+            "pinchy-audit": { enabled: true, config: {} },
+          },
+        },
+      })
+    );
+
+    const changed = sanitizeOpenClawConfig();
+
+    expect(changed).toBe(true);
+    const written = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(written.plugins.allow).toContain("pinchy-audit");
+    expect(written.plugins.allow).toContain("telegram");
+    expect(written.plugins.allow).not.toContain("pinchy-files");
+    expect(written.plugins.allow).not.toContain("pinchy-odoo");
+  });
+
+  it("returns false and does not write when allow list is already clean", () => {
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local" },
+        plugins: {
+          allow: ["pinchy-audit", "telegram"],
+          entries: {
+            "pinchy-audit": { enabled: true, config: {} },
+          },
+        },
+      })
+    );
+
+    const changed = sanitizeOpenClawConfig();
+
+    expect(changed).toBe(false);
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it("returns false when config file does not exist", () => {
+    mockedExistsSync.mockReturnValue(false);
+
+    const changed = sanitizeOpenClawConfig();
+
+    expect(changed).toBe(false);
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe("pinchy-odoo config size", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("should include only modelNames, not full schema with fields", async () => {
+    const agentsData = [
+      {
+        id: "odoo-agent",
+        name: "Odoo Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "odoo-agent",
+          connectionId: "conn-1",
+          model: "sale.order",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-1",
+          type: "odoo",
+          name: "Test Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://odoo.test",
+            db: "test",
+            uid: 2,
+            apiKey: "key",
+          }),
+          data: {
+            models: [
+              {
+                model: "sale.order",
+                name: "Sales Orders",
+                fields: [
+                  { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+                ],
+                access: { read: true, create: false, write: false, delete: false },
+              },
+              {
+                model: "res.partner",
+                name: "Contacts",
+                fields: [
+                  { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+                ],
+                access: { read: true, create: true, write: true, delete: false },
+              },
+            ],
+            lastSyncAt: "2026-04-01T00:00:00Z",
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const odooConfig = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents?.["odoo-agent"];
+    expect(odooConfig).toBeDefined();
+
+    // Should have modelNames (lightweight)
+    expect(odooConfig.modelNames).toEqual({ "sale.order": "Sales Orders" });
+
+    // Should NOT have full schema with fields
+    expect(odooConfig.schema).toBeUndefined();
+
+    // Config should be small (no field definitions bloating it)
+    const configSize = written.length;
+    expect(configSize).toBeLessThan(5000); // Without schema: ~2-3KB. With schema it would be 100KB+
+  });
+});
+
 describe("restart-state integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -751,7 +955,7 @@ describe("restart-state integration", () => {
       throw new Error("ENOENT: no such file or directory");
     });
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([]),
+      from: mockFrom(),
     } as never);
     mockedGetSetting.mockResolvedValue(null);
   });
@@ -776,7 +980,7 @@ describe("restart-state integration", () => {
     mockedReadFileSync.mockReturnValue(firstWrite);
     mockedExistsSync.mockReturnValue(true);
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([]),
+      from: mockFrom(),
     } as never);
     mockedGetSetting.mockResolvedValue(null);
 
@@ -789,7 +993,7 @@ describe("restart-state integration", () => {
 
   it("should include Telegram channel config with accounts format when bot token is configured", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "agent-1",
           name: "Smithers",
@@ -829,12 +1033,17 @@ describe("restart-state integration", () => {
       from: vi.fn().mockImplementation(() => {
         callCount++;
         if (callCount === 1) {
-          return Promise.resolve([
-            { id: "agent-1", name: "Smithers", model: "m", allowedTools: [] },
-            { id: "agent-2", name: "Support", model: "m", allowedTools: [] },
-          ]);
+          return Object.assign(
+            Promise.resolve([
+              { id: "agent-1", name: "Smithers", model: "m", allowedTools: [] },
+              { id: "agent-2", name: "Support", model: "m", allowedTools: [] },
+            ]),
+            { innerJoin: vi.fn().mockResolvedValue([]) }
+          );
         }
-        return Promise.resolve([]);
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: vi.fn().mockResolvedValue([]),
+        });
       }),
     } as never);
 
@@ -868,30 +1077,42 @@ describe("restart-state integration", () => {
         callCount++;
         if (callCount === 1) {
           // agents table: admin's Smithers has the bot, plus user-b's Smithers
-          return Promise.resolve([
-            {
-              id: "admin-smithers",
-              name: "Smithers",
-              model: "m",
-              allowedTools: [],
-              isPersonal: true,
-              ownerId: "user-a",
-            },
-            {
-              id: "user-b-smithers",
-              name: "Smithers",
-              model: "m",
-              allowedTools: [],
-              isPersonal: true,
-              ownerId: "user-b",
-            },
-          ]);
+          return Object.assign(
+            Promise.resolve([
+              {
+                id: "admin-smithers",
+                name: "Smithers",
+                model: "m",
+                allowedTools: [],
+                isPersonal: true,
+                ownerId: "user-a",
+              },
+              {
+                id: "user-b-smithers",
+                name: "Smithers",
+                model: "m",
+                allowedTools: [],
+                isPersonal: true,
+                ownerId: "user-b",
+              },
+            ]),
+            { innerJoin: vi.fn().mockResolvedValue([]) }
+          );
         }
-        // channel_links table: both users linked
-        return Promise.resolve([
-          { userId: "user-a", channel: "telegram", channelUserId: "111222333" },
-          { userId: "user-b", channel: "telegram", channelUserId: "444555666" },
-        ]);
+        // callCount 2 = agentConnectionPermissions (chained with innerJoin)
+        // callCount 3 = channel_links table: both users linked
+        if (callCount === 3) {
+          return Object.assign(
+            Promise.resolve([
+              { userId: "user-a", channel: "telegram", channelUserId: "111222333" },
+              { userId: "user-b", channel: "telegram", channelUserId: "444555666" },
+            ]),
+            { innerJoin: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: vi.fn().mockResolvedValue([]),
+        });
       }),
     } as never);
 
@@ -940,7 +1161,7 @@ describe("restart-state integration", () => {
 
   it("should not include Telegram config when no bot token is configured", async () => {
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "agent-1",
           name: "Smithers",
@@ -969,14 +1190,22 @@ describe("restart-state integration", () => {
         callCount++;
         if (callCount === 1) {
           // First call: agents table
-          return Promise.resolve([
-            { id: "agent-1", name: "Smithers", model: "m", allowedTools: [] },
-          ]);
+          return Object.assign(
+            Promise.resolve([{ id: "agent-1", name: "Smithers", model: "m", allowedTools: [] }]),
+            { innerJoin: vi.fn().mockResolvedValue([]) }
+          );
         }
-        // Second call: channel_links table
-        return Promise.resolve([
-          { userId: "user-1", channel: "telegram", channelUserId: "999888" },
-        ]);
+        // callCount 2 = agentConnectionPermissions (chained with innerJoin)
+        // callCount 3 = channel_links table
+        if (callCount === 3) {
+          return Object.assign(
+            Promise.resolve([{ userId: "user-1", channel: "telegram", channelUserId: "999888" }]),
+            { innerJoin: vi.fn().mockResolvedValue([]) }
+          );
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: vi.fn().mockResolvedValue([]),
+        });
       }),
     } as never);
 

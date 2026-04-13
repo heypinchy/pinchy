@@ -114,16 +114,16 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.2.1 to v0.3.0
+## Upgrading from v0.2.1 to %%PINCHY_VERSION%%
 
 Standard upgrade — no breaking changes, no new required environment variables.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.3.0/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
-### What's new in v0.3.0
+### What's new in %%PINCHY_VERSION%%
 
 - **Usage & Cost Stats dashboard** — admins can view token usage and estimated costs per agent and per user at `/usage`.
 - **Smart PDF reading** — Knowledge Base agents can now extract text from PDFs automatically.

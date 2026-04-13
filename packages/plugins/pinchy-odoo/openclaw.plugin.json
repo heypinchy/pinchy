@@ -1,0 +1,23 @@
+{
+  "id": "pinchy-odoo",
+  "name": "Pinchy Odoo",
+  "description": "Odoo ERP integration with model-level permissions.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "agents": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "connection": { "type": "object" },
+            "permissions": { "type": "object" },
+            "schema": { "type": "object" }
+          },
+          "required": ["connection", "permissions"]
+        }
+      }
+    },
+    "required": ["agents"]
+  }
+}
