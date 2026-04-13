@@ -9,6 +9,7 @@
     "test": "pnpm --filter @pinchy/web test",
     "test:release": "node --test scripts/lib/release-logic.test.mjs",
     "release": "node scripts/release.mjs",
+    "docs:paths": "node scripts/generate-docs-paths.mjs",
     "prepare": "husky"
   },
   "keywords": [],

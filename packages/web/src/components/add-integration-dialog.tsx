@@ -38,6 +38,7 @@ import {
 } from "@/lib/integrations/odoo-url";
 import { Loader2, CheckCircle2, AlertTriangle, Copy } from "lucide-react";
 import { OdooIcon, GoogleIcon } from "./integration-icons";
+import { docsUrl } from "./docs-link";
 
 interface IntegrationType {
   id: string;
@@ -180,7 +181,7 @@ function GoogleConnectStep({
             <p className="text-sm text-amber-700 dark:text-amber-300">
               Google OAuth requires a secure HTTPS connection. See{" "}
               <a
-                href="https://docs.heypinchy.com/guides/domain-lock/"
+                href={docsUrl("guides/domain-lock")}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="underline font-medium"
@@ -217,24 +218,12 @@ function GoogleConnectStep({
   // Not configured — show inline setup form
   if (oauthStatus === "not-configured") {
     return (
-      <div className="space-y-4">
+      <div className="space-y-5">
         <StepIndicator current={1} total={2} label="Set up Google OAuth" />
 
-        <p className="text-sm text-muted-foreground">
-          Create OAuth credentials in the{" "}
-          <a
-            href="https://console.cloud.google.com/apis/credentials"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="underline"
-          >
-            Google Cloud Console
-          </a>{" "}
-          and enter them below.
-        </p>
-
+        {/* Section 1: Copy redirect URI TO Google */}
         <div className="space-y-2">
-          <p className="text-sm font-medium">Authorized redirect URI</p>
+          <p className="text-sm font-medium">1. Copy this redirect URI to Google Cloud Console</p>
           <div className="flex items-center gap-2">
             <code className="flex-1 rounded bg-muted px-3 py-2 text-xs break-all">
               {redirectUrl}
@@ -249,27 +238,54 @@ function GoogleConnectStep({
               <Copy className="h-4 w-4" />
             </Button>
           </div>
+          <p className="text-xs text-muted-foreground">
+            Open{" "}
+            <a
+              href="https://console.cloud.google.com/apis/credentials"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline"
+            >
+              Google Cloud Console → Credentials
+            </a>
+            , create a <span className="font-medium">Web application</span> OAuth client, and add
+            this URI under <span className="font-medium">Authorized redirect URIs</span>.{" "}
+            <a
+              href={docsUrl("guides/connect-email")}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline"
+            >
+              Full guide
+            </a>
+          </p>
+          <p className="text-xs text-muted-foreground italic">
+            Keep this page open — you&apos;ll need to come back.
+          </p>
         </div>
 
-        <div className="space-y-2">
-          <Label htmlFor="google-client-id">Client ID</Label>
-          <Input
-            id="google-client-id"
-            value={clientId}
-            onChange={(e) => setClientId(e.target.value)}
-            placeholder="xxxx.apps.googleusercontent.com"
-          />
-        </div>
-
-        <div className="space-y-2">
-          <Label htmlFor="google-client-secret">Client Secret</Label>
-          <Input
-            id="google-client-secret"
-            type="password"
-            value={clientSecret}
-            onChange={(e) => setClientSecret(e.target.value)}
-            placeholder="GOCSPX-..."
-          />
+        {/* Section 2: Paste credentials FROM Google */}
+        <div className="space-y-3">
+          <p className="text-sm font-medium">2. Paste your credentials from Google</p>
+          <div className="space-y-2">
+            <Label htmlFor="google-client-id">Client ID</Label>
+            <Input
+              id="google-client-id"
+              value={clientId}
+              onChange={(e) => setClientId(e.target.value)}
+              placeholder="xxxx.apps.googleusercontent.com"
+            />
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="google-client-secret">Client Secret</Label>
+            <Input
+              id="google-client-secret"
+              type="password"
+              value={clientSecret}
+              onChange={(e) => setClientSecret(e.target.value)}
+              placeholder="GOCSPX-..."
+            />
+          </div>
         </div>
 
         {saveError && <p className="text-sm text-destructive">{saveError}</p>}
