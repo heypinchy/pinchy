@@ -183,12 +183,81 @@ describe("useWsRuntime", () => {
 
     expect(result.current.runtime.isRunning).toBe(false);
 
-    // Should show the error as an assistant message
+    // Should show the error as an assistant message with structured error in metadata
     const messages = result.current.runtime.messages;
     const errorMsg = messages.find(
-      (m: any) => m.role === "assistant" && m.content[0]?.text?.includes("Something went wrong")
+      (m: any) =>
+        m.role === "assistant" && m.metadata?.custom?.error?.message === "Something went wrong"
     );
     expect(errorMsg).toBeDefined();
+  });
+
+  it("should store structured provider error data from error message", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "error",
+          agentName: "Smithers",
+          providerError: "Your credit balance is too low.",
+          hint: "Please contact your administrator.",
+          messageId: "msg-1",
+        }),
+      });
+    });
+
+    const messages = result.current.runtime.messages;
+    const errorMsg = messages.find((m: any) => m.role === "assistant" && m.metadata?.custom?.error);
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.metadata.custom.error).toEqual({
+      agentName: "Smithers",
+      providerError: "Your credit balance is too low.",
+      hint: "Please contact your administrator.",
+    });
+  });
+
+  it("should store generic error message when no providerError is present", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "error",
+          message: "Access denied",
+          messageId: "msg-1",
+        }),
+      });
+    });
+
+    const messages = result.current.runtime.messages;
+    const errorMsg = messages.find((m: any) => m.role === "assistant" && m.metadata?.custom?.error);
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.metadata.custom.error).toEqual({
+      message: "Access denied",
+    });
   });
 
   it("should stay running when only done arrives (turn end), and stop on complete", () => {
