@@ -36,14 +36,14 @@ describe("GET /api/integrations/oauth/start", () => {
     expect(body.error).toMatch(/unauthorized/i);
   });
 
-  it("returns 401 if user is not admin", async () => {
+  it("returns 403 for non-admin user", async () => {
     mockGetSession.mockResolvedValue({
-      user: { id: "user-1", role: "user" },
+      user: { id: "user-1", role: "member" },
     });
 
     const response = await GET(makeRequest());
 
-    expect(response.status).toBe(401);
+    expect(response.status).toBe(403);
     const body = await response.json();
     expect(body.error).toMatch(/admin/i);
   });

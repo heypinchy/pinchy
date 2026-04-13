@@ -13,8 +13,11 @@ const GOOGLE_OAUTH_SCOPES = [
 // audit-exempt: read-only redirect, no state change — the callback endpoint logs the actual connection creation
 export async function GET(request: Request) {
   const session = await getSession({ headers: await headers() });
-  if (!session?.user || session.user.role !== "admin") {
-    return NextResponse.json({ error: "Unauthorized — admin access required" }, { status: 401 });
+  if (!session?.user) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+  if (session.user.role !== "admin") {
+    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
   }
 
   const settings = await getOAuthSettings("google");
