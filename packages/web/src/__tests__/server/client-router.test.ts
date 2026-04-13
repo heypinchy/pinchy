@@ -1358,16 +1358,19 @@ describe("ClientRouter", () => {
     expect(sent[0].messages).toHaveLength(2);
   });
 
-  it("should send error to client when stream yields an error chunk after all retries", async () => {
+  it("should forward provider error text from error chunk with agent name", async () => {
     const clientWs = createMockClientWs();
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-    mockChat.mockImplementation(() => {
-      return (async function* () {
-        yield { type: "error" as const, text: "INVALID_REQUEST: model overloaded" };
-      })();
-    });
+    async function* fakeStream() {
+      yield {
+        type: "error" as const,
+        text: "Your credit balance is too low to access the API",
+      };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
 
     await router.handleMessage(clientWs as any, {
       type: "message",
@@ -1378,19 +1381,98 @@ describe("ClientRouter", () => {
     const messages = clientWs.sent.map((s) => JSON.parse(s));
     const errorMsg = messages.find((m: any) => m.type === "error");
     expect(errorMsg).toBeDefined();
-    expect(errorMsg.message).toContain("Something went wrong");
-    expect(errorMsg.message).not.toContain("INVALID_REQUEST");
-    expect(errorMsg.message).not.toContain("overloaded");
+    expect(errorMsg.agentName).toBe("Smithers");
+    expect(errorMsg.providerError).toContain("Your credit balance is too low");
+    expect(errorMsg.hint).toBe("Please contact your administrator.");
     expect(errorMsg.messageId).toBeTruthy();
 
-    // Should log the actual error server-side
     expect(consoleSpy).toHaveBeenCalledWith(
       expect.stringContaining("OpenClaw error chunk"),
-      expect.stringContaining("INVALID_REQUEST")
+      expect.stringContaining("credit balance")
     );
 
     consoleSpy.mockRestore();
     logSpy.mockRestore();
+  });
+
+  it("should return admin hint for provider errors when user is admin", async () => {
+    const adminRouter = new ClientRouter(
+      mockOpenClawClient as any,
+      "admin-user",
+      "admin",
+      sessionCache
+    );
+    const clientWs = createMockClientWs();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    async function* fakeStream() {
+      yield { type: "error" as const, text: "Invalid API key provided" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await adminRouter.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const errorMsg = messages.find((m: any) => m.type === "error");
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.hint).toBe("Go to Settings > Providers to check your API configuration.");
+
+    consoleSpy.mockRestore();
+  });
+
+  it("should return try-again hint for transient errors", async () => {
+    const clientWs = createMockClientWs();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    async function* fakeStream() {
+      yield { type: "error" as const, text: "Rate limit exceeded, please try again later" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const errorMsg = messages.find((m: any) => m.type === "error");
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.hint).toBe("Try again in a moment.");
+
+    consoleSpy.mockRestore();
+  });
+
+  it("should return null hint for unrecognized errors", async () => {
+    const clientWs = createMockClientWs();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    async function* fakeStream() {
+      yield { type: "error" as const, text: "Something completely unexpected happened" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const errorMsg = messages.find((m: any) => m.type === "error");
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.agentName).toBe("Smithers");
+    expect(errorMsg.providerError).toContain("Something completely unexpected happened");
+    expect(errorMsg.hint).toBeNull();
+
+    consoleSpy.mockRestore();
   });
 
   it("should return empty history when history fetch fails and no greeting", async () => {
@@ -1752,7 +1834,8 @@ describe("ClientRouter", () => {
       const messages = clientWs.sent.map((s) => JSON.parse(s));
       const errorMsg = messages.find((m: any) => m.type === "error");
       expect(errorMsg).toBeDefined();
-      expect(errorMsg.message).toContain("Something went wrong");
+      expect(errorMsg.agentName).toBe("Smithers");
+      expect(errorMsg.providerError).toBe("JSON parse error");
       // No retry — single attempt only
       expect(mockChat).toHaveBeenCalledTimes(1);
 

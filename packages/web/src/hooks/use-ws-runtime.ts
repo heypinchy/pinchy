@@ -12,6 +12,7 @@ import {
   type AppendMessage,
   type AssistantRuntime,
 } from "@assistant-ui/react";
+import type { ChatError } from "@/components/assistant-ui/chat-error-message";
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 
@@ -21,6 +22,7 @@ interface WsMessage {
   content: string;
   images?: string[];
   timestamp?: string;
+  error?: ChatError;
 }
 
 const DELAY_HINT_MS = 15_000;
@@ -36,11 +38,15 @@ function convertMessage(msg: WsMessage): ThreadMessageLike {
     }
   }
 
+  const custom: Record<string, unknown> = {};
+  if (msg.timestamp) custom.timestamp = msg.timestamp;
+  if (msg.error) custom.error = msg.error;
+
   return {
     role: msg.role,
     content: parts,
     id: msg.id,
-    metadata: msg.timestamp ? { custom: { timestamp: msg.timestamp } } : undefined,
+    metadata: Object.keys(custom).length > 0 ? { custom } : undefined,
   };
 }
 
@@ -219,12 +225,22 @@ export function useWsRuntime(agentId: string): {
               delayTimerRef.current = null;
             }
             setIsDelayed(false);
+
+            const error: ChatError = data.providerError
+              ? {
+                  agentName: data.agentName,
+                  providerError: data.providerError,
+                  hint: data.hint,
+                }
+              : { message: data.message || "An unknown error occurred." };
+
             setMessages((prev) => [
               ...prev,
               {
                 id: uuid(),
                 role: "assistant",
-                content: data.message || "An unknown error occurred.",
+                content: "",
+                error,
               },
             ]);
             setIsRunning(false);
