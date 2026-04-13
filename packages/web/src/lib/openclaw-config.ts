@@ -13,6 +13,7 @@ import {
 import { getSetting } from "@/lib/settings";
 import { decrypt } from "@/lib/encryption";
 import { computeDeniedGroups } from "@/lib/tool-registry";
+import type { AgentPluginConfig } from "@/db/schema";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
@@ -155,10 +156,13 @@ export async function regenerateOpenClawConfig() {
     // Collect plugin config for agents that have file tools (pinchy_ls, pinchy_read)
     const hasFileTools = allowedTools.some((t: string) => t === "pinchy_ls" || t === "pinchy_read");
     if (hasFileTools && agent.pluginConfig) {
-      if (!pluginConfigs["pinchy-files"]) {
-        pluginConfigs["pinchy-files"] = {};
+      const filesConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-files"];
+      if (filesConfig) {
+        if (!pluginConfigs["pinchy-files"]) {
+          pluginConfigs["pinchy-files"] = {};
+        }
+        pluginConfigs["pinchy-files"][agent.id] = filesConfig as Record<string, unknown>;
       }
-      pluginConfigs["pinchy-files"][agent.id] = agent.pluginConfig as Record<string, unknown>;
     }
 
     // Collect plugin config for agents that have context tools (pinchy_save_*)

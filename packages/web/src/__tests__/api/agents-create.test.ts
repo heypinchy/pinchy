@@ -38,7 +38,7 @@ vi.mock("@/db", () => {
           name: "HR Knowledge Base",
           model: "anthropic/claude-haiku-4-5-20251001",
           templateId: "knowledge-base",
-          pluginConfig: { allowed_paths: ["/data/hr-docs/"] },
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
           ownerId: "1",
           tagline: "Answer questions from your docs",
         },
@@ -191,7 +191,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -215,7 +215,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -236,7 +236,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -328,7 +328,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -379,7 +379,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -400,7 +400,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -440,7 +440,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -460,7 +460,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -481,7 +481,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -502,7 +502,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -543,7 +543,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -623,7 +623,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });

@@ -25,6 +25,7 @@ import { AgentSettingsPermissions } from "@/components/agent-settings-permission
 import { AgentSettingsAccess } from "@/components/agent-settings-access";
 import { AgentTelegramSettings } from "@/components/agent-telegram-settings";
 import { useRestart } from "@/components/restart-provider";
+import type { AgentPluginConfig } from "@/db/schema";
 
 interface Agent {
   id: string;
@@ -32,7 +33,7 @@ interface Agent {
   model: string;
   isPersonal: boolean;
   allowedTools: string[];
-  pluginConfig: { allowed_paths?: string[] } | null;
+  pluginConfig: AgentPluginConfig | null;
   tagline: string | null;
   avatarSeed: string | null;
   personalityPresetId: string | null;
@@ -247,7 +248,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
       }
       if (dirtyTabs.has("permissions") && permissionsDraft.current) {
         agentPatch.allowedTools = permissionsDraft.current.allowedTools;
-        agentPatch.pluginConfig = { allowed_paths: permissionsDraft.current.allowedPaths };
+        agentPatch.pluginConfig = {
+          ...agent.pluginConfig,
+          "pinchy-files": { allowed_paths: permissionsDraft.current.allowedPaths },
+        };
 
         // Save or clear integration permissions
         if (permissionsDraft.current.integrations) {

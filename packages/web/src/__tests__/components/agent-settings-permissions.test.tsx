@@ -24,7 +24,7 @@ describe("AgentSettingsPermissions", () => {
     model: "anthropic/claude-sonnet-4-20250514",
     isPersonal: false,
     allowedTools: [] as string[],
-    pluginConfig: null as { allowed_paths?: string[] } | null,
+    pluginConfig: null as import("@/db/schema").AgentPluginConfig | null,
   };
 
   const defaultDirectories = [
@@ -111,7 +111,7 @@ describe("AgentSettingsPermissions", () => {
     const agentWithTools = {
       ...defaultAgent,
       allowedTools: ["pinchy_ls"],
-      pluginConfig: { allowed_paths: ["/data/docs"] },
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs"] } },
     };
 
     render(
@@ -145,7 +145,7 @@ describe("AgentSettingsPermissions", () => {
           agent={{
             ...defaultAgent,
             allowedTools: ["pinchy_read"],
-            pluginConfig: { allowed_paths: ["/data/docs"] },
+            pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs"] } },
             model: "ollama/llama3.1:8b",
           }}
           directories={defaultDirectories}
@@ -161,7 +161,7 @@ describe("AgentSettingsPermissions", () => {
           agent={{
             ...defaultAgent,
             allowedTools: ["pinchy_read"],
-            pluginConfig: { allowed_paths: ["/data/docs"] },
+            pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs"] } },
             model: "anthropic/claude-sonnet-4-6",
           }}
           directories={defaultDirectories}

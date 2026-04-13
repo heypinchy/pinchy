@@ -56,7 +56,9 @@ describe("updateAgent", () => {
   });
 
   it("calls regenerateOpenClawConfig when pluginConfig changes", async () => {
-    await updateAgent("agent-1", { pluginConfig: { foo: "bar" } });
+    await updateAgent("agent-1", {
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/"] } },
+    });
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 

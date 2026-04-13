@@ -70,7 +70,7 @@ export async function POST(request: NextRequest) {
 
   // Templates with pluginId require directory selection
   if (template.pluginId) {
-    const paths = pluginConfig?.allowed_paths;
+    const paths = pluginConfig?.["pinchy-files"]?.allowed_paths;
     if (!Array.isArray(paths) || paths.length === 0) {
       return NextResponse.json(
         { error: "At least one directory must be selected" },

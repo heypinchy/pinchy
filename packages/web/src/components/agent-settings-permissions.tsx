@@ -9,6 +9,7 @@ import { DirectoryPicker } from "@/components/directory-picker";
 import { getToolsByCategory, getOdooToolsForAccessLevel } from "@/lib/tool-registry";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { OdooPermissionSection } from "@/components/odoo-permission-section";
+import type { AgentPluginConfig } from "@/db/schema";
 
 interface PermissionsValues {
   allowedTools: string[];
@@ -24,7 +25,7 @@ interface AgentSettingsPermissionsProps {
     id: string;
     model: string;
     allowedTools: string[];
-    pluginConfig: { allowed_paths?: string[] } | null;
+    pluginConfig: AgentPluginConfig | null;
   };
   directories: Array<{ path: string; name: string }>;
   onChange: (values: PermissionsValues, isDirty: boolean) => void;
@@ -43,7 +44,7 @@ export function AgentSettingsPermissions({
 
   const [allowedKbTools, setAllowedKbTools] = useState<string[]>(initialKbTools);
   const [allowedPaths, setAllowedPaths] = useState<string[]>(
-    agent.pluginConfig?.allowed_paths ?? []
+    agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []
   );
   const [odooIntegration, setOdooIntegration] = useState<{
     connectionId: string;
@@ -52,7 +53,7 @@ export function AgentSettingsPermissions({
   const [odooIsDirty, setOdooIsDirty] = useState(false);
 
   const initialKbToolsRef = useRef(initialKbTools);
-  const initialAllowedPaths = useRef(agent.pluginConfig?.allowed_paths ?? []);
+  const initialAllowedPaths = useRef(agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []);
 
   const hasKbToolChecked = kbTools.some((tool) => allowedKbTools.includes(tool.id));
 

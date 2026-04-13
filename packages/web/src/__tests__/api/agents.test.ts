@@ -131,7 +131,7 @@ describe("updateAgent", () => {
             name: "Smithers",
             model: "anthropic/claude-opus-4-6",
             allowedTools: ["odoo_read", "pinchy_ls"],
-            pluginConfig: { allowed_paths: ["/data/"] },
+            pluginConfig: { "pinchy-files": { allowed_paths: ["/data/"] } },
           },
         ]),
       }),
@@ -140,12 +140,12 @@ describe("updateAgent", () => {
 
     const result = await updateAgent("1", {
       allowedTools: ["odoo_read", "pinchy_ls"],
-      pluginConfig: { allowed_paths: ["/data/"] },
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/"] } },
     });
 
     expect(setMock).toHaveBeenCalledWith({
       allowedTools: ["odoo_read", "pinchy_ls"],
-      pluginConfig: { allowed_paths: ["/data/"] },
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/"] } },
     });
     expect(result.allowedTools).toEqual(["odoo_read", "pinchy_ls"]);
   });
