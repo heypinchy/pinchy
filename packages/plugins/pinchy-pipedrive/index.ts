@@ -31,6 +31,7 @@ interface AgentTool {
   execute: (
     toolCallId: string,
     params: Record<string, unknown>,
+    signal?: AbortSignal,
   ) => Promise<{ content: ContentBlock[]; isError?: boolean }>;
 }
 
@@ -76,7 +77,7 @@ async function apiCall(
   method: string,
   path: string,
   body?: unknown,
-): Promise<{ success: boolean; data: unknown; additional_data?: unknown; error?: string }> {
+): Promise<{ data: unknown; additional_data?: unknown }> {
   const url = `${PIPEDRIVE_BASE_URL}${path}`;
   const response = await fetch(url, {
     method,
@@ -86,11 +87,21 @@ async function apiCall(
     },
     ...(body ? { body: JSON.stringify(body) } : {}),
   });
-  const json = await response.json();
-  if (!json.success) {
-    throw new Error(json.error ?? `API error (HTTP ${response.status})`);
+
+  let json: Record<string, unknown>;
+  try {
+    json = await response.json();
+  } catch {
+    throw new Error(`Pipedrive API error (HTTP ${response.status})`);
   }
-  return json;
+
+  // v1 uses { success: true/false }, v2 uses HTTP status codes
+  if (!response.ok || json.success === false) {
+    throw new Error(
+      (json.error as string) ?? `API error (HTTP ${response.status})`,
+    );
+  }
+  return json as { data: unknown; additional_data?: unknown };
 }
 
 function getAgentConfig(
@@ -494,14 +505,20 @@ const plugin = {
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
+              const permittedEntities = getPermittedEntities(config.permissions, "read");
               const queryParams = new URLSearchParams();
               queryParams.set("term", params.term as string);
 
+              // Pre-filter requested entity types to only permitted ones
               if (params.entity_types) {
-                queryParams.set(
-                  "item_types",
-                  (params.entity_types as string[]).join(","),
-                );
+                const requested = params.entity_types as string[];
+                const allowed = requested.filter((t) => {
+                  const entityName = SEARCH_TYPE_TO_ENTITY[t] ?? t;
+                  return permittedEntities.includes(entityName);
+                });
+                if (allowed.length > 0) {
+                  queryParams.set("item_types", allowed.join(","));
+                }
               }
 
               if (params.limit) {
@@ -511,8 +528,7 @@ const plugin = {
               const path = `/v2/itemSearch?${queryParams.toString()}`;
               const result = await apiCall(config.connection.apiToken, "GET", path);
 
-              // Filter results to only include entity types the agent has read permission for
-              const permittedEntities = getPermittedEntities(config.permissions, "read");
+              // Post-filter results as defense-in-depth
               const resultData = result.data as { items?: Array<{ type: string }> };
               const items = resultData?.items ?? [];
               const filteredItems = items.filter((item) => {
