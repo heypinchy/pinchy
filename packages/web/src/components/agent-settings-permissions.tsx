@@ -41,8 +41,8 @@ export function AgentSettingsPermissions({
   // KB tools = non-integration safe tools only
   const kbTools = getToolsByCategory("safe").filter((t) => !t.integration);
 
-  // Web tools = powerful tools with pinchy_web_ prefix
-  const webTools = getToolsByCategory("powerful").filter((t) => t.id.startsWith("pinchy_web_"));
+  // Web tools = powerful tools with web-search integration
+  const webTools = getToolsByCategory("powerful").filter((t) => t.integration === "web-search");
 
   // Filter initial allowedTools to only KB + web tools (exclude odoo_*)
   const initialKbTools = agent.allowedTools.filter((id) => !id.startsWith("odoo_"));

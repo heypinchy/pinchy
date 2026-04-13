@@ -109,9 +109,17 @@ interface AddIntegrationDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSuccess: () => void;
+  existingTypes?: string[];
 }
 
-export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddIntegrationDialogProps) {
+export function AddIntegrationDialog({
+  open,
+  onOpenChange,
+  onSuccess,
+  existingTypes = [],
+}: AddIntegrationDialogProps) {
+  // Types that only allow one connection (singletons)
+  const singletonTypes = new Set(["web-search"]);
   const [step, setStep] = useState<WizardStep>("type");
   const [selectedType, setSelectedType] = useState<string | null>(null);
 
@@ -437,19 +445,24 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
             <div className="grid gap-3 pt-2">
               {INTEGRATION_TYPES.map((type) => {
                 const Icon = type.icon;
+                const alreadyExists =
+                  singletonTypes.has(type.id) && existingTypes.includes(type.id);
                 return (
                   <button
                     key={type.id}
+                    disabled={alreadyExists}
                     onClick={() => {
                       setSelectedType(type.id);
                       setStep("connect");
                     }}
-                    className="flex items-center gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-accent"
+                    className="flex items-center gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                   >
                     <Icon className="h-8 w-16 shrink-0" />
                     <div className="flex flex-col gap-1">
                       <span className="font-medium">{type.name}</span>
-                      <span className="text-sm text-muted-foreground">{type.description}</span>
+                      <span className="text-sm text-muted-foreground">
+                        {alreadyExists ? "Already configured" : type.description}
+                      </span>
                     </div>
                   </button>
                 );
@@ -479,7 +492,9 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                   render={({ field }) => (
                     <FormItem>
                       <FormLabel>API Key</FormLabel>
-                      <PasswordInput placeholder="BSA..." {...field} />
+                      <FormControl>
+                        <PasswordInput placeholder="BSA..." {...field} />
+                      </FormControl>
                       <FormMessage />
                     </FormItem>
                   )}

@@ -269,6 +269,34 @@ describe("POST /api/integrations", () => {
     });
   });
 
+  it("should return 409 when creating a duplicate web-search connection", async () => {
+    // Mock: existing web-search connection found
+    mockSelectFrom.mockImplementationOnce(() => {
+      const webConn = { ...mockConnection, id: "ws-existing", type: "web-search" };
+      const result = Promise.resolve([webConn]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([webConn]);
+      return result;
+    });
+
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "web-search",
+        name: "Brave Search",
+        credentials: { apiKey: "BSA-test-key" },
+      }),
+    });
+    const response = await POST(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.error).toContain("already exists");
+  });
+
   it("should call appendAuditLog on create", async () => {
     const { POST } = await import("@/app/api/integrations/route");
 
@@ -463,6 +491,65 @@ describe("PATCH /api/integrations/[connectionId]", () => {
         body: JSON.stringify({ credentials: { url: "bad" } }),
       }),
       { params: Promise.resolve({ connectionId: "conn-1" }) }
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it("should accept web-search credentials for web-search connections", async () => {
+    const webSearchConnection = {
+      ...mockConnection,
+      id: "ws-1",
+      type: "web-search",
+      name: "Brave Search",
+    };
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([webSearchConnection]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([webSearchConnection]);
+      return result;
+    });
+
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await PATCH(
+      makeRequest("/api/integrations/ws-1", {
+        method: "PATCH",
+        body: JSON.stringify({ credentials: { apiKey: "new-brave-key" } }),
+      }),
+      { params: Promise.resolve({ connectionId: "ws-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockEncrypt).toHaveBeenCalledWith(JSON.stringify({ apiKey: "new-brave-key" }));
+  });
+
+  it("should reject odoo credentials for web-search connections", async () => {
+    const webSearchConnection = {
+      ...mockConnection,
+      id: "ws-1",
+      type: "web-search",
+      name: "Brave Search",
+    };
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([webSearchConnection]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([webSearchConnection]);
+      return result;
+    });
+
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await PATCH(
+      makeRequest("/api/integrations/ws-1", {
+        method: "PATCH",
+        body: JSON.stringify({
+          credentials: { url: "https://odoo.example.com", db: "prod", login: "admin", apiKey: "x" },
+        }),
+      }),
+      { params: Promise.resolve({ connectionId: "ws-1" }) }
     );
 
     expect(response.status).toBe(400);
@@ -964,12 +1051,24 @@ describe("POST /api/integrations/test-credentials (web-search)", () => {
 });
 
 describe("POST /api/integrations (web-search)", () => {
+  // Helper: mock the duplicate-check select to return empty (no existing web-search)
+  function mockNoDuplicateWebSearch() {
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([]);
+      return result;
+    });
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
   });
 
   it("should create a web-search integration", async () => {
+    mockNoDuplicateWebSearch();
     const { POST } = await import("@/app/api/integrations/route");
 
     const request = makeRequest("/api/integrations", {
@@ -1001,6 +1100,7 @@ describe("POST /api/integrations (web-search)", () => {
   });
 
   it("should call appendAuditLog on create", async () => {
+    mockNoDuplicateWebSearch();
     const { POST } = await import("@/app/api/integrations/route");
 
     const request = makeRequest("/api/integrations", {

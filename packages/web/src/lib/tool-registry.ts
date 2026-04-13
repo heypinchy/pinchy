@@ -42,12 +42,14 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     label: "Search the web",
     description: "Search the web via Brave Search",
     category: "powerful",
+    integration: "web-search",
   },
   {
     id: "pinchy_web_fetch",
     label: "Fetch web pages",
     description: "Download and read content from web pages",
     category: "powerful",
+    integration: "web-search",
   },
 
   // Odoo integration tools (safe = read-only, powerful = write operations)

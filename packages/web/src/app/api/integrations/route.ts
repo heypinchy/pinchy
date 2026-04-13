@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { z } from "zod";
+import { eq } from "drizzle-orm";
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
@@ -64,6 +65,20 @@ export async function POST(request: NextRequest) {
   }
 
   const { type, name, description, credentials } = parsed.data;
+
+  // Singleton types: only one connection of this type allowed
+  if (type === "web-search") {
+    const existing = await db
+      .select()
+      .from(integrationConnections)
+      .where(eq(integrationConnections.type, "web-search"));
+    if (existing.length > 0) {
+      return NextResponse.json(
+        { error: "A Web Search connection already exists. Delete it first to add a new one." },
+        { status: 409 }
+      );
+    }
+  }
 
   if (parsed.data.type === "odoo") {
     const urlCheck = validateExternalUrl(parsed.data.credentials.url);

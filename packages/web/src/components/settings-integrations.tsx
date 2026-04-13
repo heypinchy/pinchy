@@ -230,6 +230,7 @@ export function SettingsIntegrations() {
           fetchConnections();
           setShowAddDialog(false);
         }}
+        existingTypes={connections.map((c) => c.type)}
       />
 
       <Dialog open={!!renameTarget} onOpenChange={(open) => !open && setRenameTarget(null)}>

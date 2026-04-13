@@ -151,9 +151,19 @@ describe("Odoo access level helpers", () => {
     }
   });
 
-  it("non-odoo tools don't have integration set", () => {
-    const nonOdooTools = TOOL_REGISTRY.filter((t) => !t.id.startsWith("odoo_"));
-    for (const tool of nonOdooTools) {
+  it("web search tools have integration: 'web-search'", () => {
+    const webTools = TOOL_REGISTRY.filter((t) => t.id.startsWith("pinchy_web_"));
+    expect(webTools.length).toBe(2);
+    for (const tool of webTools) {
+      expect(tool.integration).toBe("web-search");
+    }
+  });
+
+  it("non-integration tools don't have integration set", () => {
+    const nonIntegrationTools = TOOL_REGISTRY.filter(
+      (t) => !t.id.startsWith("odoo_") && !t.id.startsWith("pinchy_web_")
+    );
+    for (const tool of nonIntegrationTools) {
       expect(tool.integration).toBeUndefined();
     }
   });

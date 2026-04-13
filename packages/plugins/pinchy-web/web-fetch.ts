@@ -20,16 +20,36 @@ function isPrivateIp(ip: string): boolean {
   return PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(ip));
 }
 
-async function validateHostname(
-  hostname: string,
-): Promise<string | null> {
-  if (isPrivateIp(hostname)) return "private";
-  if (hostname === "localhost") return "private";
+async function isPrivateHostname(hostname: string): Promise<boolean> {
+  if (isPrivateIp(hostname)) return true;
+  if (hostname === "localhost") return true;
   const [ipv4s, ipv6s] = await Promise.all([
     dns.resolve4(hostname).catch(() => []),
     dns.resolve6(hostname).catch(() => []),
   ]);
-  if ([...ipv4s, ...ipv6s].some(isPrivateIp)) return "private";
+  return [...ipv4s, ...ipv6s].some(isPrivateIp);
+}
+
+function checkDomainAllowed(
+  hostname: string,
+  config: Pick<WebFetchConfig, "allowedDomains" | "excludedDomains">,
+): string | null {
+  if (config.allowedDomains?.length) {
+    const allowed = config.allowedDomains.some(
+      (d) => hostname === d || hostname.endsWith(`.${d}`),
+    );
+    if (!allowed) {
+      return `This agent is not allowed to fetch content from ${hostname}. Allowed domains: ${config.allowedDomains.join(", ")}`;
+    }
+  }
+  if (config.excludedDomains?.length) {
+    const excluded = config.excludedDomains.some(
+      (d) => hostname === d || hostname.endsWith(`.${d}`),
+    );
+    if (excluded) {
+      return `Domain ${hostname} is blocked for this agent.`;
+    }
+  }
   return null;
 }
 
@@ -51,33 +71,14 @@ export async function webFetch(
 
   // Domain filtering
   const hostname = parsed.hostname;
-  if (config.allowedDomains?.length) {
-    const allowed = config.allowedDomains.some(
-      (d) => hostname === d || hostname.endsWith(`.${d}`),
-    );
-    if (!allowed) {
-      return {
-        content: `This agent is not allowed to fetch content from ${hostname}. Allowed domains: ${config.allowedDomains.join(", ")}`,
-        isError: true,
-      };
-    }
-  }
-  if (config.excludedDomains?.length) {
-    const excluded = config.excludedDomains.some(
-      (d) => hostname === d || hostname.endsWith(`.${d}`),
-    );
-    if (excluded) {
-      return {
-        content: `Domain ${hostname} is blocked for this agent.`,
-        isError: true,
-      };
-    }
+  const domainError = checkDomainAllowed(hostname, config);
+  if (domainError) {
+    return { content: domainError, isError: true };
   }
 
   // SSRF guard — resolve hostname and check IPs
   try {
-    const block = await validateHostname(hostname);
-    if (block) {
+    if (await isPrivateHostname(hostname)) {
       return {
         content: `Access to private network addresses is not allowed.`,
         isError: true,
@@ -112,8 +113,7 @@ export async function webFetch(
       }
 
       // SSRF check on redirect target
-      const block = await validateHostname(redirectUrl.hostname);
-      if (block) {
+      if (await isPrivateHostname(redirectUrl.hostname)) {
         return {
           content: `Access to private network addresses is not allowed.`,
           isError: true,
@@ -121,28 +121,9 @@ export async function webFetch(
       }
 
       // Domain filtering on redirect target
-      const redirectHost = redirectUrl.hostname;
-      if (config.allowedDomains?.length) {
-        const allowed = config.allowedDomains.some(
-          (d) => redirectHost === d || redirectHost.endsWith(`.${d}`),
-        );
-        if (!allowed) {
-          return {
-            content: `Redirect to ${redirectHost} is not allowed.`,
-            isError: true,
-          };
-        }
-      }
-      if (config.excludedDomains?.length) {
-        const excluded = config.excludedDomains.some(
-          (d) => redirectHost === d || redirectHost.endsWith(`.${d}`),
-        );
-        if (excluded) {
-          return {
-            content: `Redirect to blocked domain ${redirectHost}.`,
-            isError: true,
-          };
-        }
+      const redirectDomainError = checkDomainAllowed(redirectUrl.hostname, config);
+      if (redirectDomainError) {
+        return { content: redirectDomainError, isError: true };
       }
 
       if (i === MAX_REDIRECTS) {

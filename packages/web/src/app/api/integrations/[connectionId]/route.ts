@@ -11,11 +11,15 @@ import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { z } from "zod";
 
-const updateIntegrationSchema = z.object({
+const baseUpdateSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
-  credentials: odooCredentialsSchema.optional(),
 });
+
+const credentialSchemas: Record<string, z.ZodType> = {
+  odoo: odooCredentialsSchema,
+  "web-search": z.object({ apiKey: z.string().min(1) }).strict(),
+};
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -66,35 +70,60 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
   }
 
   const body = await request.json();
-  const parsed = updateIntegrationSchema.safeParse(body);
-  if (!parsed.success) {
+
+  // Validate base fields (name, description)
+  const baseParsed = baseUpdateSchema.safeParse(body);
+  if (!baseParsed.success) {
     return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
+      { error: "Validation failed", details: baseParsed.error.flatten() },
       { status: 400 }
     );
+  }
+
+  // Validate credentials based on connection type
+  const rawCredentials = body.credentials;
+  let parsedCredentials: Record<string, unknown> | undefined;
+  if (rawCredentials !== undefined) {
+    const credSchema = credentialSchemas[existing.type];
+    if (!credSchema) {
+      return NextResponse.json(
+        { error: `Unknown connection type: ${existing.type}` },
+        { status: 400 }
+      );
+    }
+    const credResult = credSchema.safeParse(rawCredentials);
+    if (!credResult.success) {
+      return NextResponse.json(
+        { error: "Validation failed", details: credResult.error.flatten() },
+        { status: 400 }
+      );
+    }
+    parsedCredentials = credResult.data as Record<string, unknown>;
   }
 
   const updateData: Record<string, unknown> = { updatedAt: new Date() };
   const changes: Record<string, { from: unknown; to: unknown }> = {};
 
-  if (parsed.data.name !== undefined) {
-    updateData.name = parsed.data.name;
-    if (parsed.data.name !== existing.name) {
-      changes.name = { from: existing.name, to: parsed.data.name };
+  if (baseParsed.data.name !== undefined) {
+    updateData.name = baseParsed.data.name;
+    if (baseParsed.data.name !== existing.name) {
+      changes.name = { from: existing.name, to: baseParsed.data.name };
     }
   }
-  if (parsed.data.description !== undefined) {
-    updateData.description = parsed.data.description;
-    if (parsed.data.description !== existing.description) {
-      changes.description = { from: existing.description, to: parsed.data.description };
+  if (baseParsed.data.description !== undefined) {
+    updateData.description = baseParsed.data.description;
+    if (baseParsed.data.description !== existing.description) {
+      changes.description = { from: existing.description, to: baseParsed.data.description };
     }
   }
-  if (parsed.data.credentials !== undefined) {
-    const urlCheck = validateExternalUrl(parsed.data.credentials.url);
-    if (!urlCheck.valid) {
-      return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+  if (parsedCredentials !== undefined) {
+    if (existing.type === "odoo" && "url" in parsedCredentials) {
+      const urlCheck = validateExternalUrl(parsedCredentials.url as string);
+      if (!urlCheck.valid) {
+        return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+      }
     }
-    updateData.credentials = encrypt(JSON.stringify(parsed.data.credentials));
+    updateData.credentials = encrypt(JSON.stringify(parsedCredentials));
     changes.credentials = { from: "[redacted]", to: "[redacted]" };
   }
 
