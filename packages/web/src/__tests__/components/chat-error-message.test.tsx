@@ -10,16 +10,35 @@ describe("ChatErrorMessage", () => {
         error={{
           agentName: "Smithers",
           providerError: "Your credit balance is too low.",
-          hint: "Go to Settings → Providers to check your API configuration.",
+          hint: "Go to Settings > Providers to check your API configuration.",
         }}
       />
     );
 
     expect(screen.getByText("Smithers couldn't respond")).toBeInTheDocument();
     expect(screen.getByText("Your credit balance is too low.")).toBeInTheDocument();
-    expect(
-      screen.getByText("Go to Settings → Providers to check your API configuration.")
-    ).toBeInTheDocument();
+    expect(screen.getByTestId("error-hint")).toHaveTextContent(
+      "Go to Settings > Providers to check your API configuration."
+    );
+    expect(screen.getByRole("link", { name: "Settings > Providers" })).toHaveAttribute(
+      "href",
+      "/settings?tab=provider"
+    );
+  });
+
+  it("should render a space between agent name and couldn't", () => {
+    render(
+      <ChatErrorMessage
+        error={{
+          agentName: "Smithers",
+          providerError: "Your credit balance is too low.",
+        }}
+      />
+    );
+
+    const heading = screen.getByText(/couldn't respond/i);
+    expect(heading).toHaveTextContent("Smithers couldn't respond");
+    expect(heading).not.toHaveTextContent("Smitherscouldn't respond");
   });
 
   it("should render provider error without hint when hint is null", () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { getErrorHint } from "@/server/error-hints";
+import { getErrorHint, PROVIDER_SETTINGS_HINT } from "@/server/error-hints";
 
 describe("getErrorHint", () => {
   describe("provider/config errors → role-based hint", () => {
@@ -14,7 +14,7 @@ describe("getErrorHint", () => {
 
     it.each(providerKeywords)("should return admin hint for provider error: %s", (errorText) => {
       const hint = getErrorHint(errorText, "admin");
-      expect(hint).toBe("Go to Settings → Providers to check your API configuration.");
+      expect(hint).toBe(PROVIDER_SETTINGS_HINT);
     });
 
     it.each(providerKeywords)("should return member hint for provider error: %s", (errorText) => {
@@ -51,9 +51,7 @@ describe("getErrorHint", () => {
   describe("case insensitivity", () => {
     it("should match keywords case-insensitively", () => {
       expect(getErrorHint("RATE LIMIT EXCEEDED", "admin")).toBe("Try again in a moment.");
-      expect(getErrorHint("invalid api key", "admin")).toBe(
-        "Go to Settings → Providers to check your API configuration."
-      );
+      expect(getErrorHint("invalid api key", "admin")).toBe(PROVIDER_SETTINGS_HINT);
     });
   });
 
@@ -61,16 +59,12 @@ describe("getErrorHint", () => {
     it("should classify 'Rate limit exceeded' as transient, not provider (exceeded appears in both)", () => {
       // "exceeded" matches the provider pattern, but "rate limit" is more
       // specific. Transient patterns are checked first to prevent misclassification.
-      expect(getErrorHint("Rate limit exceeded", "admin")).toBe(
-        "Try again in a moment."
-      );
+      expect(getErrorHint("Rate limit exceeded", "admin")).toBe("Try again in a moment.");
     });
 
     it("should classify 'You exceeded your current quota' as provider", () => {
       // "exceeded" alone (without "rate limit") correctly falls through to provider pattern
-      expect(getErrorHint("You exceeded your current quota", "admin")).toBe(
-        "Go to Settings → Providers to check your API configuration."
-      );
+      expect(getErrorHint("You exceeded your current quota", "admin")).toBe(PROVIDER_SETTINGS_HINT);
     });
   });
 });

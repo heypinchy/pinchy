@@ -1420,7 +1420,7 @@ describe("ClientRouter", () => {
     const messages = clientWs.sent.map((s) => JSON.parse(s));
     const errorMsg = messages.find((m: any) => m.type === "error");
     expect(errorMsg).toBeDefined();
-    expect(errorMsg.hint).toBe("Go to Settings → Providers to check your API configuration.");
+    expect(errorMsg.hint).toBe("Go to Settings > Providers to check your API configuration.");
 
     consoleSpy.mockRestore();
   });
