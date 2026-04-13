@@ -85,7 +85,7 @@ export async function POST(request: NextRequest) {
     resource: `integration:${connection.id}`,
     detail: { action: "integration_created", type, name },
     outcome: "success",
-  }).catch(() => {});
+  }).catch(console.error);
 
   return NextResponse.json(
     {

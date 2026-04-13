@@ -175,7 +175,7 @@ export async function POST(request: NextRequest) {
             permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
           },
           outcome: "success",
-        }).catch(() => {});
+        }).catch(console.error);
       }
     }
   }

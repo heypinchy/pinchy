@@ -69,7 +69,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
         modelCount: result.models,
       },
       outcome: "success",
-    }).catch(() => {});
+    }).catch(console.error);
 
     return NextResponse.json({
       success: true,

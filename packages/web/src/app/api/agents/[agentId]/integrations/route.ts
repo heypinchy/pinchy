@@ -177,7 +177,7 @@ export async function PUT(
       changes: { added, removed },
     },
     outcome: "success",
-  }).catch(() => {});
+  }).catch(console.error);
 
   return NextResponse.json({ success: true });
 }
@@ -229,7 +229,7 @@ export async function DELETE(
       removed,
     },
     outcome: "success",
-  }).catch(() => {});
+  }).catch(console.error);
 
   return NextResponse.json({ success: true });
 }
