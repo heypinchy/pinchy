@@ -9,6 +9,7 @@ export interface TemplateItem {
   odooAccessLevel?: string;
   defaultTagline: string | null;
   available?: boolean;
+  unavailableReason?: "no-connection" | "missing-modules" | null;
   iconName?: TemplateIconName;
 }
 

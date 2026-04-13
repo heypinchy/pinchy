@@ -27,12 +27,15 @@ export async function GET(request: NextRequest) {
 
   const templates = Object.entries(AGENT_TEMPLATES).map(([id, template]) => {
     let available = true;
+    let unavailableReason: "no-connection" | "missing-modules" | null = null;
 
     if (template.requiresOdooConnection && !hasOdooConnection) {
       available = false;
+      unavailableReason = "no-connection";
     } else if (template.odooConfig && connectionModels) {
       const validation = validateOdooTemplate(template.odooConfig, connectionModels);
       available = validation.valid;
+      if (!validation.valid) unavailableReason = "missing-modules";
     }
 
     return {
@@ -44,6 +47,7 @@ export async function GET(request: NextRequest) {
       odooAccessLevel: template.odooConfig?.accessLevel,
       defaultTagline: template.defaultTagline,
       available,
+      unavailableReason,
       iconName: template.iconName,
     };
   });

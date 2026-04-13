@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
-import { ArrowRight, Bot } from "lucide-react";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { ArrowRight, Bot, ChevronRight } from "lucide-react";
 import {
   groupTemplatesByCategory,
   getAccessBadgeProps,
   type TemplateItem,
-  type TemplateCategory,
 } from "@/lib/template-grouping";
 import { TEMPLATE_ICON_COMPONENTS } from "@/lib/template-icons";
 
@@ -16,16 +16,6 @@ interface TemplateSelectorProps {
   onSelect: (templateId: string) => void;
 }
 
-const ICON_CLASS = "size-8 mb-2 text-muted-foreground";
-
-const BADGE_COLORS = {
-  green:
-    "bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200 border-green-200 dark:border-green-800",
-  amber:
-    "bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200 border-yellow-200 dark:border-yellow-800",
-  red: "bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200 border-red-200 dark:border-red-800",
-};
-
 function TemplateCard({
   template,
   onSelect,
@@ -33,7 +23,6 @@ function TemplateCard({
   template: TemplateItem;
   onSelect: (id: string) => void;
 }) {
-  const isAvailable = template.available !== false;
   const IconComponent = template.iconName ? TEMPLATE_ICON_COMPONENTS[template.iconName] : Bot;
   const badge = getAccessBadgeProps(template);
 
@@ -41,9 +30,7 @@ function TemplateCard({
     <Card
       role="button"
       tabIndex={0}
-      className={
-        "cursor-pointer transition-colors" + (isAvailable ? " hover:border-primary" : " opacity-50")
-      }
+      className="cursor-pointer transition-colors hover:border-primary"
       onClick={() => onSelect(template.id)}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return;
@@ -53,34 +40,30 @@ function TemplateCard({
         if (e.target !== e.currentTarget) return;
         if (e.key === "Enter" || e.key === " ") onSelect(template.id);
       }}
-      data-available={isAvailable}
     >
-      <CardContent className="flex flex-col items-center text-center p-6">
-        <IconComponent className={ICON_CLASS} />
+      <CardContent className="flex flex-col items-center text-center p-4">
+        <IconComponent className="size-6 mb-1 text-muted-foreground" />
         <h3 className="font-semibold">{template.name}</h3>
         <p className="text-sm text-muted-foreground mt-1">{template.description}</p>
-        {badge && (
-          <span
-            className={`mt-3 inline-flex items-center rounded-full border px-2.5 py-0.5 text-xs font-medium ${BADGE_COLORS[badge.variant]}`}
-          >
-            {badge.label}
-          </span>
-        )}
+        {badge && <span className="mt-2 text-[11px] text-muted-foreground">{badge.label}</span>}
       </CardContent>
     </Card>
   );
 }
 
-function CategoryTeaser({ category }: { category: TemplateCategory }) {
-  const count = category.templates.length;
-  return (
-    <div className="rounded-md border border-dashed p-4 text-sm text-muted-foreground">
-      {count} templates available with Odoo ·{" "}
-      <Link href="/settings?tab=integrations" className="underline hover:text-foreground">
-        Set up connection →
-      </Link>
-    </div>
-  );
+function UnavailableTriggerText({ templates }: { templates: TemplateItem[] }) {
+  const hasNoConnection = templates.some((t) => t.unavailableReason === "no-connection");
+  if (hasNoConnection) {
+    return (
+      <>
+        {templates.length} templates available with Odoo ·{" "}
+        <Link href="/settings?tab=integrations" className="underline hover:text-foreground">
+          Set up connection →
+        </Link>
+      </>
+    );
+  }
+  return <>{templates.length} more with additional Odoo modules</>;
 }
 
 export function TemplateSelector({ templates, onSelect }: TemplateSelectorProps) {
@@ -89,19 +72,33 @@ export function TemplateSelector({ templates, onSelect }: TemplateSelectorProps)
   return (
     <div className="space-y-8">
       {categories.map((category) => {
-        const allUnavailable = category.templates.every((t) => t.available === false);
+        const available = category.templates.filter((t) => t.available !== false);
+        const unavailable = category.templates.filter((t) => t.available === false);
 
         return (
           <div key={category.id}>
             <h2 className="text-sm font-medium text-muted-foreground mb-3">{category.label}</h2>
-            {allUnavailable ? (
-              <CategoryTeaser category={category} />
-            ) : (
+            {available.length > 0 && (
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                {category.templates.map((template) => (
+                {available.map((template) => (
                   <TemplateCard key={template.id} template={template} onSelect={onSelect} />
                 ))}
               </div>
+            )}
+            {unavailable.length > 0 && (
+              <Collapsible>
+                <CollapsibleTrigger className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground mt-3 cursor-pointer">
+                  <ChevronRight className="size-4" />
+                  <UnavailableTriggerText templates={unavailable} />
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 mt-3">
+                    {unavailable.map((template) => (
+                      <TemplateCard key={template.id} template={template} onSelect={onSelect} />
+                    ))}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
             )}
           </div>
         );

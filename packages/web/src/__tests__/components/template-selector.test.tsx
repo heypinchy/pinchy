@@ -154,41 +154,12 @@ describe("TemplateSelector", () => {
     expect(screen.getByText("Documents · Read-only")).toBeInTheDocument();
   });
 
-  it("shows teaser when all category templates are unavailable", () => {
-    const unavailableTemplates = [
+  it("hides unavailable templates behind collapsible trigger", () => {
+    const mixedTemplates = [
       {
         id: "odoo-sales-analyst",
         name: "Sales Analyst",
         description: "Analyze revenue",
-        requiresDirectories: false,
-        requiresOdooConnection: true,
-        odooAccessLevel: "read-only",
-        available: false,
-      },
-      {
-        id: "odoo-crm-assistant",
-        name: "CRM Assistant",
-        description: "Manage leads",
-        requiresDirectories: false,
-        requiresOdooConnection: true,
-        odooAccessLevel: "read-write",
-        available: false,
-      },
-    ];
-
-    render(<TemplateSelector templates={unavailableTemplates} onSelect={vi.fn()} />);
-    expect(screen.getByText(/2 templates available with Odoo/)).toBeInTheDocument();
-    const link = screen.getByText(/Set up connection/);
-    expect(link).toBeInTheDocument();
-    expect(link.closest("a")).toHaveAttribute("href", "/settings?tab=integrations");
-  });
-
-  it("should dim unavailable templates with reduced opacity", () => {
-    const mixedTemplates = [
-      {
-        id: "odoo-sales-analyst",
-        name: "Available Agent",
-        description: "Works fine",
         requiresOdooConnection: true,
         requiresDirectories: false,
         odooAccessLevel: "read-only",
@@ -196,25 +167,138 @@ describe("TemplateSelector", () => {
       },
       {
         id: "odoo-crm-assistant",
-        name: "Unavailable Agent",
-        description: "Missing modules",
+        name: "CRM Assistant",
+        description: "Manage leads",
         requiresOdooConnection: true,
         requiresDirectories: false,
         odooAccessLevel: "read-write",
         available: false,
+        unavailableReason: "missing-modules" as const,
+      },
+      {
+        id: "odoo-customer-service",
+        name: "Customer Service",
+        description: "Handle support",
+        requiresOdooConnection: true,
+        requiresDirectories: false,
+        odooAccessLevel: "read-only",
+        available: false,
+        unavailableReason: "missing-modules" as const,
       },
     ];
 
     render(<TemplateSelector templates={mixedTemplates} onSelect={vi.fn()} />);
-
-    const availableCard = screen.getByText("Available Agent").closest("[data-available]");
-    const unavailableCard = screen.getByText("Unavailable Agent").closest("[data-available]");
-
-    expect(availableCard).toHaveAttribute("data-available", "true");
-    expect(unavailableCard).toHaveAttribute("data-available", "false");
+    // Available template visible
+    expect(screen.getByText("Sales Analyst")).toBeInTheDocument();
+    // Unavailable templates hidden
+    expect(screen.queryByText("CRM Assistant")).not.toBeInTheDocument();
+    // Trigger shows count
+    expect(screen.getByText(/2 more with additional Odoo modules/)).toBeInTheDocument();
   });
 
-  it("should still call onSelect for unavailable templates in mixed categories", () => {
+  it("shows 'Set up connection' trigger when unavailable reason is no-connection", () => {
+    const noConnTemplates = [
+      {
+        id: "odoo-sales-analyst",
+        name: "Sales Analyst",
+        description: "Analyze revenue",
+        requiresOdooConnection: true,
+        requiresDirectories: false,
+        odooAccessLevel: "read-only",
+        available: false,
+        unavailableReason: "no-connection" as const,
+      },
+      {
+        id: "odoo-crm-assistant",
+        name: "CRM Assistant",
+        description: "Manage leads",
+        requiresOdooConnection: true,
+        requiresDirectories: false,
+        odooAccessLevel: "read-write",
+        available: false,
+        unavailableReason: "no-connection" as const,
+      },
+    ];
+
+    render(<TemplateSelector templates={noConnTemplates} onSelect={vi.fn()} />);
+    expect(screen.getByText(/2 templates available with Odoo/)).toBeInTheDocument();
+    const link = screen.getByText(/Set up connection/);
+    expect(link).toBeInTheDocument();
+    expect(link.closest("a")).toHaveAttribute("href", "/settings?tab=integrations");
+  });
+
+  it("expands to show unavailable template cards on trigger click", () => {
+    const mixedTemplates = [
+      {
+        id: "odoo-sales-analyst",
+        name: "Sales Analyst",
+        description: "Analyze revenue",
+        requiresOdooConnection: true,
+        requiresDirectories: false,
+        odooAccessLevel: "read-only",
+        available: true,
+      },
+      {
+        id: "odoo-crm-assistant",
+        name: "CRM Assistant",
+        description: "Manage leads",
+        requiresOdooConnection: true,
+        requiresDirectories: false,
+        odooAccessLevel: "read-write",
+        available: false,
+        unavailableReason: "missing-modules" as const,
+      },
+    ];
+
+    render(<TemplateSelector templates={mixedTemplates} onSelect={vi.fn()} />);
+    // Initially hidden
+    expect(screen.queryByText("CRM Assistant")).not.toBeInTheDocument();
+
+    // Click trigger to expand
+    fireEvent.click(screen.getByText(/1 more with additional Odoo modules/));
+
+    // Now visible
+    expect(screen.getByText("CRM Assistant")).toBeInTheDocument();
+  });
+
+  it("shows all templates in collapsible when entire category is unavailable", () => {
+    const allUnavailable = [
+      {
+        id: "odoo-sales-analyst",
+        name: "Sales Analyst",
+        description: "Analyze revenue",
+        requiresOdooConnection: true,
+        requiresDirectories: false,
+        odooAccessLevel: "read-only",
+        available: false,
+        unavailableReason: "missing-modules" as const,
+      },
+      {
+        id: "odoo-crm-assistant",
+        name: "CRM Assistant",
+        description: "Manage leads",
+        requiresOdooConnection: true,
+        requiresDirectories: false,
+        odooAccessLevel: "read-write",
+        available: false,
+        unavailableReason: "missing-modules" as const,
+      },
+    ];
+
+    render(<TemplateSelector templates={allUnavailable} onSelect={vi.fn()} />);
+    // Category heading visible
+    expect(screen.getByText("Sales & Customers")).toBeInTheDocument();
+    // Templates hidden behind trigger
+    expect(screen.queryByText("Sales Analyst")).not.toBeInTheDocument();
+    expect(screen.getByText(/2 more with additional Odoo modules/)).toBeInTheDocument();
+
+    // Expand
+    fireEvent.click(screen.getByText(/2 more with additional Odoo modules/));
+    expect(screen.getByText("Sales Analyst")).toBeInTheDocument();
+    expect(screen.getByText("CRM Assistant")).toBeInTheDocument();
+  });
+
+  it("should call onSelect for unavailable templates after expanding", () => {
     const onSelect = vi.fn();
     const mixedTemplates = [
       {
@@ -234,10 +318,14 @@ describe("TemplateSelector", () => {
         requiresDirectories: false,
         odooAccessLevel: "read-write",
         available: false,
+        unavailableReason: "missing-modules" as const,
       },
     ];
 
     render(<TemplateSelector templates={mixedTemplates} onSelect={onSelect} />);
+    // Expand first
+    fireEvent.click(screen.getByText(/1 more with additional Odoo modules/));
+    // Then click the unavailable template
     fireEvent.click(screen.getByText("Unavailable Agent"));
     expect(onSelect).toHaveBeenCalledWith("odoo-crm-assistant");
   });

@@ -115,7 +115,7 @@ describe("GET /api/templates", () => {
     });
   });
 
-  it("includes odoo templates when no odoo connection exists, marked unavailable", async () => {
+  it("includes odoo templates when no odoo connection exists, marked unavailable with reason", async () => {
     mockLimit.mockResolvedValue([]);
 
     const request = new NextRequest("http://localhost:7777/api/templates");
@@ -128,6 +128,7 @@ describe("GET /api/templates", () => {
     expect(odooTemplates.length).toBeGreaterThan(0);
     for (const t of odooTemplates) {
       expect(t.available).toBe(false);
+      expect(t.unavailableReason).toBe("no-connection");
     }
   });
 
@@ -167,6 +168,7 @@ describe("GET /api/templates", () => {
 
     const salesAnalyst = body.templates.find((t: { id: string }) => t.id === "odoo-sales-analyst");
     expect(salesAnalyst.available).toBe(true);
+    expect(salesAnalyst.unavailableReason).toBeNull();
   });
 
   it("marks odoo templates as unavailable when required models are missing", async () => {
@@ -186,6 +188,7 @@ describe("GET /api/templates", () => {
 
     const salesAnalyst = body.templates.find((t: { id: string }) => t.id === "odoo-sales-analyst");
     expect(salesAnalyst.available).toBe(false);
+    expect(salesAnalyst.unavailableReason).toBe("missing-modules");
   });
 
   it("marks non-odoo templates as always available", async () => {
@@ -195,9 +198,11 @@ describe("GET /api/templates", () => {
 
     const kb = body.templates.find((t: { id: string }) => t.id === "knowledge-base");
     expect(kb.available).toBe(true);
+    expect(kb.unavailableReason).toBeNull();
 
     const custom = body.templates.find((t: { id: string }) => t.id === "custom");
     expect(custom.available).toBe(true);
+    expect(custom.unavailableReason).toBeNull();
   });
 
   it("always includes non-odoo templates", async () => {
