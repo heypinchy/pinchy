@@ -59,7 +59,6 @@ export function getPermissionPreviewItems(
       case "read-write":
         return [
           { icon: "check", text: "Read and write data in Odoo" },
-          { icon: "check", text: "Create and update records" },
           { icon: "warning", text: "This agent can modify data in Odoo" },
         ];
       default:
