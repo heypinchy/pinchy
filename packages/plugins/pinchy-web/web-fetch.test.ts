@@ -196,6 +196,87 @@ describe("webFetch", () => {
       expect(result.content).toContain("private network");
       expect(fetchMock).not.toHaveBeenCalled();
     });
+
+    it("blocks redirects to private IPs (SSRF via redirect)", async () => {
+      // First request returns a redirect to a private IP
+      fetchMock.mockResolvedValueOnce({
+        status: 302,
+        ok: false,
+        headers: new Map([["location", "http://169.254.169.254/latest/meta-data/"]]),
+      });
+
+      const result = await webFetch("https://evil.com/redirect");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+    });
+
+    it("blocks redirects to hostnames resolving to private IPs", async () => {
+      // First fetch for the initial URL (public IP)
+      fetchMock.mockResolvedValueOnce({
+        status: 301,
+        ok: false,
+        headers: new Map([["location", "https://internal.corp.com/secret"]]),
+      });
+      // DNS for redirect target resolves to private IP
+      resolve4Mock
+        .mockResolvedValueOnce(["93.184.216.34"])  // initial URL
+        .mockResolvedValueOnce(["10.0.0.5"]);      // redirect target
+      resolve6Mock
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]);
+
+      const result = await webFetch("https://evil.com/redirect");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+    });
+
+    it("follows safe redirects", async () => {
+      fetchMock
+        .mockResolvedValueOnce({
+          status: 301,
+          ok: false,
+          headers: new Map([["location", "https://www.example.com/page"]]),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          statusText: "OK",
+          headers: new Map([["content-type", "text/plain"]]),
+          text: async () => "Final content",
+        });
+      // DNS for both hops resolves to public IPs
+      resolve4Mock
+        .mockResolvedValueOnce(["93.184.216.34"])
+        .mockResolvedValueOnce(["93.184.216.34"]);
+      resolve6Mock
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([]);
+
+      const result = await webFetch("https://example.com/old");
+
+      expect(result.isError).toBeUndefined();
+      expect(result.content).toBe("Final content");
+    });
+
+    it("rejects too many redirects", async () => {
+      // 6 consecutive redirects (limit is 5)
+      for (let i = 0; i < 6; i++) {
+        fetchMock.mockResolvedValueOnce({
+          status: 302,
+          ok: false,
+          headers: new Map([["location", `https://example.com/hop${i + 1}`]]),
+        });
+        resolve4Mock.mockResolvedValueOnce(["93.184.216.34"]);
+        resolve6Mock.mockResolvedValueOnce([]);
+      }
+
+      const result = await webFetch("https://example.com/start");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("Too many redirects");
+    });
   });
 
   describe("error handling", () => {

@@ -13,8 +13,24 @@ const PRIVATE_IP_PATTERNS = [
   /^169\.254\./, /^0\./, /^::1$/, /^fc00:/i, /^fe80:/i,
 ];
 
+const MAX_REDIRECTS = 5;
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
 function isPrivateIp(ip: string): boolean {
   return PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(ip));
+}
+
+async function validateHostname(
+  hostname: string,
+): Promise<string | null> {
+  if (isPrivateIp(hostname)) return "private";
+  if (hostname === "localhost") return "private";
+  const [ipv4s, ipv6s] = await Promise.all([
+    dns.resolve4(hostname).catch(() => []),
+    dns.resolve6(hostname).catch(() => []),
+  ]);
+  if ([...ipv4s, ...ipv6s].some(isPrivateIp)) return "private";
+  return null;
 }
 
 export async function webFetch(
@@ -60,27 +76,8 @@ export async function webFetch(
 
   // SSRF guard — resolve hostname and check IPs
   try {
-    // Check if hostname is already an IP literal
-    if (isPrivateIp(hostname)) {
-      return {
-        content: `Access to private network addresses is not allowed.`,
-        isError: true,
-      };
-    }
-    // "localhost" always maps to loopback
-    if (hostname === "localhost") {
-      return {
-        content: `Access to private network addresses is not allowed.`,
-        isError: true,
-      };
-    }
-    // Resolve DNS and check all IPs
-    const [ipv4s, ipv6s] = await Promise.all([
-      dns.resolve4(hostname).catch(() => []),
-      dns.resolve6(hostname).catch(() => []),
-    ]);
-    const allIps = [...ipv4s, ...ipv6s];
-    if (allIps.some(isPrivateIp)) {
+    const block = await validateHostname(hostname);
+    if (block) {
       return {
         content: `Access to private network addresses is not allowed.`,
         isError: true,
@@ -90,18 +87,76 @@ export async function webFetch(
     // If DNS resolution fails entirely, let fetch handle it
   }
 
-  // Fetch
+  // Fetch with manual redirect handling to prevent SSRF via redirect
   const maxChars = config.maxChars ?? 50000;
   try {
-    const res = await fetch(url, {
-      headers: { "User-Agent": "PinchyBot/1.0" },
-      signal: AbortSignal.timeout(30000),
-      redirect: "follow",
-    });
+    let currentUrl = url;
+    let res: Response | undefined;
 
-    if (!res.ok) {
+    for (let i = 0; i <= MAX_REDIRECTS; i++) {
+      res = await fetch(currentUrl, {
+        headers: { "User-Agent": "PinchyBot/1.0" },
+        signal: AbortSignal.timeout(30000),
+        redirect: "manual",
+      });
+
+      if (!REDIRECT_STATUSES.has(res.status)) break;
+
+      const location = res.headers.get("location");
+      if (!location) break;
+
+      // Resolve relative redirects
+      const redirectUrl = new URL(location, currentUrl);
+      if (!["http:", "https:"].includes(redirectUrl.protocol)) {
+        return { content: `Redirect to unsupported protocol.`, isError: true };
+      }
+
+      // SSRF check on redirect target
+      const block = await validateHostname(redirectUrl.hostname);
+      if (block) {
+        return {
+          content: `Access to private network addresses is not allowed.`,
+          isError: true,
+        };
+      }
+
+      // Domain filtering on redirect target
+      const redirectHost = redirectUrl.hostname;
+      if (config.allowedDomains?.length) {
+        const allowed = config.allowedDomains.some(
+          (d) => redirectHost === d || redirectHost.endsWith(`.${d}`),
+        );
+        if (!allowed) {
+          return {
+            content: `Redirect to ${redirectHost} is not allowed.`,
+            isError: true,
+          };
+        }
+      }
+      if (config.excludedDomains?.length) {
+        const excluded = config.excludedDomains.some(
+          (d) => redirectHost === d || redirectHost.endsWith(`.${d}`),
+        );
+        if (excluded) {
+          return {
+            content: `Redirect to blocked domain ${redirectHost}.`,
+            isError: true,
+          };
+        }
+      }
+
+      if (i === MAX_REDIRECTS) {
+        return { content: `Too many redirects.`, isError: true };
+      }
+
+      currentUrl = redirectUrl.href;
+    }
+
+    if (!res || !res.ok) {
+      const status = res?.status ?? 0;
+      const statusText = res?.statusText ?? "Unknown";
       return {
-        content: `HTTP error ${res.status}: ${res.statusText}`,
+        content: `HTTP error ${status}: ${statusText}`,
         isError: true,
       };
     }
