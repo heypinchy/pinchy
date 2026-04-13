@@ -37,7 +37,7 @@ test.describe("Pipedrive Integration", () => {
     const res = await pinchyGet("/api/integrations", cookie);
     expect(res.status).toBe(200);
     const body = await res.json();
-    const pd = body.find((c: any) => c.type === "pipedrive");
+    const pd = body.find((c: { type: string }) => c.type === "pipedrive");
     expect(pd).toBeDefined();
     expect(pd.id).toBe(connectionId);
   });
@@ -96,7 +96,7 @@ test.describe("Pipedrive Integration", () => {
     // Verify it's gone
     const listRes = await pinchyGet("/api/integrations", cookie);
     const connections = await listRes.json();
-    const found = connections.find((c: any) => c.id === connectionId);
+    const found = connections.find((c: { id: string }) => c.id === connectionId);
     expect(found).toBeUndefined();
   });
 });
