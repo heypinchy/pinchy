@@ -31,8 +31,28 @@ describe("TOOL_REGISTRY", () => {
 
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
-    expect(powerful.length).toBe(3);
-    expect(powerful.map((t) => t.id)).toEqual(["odoo_create", "odoo_write", "odoo_delete"]);
+    expect(powerful.length).toBe(5);
+    expect(powerful.map((t) => t.id)).toEqual([
+      "pinchy_web_search",
+      "pinchy_web_fetch",
+      "odoo_create",
+      "odoo_write",
+      "odoo_delete",
+    ]);
+  });
+
+  it("contains pinchy_web_search as a powerful tool with no group", () => {
+    const tool = getToolById("pinchy_web_search");
+    expect(tool).toBeDefined();
+    expect(tool?.category).toBe("powerful");
+    expect(tool).not.toHaveProperty("group");
+  });
+
+  it("contains pinchy_web_fetch as a powerful tool with no group", () => {
+    const tool = getToolById("pinchy_web_fetch");
+    expect(tool).toBeDefined();
+    expect(tool?.category).toBe("powerful");
+    expect(tool).not.toHaveProperty("group");
   });
 
   it("does not contain any OpenClaw native tools", () => {
