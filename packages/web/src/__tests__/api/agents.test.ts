@@ -149,4 +149,72 @@ describe("updateAgent", () => {
     });
     expect(result.allowedTools).toEqual(["odoo_read", "pinchy_ls"]);
   });
+
+  it("should accept pinchy-web pluginConfig and call regenerateOpenClawConfig", async () => {
+    const { db } = await import("@/db");
+    const { regenerateOpenClawConfig } = await import("@/lib/openclaw-config");
+    vi.mocked(regenerateOpenClawConfig).mockClear();
+
+    const webConfig = {
+      "pinchy-web": { allowedDomains: ["github.com"], language: "de" },
+    };
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          {
+            id: "1",
+            name: "Smithers",
+            model: "anthropic/claude-opus-4-6",
+            pluginConfig: webConfig,
+          },
+        ]),
+      }),
+    });
+    vi.mocked(db.update).mockReturnValueOnce({ set: setMock } as never);
+
+    const result = await updateAgent("1", { pluginConfig: webConfig });
+
+    expect(setMock).toHaveBeenCalledWith({ pluginConfig: webConfig });
+    expect(result.pluginConfig).toEqual(webConfig);
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("should preserve both pinchy-files and pinchy-web in pluginConfig", async () => {
+    const { db } = await import("@/db");
+
+    const combinedConfig = {
+      "pinchy-files": { allowed_paths: ["/data/docs/"] },
+      "pinchy-web": {
+        allowedDomains: ["github.com", "stackoverflow.com"],
+        excludedDomains: ["example.com"],
+        language: "en",
+        country: "US",
+        freshness: "month",
+      },
+    };
+    const setMock = vi.fn().mockReturnValue({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([
+          {
+            id: "1",
+            name: "Research Agent",
+            model: "anthropic/claude-opus-4-6",
+            pluginConfig: combinedConfig,
+          },
+        ]),
+      }),
+    });
+    vi.mocked(db.update).mockReturnValueOnce({ set: setMock } as never);
+
+    const result = await updateAgent("1", { pluginConfig: combinedConfig });
+
+    expect(setMock).toHaveBeenCalledWith({ pluginConfig: combinedConfig });
+    expect(result.pluginConfig).toEqual(combinedConfig);
+    expect(result.pluginConfig?.["pinchy-files"]?.allowed_paths).toEqual(["/data/docs/"]);
+    expect(result.pluginConfig?.["pinchy-web"]?.allowedDomains).toEqual([
+      "github.com",
+      "stackoverflow.com",
+    ]);
+    expect(result.pluginConfig?.["pinchy-web"]?.language).toBe("en");
+  });
 });
