@@ -2,10 +2,12 @@ import { test, expect } from "@playwright/test";
 
 test.describe("Setup wizard", () => {
   test("creates admin account and shows success", async ({ page }) => {
-    await page.goto("/setup");
+    // networkidle waits for preflight API call (/api/setup/status) to complete
+    // before assertions start — avoids flaky timeouts from cold compilation on CI
+    await page.goto("/setup", { waitUntil: "networkidle" });
 
-    // Verify setup page loaded
-    await expect(page.getByText(/welcome to pinchy/i)).toBeVisible();
+    // Verify setup page loaded (generous timeout for first page compilation on CI)
+    await expect(page.getByText(/welcome to pinchy/i)).toBeVisible({ timeout: 15000 });
 
     // Fill the form
     await page.getByLabel(/name/i).fill("Test Admin");
