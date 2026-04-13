@@ -5,18 +5,20 @@
   "configSchema": {
     "type": "object",
     "properties": {
+      "apiBaseUrl": { "type": "string" },
+      "gatewayToken": { "type": "string" },
       "agents": {
         "type": "object",
         "additionalProperties": {
           "type": "object",
           "properties": {
-            "connection": { "type": "object" },
+            "connectionId": { "type": "string" },
             "permissions": { "type": "object" }
           },
-          "required": ["connection", "permissions"]
+          "required": ["connectionId", "permissions"]
         }
       }
     },
-    "required": ["agents"]
+    "required": ["apiBaseUrl", "gatewayToken", "agents"]
   }
 }

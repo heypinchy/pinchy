@@ -30,16 +30,22 @@ interface AgentTool {
     toolCallId: string,
     params: Record<string, unknown>,
     signal?: AbortSignal,
-  ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+  ) => Promise<{
+    content: Array<{ type: string; text: string }>;
+    isError?: boolean;
+  }>;
 }
 
 interface PluginConfig {
   apiBaseUrl: string;
   gatewayToken: string;
-  agents: Record<string, {
-    connectionId: string;
-    permissions: Record<string, string[]>;
-  }>;
+  agents: Record<
+    string,
+    {
+      connectionId: string;
+      permissions: Record<string, string[]>;
+    }
+  >;
 }
 
 const testConfig: PluginConfig = {
@@ -54,11 +60,17 @@ const testConfig: PluginConfig = {
 };
 
 function createApi(pluginConfig: PluginConfig = testConfig) {
-  const tools: Array<{ factory: (ctx: { agentId?: string }) => AgentTool | null; name: string }> = [];
+  const tools: Array<{
+    factory: (ctx: { agentId?: string }) => AgentTool | null;
+    name: string;
+  }> = [];
 
   const api = {
     pluginConfig,
-    registerTool: (factory: (ctx: { agentId?: string }) => AgentTool | null, opts?: { name?: string }) => {
+    registerTool: (
+      factory: (ctx: { agentId?: string }) => AgentTool | null,
+      opts?: { name?: string },
+    ) => {
       tools.push({ factory, name: opts?.name ?? "" });
     },
   };
@@ -67,7 +79,11 @@ function createApi(pluginConfig: PluginConfig = testConfig) {
   return tools;
 }
 
-function findTool(tools: ReturnType<typeof createApi>, name: string, agentId?: string): AgentTool | null {
+function findTool(
+  tools: ReturnType<typeof createApi>,
+  name: string,
+  agentId?: string,
+): AgentTool | null {
   const entry = tools.find((t) => t.name === name);
   if (!entry) return null;
   return entry.factory({ agentId });
@@ -82,11 +98,14 @@ vi.stubGlobal("fetch", mockFetch);
 function mockCredentialResponse(accessToken = "test-access-token") {
   mockFetch.mockResolvedValue({
     ok: true,
-    json: async () => ({ accessToken }),
+    json: async () => ({ type: "google", credentials: { accessToken } }),
   });
 }
 
-function mockCredentialFailure(status = 500, statusText = "Internal Server Error") {
+function mockCredentialFailure(
+  status = 500,
+  statusText = "Internal Server Error",
+) {
   mockFetch.mockResolvedValue({
     ok: false,
     status,
@@ -211,7 +230,9 @@ describe("credential fetching", () => {
 
     await tool.execute("call-1", {});
 
-    expect(GmailAdapter).toHaveBeenCalledWith({ accessToken: "fresh-token-123" });
+    expect(GmailAdapter).toHaveBeenCalledWith({
+      accessToken: "fresh-token-123",
+    });
   });
 
   it("returns error when credential fetch fails", async () => {
@@ -248,7 +269,12 @@ describe("email_list", () => {
 
   it("lists emails with parameters", async () => {
     const emails = [
-      { id: "msg-1", from: "a@test.com", subject: "Hello", snippet: "Hi there" },
+      {
+        id: "msg-1",
+        from: "a@test.com",
+        subject: "Hello",
+        snippet: "Hi there",
+      },
     ];
     mockList.mockResolvedValue(emails);
 
@@ -307,7 +333,12 @@ describe("email_search", () => {
 
   it("searches emails with query", async () => {
     const emails = [
-      { id: "msg-2", from: "b@test.com", subject: "Invoice", snippet: "Please pay" },
+      {
+        id: "msg-2",
+        from: "b@test.com",
+        subject: "Invoice",
+        snippet: "Please pay",
+      },
     ];
     mockSearch.mockResolvedValue(emails);
 

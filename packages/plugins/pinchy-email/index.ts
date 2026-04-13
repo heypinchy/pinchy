@@ -54,7 +54,10 @@ function getAgentConfig(
   return agentConfigs[agentId] ?? null;
 }
 
-function permissionDenied(operation: string): { content: ContentBlock[]; isError: true } {
+function permissionDenied(operation: string): {
+  content: ContentBlock[];
+  isError: true;
+} {
   return {
     isError: true,
     content: [
@@ -66,9 +69,15 @@ function permissionDenied(operation: string): { content: ContentBlock[]; isError
   };
 }
 
-function errorResult(error: unknown): { content: ContentBlock[]; isError: true } {
+function errorResult(error: unknown): {
+  content: ContentBlock[];
+  isError: true;
+} {
   const message = error instanceof Error ? error.message : "Unknown error";
-  return { isError: true, content: [{ type: "text", text: `Error: ${message}` }] };
+  return {
+    isError: true,
+    content: [{ type: "text", text: `Error: ${message}` }],
+  };
 }
 
 async function fetchCredentials(
@@ -87,7 +96,8 @@ async function fetchCredentials(
     );
   }
 
-  return response.json() as Promise<{ accessToken: string }>;
+  const data = await response.json();
+  return data.credentials;
 }
 
 const plugin = {
@@ -143,7 +153,9 @@ const plugin = {
                 gatewayToken,
                 config.connectionId,
               );
-              const gmail = new GmailAdapter({ accessToken: credentials.accessToken });
+              const gmail = new GmailAdapter({
+                accessToken: credentials.accessToken,
+              });
 
               const result = await gmail.list({
                 folder: params.folder as string | undefined,
@@ -152,7 +164,9 @@ const plugin = {
               });
 
               return {
-                content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+                content: [
+                  { type: "text", text: JSON.stringify(result, null, 2) },
+                ],
               };
             } catch (error) {
               return errorResult(error);
@@ -197,12 +211,16 @@ const plugin = {
                 gatewayToken,
                 config.connectionId,
               );
-              const gmail = new GmailAdapter({ accessToken: credentials.accessToken });
+              const gmail = new GmailAdapter({
+                accessToken: credentials.accessToken,
+              });
 
               const result = await gmail.read(params.id as string);
 
               return {
-                content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+                content: [
+                  { type: "text", text: JSON.stringify(result, null, 2) },
+                ],
               };
             } catch (error) {
               return errorResult(error);
@@ -252,7 +270,9 @@ const plugin = {
                 gatewayToken,
                 config.connectionId,
               );
-              const gmail = new GmailAdapter({ accessToken: credentials.accessToken });
+              const gmail = new GmailAdapter({
+                accessToken: credentials.accessToken,
+              });
 
               const result = await gmail.search({
                 query: params.query as string,
@@ -260,7 +280,9 @@ const plugin = {
               });
 
               return {
-                content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+                content: [
+                  { type: "text", text: JSON.stringify(result, null, 2) },
+                ],
               };
             } catch (error) {
               return errorResult(error);
@@ -312,7 +334,9 @@ const plugin = {
                 gatewayToken,
                 config.connectionId,
               );
-              const gmail = new GmailAdapter({ accessToken: credentials.accessToken });
+              const gmail = new GmailAdapter({
+                accessToken: credentials.accessToken,
+              });
 
               const result = await gmail.draft({
                 to: params.to as string,
@@ -322,7 +346,9 @@ const plugin = {
               });
 
               return {
-                content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+                content: [
+                  { type: "text", text: JSON.stringify(result, null, 2) },
+                ],
               };
             } catch (error) {
               return errorResult(error);
@@ -374,7 +400,9 @@ const plugin = {
                 gatewayToken,
                 config.connectionId,
               );
-              const gmail = new GmailAdapter({ accessToken: credentials.accessToken });
+              const gmail = new GmailAdapter({
+                accessToken: credentials.accessToken,
+              });
 
               const result = await gmail.send({
                 to: params.to as string,
@@ -384,7 +412,9 @@ const plugin = {
               });
 
               return {
-                content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+                content: [
+                  { type: "text", text: JSON.stringify(result, null, 2) },
+                ],
               };
             } catch (error) {
               return errorResult(error);
