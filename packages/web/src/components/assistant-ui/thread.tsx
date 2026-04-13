@@ -3,6 +3,7 @@ import {
   ComposerAttachments,
   UserMessageAttachments,
 } from "@/components/assistant-ui/attachment";
+import { ChatErrorMessage } from "@/components/assistant-ui/chat-error-message";
 import { ChatImage } from "@/components/assistant-ui/chat-image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
@@ -274,6 +275,36 @@ const MessageError: FC = () => {
   );
 };
 
+const AssistantErrorOrContent: FC = () => {
+  const error = useMessage(
+    (s) =>
+      s.metadata?.custom?.error as
+        | {
+            agentName?: string;
+            providerError?: string;
+            hint?: string | null;
+            message?: string;
+          }
+        | undefined
+  );
+
+  if (error) {
+    return <ChatErrorMessage error={error} />;
+  }
+
+  return (
+    <>
+      <MessagePrimitive.Parts
+        components={{
+          Text: MarkdownText,
+          tools: { Fallback: ToolFallback },
+        }}
+      />
+      <MessageError />
+    </>
+  );
+};
+
 const AssistantMessage: FC = () => {
   return (
     <MessagePrimitive.Root
@@ -281,13 +312,7 @@ const AssistantMessage: FC = () => {
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
-        <MessagePrimitive.Parts
-          components={{
-            Text: MarkdownText,
-            tools: { Fallback: ToolFallback },
-          }}
-        />
-        <MessageError />
+        <AssistantErrorOrContent />
       </div>
 
       <div className="aui-assistant-message-footer mt-1 ml-2 flex items-center gap-2">
