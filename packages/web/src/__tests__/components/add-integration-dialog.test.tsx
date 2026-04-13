@@ -142,6 +142,140 @@ describe("AddIntegrationDialog", () => {
     });
   });
 
+  describe("Pipedrive wizard flow", () => {
+    async function selectPipedriveType(user: ReturnType<typeof userEvent.setup>) {
+      const pipedriveButton = screen.getByText("Pipedrive");
+      await user.click(pipedriveButton);
+    }
+
+    it("should show Pipedrive in type selection", () => {
+      render(<AddIntegrationDialog {...defaultProps} />);
+
+      expect(screen.getByText("Pipedrive")).toBeInTheDocument();
+      expect(
+        screen.getByText("Connect your Pipedrive CRM to manage deals, contacts, and pipeline data.")
+      ).toBeInTheDocument();
+    });
+
+    it("should show API Token field when Pipedrive is selected (not URL/login/apiKey/db)", async () => {
+      const user = userEvent.setup();
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectPipedriveType(user);
+
+      expect(screen.getByLabelText("API Token")).toBeInTheDocument();
+      expect(screen.queryByLabelText("URL")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Database")).not.toBeInTheDocument();
+    });
+
+    it("should go back to type selection from Pipedrive connect step", async () => {
+      const user = userEvent.setup();
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectPipedriveType(user);
+
+      // Should be on connect step
+      expect(screen.getByText("Connect Pipedrive")).toBeInTheDocument();
+
+      const backButton = screen.getByText("Back");
+      await user.click(backButton);
+
+      // Should be back on type selection
+      expect(screen.getByText("Add Integration")).toBeInTheDocument();
+      expect(screen.getByText("Pipedrive")).toBeInTheDocument();
+      expect(screen.getByText("Odoo")).toBeInTheDocument();
+    });
+
+    it("should show sync step after successful Pipedrive connection", async () => {
+      const user = userEvent.setup();
+      const fetchSpy = vi.spyOn(global, "fetch").mockImplementation((url, init) => {
+        const urlStr = resolveUrl(url);
+        if (urlStr.includes("/api/integrations/test-credentials")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              companyDomain: "mycompany",
+              companyName: "My Company Ltd",
+              userId: 42,
+              userName: "Jane Doe",
+            }),
+          } as Response);
+        }
+        if (urlStr.includes("/api/integrations/sync-preview")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              entities: 10,
+              categories: [
+                {
+                  id: "crm",
+                  label: "CRM",
+                  accessible: true,
+                  accessibleEntities: ["Deals", "Persons"],
+                  totalEntities: 5,
+                },
+              ],
+              data: { entities: [], lastSyncAt: "2026-04-13T12:00:00.000Z" },
+            }),
+          } as Response);
+        }
+        return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+      });
+
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectPipedriveType(user);
+
+      const apiTokenInput = screen.getByLabelText("API Token");
+      await user.type(apiTokenInput, "pd-test-token");
+
+      const connectButton = screen.getByRole("button", { name: "Connect" });
+      await user.click(connectButton);
+
+      // Should reach sync step with Pipedrive-specific loading text
+      await waitFor(() => {
+        // After sync completes, categories should show
+        expect(screen.getByText("CRM")).toBeInTheDocument();
+        expect(screen.getByText("Deals, Persons")).toBeInTheDocument();
+      });
+
+      fetchSpy.mockRestore();
+    });
+
+    it("should show inline error on Pipedrive connection failure", async () => {
+      const user = userEvent.setup();
+      const fetchSpy = vi.spyOn(global, "fetch").mockImplementation((url) => {
+        const urlStr = resolveUrl(url);
+        if (urlStr.includes("/api/integrations/test-credentials")) {
+          return Promise.resolve({
+            ok: false,
+            json: async () => ({
+              success: false,
+              error: "Invalid API token",
+            }),
+          } as Response);
+        }
+        return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+      });
+
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectPipedriveType(user);
+
+      const apiTokenInput = screen.getByLabelText("API Token");
+      await user.type(apiTokenInput, "bad-token");
+
+      const connectButton = screen.getByRole("button", { name: "Connect" });
+      await user.click(connectButton);
+
+      await waitFor(() => {
+        expect(screen.getByText("Invalid API token")).toBeInTheDocument();
+      });
+
+      fetchSpy.mockRestore();
+    });
+  });
+
   describe("database auto-selection", () => {
     it("should pre-select database matching odoo.com subdomain", async () => {
       const user = userEvent.setup();

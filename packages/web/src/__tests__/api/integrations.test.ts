@@ -1461,3 +1461,78 @@ describe("POST /api/integrations/test-credentials (Pipedrive)", () => {
     // No URL validation call — Pipedrive uses central API
   });
 });
+
+describe("POST /api/integrations/sync-preview (Pipedrive)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockFetchPipedriveSchema.mockResolvedValue({
+      success: true,
+      entities: 10,
+      lastSyncAt: "2026-04-13T12:00:00.000Z",
+      categories: [
+        {
+          id: "crm",
+          label: "CRM",
+          accessible: true,
+          accessibleEntities: ["Deals", "Persons"],
+          totalEntities: 5,
+        },
+      ],
+      data: { entities: [], lastSyncAt: "2026-04-13T12:00:00.000Z" },
+    });
+  });
+
+  it("should call fetchPipedriveSchema for Pipedrive type", async () => {
+    const { POST } = await import("@/app/api/integrations/sync-preview/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/sync-preview", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "pipedrive",
+          credentials: { apiToken: "pd-token-123" },
+        }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.entities).toBe(10);
+    expect(mockFetchPipedriveSchema).toHaveBeenCalledWith("pd-token-123");
+  });
+
+  it("should reject invalid Pipedrive credentials in sync-preview", async () => {
+    const { POST } = await import("@/app/api/integrations/sync-preview/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/sync-preview", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "pipedrive",
+          credentials: { apiToken: "" },
+        }),
+      })
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it("should still handle Odoo sync-preview requests", async () => {
+    const { POST } = await import("@/app/api/integrations/sync-preview/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/sync-preview", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "odoo",
+          credentials: validCredentials,
+        }),
+      })
+    );
+
+    // Should not call pipedrive, should pass through to odoo path
+    expect(mockFetchPipedriveSchema).not.toHaveBeenCalled();
+  });
+});
