@@ -106,19 +106,14 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ success: true });
   }
 
+  // Audit entries should answer: who, what, when, on what, outcome.
+  // No full result payloads (contain business data), no OpenClaw-internal IDs.
   const detail: Record<string, unknown> = {
     toolName: payload.toolName,
-    phase: payload.phase,
-    source: "openclaw_hook",
+    success: !payload.error,
   };
 
-  if (payload.runId) detail.runId = payload.runId;
-  if (payload.toolCallId) detail.toolCallId = payload.toolCallId;
-  if (payload.sessionKey) detail.sessionKey = payload.sessionKey;
-  if (payload.sessionId) detail.sessionId = payload.sessionId;
   if (payload.params !== undefined) detail.params = payload.params;
-
-  if (payload.result !== undefined) detail.result = payload.result;
   if (payload.error) detail.error = payload.error;
   if (payload.durationMs !== undefined) detail.durationMs = payload.durationMs;
 

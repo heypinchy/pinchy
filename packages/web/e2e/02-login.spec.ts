@@ -20,6 +20,7 @@ test.describe("Login", () => {
     await page.getByRole("button", { name: /sign in/i }).click();
 
     // First login after setup → redirected to provider configuration
-    await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 10000 });
+    // (generous timeout: scrypt hashing + cold compilation of / and /setup/provider on CI)
+    await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 20000 });
   });
 });

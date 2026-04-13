@@ -29,6 +29,7 @@ interface AgentTool {
     signal?: AbortSignal
   ) => Promise<{
     content: Array<{ type: string; text: string }>;
+    isError?: boolean;
     details?: unknown;
   }>;
 }
@@ -229,6 +230,7 @@ const plugin = {
               const message =
                 error instanceof Error ? error.message : "Unknown error";
               return {
+                isError: true,
                 content: [{ type: "text", text: `Error listing docs: ${message}` }],
               };
             }
@@ -265,6 +267,7 @@ const plugin = {
             const safe = resolveSafe(docsPath, relPath);
             if (!safe) {
               return {
+                isError: true,
                 content: [
                   {
                     type: "text",
@@ -277,6 +280,7 @@ const plugin = {
               const stat = statSync(safe);
               if (!stat.isFile()) {
                 return {
+                  isError: true,
                   content: [{ type: "text", text: `Not a file: ${relPath}` }],
                 };
               }
@@ -286,6 +290,7 @@ const plugin = {
               const message =
                 error instanceof Error ? error.message : "Unknown error";
               return {
+                isError: true,
                 content: [
                   { type: "text", text: `File not found: ${relPath} (${message})` },
                 ],

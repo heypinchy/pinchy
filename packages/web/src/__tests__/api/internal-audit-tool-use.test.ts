@@ -142,14 +142,8 @@ describe("POST /api/internal/audit/tool-use", () => {
       resource: "agent:agent-2",
       detail: {
         toolName: "browser",
-        phase: "end",
-        runId: "run-2",
-        toolCallId: "tool-2",
-        sessionKey: "agent:agent-2:direct:user-1",
-        sessionId: "session-2",
-        result: { ok: true },
+        success: true,
         durationMs: 123,
-        source: "openclaw_hook",
       },
       outcome: "success",
       error: null,
@@ -174,10 +168,7 @@ describe("POST /api/internal/audit/tool-use", () => {
       resource: "agent:derived-agent-id",
       detail: {
         toolName: "pinchy_read",
-        phase: "end",
-        sessionKey: "agent:derived-agent-id:main",
-        result: "ok",
-        source: "openclaw_hook",
+        success: true,
       },
       outcome: "success",
       error: null,
@@ -202,10 +193,8 @@ describe("POST /api/internal/audit/tool-use", () => {
       resource: "agent:unknown-agent",
       detail: {
         toolName: "browser",
-        phase: "end",
+        success: true,
         params: { action: "open" },
-        result: "done",
-        source: "openclaw_hook",
       },
       outcome: "success",
       error: null,
@@ -353,36 +342,37 @@ describe("POST /api/internal/audit/tool-use", () => {
       expect(params.url).toBe("https://api.example.com");
     });
 
-    it("redacts secret patterns in result strings before logging", async () => {
+    it("does not include result payload in audit log", async () => {
       await POST(
         makeRequest({
           phase: "end",
-          toolName: "pinchy_read",
+          toolName: "odoo_read",
           agentId: "agent-1",
-          result: "Found key: sk-abcdefghijklmnopqrstuvwxyz in config",
+          result: { records: [{ name: "Customer A", amount: 50000 }] },
         })
       );
 
       const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
       const detail = call?.detail as Record<string, unknown>;
-      expect(detail?.result).toContain("[REDACTED]");
-      expect(detail?.result).not.toContain("sk-abcdefghijklmnopqrstuvwxyz");
+      expect(detail).not.toHaveProperty("result");
+      expect(detail?.success).toBe(true);
     });
 
-    it("redacts env-file content in result strings", async () => {
+    it("logs error message but not result on failure", async () => {
       await POST(
         makeRequest({
           phase: "end",
-          toolName: "pinchy_read",
+          toolName: "odoo_read",
           agentId: "agent-1",
-          result: "API_KEY=my-secret-key\nAPP_NAME=pinchy",
+          error: "AccessError: permission denied",
         })
       );
 
       const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
       const detail = call?.detail as Record<string, unknown>;
-      expect(detail?.result).toContain("API_KEY=[REDACTED]");
-      expect(detail?.result).toContain("APP_NAME=pinchy");
+      expect(detail?.success).toBe(false);
+      expect(detail?.error).toBe("AccessError: permission denied");
+      expect(detail).not.toHaveProperty("result");
     });
   });
 });

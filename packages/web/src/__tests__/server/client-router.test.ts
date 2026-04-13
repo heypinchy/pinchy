@@ -1361,6 +1361,7 @@ describe("ClientRouter", () => {
   it("should forward provider error text from error chunk with agent name", async () => {
     const clientWs = createMockClientWs();
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
     async function* fakeStream() {
       yield {
@@ -1391,6 +1392,7 @@ describe("ClientRouter", () => {
     );
 
     consoleSpy.mockRestore();
+    logSpy.mockRestore();
   });
 
   it("should return admin hint for provider errors when user is admin", async () => {
@@ -1809,6 +1811,101 @@ describe("ClientRouter", () => {
       const greeting = sent[0].messages[0].content;
       expect(greeting).not.toContain("{user}");
       expect(greeting).toContain("I'm Smithers");
+    });
+  });
+
+  describe("error chunk handling", () => {
+    it("should send error to client on error chunk (no retry)", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield { type: "error" as const, text: "JSON parse error" };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const errorMsg = messages.find((m: any) => m.type === "error");
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg.agentName).toBe("Smithers");
+      expect(errorMsg.providerError).toBe("JSON parse error");
+      // No retry — single attempt only
+      expect(mockChat).toHaveBeenCalledTimes(1);
+
+      consoleSpy.mockRestore();
+    });
+
+    it("should not send error on successful stream", async () => {
+      const clientWs = createMockClientWs();
+
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).toHaveBeenCalledTimes(1);
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m: any) => m.type === "done")).toBe(true);
+      expect(messages.some((m: any) => m.type === "error")).toBe(false);
+    });
+
+    it("should stop streaming when browser disconnects", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          // Close the WS during the stream
+          clientWs.readyState = 3; // CLOSED
+          yield { type: "error" as const, text: "JSON parse error" };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      // Should only call chat once (no retries)
+      expect(mockChat).toHaveBeenCalledTimes(1);
+
+      consoleSpy.mockRestore();
+    });
+
+    it("should send error on thrown exceptions", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockChat.mockImplementation(async function* () {
+        throw new Error("ECONNREFUSED");
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).toHaveBeenCalledTimes(1);
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m: any) => m.type === "error")).toBe(true);
+
+      consoleSpy.mockRestore();
     });
   });
 });

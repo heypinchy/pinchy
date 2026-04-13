@@ -132,7 +132,7 @@ describe("appendAuditLog", () => {
       actorType: "agent",
       actorId: "agent-42",
       eventType: "tool.denied",
-      resource: "tool:shell",
+      resource: "tool:odoo_read",
       detail: { reason: "not allowed" },
       outcome: "failure",
     });
@@ -141,7 +141,7 @@ describe("appendAuditLog", () => {
     expect(insertedRow.actorType).toBe("agent");
     expect(insertedRow.actorId).toBe("agent-42");
     expect(insertedRow.eventType).toBe("tool.denied");
-    expect(insertedRow.resource).toBe("tool:shell");
+    expect(insertedRow.resource).toBe("tool:odoo_read");
     expect(insertedRow.detail).toEqual({ reason: "not allowed" });
   });
 

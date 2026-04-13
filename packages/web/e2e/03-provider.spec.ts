@@ -9,8 +9,8 @@ test.describe("Provider configuration", () => {
     await page.getByLabel("Password", { exact: true }).fill("test-password-123");
     await page.getByRole("button", { name: /sign in/i }).click();
 
-    // Lands on provider setup
-    await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 10000 });
+    // Lands on provider setup (generous timeout: scrypt hashing + cold compilation of / and /setup/provider)
+    await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 20000 });
 
     // Verify provider buttons are visible
     await expect(page.getByRole("button", { name: /anthropic/i })).toBeVisible();
@@ -24,7 +24,7 @@ test.describe("Provider configuration", () => {
     await page.getByLabel("Password", { exact: true }).fill("test-password-123");
     await page.getByRole("button", { name: /sign in/i }).click();
 
-    await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 10000 });
+    await expect(page).toHaveURL(/\/setup\/provider/, { timeout: 20000 });
 
     // Select Anthropic
     await page.getByRole("button", { name: /anthropic/i }).click();
