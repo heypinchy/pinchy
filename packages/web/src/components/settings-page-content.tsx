@@ -11,6 +11,7 @@ import { SettingsContext } from "@/components/settings-context";
 import { SettingsProfile } from "@/components/settings-profile";
 import { SettingsGroups } from "@/components/settings-groups";
 import { SettingsIntegrations } from "@/components/settings-integrations";
+import { SettingsOAuth } from "@/components/settings-oauth";
 import { SettingsLicense } from "@/components/settings-license";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
@@ -203,7 +204,10 @@ export function SettingsPageContent({
 
           {isAdmin && (
             <TabsContent value="integrations" keepMounted>
-              <SettingsIntegrations />
+              <div className="space-y-6">
+                <SettingsOAuth />
+                <SettingsIntegrations />
+              </div>
             </TabsContent>
           )}
 
