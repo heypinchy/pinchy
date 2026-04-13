@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
-import { UsageDashboard } from "@/components/usage-dashboard";
+import { UsageDashboard, shouldShowDots } from "@/components/usage-dashboard";
 
 // recharts uses ResponsiveContainer which needs dimensions — mock it
 vi.mock("recharts", async () => {
@@ -120,7 +120,9 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=30");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=30");
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/usage/timeseries?days=30")
+      );
     });
   });
 
@@ -140,7 +142,154 @@ describe("UsageDashboard", () => {
       expect(screen.getByText("1.6M")).toBeInTheDocument();
     });
 
-    expect(screen.getByText("$4.82")).toBeInTheDocument();
+    expect(screen.getAllByText("$4.82").length).toBeGreaterThanOrEqual(1);
+  });
+
+  describe("source breakdown cards", () => {
+    it("renders chat/system/plugin cards when totals include all three", async () => {
+      mockBothEndpoints({
+        agents: mockSummaryResponse.agents,
+        totals: {
+          chat: {
+            inputTokens: "500000",
+            outputTokens: "700000",
+            cost: "3.50",
+          },
+          system: {
+            inputTokens: "50000",
+            outputTokens: "10000",
+            cost: "0.40",
+          },
+          plugin: {
+            inputTokens: "100000",
+            outputTokens: "20000",
+            cost: "0.92",
+          },
+        },
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Chat Tokens")).toBeInTheDocument();
+      });
+
+      expect(screen.getByText("System Tokens")).toBeInTheDocument();
+      expect(screen.getByText("Plugin Tokens")).toBeInTheDocument();
+
+      // Chat: 500k + 700k = 1.2M
+      expect(screen.getByText("1.2M")).toBeInTheDocument();
+      // Plugin: 100k + 20k = 120k -> 120.0k
+      expect(screen.getByText("120.0k")).toBeInTheDocument();
+      // System: 50k + 10k = 60k -> 60.0k
+      expect(screen.getByText("60.0k")).toBeInTheDocument();
+
+      // Costs per bucket — $3.50 also appears in the Smithers agent table row
+      // (getAllByText handles both occurrences). $0.40 and $0.92 are unique to
+      // the source-breakdown cards.
+      expect(screen.getAllByText("$3.50").length).toBeGreaterThanOrEqual(1);
+      expect(screen.getByText("$0.40")).toBeInTheDocument();
+      expect(screen.getByText("$0.92")).toBeInTheDocument();
+    });
+
+    it("hides system card when system tokens are zero", async () => {
+      mockBothEndpoints({
+        agents: mockSummaryResponse.agents,
+        totals: {
+          chat: {
+            inputTokens: "500000",
+            outputTokens: "700000",
+            cost: "3.50",
+          },
+          system: { inputTokens: "0", outputTokens: "0", cost: "0" },
+          plugin: {
+            inputTokens: "100000",
+            outputTokens: "20000",
+            cost: "0.92",
+          },
+        },
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Chat Tokens")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText("System Tokens")).not.toBeInTheDocument();
+      expect(screen.getByText("Plugin Tokens")).toBeInTheDocument();
+    });
+
+    it("hides chat card when chat tokens are zero (same rule as system/plugin cards)", async () => {
+      // The source breakdown must stay internally consistent: all three
+      // cards follow the same "hide when zero" rule. Previously Chat was
+      // always rendered, which created an empty placeholder for the
+      // (admittedly unusual) system-only / plugin-only scenarios.
+      mockBothEndpoints({
+        agents: mockSummaryResponse.agents,
+        totals: {
+          chat: { inputTokens: "0", outputTokens: "0", cost: "0" },
+          system: {
+            inputTokens: "50000",
+            outputTokens: "10000",
+            cost: "0.40",
+          },
+          plugin: {
+            inputTokens: "100000",
+            outputTokens: "20000",
+            cost: "0.92",
+          },
+        },
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getByText("System Tokens")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText("Chat Tokens")).not.toBeInTheDocument();
+      expect(screen.getByText("Plugin Tokens")).toBeInTheDocument();
+    });
+
+    it("hides plugin card when plugin tokens are zero", async () => {
+      mockBothEndpoints({
+        agents: mockSummaryResponse.agents,
+        totals: {
+          chat: {
+            inputTokens: "500000",
+            outputTokens: "700000",
+            cost: "3.50",
+          },
+          system: {
+            inputTokens: "50000",
+            outputTokens: "10000",
+            cost: "0.40",
+          },
+          plugin: { inputTokens: "0", outputTokens: "0", cost: "0" },
+        },
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getByText("Chat Tokens")).toBeInTheDocument();
+      });
+
+      expect(screen.getByText("System Tokens")).toBeInTheDocument();
+      expect(screen.queryByText("Plugin Tokens")).not.toBeInTheDocument();
+    });
+
+    it("does not render any source cards when totals is missing from response", async () => {
+      // Backward compat: summary responses without `totals` should still render
+      mockBothEndpoints(mockSummaryResponse);
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        // Main summary cards still render
+        expect(screen.getByText("Total Tokens")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText("Chat Tokens")).not.toBeInTheDocument();
+      expect(screen.queryByText("System Tokens")).not.toBeInTheDocument();
+      expect(screen.queryByText("Plugin Tokens")).not.toBeInTheDocument();
+    });
   });
 
   it("should display agent table with agent names and formatted values", async () => {
@@ -160,6 +309,52 @@ describe("UsageDashboard", () => {
     expect(screen.getByText("$1.32")).toBeInTheDocument();
   });
 
+  it("shows (deleted) label for deleted agents in dropdown and table", async () => {
+    mockBothEndpoints({
+      agents: [
+        {
+          agentId: "agent-1",
+          agentName: "Smithers",
+          totalInputTokens: "500000",
+          totalOutputTokens: "700000",
+          totalCost: "3.50",
+          deleted: false,
+        },
+        {
+          agentId: "agent-2",
+          agentName: "Old Bot",
+          totalInputTokens: "150000",
+          totalOutputTokens: "250000",
+          totalCost: "1.32",
+          deleted: true,
+        },
+      ],
+    });
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+    });
+
+    // Agent filter dropdown should show "(deleted)" suffix
+    const agentSelect = screen.getByLabelText("Filter by agent");
+    const options = agentSelect.querySelectorAll("option");
+    expect(options[1]).toHaveTextContent("Smithers");
+    expect(options[1]).not.toHaveTextContent("(deleted)");
+    expect(options[2]).toHaveTextContent("Old Bot (deleted)");
+
+    // Agent table should show "(deleted)" suffix with muted styling
+    const oldBotCells = screen.getAllByText(/Old Bot/);
+    const oldBotTableCell = oldBotCells.find((el) => el.tagName === "TD")!;
+    expect(oldBotTableCell).toHaveTextContent("Old Bot (deleted)");
+    expect(oldBotTableCell).toHaveClass("text-muted-foreground");
+
+    // Smithers table cell should NOT have muted styling
+    const smithersCells = screen.getAllByText("Smithers");
+    const smithersTableCell = smithersCells.find((el) => el.tagName === "TD")!;
+    expect(smithersTableCell).not.toHaveClass("text-muted-foreground");
+  });
+
   it("should change fetch parameters when time period buttons are clicked", async () => {
     mockBothEndpoints();
     const user = userEvent.setup();
@@ -177,7 +372,9 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=7");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=7");
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/usage/timeseries?days=7")
+      );
     });
   });
 
@@ -197,7 +394,9 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=0");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=0");
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/usage/timeseries?days=0")
+      );
     });
   });
 
@@ -210,6 +409,46 @@ describe("UsageDashboard", () => {
     });
   });
 
+  it("renders chart when only one data point exists", async () => {
+    const singlePointTimeseries = {
+      data: [
+        {
+          date: "2026-03-20",
+          inputTokens: "200000",
+          outputTokens: "300000",
+          cost: "1.50",
+        },
+      ],
+    };
+    mockBothEndpoints(undefined, singlePointTimeseries);
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Daily Token Usage")).toBeInTheDocument();
+    });
+
+    // The chart renders (not stuck in empty/loading state) with a single data point
+    expect(screen.getByTestId("chart-container")).toBeInTheDocument();
+  });
+
+  describe("shouldShowDots", () => {
+    it("returns true for zero data points", () => {
+      expect(shouldShowDots(0)).toBe(true);
+    });
+
+    it("returns true for exactly one data point", () => {
+      expect(shouldShowDots(1)).toBe(true);
+    });
+
+    it("returns false for two data points", () => {
+      expect(shouldShowDots(2)).toBe(false);
+    });
+
+    it("returns false for many data points", () => {
+      expect(shouldShowDots(30)).toBe(false);
+    });
+  });
+
   it("should show 'No usage data' when summary has no agents", async () => {
     mockBothEndpoints({ agents: [] }, { data: [] });
     render(<UsageDashboard />);
@@ -217,6 +456,57 @@ describe("UsageDashboard", () => {
     await waitFor(() => {
       expect(screen.getByText("No usage data available.")).toBeInTheDocument();
     });
+  });
+
+  it("displays cache tokens column in agent table and summary card", async () => {
+    mockBothEndpoints({
+      agents: [
+        {
+          agentId: "agent-1",
+          agentName: "Smithers",
+          totalInputTokens: "500000",
+          totalOutputTokens: "700000",
+          totalCacheReadTokens: "50000",
+          totalCacheWriteTokens: "10000",
+          totalCost: "3.50",
+        },
+      ],
+    });
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+    });
+
+    // "Cache Tokens" appears in both summary card and table header
+    const cacheTokensElements = screen.getAllByText("Cache Tokens");
+    expect(cacheTokensElements.length).toBe(2);
+    // 50000 + 10000 = 60000 -> "60.0k" appears in both summary card and table cell
+    expect(screen.getAllByText("60.0k").length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("hides cache tokens summary card when no cache tokens", async () => {
+    mockBothEndpoints({
+      agents: [
+        {
+          agentId: "agent-1",
+          agentName: "Smithers",
+          totalInputTokens: "500000",
+          totalOutputTokens: "700000",
+          totalCacheReadTokens: "0",
+          totalCacheWriteTokens: "0",
+          totalCost: "3.50",
+        },
+      ],
+    });
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+    });
+
+    // "Cache Tokens" should NOT appear (no column header, no summary card)
+    expect(screen.queryByText("Cache Tokens")).not.toBeInTheDocument();
   });
 
   it("should render all time period buttons", () => {
@@ -328,6 +618,55 @@ describe("UsageDashboard", () => {
 
       expect(screen.getByText("$2.10")).toBeInTheDocument();
       expect(screen.getByText("$1.05")).toBeInTheDocument();
+    });
+
+    it("shows error message when by-user API fails", async () => {
+      vi.mocked(global.fetch).mockImplementation((url) => {
+        const urlStr = String(url);
+        if (urlStr.includes("/api/enterprise/status")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({ enterprise: true }),
+          } as Response);
+        }
+        if (urlStr.includes("/api/usage/summary")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => mockSummaryResponse,
+          } as Response);
+        }
+        if (urlStr.includes("/api/usage/timeseries")) {
+          return Promise.resolve({
+            ok: true,
+            json: async () => mockTimeseriesResponse,
+          } as Response);
+        }
+        if (urlStr.includes("/api/usage/by-user")) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: async () => ({}),
+          } as Response);
+        }
+        return Promise.resolve({ ok: false, json: async () => ({}) } as Response);
+      });
+
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+      const user = userEvent.setup();
+      render(<UsageDashboard isEnterprise />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Smithers").length).toBeGreaterThan(0);
+      });
+
+      await user.click(screen.getByRole("tab", { name: "By User" }));
+
+      await waitFor(() => {
+        expect(screen.getByText(/failed to load user data/i)).toBeInTheDocument();
+      });
+      expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+
+      consoleSpy.mockRestore();
     });
 
     it("should show 'By User' tab even when not enterprise", async () => {
@@ -445,7 +784,9 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=30&agentId=agent-1");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=30&agentId=agent-1");
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringMatching(/\/api\/usage\/timeseries\?days=30&agentId=agent-1/)
+      );
     });
   });
 
@@ -472,7 +813,9 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=30");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=30");
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/usage/timeseries?days=30")
+      );
     });
   });
 
@@ -495,7 +838,21 @@ describe("UsageDashboard", () => {
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/usage/summary?days=7");
-      expect(global.fetch).toHaveBeenCalledWith("/api/usage/timeseries?days=7");
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/usage/timeseries?days=7")
+      );
+    });
+  });
+
+  it("sends tz parameter in timeseries fetch", async () => {
+    mockBothEndpoints();
+    render(<UsageDashboard />);
+
+    await waitFor(() => {
+      const calls = vi.mocked(global.fetch).mock.calls.map((c) => String(c[0]));
+      const tsCalls = calls.filter((u) => u.includes("/api/usage/timeseries"));
+      expect(tsCalls.length).toBeGreaterThan(0);
+      expect(tsCalls[0]).toMatch(/tz=.+/);
     });
   });
 
@@ -539,7 +896,98 @@ describe("UsageDashboard", () => {
     });
   });
 
-  it("should handle fetch errors gracefully and show no-data message", async () => {
+  describe("null cost vs $0.00", () => {
+    it("displays dash when all agent costs are null", async () => {
+      mockBothEndpoints({
+        agents: [
+          {
+            agentId: "agent-1",
+            agentName: "Ollama Bot",
+            totalInputTokens: "100000",
+            totalOutputTokens: "200000",
+            totalCost: null,
+          },
+        ],
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Ollama Bot").length).toBeGreaterThan(0);
+      });
+
+      // The Estimated Cost card should show em dash, not "$0.00"
+      const costCard = screen.getByText("Estimated Cost").closest("[data-slot='card']")!;
+      expect(costCard).toHaveTextContent("\u2014");
+      expect(costCard).not.toHaveTextContent("$0.00");
+    });
+
+    it("displays $0.00 when agent cost is explicitly zero", async () => {
+      mockBothEndpoints({
+        agents: [
+          {
+            agentId: "agent-1",
+            agentName: "Zero Cost Bot",
+            totalInputTokens: "100000",
+            totalOutputTokens: "200000",
+            totalCost: "0",
+          },
+        ],
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Zero Cost Bot").length).toBeGreaterThan(0);
+      });
+
+      const costCard = screen.getByText("Estimated Cost").closest("[data-slot='card']")!;
+      expect(costCard).toHaveTextContent("$0.00");
+    });
+
+    it("displays dash for individual agent cost when null", async () => {
+      mockBothEndpoints({
+        agents: [
+          {
+            agentId: "agent-1",
+            agentName: "Ollama Bot",
+            totalInputTokens: "100000",
+            totalOutputTokens: "200000",
+            totalCost: null,
+          },
+          {
+            agentId: "agent-2",
+            agentName: "Claude Bot",
+            totalInputTokens: "50000",
+            totalOutputTokens: "80000",
+            totalCost: "2.50",
+          },
+        ],
+      });
+      render(<UsageDashboard />);
+
+      await waitFor(() => {
+        expect(screen.getAllByText("Ollama Bot").length).toBeGreaterThan(0);
+      });
+
+      // Find the Ollama Bot row via its table cell and check the cost cell shows em dash
+      const ollamaCells = screen.getAllByText("Ollama Bot");
+      const ollamaCell = ollamaCells.find((el) => el.tagName === "TD")!;
+      const ollamaRow = ollamaCell.closest("tr")!;
+      const ollamaCostCells = ollamaRow.querySelectorAll("td");
+      const ollamaCostCell = ollamaCostCells[ollamaCostCells.length - 1];
+      expect(ollamaCostCell).toHaveTextContent("\u2014");
+      expect(ollamaCostCell).not.toHaveTextContent("$0.00");
+
+      // Claude Bot should still show its cost
+      const claudeCells = screen.getAllByText("Claude Bot");
+      const claudeCell = claudeCells.find((el) => el.tagName === "TD")!;
+      const claudeRow = claudeCell.closest("tr")!;
+      const claudeCostCells = claudeRow.querySelectorAll("td");
+      const claudeCostCell = claudeCostCells[claudeCostCells.length - 1];
+      expect(claudeCostCell).toHaveTextContent("$2.50");
+    });
+  });
+
+  it("shows error message when API fetch fails", async () => {
     vi.mocked(global.fetch).mockImplementation((url) => {
       const urlStr = String(url);
       if (urlStr.includes("/api/enterprise/status")) {
@@ -570,21 +1018,72 @@ describe("UsageDashboard", () => {
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     render(<UsageDashboard />);
 
-    // The component should not crash — it stays in loading state since the
-    // catch handler does not set summary/timeseries, so it will keep showing
-    // Loading... (which means it didn't crash). Eventually nothing is rendered
-    // as data — verify no crash by checking the heading still renders.
-    expect(screen.getByText("Usage & Costs")).toBeInTheDocument();
-
     await waitFor(() => {
-      expect(consoleSpy).toHaveBeenCalledWith(
-        "[usage] Failed to fetch usage data:",
-        expect.any(Error)
-      );
+      expect(screen.getByText(/failed to load/i)).toBeInTheDocument();
     });
 
-    // After error, summary remains null so Loading... is shown (graceful degradation)
-    expect(screen.getByText("Loading...")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+    expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+
+    consoleSpy.mockRestore();
+  });
+
+  it("retries fetch when Retry button is clicked", async () => {
+    const user = userEvent.setup();
+
+    // First call: summary fails
+    let callCount = 0;
+    vi.mocked(global.fetch).mockImplementation((url) => {
+      const urlStr = String(url);
+      if (urlStr.includes("/api/enterprise/status")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ enterprise: false }),
+        } as Response);
+      }
+      if (urlStr.includes("/api/usage/summary")) {
+        callCount++;
+        if (callCount <= 1) {
+          return Promise.resolve({
+            ok: false,
+            status: 500,
+            json: async () => ({}),
+          } as Response);
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => mockSummaryResponse,
+        } as Response);
+      }
+      if (urlStr.includes("/api/usage/timeseries")) {
+        return Promise.resolve({
+          ok: true,
+          json: async () => mockTimeseriesResponse,
+        } as Response);
+      }
+      return Promise.resolve({
+        ok: false,
+        json: async () => ({}),
+      } as Response);
+    });
+
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    render(<UsageDashboard />);
+
+    // Wait for error state
+    await waitFor(() => {
+      expect(screen.getByText(/failed to load/i)).toBeInTheDocument();
+    });
+
+    // Click retry
+    await user.click(screen.getByRole("button", { name: /retry/i }));
+
+    // After retry, data should render (agent name appears in both dropdown and data area)
+    await waitFor(() => {
+      expect(screen.getAllByText("Smithers").length).toBeGreaterThanOrEqual(1);
+    });
+
+    expect(screen.queryByText(/failed to load/i)).not.toBeInTheDocument();
 
     consoleSpy.mockRestore();
   });

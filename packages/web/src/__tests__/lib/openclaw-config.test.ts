@@ -116,6 +116,30 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
+  it("should disable heartbeat per agent in agents.list", async () => {
+    // Rationale: Heartbeat fires LLM calls in the background and racks up
+    // tokens for every agent, even idle ones. Pinchy disables it by default
+    // (`heartbeat: { every: "0m" }`). We set it per-agent, NOT on agents.defaults,
+    // to avoid hot-reload races with Telegram (openclaw#47458).
+    const agentsData = [
+      { id: "a1", name: "Smithers", model: "anthropic/claude-opus-4-6", createdAt: new Date() },
+      { id: "a2", name: "Jeeves", model: "openai/gpt-4o", createdAt: new Date() },
+    ];
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue(agentsData),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    for (const agent of config.agents.list) {
+      expect(agent.heartbeat).toEqual({ every: "0m" });
+    }
+    // Must NOT be in agents.defaults (would cause hot-reload loops)
+    expect(config.agents.defaults?.heartbeat).toBeUndefined();
+  });
+
   it("should write agents.list with all agents from DB", async () => {
     const agentsData = [
       {
@@ -149,6 +173,7 @@ describe("regenerateOpenClawConfig", () => {
       model: "anthropic/claude-opus-4-6",
       workspace: "/root/.openclaw/workspaces/uuid-agent-1",
       tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
+      heartbeat: { every: "0m" },
     });
     expect(config.agents.list[1]).toEqual({
       id: "uuid-agent-2",
@@ -156,6 +181,7 @@ describe("regenerateOpenClawConfig", () => {
       model: "openai/gpt-4o",
       workspace: "/root/.openclaw/workspaces/uuid-agent-2",
       tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
+      heartbeat: { every: "0m" },
     });
   });
 
@@ -325,6 +351,41 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.entries["pinchy-files"].enabled).toBe(true);
     expect(config.plugins.entries["pinchy-files"].config.agents["kb-agent-id"]).toEqual({
       allowed_paths: ["/data/hr-docs/", "/data/policies/"],
+    });
+  });
+
+  it("should include apiBaseUrl and gatewayToken in pinchy-files config so the plugin can report vision token usage", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-files" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockResolvedValue([
+        {
+          id: "kb-agent-id",
+          name: "HR Knowledge Base",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          templateId: "knowledge-base",
+          pluginConfig: { allowed_paths: ["/data/hr-docs/"] },
+          allowedTools: ["pinchy_ls", "pinchy_read"],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    // apiBaseUrl and gatewayToken live at the plugin-level config (alongside `agents`),
+    // matching how pinchy-context and pinchy-audit expose them.
+    expect(config.plugins.entries["pinchy-files"].config.apiBaseUrl).toBe("http://pinchy:7777");
+    expect(config.plugins.entries["pinchy-files"].config.gatewayToken).toBe("gw-token-files");
+    // Per-agent allowed_paths is still nested under .agents
+    expect(config.plugins.entries["pinchy-files"].config.agents["kb-agent-id"]).toEqual({
+      allowed_paths: ["/data/hr-docs/"],
     });
   });
 

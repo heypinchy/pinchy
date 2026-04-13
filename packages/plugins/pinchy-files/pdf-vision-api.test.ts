@@ -21,7 +21,7 @@ describe("describePageImage", () => {
       resolveApiKey: async () => "test-key",
     });
 
-    expect(result).toBe("Extracted text from page");
+    expect(result?.text).toBe("Extracted text from page");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "https://api.anthropic.com/v1/messages",
       expect.objectContaining({ method: "POST" }),
@@ -82,7 +82,7 @@ describe("describePageImage", () => {
       resolveApiKey: async () => "test-key",
     });
 
-    expect(result).toBe("Extracted after retry");
+    expect(result?.text).toBe("Extracted after retry");
     expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 
@@ -116,7 +116,7 @@ describe("describePageImage", () => {
       resolveApiKey: async () => "test-key",
     });
 
-    expect(result).toBe("OpenAI extracted text");
+    expect(result?.text).toBe("OpenAI extracted text");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "https://api.openai.com/v1/chat/completions",
       expect.objectContaining({ method: "POST" }),
@@ -136,7 +136,7 @@ describe("describePageImage", () => {
       resolveApiKey: async () => "test-key",
     });
 
-    expect(result).toBe("Google extracted text");
+    expect(result?.text).toBe("Google extracted text");
     expect(globalThis.fetch).toHaveBeenCalledWith(
       expect.stringContaining("generativelanguage.googleapis.com"),
       expect.objectContaining({ method: "POST" }),
@@ -167,7 +167,7 @@ describe("describePageImage", () => {
         resolveApiKey: async () => null,
       });
 
-      expect(result).toBe("Extracted text from scanned page");
+      expect(result?.text).toBe("Extracted text from scanned page");
       expect(globalThis.fetch).toHaveBeenCalledWith(
         "http://localhost:11434/v1/chat/completions",
         expect.objectContaining({
@@ -220,6 +220,115 @@ describe("describePageImage", () => {
       });
       expect(result).toBeNull();
       expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("describePageImage usage extraction", () => {
+  const originalFetch = globalThis.fetch;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("returns usage tokens from Anthropic response", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [{ type: "text", text: "Extracted text" }],
+        usage: { input_tokens: 1234, output_tokens: 56 },
+      }),
+    });
+
+    const result = await describePageImage("base64data", {
+      model: "anthropic/claude-haiku-4-5-20251001",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(result).toEqual({
+      text: "Extracted text",
+      usage: { inputTokens: 1234, outputTokens: 56 },
+    });
+  });
+
+  it("returns usage tokens from OpenAI response", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "OpenAI text" } }],
+        usage: { prompt_tokens: 900, completion_tokens: 42 },
+      }),
+    });
+
+    const result = await describePageImage("base64data", {
+      model: "openai/gpt-4o",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(result).toEqual({
+      text: "OpenAI text",
+      usage: { inputTokens: 900, outputTokens: 42 },
+    });
+  });
+
+  it("returns usage tokens from Google response", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: "Google text" }] } }],
+        usageMetadata: { promptTokenCount: 500, candidatesTokenCount: 70 },
+      }),
+    });
+
+    const result = await describePageImage("base64data", {
+      model: "google/gemini-2.5-flash",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(result).toEqual({
+      text: "Google text",
+      usage: { inputTokens: 500, outputTokens: 70 },
+    });
+  });
+
+  it("returns usage tokens from Ollama response", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        choices: [{ message: { content: "Ollama text" } }],
+        usage: { prompt_tokens: 300, completion_tokens: 20 },
+      }),
+    });
+
+    const result = await describePageImage("base64data", {
+      model: "ollama/llava:7b",
+      ollamaBaseUrl: "http://localhost:11434",
+      resolveApiKey: async () => null,
+    });
+
+    expect(result).toEqual({
+      text: "Ollama text",
+      usage: { inputTokens: 300, outputTokens: 20 },
+    });
+  });
+
+  it("defaults usage to zero when provider omits usage field", async () => {
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        content: [{ type: "text", text: "No usage provided" }],
+        // no usage field
+      }),
+    });
+
+    const result = await describePageImage("base64data", {
+      model: "anthropic/claude-haiku-4-5-20251001",
+      resolveApiKey: async () => "test-key",
+    });
+
+    expect(result).toEqual({
+      text: "No usage provided",
+      usage: { inputTokens: 0, outputTokens: 0 },
     });
   });
 });

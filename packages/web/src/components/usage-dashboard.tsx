@@ -34,17 +34,37 @@ interface AgentSummary {
   agentName: string;
   totalInputTokens: string | null;
   totalOutputTokens: string | null;
+  totalCacheReadTokens: string | null;
+  totalCacheWriteTokens: string | null;
   totalCost: string | null;
+  deleted?: boolean;
+}
+
+interface SourceBucket {
+  inputTokens: string | null;
+  outputTokens: string | null;
+  cacheReadTokens: string | null;
+  cacheWriteTokens: string | null;
+  cost: string | null;
+}
+
+interface SourceTotals {
+  chat: SourceBucket;
+  system: SourceBucket;
+  plugin: SourceBucket;
 }
 
 interface SummaryResponse {
   agents: AgentSummary[];
+  totals?: SourceTotals;
 }
 
 interface TimeseriesPoint {
   date: string;
   inputTokens: string | null;
   outputTokens: string | null;
+  cacheReadTokens: string | null;
+  cacheWriteTokens: string | null;
   cost: string | null;
 }
 
@@ -53,6 +73,8 @@ interface UserSummary {
   userName: string;
   totalInputTokens: string | null;
   totalOutputTokens: string | null;
+  totalCacheReadTokens: string | null;
+  totalCacheWriteTokens: string | null;
   totalCost: string | null;
 }
 
@@ -74,8 +96,11 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-function formatCost(n: number): string {
-  return `$${n.toFixed(2)}`;
+const NO_PRICING_HINT = "No pricing data available for this model";
+
+function FormattedCost({ value }: { value: number | null }) {
+  if (value === null) return <span title={NO_PRICING_HINT}>{"\u2014"}</span>;
+  return <>{`$${value.toFixed(2)}`}</>;
 }
 
 type DaysOption = 7 | 30 | 90 | "all";
@@ -87,6 +112,35 @@ const PERIOD_OPTIONS: { label: string; value: DaysOption }[] = [
   { label: "All", value: "all" },
 ];
 
+/** Show dots on chart lines when there is at most one data point (otherwise the single point is invisible). */
+export function shouldShowDots(dataLength: number): boolean {
+  return dataLength <= 1;
+}
+
+function StatCard({
+  label,
+  value,
+  subtitle,
+}: {
+  label: string;
+  value: React.ReactNode;
+  subtitle?: React.ReactNode;
+}) {
+  return (
+    <Card>
+      <CardHeader className="p-3 pb-1 sm:p-4 sm:pb-1">
+        <CardTitle className="text-[10px] sm:text-xs font-medium text-muted-foreground">
+          {label}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="p-3 pt-0 sm:p-4 sm:pt-0">
+        <p className="text-base sm:text-xl font-bold truncate">{value}</p>
+        {subtitle && <p className="text-[10px] sm:text-xs text-muted-foreground">{subtitle}</p>}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function UsageDashboard({ isEnterprise: initialEnterprise = false }: UsageDashboardProps) {
   const [enterprise, setEnterprise] = useState(initialEnterprise);
   const [days, setDays] = useState<DaysOption>(30);
@@ -96,6 +150,10 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
   const [knownAgents, setKnownAgents] = useState<AgentSummary[]>([]);
   const [byUser, setByUser] = useState<ByUserResponse | null>(null);
   const [activeTab, setActiveTab] = useState("by-agent");
+  const [error, setError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
+  const [byUserError, setByUserError] = useState<string | null>(null);
+  const [byUserRetryKey, setByUserRetryKey] = useState(0);
 
   // Fetch fresh enterprise status client-side (server value may be stale after dev toggle)
   useEffect(() => {
@@ -112,18 +170,24 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
     if (selectedAgent !== "all") params.set("agentId", selectedAgent);
     const qs = params.toString() ? `?${params.toString()}` : "";
 
+    const tsParams = new URLSearchParams(params);
+    const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if (tz) tsParams.set("tz", tz);
+    const tsQs = tsParams.toString() ? `?${tsParams.toString()}` : "";
+
     Promise.all([
       fetch(`/api/usage/summary${qs}`).then((r) => {
         if (!r.ok) throw new Error(`Summary API error: ${r.status}`);
         return r.json();
       }),
-      fetch(`/api/usage/timeseries${qs}`).then((r) => {
+      fetch(`/api/usage/timeseries${tsQs}`).then((r) => {
         if (!r.ok) throw new Error(`Timeseries API error: ${r.status}`);
         return r.json();
       }),
     ])
       .then(([summaryData, timeseriesData]) => {
         if (!cancelled) {
+          setError(null);
           setSummary(summaryData);
           setTimeseries(timeseriesData);
           // Only update agent list when not filtering by agent (to keep full list)
@@ -134,12 +198,17 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
       })
       .catch((err) => {
         console.error("[usage] Failed to fetch usage data:", err);
+        if (!cancelled) {
+          setError("Failed to load usage data.");
+          setSummary(null);
+          setTimeseries(null);
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [days, selectedAgent]);
+  }, [days, selectedAgent, retryKey]);
 
   useEffect(() => {
     if (!enterprise || activeTab !== "by-user") return;
@@ -155,18 +224,33 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
         return r.json();
       })
       .then((data) => {
-        if (!cancelled) setByUser(data);
+        if (!cancelled) {
+          setByUserError(null);
+          setByUser(data);
+        }
       })
       .catch((err) => {
         console.error("[usage] Failed to fetch by-user data:", err);
+        if (!cancelled) {
+          setByUserError("Failed to load user data.");
+          setByUser(null);
+        }
       });
 
     return () => {
       cancelled = true;
     };
-  }, [enterprise, activeTab, days, selectedAgent]);
+  }, [enterprise, activeTab, days, selectedAgent, byUserRetryKey]);
+
+  function handleByUserRetry() {
+    setByUserError(null);
+    setByUser(null);
+    setByUserRetryKey((k) => k + 1);
+  }
 
   function handleDaysChange(value: DaysOption) {
+    setError(null);
+    setByUserError(null);
     setSummary(null);
     setTimeseries(null);
     setByUser(null);
@@ -174,6 +258,8 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
   }
 
   function handleAgentChange(value: string) {
+    setError(null);
+    setByUserError(null);
     setSummary(null);
     setTimeseries(null);
     setByUser(null);
@@ -190,7 +276,29 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
     (acc, a) => acc + Number(a.totalInputTokens ?? 0) + Number(a.totalOutputTokens ?? 0),
     0
   );
-  const totalCost = (summary?.agents ?? []).reduce((acc, a) => acc + Number(a.totalCost ?? 0), 0);
+  const totalCost = (() => {
+    const agents = summary?.agents ?? [];
+    if (agents.length === 0) return null;
+    const allNull = agents.every((a) => a.totalCost === null);
+    if (allNull) return null;
+    return agents.reduce((acc, a) => acc + Number(a.totalCost ?? 0), 0);
+  })();
+  const totalCacheTokens = (summary?.agents ?? []).reduce(
+    (acc, a) => acc + Number(a.totalCacheReadTokens ?? 0) + Number(a.totalCacheWriteTokens ?? 0),
+    0
+  );
+
+  function bucketTotals(b: SourceBucket | undefined): { tokens: number; cost: number | null } {
+    if (!b) return { tokens: 0, cost: null };
+    return {
+      tokens: Number(b.inputTokens ?? 0) + Number(b.outputTokens ?? 0),
+      cost: b.cost !== null ? Number(b.cost) : null,
+    };
+  }
+
+  const chatBucket = bucketTotals(summary?.totals?.chat);
+  const systemBucket = bucketTotals(summary?.totals?.system);
+  const pluginBucket = bucketTotals(summary?.totals?.plugin);
 
   const chartData = (timeseries?.data ?? []).map((p) => ({
     date: p.date,
@@ -200,11 +308,18 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
 
   const hasData = (summary?.agents?.length ?? 0) > 0;
 
+  function handleRetry() {
+    setError(null);
+    setSummary(null);
+    setTimeseries(null);
+    setRetryKey((k) => k + 1);
+  }
+
   return (
-    <div className="space-y-6">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="space-y-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
         <h2 className="text-2xl font-bold">Usage & Costs</h2>
-        <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+        <div className="flex flex-wrap items-center gap-2 lg:gap-3">
           <select
             aria-label="Select time period"
             value={String(days)}
@@ -212,7 +327,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
               const v = e.target.value;
               handleDaysChange(v === "all" ? "all" : (Number(v) as 7 | 30 | 90));
             }}
-            className="border-input bg-transparent text-sm rounded-md border px-3 py-1.5 h-8 sm:hidden"
+            className="border-input bg-transparent text-sm rounded-md border px-3 py-1.5 h-8 lg:hidden"
           >
             {PERIOD_OPTIONS.map((opt) => (
               <option key={opt.label} value={String(opt.value)}>
@@ -220,7 +335,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
               </option>
             ))}
           </select>
-          <div className="hidden sm:flex gap-1">
+          <div className="hidden lg:flex gap-1">
             {PERIOD_OPTIONS.map((opt) => (
               <Button
                 key={opt.label}
@@ -243,6 +358,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
               {knownAgents.map((a) => (
                 <option key={a.agentId} value={a.agentId}>
                   {a.agentName}
+                  {a.deleted ? " (deleted)" : ""}
                 </option>
               ))}
             </select>
@@ -280,41 +396,58 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
         </div>
       </div>
 
-      {loading ? (
+      {error ? (
+        <div className="text-center py-8">
+          <p className="text-muted-foreground mb-3">{error}</p>
+          <Button variant="outline" onClick={handleRetry}>
+            Retry
+          </Button>
+        </div>
+      ) : loading ? (
         <p>Loading...</p>
       ) : !hasData ? (
         <p>No usage data available.</p>
       ) : (
         <>
-          <div className="grid grid-cols-2 gap-4">
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Total Tokens
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold">{formatTokens(totalTokens)}</p>
-              </CardContent>
-            </Card>
-            <Card>
-              <CardHeader>
-                <CardTitle className="text-sm font-medium text-muted-foreground">
-                  Estimated Cost
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <p className="text-2xl font-bold">{formatCost(totalCost)}</p>
-              </CardContent>
-            </Card>
+          <div className="grid grid-cols-3 gap-2 sm:gap-3">
+            <StatCard
+              label="Total Tokens"
+              value={formatTokens(totalTokens)}
+              subtitle={<FormattedCost value={totalCost} />}
+            />
+            <StatCard label="Estimated Cost" value={<FormattedCost value={totalCost} />} />
+            {totalCacheTokens > 0 && (
+              <StatCard label="Cache Tokens" value={formatTokens(totalCacheTokens)} />
+            )}
+            {summary?.totals && chatBucket.tokens > 0 && (
+              <StatCard
+                label="Chat Tokens"
+                value={formatTokens(chatBucket.tokens)}
+                subtitle={<FormattedCost value={chatBucket.cost} />}
+              />
+            )}
+            {summary?.totals && systemBucket.tokens > 0 && (
+              <StatCard
+                label="System Tokens"
+                value={formatTokens(systemBucket.tokens)}
+                subtitle={<FormattedCost value={systemBucket.cost} />}
+              />
+            )}
+            {summary?.totals && pluginBucket.tokens > 0 && (
+              <StatCard
+                label="Plugin Tokens"
+                value={formatTokens(pluginBucket.tokens)}
+                subtitle={<FormattedCost value={pluginBucket.cost} />}
+              />
+            )}
           </div>
 
           <Card>
-            <CardHeader>
+            <CardHeader className="pb-2">
               <CardTitle>Daily Token Usage</CardTitle>
             </CardHeader>
-            <CardContent className="px-2 sm:px-6">
-              <ResponsiveContainer width="100%" height={250} className="sm:!h-[300px]">
+            <CardContent className="px-2 pb-2 sm:px-6 sm:pb-3">
+              <ResponsiveContainer width="100%" height={220}>
                 <LineChart data={chartData} margin={{ left: -10, right: 5, top: 5, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="oklch(0.9 0 0)" />
                   <XAxis
@@ -355,7 +488,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                     dataKey="inputTokens"
                     stroke="oklch(0.65 0.195 50)"
                     strokeWidth={2}
-                    dot={false}
+                    dot={shouldShowDots(chartData.length)}
                     name="Input Tokens"
                   />
                   <Line
@@ -363,7 +496,7 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                     dataKey="outputTokens"
                     stroke="oklch(0.62 0.1 230)"
                     strokeWidth={2}
-                    dot={false}
+                    dot={shouldShowDots(chartData.length)}
                     name="Output Tokens"
                   />
                 </LineChart>
@@ -388,6 +521,9 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                         <TableHead>Agent</TableHead>
                         <TableHead className="text-right">Input Tokens</TableHead>
                         <TableHead className="text-right">Output Tokens</TableHead>
+                        {totalCacheTokens > 0 && (
+                          <TableHead className="text-right">Cache Tokens</TableHead>
+                        )}
                         <TableHead className="text-right">Cost</TableHead>
                       </TableRow>
                     </TableHeader>
@@ -405,15 +541,28 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                         })
                         .map((agent) => (
                           <TableRow key={agent.agentId}>
-                            <TableCell>{agent.agentName}</TableCell>
+                            <TableCell className={agent.deleted ? "text-muted-foreground" : ""}>
+                              {agent.agentName}
+                              {agent.deleted ? " (deleted)" : ""}
+                            </TableCell>
                             <TableCell className="text-right">
                               {formatTokens(Number(agent.totalInputTokens ?? 0))}
                             </TableCell>
                             <TableCell className="text-right">
                               {formatTokens(Number(agent.totalOutputTokens ?? 0))}
                             </TableCell>
+                            {totalCacheTokens > 0 && (
+                              <TableCell className="text-right">
+                                {formatTokens(
+                                  Number(agent.totalCacheReadTokens ?? 0) +
+                                    Number(agent.totalCacheWriteTokens ?? 0)
+                                )}
+                              </TableCell>
+                            )}
                             <TableCell className="text-right">
-                              {formatCost(Number(agent.totalCost ?? 0))}
+                              <FormattedCost
+                                value={agent.totalCost !== null ? Number(agent.totalCost) : null}
+                              />
                             </TableCell>
                           </TableRow>
                         ))}
@@ -429,7 +578,14 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                     <CardTitle>Per-User Breakdown</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    {byUser === null ? (
+                    {byUserError ? (
+                      <div className="text-center py-8">
+                        <p className="text-muted-foreground mb-3">{byUserError}</p>
+                        <Button variant="outline" onClick={handleByUserRetry}>
+                          Retry
+                        </Button>
+                      </div>
+                    ) : byUser === null ? (
                       <p>Loading...</p>
                     ) : (
                       <Table>
@@ -438,6 +594,9 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                             <TableHead>User</TableHead>
                             <TableHead className="text-right">Input Tokens</TableHead>
                             <TableHead className="text-right">Output Tokens</TableHead>
+                            {totalCacheTokens > 0 && (
+                              <TableHead className="text-right">Cache Tokens</TableHead>
+                            )}
                             <TableHead className="text-right">Cost</TableHead>
                           </TableRow>
                         </TableHeader>
@@ -462,8 +621,18 @@ export function UsageDashboard({ isEnterprise: initialEnterprise = false }: Usag
                                 <TableCell className="text-right">
                                   {formatTokens(Number(user.totalOutputTokens ?? 0))}
                                 </TableCell>
+                                {totalCacheTokens > 0 && (
+                                  <TableCell className="text-right">
+                                    {formatTokens(
+                                      Number(user.totalCacheReadTokens ?? 0) +
+                                        Number(user.totalCacheWriteTokens ?? 0)
+                                    )}
+                                  </TableCell>
+                                )}
                                 <TableCell className="text-right">
-                                  {formatCost(Number(user.totalCost ?? 0))}
+                                  <FormattedCost
+                                    value={user.totalCost !== null ? Number(user.totalCost) : null}
+                                  />
                                 </TableCell>
                               </TableRow>
                             ))}

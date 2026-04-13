@@ -6,7 +6,10 @@ import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, type AgentFileConfig 
 import { extractPdfText } from "./pdf-extract";
 import { formatPdfResult } from "./pdf-format";
 import { PdfCache } from "./pdf-cache";
-import { createVisionConfig, describePageImage, type VisionApiConfig } from "./pdf-vision-api";
+import { createVisionConfig, type VisionApiConfig } from "./pdf-vision-api";
+import { runVisionTasks, type AggregatedVisionUsage } from "./pdf-vision-runner";
+import { reportUsage } from "./usage-reporter";
+import { resolveAgentInfo } from "./resolve-agent-info";
 
 interface PluginToolContext {
   agentId?: string;
@@ -20,6 +23,8 @@ interface ContentBlock {
 interface PluginApi {
   pluginConfig?: {
     agents?: Record<string, AgentFileConfig>;
+    apiBaseUrl?: string;
+    gatewayToken?: string;
   };
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
@@ -70,13 +75,14 @@ async function readPdf(
   realPath: string,
   stats: { size: number; mtimeMs: number },
   visionConfig: VisionApiConfig | null,
-): Promise<{ content: ContentBlock[] }> {
+): Promise<{ content: ContentBlock[]; visionUsage: AggregatedVisionUsage }> {
   const pdfCache = getCache();
+  const zeroUsage: AggregatedVisionUsage = { inputTokens: 0, outputTokens: 0 };
 
   // Fast path: check cache with just size+mtime (no file read needed)
   const cachedFast = pdfCache.getFast(realPath, stats.size, stats.mtimeMs);
   if (cachedFast) {
-    return { content: [{ type: "text", text: cachedFast }] };
+    return { content: [{ type: "text", text: cachedFast }], visionUsage: zeroUsage };
   }
 
   // Cache miss or mtime changed — read file and compute hash
@@ -87,54 +93,17 @@ async function readPdf(
   const cachedSlow = pdfCache.getByHash(realPath, contentHash);
   if (cachedSlow) {
     pdfCache.updateMtime(realPath, stats.mtimeMs);
-    return { content: [{ type: "text", text: cachedSlow }] };
+    return { content: [{ type: "text", text: cachedSlow }], visionUsage: zeroUsage };
   }
 
   const extraction = await extractPdfText(fileBuffer);
 
   // Call the LLM vision API for scanned pages and embedded images.
-  // All calls run in parallel for maximum speed.
+  // All calls run in parallel for maximum speed and their token usage is
+  // aggregated so the caller can report it to the usage dashboard.
+  let visionUsage: AggregatedVisionUsage = zeroUsage;
   if (visionConfig) {
-    const visionTasks: Promise<void>[] = [];
-
-    // Scanned pages: render → vision API → replace text
-    for (const page of extraction.pages) {
-      if (page.isScanned && page.renderedImage) {
-        visionTasks.push(
-          (async () => {
-            const imageBase64 = page.renderedImage!.toString("base64");
-            page.renderedImage = undefined;
-            const extractedText = await describePageImage(imageBase64, visionConfig);
-            if (extractedText) {
-              page.text = extractedText;
-              page.isScanned = false;
-            }
-          })(),
-        );
-      }
-
-      // Embedded images: describe each and append [Figure: ...] to page text
-      for (const img of page.embeddedImages) {
-        visionTasks.push(
-          (async () => {
-            const imageBase64 = img.data.toString("base64");
-            const description = await describePageImage(imageBase64, visionConfig);
-            if (description) {
-              page.text += `\n\n[Figure: ${description}]`;
-            }
-          })(),
-        );
-      }
-    }
-
-    if (visionTasks.length > 0) {
-      const results = await Promise.allSettled(visionTasks);
-      for (const result of results) {
-        if (result.status === "rejected") {
-          console.error("[pinchy-files] Vision API failed:", result.reason);
-        }
-      }
-    }
+    visionUsage = await runVisionTasks(extraction.pages, visionConfig);
 
     // Free embedded image data after vision processing
     for (const page of extraction.pages) {
@@ -152,7 +121,7 @@ async function readPdf(
     pdfCache.set(realPath, stats.size, stats.mtimeMs, contentHash, formatted);
   }
 
-  return { content: [{ type: "text", text: formatted }] };
+  return { content: [{ type: "text", text: formatted }], visionUsage };
 }
 
 const plugin = {
@@ -170,6 +139,8 @@ const plugin = {
 
   register(api: PluginApi) {
     const agentConfigs = api.pluginConfig?.agents ?? {};
+    const apiBaseUrl = api.pluginConfig?.apiBaseUrl;
+    const gatewayToken = api.pluginConfig?.gatewayToken;
 
     // Capture runtime APIs for vision (direct LLM API calls for scanned pages)
     const modelAuth = (api as any).runtime?.modelAuth as {
@@ -290,23 +261,44 @@ const plugin = {
 
               // PDF detection
               if (isPdf) {
-                // Build vision config from runtime APIs
+                // Resolve agent name + model from OpenClaw config in one walk.
+                // The model drives vision API calls; the name makes rows on
+                // the Usage Dashboard readable (agentId alone is opaque).
                 let visionConfig: VisionApiConfig | null = null;
+                let resolvedAgentName: string | undefined;
                 if (modelAuth && loadConfig) {
                   const cfg = loadConfig();
-                  const agents = (cfg as any)?.agents?.list as Array<{ id: string; model: string }> | undefined;
-                  const agentModel = agents?.find(
-                    (a) => a.id === agentId
-                  )?.model;
-                  if (agentModel) {
+                  const agentInfo = resolveAgentInfo(cfg, agentId);
+                  resolvedAgentName = agentInfo.name;
+                  if (agentInfo.model) {
                     visionConfig = createVisionConfig({
                       modelAuth,
                       cfg,
-                      model: agentModel,
+                      model: agentInfo.model,
                     });
                   }
                 }
-                return await readPdf(realPath, stats, visionConfig);
+                const pdfResult = await readPdf(realPath, stats, visionConfig);
+
+                // Fire-and-forget: report any vision API tokens to Pinchy's
+                // internal usage endpoint so they show up on the Usage
+                // Dashboard. We intentionally do not await — telemetry must
+                // never block or fail a PDF read.
+                if (apiBaseUrl && gatewayToken && visionConfig) {
+                  void reportUsage(
+                    {
+                      agentId,
+                      agentName: resolvedAgentName ?? agentId,
+                      sessionKey: "plugin:pinchy-files",
+                      model: visionConfig.model,
+                      inputTokens: pdfResult.visionUsage.inputTokens,
+                      outputTokens: pdfResult.visionUsage.outputTokens,
+                    },
+                    { apiBaseUrl, gatewayToken },
+                  );
+                }
+
+                return { content: pdfResult.content };
               }
 
               // Non-PDF: existing behavior

@@ -16,10 +16,22 @@ Admins only. Non-admin users get redirected to the home page if they try to open
 Open **Usage** from the sidebar (or visit `/usage`).
 
 - **Total Tokens** — sum of input and output tokens for the selected period and agent filter
-- **Estimated Cost** — running USD estimate based on the per-token prices in your provider's model config
-- **Daily Token Usage** chart — input vs output tokens over time
-- **Per-Agent Breakdown** — which agents consume what, sorted by cost
+- **Estimated Cost** — running USD estimate based on the per-token prices in your provider's model config. Shows "—" when pricing is unavailable (e.g. local Ollama models) so you can tell the difference between "free" and "no pricing data"
+- **Cache Tokens** — combined cache read and write tokens, shown when cache usage exists. Cache tokens reduce costs (reads are cheaper than fresh input tokens) and this card helps you see how much you're saving
+- **Source Breakdown** — how those tokens split across Chat, System, and Plugin use (see below)
+- **Daily Token Usage** chart — input vs output tokens over time. Days with no usage show as zero instead of being skipped, so you see actual gaps rather than misleading interpolation. The chart groups days by your browser's timezone, not UTC
+- **Per-Agent Breakdown** — which agents consume what, sorted by cost. Deleted agents are marked with "(deleted)" so you can still see their historical usage
 - **Per-User Breakdown** — Enterprise only — same numbers split by who chatted with the agent
+
+### Token sources
+
+Not every token an agent burns comes from a user message. Pinchy labels each usage record with its source so you can see where the budget actually goes:
+
+- **Chat** — tokens spent on direct conversations with the agent (user messages and the agent's replies).
+- **System** — tokens spent on background work Pinchy triggers on the agent's behalf, such as onboarding interviews or scheduled jobs. No human sent these messages.
+- **Plugin** — tokens spent _inside_ a tool call. For example, when an agent asks the `pinchy-files` plugin to read a PDF, the plugin may call a vision model to extract text from scanned pages. Those vision calls are billed to the agent but show up under Plugin, not Chat.
+
+Cards for each bucket only appear when that bucket has non-zero usage, so a fresh instance only shows Chat until background or plugin work kicks in.
 
 ### Filters
 
@@ -30,19 +42,22 @@ Both filters apply to every card and tab on the page.
 
 ## Where the numbers come from
 
-Every successful chat turn writes a usage record with the input/output tokens that the LLM provider reported. Pinchy multiplies those by the per-million-token prices configured for the model and stores the result in USD with six decimals.
+Pinchy writes a usage record whenever an LLM call completes — both for chat turns (captured by a background poller that reads OpenClaw session snapshots) and for plugin-internal LLM calls (reported directly by the plugin). Each record carries the input/output tokens the provider reported, plus cache read and write tokens when the provider supports prompt caching.
+
+Pinchy multiplies those by the per-million-token prices configured for the model and stores the result in USD with six decimals. Cache tokens use Anthropic-style pricing ratios: cache reads at 10% of the input price, cache writes at 125%.
 
 A few honest caveats:
 
 - **It's an estimate.** Provider invoices are the source of truth. Pinchy uses the prices baked into the OpenClaw model config, which can drift from a provider's current published rates.
-- **Local Ollama is free.** Local models record token counts but their cost is always zero — you're paying in electricity and hardware, not API fees.
+- **Cache pricing is approximate.** The 10%/125% ratios match Anthropic's published pricing. If your provider uses different cache pricing, the estimate will be off. The token counts themselves are always accurate.
+- **Local Ollama shows "—" for cost.** Local models record token counts but have no pricing config. The dashboard shows a dash instead of $0.00 to make this clear.
 - **Tool execution time isn't tracked here.** Only the LLM tokens count. The Audit Trail at `/audit` is where you go for tool-use details.
 
 ## Export
 
 <Aside type="note">CSV export is an Enterprise feature.</Aside>
 
-With an active Enterprise license, the **Export CSV** button (top-right) downloads the current view — period and agent filter applied — as a CSV file. Useful for finance hand-offs or feeding the data into your own dashboards.
+With an active Enterprise license, the **Export CSV** button (top-right) downloads the current view — period and agent filter applied — as a CSV file. The export includes cache read and write tokens alongside the regular token columns. Useful for finance hand-offs or feeding the data into your own dashboards.
 
 Without a license, the button is disabled but stays visible so you know the feature exists.
 

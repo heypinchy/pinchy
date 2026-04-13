@@ -7,10 +7,11 @@ vi.mock("@/lib/api-auth", () => ({
   requireAdmin: vi.fn(),
 }));
 
-// Build chainable mock: select().from().where().groupBy()
+// Build chainable mock: select().from().leftJoin().where().groupBy()
 const mockGroupBy = vi.fn();
 const mockWhere = vi.fn().mockReturnValue({ groupBy: mockGroupBy });
-const mockFrom = vi.fn().mockReturnValue({ where: mockWhere });
+const mockLeftJoin = vi.fn().mockReturnValue({ where: mockWhere });
+const mockFrom = vi.fn().mockReturnValue({ leftJoin: mockLeftJoin, where: mockWhere });
 
 const mockSelect = vi.fn().mockReturnValue({ from: mockFrom });
 
@@ -24,8 +25,15 @@ vi.mock("@/db/schema", () => ({
     agentName: "agent_name",
     inputTokens: "input_tokens",
     outputTokens: "output_tokens",
+    cacheReadTokens: "cache_read_tokens",
+    cacheWriteTokens: "cache_write_tokens",
     estimatedCostUsd: "estimated_cost_usd",
     timestamp: "timestamp",
+    sessionKey: "session_key",
+  },
+  agents: {
+    id: "id",
+    deletedAt: "deleted_at",
   },
 }));
 
@@ -35,6 +43,15 @@ vi.mock("drizzle-orm", () => ({
   gte: vi.fn((col, val) => ({ col, val, op: "gte" })),
   eq: vi.fn((col, val) => ({ col, val })),
   and: vi.fn((...args) => args),
+  sql: Object.assign(
+    vi.fn((strings: TemplateStringsArray, ...values: unknown[]) => ({
+      __sql: true,
+      strings,
+      values,
+      as: vi.fn().mockReturnThis(),
+    })),
+    { raw: vi.fn() }
+  ),
 }));
 
 import { requireAdmin } from "@/lib/api-auth";
@@ -71,8 +88,12 @@ describe("GET /api/usage/summary", () => {
 
     // Reset chainable mock defaults
     mockSelect.mockReturnValue({ from: mockFrom });
-    mockFrom.mockReturnValue({ where: mockWhere });
+    mockFrom.mockReturnValue({ leftJoin: mockLeftJoin, where: mockWhere });
+    mockLeftJoin.mockReturnValue({ where: mockWhere });
     mockWhere.mockReturnValue({ groupBy: mockGroupBy });
+    // Default for the source-breakdown query (second groupBy call).
+    // Tests that care about the totals override with mockResolvedValueOnce.
+    mockGroupBy.mockResolvedValue([]);
 
     const mod = await import("@/app/api/usage/summary/route");
     GET = mod.GET;
@@ -198,5 +219,230 @@ describe("GET /api/usage/summary", () => {
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.agents).toEqual([]);
+  });
+
+  it("returns deleted flag for soft-deleted agents", async () => {
+    mockGroupBy.mockResolvedValueOnce([
+      {
+        agentId: "a1",
+        agentName: "Smithers",
+        totalInputTokens: "5000",
+        totalOutputTokens: "2000",
+        totalCost: "0.045000",
+        deleted: false,
+      },
+      {
+        agentId: "a2",
+        agentName: "Old Bot",
+        totalInputTokens: "3000",
+        totalOutputTokens: "1000",
+        totalCost: "0.025000",
+        deleted: true,
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/usage/summary");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.agents).toHaveLength(2);
+    expect(body.agents[0].deleted).toBe(false);
+    expect(body.agents[1].deleted).toBe(true);
+  });
+
+  describe("source breakdown (totals)", () => {
+    it("returns totals split into chat/system/plugin based on sessionKey", async () => {
+      mockGroupBy.mockResolvedValueOnce(sampleAgents).mockResolvedValueOnce([
+        {
+          source: "chat",
+          inputTokens: "5000",
+          outputTokens: "2000",
+          cost: "0.045000",
+        },
+        {
+          source: "system",
+          inputTokens: "1000",
+          outputTokens: "500",
+          cost: "0.010000",
+        },
+        {
+          source: "plugin",
+          inputTokens: "2000",
+          outputTokens: "300",
+          cost: "0.015000",
+        },
+      ]);
+
+      const request = new NextRequest("http://localhost:7777/api/usage/summary");
+      const response = await GET(request);
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.totals).toEqual({
+        chat: {
+          inputTokens: "5000",
+          outputTokens: "2000",
+          cacheReadTokens: "0",
+          cacheWriteTokens: "0",
+          cost: "0.045000",
+        },
+        system: {
+          inputTokens: "1000",
+          outputTokens: "500",
+          cacheReadTokens: "0",
+          cacheWriteTokens: "0",
+          cost: "0.010000",
+        },
+        plugin: {
+          inputTokens: "2000",
+          outputTokens: "300",
+          cacheReadTokens: "0",
+          cacheWriteTokens: "0",
+          cost: "0.015000",
+        },
+      });
+    });
+
+    it("defaults missing sources to zero tokens/cost", async () => {
+      // Only chat tokens exist — system and plugin should be zero
+      mockGroupBy.mockResolvedValueOnce(sampleAgents).mockResolvedValueOnce([
+        {
+          source: "chat",
+          inputTokens: "5000",
+          outputTokens: "2000",
+          cost: "0.045000",
+        },
+      ]);
+
+      const request = new NextRequest("http://localhost:7777/api/usage/summary");
+      const response = await GET(request);
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.totals.chat).toEqual({
+        inputTokens: "5000",
+        outputTokens: "2000",
+        cacheReadTokens: "0",
+        cacheWriteTokens: "0",
+        cost: "0.045000",
+      });
+      expect(body.totals.system).toEqual({
+        inputTokens: "0",
+        outputTokens: "0",
+        cacheReadTokens: "0",
+        cacheWriteTokens: "0",
+        cost: null,
+      });
+      expect(body.totals.plugin).toEqual({
+        inputTokens: "0",
+        outputTokens: "0",
+        cacheReadTokens: "0",
+        cacheWriteTokens: "0",
+        cost: null,
+      });
+    });
+
+    it("returns all-zero totals when there are no records at all", async () => {
+      mockGroupBy.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
+
+      const request = new NextRequest("http://localhost:7777/api/usage/summary");
+      const response = await GET(request);
+
+      expect(response.status).toBe(200);
+      const body = await response.json();
+      expect(body.totals).toEqual({
+        chat: {
+          inputTokens: "0",
+          outputTokens: "0",
+          cacheReadTokens: "0",
+          cacheWriteTokens: "0",
+          cost: null,
+        },
+        system: {
+          inputTokens: "0",
+          outputTokens: "0",
+          cacheReadTokens: "0",
+          cacheWriteTokens: "0",
+          cost: null,
+        },
+        plugin: {
+          inputTokens: "0",
+          outputTokens: "0",
+          cacheReadTokens: "0",
+          cacheWriteTokens: "0",
+          cost: null,
+        },
+      });
+    });
+  });
+
+  it("returns cache token totals per agent", async () => {
+    mockGroupBy.mockResolvedValueOnce([
+      {
+        agentId: "a1",
+        agentName: "Smithers",
+        totalInputTokens: "5000",
+        totalOutputTokens: "2000",
+        totalCacheReadTokens: "50000",
+        totalCacheWriteTokens: "10000",
+        totalCost: "0.045000",
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/usage/summary");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.agents[0].totalCacheReadTokens).toBe("50000");
+    expect(body.agents[0].totalCacheWriteTokens).toBe("10000");
+  });
+
+  it("preserves null cost in source breakdown when pricing is unavailable", async () => {
+    mockGroupBy.mockResolvedValueOnce(sampleAgents).mockResolvedValueOnce([
+      {
+        source: "chat",
+        inputTokens: "5000",
+        outputTokens: "2000",
+        cacheReadTokens: null,
+        cacheWriteTokens: null,
+        cost: null,
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/usage/summary");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.totals.chat.cost).toBeNull();
+    // Token fields should still default to "0" when null
+    expect(body.totals.chat.inputTokens).toBe("5000");
+    expect(body.totals.chat.outputTokens).toBe("2000");
+  });
+
+  it("includes cache tokens in source breakdown totals", async () => {
+    mockGroupBy.mockResolvedValueOnce(sampleAgents).mockResolvedValueOnce([
+      {
+        source: "chat",
+        inputTokens: "5000",
+        outputTokens: "2000",
+        cacheReadTokens: "30000",
+        cacheWriteTokens: "5000",
+        cost: "0.045000",
+      },
+    ]);
+
+    const request = new NextRequest("http://localhost:7777/api/usage/summary");
+    const response = await GET(request);
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.totals.chat.cacheReadTokens).toBe("30000");
+    expect(body.totals.chat.cacheWriteTokens).toBe("5000");
+    // Missing sources default to zero
+    expect(body.totals.system.cacheReadTokens).toBe("0");
+    expect(body.totals.system.cacheWriteTokens).toBe("0");
   });
 });
