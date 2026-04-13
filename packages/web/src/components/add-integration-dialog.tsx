@@ -36,7 +36,7 @@ import {
   generateConnectionName,
 } from "@/lib/integrations/odoo-url";
 import { Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
-import { OdooIcon } from "./integration-icons";
+import { OdooIcon, GoogleIcon } from "./integration-icons";
 
 interface IntegrationType {
   id: string;
@@ -52,7 +52,12 @@ const INTEGRATION_TYPES: IntegrationType[] = [
     description: "Connect your Odoo ERP to query sales, inventory, and customer data.",
     icon: OdooIcon,
   },
-  // Future: { id: "shopify", name: "Shopify", description: "...", icon: ShopifyIcon },
+  {
+    id: "google",
+    name: "Google",
+    description: "Connect your Google account to sync email via Gmail.",
+    icon: GoogleIcon,
+  },
 ];
 
 // --- Wizard state ---
@@ -131,6 +136,8 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
   // DB detection
   const [dbFetchState, setDbFetchState] = useState<"idle" | "loading" | "done" | "failed">("idle");
   const [fetchedDatabases, setFetchedDatabases] = useState<string[]>([]);
+
+  const isSecure = typeof window !== "undefined" && window.location.protocol === "https:";
 
   const form = useForm<ConnectFormValues>({
     resolver: zodResolver(connectFormSchema),
@@ -381,16 +388,13 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
           </>
         )}
 
-        {/* Step 1: Connect */}
-        {step === "connect" && (
+        {/* Step 1: Connect (Odoo) */}
+        {step === "connect" && selectedType === "odoo" && (
           <>
             <DialogHeader>
-              <DialogTitle>
-                Connect {INTEGRATION_TYPES.find((t) => t.id === selectedType)?.name}
-              </DialogTitle>
+              <DialogTitle>Connect Odoo</DialogTitle>
               <DialogDescription>
-                Enter the connection details for your{" "}
-                {INTEGRATION_TYPES.find((t) => t.id === selectedType)?.name} instance.
+                Enter the connection details for your Odoo instance.
               </DialogDescription>
             </DialogHeader>
 
@@ -524,6 +528,56 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
                 </div>
               </form>
             </Form>
+          </>
+        )}
+
+        {/* Step 1: Connect (Google OAuth) */}
+        {step === "connect" && selectedType === "google" && (
+          <>
+            <DialogHeader>
+              <DialogTitle>Connect Google</DialogTitle>
+              <DialogDescription>
+                Sign in with your Google account to connect Gmail.
+              </DialogDescription>
+            </DialogHeader>
+
+            <StepIndicator current={1} total={2} label="Connect" />
+
+            {/* eslint-disable @next/next/no-html-link-for-pages -- OAuth requires full page redirect, not client-side navigation */}
+            <div className="space-y-4">
+              <div className="flex flex-col items-center gap-4 py-4">
+                {isSecure ? (
+                  <a
+                    href="/api/integrations/oauth/start"
+                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground ring-offset-background transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                  >
+                    Connect Google Account
+                  </a>
+                ) : (
+                  <>
+                    <a
+                      href="/api/integrations/oauth/start"
+                      aria-disabled="true"
+                      className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground opacity-50 pointer-events-none"
+                      tabIndex={-1}
+                    >
+                      Connect Google Account
+                    </a>
+                    <p className="text-sm text-destructive">HTTPS is required for Google OAuth.</p>
+                  </>
+                )}
+              </div>
+
+              <div className="flex justify-between pt-2">
+                <Button type="button" variant="ghost" onClick={handleBack}>
+                  Back
+                </Button>
+                <Button type="button" variant="outline" onClick={() => handleClose(false)}>
+                  Cancel
+                </Button>
+              </div>
+            </div>
+            {/* eslint-enable @next/next/no-html-link-for-pages */}
           </>
         )}
 

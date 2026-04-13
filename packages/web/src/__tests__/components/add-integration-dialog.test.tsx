@@ -142,6 +142,102 @@ describe("AddIntegrationDialog", () => {
     });
   });
 
+  describe("Google OAuth type", () => {
+    async function selectGoogleType(user: ReturnType<typeof userEvent.setup>) {
+      const googleButton = screen.getByText("Google");
+      await user.click(googleButton);
+    }
+
+    it("should show Google as a type option alongside Odoo", () => {
+      render(<AddIntegrationDialog {...defaultProps} />);
+      expect(screen.getByText("Odoo")).toBeInTheDocument();
+      expect(screen.getByText("Google")).toBeInTheDocument();
+    });
+
+    it("should show OAuth connect button when Google is selected", async () => {
+      const user = userEvent.setup();
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectGoogleType(user);
+
+      expect(screen.getByRole("link", { name: /connect google account/i })).toBeInTheDocument();
+    });
+
+    it("should link to /api/integrations/oauth/start", async () => {
+      const user = userEvent.setup();
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectGoogleType(user);
+
+      const link = screen.getByRole("link", { name: /connect google account/i });
+      expect(link).toHaveAttribute("href", "/api/integrations/oauth/start");
+    });
+
+    it("should show step indicator with 1 of 2 for Google connect step", async () => {
+      const user = userEvent.setup();
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectGoogleType(user);
+
+      expect(screen.getByText("Step 1 of 2")).toBeInTheDocument();
+    });
+
+    it("should disable OAuth button and show warning when not on HTTPS", async () => {
+      // jsdom defaults to http://localhost, so insecure mode is the default
+      const user = userEvent.setup();
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectGoogleType(user);
+
+      const link = screen.getByRole("link", { name: /connect google account/i });
+      expect(link).toHaveAttribute("aria-disabled", "true");
+      expect(screen.getByText("HTTPS is required for Google OAuth.")).toBeInTheDocument();
+    });
+
+    it("should enable OAuth button when on HTTPS", async () => {
+      // Temporarily change location.protocol
+      const originalProtocol = window.location.protocol;
+      Object.defineProperty(window, "location", {
+        writable: true,
+        value: { ...window.location, protocol: "https:" },
+      });
+
+      const user = userEvent.setup();
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectGoogleType(user);
+
+      const link = screen.getByRole("link", { name: /connect google account/i });
+      expect(link).not.toHaveAttribute("aria-disabled");
+      expect(screen.queryByText("HTTPS is required for Google OAuth.")).not.toBeInTheDocument();
+
+      // Restore
+      Object.defineProperty(window, "location", {
+        writable: true,
+        value: { ...window.location, protocol: originalProtocol },
+      });
+    });
+
+    it("should not show Odoo form fields when Google is selected", async () => {
+      const user = userEvent.setup();
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectGoogleType(user);
+
+      expect(screen.queryByLabelText("URL")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("API Key")).not.toBeInTheDocument();
+    });
+
+    it("should allow navigating back to type selection from Google connect step", async () => {
+      const user = userEvent.setup();
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectGoogleType(user);
+
+      const backButton = screen.getByRole("button", { name: /back/i });
+      await user.click(backButton);
+
+      // Should be back on type selection
+      expect(screen.getByText("Add Integration")).toBeInTheDocument();
+      expect(screen.getByText("Odoo")).toBeInTheDocument();
+      expect(screen.getByText("Google")).toBeInTheDocument();
+    });
+  });
+
   describe("database auto-selection", () => {
     it("should pre-select database matching odoo.com subdomain", async () => {
       const user = userEvent.setup();
