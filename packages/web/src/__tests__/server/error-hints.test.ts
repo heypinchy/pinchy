@@ -56,4 +56,21 @@ describe("getErrorHint", () => {
       );
     });
   });
+
+  describe("ambiguous keywords — ordering matters", () => {
+    it("should classify 'Rate limit exceeded' as transient, not provider (exceeded appears in both)", () => {
+      // "exceeded" matches the provider pattern, but "rate limit" is more
+      // specific. Transient patterns are checked first to prevent misclassification.
+      expect(getErrorHint("Rate limit exceeded", "admin")).toBe(
+        "Try again in a moment."
+      );
+    });
+
+    it("should classify 'You exceeded your current quota' as provider", () => {
+      // "exceeded" alone (without "rate limit") correctly falls through to provider pattern
+      expect(getErrorHint("You exceeded your current quota", "admin")).toBe(
+        "Go to Settings → Providers to check your API configuration."
+      );
+    });
+  });
 });
