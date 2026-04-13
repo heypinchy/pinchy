@@ -12,15 +12,9 @@ import {
   type AppendMessage,
   type AssistantRuntime,
 } from "@assistant-ui/react";
+import type { ChatError } from "@/components/assistant-ui/chat-error-message";
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
-
-interface ChatError {
-  agentName?: string;
-  providerError?: string;
-  hint?: string | null;
-  message?: string;
-}
 
 interface WsMessage {
   id: string;

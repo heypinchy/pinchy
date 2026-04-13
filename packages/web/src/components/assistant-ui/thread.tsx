@@ -276,9 +276,7 @@ const MessageError: FC = () => {
 };
 
 const AssistantErrorOrContent: FC = () => {
-  const error = useMessage(
-    (s) => s.metadata?.custom?.error as ChatError | undefined
-  );
+  const error = useMessage((s) => s.metadata?.custom?.error as ChatError | undefined);
 
   if (error) {
     return <ChatErrorMessage error={error} />;

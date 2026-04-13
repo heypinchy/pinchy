@@ -1,7 +1,7 @@
 import { AlertTriangle } from "lucide-react";
 import type { FC } from "react";
 
-interface ChatError {
+export interface ChatError {
   agentName?: string;
   providerError?: string;
   hint?: string | null;
