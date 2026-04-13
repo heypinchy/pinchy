@@ -37,6 +37,7 @@ export async function GET(
     return NextResponse.json({ error: "Failed to decrypt credentials" }, { status: 500 });
   }
 
+  // TODO: Add mutex/lock to prevent concurrent refresh calls for the same connectionId
   // Auto-refresh expired Google OAuth tokens (graceful degradation: return old credentials on failure)
   if (
     connection.type === "google" &&
@@ -69,6 +70,8 @@ export async function GET(
             updatedAt: new Date(),
           })
           .where(eq(integrationConnections.id, connectionId));
+
+        console.log("Refreshed Google OAuth token for connection", connectionId);
       }
     } catch (err) {
       console.error("Google OAuth token refresh failed:", err);
