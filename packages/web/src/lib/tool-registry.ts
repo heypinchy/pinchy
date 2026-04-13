@@ -86,6 +86,43 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     category: "powerful",
     integration: "odoo",
   },
+
+  // Email integration tools
+  {
+    id: "email_list",
+    label: "Email: List messages",
+    description: "List emails from connected inbox",
+    category: "safe",
+    integration: "email",
+  },
+  {
+    id: "email_read",
+    label: "Email: Read message",
+    description: "Read full email content",
+    category: "safe",
+    integration: "email",
+  },
+  {
+    id: "email_search",
+    label: "Email: Search",
+    description: "Search emails with query",
+    category: "safe",
+    integration: "email",
+  },
+  {
+    id: "email_draft",
+    label: "Email: Create draft",
+    description: "Create email draft (does not send)",
+    category: "powerful",
+    integration: "email",
+  },
+  {
+    id: "email_send",
+    label: "Email: Send",
+    description: "Send email directly",
+    category: "powerful",
+    integration: "email",
+  },
 ];
 
 const ALL_GROUPS = ["group:runtime", "group:fs", "group:web"] as const;
@@ -124,6 +161,11 @@ const ODOO_DELETE_TOOLS = ["odoo_delete"] as const;
 /** Returns all Odoo tool definitions from the registry. */
 export function getOdooTools(): ToolDefinition[] {
   return TOOL_REGISTRY.filter((t) => t.integration === "odoo");
+}
+
+/** Returns all email tool definitions from the registry. */
+export function getEmailTools(): ToolDefinition[] {
+  return TOOL_REGISTRY.filter((t) => t.integration === "email");
 }
 
 /** Returns the odoo_* tool IDs that should be enabled for the given access level. */

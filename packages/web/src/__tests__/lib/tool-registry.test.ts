@@ -7,6 +7,7 @@ import {
   getOdooTools,
   getOdooToolsForAccessLevel,
   detectOdooAccessLevel,
+  getEmailTools,
 } from "@/lib/tool-registry";
 
 describe("TOOL_REGISTRY", () => {
@@ -31,8 +32,14 @@ describe("TOOL_REGISTRY", () => {
 
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
-    expect(powerful.length).toBe(3);
-    expect(powerful.map((t) => t.id)).toEqual(["odoo_create", "odoo_write", "odoo_delete"]);
+    expect(powerful.length).toBe(5);
+    expect(powerful.map((t) => t.id)).toEqual([
+      "odoo_create",
+      "odoo_write",
+      "odoo_delete",
+      "email_draft",
+      "email_send",
+    ]);
   });
 
   it("does not contain any OpenClaw native tools", () => {
@@ -131,9 +138,11 @@ describe("Odoo access level helpers", () => {
     }
   });
 
-  it("non-odoo tools don't have integration set", () => {
-    const nonOdooTools = TOOL_REGISTRY.filter((t) => !t.id.startsWith("odoo_"));
-    for (const tool of nonOdooTools) {
+  it("non-integration tools don't have integration set", () => {
+    const nonIntegrationTools = TOOL_REGISTRY.filter(
+      (t) => !t.id.startsWith("odoo_") && !t.id.startsWith("email_")
+    );
+    for (const tool of nonIntegrationTools) {
       expect(tool.integration).toBeUndefined();
     }
   });
@@ -219,5 +228,33 @@ describe("Odoo access level helpers", () => {
 
   it("detectOdooAccessLevel returns 'custom' when no odoo tools present", () => {
     expect(detectOdooAccessLevel(["pinchy_ls", "pinchy_read"])).toBe("custom");
+  });
+
+  // --- Email tools ---
+
+  it("email tools are registered in TOOL_REGISTRY", () => {
+    const emailTools = TOOL_REGISTRY.filter((t) => t.integration === "email");
+    expect(emailTools).toHaveLength(5);
+
+    const ids = emailTools.map((t) => t.id);
+    expect(ids).toContain("email_list");
+    expect(ids).toContain("email_read");
+    expect(ids).toContain("email_search");
+    expect(ids).toContain("email_draft");
+    expect(ids).toContain("email_send");
+  });
+
+  it("email read tools are safe category, send is powerful", () => {
+    expect(getToolById("email_list")?.category).toBe("safe");
+    expect(getToolById("email_read")?.category).toBe("safe");
+    expect(getToolById("email_search")?.category).toBe("safe");
+    expect(getToolById("email_draft")?.category).toBe("powerful");
+    expect(getToolById("email_send")?.category).toBe("powerful");
+  });
+
+  it("getEmailTools() returns exactly 5 tools", () => {
+    const tools = getEmailTools();
+    expect(tools).toHaveLength(5);
+    expect(tools.every((t) => t.integration === "email")).toBe(true);
   });
 });
