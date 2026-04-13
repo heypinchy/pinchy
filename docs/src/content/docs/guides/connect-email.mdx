@@ -1,0 +1,122 @@
+---
+title: Connect Email
+description: Connect a Google account to Pinchy so agents can read, search, draft, and send emails via Gmail.
+---
+
+This guide walks you through connecting a Google account to Pinchy so your agents can work with email — reading, searching, drafting, and sending messages via the Gmail API.
+
+## Prerequisites
+
+- Pinchy is running with HTTPS enabled (see [Lock Pinchy to a Domain](/guides/domain-lock/))
+- You're logged in as an admin in Pinchy
+- You have access to a [Google Cloud Console](https://console.cloud.google.com/) project
+
+:::caution
+Google OAuth requires HTTPS. The "Connect Google Account" button is disabled when Pinchy runs without HTTPS.
+:::
+
+## 1. Create a Google Cloud OAuth app
+
+Before Pinchy can connect to Google, you need to create an OAuth 2.0 application in Google Cloud Console. This is a one-time setup.
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Create a new project or select an existing one
+3. Navigate to **APIs & Services → OAuth consent screen**
+4. Configure the consent screen:
+   - **User type** — choose "Internal" (if using Google Workspace) or "External"
+   - Fill in the required fields (app name, support email)
+   - Add these scopes:
+     - `https://www.googleapis.com/auth/gmail.readonly`
+     - `https://www.googleapis.com/auth/gmail.compose`
+     - `https://www.googleapis.com/auth/userinfo.email`
+5. Navigate to **APIs & Services → Credentials**
+6. Click **Create Credentials → OAuth client ID**
+7. Select **Web application** as the application type
+8. Under **Authorized redirect URIs**, add:
+   ```
+   https://your-pinchy-domain.com/api/integrations/oauth/callback
+   ```
+   Replace `your-pinchy-domain.com` with your actual Pinchy URL.
+9. Click **Create** and copy the **Client ID** and **Client Secret**
+
+:::note
+If you chose "External" user type, your OAuth app starts in "Testing" mode. Only users you add as test users can authorize. To remove this restriction, submit the app for Google's verification process.
+:::
+
+## 2. Configure OAuth in Pinchy
+
+1. Go to **Settings → OAuth Providers**
+2. In the **Google** section, enter:
+   - **Client ID** — the client ID from step 1
+   - **Client Secret** — the client secret from step 1
+3. Click **Save**
+
+The credentials are encrypted at rest and never leave your server. A green checkmark appears once saved.
+
+## 3. Connect a Google account
+
+1. Go to **Settings → Integrations**
+2. Click **Add Integration** and select **Google**
+3. Click **Connect Google Account**
+4. Google's consent screen opens — sign in with the Google account whose email the agent should access
+5. Grant the requested permissions
+6. You're redirected back to Pinchy — the connection appears in the integration list, showing the connected email address
+
+:::tip
+Use a shared mailbox or functional account (e.g. `invoices@yourcompany.com`) rather than a personal account. The agent will have access to all email in this account.
+:::
+
+## 4. Grant agent email permissions
+
+A connection alone doesn't give any agent access. You must explicitly grant it.
+
+1. Open the agent you want to connect to email
+2. Click the gear icon to open **Agent Settings**
+3. Select the **Permissions** tab
+4. In the **Email** section:
+   - **Connection** — select the Google account you connected
+   - **Permissions** — check the operations this agent is allowed to perform:
+
+| Permission | What it enables |
+| ---------- | --------------- |
+| **Read messages** | List, read, and search emails |
+| **Create drafts** | Create draft emails (saved but not sent) |
+| **Send messages** | Send emails immediately — cannot be undone |
+
+5. Click **Save**
+
+:::caution
+**Send messages** is a powerful permission. The agent can send email from the connected account without human review. Consider using **Create drafts** instead and having a human review and send drafts manually.
+:::
+
+## 5. Test it
+
+Open the agent's chat and try a few queries:
+
+- "Show me my latest unread emails"
+- "Search for emails from max@example.com about invoices"
+- "Draft a reply to the last email saying we'll process it today"
+- "How many unread emails do I have?"
+
+## Available tools
+
+When email permissions are granted, the agent gets access to these tools:
+
+| Tool | Permission required | Description |
+| ---- | ------------------- | ----------- |
+| `email_list` | Read | List emails from a folder (INBOX, SENT, DRAFTS). Supports filtering by read status. |
+| `email_read` | Read | Read the full content of a specific email by ID. |
+| `email_search` | Read | Search emails using Gmail search syntax (e.g. `from:user@example.com subject:invoice newer_than:7d`). |
+| `email_draft` | Draft | Create a draft email. Can also create reply drafts with `replyTo`. |
+| `email_send` | Send | Send an email immediately. Can also send replies with `replyTo`. |
+
+## Token refresh
+
+Google access tokens expire after about one hour. Pinchy automatically refreshes expired tokens in the background — no action required. If a refresh fails (e.g. the Google account revoked access), the agent falls back to the last known token and logs an error.
+
+To fix a revoked connection: remove the connection in **Settings → Integrations** and reconnect the Google account.
+
+## What's next
+
+- [Integrations](/concepts/integrations/) — how connections and permissions work
+- [Agent Permissions](/concepts/agent-permissions/) — the full allow-list model
