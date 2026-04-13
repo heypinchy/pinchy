@@ -37,35 +37,41 @@ export async function GET(
     return NextResponse.json({ error: "Failed to decrypt credentials" }, { status: 500 });
   }
 
-  // Auto-refresh expired Google OAuth tokens
-  if (connection.type === "google" && credentials.expiresAt && credentials.refreshToken) {
-    if (isTokenExpired(credentials.expiresAt)) {
-      try {
-        const oauthSettingsRaw = await getSetting("google_oauth_credentials");
-        if (oauthSettingsRaw) {
-          const oauthSettings = JSON.parse(oauthSettingsRaw) as {
-            clientId: string;
-            clientSecret: string;
-          };
-          const refreshed = await refreshAccessToken({
-            refreshToken: credentials.refreshToken,
-            clientId: oauthSettings.clientId,
-            clientSecret: oauthSettings.clientSecret,
-          });
+  // Auto-refresh expired Google OAuth tokens (graceful degradation: return old credentials on failure)
+  if (
+    connection.type === "google" &&
+    credentials.expiresAt &&
+    isTokenExpired(credentials.expiresAt)
+  ) {
+    try {
+      const oauthSettingsRaw = await getSetting("google_oauth_credentials");
+      if (!oauthSettingsRaw) {
+        console.error("Google OAuth token refresh failed: OAuth settings not configured");
+      } else {
+        const { clientId, clientSecret } = JSON.parse(oauthSettingsRaw) as {
+          clientId: string;
+          clientSecret: string;
+        };
+        const refreshed = await refreshAccessToken({
+          refreshToken: credentials.refreshToken,
+          clientId,
+          clientSecret,
+        });
 
-          credentials.accessToken = refreshed.accessToken;
-          credentials.expiresAt = refreshed.expiresAt;
+        credentials.accessToken = refreshed.accessToken;
+        credentials.expiresAt = refreshed.expiresAt;
 
-          // Persist the refreshed credentials back to DB
-          await db
-            .update(integrationConnections)
-            .set({ credentials: encrypt(JSON.stringify(credentials)) })
-            .where(eq(integrationConnections.id, connectionId));
-        }
-      } catch {
-        // If refresh fails, return existing (possibly expired) credentials
-        // and let the plugin handle the error
+        // Persist the refreshed credentials back to DB
+        await db
+          .update(integrationConnections)
+          .set({
+            credentials: encrypt(JSON.stringify(credentials)),
+            updatedAt: new Date(),
+          })
+          .where(eq(integrationConnections.id, connectionId));
       }
+    } catch (err) {
+      console.error("Google OAuth token refresh failed:", err);
     }
   }
 
