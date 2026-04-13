@@ -126,7 +126,7 @@ describe("regenerateOpenClawConfig", () => {
       { id: "a2", name: "Jeeves", model: "openai/gpt-4o", createdAt: new Date() },
     ];
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue(agentsData),
+      from: mockFrom(agentsData),
     } as never);
     mockedGetSetting.mockResolvedValue(null);
 
@@ -361,7 +361,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
 
     mockedDb.select.mockReturnValue({
-      from: vi.fn().mockResolvedValue([
+      from: mockFrom([
         {
           id: "kb-agent-id",
           name: "HR Knowledge Base",
