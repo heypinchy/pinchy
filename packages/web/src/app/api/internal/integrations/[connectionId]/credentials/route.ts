@@ -6,7 +6,7 @@ import { integrationConnections } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { isTokenExpired, refreshAccessToken } from "@/lib/integrations/google-oauth";
-import { getSetting } from "@/lib/settings";
+import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
 
 export async function GET(
   request: NextRequest,
@@ -45,18 +45,14 @@ export async function GET(
     isTokenExpired(credentials.expiresAt)
   ) {
     try {
-      const oauthSettingsRaw = await getSetting("google_oauth_credentials");
-      if (!oauthSettingsRaw) {
+      const oauthSettings = await getOAuthSettings("google");
+      if (!oauthSettings) {
         console.error("Google OAuth token refresh failed: OAuth settings not configured");
       } else {
-        const { clientId, clientSecret } = JSON.parse(oauthSettingsRaw) as {
-          clientId: string;
-          clientSecret: string;
-        };
         const refreshed = await refreshAccessToken({
           refreshToken: credentials.refreshToken,
-          clientId,
-          clientSecret,
+          clientId: oauthSettings.clientId,
+          clientSecret: oauthSettings.clientSecret,
         });
 
         credentials.accessToken = refreshed.accessToken;

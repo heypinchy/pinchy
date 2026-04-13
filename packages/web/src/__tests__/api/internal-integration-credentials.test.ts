@@ -41,15 +41,15 @@ vi.mock("@/lib/integrations/google-oauth", () => ({
   }),
 }));
 
-vi.mock("@/lib/settings", () => ({
-  getSetting: vi.fn().mockResolvedValue(null),
+vi.mock("@/lib/integrations/oauth-settings", () => ({
+  getOAuthSettings: vi.fn().mockResolvedValue(null),
 }));
 
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { db } from "@/db";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { isTokenExpired, refreshAccessToken } from "@/lib/integrations/google-oauth";
-import { getSetting } from "@/lib/settings";
+import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { GET } from "@/app/api/internal/integrations/[connectionId]/credentials/route";
 
 function makeRequest(connectionId: string) {
@@ -160,12 +160,10 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
         })
       );
 
-      vi.mocked(getSetting).mockResolvedValue(
-        JSON.stringify({
-          clientId: "google-client-id",
-          clientSecret: "google-client-secret",
-        })
-      );
+      vi.mocked(getOAuthSettings).mockResolvedValue({
+        clientId: "google-client-id",
+        clientSecret: "google-client-secret",
+      });
 
       const res = await GET(makeRequest("conn-google"), makeParams("conn-google"));
       expect(res.status).toBe(200);
@@ -207,7 +205,7 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
 
     it("returns existing credentials when Google OAuth settings are missing (graceful degradation)", async () => {
       vi.mocked(isTokenExpired).mockReturnValue(true);
-      vi.mocked(getSetting).mockResolvedValue(null);
+      vi.mocked(getOAuthSettings).mockResolvedValue(null);
 
       const expiredAt = new Date(Date.now() - 60_000).toISOString();
       vi.mocked(decrypt).mockReturnValue(
@@ -242,12 +240,10 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
         })
       );
 
-      vi.mocked(getSetting).mockResolvedValue(
-        JSON.stringify({
-          clientId: "client-id",
-          clientSecret: "client-secret",
-        })
-      );
+      vi.mocked(getOAuthSettings).mockResolvedValue({
+        clientId: "client-id",
+        clientSecret: "client-secret",
+      });
 
       const res = await GET(makeRequest("conn-google"), makeParams("conn-google"));
       expect(res.status).toBe(200);
