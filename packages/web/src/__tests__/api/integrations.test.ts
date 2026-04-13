@@ -638,6 +638,94 @@ describe("POST /api/integrations/[connectionId]/test", () => {
   });
 });
 
+describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
+  let mockFetch: ReturnType<typeof vi.fn>;
+  const originalFetch = global.fetch;
+
+  const webSearchConnection = {
+    ...mockConnection,
+    id: "conn-ws-1",
+    type: "web-search",
+    name: "Brave Search",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockFetch = vi.fn();
+    global.fetch = mockFetch;
+    mockDecrypt.mockReturnValue(JSON.stringify({ apiKey: "BSA-valid-key" }));
+    mockSelectFrom.mockImplementation(() => {
+      const result = Promise.resolve([webSearchConnection]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([webSearchConnection]);
+      return result;
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    mockDecrypt.mockReturnValue(
+      JSON.stringify({
+        url: "https://odoo.example.com",
+        db: "prod",
+        login: "admin",
+        apiKey: "secret-key",
+        uid: 2,
+      })
+    );
+  });
+
+  it("should return success when Brave API key is valid", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true });
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/conn-ws-1/test", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-ws-1" }) },
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.search.brave.com/res/v1/web/search?q=test&count=1",
+      { headers: { "X-Subscription-Token": "BSA-valid-key" } },
+    );
+  });
+
+  it("should return error when Brave API key is invalid", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 401 });
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/conn-ws-1/test", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-ws-1" }) },
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Invalid API key");
+  });
+
+  it("should return error when credentials have no apiKey", async () => {
+    mockDecrypt.mockReturnValueOnce(JSON.stringify({}));
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/conn-ws-1/test", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-ws-1" }) },
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Invalid credentials format");
+  });
+});
+
 describe("POST /api/integrations/test-credentials", () => {
   beforeEach(() => {
     vi.clearAllMocks();
