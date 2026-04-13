@@ -11,15 +11,29 @@ import {
   odooConnectionDataSchema,
   maskCredentials,
 } from "@/lib/integrations/odoo-schema";
+import {
+  pipedriveCredentialsSchema,
+  pipedriveConnectionDataSchema,
+  maskPipedriveCredentials,
+} from "@/lib/integrations/pipedrive-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 
-const createIntegrationSchema = z.object({
-  type: z.literal("odoo"),
-  name: z.string().min(1).max(100),
-  description: z.string().max(500).default(""),
-  credentials: odooCredentialsSchema,
-  data: odooConnectionDataSchema.optional(),
-});
+const createIntegrationSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("odoo"),
+    name: z.string().min(1).max(100),
+    description: z.string().max(500).default(""),
+    credentials: odooCredentialsSchema,
+    data: odooConnectionDataSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("pipedrive"),
+    name: z.string().min(1).max(100),
+    description: z.string().max(500).default(""),
+    credentials: pipedriveCredentialsSchema,
+    data: pipedriveConnectionDataSchema.optional(),
+  }),
+]);
 
 export async function GET() {
   const session = await getSession({ headers: await headers() });
@@ -34,7 +48,10 @@ export async function GET() {
 
   const masked = connections.map((conn) => ({
     ...conn,
-    credentials: maskCredentials(conn.credentials, decrypt),
+    credentials:
+      conn.type === "pipedrive"
+        ? maskPipedriveCredentials(conn.credentials, decrypt)
+        : maskCredentials(conn.credentials, decrypt),
   }));
 
   return NextResponse.json(masked);
@@ -60,9 +77,11 @@ export async function POST(request: NextRequest) {
 
   const { type, name, description, credentials, data } = parsed.data;
 
-  const urlCheck = validateExternalUrl(credentials.url);
-  if (!urlCheck.valid) {
-    return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+  if (type === "odoo") {
+    const urlCheck = validateExternalUrl(credentials.url);
+    if (!urlCheck.valid) {
+      return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+    }
   }
 
   const encryptedCredentials = encrypt(JSON.stringify(credentials));
@@ -87,10 +106,19 @@ export async function POST(request: NextRequest) {
     outcome: "success",
   }).catch(console.error);
 
+  const maskedCredentials =
+    type === "pipedrive"
+      ? {
+          companyDomain: credentials.companyDomain,
+          companyName: credentials.companyName,
+          userName: credentials.userName,
+        }
+      : { url: credentials.url, db: credentials.db, login: credentials.login };
+
   return NextResponse.json(
     {
       ...connection,
-      credentials: { url: credentials.url, db: credentials.db, login: credentials.login },
+      credentials: maskedCredentials,
     },
     { status: 201 }
   );
