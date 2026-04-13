@@ -1,0 +1,106 @@
+---
+title: Connect Pipedrive
+description: Connect your Pipedrive CRM to Pinchy and give agents access to your deals, contacts, and pipeline data.
+---
+
+This guide walks you through connecting your Pipedrive CRM to Pinchy so your agents can query deals, persons, organizations, pipelines, and other CRM data — without giving them direct API access.
+
+## Prerequisites
+
+- Pinchy is running (see [Quick Start](/getting-started/))
+- A Pipedrive account with API access
+- You're logged in as an admin in Pinchy
+
+## 1. Get your Pipedrive API token
+
+Pinchy connects to Pipedrive via its REST API using a personal API token.
+
+1. Log in to Pipedrive
+2. Click your **profile picture** → **Company settings** → **Personal preferences**
+3. Scroll down to the **API** section
+4. Copy your **API token**
+
+:::note
+The API token inherits the permissions of the Pipedrive user it belongs to. If you want agents to have limited access, create a dedicated Pipedrive user with the appropriate permissions and use that user's token.
+:::
+
+## 2. Add the connection in Pinchy
+
+1. Go to **Settings → Integrations**
+2. Click **Add Integration** and select **Pipedrive**
+3. Enter:
+   - **API Token** — the token you copied in step 1
+4. Click **Connect**
+
+Pinchy verifies the credentials and probes the available entities. If the connection fails, double-check the API token.
+
+## 3. Review the sync
+
+After a successful connection, Pinchy shows which entity categories are accessible:
+
+- **CRM** — Deals, Persons, Organizations, Leads, Activities
+- **Products** — Product catalog and variations
+- **Pipeline** — Pipelines and Stages
+- **Communication** — Notes and Files
+- **Projects** — Projects and Tasks
+- **Reporting** — Goals
+
+Some entities may be unavailable depending on your Pipedrive plan. Review the list and click **Save**.
+
+:::tip
+If you're on a lower-tier Pipedrive plan, features like Projects or Goals may not be available. Pinchy detects this automatically during the connection probe.
+:::
+
+## 4. Grant agent access
+
+A connection alone doesn't give any agent access. You need to explicitly grant it.
+
+1. Open the agent you want to connect to Pipedrive
+2. Click the gear icon to open **Agent Settings**
+3. Select the **Permissions** tab
+4. In the **Pipedrive** section, select:
+   - **Connection** — pick the connection you just created
+   - **Access level** — Read-only, Read & Update, Full, or Custom
+   - **Entities** — optionally restrict to specific entities (e.g. only Deals and Persons)
+5. Click **Save**
+
+For details on access levels, see the [Integrations](/concepts/integrations/) concept page.
+
+:::caution
+The **Full** access level allows agents to create, update, and delete records. Start with **Read-only** and escalate only after testing.
+:::
+
+## 5. Test it
+
+Open the agent's chat and try a few queries:
+
+- "List all open deals"
+- "Who are the contacts at Acme Corp?"
+- "Show me the pipeline stages"
+- "Search for deals worth more than €10,000"
+
+The agent uses the Pipedrive tools to query your data in real time. If something doesn't work, check that the Pipedrive user has the right permissions for the entities you're querying.
+
+## Available tools
+
+When you grant an agent Pipedrive access, it gets the following tools:
+
+| Tool | Description |
+|------|-------------|
+| `pipedrive_schema` | Discover entities and their fields |
+| `pipedrive_read` | Read records with filters and pagination |
+| `pipedrive_create` | Create new records |
+| `pipedrive_update` | Update existing records |
+| `pipedrive_delete` | Delete records |
+| `pipedrive_search` | Search across entities |
+| `pipedrive_summary` | Deal and pipeline statistics |
+| `pipedrive_merge` | Merge duplicate records |
+| `pipedrive_relate` | Manage relationships (products on deals, participants, followers) |
+| `pipedrive_convert` | Convert between leads and deals |
+
+Which tools are available to a given agent depends on the access level you configured in step 4. Read-only agents only get `pipedrive_schema`, `pipedrive_read`, `pipedrive_search`, and `pipedrive_summary`.
+
+## What's next
+
+- [Integrations](/concepts/integrations/) — how connections and permissions work under the hood
+- [Agent Permissions](/concepts/agent-permissions/) — the full allow-list model and integration tools

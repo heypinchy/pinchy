@@ -129,6 +129,7 @@ export default defineConfig({
             { label: 'Upgrading', slug: 'guides/upgrading' },
             { label: 'Hardening', slug: 'guides/hardening' },
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
+            { label: 'Connect Pipedrive', slug: 'guides/connect-pipedrive' },
             { label: 'Lock Pinchy to a Domain (HTTPS)', slug: 'guides/domain-lock' },
           ],
         },
