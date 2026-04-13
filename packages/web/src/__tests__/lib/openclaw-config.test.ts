@@ -947,6 +947,258 @@ describe("pinchy-odoo config size", () => {
   });
 });
 
+describe("pinchy-pipedrive config", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("should include pinchy-pipedrive plugin config when an agent has Pipedrive permissions", async () => {
+    const agentsData = [
+      {
+        id: "pd-agent",
+        name: "Sales Bot",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["pipedrive_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "pd-agent",
+          connectionId: "conn-pd-1",
+          model: "deals",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-pd-1",
+          type: "pipedrive",
+          name: "Acme Pipedrive",
+          description: "",
+          credentials: JSON.stringify({
+            apiToken: "pd-api-token-123",
+            companyDomain: "acme",
+          }),
+          data: {
+            entities: [
+              { entity: "deals", name: "Deals" },
+              { entity: "persons", name: "Persons" },
+            ],
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+      {
+        agent_connection_permissions: {
+          agentId: "pd-agent",
+          connectionId: "conn-pd-1",
+          model: "deals",
+          operation: "create",
+        },
+        integration_connections: {
+          id: "conn-pd-1",
+          type: "pipedrive",
+          name: "Acme Pipedrive",
+          description: "",
+          credentials: JSON.stringify({
+            apiToken: "pd-api-token-123",
+            companyDomain: "acme",
+          }),
+          data: {
+            entities: [
+              { entity: "deals", name: "Deals" },
+              { entity: "persons", name: "Persons" },
+            ],
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+      {
+        agent_connection_permissions: {
+          agentId: "pd-agent",
+          connectionId: "conn-pd-1",
+          model: "persons",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-pd-1",
+          type: "pipedrive",
+          name: "Acme Pipedrive",
+          description: "",
+          credentials: JSON.stringify({
+            apiToken: "pd-api-token-123",
+            companyDomain: "acme",
+          }),
+          data: {
+            entities: [
+              { entity: "deals", name: "Deals" },
+              { entity: "persons", name: "Persons" },
+            ],
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const pdEntry = config.plugins?.entries?.["pinchy-pipedrive"];
+    expect(pdEntry).toBeDefined();
+    expect(pdEntry.enabled).toBe(true);
+
+    const pdAgentConfig = pdEntry.config.agents["pd-agent"];
+    expect(pdAgentConfig).toBeDefined();
+
+    // Connection config uses apiToken + companyDomain (not url/db/uid/apiKey like Odoo)
+    expect(pdAgentConfig.connection).toEqual({
+      name: "Acme Pipedrive",
+      apiToken: "pd-api-token-123",
+      companyDomain: "acme",
+    });
+
+    // Permissions map: entity → operations
+    expect(pdAgentConfig.permissions).toEqual({
+      deals: ["read", "create"],
+      persons: ["read"],
+    });
+
+    // Entity names map (only entities with permissions)
+    expect(pdAgentConfig.entityNames).toEqual({
+      deals: "Deals",
+      persons: "Persons",
+    });
+
+    // Should be in allow list
+    expect(config.plugins.allow).toContain("pinchy-pipedrive");
+  });
+
+  it("should not include pinchy-pipedrive when no agents have Pipedrive permissions", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Generic Agent",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-pipedrive"]).toBeUndefined();
+    expect(config.plugins.allow).not.toContain("pinchy-pipedrive");
+  });
+
+  it("should not mix Pipedrive and Odoo permissions across plugin configs", async () => {
+    const agentsData = [
+      {
+        id: "multi-agent",
+        name: "Multi Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: [],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "multi-agent",
+          connectionId: "conn-odoo",
+          model: "sale.order",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-odoo",
+          type: "odoo",
+          name: "Test Odoo",
+          description: "Odoo ERP",
+          credentials: JSON.stringify({
+            url: "https://odoo.test",
+            db: "test",
+            uid: 2,
+            apiKey: "odoo-key",
+          }),
+          data: { models: [{ model: "sale.order", name: "Sales Orders" }] },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+      {
+        agent_connection_permissions: {
+          agentId: "multi-agent",
+          connectionId: "conn-pd",
+          model: "deals",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-pd",
+          type: "pipedrive",
+          name: "Test Pipedrive",
+          description: "",
+          credentials: JSON.stringify({
+            apiToken: "pd-token",
+            companyDomain: "testco",
+          }),
+          data: { entities: [{ entity: "deals", name: "Deals" }] },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    // Both plugins should exist
+    expect(config.plugins.entries["pinchy-odoo"]).toBeDefined();
+    expect(config.plugins.entries["pinchy-pipedrive"]).toBeDefined();
+
+    // Odoo should only have sale.order, not deals
+    const odooAgent = config.plugins.entries["pinchy-odoo"].config.agents["multi-agent"];
+    expect(odooAgent.permissions).toEqual({ "sale.order": ["read"] });
+
+    // Pipedrive should only have deals, not sale.order
+    const pdAgent = config.plugins.entries["pinchy-pipedrive"].config.agents["multi-agent"];
+    expect(pdAgent.permissions).toEqual({ deals: ["read"] });
+  });
+});
+
 describe("restart-state integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();
