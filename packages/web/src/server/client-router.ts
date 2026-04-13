@@ -5,6 +5,7 @@ import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { isEnterprise } from "@/lib/enterprise";
 import { appendAuditLog } from "@/lib/audit";
 import { SessionCache } from "@/server/session-cache";
+import { getErrorHint } from "@/server/error-hints";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -193,8 +194,9 @@ export class ClientRouter {
             console.error("OpenClaw error chunk:", chunk.text);
             this.sendToClient(clientWs, {
               type: "error",
-              message:
-                "Something went wrong connecting to the agent. Try refreshing — if it persists, check the logs.",
+              agentName: agent.name,
+              providerError: chunk.text,
+              hint: getErrorHint(chunk.text, this.userRole),
               messageId,
             });
           }
