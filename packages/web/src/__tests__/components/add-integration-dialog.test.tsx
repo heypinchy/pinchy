@@ -143,6 +143,8 @@ describe("AddIntegrationDialog", () => {
   });
 
   describe("Google OAuth type", () => {
+    let googleFetchSpy: ReturnType<typeof vi.spyOn>;
+
     async function selectGoogleType(user: ReturnType<typeof userEvent.setup>) {
       const googleButton = screen.getByText("Google");
       await user.click(googleButton);
@@ -154,43 +156,99 @@ describe("AddIntegrationDialog", () => {
       expect(screen.getByText("Google")).toBeInTheDocument();
     });
 
-    it("should show OAuth connect button when Google is selected", async () => {
+    it("should show OAuth connect button when Google is selected and OAuth is configured", async () => {
+      const originalProtocol = window.location.protocol;
+      Object.defineProperty(window, "location", {
+        writable: true,
+        value: { ...window.location, protocol: "https:" },
+      });
+
+      googleFetchSpy = vi.spyOn(global, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ configured: true, clientId: "existing-id" }),
+      } as Response);
+
       const user = userEvent.setup();
       render(<AddIntegrationDialog {...defaultProps} />);
       await selectGoogleType(user);
 
-      expect(screen.getByRole("link", { name: /connect google account/i })).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByRole("link", { name: /connect google account/i })).toBeInTheDocument();
+      });
+
+      googleFetchSpy.mockRestore();
+      Object.defineProperty(window, "location", {
+        writable: true,
+        value: { ...window.location, protocol: originalProtocol },
+      });
     });
 
-    it("should link to /api/integrations/oauth/start", async () => {
+    it("should link to /api/integrations/oauth/start when configured", async () => {
+      const originalProtocol = window.location.protocol;
+      Object.defineProperty(window, "location", {
+        writable: true,
+        value: { ...window.location, protocol: "https:" },
+      });
+
+      googleFetchSpy = vi.spyOn(global, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ configured: true, clientId: "existing-id" }),
+      } as Response);
+
       const user = userEvent.setup();
       render(<AddIntegrationDialog {...defaultProps} />);
       await selectGoogleType(user);
 
-      const link = screen.getByRole("link", { name: /connect google account/i });
-      expect(link).toHaveAttribute("href", "/api/integrations/oauth/start");
+      await waitFor(() => {
+        const link = screen.getByRole("link", { name: /connect google account/i });
+        expect(link).toHaveAttribute("href", "/api/integrations/oauth/start");
+      });
+
+      googleFetchSpy.mockRestore();
+      Object.defineProperty(window, "location", {
+        writable: true,
+        value: { ...window.location, protocol: originalProtocol },
+      });
     });
 
-    it("should show step indicator with 1 of 2 for Google connect step", async () => {
+    it("should show step indicator for Google OAuth setup when not configured", async () => {
+      const originalProtocol = window.location.protocol;
+      Object.defineProperty(window, "location", {
+        writable: true,
+        value: { ...window.location, protocol: "https:" },
+      });
+
+      googleFetchSpy = vi.spyOn(global, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ configured: false, clientId: "" }),
+      } as Response);
+
       const user = userEvent.setup();
       render(<AddIntegrationDialog {...defaultProps} />);
       await selectGoogleType(user);
 
-      expect(screen.getByText("Step 1 of 2")).toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByText(/Step 1 of 2/)).toBeInTheDocument();
+      });
+
+      googleFetchSpy.mockRestore();
+      Object.defineProperty(window, "location", {
+        writable: true,
+        value: { ...window.location, protocol: originalProtocol },
+      });
     });
 
-    it("should disable OAuth button and show warning when not on HTTPS", async () => {
+    it("should show HTTPS warning and no connect button when not on HTTPS", async () => {
       // jsdom defaults to http://localhost, so insecure mode is the default
       const user = userEvent.setup();
       render(<AddIntegrationDialog {...defaultProps} />);
       await selectGoogleType(user);
 
-      const link = screen.getByRole("link", { name: /connect google account/i });
-      expect(link).toHaveAttribute("aria-disabled", "true");
-      expect(screen.getByText("HTTPS is required for Google OAuth.")).toBeInTheDocument();
+      expect(screen.getByText(/HTTPS is required/)).toBeInTheDocument();
+      expect(screen.queryByText("Connect Google Account")).not.toBeInTheDocument();
     });
 
-    it("should enable OAuth button when on HTTPS", async () => {
+    it("should show connect button when on HTTPS and OAuth is configured", async () => {
       // Temporarily change location.protocol
       const originalProtocol = window.location.protocol;
       Object.defineProperty(window, "location", {
@@ -198,15 +256,23 @@ describe("AddIntegrationDialog", () => {
         value: { ...window.location, protocol: "https:" },
       });
 
+      googleFetchSpy = vi.spyOn(global, "fetch").mockResolvedValue({
+        ok: true,
+        json: async () => ({ configured: true, clientId: "existing-id" }),
+      } as Response);
+
       const user = userEvent.setup();
       render(<AddIntegrationDialog {...defaultProps} />);
       await selectGoogleType(user);
 
-      const link = screen.getByRole("link", { name: /connect google account/i });
-      expect(link).not.toHaveAttribute("aria-disabled");
-      expect(screen.queryByText("HTTPS is required for Google OAuth.")).not.toBeInTheDocument();
+      await waitFor(() => {
+        expect(screen.getByText("Connect Google Account")).toBeInTheDocument();
+      });
+
+      expect(screen.queryByText(/HTTPS is required/)).not.toBeInTheDocument();
 
       // Restore
+      googleFetchSpy.mockRestore();
       Object.defineProperty(window, "location", {
         writable: true,
         value: { ...window.location, protocol: originalProtocol },

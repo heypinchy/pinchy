@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -20,6 +20,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -35,7 +36,7 @@ import {
   parseOdooSubdomainHint,
   generateConnectionName,
 } from "@/lib/integrations/odoo-url";
-import { Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
+import { Loader2, CheckCircle2, AlertTriangle, Copy } from "lucide-react";
 import { OdooIcon, GoogleIcon } from "./integration-icons";
 
 interface IntegrationType {
@@ -93,6 +94,242 @@ function StepIndicator({
       </span>
       <span>&mdash;</span>
       <span>{label}</span>
+    </div>
+  );
+}
+
+// --- Google Connect Step ---
+
+type GoogleOAuthStatus = "loading" | "not-configured" | "configured";
+
+function GoogleConnectStep({
+  isSecure,
+  onBack,
+  onCancel,
+}: {
+  isSecure: boolean;
+  onBack: () => void;
+  onCancel: () => void;
+}) {
+  const [oauthStatus, setOauthStatus] = useState<GoogleOAuthStatus>("loading");
+  const [justConfigured, setJustConfigured] = useState(false);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isSecure) return;
+    let cancelled = false;
+    async function check() {
+      try {
+        const res = await fetch("/api/settings/oauth?provider=google");
+        const data = await res.json();
+        if (!cancelled) setOauthStatus(data.configured ? "configured" : "not-configured");
+      } catch {
+        if (!cancelled) setOauthStatus("not-configured");
+      }
+    }
+    check();
+    return () => {
+      cancelled = true;
+    };
+  }, [isSecure]);
+
+  async function handleSaveOAuth() {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const res = await fetch("/api/settings/oauth", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          provider: "google",
+          clientId: clientId.trim(),
+          clientSecret: clientSecret.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        setSaveError(data.error || "Failed to save OAuth credentials");
+        setSaving(false);
+        return;
+      }
+      setJustConfigured(true);
+      setOauthStatus("configured");
+      setSaving(false);
+    } catch {
+      setSaveError("Failed to save OAuth credentials");
+      setSaving(false);
+    }
+  }
+
+  const redirectUrl =
+    typeof window !== "undefined"
+      ? `${window.location.origin}/api/integrations/oauth/callback`
+      : "/api/integrations/oauth/callback";
+
+  // Not HTTPS — show warning
+  if (!isSecure) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950">
+          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
+          <div className="space-y-1">
+            <p className="font-medium text-amber-800 dark:text-amber-200">HTTPS is required</p>
+            <p className="text-sm text-amber-700 dark:text-amber-300">
+              Google OAuth requires a secure HTTPS connection. See{" "}
+              <a
+                href="https://docs.heypinchy.com/guides/domain-lock/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="underline font-medium"
+              >
+                Lock Pinchy to a Domain
+              </a>{" "}
+              to enable HTTPS.
+            </p>
+          </div>
+        </div>
+
+        <div className="flex justify-between pt-2">
+          <Button type="button" variant="ghost" onClick={onBack}>
+            Back
+          </Button>
+          <Button type="button" variant="outline" onClick={onCancel}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  // Loading
+  if (oauthStatus === "loading") {
+    return (
+      <div className="flex flex-col items-center gap-3 py-6">
+        <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
+        <p className="text-sm text-muted-foreground">Checking OAuth configuration...</p>
+      </div>
+    );
+  }
+
+  // Not configured — show inline setup form
+  if (oauthStatus === "not-configured") {
+    return (
+      <div className="space-y-4">
+        <StepIndicator current={1} total={2} label="Set up Google OAuth" />
+
+        <p className="text-sm text-muted-foreground">
+          Create OAuth credentials in the{" "}
+          <a
+            href="https://console.cloud.google.com/apis/credentials"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline"
+          >
+            Google Cloud Console
+          </a>{" "}
+          and enter them below.
+        </p>
+
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Authorized redirect URI</p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 rounded bg-muted px-3 py-2 text-xs break-all">
+              {redirectUrl}
+            </code>
+            <Button
+              type="button"
+              variant="outline"
+              size="icon"
+              className="shrink-0"
+              onClick={() => navigator.clipboard.writeText(redirectUrl)}
+            >
+              <Copy className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="google-client-id">Client ID</Label>
+          <Input
+            id="google-client-id"
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            placeholder="xxxx.apps.googleusercontent.com"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label htmlFor="google-client-secret">Client Secret</Label>
+          <Input
+            id="google-client-secret"
+            type="password"
+            value={clientSecret}
+            onChange={(e) => setClientSecret(e.target.value)}
+            placeholder="GOCSPX-..."
+          />
+        </div>
+
+        {saveError && <p className="text-sm text-destructive">{saveError}</p>}
+
+        <div className="flex justify-between pt-2">
+          <Button type="button" variant="ghost" onClick={onBack}>
+            Back
+          </Button>
+          <div className="flex gap-2">
+            <Button type="button" variant="outline" onClick={onCancel}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              disabled={!clientId.trim() || !clientSecret.trim() || saving}
+              onClick={handleSaveOAuth}
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Saving...
+                </>
+              ) : (
+                "Save & Continue"
+              )}
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // Configured — show connect button
+  return (
+    <div className="space-y-4">
+      <StepIndicator
+        current={justConfigured ? 2 : 1}
+        total={justConfigured ? 2 : 1}
+        label="Connect"
+      />
+
+      {/* eslint-disable @next/next/no-html-link-for-pages -- OAuth requires full page redirect */}
+      <div className="flex flex-col items-center gap-4 py-4">
+        <a
+          href="/api/integrations/oauth/start"
+          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground ring-offset-background transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+        >
+          Connect Google Account
+        </a>
+      </div>
+      {/* eslint-enable @next/next/no-html-link-for-pages */}
+
+      <div className="flex justify-between pt-2">
+        <Button type="button" variant="ghost" onClick={onBack}>
+          Back
+        </Button>
+        <Button type="button" variant="outline" onClick={onCancel}>
+          Cancel
+        </Button>
+      </div>
     </div>
   );
 }
@@ -541,43 +778,11 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
               </DialogDescription>
             </DialogHeader>
 
-            <StepIndicator current={1} total={2} label="Connect" />
-
-            {/* eslint-disable @next/next/no-html-link-for-pages -- OAuth requires full page redirect, not client-side navigation */}
-            <div className="space-y-4">
-              <div className="flex flex-col items-center gap-4 py-4">
-                {isSecure ? (
-                  <a
-                    href="/api/integrations/oauth/start"
-                    className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground ring-offset-background transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  >
-                    Connect Google Account
-                  </a>
-                ) : (
-                  <>
-                    <a
-                      href="/api/integrations/oauth/start"
-                      aria-disabled="true"
-                      className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground opacity-50 pointer-events-none"
-                      tabIndex={-1}
-                    >
-                      Connect Google Account
-                    </a>
-                    <p className="text-sm text-destructive">HTTPS is required for Google OAuth.</p>
-                  </>
-                )}
-              </div>
-
-              <div className="flex justify-between pt-2">
-                <Button type="button" variant="ghost" onClick={handleBack}>
-                  Back
-                </Button>
-                <Button type="button" variant="outline" onClick={() => handleClose(false)}>
-                  Cancel
-                </Button>
-              </div>
-            </div>
-            {/* eslint-enable @next/next/no-html-link-for-pages */}
+            <GoogleConnectStep
+              isSecure={isSecure}
+              onBack={handleBack}
+              onCancel={() => handleClose(false)}
+            />
           </>
         )}
 

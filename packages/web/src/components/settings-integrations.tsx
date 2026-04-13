@@ -26,7 +26,8 @@ import { MoreHorizontal, Plus, Plug, CheckCircle2, Loader2 } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 // toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
-import { OdooIcon } from "./integration-icons";
+import { EditOAuthDialog } from "./edit-oauth-dialog";
+import { GoogleIcon, OdooIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
 
@@ -55,6 +56,7 @@ export function SettingsIntegrations() {
   const [deleteTarget, setDeleteTarget] = useState<IntegrationConnection | null>(null);
   const [renameTarget, setRenameTarget] = useState<IntegrationConnection | null>(null);
   const [renameName, setRenameName] = useState("");
+  const [showOAuthEdit, setShowOAuthEdit] = useState(false);
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -117,7 +119,11 @@ export function SettingsIntegrations() {
                   <div key={conn.id} className="rounded-lg border p-4 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <OdooIcon className="h-6 w-12 shrink-0" />
+                        {conn.type === "google" ? (
+                          <GoogleIcon className="h-6 w-6 shrink-0" />
+                        ) : (
+                          <OdooIcon className="h-6 w-12 shrink-0" />
+                        )}
                         <span className="text-sm font-medium">{conn.name}</span>
                       </div>
                       <DropdownMenu>
@@ -135,18 +141,26 @@ export function SettingsIntegrations() {
                           >
                             Rename
                           </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => testConnection(conn.id)}
-                            disabled={testing === conn.id}
-                          >
-                            {testing === conn.id ? "Testing..." : "Test Connection"}
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => syncSchema(conn.id)}
-                            disabled={syncing === conn.id}
-                          >
-                            {syncing === conn.id ? "Syncing..." : "Sync Schema"}
-                          </DropdownMenuItem>
+                          {conn.type === "google" ? (
+                            <DropdownMenuItem onClick={() => setShowOAuthEdit(true)}>
+                              Edit OAuth Credentials
+                            </DropdownMenuItem>
+                          ) : (
+                            <>
+                              <DropdownMenuItem
+                                onClick={() => testConnection(conn.id)}
+                                disabled={testing === conn.id}
+                              >
+                                {testing === conn.id ? "Testing..." : "Test Connection"}
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                onClick={() => syncSchema(conn.id)}
+                                disabled={syncing === conn.id}
+                              >
+                                {syncing === conn.id ? "Syncing..." : "Sync Schema"}
+                              </DropdownMenuItem>
+                            </>
+                          )}
                           <DropdownMenuItem
                             className="text-destructive"
                             onClick={() => setDeleteTarget(conn)}
@@ -158,7 +172,12 @@ export function SettingsIntegrations() {
                     </div>
                     <TooltipProvider>
                       <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                        {testing === conn.id ? (
+                        {conn.type === "google" ? (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+                            <span>Connected</span>
+                          </>
+                        ) : testing === conn.id ? (
                           <>
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                             <span>Testing connection...</span>
@@ -261,6 +280,8 @@ export function SettingsIntegrations() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <EditOAuthDialog open={showOAuthEdit} onOpenChange={setShowOAuthEdit} />
     </div>
   );
 }
