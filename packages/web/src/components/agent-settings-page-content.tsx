@@ -250,7 +250,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
       if (dirtyTabs.has("permissions") && permissionsDraft.current) {
         agentPatch.allowedTools = permissionsDraft.current.allowedTools;
         agentPatch.pluginConfig = {
-          ...agent.pluginConfig,
+          ...agent?.pluginConfig,
           "pinchy-files": { allowed_paths: permissionsDraft.current.allowedPaths },
           "pinchy-web": permissionsDraft.current.webSearchConfig,
         };

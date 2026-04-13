@@ -43,10 +43,9 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
           { status: 200 }
         );
       }
-      const res = await fetch(
-        "https://api.search.brave.com/res/v1/web/search?q=test&count=1",
-        { headers: { "X-Subscription-Token": apiKey } },
-      );
+      const res = await fetch("https://api.search.brave.com/res/v1/web/search?q=test&count=1", {
+        headers: { "X-Subscription-Token": apiKey },
+      });
       if (!res.ok) {
         return NextResponse.json({ success: false, error: "Invalid API key" }, { status: 200 });
       }

@@ -683,7 +683,7 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
 
     const response = await POST(
       makeRequest("/api/integrations/conn-ws-1/test", { method: "POST" }),
-      { params: Promise.resolve({ connectionId: "conn-ws-1" }) },
+      { params: Promise.resolve({ connectionId: "conn-ws-1" }) }
     );
     const body = await response.json();
 
@@ -691,7 +691,7 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
     expect(body.success).toBe(true);
     expect(mockFetch).toHaveBeenCalledWith(
       "https://api.search.brave.com/res/v1/web/search?q=test&count=1",
-      { headers: { "X-Subscription-Token": "BSA-valid-key" } },
+      { headers: { "X-Subscription-Token": "BSA-valid-key" } }
     );
   });
 
@@ -701,7 +701,7 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
 
     const response = await POST(
       makeRequest("/api/integrations/conn-ws-1/test", { method: "POST" }),
-      { params: Promise.resolve({ connectionId: "conn-ws-1" }) },
+      { params: Promise.resolve({ connectionId: "conn-ws-1" }) }
     );
     const body = await response.json();
 
@@ -716,7 +716,7 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
 
     const response = await POST(
       makeRequest("/api/integrations/conn-ws-1/test", { method: "POST" }),
-      { params: Promise.resolve({ connectionId: "conn-ws-1" }) },
+      { params: Promise.resolve({ connectionId: "conn-ws-1" }) }
     );
     const body = await response.json();
 
