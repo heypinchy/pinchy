@@ -1,21 +1,37 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentSettingsPermissions } from "@/components/agent-settings-permissions";
 
-vi.mock("@/components/odoo-permission-section", () => ({
-  OdooPermissionSection: ({
+// Mock the IntegrationPermissionSection to avoid fetch calls from the hook
+vi.mock("@/components/integration-permission-section", () => ({
+  IntegrationPermissionSection: ({
+    label,
     onChange,
   }: {
     agentId: string;
+    integrationType: string;
+    label: string;
     onChange: (v: unknown, d: boolean) => void;
   }) => {
-    // Simple stub that calls onChange with null on mount (no connection selected)
     void onChange;
-    return <div data-testid="odoo-section">Odoo Section</div>;
+    return <div data-testid={`integration-section-${label.toLowerCase()}`}>{label} Section</div>;
   },
 }));
+
+// Mock fetch for connections loading
+const mockFetch = vi.fn();
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  // Default: no connections → no integration sections shown
+  mockFetch.mockResolvedValue({
+    ok: true,
+    json: async () => [],
+  });
+  global.fetch = mockFetch;
+});
 
 describe("AgentSettingsPermissions", () => {
   const defaultAgent = {
@@ -59,6 +75,19 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.queryByLabelText("Odoo: Read data")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Odoo: Count records")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Odoo: Aggregate data")).not.toBeInTheDocument();
+  });
+
+  it("should not render pipedrive tools as checkboxes", () => {
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByLabelText("Pipedrive: Browse schema")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Pipedrive: Read data")).not.toBeInTheDocument();
   });
 
   it("should not render Powerful Tools section (OpenClaw native tools removed)", () => {
@@ -125,7 +154,12 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
   });
 
-  it("should render Odoo section", () => {
+  it("should render Odoo section when Odoo connections exist", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => [{ id: "conn-1", name: "My Odoo", type: "odoo", data: null }],
+    });
+
     render(
       <AgentSettingsPermissions
         agent={defaultAgent}
@@ -134,8 +168,76 @@ describe("AgentSettingsPermissions", () => {
       />
     );
 
-    expect(screen.getByText("Odoo")).toBeInTheDocument();
-    expect(screen.getByTestId("odoo-section")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("Odoo")).toBeInTheDocument();
+      expect(screen.getByTestId("integration-section-odoo")).toBeInTheDocument();
+    });
+  });
+
+  it("should render Pipedrive section when Pipedrive connections exist", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => [{ id: "conn-2", name: "My Pipedrive", type: "pipedrive", data: null }],
+    });
+
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Pipedrive")).toBeInTheDocument();
+      expect(screen.getByTestId("integration-section-pipedrive")).toBeInTheDocument();
+    });
+  });
+
+  it("should render both integration sections when both have connections", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => [
+        { id: "conn-1", name: "My Odoo", type: "odoo", data: null },
+        { id: "conn-2", name: "My Pipedrive", type: "pipedrive", data: null },
+      ],
+    });
+
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("Odoo")).toBeInTheDocument();
+      expect(screen.getByText("Pipedrive")).toBeInTheDocument();
+    });
+  });
+
+  it("should not render integration sections when no connections exist", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => [],
+    });
+
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
+
+    // Wait for connections to load
+    await waitFor(() => {
+      expect(mockFetch).toHaveBeenCalledWith("/api/integrations");
+    });
+
+    expect(screen.queryByText("Odoo")).not.toBeInTheDocument();
+    expect(screen.queryByText("Pipedrive")).not.toBeInTheDocument();
   });
 
   describe("vision warning", () => {
