@@ -77,10 +77,10 @@ A connection alone doesn't give any agent access. You must explicitly grant it.
    - **Connection** — select the Google account you connected
    - **Permissions** — check the operations this agent is allowed to perform:
 
-| Permission | What it enables |
-| ---------- | --------------- |
-| **Read messages** | List, read, and search emails |
-| **Create drafts** | Create draft emails (saved but not sent) |
+| Permission        | What it enables                            |
+| ----------------- | ------------------------------------------ |
+| **Read messages** | List, read, and search emails              |
+| **Create drafts** | Create draft emails (saved but not sent)   |
 | **Send messages** | Send emails immediately — cannot be undone |
 
 5. Click **Save**
@@ -102,13 +102,13 @@ Open the agent's chat and try a few queries:
 
 When email permissions are granted, the agent gets access to these tools:
 
-| Tool | Permission required | Description |
-| ---- | ------------------- | ----------- |
-| `email_list` | Read | List emails from a folder (INBOX, SENT, DRAFTS). Supports filtering by read status. |
-| `email_read` | Read | Read the full content of a specific email by ID. |
-| `email_search` | Read | Search emails using Gmail search syntax (e.g. `from:user@example.com subject:invoice newer_than:7d`). |
-| `email_draft` | Draft | Create a draft email. Can also create reply drafts with `replyTo`. |
-| `email_send` | Send | Send an email immediately. Can also send replies with `replyTo`. |
+| Tool           | Permission required | Description                                                                                           |
+| -------------- | ------------------- | ----------------------------------------------------------------------------------------------------- |
+| `email_list`   | Read                | List emails from a folder (INBOX, SENT, DRAFTS). Supports filtering by read status.                   |
+| `email_read`   | Read                | Read the full content of a specific email by ID.                                                      |
+| `email_search` | Read                | Search emails using Gmail search syntax (e.g. `from:user@example.com subject:invoice newer_than:7d`). |
+| `email_draft`  | Draft               | Create a draft email. Can also create reply drafts with `replyTo`.                                    |
+| `email_send`   | Send                | Send an email immediately. Can also send replies with `replyTo`.                                      |
 
 ## Token refresh
 
