@@ -10,6 +10,7 @@ const GOOGLE_OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/userinfo.email",
 ].join(" ");
 
+// audit-exempt: read-only redirect, no state change — the callback endpoint logs the actual connection creation
 export async function GET(request: Request) {
   const session = await getSession({ headers: await headers() });
   if (!session?.user || session.user.role !== "admin") {
@@ -36,8 +37,10 @@ export async function GET(request: Request) {
   authUrl.searchParams.set("state", state);
 
   const response = NextResponse.redirect(authUrl.toString(), 302);
+  const isSecure = requestUrl.protocol === "https:";
   response.cookies.set("oauth_state", state, {
     httpOnly: true,
+    secure: isSecure,
     sameSite: "lax",
     maxAge: 600,
     path: "/",
