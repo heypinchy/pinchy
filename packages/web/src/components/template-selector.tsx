@@ -77,7 +77,7 @@ export function TemplateSelector({ templates, onSelect }: TemplateSelectorProps)
 
         return (
           <div key={category.id}>
-            <h2 className="text-sm font-medium text-muted-foreground mb-3">{category.label}</h2>
+            <h2 className="text-base font-semibold mb-3">{category.label}</h2>
             {available.length > 0 && (
               <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                 {available.map((template) => (
