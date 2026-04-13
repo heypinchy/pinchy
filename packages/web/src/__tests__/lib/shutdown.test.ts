@@ -1,0 +1,92 @@
+import { describe, it, expect, vi, afterEach } from "vitest";
+import { registerShutdownHandlers } from "@/lib/shutdown";
+
+describe("registerShutdownHandlers", () => {
+  const disposers: Array<() => void> = [];
+
+  afterEach(() => {
+    while (disposers.length) {
+      const dispose = disposers.pop();
+      try {
+        dispose?.();
+      } catch {
+        // best-effort
+      }
+    }
+  });
+
+  it("calls every registered stopFn when a shutdown signal fires", async () => {
+    const stopA = vi.fn();
+    const stopB = vi.fn();
+    const exit = vi.fn();
+
+    const dispose = registerShutdownHandlers([stopA, stopB], { exit });
+    disposers.push(dispose);
+
+    process.emit("SIGTERM", "SIGTERM");
+    // Handlers are async — let the microtask queue drain
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(stopA).toHaveBeenCalledTimes(1);
+    expect(stopB).toHaveBeenCalledTimes(1);
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it("runs every stopFn even if an earlier one throws (keeps shutdown best-effort)", async () => {
+    // Rationale: if stopUsagePoller throws, we still want to close the HTTP
+    // server and release DB handles. One broken shutdown step must not
+    // orphan the rest.
+    const stopA = vi.fn().mockImplementation(() => {
+      throw new Error("poller stop blew up");
+    });
+    const stopB = vi.fn();
+    const exit = vi.fn();
+
+    const dispose = registerShutdownHandlers([stopA, stopB], { exit });
+    disposers.push(dispose);
+
+    process.emit("SIGINT", "SIGINT");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(stopA).toHaveBeenCalled();
+    expect(stopB).toHaveBeenCalled();
+    expect(exit).toHaveBeenCalledWith(0);
+  });
+
+  it("awaits async stopFns before exiting", async () => {
+    const order: string[] = [];
+    const stopA = vi.fn().mockImplementation(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      order.push("A");
+    });
+    const stopB = vi.fn().mockImplementation(() => {
+      order.push("B");
+    });
+    const exit = vi.fn().mockImplementation(() => {
+      order.push("exit");
+    });
+
+    const dispose = registerShutdownHandlers([stopA, stopB], { exit });
+    disposers.push(dispose);
+
+    process.emit("SIGTERM", "SIGTERM");
+    await new Promise((resolve) => setTimeout(resolve, 30));
+
+    // Exit must come strictly after both stop fns finished
+    expect(order).toEqual(["A", "B", "exit"]);
+  });
+
+  it("returns a disposer that removes the signal handlers", async () => {
+    const stopA = vi.fn();
+    const exit = vi.fn();
+
+    const dispose = registerShutdownHandlers([stopA], { exit });
+    dispose();
+
+    process.emit("SIGTERM", "SIGTERM");
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(stopA).not.toHaveBeenCalled();
+    expect(exit).not.toHaveBeenCalled();
+  });
+});

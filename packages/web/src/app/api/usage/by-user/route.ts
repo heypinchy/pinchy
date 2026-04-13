@@ -38,6 +38,8 @@ export async function GET(request: NextRequest) {
       userName: users.name,
       totalInputTokens: sum(usageRecords.inputTokens),
       totalOutputTokens: sum(usageRecords.outputTokens),
+      totalCacheReadTokens: sum(usageRecords.cacheReadTokens),
+      totalCacheWriteTokens: sum(usageRecords.cacheWriteTokens),
       totalCost: sum(usageRecords.estimatedCostUsd),
     })
     .from(usageRecords)

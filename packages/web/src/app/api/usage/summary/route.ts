@@ -2,8 +2,25 @@ import { NextRequest, NextResponse } from "next/server";
 import { requireAdmin } from "@/lib/api-auth";
 import { parseDays } from "@/lib/usage-params";
 import { db } from "@/db";
-import { usageRecords } from "@/db/schema";
-import { max, sum, gte, eq, and } from "drizzle-orm";
+import { usageRecords, agents } from "@/db/schema";
+import { max, sum, gte, eq, and, sql } from "drizzle-orm";
+import type { UsageSource } from "@/lib/usage-source";
+
+type SourceBucket = {
+  inputTokens: string;
+  outputTokens: string;
+  cacheReadTokens: string;
+  cacheWriteTokens: string;
+  cost: string | null;
+};
+
+const ZERO_BUCKET: SourceBucket = {
+  inputTokens: "0",
+  outputTokens: "0",
+  cacheReadTokens: "0",
+  cacheWriteTokens: "0",
+  cost: null,
+};
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -30,17 +47,59 @@ export async function GET(request: NextRequest) {
   // max(agentName) returns the lexicographically greatest name.
   // If an agent is renamed, this may show either old or new name
   // until all old records age out. Acceptable trade-off for simplicity.
-  const agents = await db
+  const agentResults = await db
     .select({
       agentId: usageRecords.agentId,
       agentName: max(usageRecords.agentName),
       totalInputTokens: sum(usageRecords.inputTokens),
       totalOutputTokens: sum(usageRecords.outputTokens),
+      totalCacheReadTokens: sum(usageRecords.cacheReadTokens),
+      totalCacheWriteTokens: sum(usageRecords.cacheWriteTokens),
       totalCost: sum(usageRecords.estimatedCostUsd),
+      deleted: sql<boolean>`bool_or(${agents.deletedAt} IS NOT NULL)`.as("deleted"),
     })
     .from(usageRecords)
+    .leftJoin(agents, eq(agents.id, usageRecords.agentId))
     .where(where)
     .groupBy(usageRecords.agentId);
 
-  return NextResponse.json({ agents });
+  // Source breakdown — classify each row by its sessionKey shape and sum
+  // tokens/cost per bucket. SQL can't call our TypeScript classifier, so
+  // we mirror its rules as a CASE expression. Keep in sync with
+  // packages/web/src/lib/usage-source.ts.
+  const sourceExpr = sql<UsageSource>`CASE
+    WHEN ${usageRecords.sessionKey} LIKE 'plugin:%' THEN 'plugin'
+    WHEN ${usageRecords.sessionKey} LIKE 'agent:%:direct:%' THEN 'chat'
+    ELSE 'system'
+  END`;
+
+  const bySource = await db
+    .select({
+      source: sourceExpr,
+      inputTokens: sum(usageRecords.inputTokens),
+      outputTokens: sum(usageRecords.outputTokens),
+      cacheReadTokens: sum(usageRecords.cacheReadTokens),
+      cacheWriteTokens: sum(usageRecords.cacheWriteTokens),
+      cost: sum(usageRecords.estimatedCostUsd),
+    })
+    .from(usageRecords)
+    .where(where)
+    .groupBy(sourceExpr);
+
+  const totals: Record<UsageSource, SourceBucket> = {
+    chat: { ...ZERO_BUCKET },
+    system: { ...ZERO_BUCKET },
+    plugin: { ...ZERO_BUCKET },
+  };
+  for (const row of bySource) {
+    totals[row.source] = {
+      inputTokens: row.inputTokens ?? "0",
+      outputTokens: row.outputTokens ?? "0",
+      cacheReadTokens: row.cacheReadTokens ?? "0",
+      cacheWriteTokens: row.cacheWriteTokens ?? "0",
+      cost: row.cost ?? null,
+    };
+  }
+
+  return NextResponse.json({ agents: agentResults, totals });
 }

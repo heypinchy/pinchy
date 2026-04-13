@@ -38,7 +38,12 @@ vi.mock("drizzle-orm", () => ({
   sum: vi.fn((col) => ({ _type: "sum", col })),
 }));
 
-import { recordUsage, _resetPricingCacheForTest } from "@/lib/usage";
+import {
+  recordUsage,
+  _resetPricingCacheForTest,
+  _resetPendingSessionsForTest,
+  _resetUsageWatermarksForTest,
+} from "@/lib/usage";
 import { usageRecords } from "@/db/schema";
 
 const emptyConfig = { config: { models: { providers: {} } } };
@@ -65,6 +70,8 @@ describe("recordUsage", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     _resetPricingCacheForTest();
+    _resetPendingSessionsForTest();
+    _resetUsageWatermarksForTest();
     mockValues.mockResolvedValue(undefined);
     // Default: no previous records
     mockWhere._result = [
@@ -249,6 +256,91 @@ describe("recordUsage", () => {
     );
   });
 
+  it("includes cache read tokens at 10% of input price in cost estimation", async () => {
+    const configWithPricing = {
+      config: {
+        models: {
+          providers: {
+            anthropic: {
+              models: [
+                {
+                  id: "claude-sonnet-4-20250514",
+                  cost: { input: 3.0, output: 15.0 },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const client = makeOpenClawClient(
+      [
+        {
+          key: "agent:agent-1:user-user-1",
+          inputTokens: 1000,
+          outputTokens: 500,
+          cacheReadTokens: 2000,
+          cacheWriteTokens: 0,
+          model: "claude-sonnet-4-20250514",
+        },
+      ],
+      configWithPricing
+    );
+
+    await recordUsage({ openclawClient: client, ...baseParams });
+
+    // cost = (1000*3.0 + 500*15.0 + 2000*0.3) / 1_000_000
+    //      = (3000 + 7500 + 600) / 1_000_000 = 0.011100
+    expect(mockValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        estimatedCostUsd: "0.011100",
+      })
+    );
+  });
+
+  it("includes cache write tokens at 125% of input price in cost estimation", async () => {
+    const configWithPricing = {
+      config: {
+        models: {
+          providers: {
+            anthropic: {
+              models: [
+                {
+                  id: "claude-sonnet-4-20250514",
+                  cost: { input: 3.0, output: 15.0 },
+                },
+              ],
+            },
+          },
+        },
+      },
+    };
+
+    const client = makeOpenClawClient(
+      [
+        {
+          key: "agent:agent-1:user-user-1",
+          inputTokens: 0,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 1000,
+          model: "claude-sonnet-4-20250514",
+        },
+      ],
+      configWithPricing
+    );
+
+    await recordUsage({ openclawClient: client, ...baseParams });
+
+    // cost = (1000 * 3.75) / 1_000_000 = 0.003750
+    expect(mockValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        estimatedCostUsd: "0.003750",
+      })
+    );
+  });
+
   it("sets estimatedCostUsd to null when no pricing configured for model", async () => {
     const configWithOtherModel = {
       config: {
@@ -363,6 +455,72 @@ describe("recordUsage", () => {
       cacheWriteTokens: 5,
       estimatedCostUsd: null,
     });
+  });
+
+  it("does not advance watermark when DB insert fails", async () => {
+    const client = makeOpenClawClient([
+      {
+        key: "agent:agent-1:user-user-1",
+        inputTokens: 100,
+        outputTokens: 200,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        model: "test-model",
+      },
+    ]);
+
+    // First call succeeds — establishes watermark
+    await recordUsage({ openclawClient: client, ...baseParams });
+    expect(mockInsert).toHaveBeenCalledTimes(1);
+    mockInsert.mockClear();
+    mockValues.mockClear();
+
+    // Bump OpenClaw counters
+    (client.sessions.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      sessions: [
+        {
+          key: "agent:agent-1:user-user-1",
+          inputTokens: 300,
+          outputTokens: 400,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          model: "test-model",
+        },
+      ],
+    });
+
+    // Make DB insert fail
+    mockValues.mockRejectedValueOnce(new Error("connection pool exhausted"));
+
+    await recordUsage({ openclawClient: client, ...baseParams });
+
+    // Reset mock to succeed again
+    mockValues.mockResolvedValue(undefined);
+
+    // Bump OpenClaw counters again
+    (client.sessions.list as ReturnType<typeof vi.fn>).mockResolvedValue({
+      sessions: [
+        {
+          key: "agent:agent-1:user-user-1",
+          inputTokens: 350,
+          outputTokens: 450,
+          cacheReadTokens: 0,
+          cacheWriteTokens: 0,
+          model: "test-model",
+        },
+      ],
+    });
+
+    // Third call: should see delta from 100/200 (last SUCCESSFUL watermark),
+    // not from 300/400 (failed call's watermark)
+    await recordUsage({ openclawClient: client, ...baseParams });
+
+    expect(mockValues).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        inputTokens: 250, // 350 - 100, not 350 - 300
+        outputTokens: 250, // 450 - 200, not 450 - 400
+      })
+    );
   });
 
   it("caches config and does not call config.get() again within 5 minutes", async () => {
