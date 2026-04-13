@@ -16,6 +16,10 @@ install_plugin_deps() {
         rm -rf /root/.openclaw/extensions/pinchy-odoo/node_modules
         cp -r /opt/pinchy-odoo-deps/node_modules /root/.openclaw/extensions/pinchy-odoo/node_modules
     fi
+    if [ -d /opt/pinchy-pipedrive-deps/node_modules ] && [ -d /root/.openclaw/extensions/pinchy-pipedrive ]; then
+        rm -rf /root/.openclaw/extensions/pinchy-pipedrive/node_modules
+        cp -r /opt/pinchy-pipedrive-deps/node_modules /root/.openclaw/extensions/pinchy-pipedrive/node_modules
+    fi
 }
 
 # Fix plugin ownership — bind-mounted plugin files from the host may have

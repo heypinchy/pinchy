@@ -1319,6 +1319,89 @@ describe("POST /api/integrations/[connectionId]/sync (Pipedrive)", () => {
   });
 });
 
+describe("POST /api/integrations/[connectionId]/test (Pipedrive)", () => {
+  let mockFetch: ReturnType<typeof vi.fn>;
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockFetch = vi.fn();
+    global.fetch = mockFetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("should test Pipedrive connection via API", async () => {
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([mockPipedriveConnection]) as Promise<
+        (typeof mockPipedriveConnection)[]
+      > & { where: ReturnType<typeof vi.fn> };
+      result.where = vi.fn().mockResolvedValue([mockPipedriveConnection]);
+      return result;
+    });
+    mockDecrypt.mockReturnValueOnce(JSON.stringify(validPipedriveCredentials));
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        success: true,
+        data: {
+          id: 42,
+          name: "Jane Doe",
+          company_domain: "mycompany",
+          company_name: "My Company Ltd",
+        },
+      }),
+    });
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/conn-pd-1/test", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-pd-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.companyDomain).toBe("mycompany");
+    expect(body.companyName).toBe("My Company Ltd");
+    expect(mockFetch).toHaveBeenCalledWith("https://api.pipedrive.com/v1/users/me", {
+      headers: { "x-api-token": "pd-token-123" },
+    });
+  });
+
+  it("should return error when Pipedrive auth fails", async () => {
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([mockPipedriveConnection]) as Promise<
+        (typeof mockPipedriveConnection)[]
+      > & { where: ReturnType<typeof vi.fn> };
+      result.where = vi.fn().mockResolvedValue([mockPipedriveConnection]);
+      return result;
+    });
+    mockDecrypt.mockReturnValueOnce(JSON.stringify(validPipedriveCredentials));
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        success: false,
+        error: "Invalid API token",
+      }),
+    });
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/conn-pd-1/test", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-pd-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Invalid API token");
+  });
+});
+
 describe("POST /api/integrations/test-credentials (Pipedrive)", () => {
   let mockFetch: ReturnType<typeof vi.fn>;
   const originalFetch = global.fetch;
