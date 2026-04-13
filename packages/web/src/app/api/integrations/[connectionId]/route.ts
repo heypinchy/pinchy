@@ -17,7 +17,7 @@ import { z } from "zod";
 const updateIntegrationSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
-  credentials: z.union([odooCredentialsSchema, pipedriveCredentialsSchema]).optional(),
+  credentials: z.object({}).passthrough().optional(),
 });
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
@@ -96,14 +96,23 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
     }
   }
   if (parsed.data.credentials !== undefined) {
-    if ("url" in parsed.data.credentials) {
-      // Odoo credentials — validate external URL
-      const urlCheck = validateExternalUrl(parsed.data.credentials.url);
+    // Validate credentials match connection type
+    const credSchema =
+      existing.type === "pipedrive" ? pipedriveCredentialsSchema : odooCredentialsSchema;
+    const credParsed = credSchema.safeParse(parsed.data.credentials);
+    if (!credParsed.success) {
+      return NextResponse.json(
+        { error: "Credentials do not match connection type" },
+        { status: 400 }
+      );
+    }
+    if (existing.type === "odoo" && "url" in credParsed.data) {
+      const urlCheck = validateExternalUrl(credParsed.data.url);
       if (!urlCheck.valid) {
         return NextResponse.json({ error: urlCheck.error }, { status: 400 });
       }
     }
-    updateData.credentials = encrypt(JSON.stringify(parsed.data.credentials));
+    updateData.credentials = encrypt(JSON.stringify(credParsed.data));
     changes.credentials = { from: "[redacted]", to: "[redacted]" };
   }
 
