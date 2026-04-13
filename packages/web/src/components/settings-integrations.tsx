@@ -26,7 +26,7 @@ import { MoreHorizontal, Plus, Plug, CheckCircle2, Loader2 } from "lucide-react"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 // toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
-import { OdooIcon } from "./integration-icons";
+import { OdooIcon, BraveIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
 
@@ -112,12 +112,19 @@ export function SettingsIntegrations() {
           ) : (
             <div className="space-y-3">
               {connections.map((conn) => {
-                const categories = getAccessibleCategoryLabels(conn.data);
+                const isOdoo = conn.type === "odoo";
+                const categories = isOdoo ? getAccessibleCategoryLabels(conn.data) : [];
+                const lastSyncAt =
+                  isOdoo && conn.data && typeof conn.data.lastSyncAt === "string"
+                    ? conn.data.lastSyncAt
+                    : null;
+                const Icon = conn.type === "web-search" ? BraveIcon : OdooIcon;
+
                 return (
                   <div key={conn.id} className="rounded-lg border p-4 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <OdooIcon className="h-6 w-12 shrink-0" />
+                        <Icon className="h-6 w-12 shrink-0" />
                         <span className="text-sm font-medium">{conn.name}</span>
                       </div>
                       <DropdownMenu>
@@ -141,12 +148,14 @@ export function SettingsIntegrations() {
                           >
                             {testing === conn.id ? "Testing..." : "Test Connection"}
                           </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => syncSchema(conn.id)}
-                            disabled={syncing === conn.id}
-                          >
-                            {syncing === conn.id ? "Syncing..." : "Sync Schema"}
-                          </DropdownMenuItem>
+                          {isOdoo && (
+                            <DropdownMenuItem
+                              onClick={() => syncSchema(conn.id)}
+                              disabled={syncing === conn.id}
+                            >
+                              {syncing === conn.id ? "Syncing..." : "Sync Schema"}
+                            </DropdownMenuItem>
+                          )}
                           <DropdownMenuItem
                             className="text-destructive"
                             onClick={() => setDeleteTarget(conn)}
@@ -168,7 +177,12 @@ export function SettingsIntegrations() {
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                             <span>Syncing schema...</span>
                           </>
-                        ) : conn.data?.lastSyncAt ? (
+                        ) : !isOdoo ? (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+                            <span>Connected</span>
+                          </>
+                        ) : lastSyncAt ? (
                           <>
                             <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
                             <span>Connected</span>
@@ -188,11 +202,11 @@ export function SettingsIntegrations() {
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <span className="cursor-default underline decoration-dotted underline-offset-4">
-                                  Synced {formatRelativeTime(conn.data.lastSyncAt)}
+                                  Synced {formatRelativeTime(lastSyncAt)}
                                 </span>
                               </TooltipTrigger>
                               <TooltipContent>
-                                <p>{new Date(conn.data.lastSyncAt).toLocaleString()}</p>
+                                <p>{new Date(lastSyncAt).toLocaleString()}</p>
                               </TooltipContent>
                             </Tooltip>
                           </>

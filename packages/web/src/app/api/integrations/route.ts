@@ -6,20 +6,25 @@ import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog } from "@/lib/audit";
-import {
-  odooCredentialsSchema,
-  odooConnectionDataSchema,
-  maskCredentials,
-} from "@/lib/integrations/odoo-schema";
+import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrations/odoo-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 
-const createIntegrationSchema = z.object({
-  type: z.literal("odoo"),
-  name: z.string().min(1).max(100),
-  description: z.string().max(500).default(""),
-  credentials: odooCredentialsSchema,
-  data: odooConnectionDataSchema.optional(),
-});
+const createIntegrationSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("odoo"),
+    name: z.string().min(1).max(100),
+    description: z.string().max(500).default(""),
+    credentials: odooCredentialsSchema,
+    data: odooConnectionDataSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("web-search"),
+    name: z.string().min(1).max(100),
+    description: z.string().max(500).default(""),
+    credentials: z.object({ apiKey: z.string().min(1) }),
+  }),
+]);
 
 export async function GET() {
   const session = await getSession({ headers: await headers() });
@@ -34,7 +39,7 @@ export async function GET() {
 
   const masked = connections.map((conn) => ({
     ...conn,
-    credentials: maskCredentials(conn.credentials, decrypt),
+    credentials: maskConnectionCredentials(conn.type, conn.credentials, decrypt),
   }));
 
   return NextResponse.json(masked);
@@ -58,14 +63,17 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { type, name, description, credentials, data } = parsed.data;
+  const { type, name, description, credentials } = parsed.data;
 
-  const urlCheck = validateExternalUrl(credentials.url);
-  if (!urlCheck.valid) {
-    return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+  if (parsed.data.type === "odoo") {
+    const urlCheck = validateExternalUrl(parsed.data.credentials.url);
+    if (!urlCheck.valid) {
+      return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+    }
   }
 
   const encryptedCredentials = encrypt(JSON.stringify(credentials));
+  const data = parsed.data.type === "odoo" ? (parsed.data.data ?? null) : null;
 
   const [connection] = await db
     .insert(integrationConnections)
@@ -74,7 +82,7 @@ export async function POST(request: NextRequest) {
       name,
       description,
       credentials: encryptedCredentials,
-      data: data ?? null,
+      data,
     })
     .returning();
 
@@ -90,7 +98,7 @@ export async function POST(request: NextRequest) {
   return NextResponse.json(
     {
       ...connection,
-      credentials: { url: credentials.url, db: credentials.db, login: credentials.login },
+      credentials: maskConnectionCredentials(type, connection.credentials, decrypt),
     },
     { status: 201 }
   );

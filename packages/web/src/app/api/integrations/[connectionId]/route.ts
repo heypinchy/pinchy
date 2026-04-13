@@ -6,8 +6,9 @@ import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog } from "@/lib/audit";
-import { odooCredentialsSchema, maskCredentials } from "@/lib/integrations/odoo-schema";
+import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { z } from "zod";
 
 const updateIntegrationSchema = z.object({
@@ -39,7 +40,7 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 
   return NextResponse.json({
     ...connection,
-    credentials: maskCredentials(connection.credentials, decrypt),
+    credentials: maskConnectionCredentials(connection.type, connection.credentials, decrypt),
   });
 }
 
@@ -116,7 +117,7 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
 
   return NextResponse.json({
     ...updated,
-    credentials: maskCredentials(updated.credentials, decrypt),
+    credentials: maskConnectionCredentials(updated.type, updated.credentials, decrypt),
   });
 }
 
