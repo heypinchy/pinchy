@@ -31,6 +31,7 @@ vi.mock("@/db", () => ({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve([]), {
           innerJoin: vi.fn().mockResolvedValue([]),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     })),
@@ -85,11 +86,12 @@ const mockedMkdirSync = vi.mocked(mkdirSync);
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
 
-/** Helper: create a mock `from()` that returns a thenable with `.innerJoin()` */
+/** Helper: create a mock `from()` that returns a thenable with `.innerJoin()` and `.where()` */
 function mockFrom(data: unknown[] = []) {
   return vi.fn().mockImplementation(() =>
     Object.assign(Promise.resolve(data), {
       innerJoin: vi.fn().mockResolvedValue([]),
+      where: vi.fn().mockResolvedValue([]),
     })
   );
 }
@@ -856,6 +858,313 @@ describe("sanitizeOpenClawConfig", () => {
   });
 });
 
+describe("pinchy-web config", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("should include pinchy-web entry when web-search connection exists and agent has web tools", async () => {
+    const agentsData = [
+      {
+        id: "web-agent",
+        name: "Web Agent",
+        model: "anthropic/claude-sonnet-4-20250514",
+        allowedTools: ["pinchy_web_search", "pinchy_web_fetch"],
+        pluginConfig: {
+          "pinchy-web": {
+            allowedDomains: ["docs.example.com"],
+            language: "de",
+            country: "at",
+            freshness: "month",
+          },
+        },
+        createdAt: new Date(),
+      },
+    ];
+
+    const webSearchConnections = [
+      {
+        id: "ws-conn-1",
+        type: "web-search",
+        name: "Brave Search",
+        description: "",
+        credentials: JSON.stringify({ apiKey: "BSA-test-key" }),
+        data: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          // agents table
+          return Object.assign(Promise.resolve(agentsData), {
+            innerJoin: vi.fn().mockResolvedValue([]),
+          });
+        }
+        // callCount 2 = agentConnectionPermissions (chained with innerJoin)
+        // callCount 3 = integrationConnections for web-search (with where)
+        if (callCount === 3) {
+          return Object.assign(Promise.resolve(webSearchConnections), {
+            innerJoin: vi.fn().mockResolvedValue([]),
+            where: vi.fn().mockResolvedValue(webSearchConnections),
+          });
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: vi.fn().mockResolvedValue([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-web"]).toBeDefined();
+    expect(config.plugins.entries["pinchy-web"].enabled).toBe(true);
+    expect(config.plugins.entries["pinchy-web"].config.braveApiKey).toBe("BSA-test-key");
+    expect(config.plugins.entries["pinchy-web"].config.agents["web-agent"]).toEqual({
+      tools: ["pinchy_web_search", "pinchy_web_fetch"],
+      allowedDomains: ["docs.example.com"],
+      language: "de",
+      country: "at",
+      freshness: "month",
+    });
+    expect(config.plugins.allow).toContain("pinchy-web");
+  });
+
+  it("should not include pinchy-web when no web-search connection exists", async () => {
+    const agentsData = [
+      {
+        id: "web-agent",
+        name: "Web Agent",
+        model: "anthropic/claude-sonnet-4-20250514",
+        allowedTools: ["pinchy_web_search"],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+    ];
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(Promise.resolve(agentsData), {
+            innerJoin: vi.fn().mockResolvedValue([]),
+          });
+        }
+        // No web-search connections returned
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: vi.fn().mockResolvedValue([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-web"]).toBeUndefined();
+  });
+
+  it("should not include pinchy-web when connection exists but no agent has web tools", async () => {
+    const agentsData = [
+      {
+        id: "plain-agent",
+        name: "Plain Agent",
+        model: "anthropic/claude-sonnet-4-20250514",
+        allowedTools: ["pinchy_ls", "pinchy_read"],
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
+        createdAt: new Date(),
+      },
+    ];
+
+    const webSearchConnections = [
+      {
+        id: "ws-conn-1",
+        type: "web-search",
+        name: "Brave Search",
+        description: "",
+        credentials: JSON.stringify({ apiKey: "BSA-key" }),
+        data: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(Promise.resolve(agentsData), {
+            innerJoin: vi.fn().mockResolvedValue([]),
+          });
+        }
+        if (callCount === 3) {
+          return Object.assign(Promise.resolve(webSearchConnections), {
+            innerJoin: vi.fn().mockResolvedValue([]),
+            where: vi.fn().mockResolvedValue(webSearchConnections),
+          });
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: vi.fn().mockResolvedValue([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-web"]).toBeUndefined();
+  });
+
+  it("should only list pinchy_web_search when agent does not have pinchy_web_fetch", async () => {
+    const agentsData = [
+      {
+        id: "search-only-agent",
+        name: "Search Only",
+        model: "anthropic/claude-sonnet-4-20250514",
+        allowedTools: ["pinchy_web_search"],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+    ];
+
+    const webSearchConnections = [
+      {
+        id: "ws-conn-1",
+        type: "web-search",
+        name: "Brave Search",
+        description: "",
+        credentials: JSON.stringify({ apiKey: "BSA-key" }),
+        data: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(Promise.resolve(agentsData), {
+            innerJoin: vi.fn().mockResolvedValue([]),
+          });
+        }
+        if (callCount === 3) {
+          return Object.assign(Promise.resolve(webSearchConnections), {
+            innerJoin: vi.fn().mockResolvedValue([]),
+            where: vi.fn().mockResolvedValue(webSearchConnections),
+          });
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: vi.fn().mockResolvedValue([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-web"]).toBeDefined();
+    expect(config.plugins.entries["pinchy-web"].config.agents["search-only-agent"].tools).toEqual([
+      "pinchy_web_search",
+    ]);
+  });
+
+  it("should pass through pluginConfig filter settings alongside tools", async () => {
+    const agentsData = [
+      {
+        id: "filtered-agent",
+        name: "Filtered Agent",
+        model: "anthropic/claude-sonnet-4-20250514",
+        allowedTools: ["pinchy_web_search", "pinchy_web_fetch"],
+        pluginConfig: {
+          "pinchy-web": {
+            allowedDomains: ["example.com", "docs.example.com"],
+            excludedDomains: ["evil.com"],
+            language: "en",
+            country: "us",
+            freshness: "week",
+          },
+        },
+        createdAt: new Date(),
+      },
+    ];
+
+    const webSearchConnections = [
+      {
+        id: "ws-conn-1",
+        type: "web-search",
+        name: "Brave Search",
+        description: "",
+        credentials: JSON.stringify({ apiKey: "BSA-filter-key" }),
+        data: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(Promise.resolve(agentsData), {
+            innerJoin: vi.fn().mockResolvedValue([]),
+          });
+        }
+        if (callCount === 3) {
+          return Object.assign(Promise.resolve(webSearchConnections), {
+            innerJoin: vi.fn().mockResolvedValue([]),
+            where: vi.fn().mockResolvedValue(webSearchConnections),
+          });
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: vi.fn().mockResolvedValue([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const agentConfig = config.plugins.entries["pinchy-web"].config.agents["filtered-agent"];
+    expect(agentConfig).toEqual({
+      tools: ["pinchy_web_search", "pinchy_web_fetch"],
+      allowedDomains: ["example.com", "docs.example.com"],
+      excludedDomains: ["evil.com"],
+      language: "en",
+      country: "us",
+      freshness: "week",
+    });
+  });
+});
+
 describe("pinchy-odoo config size", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -927,6 +1236,7 @@ describe("pinchy-odoo config size", () => {
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
           innerJoin: vi.fn().mockResolvedValue(permissionsData),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -1042,11 +1352,12 @@ describe("restart-state integration", () => {
               { id: "agent-1", name: "Smithers", model: "m", allowedTools: [] },
               { id: "agent-2", name: "Support", model: "m", allowedTools: [] },
             ]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: vi.fn().mockResolvedValue([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
         return Object.assign(Promise.resolve([]), {
           innerJoin: vi.fn().mockResolvedValue([]),
+          where: vi.fn().mockResolvedValue([]),
         });
       }),
     } as never);
@@ -1100,22 +1411,24 @@ describe("restart-state integration", () => {
                 ownerId: "user-b",
               },
             ]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: vi.fn().mockResolvedValue([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
         // callCount 2 = agentConnectionPermissions (chained with innerJoin)
-        // callCount 3 = channel_links table: both users linked
-        if (callCount === 3) {
+        // callCount 3 = integrationConnections for web-search (chained with where)
+        // callCount 4 = channel_links table: both users linked
+        if (callCount === 4) {
           return Object.assign(
             Promise.resolve([
               { userId: "user-a", channel: "telegram", channelUserId: "111222333" },
               { userId: "user-b", channel: "telegram", channelUserId: "444555666" },
             ]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: vi.fn().mockResolvedValue([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
         return Object.assign(Promise.resolve([]), {
           innerJoin: vi.fn().mockResolvedValue([]),
+          where: vi.fn().mockResolvedValue([]),
         });
       }),
     } as never);
@@ -1196,19 +1509,21 @@ describe("restart-state integration", () => {
           // First call: agents table
           return Object.assign(
             Promise.resolve([{ id: "agent-1", name: "Smithers", model: "m", allowedTools: [] }]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: vi.fn().mockResolvedValue([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
         // callCount 2 = agentConnectionPermissions (chained with innerJoin)
-        // callCount 3 = channel_links table
-        if (callCount === 3) {
+        // callCount 3 = integrationConnections for web-search (chained with where)
+        // callCount 4 = channel_links table
+        if (callCount === 4) {
           return Object.assign(
             Promise.resolve([{ userId: "user-1", channel: "telegram", channelUserId: "999888" }]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: vi.fn().mockResolvedValue([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
         return Object.assign(Promise.resolve([]), {
           innerJoin: vi.fn().mockResolvedValue([]),
+          where: vi.fn().mockResolvedValue([]),
         });
       }),
     } as never);

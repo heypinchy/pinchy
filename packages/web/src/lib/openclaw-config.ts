@@ -370,6 +370,43 @@ export async function regenerateOpenClawConfig() {
     };
   }
 
+  // Collect web search configs
+  const webSearchConnections = await db
+    .select()
+    .from(integrationConnections)
+    .where(eq(integrationConnections.type, "web-search"));
+
+  if (webSearchConnections.length > 0) {
+    const webConn = webSearchConnections[0];
+    const decryptedWebCreds = JSON.parse(decrypt(webConn.credentials));
+    const webAgentConfigs: Record<string, Record<string, unknown>> = {};
+
+    for (const agent of allAgents) {
+      const allowedTools = (agent.allowedTools as string[]) || [];
+      const hasWebSearch = allowedTools.includes("pinchy_web_search");
+      const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
+
+      if (hasWebSearch || hasWebFetch) {
+        const webConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-web"] ?? {};
+        const tools: string[] = [];
+        if (hasWebSearch) tools.push("pinchy_web_search");
+        if (hasWebFetch) tools.push("pinchy_web_fetch");
+
+        webAgentConfigs[agent.id] = { tools, ...webConfig };
+      }
+    }
+
+    if (Object.keys(webAgentConfigs).length > 0) {
+      entries["pinchy-web"] = {
+        enabled: true,
+        config: {
+          braveApiKey: decryptedWebCreds.apiKey,
+          agents: webAgentConfigs,
+        },
+      };
+    }
+  }
+
   // Build the allow list from: (1) plugins we have entries for, and (2)
   // OpenClaw-managed plugins (e.g. "telegram") that were already in the list.
   // We must NOT include Pinchy plugins without entries — OpenClaw validates
