@@ -65,7 +65,7 @@ describe("fetchPipedriveSchema", () => {
     // Make deals accessible, everything else 403
     mockFetch.mockImplementation((url: string) => {
       const urlStr = url.toString();
-      if (urlStr.includes("/v1/deals?") || urlStr.includes("/v1/deals?")) {
+      if (urlStr.includes("/v1/deals?")) {
         return Promise.resolve(probeOk());
       }
       if (urlStr.includes("/v1/dealFields")) {
@@ -179,7 +179,7 @@ describe("fetchPipedriveSchema", () => {
     expect(crm).toBeDefined();
     expect(crm!.label).toBe("CRM");
     expect(crm!.accessible).toBe(true);
-    expect(crm!.accessibleModels.length).toBe(5); // deals, persons, orgs, leads, activities
+    expect(crm!.accessibleEntities.length).toBe(5); // deals, persons, orgs, leads, activities
   });
 
   it("returns error if no entities are accessible", async () => {

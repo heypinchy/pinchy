@@ -82,8 +82,8 @@ export interface CategorySummary {
   id: string;
   label: string;
   accessible: boolean;
-  accessibleModels: string[];
-  totalModels: number;
+  accessibleEntities: string[];
+  totalEntities: number;
 }
 
 export interface PipedriveSyncResult {
@@ -199,7 +199,11 @@ export async function fetchPipedriveSchema(
           }
 
           if (!response.ok) {
-            // Other HTTP errors — treat as transient, retry
+            // 4xx (except 429) → skip immediately, no retry
+            if (response.status !== 429 && response.status >= 400 && response.status < 500) {
+              return { entity, name, category, fieldsEndpoint, accessible: false };
+            }
+            // 429 (rate limit) and 5xx → treat as transient, retry
             if (attempt === MAX_RETRIES) {
               return { entity, name, category, fieldsEndpoint, accessible: false };
             }
@@ -272,8 +276,8 @@ export async function fetchPipedriveSchema(
       id: cat.id,
       label: cat.label,
       accessible: accessible.length > 0,
-      accessibleModels: accessible.map((r) => r.name),
-      totalModels: cat.entities.length,
+      accessibleEntities: accessible.map((r) => r.name),
+      totalEntities: cat.entities.length,
     };
   });
 
