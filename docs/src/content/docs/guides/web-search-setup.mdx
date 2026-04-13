@@ -58,6 +58,7 @@ When you enable web search tools for an agent, additional filter options appear 
 Restrict web access to specific domains. When set, the agent can only search and fetch pages from these domains. Type a domain and press Enter to add it.
 
 **Use cases:**
+
 - Restrict an agent to your company documentation site (`docs.yourcompany.com`)
 - Limit a support agent to your product's knowledge base and status page
 - Confine research to trusted industry sources
@@ -67,6 +68,7 @@ Restrict web access to specific domains. When set, the agent can only search and
 Block specific domains. The agent can access everything except these. Type a domain and press Enter to add it.
 
 **Use cases:**
+
 - Block social media sites (`twitter.com`, `reddit.com`) to keep agents focused
 - Exclude competitor websites
 - Remove low-quality content farms from results
@@ -79,13 +81,13 @@ If both Allowed Domains and Excluded Domains are set, Allowed Domains take prior
 
 Filter search results by recency:
 
-| Setting       | Search results limited to |
-| ------------- | ------------------------- |
-| **Any time**  | No time filter (default)  |
-| **Last day**  | Past 24 hours             |
-| **Last week** | Past 7 days               |
-| **Last month**| Past 30 days              |
-| **Last year** | Past 12 months            |
+| Setting        | Search results limited to |
+| -------------- | ------------------------- |
+| **Any time**   | No time filter (default)  |
+| **Last day**   | Past 24 hours             |
+| **Last week**  | Past 7 days               |
+| **Last month** | Past 30 days              |
+| **Last year**  | Past 12 months            |
 
 Useful for agents that need current information — set "Last week" for a news monitoring agent, or "Last month" for a market research agent.
 
@@ -104,6 +106,7 @@ When an agent has **both** web access (especially Fetch web pages) **and** acces
 This is a real risk in any system where an AI agent can both read private data and make outbound requests. A malicious web page could contain hidden instructions that trick the agent into encoding sensitive data into a URL and fetching it.
 
 **Mitigation strategies:**
+
 - Use **Allowed Domains** to restrict fetch access to known, trusted sites
 - Only enable **Search the web** without **Fetch web pages** if the agent doesn't need to read full page content
 - Avoid combining web fetch with access to highly sensitive data (credentials, financial records)
@@ -111,6 +114,7 @@ This is a real risk in any system where an AI agent can both read private data a
 ### SSRF protection
 
 Pinchy's web fetch module includes built-in SSRF (Server-Side Request Forgery) protection. Agents cannot fetch:
+
 - Internal network addresses (private IP ranges like `10.x.x.x`, `192.168.x.x`, `172.16-31.x.x`)
 - Localhost (`127.0.0.1`, `::1`)
 - Link-local addresses
@@ -120,6 +124,7 @@ This prevents agents from using web fetch to probe your internal infrastructure.
 ### Credential handling
 
 Your Brave Search API key is:
+
 - Encrypted at rest with AES-256-GCM in the database
 - Never exposed in API responses (masked when displayed)
 - Never logged in application logs or the audit trail

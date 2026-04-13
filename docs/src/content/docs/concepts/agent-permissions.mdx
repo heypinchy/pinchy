@@ -34,9 +34,9 @@ When you enable a safe tool, a directory picker appears so you can select which 
 
 Web search tools give the agent access to live web information via the Brave Search API. These require a Brave Search API key configured in Settings → Integrations.
 
-| Tool                | What it does                                                  |
-| ------------------- | ------------------------------------------------------------- |
-| **Search the web**  | Query Brave Search and return ranked results (`pinchy_web_search`) |
+| Tool                | What it does                                                          |
+| ------------------- | --------------------------------------------------------------------- |
+| **Search the web**  | Query Brave Search and return ranked results (`pinchy_web_search`)    |
 | **Fetch web pages** | Download and extract readable content from a URL (`pinchy_web_fetch`) |
 
 When web search tools are enabled, additional per-agent filters appear: Allowed Domains, Excluded Domains, Freshness, Language, and Region. See [Set Up Web Search](/guides/web-search-setup/) for details.
@@ -49,11 +49,11 @@ If an agent has **Fetch web pages** enabled alongside access to sensitive data (
 
 Powerful tools give the agent **direct access to the server**. Only enable them if you understand the risks.
 
-| Tool               | What it does                                      |
-| ------------------ | ------------------------------------------------- |
-| **Run commands**   | Execute shell commands on the server              |
-| **Read any file**  | Read any file on the system, without restrictions |
-| **Write files**    | Create and modify files on the system             |
+| Tool              | What it does                                      |
+| ----------------- | ------------------------------------------------- |
+| **Run commands**  | Execute shell commands on the server              |
+| **Read any file** | Read any file on the system, without restrictions |
+| **Write files**   | Create and modify files on the system             |
 
 An agent with powerful tools enabled has significantly broader capabilities. Use these only for trusted, internal use cases.
 
@@ -109,10 +109,10 @@ For example, setting an agent to "Read-only" for an Odoo connection enables sche
 
 Web search tools are enabled individually per agent via checkboxes in the Permissions tab. Unlike Odoo tools, there are no access levels — you simply check the tools you want.
 
-| Tool                | Tool ID              | What it does                           |
-| ------------------- | -------------------- | -------------------------------------- |
-| **Search the web**  | `pinchy_web_search`  | Query Brave Search for relevant results |
-| **Fetch web pages** | `pinchy_web_fetch`   | Download and read content from a URL   |
+| Tool                | Tool ID             | What it does                            |
+| ------------------- | ------------------- | --------------------------------------- |
+| **Search the web**  | `pinchy_web_search` | Query Brave Search for relevant results |
+| **Fetch web pages** | `pinchy_web_fetch`  | Download and read content from a URL    |
 
 Each agent can also have per-agent filters (Allowed Domains, Excluded Domains, Freshness, Language, Region) that control what the agent can access. See [Set Up Web Search](/guides/web-search-setup/) for configuration details.
 
