@@ -188,11 +188,11 @@ export function SettingsIntegrations() {
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <span className="cursor-default underline decoration-dotted underline-offset-4">
-                                  Synced {formatRelativeTime(conn.data.lastSyncAt)}
+                                  Synced {formatRelativeTime(conn.data.lastSyncAt as string)}
                                 </span>
                               </TooltipTrigger>
                               <TooltipContent>
-                                <p>{new Date(conn.data.lastSyncAt).toLocaleString()}</p>
+                                <p>{new Date(conn.data.lastSyncAt as string).toLocaleString()}</p>
                               </TooltipContent>
                             </Tooltip>
                           </>
