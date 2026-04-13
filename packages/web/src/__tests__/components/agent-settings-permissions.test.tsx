@@ -17,6 +17,37 @@ vi.mock("@/components/odoo-permission-section", () => ({
   },
 }));
 
+vi.mock("@/components/web-search-permission-section", () => ({
+  WebSearchPermissionSection: ({
+    showSecurityWarning,
+    hasApiKey,
+  }: {
+    config: unknown;
+    onChange: (v: unknown) => void;
+    showSecurityWarning: boolean;
+    hasApiKey: boolean;
+  }) => (
+    <div data-testid="web-search-section">
+      Web Search Config
+      {showSecurityWarning && <span data-testid="security-warning">Security Warning</span>}
+      {!hasApiKey && <span data-testid="no-api-key">No API Key</span>}
+    </div>
+  ),
+}));
+
+// Mock fetch for the integrations API call
+const mockFetch = vi.fn();
+global.fetch = mockFetch;
+
+beforeEach(() => {
+  mockFetch.mockReset();
+  // Default: no web-search connections
+  mockFetch.mockResolvedValue({
+    ok: true,
+    json: async () => [],
+  });
+});
+
 describe("AgentSettingsPermissions", () => {
   const defaultAgent = {
     id: "agent-1",
@@ -188,6 +219,110 @@ describe("AgentSettingsPermissions", () => {
     });
   });
 
+  describe("Web Search section", () => {
+    it("should render Web Search heading with checkboxes for web tools", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText("Web Search")).toBeInTheDocument();
+      expect(screen.getByLabelText("Search the web")).toBeInTheDocument();
+      expect(screen.getByLabelText("Fetch web pages")).toBeInTheDocument();
+    });
+
+    it("should not show WebSearchPermissionSection when no web tool is checked", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByTestId("web-search-section")).not.toBeInTheDocument();
+    });
+
+    it("should show WebSearchPermissionSection when a web tool is checked", async () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          onChange={vi.fn()}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Search the web"));
+
+      expect(screen.getByTestId("web-search-section")).toBeInTheDocument();
+    });
+
+    it("should show WebSearchPermissionSection when agent already has web tools allowed", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_web_search"] }}
+          directories={defaultDirectories}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.getByTestId("web-search-section")).toBeInTheDocument();
+    });
+
+    it("should show security warning when agent has web tools and file tools", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{
+            ...defaultAgent,
+            allowedTools: ["pinchy_web_fetch", "pinchy_ls"],
+            pluginConfig: { "pinchy-files": { allowed_paths: ["/data"] } },
+          }}
+          directories={defaultDirectories}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.getByTestId("security-warning")).toBeInTheDocument();
+    });
+
+    it("should not show security warning when agent has only web tools", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_web_search"] }}
+          directories={defaultDirectories}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByTestId("security-warning")).not.toBeInTheDocument();
+    });
+
+    it("should include web tools in allowedTools onChange", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          onChange={onChange}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Search the web"));
+
+      await waitFor(() => {
+        expect(onChange).toHaveBeenCalledWith(
+          expect.objectContaining({
+            allowedTools: expect.arrayContaining(["pinchy_web_search"]),
+          }),
+          true
+        );
+      });
+    });
+  });
+
   describe("onChange behavior", () => {
     it("should NOT render a Save button", () => {
       const onChange = vi.fn();
@@ -235,7 +370,7 @@ describe("AgentSettingsPermissions", () => {
       );
 
       expect(onChange).toHaveBeenCalledWith(
-        { allowedTools: [], allowedPaths: [], integrations: null },
+        { allowedTools: [], allowedPaths: [], integrations: null, webSearchConfig: {} },
         false
       );
     });

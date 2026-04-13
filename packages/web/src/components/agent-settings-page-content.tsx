@@ -71,6 +71,7 @@ interface PermissionsValues {
     connectionId: string;
     permissions: Array<{ model: string; operation: string }>;
   } | null;
+  webSearchConfig?: AgentPluginConfig["pinchy-web"];
 }
 
 interface AccessValues {
@@ -251,6 +252,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
         agentPatch.pluginConfig = {
           ...agent.pluginConfig,
           "pinchy-files": { allowed_paths: permissionsDraft.current.allowedPaths },
+          "pinchy-web": permissionsDraft.current.webSearchConfig,
         };
 
         // Save or clear integration permissions
