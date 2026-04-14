@@ -152,8 +152,8 @@ test.describe.serial("Pipedrive Permission Setup", () => {
       .first()
       .click();
 
-    // Entity should now appear in the table
-    await expect(page.getByText("deals")).toBeVisible();
+    // Entity should now appear in the table (exact: true avoids matching "Deals" display name)
+    await expect(page.getByText("deals", { exact: true })).toBeVisible();
 
     // At Read-only: Read checkbox should be checked
     const readCheckbox = page.getByRole("checkbox", { name: /read deals/i });
@@ -224,14 +224,14 @@ test.describe.serial("Pipedrive Permission Setup", () => {
       .first()
       .click();
 
-    // Verify entity is in the table
-    await expect(page.getByText("deals")).toBeVisible();
+    // Verify entity is in the table (exact: true avoids matching "Deals" display name)
+    await expect(page.getByText("deals", { exact: true })).toBeVisible();
 
     // Click the remove button (X) for this entity
     await page.getByRole("button", { name: /remove deals/i }).click();
 
     // Entity should disappear
-    await expect(page.getByText("deals")).not.toBeVisible();
+    await expect(page.getByText("deals", { exact: true })).not.toBeVisible();
   });
 
   test("save and reload preserves state", { timeout: 120000 }, async ({ page }) => {
@@ -255,8 +255,8 @@ test.describe.serial("Pipedrive Permission Setup", () => {
       .first()
       .click();
 
-    // Verify entity is added
-    await expect(page.getByText("persons")).toBeVisible();
+    // Verify entity is added (exact: true avoids matching "Persons" display name)
+    await expect(page.getByText("persons", { exact: true })).toBeVisible();
 
     // Wait for dirty state to be detected — this is the key indicator
     await expect(page.getByText("Unsaved changes")).toBeVisible({ timeout: 10000 });
@@ -287,7 +287,7 @@ test.describe.serial("Pipedrive Permission Setup", () => {
     // Access level should be "Read & Write"
     await expect(page.getByRole("radio", { name: "Read & Write" })).toBeChecked();
 
-    // Entity should still be in the table
-    await expect(page.getByText("persons")).toBeVisible();
+    // Entity should still be in the table (exact: true avoids matching "Persons" display name)
+    await expect(page.getByText("persons", { exact: true })).toBeVisible();
   });
 });
