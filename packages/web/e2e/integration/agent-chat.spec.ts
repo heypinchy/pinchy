@@ -2,12 +2,9 @@
 import { test, expect } from "@playwright/test";
 
 test.describe("Agent chat — full integration", () => {
-  test("agent created through Pinchy responds to messages via OpenClaw", async ({
-    page,
-    request,
-  }) => {
+  test("agent created through Pinchy responds to messages via OpenClaw", async ({ page }) => {
     // 1. Run setup wizard (creates admin + Smithers)
-    const setup = await request.post("/api/setup", {
+    const setup = await page.request.post("/api/setup", {
       data: {
         name: "Integration Admin",
         email: "admin@integration.local",
@@ -24,7 +21,7 @@ test.describe("Agent chat — full integration", () => {
     await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
 
     // 3. Create a test agent via API with the fake Ollama model
-    const agentRes = await request.post("/api/agents", {
+    const agentRes = await page.request.post("/api/agents", {
       data: {
         name: "Integration Test Bot",
         model: "ollama/fake-model:latest",
