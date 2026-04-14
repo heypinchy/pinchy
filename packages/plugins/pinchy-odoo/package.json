@@ -8,10 +8,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "odoo-node": "^0.1.1"
+    "odoo-node": "^0.2.0"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4"
   }
 }
