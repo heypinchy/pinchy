@@ -158,6 +158,7 @@ interface IntegrationTypeConfig {
   type: string;
   label: string;
   entityLabel: string;
+  entityLabelSingular: string;
   operations: readonly string[];
   operationLabels: Record<string, string>;
   hookConfig: IntegrationPermissionsConfig;
@@ -173,6 +174,7 @@ const INTEGRATION_CONFIGS: IntegrationTypeConfig[] = [
     type: "odoo",
     label: "Odoo",
     entityLabel: "Models",
+    entityLabelSingular: "Model",
     operations: ["read", "create", "write", "delete"],
     operationLabels: { read: "Read", create: "Create", write: "Write", delete: "Delete" },
     hookConfig: ODOO_INTEGRATION_CONFIG,
@@ -184,6 +186,7 @@ const INTEGRATION_CONFIGS: IntegrationTypeConfig[] = [
     type: "pipedrive",
     label: "Pipedrive",
     entityLabel: "Entities",
+    entityLabelSingular: "Entity",
     operations: ["read", "create", "update", "delete"],
     operationLabels: { read: "Read", create: "Create", update: "Update", delete: "Delete" },
     hookConfig: PIPEDRIVE_INTEGRATION_CONFIG,
@@ -409,6 +412,7 @@ export function AgentSettingsPermissions({
             integrationType={config.type}
             label={config.label}
             entityLabel={config.entityLabel}
+            entityLabelSingular={config.entityLabelSingular}
             connections={connectionsByType[config.type] ?? []}
             hookConfig={config.hookConfig}
             operations={config.operations}

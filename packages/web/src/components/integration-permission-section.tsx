@@ -48,6 +48,7 @@ export interface IntegrationPermissionSectionProps {
   integrationType: string;
   label: string;
   entityLabel: string;
+  entityLabelSingular: string;
   connections: IntegrationConnection[];
   hookConfig: IntegrationPermissionsConfig;
   operations: readonly string[];
@@ -76,6 +77,7 @@ function flatGroup(
 export function IntegrationPermissionSection({
   agentId,
   entityLabel,
+  entityLabelSingular,
   hookConfig,
   operations,
   operationLabels,
@@ -224,9 +226,7 @@ export function IntegrationPermissionSection({
                       gridTemplateColumns: `1fr ${operations.map(() => "60px").join(" ")} 40px`,
                     }}
                   >
-                    <span>
-                      {entityLabel.endsWith("s") ? entityLabel.slice(0, -1) : entityLabel}
-                    </span>
+                    <span>{entityLabelSingular}</span>
                     {operations.map((op) => (
                       <span key={op} className="text-center">
                         {operationLabels[op] ?? op}
@@ -315,11 +315,7 @@ export function IntegrationPermissionSection({
                   <PopoverTrigger asChild>
                     <Button variant="outline" size="sm" disabled={availableEntities.length === 0}>
                       <Plus className="mr-1 h-4 w-4" />
-                      Add{" "}
-                      {entityLabel.toLowerCase().endsWith("s")
-                        ? entityLabel.toLowerCase().slice(0, -1)
-                        : entityLabel.toLowerCase()}
-                      ...
+                      Add {entityLabelSingular.toLowerCase()}...
                       <ChevronsUpDown className="ml-1 h-4 w-4 opacity-50" />
                     </Button>
                   </PopoverTrigger>
