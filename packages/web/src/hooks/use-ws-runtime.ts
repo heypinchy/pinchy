@@ -26,6 +26,7 @@ interface WsMessage {
 }
 
 const DELAY_HINT_MS = 15_000;
+const STUCK_TIMEOUT_MS = 60_000;
 
 function convertMessage(msg: WsMessage): ThreadMessageLike {
   const parts: Array<{ type: "text"; text: string } | { type: "image"; image: string }> = [
@@ -67,6 +68,7 @@ export function useWsRuntime(agentId: string): {
   isConnected: boolean;
   isDelayed: boolean;
   isHistoryLoaded: boolean;
+  reconnectExhausted: boolean;
 } {
   const { triggerRestart } = useRestart();
   const [messages, setMessages] = useState<WsMessage[]>([]);
@@ -74,13 +76,17 @@ export function useWsRuntime(agentId: string): {
   const [isConnected, setIsConnected] = useState(false);
   const [isDelayed, setIsDelayed] = useState(false);
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
+  const [reconnectExhausted, setReconnectExhausted] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetStuckTimerRef = useRef<(() => void) | null>(null);
   const mountedRef = useRef(true);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldRecoverFromHistoryRef = useRef(false);
   const pendingMessageRef = useRef<string | null>(null);
+  const isRunningRef = useRef(false);
 
   // Reset state when switching agents — prevents stale messages from
   // one agent blocking history load for a different agent.
@@ -99,12 +105,41 @@ export function useWsRuntime(agentId: string): {
     reconnectAttemptRef.current = 0;
     shouldRecoverFromHistoryRef.current = false;
 
+    function clearStuckTimer() {
+      if (stuckTimerRef.current) {
+        clearTimeout(stuckTimerRef.current);
+        stuckTimerRef.current = null;
+      }
+    }
+
+    function resetStuckTimer() {
+      clearStuckTimer();
+      stuckTimerRef.current = setTimeout(() => {
+        isRunningRef.current = false;
+        setIsRunning(false);
+        setIsDelayed(false);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: uuid(),
+            role: "assistant",
+            content: "",
+            error: { timedOut: true },
+          },
+        ]);
+      }, STUCK_TIMEOUT_MS);
+    }
+
+    // Expose resetStuckTimer to onNew (defined outside this useEffect)
+    resetStuckTimerRef.current = resetStuckTimer;
+
     function connect() {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws?agentId=${agentId}`);
 
       ws.onopen = () => {
         setIsConnected(true);
+        setReconnectExhausted(false);
         reconnectAttemptRef.current = 0;
         ws.send(JSON.stringify({ type: "history", agentId }));
 
@@ -117,7 +152,31 @@ export function useWsRuntime(agentId: string): {
 
       ws.onclose = () => {
         setIsConnected(false);
-        setIsRunning(false);
+        setIsDelayed(false);
+        clearStuckTimer();
+        if (delayTimerRef.current) {
+          clearTimeout(delayTimerRef.current);
+          delayTimerRef.current = null;
+        }
+
+        // If a stream was in progress, inject a disconnect error so the user
+        // knows the response may have been lost.
+        if (isRunningRef.current) {
+          isRunningRef.current = false;
+          setIsRunning(false);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: uuid(),
+              role: "assistant",
+              content: "",
+              error: { disconnected: true },
+            },
+          ]);
+        } else {
+          setIsRunning(false);
+        }
+
         setIsHistoryLoaded(false);
 
         if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
@@ -125,11 +184,15 @@ export function useWsRuntime(agentId: string): {
           const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 5000);
           reconnectAttemptRef.current++;
           reconnectTimerRef.current = setTimeout(connect, delay);
+        } else if (mountedRef.current) {
+          setReconnectExhausted(true);
         }
       };
 
       ws.onerror = () => {
         setIsConnected(false);
+        clearStuckTimer();
+        isRunningRef.current = false;
         setIsRunning(false);
       };
 
@@ -172,13 +235,17 @@ export function useWsRuntime(agentId: string): {
           if (data.type === "thinking") {
             // Server keep-alive: defeats browser/proxy WebSocket idle
             // timeouts during long pauses (e.g. local Ollama tool-use loops).
-            // No state change needed — we just don't want to drop the frame.
+            // Reset stuck timer so a slow-but-alive agent doesn't get killed.
+            isRunningRef.current = true;
             setIsRunning(true);
+            resetStuckTimer();
             return;
           }
 
           if (data.type === "chunk") {
+            isRunningRef.current = true;
             setIsRunning(true);
+            resetStuckTimer();
 
             if (delayTimerRef.current) {
               clearTimeout(delayTimerRef.current);
@@ -215,7 +282,9 @@ export function useWsRuntime(agentId: string): {
               clearTimeout(delayTimerRef.current);
               delayTimerRef.current = null;
             }
+            clearStuckTimer();
             setIsDelayed(false);
+            isRunningRef.current = false;
             setIsRunning(false);
           }
 
@@ -224,6 +293,7 @@ export function useWsRuntime(agentId: string): {
               clearTimeout(delayTimerRef.current);
               delayTimerRef.current = null;
             }
+            clearStuckTimer();
             setIsDelayed(false);
 
             const error: ChatError = data.providerError
@@ -243,6 +313,7 @@ export function useWsRuntime(agentId: string): {
                 error,
               },
             ]);
+            isRunningRef.current = false;
             setIsRunning(false);
           }
         } catch {
@@ -263,6 +334,7 @@ export function useWsRuntime(agentId: string): {
       if (delayTimerRef.current) {
         clearTimeout(delayTimerRef.current);
       }
+      clearStuckTimer();
       wsRef.current?.close();
     };
   }, [agentId]);
@@ -319,6 +391,7 @@ export function useWsRuntime(agentId: string): {
       };
 
       setMessages((prev) => [...prev, userMessage]);
+      isRunningRef.current = true;
       setIsRunning(true);
 
       // Start delay hint timer
@@ -328,6 +401,9 @@ export function useWsRuntime(agentId: string): {
       delayTimerRef.current = setTimeout(() => {
         setIsDelayed(true);
       }, DELAY_HINT_MS);
+
+      // Start stuck timer — fires if no activity (chunk or thinking) for 60s
+      resetStuckTimerRef.current?.();
 
       // Build content: structured array if images present, plain string otherwise
       let wsContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
@@ -372,5 +448,5 @@ export function useWsRuntime(agentId: string): {
     },
   });
 
-  return { runtime, isConnected, isDelayed, isHistoryLoaded };
+  return { runtime, isConnected, isDelayed, isHistoryLoaded, reconnectExhausted };
 }
