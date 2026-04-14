@@ -97,4 +97,54 @@ export default async function globalSetup() {
   `);
   await sql.end();
   console.log("[integration-setup] Ollama URL seeded");
+
+  // 6. Run setup wizard so Pinchy writes openclaw.json WITH Smithers before OpenClaw
+  //    restarts. This must happen before restarting OpenClaw (step 7) so the container
+  //    reads the populated config on startup.
+  //    Note: webServer (Pinchy) is already running — Playwright starts it before globalSetup.
+  console.log("[integration-setup] Running setup wizard...");
+  const setupRes = await fetch("http://localhost:7779/api/setup", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      name: "Integration Admin",
+      email: "admin@integration.local",
+      password: "integration-password-123",
+    }),
+  });
+  if (setupRes.status !== 201 && setupRes.status !== 403) {
+    throw new Error(`[integration-setup] Setup failed with status ${setupRes.status}`);
+  }
+  console.log(`[integration-setup] Setup complete (status ${setupRes.status})`);
+
+  // 7. Restart OpenClaw so it reads the fresh config (with Smithers). This bypasses
+  //    the inotify bind-mount limitation where renameSync generates IN_MOVED_TO which
+  //    OpenClaw's file watcher does not detect on CI bind-mounts.
+  console.log("[integration-setup] Restarting OpenClaw container to reload config...");
+  execSync("docker compose -f docker-compose.integration.yml restart openclaw", {
+    cwd: PROJECT_ROOT,
+    stdio: "inherit",
+  });
+
+  // 8. Wait for Pinchy to reconnect to OpenClaw (up to 60s)
+  console.log("[integration-setup] Waiting for Pinchy to reconnect to OpenClaw...");
+  const deadline = Date.now() + 60000;
+  let reconnected = false;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch("http://localhost:7779/api/health/openclaw");
+      const data = (await res.json()) as { connected: boolean };
+      if (data.connected) {
+        reconnected = true;
+        break;
+      }
+    } catch {
+      // Pinchy may be briefly unavailable during OpenClaw restart
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (!reconnected) {
+    throw new Error("[integration-setup] Pinchy did not reconnect to OpenClaw within 60s");
+  }
+  console.log("[integration-setup] Pinchy reconnected to OpenClaw — integration stack ready");
 }
