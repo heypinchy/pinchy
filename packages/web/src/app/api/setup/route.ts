@@ -2,6 +2,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createAdmin } from "@/lib/setup";
 import { validatePassword } from "@/lib/validate-password";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 
 export async function POST(request: NextRequest) {
   try {
@@ -21,6 +22,11 @@ export async function POST(request: NextRequest) {
     }
 
     const user = await createAdmin(name.trim(), email, password);
+    // Write OpenClaw config with the newly created Smithers agent so OpenClaw
+    // knows about it when the container restarts or the file watcher picks it up.
+    await regenerateOpenClawConfig().catch((err) => {
+      console.error("[setup] Failed to regenerate OpenClaw config:", err);
+    });
     return NextResponse.json(user, { status: 201 });
   } catch (error) {
     if (error instanceof Error && error.message === "Setup already complete") {
