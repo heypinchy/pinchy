@@ -10,7 +10,7 @@
   "dependencies": {
     "@napi-rs/canvas": "^0.1.97",
     "better-sqlite3": "^12.9.0",
-    "pdfjs-dist": "^4.10.38"
+    "pdfjs-dist": "^5.6.205"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",
