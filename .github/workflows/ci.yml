@@ -530,6 +530,22 @@ jobs:
       - name: Build OpenClaw image
         run: docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
 
+      # Pre-start Docker stack + migrate DB BEFORE Playwright launches the webServer.
+      # Playwright starts webServer before globalSetup, so Pinchy would try to connect
+      # to the DB before it exists unless we pre-provision it here.
+      - name: Pre-start integration Docker stack
+        run: |
+          mkdir -p /tmp/pinchy-integration-openclaw/workspaces
+          docker compose -f docker-compose.integration.yml up -d --wait
+
+      - name: Create and migrate integration DB
+        run: |
+          PGPASSWORD=pinchy_dev psql -h localhost -p 5435 -U pinchy -d pinchy \
+            -c "DROP DATABASE IF EXISTS pinchy_integration_test WITH (FORCE);" \
+            -c "CREATE DATABASE pinchy_integration_test;"
+          DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5435/pinchy_integration_test \
+            pnpm -C packages/web db:migrate
+
       - name: Install Playwright Chromium
         run: pnpm -C packages/web exec playwright install chromium --with-deps
 
