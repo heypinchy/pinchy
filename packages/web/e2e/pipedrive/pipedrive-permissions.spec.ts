@@ -13,8 +13,6 @@ import {
   getAdminPassword,
 } from "./helpers";
 
-const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
-
 async function loginViaUI(page: Page) {
   await page.goto("/login");
   await page.getByLabel(/email/i).fill(getAdminEmail());
@@ -60,24 +58,29 @@ test.describe.serial("Pipedrive Permission Setup", () => {
     // Clean slate: remove any leftover connections
     await deleteAllConnections(cookie);
 
-    // Create a fresh Pipedrive connection (with synced entities)
+    // Create a fresh Pipedrive connection
     const connRes = await createPipedriveConnection(cookie, "Permissions Test Pipedrive");
     expect(connRes.status).toBe(201);
     const conn = await connRes.json();
     connectionId = conn.id;
 
-    // Wait for the sync to populate entities on the connection.
-    // The wizard flow triggers sync automatically, but API creation may need
-    // the sync endpoint called explicitly.
-    const syncRes = await fetch(`${PINCHY_URL}/api/integrations/${connectionId}/sync`, {
-      method: "POST",
-      headers: { Cookie: cookie },
-    });
-    // Sync may or may not exist — if not, the wizard already synced
-    if (syncRes.ok) {
-      // Give it a moment to complete
-      await new Promise((r) => setTimeout(r, 2000));
-    }
+    // API-based creation does not auto-sync (unlike the wizard). Explicitly
+    // trigger a sync and assert that entities were captured, since the UI
+    // tests below rely on `connection.data.entities` being populated to show
+    // the "Add entity..." button.
+    const syncRes = await pinchyPost(`/api/integrations/${connectionId}/sync`, {}, cookie);
+    expect(syncRes.status).toBe(200);
+    const syncBody = await syncRes.json();
+    expect(syncBody.success).toBe(true);
+    expect(syncBody.entities).toBeGreaterThan(0);
+
+    // Sanity-check: the connection row in the DB now carries entity data.
+    const integrationsRes = await pinchyGet("/api/integrations", cookie);
+    expect(integrationsRes.status).toBe(200);
+    const integrations = await integrationsRes.json();
+    const storedConn = integrations.find((c: { id: string }) => c.id === connectionId);
+    expect(storedConn).toBeTruthy();
+    expect(storedConn.data?.entities?.length ?? 0).toBeGreaterThan(0);
 
     // Ensure we have a shared (non-personal) agent
     agentId = await ensureSharedAgent(cookie);

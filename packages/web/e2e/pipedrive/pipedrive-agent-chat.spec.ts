@@ -104,14 +104,13 @@ test.describe.serial("Pipedrive Agent Chat", () => {
   });
 
   test("sync captures entity accessibility", async () => {
-    // Configure mock with restricted access for some entities
+    // Configure mock to return 403 for 'leads' (entity-level plan restriction)
+    // The mock's /control/access endpoint accepts { entity: 403 } to simulate a
+    // Pipedrive plan that doesn't include certain features.
     const configRes = await fetch(`${MOCK_PIPEDRIVE_URL}/control/access`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        deals: { read: true, create: true, update: true, delete: false },
-        persons: { read: true, create: false, update: false, delete: false },
-      }),
+      body: JSON.stringify({ leads: 403 }),
     });
     expect(configRes.status).toBe(200);
 
@@ -130,14 +129,19 @@ test.describe.serial("Pipedrive Agent Chat", () => {
     expect(conn).toBeTruthy();
     expect(conn.data).toBeTruthy();
 
-    // Find deals in the synced entities and check its operations
+    // 403-restricted entities should be omitted from the synced entities
+    const leads = conn.data.entities.find((e: { entity: string }) => e.entity === "leads");
+    expect(leads).toBeUndefined();
+
+    // Accessible entities should be present with the static operations defined
+    // in ENTITY_OPERATIONS (Pipedrive does not expose per-user access rights).
     const deals = conn.data.entities.find((e: { entity: string }) => e.entity === "deals");
     expect(deals).toBeTruthy();
     expect(deals.operations).toEqual({
       read: true,
       create: true,
       update: true,
-      delete: false,
+      delete: true,
     });
   });
 
