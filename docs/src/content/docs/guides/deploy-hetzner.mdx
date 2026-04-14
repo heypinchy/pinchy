@@ -3,7 +3,8 @@ title: Deploy Pinchy on Hetzner Cloud
 description: Deploy a self-hosted AI agent platform on Hetzner Cloud. Step-by-step guide from server creation to running Pinchy with Docker.
 ---
 
-import { Aside, Steps } from "@astrojs/starlight/components";
+import { Aside, Code, Steps } from "@astrojs/starlight/components";
+import cloudInitScript from '../../../snippets/cloud-init.yml?raw';
 
 Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU data centers (Germany and Finland), which keeps your data under EU jurisdiction — no overseas transfers, no third-party cloud AI providers touching your conversations. Combined with strong price-to-performance ratios, it's the go-to option for European teams that take data sovereignty seriously.
 
@@ -77,42 +78,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
     Scroll down past Volumes, Firewalls, Backups, Placement groups, and Labels until you reach **Cloud config** — it's near the very bottom. Paste the following script into the "Cloud-init configuration" text area:
 
-    ```yaml
-    #cloud-config
-    runcmd:
-      - mkdir -p /opt/pinchy-loading
-      - curl -fsSL https://github.com/heypinchy/pinchy/releases/download/%%PINCHY_VERSION%%/installing.html -o /opt/pinchy-loading/index.html
-      - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /opt/pinchy-loading/index.html
-      - cd /opt/pinchy-loading && python3 -m http.server 80 &
-      - echo $! > /tmp/loading-server.pid
-      - apt-get update -qq
-      - apt-get install -y -qq docker.io docker-compose-v2 ufw
-      - echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
-      - echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
-      - apt-get install -y -qq iptables-persistent
-      - ufw allow OpenSSH
-      - ufw allow 80/tcp
-      - ufw allow 443/tcp
-      - ufw allow 7777/tcp
-      - ufw --force enable
-      - systemctl enable docker
-      - systemctl start docker
-      - fallocate -l 2G /swapfile
-      - chmod 600 /swapfile
-      - mkswap /swapfile
-      - swapon /swapfile
-      - echo '/swapfile none swap sw 0 0' >> /etc/fstab
-      - mkdir -p /opt/pinchy
-      - curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o /opt/pinchy/docker-compose.yml
-      - cd /opt/pinchy && docker compose pull
-      - cd /opt/pinchy && docker compose up -d
-      - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
-      - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
-      - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
-      - iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
-      - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
-      - netfilter-persistent save
-    ```
+    <Code code={cloudInitScript} lang="yaml" title="cloud-init.yml" />
 
     <details>
 

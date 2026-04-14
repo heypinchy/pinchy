@@ -1,6 +1,7 @@
 #!/bin/sh
 # Reads the Pinchy version and replaces %%PINCHY_VERSION%% placeholders
-# in docs source files and public assets (e.g., cloud-init.yml).
+# in docs source files. Also generates public/cloud-init.yml from
+# src/snippets/cloud-init.yml (the canonical source).
 # Called automatically by the build/dev scripts — no manual step needed.
 #
 # Version sources (in priority order):
@@ -35,7 +36,7 @@ if [ -z "$TAG" ]; then
 fi
 
 # Count replacements for feedback
-COUNT=$(grep -r '%%PINCHY_VERSION%%' "$DOCS_DIR/src" "$DOCS_DIR/public" --include='*.mdx' --include='*.md' --include='*.yml' -l 2>/dev/null | wc -l | tr -d ' ')
+COUNT=$(grep -r '%%PINCHY_VERSION%%' "$DOCS_DIR/src" --include='*.mdx' --include='*.md' --include='*.yml' -l 2>/dev/null | wc -l | tr -d ' ')
 
 if [ "$COUNT" = "0" ]; then
   echo "[docs] No %%PINCHY_VERSION%% placeholders found (version: $TAG)"
@@ -46,7 +47,10 @@ fi
 echo "$TAG" > "$DOCS_DIR/.injected-version"
 
 # Replace in-place (works on both macOS and Linux)
-find "$DOCS_DIR/src" "$DOCS_DIR/public" \( -name '*.mdx' -o -name '*.md' -o -name '*.yml' \) -exec sed -i.bak "s/%%PINCHY_VERSION%%/$TAG/g" {} +
-find "$DOCS_DIR/src" "$DOCS_DIR/public" -name '*.bak' -delete
+find "$DOCS_DIR/src" \( -name '*.mdx' -o -name '*.md' -o -name '*.yml' \) -exec sed -i.bak "s/%%PINCHY_VERSION%%/$TAG/g" {} +
+find "$DOCS_DIR/src" -name '*.bak' -delete
+
+# Regenerate public/cloud-init.yml from the (now version-injected) source
+cp "$DOCS_DIR/src/snippets/cloud-init.yml" "$DOCS_DIR/public/cloud-init.yml"
 
 echo "[docs] Injected $TAG into $COUNT file(s)"

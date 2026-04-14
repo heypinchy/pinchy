@@ -2,3 +2,4 @@ node_modules/
 dist/
 .astro/
 .injected-version
+public/cloud-init.yml
