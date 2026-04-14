@@ -21,8 +21,9 @@ if [ -z "$TAG" ]; then
   exit 0
 fi
 
-find "$DOCS_DIR/src" "$DOCS_DIR/public" \( -name '*.mdx' -o -name '*.md' -o -name '*.yml' \) -exec sed -i.bak "s/$TAG/%%PINCHY_VERSION%%/g" {} +
-find "$DOCS_DIR/src" "$DOCS_DIR/public" -name '*.bak' -delete
+find "$DOCS_DIR/src" \( -name '*.mdx' -o -name '*.md' -o -name '*.yml' \) -exec sed -i.bak "s/$TAG/%%PINCHY_VERSION%%/g" {} +
+find "$DOCS_DIR/src" -name '*.bak' -delete
+rm -f "$DOCS_DIR/public/cloud-init.yml"
 rm -f "$INJECTED_VERSION_FILE"
 
 echo "[docs] Restored %%PINCHY_VERSION%% placeholders (was: $TAG)"
