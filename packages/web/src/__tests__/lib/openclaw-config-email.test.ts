@@ -129,13 +129,11 @@ describe("pinchy-email config generation", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi
-            .fn()
-            .mockReturnValue(
-              Object.assign(Promise.resolve(permissionsData), {
-                where: vi.fn().mockResolvedValue(permissionsData),
-              })
-            ),
+          innerJoin: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve(permissionsData), {
+              where: vi.fn().mockResolvedValue(permissionsData),
+            })
+          ),
         })
       ),
     } as never);
@@ -215,13 +213,11 @@ describe("pinchy-email config generation", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi
-            .fn()
-            .mockReturnValue(
-              Object.assign(Promise.resolve(permissionsData), {
-                where: vi.fn().mockResolvedValue(permissionsData),
-              })
-            ),
+          innerJoin: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve(permissionsData), {
+              where: vi.fn().mockResolvedValue(permissionsData),
+            })
+          ),
         })
       ),
     } as never);
@@ -286,13 +282,11 @@ describe("pinchy-email config generation", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi
-            .fn()
-            .mockReturnValue(
-              Object.assign(Promise.resolve(permissionsData), {
-                where: vi.fn().mockResolvedValue(permissionsData),
-              })
-            ),
+          innerJoin: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve(permissionsData), {
+              where: vi.fn().mockResolvedValue(permissionsData),
+            })
+          ),
         })
       ),
     } as never);
@@ -365,13 +359,11 @@ describe("pinchy-email config generation", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi
-            .fn()
-            .mockReturnValue(
-              Object.assign(Promise.resolve(permissionsData), {
-                where: vi.fn().mockResolvedValue(permissionsData),
-              })
-            ),
+          innerJoin: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve(permissionsData), {
+              where: vi.fn().mockResolvedValue(permissionsData),
+            })
+          ),
         })
       ),
     } as never);
@@ -447,13 +439,11 @@ describe("pinchy-email config generation", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi
-            .fn()
-            .mockReturnValue(
-              Object.assign(Promise.resolve(permissionsData), {
-                where: vi.fn().mockResolvedValue(permissionsData),
-              })
-            ),
+          innerJoin: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve(permissionsData), {
+              where: vi.fn().mockResolvedValue(permissionsData),
+            })
+          ),
         })
       ),
     } as never);
