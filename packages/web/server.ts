@@ -10,6 +10,7 @@ import { validateWsSession } from "./src/server/ws-auth";
 import { restartState } from "./src/server/restart-state";
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
+import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
 import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
@@ -329,6 +330,8 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       // second poller. The poller handles sessions.list() failures gracefully.
       startUsagePoller(openclawClient!);
     });
+
+    setupOpenClawDisconnectHandler(openclawClient, sessionMap);
 
     openclawClient.on("disconnected", () => {
       if (hasConnected) {
