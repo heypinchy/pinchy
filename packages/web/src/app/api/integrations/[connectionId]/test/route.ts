@@ -8,6 +8,8 @@ import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import { pipedriveCredentialsSchema } from "@/lib/integrations/pipedrive-schema";
+import { getPipedriveBaseUrl } from "@/lib/integrations/pipedrive-api";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -33,6 +35,36 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
 
   try {
     const decrypted = JSON.parse(decrypt(connection.credentials));
+
+    if (connection.type === "pipedrive") {
+      const parsed = pipedriveCredentialsSchema.safeParse(decrypted);
+      if (!parsed.success) {
+        return NextResponse.json(
+          { success: false, error: "Invalid credentials format" },
+          { status: 200 }
+        );
+      }
+
+      const response = await fetch(`${getPipedriveBaseUrl()}/v1/users/me`, {
+        headers: { "x-api-token": parsed.data.apiToken },
+      });
+      const data = await response.json();
+
+      if (!data.success) {
+        return NextResponse.json({
+          success: false,
+          error: data.error || "Authentication failed",
+        });
+      }
+
+      return NextResponse.json({
+        success: true,
+        companyDomain: data.data.company_domain,
+        companyName: data.data.company_name,
+      });
+    }
+
+    // Odoo (default)
     const parsed = odooCredentialsSchema.safeParse(decrypted);
     if (!parsed.success) {
       return NextResponse.json(

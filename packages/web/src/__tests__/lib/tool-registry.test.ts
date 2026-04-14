@@ -31,8 +31,19 @@ describe("TOOL_REGISTRY", () => {
 
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
-    expect(powerful.length).toBe(3);
-    expect(powerful.map((t) => t.id)).toEqual(["odoo_create", "odoo_write", "odoo_delete"]);
+    const ids = powerful.map((t) => t.id);
+    // Odoo write tools
+    expect(ids).toContain("odoo_create");
+    expect(ids).toContain("odoo_write");
+    expect(ids).toContain("odoo_delete");
+    // Pipedrive write tools
+    expect(ids).toContain("pipedrive_create");
+    expect(ids).toContain("pipedrive_update");
+    expect(ids).toContain("pipedrive_delete");
+    expect(ids).toContain("pipedrive_merge");
+    expect(ids).toContain("pipedrive_relate");
+    expect(ids).toContain("pipedrive_convert");
+    expect(powerful.length).toBe(9);
   });
 
   it("does not contain any OpenClaw native tools", () => {
@@ -131,9 +142,11 @@ describe("Odoo access level helpers", () => {
     }
   });
 
-  it("non-odoo tools don't have integration set", () => {
-    const nonOdooTools = TOOL_REGISTRY.filter((t) => !t.id.startsWith("odoo_"));
-    for (const tool of nonOdooTools) {
+  it("non-integration tools don't have integration set", () => {
+    const nonIntegrationTools = TOOL_REGISTRY.filter(
+      (t) => !t.id.startsWith("odoo_") && !t.id.startsWith("pipedrive_")
+    );
+    for (const tool of nonIntegrationTools) {
       expect(tool.integration).toBeUndefined();
     }
   });
