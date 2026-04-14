@@ -505,6 +505,51 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml down -v
 
+  integration:
+    name: Integration Tests (OpenClaw + Fake Ollama)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build OpenClaw image
+        run: docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
+
+      - name: Install Playwright Chromium
+        run: pnpm -C packages/web exec playwright install chromium --with-deps
+
+      - name: Run integration tests
+        run: pnpm -C packages/web test:integration
+        env:
+          CI: true
+
+      - name: Show Docker logs on failure
+        if: failure()
+        run: |
+          echo "=== OpenClaw logs ==="
+          docker compose -f docker-compose.integration.yml logs openclaw 2>/dev/null || true
+          echo "=== DB logs ==="
+          docker compose -f docker-compose.integration.yml logs db 2>/dev/null || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.integration.yml down 2>/dev/null || true
+
   ollama-integration:
     name: Ollama integration tests
     runs-on: ubuntu-latest

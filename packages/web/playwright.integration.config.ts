@@ -29,6 +29,8 @@ export default defineConfig({
       // Workspaces also under the shared dir so OpenClaw can read SOUL.md / AGENTS.md
       "WORKSPACE_BASE_PATH=/tmp/pinchy-integration-openclaw/workspaces",
       "OPENCLAW_WORKSPACE_PREFIX=/root/.openclaw/workspaces",
+      // Device identity for OpenClaw connection (defaults to /app/secrets which is Docker-only)
+      "DEVICE_IDENTITY_PATH=/tmp/pinchy-integration-openclaw/device-identity.json",
       "PORT=7779",
       "node -r ./server-preload.cjs --import tsx server.ts",
     ].join(" "),
