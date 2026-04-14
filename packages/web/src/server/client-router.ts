@@ -159,17 +159,13 @@ export class ClientRouter {
         messageId,
       });
 
-      // Periodic keep-alive: defeat browser/proxy idle timeouts during long
-      // pauses between agent turns (Ollama tool-use loops can take >60s).
-      // The interval is cleared in the finally block below.
-      const heartbeatInterval = setInterval(() => {
-        if (clientWs.readyState === WS_OPEN) {
-          this.sendToClient(clientWs, {
-            type: "thinking",
-            messageId,
-          });
-        }
-      }, THINKING_HEARTBEAT_MS);
+      // Heartbeat is intentionally deferred until the first chunk arrives.
+      // Starting it immediately would reset the client-side stuck timer even
+      // when OpenClaw's stream hangs before producing any output (e.g. after a
+      // restart), trapping the user in an infinite spinner. Once the first
+      // chunk arrives we know OpenClaw is actively responding, so heartbeats
+      // are safe to send between turns.
+      let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
       try {
         // Debug shortcut: "__debug_error:<type>" messages bypass OpenClaw and
@@ -206,6 +202,20 @@ export class ClientRouter {
           // server resources while letting OpenClaw finish on its side.
           if (clientWs.readyState !== WS_OPEN) {
             break;
+          }
+
+          // Start keep-alive heartbeats on the first chunk. Deferring until
+          // here ensures heartbeats only flow while OpenClaw is actively
+          // producing output — not while it may be hung before the first byte.
+          if (heartbeatInterval === null) {
+            heartbeatInterval = setInterval(() => {
+              if (clientWs.readyState === WS_OPEN) {
+                this.sendToClient(clientWs, {
+                  type: "thinking",
+                  messageId,
+                });
+              }
+            }, THINKING_HEARTBEAT_MS);
           }
 
           if (chunk.type === "text") {
@@ -253,7 +263,9 @@ export class ClientRouter {
           type: "complete",
         });
       } finally {
-        clearInterval(heartbeatInterval);
+        if (heartbeatInterval !== null) {
+          clearInterval(heartbeatInterval);
+        }
       }
     } catch (err) {
       this.sendToClient(clientWs, {

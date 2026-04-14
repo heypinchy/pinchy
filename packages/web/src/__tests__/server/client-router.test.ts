@@ -509,6 +509,46 @@ describe("ClientRouter", () => {
     }
   });
 
+  it("should not send heartbeats before the first chunk arrives so the client stuck-timer fires when OpenClaw hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const clientWs = createMockClientWs();
+      let resolveStream: () => void = () => {};
+
+      async function* hangingStream() {
+        // Never yields a chunk — simulates OpenClaw being unresponsive after a restart
+        await new Promise<void>((r) => (resolveStream = r));
+      }
+      mockChat.mockReturnValue(hangingStream());
+
+      const handlePromise = router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      // Let synchronous code (including initial thinking) run
+      await vi.advanceTimersByTimeAsync(0);
+
+      const afterInitial = clientWs.sent.map((s) => JSON.parse(s));
+      expect(afterInitial.filter((m: any) => m.type === "thinking")).toHaveLength(1);
+
+      // Advance well past one heartbeat interval — no additional thinking should
+      // fire because no chunk has arrived from OpenClaw yet. Without this fix the
+      // heartbeat would reset the client stuck-timer indefinitely.
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      const afterInterval = clientWs.sent.map((s) => JSON.parse(s));
+      expect(afterInterval.filter((m: any) => m.type === "thinking")).toHaveLength(1);
+
+      // Clean up
+      resolveStream();
+      await handlePromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("should send a thinking message before consuming the stream so the UI can show a spinner", async () => {
     const clientWs = createMockClientWs();
     let firstSent: unknown = null;
