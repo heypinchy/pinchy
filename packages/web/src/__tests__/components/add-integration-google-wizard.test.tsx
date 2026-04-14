@@ -181,4 +181,54 @@ describe("Add Integration Dialog — Google flow", () => {
       expect(screen.queryByLabelText("Client ID")).not.toBeInTheDocument();
     });
   });
+
+  describe("Copy redirect URI button", () => {
+    let clipboardWriteTextSpy: ReturnType<typeof vi.spyOn>;
+
+    beforeEach(() => {
+      vi.stubGlobal("location", { ...window.location, protocol: "https:" });
+      fetchSpy.mockResolvedValue({
+        ok: true,
+        json: async () => ({ configured: false, clientId: "" }),
+      } as Response);
+
+      // Mock clipboard API
+      clipboardWriteTextSpy = vi
+        .spyOn(navigator.clipboard, "writeText")
+        .mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      vi.unstubAllGlobals();
+      clipboardWriteTextSpy.mockRestore();
+    });
+
+    it("shows success feedback when copy button is clicked", async () => {
+      const user = userEvent.setup();
+      renderDialog();
+      await selectGoogle(user);
+
+      await waitFor(() => {
+        expect(screen.getByText(/Set up Google OAuth/i)).toBeInTheDocument();
+      });
+
+      const codeElement = screen.getByText(/\/api\/integrations\/oauth\/callback/);
+      const copyButton = codeElement.parentElement?.querySelector("button");
+      expect(copyButton).toBeInTheDocument();
+
+      // Click to copy
+      await user.click(copyButton!);
+
+      // Verify clipboard.writeText was called
+      await waitFor(() => {
+        expect(clipboardWriteTextSpy).toHaveBeenCalledWith(
+          expect.stringContaining("/api/integrations/oauth/callback")
+        );
+      });
+
+      // After click, button should show checkmark icon
+      const checkIcon = copyButton?.querySelector("svg");
+      expect(checkIcon?.closest("svg")).toBeInTheDocument();
+    });
+  });
 });
