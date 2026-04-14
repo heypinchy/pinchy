@@ -360,7 +360,7 @@ export function useWsRuntime(agentId: string): {
     [agentId]
   );
 
-  const onCancel = useCallback(() => {
+  const onCancel = useCallback(async () => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: "abort", agentId }));
     }
