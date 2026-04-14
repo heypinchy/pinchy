@@ -117,7 +117,11 @@ export interface PipedriveSyncError {
 const MAX_CONCURRENCY = 5;
 const MAX_RETRIES = 2;
 
-const PIPEDRIVE_BASE_URL = "https://api.pipedrive.com/v1";
+import { getPipedriveBaseUrl } from "./pipedrive-api";
+
+function getPipedriveV1Url(): string {
+  return `${getPipedriveBaseUrl()}/v1`;
+}
 
 /** Static operations per entity — Pipedrive doesn't expose per-user access rights. */
 const ENTITY_OPERATIONS: Record<
@@ -190,7 +194,7 @@ export async function fetchPipedriveSchema(
       // Phase 1: Probe entity accessibility
       for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
         try {
-          const probeUrl = `${PIPEDRIVE_BASE_URL}/${entity}?limit=1`;
+          const probeUrl = `${getPipedriveV1Url()}/${entity}?limit=1`;
           const response = await fetch(probeUrl, { headers });
 
           if (response.status === 403) {
@@ -215,7 +219,7 @@ export async function fetchPipedriveSchema(
           let fields: ProbeResult["fields"];
           if (fieldsEndpoint) {
             try {
-              const fieldsUrl = `${PIPEDRIVE_BASE_URL}/${fieldsEndpoint}`;
+              const fieldsUrl = `${getPipedriveV1Url()}/${fieldsEndpoint}`;
               const fieldsResponse = await fetch(fieldsUrl, { headers });
               if (fieldsResponse.ok) {
                 const fieldsData = await fieldsResponse.json();

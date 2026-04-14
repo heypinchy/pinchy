@@ -6,9 +6,9 @@ import {
   resetPipedriveMock,
   login,
   createPipedriveConnection,
+  deleteAllConnections,
   pinchyGet,
   pinchyPost,
-  pinchyDelete,
   getAdminEmail,
   getAdminPassword,
 } from "./helpers";
@@ -21,15 +21,6 @@ async function loginViaUI(page: Page) {
   await page.getByLabel("Password", { exact: true }).fill(getAdminPassword());
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).not.toHaveURL(/\/login/, { timeout: 15000 });
-}
-
-async function deleteAllConnections(cookie: string) {
-  const res = await pinchyGet("/api/integrations", cookie);
-  if (!res.ok) return;
-  const connections = await res.json();
-  for (const conn of connections) {
-    await pinchyDelete(`/api/integrations/${conn.id}`, cookie);
-  }
 }
 
 /** Find an existing shared agent, or create one via API. */

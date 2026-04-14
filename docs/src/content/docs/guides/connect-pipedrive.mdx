@@ -85,18 +85,18 @@ The agent uses the Pipedrive tools to query your data in real time. If something
 
 When you grant an agent Pipedrive access, it gets the following tools:
 
-| Tool | Description |
-|------|-------------|
-| `pipedrive_schema` | Discover entities and their fields |
-| `pipedrive_read` | Read records with filters and pagination |
-| `pipedrive_create` | Create new records |
-| `pipedrive_update` | Update existing records |
-| `pipedrive_delete` | Delete records |
-| `pipedrive_search` | Search across entities |
-| `pipedrive_summary` | Deal and pipeline statistics |
-| `pipedrive_merge` | Merge duplicate records |
-| `pipedrive_relate` | Manage relationships (products on deals, participants, followers) |
-| `pipedrive_convert` | Convert between leads and deals |
+| Tool                | Description                                                       |
+| ------------------- | ----------------------------------------------------------------- |
+| `pipedrive_schema`  | Discover entities and their fields                                |
+| `pipedrive_read`    | Read records with filters and pagination                          |
+| `pipedrive_create`  | Create new records                                                |
+| `pipedrive_update`  | Update existing records                                           |
+| `pipedrive_delete`  | Delete records                                                    |
+| `pipedrive_search`  | Search across entities                                            |
+| `pipedrive_summary` | Deal and pipeline statistics                                      |
+| `pipedrive_merge`   | Merge duplicate records                                           |
+| `pipedrive_relate`  | Manage relationships (products on deals, participants, followers) |
+| `pipedrive_convert` | Convert between leads and deals                                   |
 
 Which tools are available to a given agent depends on the access level you configured in step 4. Read-only agents only get `pipedrive_schema`, `pipedrive_read`, `pipedrive_search`, and `pipedrive_summary`.
 

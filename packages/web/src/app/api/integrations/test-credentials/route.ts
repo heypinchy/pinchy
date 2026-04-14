@@ -5,6 +5,7 @@ import { z } from "zod";
 import { OdooClient } from "odoo-node";
 import { getSession } from "@/lib/auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { getPipedriveBaseUrl } from "@/lib/integrations/pipedrive-api";
 
 const testCredentialsSchema = z.discriminatedUnion("type", [
   z.object({
@@ -46,7 +47,7 @@ export async function POST(request: NextRequest) {
     const { apiToken } = parsed.data.credentials;
 
     try {
-      const response = await fetch("https://api.pipedrive.com/v1/users/me", {
+      const response = await fetch(`${getPipedriveBaseUrl()}/v1/users/me`, {
         headers: { "x-api-token": apiToken },
       });
       const data = await response.json();

@@ -188,6 +188,16 @@ export async function pinchyDelete(path: string, cookie: string): Promise<Respon
   });
 }
 
+/** Delete all integration connections (used for test isolation). */
+export async function deleteAllConnections(cookie: string): Promise<void> {
+  const res = await pinchyGet("/api/integrations", cookie);
+  if (!res.ok) return;
+  const connections: Array<{ id: string }> = await res.json();
+  for (const conn of connections) {
+    await pinchyDelete(`/api/integrations/${conn.id}`, cookie);
+  }
+}
+
 export async function createPipedriveConnection(
   cookie: string,
   name = "Test Pipedrive"

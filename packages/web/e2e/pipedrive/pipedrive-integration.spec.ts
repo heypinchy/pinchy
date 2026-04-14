@@ -6,13 +6,14 @@ import {
   resetPipedriveMock,
   login,
   createPipedriveConnection,
+  deleteAllConnections,
   pinchyGet,
   pinchyPost,
   pinchyPatch,
   pinchyDelete,
 } from "./helpers";
 
-test.describe("Pipedrive Integration", () => {
+test.describe.serial("Pipedrive Integration", () => {
   let cookie: string;
   let connectionId: string;
 
@@ -22,6 +23,8 @@ test.describe("Pipedrive Integration", () => {
     await waitForPipedriveMock();
     await resetPipedriveMock();
     cookie = await login();
+    // Clean slate: remove any leftover connections from previous test files
+    await deleteAllConnections(cookie);
   });
 
   test("create Pipedrive connection", async () => {

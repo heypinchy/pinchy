@@ -6,6 +6,7 @@ import {
   resetPipedriveMock,
   login,
   createPipedriveConnection,
+  deleteAllConnections,
   setAgentPermissions,
   pinchyGet,
   pinchyPatch,
@@ -14,7 +15,7 @@ import {
 
 const MOCK_PIPEDRIVE_URL = process.env.MOCK_PIPEDRIVE_URL || "http://localhost:9003";
 
-test.describe("Pipedrive Agent Chat", () => {
+test.describe.serial("Pipedrive Agent Chat", () => {
   let cookie: string;
   let connectionId: string;
   let agentId: string;
@@ -25,6 +26,8 @@ test.describe("Pipedrive Agent Chat", () => {
     await waitForPipedriveMock();
     await resetPipedriveMock();
     cookie = await login();
+    // Clean slate: remove any leftover connections from previous test files
+    await deleteAllConnections(cookie);
 
     // Create Pipedrive connection
     const connRes = await createPipedriveConnection(cookie);

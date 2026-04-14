@@ -13,3 +13,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  pinchy:
+    environment:
+      # Redirect Pipedrive API calls to the mock server for E2E testing
+      - PIPEDRIVE_API_URL=http://pipedrive-mock:8080

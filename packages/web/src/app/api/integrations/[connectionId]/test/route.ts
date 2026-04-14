@@ -9,6 +9,7 @@ import { integrationConnections } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { pipedriveCredentialsSchema } from "@/lib/integrations/pipedrive-schema";
+import { getPipedriveBaseUrl } from "@/lib/integrations/pipedrive-api";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -44,7 +45,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
         );
       }
 
-      const response = await fetch("https://api.pipedrive.com/v1/users/me", {
+      const response = await fetch(`${getPipedriveBaseUrl()}/v1/users/me`, {
         headers: { "x-api-token": parsed.data.apiToken },
       });
       const data = await response.json();
