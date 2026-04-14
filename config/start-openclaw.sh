@@ -79,9 +79,19 @@ auto_approve_devices() {
             echo "auto_approve_devices: Pinchy connected, stopping"
             return 0
         fi
-        openclaw devices approve --latest \
+        # `openclaw devices approve --latest` is preview-only since 2026.4.10.
+        # It prints the requestId but exits with code 1 without approving.
+        # We parse the requestId from the output and approve explicitly.
+        local approve_output request_id
+        approve_output=$(openclaw devices approve --latest \
             --url ws://127.0.0.1:18789 \
-            --token "$token" >/dev/null 2>&1 || true
+            --token "$token" 2>&1 || true)
+        request_id=$(echo "$approve_output" | grep -oE 'openclaw devices approve [a-zA-Z0-9_=-]+' | awk '{print $NF}' || true)
+        if [ -n "$request_id" ]; then
+            openclaw devices approve "$request_id" \
+                --url ws://127.0.0.1:18789 \
+                --token "$token" >/dev/null 2>&1 || true
+        fi
         elapsed=$((elapsed + 5))
         sleep 5
     done
