@@ -25,11 +25,23 @@ interface ContentPart {
   image_url?: { url: string };
 }
 
-interface BrowserMessage {
-  type: string;
+interface ChatMessage {
+  type: "message";
   content: string | ContentPart[];
   agentId: string;
 }
+
+interface HistoryRequestMessage {
+  type: "history";
+  agentId: string;
+}
+
+interface AbortMessage {
+  type: "abort";
+  agentId: string;
+}
+
+type BrowserMessage = ChatMessage | HistoryRequestMessage | AbortMessage;
 
 interface HistoryMessage {
   role: string;

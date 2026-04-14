@@ -238,7 +238,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -677,7 +676,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -795,7 +793,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -818,7 +815,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -840,7 +836,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -860,7 +855,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -887,7 +881,6 @@ describe("ClientRouter", () => {
 
     await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -914,7 +907,6 @@ describe("ClientRouter", () => {
 
     await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -944,7 +936,6 @@ describe("ClientRouter", () => {
 
     await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1057,7 +1048,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1097,7 +1087,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1127,7 +1116,6 @@ describe("ClientRouter", () => {
     const clientWs = createMockClientWs();
     await disconnectedRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1154,7 +1142,6 @@ describe("ClientRouter", () => {
     const clientWs = createMockClientWs();
     const messagePromise = disconnectedRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1299,7 +1286,6 @@ describe("ClientRouter", () => {
     const clientWs = createMockClientWs();
     await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1348,7 +1334,6 @@ describe("ClientRouter", () => {
     const clientWs = createMockClientWs();
     await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1488,7 +1473,6 @@ describe("ClientRouter", () => {
     const clientWs = createMockClientWs();
     await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1747,7 +1731,6 @@ describe("ClientRouter", () => {
       const clientWs = createMockClientWs();
       await freshRouter.handleMessage(clientWs as any, {
         type: "history",
-        content: "",
         agentId: "agent-1",
       });
 
@@ -1803,7 +1786,6 @@ describe("ClientRouter", () => {
       const clientWs = createMockClientWs();
       await freshRouter.handleMessage(clientWs as any, {
         type: "history",
-        content: "",
         agentId: "agent-1",
       });
 
