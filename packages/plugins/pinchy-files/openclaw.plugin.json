@@ -6,6 +6,8 @@
     "type": "object",
     "additionalProperties": false,
     "properties": {
+      "apiBaseUrl": { "type": "string" },
+      "gatewayToken": { "type": "string" },
       "agents": {
         "type": "object",
         "additionalProperties": {
@@ -13,13 +15,19 @@
           "properties": {
             "allowed_paths": {
               "type": "array",
-              "items": { "type": "string" }
+              "items": {
+                "type": "string"
+              }
             }
           },
-          "required": ["allowed_paths"]
+          "required": [
+            "allowed_paths"
+          ]
         }
       }
     },
-    "required": ["agents"]
+    "required": [
+      "agents"
+    ]
   }
 }
