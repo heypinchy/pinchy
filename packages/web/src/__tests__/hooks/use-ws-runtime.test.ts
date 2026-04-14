@@ -1430,6 +1430,71 @@ describe("useWsRuntime", () => {
   });
 
   describe("disconnect during active stream", () => {
+    it("should add a disconnect error message when stream is interrupted by a WebSocket error followed by close", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      // Real browser behavior: onerror always fires before onclose
+      act(() => {
+        ws.onerror?.();
+        ws.onclose?.();
+      });
+
+      const messages = result.current.runtime.messages;
+      const disconnectError = messages.find(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
+      );
+      expect(disconnectError).toBeDefined();
+    });
+
+    it("should not inject a disconnect error into the new agent chat when switching during an active stream", () => {
+      const { result, rerender } = renderHook(({ agentId }) => useWsRuntime(agentId), {
+        initialProps: { agentId: "agent-1" },
+      });
+      const ws1 = wsInstances[0];
+
+      act(() => {
+        ws1.onopen?.();
+      });
+
+      // Start a stream on agent-1
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+      act(() => {
+        ws1.onmessage?.({
+          data: JSON.stringify({ type: "chunk", content: "Hi", messageId: "msg-1" }),
+        });
+      });
+
+      // Switch to agent-2 while stream is active
+      rerender({ agentId: "agent-2" });
+
+      // Old connection closes (triggered by cleanup calling ws.close())
+      act(() => {
+        ws1.onclose?.();
+      });
+
+      // Agent-2's messages must be empty — no spurious disconnect error
+      expect(result.current.runtime.messages).toHaveLength(0);
+    });
+
     it("should add a disconnect error message when stream is interrupted by close", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws = wsInstances[0];

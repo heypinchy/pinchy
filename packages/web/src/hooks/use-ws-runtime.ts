@@ -87,6 +87,11 @@ export function useWsRuntime(agentId: string): {
   const shouldRecoverFromHistoryRef = useRef(false);
   const pendingMessageRef = useRef<string | null>(null);
   const isRunningRef = useRef(false);
+  // Tracks the current agentId so stale WebSocket handlers (from before an
+  // agent switch) can detect they belong to an old connection and bail out.
+  // Updated at the start of the useEffect (before connecting), not during render,
+  // so the new value is in place before any stale onclose/onmessage fires.
+  const agentIdRef = useRef(agentId);
 
   // Reset state when switching agents — prevents stale messages from
   // one agent blocking history load for a different agent.
@@ -101,6 +106,9 @@ export function useWsRuntime(agentId: string): {
   }
 
   useEffect(() => {
+    // Update before connect() so stale handlers from the previous agent see
+    // the new agentId as soon as the cleanup's ws.close() fires asynchronously.
+    agentIdRef.current = agentId;
     mountedRef.current = true;
     reconnectAttemptRef.current = 0;
     shouldRecoverFromHistoryRef.current = false;
@@ -136,6 +144,9 @@ export function useWsRuntime(agentId: string): {
     function connect() {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws?agentId=${agentId}`);
+      // Snapshot the agentId at connection time. Handlers compare this against
+      // agentIdRef.current to detect stale connections after an agent switch.
+      const connectionAgentId = agentId;
 
       ws.onopen = () => {
         setIsConnected(true);
@@ -151,6 +162,7 @@ export function useWsRuntime(agentId: string): {
       };
 
       ws.onclose = () => {
+        if (connectionAgentId !== agentIdRef.current) return;
         setIsConnected(false);
         setIsDelayed(false);
         clearStuckTimer();
@@ -190,13 +202,15 @@ export function useWsRuntime(agentId: string): {
       };
 
       ws.onerror = () => {
+        if (connectionAgentId !== agentIdRef.current) return;
+        // onclose always fires after onerror — let onclose handle isRunning and
+        // the disconnect error injection so the user sees the right feedback.
         setIsConnected(false);
         clearStuckTimer();
-        isRunningRef.current = false;
-        setIsRunning(false);
       };
 
       ws.onmessage = (event) => {
+        if (connectionAgentId !== agentIdRef.current) return;
         try {
           const data = JSON.parse(event.data);
 
