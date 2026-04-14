@@ -8,6 +8,7 @@ import { ClientRouter } from "./src/server/client-router";
 import { SessionCache } from "./src/server/session-cache";
 import { validateWsSession } from "./src/server/ws-auth";
 import { restartState } from "./src/server/restart-state";
+import { openClawConnectionState } from "./src/server/openclaw-connection-state";
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { logCapture } from "./src/lib/log-capture";
@@ -300,6 +301,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       const firstConnect = !hasConnected;
       hasConnected = true;
       errorLogged = false;
+      openClawConnectionState.connected = true;
       if (restartState.isRestarting) {
         restartState.notifyReady();
       }
@@ -331,6 +333,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     });
 
     openclawClient.on("disconnected", () => {
+      openClawConnectionState.connected = false;
       if (hasConnected) {
         console.log("Disconnected from OpenClaw Gateway, reconnecting...");
       }

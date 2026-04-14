@@ -31,6 +31,28 @@ test.describe("Agent chat — full integration", () => {
     const agent = await agentRes.json();
     const agentId: string = agent.id;
 
+    // 3b. Wait for OpenClaw to reload the config and pick up the new agent.
+    // OpenClaw 2026.4.12+ crashes on "unknown agent id" (unlike older versions
+    // which returned a graceful error). We must ensure the config reload has
+    // completed before sending any message to this agent.
+    // Strategy: poll until connected after a disconnect-reconnect cycle (config
+    // reload) OR until 5 seconds have passed (file watcher had time to trigger
+    // a seamless reload with no disconnect).
+    const agentCreatedAt = Date.now();
+    const configReloadDeadline = agentCreatedAt + 30000;
+    const MIN_WAIT_MS = 5000;
+    let wasEverDisconnected = false;
+    while (Date.now() < configReloadDeadline) {
+      await new Promise((r) => setTimeout(r, 500));
+      const health = await page.request.get("/api/health/openclaw");
+      const data = await health.json();
+      if (!data.connected) {
+        wasEverDisconnected = true;
+      } else if (wasEverDisconnected || Date.now() - agentCreatedAt >= MIN_WAIT_MS) {
+        break;
+      }
+    }
+
     // 4. Navigate to the agent's chat page
     await page.goto(`/chat/${agentId}`);
     await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10000 });
