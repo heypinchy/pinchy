@@ -530,6 +530,12 @@ jobs:
       - name: Build OpenClaw image
         run: docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
 
+      # On Linux, host.docker.internal doesn't resolve outside containers by default.
+      # Add it to /etc/hosts so Pinchy (host process) can reach the fake Ollama the
+      # same way OpenClaw (Docker container) does.
+      - name: Add host.docker.internal to /etc/hosts
+        run: echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
+
       # Pre-start Docker stack + migrate DB BEFORE Playwright launches the webServer.
       # Playwright starts webServer before globalSetup, so Pinchy would try to connect
       # to the DB before it exists unless we pre-provision it here.
