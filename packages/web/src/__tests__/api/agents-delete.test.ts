@@ -392,12 +392,14 @@ describe("PATCH /api/agents/[agentId]", () => {
       id: "agent-1",
       name: "Shared Agent",
       model: "anthropic/claude-sonnet-4-20250514",
-      pluginConfig: { allowed_paths: ["/data/docs/"] },
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
-      body: JSON.stringify({ pluginConfig: { allowed_paths: ["/data/docs/"] } }),
+      body: JSON.stringify({
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
+      }),
       headers: { "Content-Type": "application/json" },
     });
     const response = await PATCH(request, {
@@ -406,7 +408,7 @@ describe("PATCH /api/agents/[agentId]", () => {
     expect(response.status).toBe(200);
 
     expect(updateAgent).toHaveBeenCalledWith("agent-1", {
-      pluginConfig: { allowed_paths: ["/data/docs/"] },
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
     });
   });
 

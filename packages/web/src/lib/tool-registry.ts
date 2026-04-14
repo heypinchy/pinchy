@@ -36,6 +36,22 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     category: "safe",
   },
 
+  // Web search tools (pinchy-web plugin — independent, no group)
+  {
+    id: "pinchy_web_search",
+    label: "Search the web",
+    description: "Search the web via Brave Search",
+    category: "powerful",
+    integration: "web-search",
+  },
+  {
+    id: "pinchy_web_fetch",
+    label: "Fetch web pages",
+    description: "Download and read content from web pages",
+    category: "powerful",
+    integration: "web-search",
+  },
+
   // Odoo integration tools (safe = read-only, powerful = write operations)
   {
     id: "odoo_schema",

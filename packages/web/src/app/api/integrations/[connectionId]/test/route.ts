@@ -33,6 +33,26 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
 
   try {
     const decrypted = JSON.parse(decrypt(connection.credentials));
+
+    // Web-search: validate API key against Brave Search API
+    if (connection.type === "web-search") {
+      const apiKey = decrypted.apiKey as string | undefined;
+      if (!apiKey) {
+        return NextResponse.json(
+          { success: false, error: "Invalid credentials format" },
+          { status: 200 }
+        );
+      }
+      const res = await fetch("https://api.search.brave.com/res/v1/web/search?q=test&count=1", {
+        headers: { "X-Subscription-Token": apiKey },
+      });
+      if (!res.ok) {
+        return NextResponse.json({ success: false, error: "Invalid API key" }, { status: 200 });
+      }
+      return NextResponse.json({ success: true });
+    }
+
+    // Odoo: authenticate and verify version
     const parsed = odooCredentialsSchema.safeParse(decrypted);
     if (!parsed.success) {
       return NextResponse.json(

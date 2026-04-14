@@ -3,15 +3,8 @@ export interface IntegrationConnection {
   type: string;
   name: string;
   description: string;
-  credentials: {
-    url: string;
-    db: string;
-    login: string;
-  };
-  data: {
-    lastSyncAt?: string;
-    models?: Array<{ model: string; name: string }>;
-  } | null;
+  credentials: Record<string, string | boolean>;
+  data: Record<string, unknown> | null;
   createdAt: string;
   updatedAt: string;
 }

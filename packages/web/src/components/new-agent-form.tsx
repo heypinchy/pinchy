@@ -278,7 +278,7 @@ export function NewAgentForm() {
       };
 
       if (requiresDirectories && selectedPaths.length > 0) {
-        body.pluginConfig = { allowed_paths: selectedPaths };
+        body.pluginConfig = { "pinchy-files": { allowed_paths: selectedPaths } };
       }
 
       if (requiresOdooConnection && selectedConnectionId) {

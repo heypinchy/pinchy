@@ -128,6 +128,7 @@ export default defineConfig({
             { label: 'Deploy on DigitalOcean', slug: 'guides/deploy-digitalocean' },
             { label: 'Upgrading', slug: 'guides/upgrading' },
             { label: 'Hardening', slug: 'guides/hardening' },
+            { label: 'Set Up Web Search', slug: 'guides/web-search-setup' },
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
             { label: 'Lock Pinchy to a Domain (HTTPS)', slug: 'guides/domain-lock' },
           ],

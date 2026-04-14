@@ -1,3 +1,16 @@
+export function BraveIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      className={className}
+      fill="currentColor"
+    >
+      <path d="M12 2L4 6v6c0 5.55 3.84 10.74 8 12 4.16-1.26 8-6.45 8-12V6l-8-4zm0 2.18l6 3v5.82c0 4.53-3.13 8.76-6 9.88-2.87-1.12-6-5.35-6-9.88V7.18l6-3zM11 7v6h2V7h-2zm0 8v2h2v-2h-2z" />
+    </svg>
+  );
+}
+
 export function OdooIcon({ className }: { className?: string }) {
   return (
     <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 191" className={className}>

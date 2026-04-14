@@ -36,7 +36,7 @@ import {
   generateConnectionName,
 } from "@/lib/integrations/odoo-url";
 import { Loader2, CheckCircle2, AlertTriangle } from "lucide-react";
-import { OdooIcon } from "./integration-icons";
+import { OdooIcon, BraveIcon } from "./integration-icons";
 
 interface IntegrationType {
   id: string;
@@ -47,12 +47,17 @@ interface IntegrationType {
 
 const INTEGRATION_TYPES: IntegrationType[] = [
   {
+    id: "web-search",
+    name: "Web Search (Brave)",
+    description: "Search the web and fetch pages via Brave Search API.",
+    icon: BraveIcon,
+  },
+  {
     id: "odoo",
     name: "Odoo",
     description: "Connect your Odoo ERP to query sales, inventory, and customer data.",
     icon: OdooIcon,
   },
-  // Future: { id: "shopify", name: "Shopify", description: "...", icon: ShopifyIcon },
 ];
 
 // --- Wizard state ---
@@ -69,6 +74,12 @@ const connectFormSchema = z.object({
 });
 
 type ConnectFormValues = z.infer<typeof connectFormSchema>;
+
+const webSearchFormSchema = z.object({
+  apiKey: z.string().min(1, "API key is required"),
+});
+
+type WebSearchFormValues = z.infer<typeof webSearchFormSchema>;
 
 // --- Step indicator ---
 
@@ -98,9 +109,17 @@ interface AddIntegrationDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSuccess: () => void;
+  existingTypes?: string[];
 }
 
-export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddIntegrationDialogProps) {
+export function AddIntegrationDialog({
+  open,
+  onOpenChange,
+  onSuccess,
+  existingTypes = [],
+}: AddIntegrationDialogProps) {
+  // Types that only allow one connection (singletons)
+  const singletonTypes = new Set(["web-search"]);
   const [step, setStep] = useState<WizardStep>("type");
   const [selectedType, setSelectedType] = useState<string | null>(null);
 
@@ -142,6 +161,13 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
     },
   });
 
+  const webSearchForm = useForm<WebSearchFormValues>({
+    resolver: zodResolver(webSearchFormSchema),
+    defaultValues: {
+      apiKey: "",
+    },
+  });
+
   function resetAll() {
     setStep("type");
     setSelectedType(null);
@@ -155,6 +181,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
     setDbFetchState("idle");
     setFetchedDatabases([]);
     form.reset();
+    webSearchForm.reset();
   }
 
   function handleClose(isOpen: boolean) {
@@ -172,6 +199,7 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
       setDbFetchState("idle");
       setFetchedDatabases([]);
       form.reset();
+      webSearchForm.reset();
       setStep("type");
     }
   }
@@ -337,6 +365,63 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
     }
   }
 
+  // --- Web Search: Test & Save (single step) ---
+
+  async function onWebSearchTestAndSave(values: WebSearchFormValues) {
+    webSearchForm.clearErrors("root");
+    setConnecting(true);
+
+    try {
+      // 1. Test the API key
+      const testRes = await fetch("/api/integrations/test-credentials", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "web-search",
+          credentials: { apiKey: values.apiKey },
+        }),
+      });
+
+      const testData = await testRes.json();
+
+      if (!testRes.ok || !testData.success) {
+        webSearchForm.setError("root", {
+          message: testData.error || "API key validation failed",
+        });
+        setConnecting(false);
+        return;
+      }
+
+      // 2. Create the integration immediately
+      const createRes = await fetch("/api/integrations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "web-search",
+          name: "Brave Search",
+          description: "",
+          credentials: { apiKey: values.apiKey },
+        }),
+      });
+
+      if (!createRes.ok) {
+        const err = await createRes.json();
+        webSearchForm.setError("root", {
+          message: err.error || "Failed to save integration",
+        });
+        setConnecting(false);
+        return;
+      }
+
+      toast.success("Web Search connected");
+      handleClose(false);
+      onSuccess();
+    } catch {
+      webSearchForm.setError("root", { message: "Connection failed" });
+      setConnecting(false);
+    }
+  }
+
   // --- Permission error detection ---
   const isPermissionError =
     syncError &&
@@ -360,19 +445,24 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
             <div className="grid gap-3 pt-2">
               {INTEGRATION_TYPES.map((type) => {
                 const Icon = type.icon;
+                const alreadyExists =
+                  singletonTypes.has(type.id) && existingTypes.includes(type.id);
                 return (
                   <button
                     key={type.id}
+                    disabled={alreadyExists}
                     onClick={() => {
                       setSelectedType(type.id);
                       setStep("connect");
                     }}
-                    className="flex items-center gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-accent"
+                    className="flex items-center gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
                   >
                     <Icon className="h-8 w-16 shrink-0" />
                     <div className="flex flex-col gap-1">
                       <span className="font-medium">{type.name}</span>
-                      <span className="text-sm text-muted-foreground">{type.description}</span>
+                      <span className="text-sm text-muted-foreground">
+                        {alreadyExists ? "Already configured" : type.description}
+                      </span>
                     </div>
                   </button>
                 );
@@ -381,8 +471,80 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
           </>
         )}
 
-        {/* Step 1: Connect */}
-        {step === "connect" && (
+        {/* Step 1: Connect (Web Search — simplified single-step) */}
+        {step === "connect" && selectedType === "web-search" && (
+          <>
+            <DialogHeader>
+              <DialogTitle>Connect Web Search (Brave)</DialogTitle>
+              <DialogDescription>
+                Enter your Brave Search API key to enable web search for agents.
+              </DialogDescription>
+            </DialogHeader>
+
+            <Form {...webSearchForm}>
+              <form
+                onSubmit={webSearchForm.handleSubmit(onWebSearchTestAndSave)}
+                className="space-y-4"
+              >
+                <FormField
+                  control={webSearchForm.control}
+                  name="apiKey"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>API Key</FormLabel>
+                      <FormControl>
+                        <PasswordInput placeholder="BSA..." {...field} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                {webSearchForm.formState.errors.root && (
+                  <p className="text-sm text-destructive">
+                    {webSearchForm.formState.errors.root.message}
+                  </p>
+                )}
+
+                <p className="text-xs text-muted-foreground">
+                  Get your API key from{" "}
+                  <a
+                    href="https://brave.com/search/api/"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="underline underline-offset-4 hover:text-foreground"
+                  >
+                    brave.com/search/api
+                  </a>
+                </p>
+
+                <div className="flex justify-between pt-2">
+                  <Button type="button" variant="ghost" onClick={handleBack}>
+                    Back
+                  </Button>
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" onClick={() => handleClose(false)}>
+                      Cancel
+                    </Button>
+                    <Button type="submit" disabled={connecting}>
+                      {connecting ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Connecting...
+                        </>
+                      ) : (
+                        "Test & Save"
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              </form>
+            </Form>
+          </>
+        )}
+
+        {/* Step 1: Connect (Odoo — multi-step wizard) */}
+        {step === "connect" && selectedType !== "web-search" && (
           <>
             <DialogHeader>
               <DialogTitle>

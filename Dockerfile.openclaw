@@ -18,6 +18,13 @@ RUN cd /tmp/pinchy-odoo && npm install --omit=dev && \
     cp -r /tmp/pinchy-odoo/node_modules /opt/pinchy-odoo-deps/ && \
     rm -rf /tmp/pinchy-odoo
 
+# Install pinchy-web plugin dependencies
+COPY packages/plugins/pinchy-web/package.json /tmp/pinchy-web/package.json
+RUN cd /tmp/pinchy-web && npm install --omit=dev && \
+    mkdir -p /opt/pinchy-web-deps && \
+    cp -r /tmp/pinchy-web/node_modules /opt/pinchy-web-deps/ && \
+    rm -rf /tmp/pinchy-web
+
 COPY config/openclaw.json /root/.openclaw/openclaw.json
 COPY config/ensure-gateway-token.js /ensure-gateway-token.js
 COPY config/start-openclaw.sh /start-openclaw.sh

@@ -1,6 +1,7 @@
 import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
 import type { PersonalityPresetId } from "@/lib/personality-presets";
 import type { TemplateIconName } from "@/lib/template-icons";
+import type { AgentPluginConfig } from "@/db/schema";
 
 const ODOO_QUERY_INSTRUCTIONS = `## Mandatory Workflow
 1. **Always call \`odoo_schema\` first** before querying any model. This gives you the exact field names and types. Never guess field names — they differ from what you might expect (e.g., \`product_uom_qty\` not \`quantity\`, \`amount_total\` not \`total\`).
@@ -1200,12 +1201,15 @@ export function getTemplateList(): (AgentTemplate & { id: string })[] {
  */
 export function generateAgentsMd(
   template: AgentTemplate,
-  pluginConfig: { allowed_paths?: string[] } | undefined
+  pluginConfig: AgentPluginConfig | undefined
 ): string | null {
   if (!template.defaultAgentsMd) return template.defaultAgentsMd;
 
-  if (template.pluginId === "pinchy-files" && pluginConfig?.allowed_paths?.length) {
-    const paths = pluginConfig.allowed_paths;
+  if (
+    template.pluginId === "pinchy-files" &&
+    pluginConfig?.["pinchy-files"]?.allowed_paths?.length
+  ) {
+    const paths = pluginConfig["pinchy-files"].allowed_paths;
     const pathList = paths.map((p) => `- \`${p}\``).join("\n");
     return (
       template.defaultAgentsMd +

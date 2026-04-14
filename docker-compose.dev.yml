@@ -20,6 +20,7 @@ services:
       - ./packages/plugins/pinchy-context:/root/.openclaw/extensions/pinchy-context
       - ./packages/plugins/pinchy-audit:/root/.openclaw/extensions/pinchy-audit
       - ./packages/plugins/pinchy-odoo:/root/.openclaw/extensions/pinchy-odoo
+      - ./packages/plugins/pinchy-web:/root/.openclaw/extensions/pinchy-web
       - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
       - ./sample-data:/data/sample-docs
   db:

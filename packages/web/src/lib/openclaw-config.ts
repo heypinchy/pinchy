@@ -13,6 +13,7 @@ import {
 import { getSetting } from "@/lib/settings";
 import { decrypt } from "@/lib/encryption";
 import { computeDeniedGroups } from "@/lib/tool-registry";
+import type { AgentPluginConfig } from "@/db/schema";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
@@ -155,10 +156,13 @@ export async function regenerateOpenClawConfig() {
     // Collect plugin config for agents that have file tools (pinchy_ls, pinchy_read)
     const hasFileTools = allowedTools.some((t: string) => t === "pinchy_ls" || t === "pinchy_read");
     if (hasFileTools && agent.pluginConfig) {
-      if (!pluginConfigs["pinchy-files"]) {
-        pluginConfigs["pinchy-files"] = {};
+      const filesConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-files"];
+      if (filesConfig) {
+        if (!pluginConfigs["pinchy-files"]) {
+          pluginConfigs["pinchy-files"] = {};
+        }
+        pluginConfigs["pinchy-files"][agent.id] = filesConfig as Record<string, unknown>;
       }
-      pluginConfigs["pinchy-files"][agent.id] = agent.pluginConfig as Record<string, unknown>;
     }
 
     // Collect plugin config for agents that have context tools (pinchy_save_*)
@@ -364,6 +368,43 @@ export async function regenerateOpenClawConfig() {
         agents: odooAgentConfigs,
       },
     };
+  }
+
+  // Collect web search configs
+  const webSearchConnections = await db
+    .select()
+    .from(integrationConnections)
+    .where(eq(integrationConnections.type, "web-search"));
+
+  if (webSearchConnections.length > 0) {
+    const webConn = webSearchConnections[0];
+    const decryptedWebCreds = JSON.parse(decrypt(webConn.credentials));
+    const webAgentConfigs: Record<string, Record<string, unknown>> = {};
+
+    for (const agent of allAgents) {
+      const allowedTools = (agent.allowedTools as string[]) || [];
+      const hasWebSearch = allowedTools.includes("pinchy_web_search");
+      const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
+
+      if (hasWebSearch || hasWebFetch) {
+        const webConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-web"] ?? {};
+        const tools: string[] = [];
+        if (hasWebSearch) tools.push("pinchy_web_search");
+        if (hasWebFetch) tools.push("pinchy_web_fetch");
+
+        webAgentConfigs[agent.id] = { tools, ...webConfig };
+      }
+    }
+
+    if (Object.keys(webAgentConfigs).length > 0) {
+      entries["pinchy-web"] = {
+        enabled: true,
+        config: {
+          braveApiKey: decryptedWebCreds.apiKey,
+          agents: webAgentConfigs,
+        },
+      };
+    }
   }
 
   // Build the allow list from: (1) plugins we have entries for, and (2)
