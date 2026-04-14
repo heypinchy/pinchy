@@ -1,1 +1,8 @@
+# If HOME is not writable (e.g. OrbStack containers where HOME is overridden to a
+# root-owned path), point pnpm to the user's actual writable home directory.
+if [ ! -w "$HOME" ]; then
+  export PNPM_HOME="/home/$(id -un)/.local/share/pnpm"
+  mkdir -p "$PNPM_HOME"
+fi
+
 pnpm build
