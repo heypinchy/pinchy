@@ -30,6 +30,10 @@ export async function GET(
 
   const connection = rows[0];
 
+  if (connection.status === "pending") {
+    return NextResponse.json({ error: "Connection not active" }, { status: 403 });
+  }
+
   let credentials;
   try {
     credentials = JSON.parse(decrypt(connection.credentials));

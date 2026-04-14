@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { MoreHorizontal, Plus, Plug, CheckCircle2, Loader2 } from "lucide-react";
+import { MoreHorizontal, Plus, Plug, CheckCircle2, Loader2, Clock } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 // toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
@@ -57,6 +57,7 @@ export function SettingsIntegrations() {
   const [renameTarget, setRenameTarget] = useState<IntegrationConnection | null>(null);
   const [renameName, setRenameName] = useState("");
   const [showOAuthEdit, setShowOAuthEdit] = useState(false);
+  const [resumeGoogleSetup, setResumeGoogleSetup] = useState(false);
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -133,46 +134,67 @@ export function SettingsIntegrations() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={() => {
-                              setRenameTarget(conn);
-                              setRenameName(conn.name);
-                            }}
-                          >
-                            Rename
-                          </DropdownMenuItem>
-                          {conn.type === "google" ? (
-                            <DropdownMenuItem onClick={() => setShowOAuthEdit(true)}>
-                              Edit OAuth Credentials
-                            </DropdownMenuItem>
+                          {conn.type === "google" && conn.status === "pending" ? (
+                            <>
+                              <DropdownMenuItem onClick={() => setResumeGoogleSetup(true)}>
+                                Continue setup
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                className="text-destructive"
+                                onClick={() => setDeleteTarget(conn)}
+                              >
+                                Remove
+                              </DropdownMenuItem>
+                            </>
                           ) : (
                             <>
                               <DropdownMenuItem
-                                onClick={() => testConnection(conn.id)}
-                                disabled={testing === conn.id}
+                                onClick={() => {
+                                  setRenameTarget(conn);
+                                  setRenameName(conn.name);
+                                }}
                               >
-                                {testing === conn.id ? "Testing..." : "Test Connection"}
+                                Rename
                               </DropdownMenuItem>
+                              {conn.type === "google" ? (
+                                <DropdownMenuItem onClick={() => setShowOAuthEdit(true)}>
+                                  Edit OAuth Credentials
+                                </DropdownMenuItem>
+                              ) : (
+                                <>
+                                  <DropdownMenuItem
+                                    onClick={() => testConnection(conn.id)}
+                                    disabled={testing === conn.id}
+                                  >
+                                    {testing === conn.id ? "Testing..." : "Test Connection"}
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onClick={() => syncSchema(conn.id)}
+                                    disabled={syncing === conn.id}
+                                  >
+                                    {syncing === conn.id ? "Syncing..." : "Sync Schema"}
+                                  </DropdownMenuItem>
+                                </>
+                              )}
                               <DropdownMenuItem
-                                onClick={() => syncSchema(conn.id)}
-                                disabled={syncing === conn.id}
+                                className="text-destructive"
+                                onClick={() => setDeleteTarget(conn)}
                               >
-                                {syncing === conn.id ? "Syncing..." : "Sync Schema"}
+                                Delete
                               </DropdownMenuItem>
                             </>
                           )}
-                          <DropdownMenuItem
-                            className="text-destructive"
-                            onClick={() => setDeleteTarget(conn)}
-                          >
-                            Delete
-                          </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </div>
                     <TooltipProvider>
                       <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                        {conn.type === "google" ? (
+                        {conn.type === "google" && conn.status === "pending" ? (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                            <Clock className="h-3 w-3" />
+                            Setup in progress
+                          </span>
+                        ) : conn.type === "google" ? (
                           <>
                             <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
                             <span>Connected</span>
@@ -235,6 +257,16 @@ export function SettingsIntegrations() {
           fetchConnections();
           setShowAddDialog(false);
         }}
+      />
+
+      <AddIntegrationDialog
+        open={resumeGoogleSetup}
+        onOpenChange={setResumeGoogleSetup}
+        onSuccess={() => {
+          fetchConnections();
+          setResumeGoogleSetup(false);
+        }}
+        initialType="google"
       />
 
       <Dialog open={!!renameTarget} onOpenChange={(open) => !open && setRenameTarget(null)}>

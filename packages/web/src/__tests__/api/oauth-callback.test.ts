@@ -1,28 +1,61 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+const {
+  mockGetSession,
+  mockGetOAuthSettings,
+  mockEncrypt,
+  mockAppendAuditLog,
+  mockValues,
+  mockSelectLimit,
+  mockSelectWhere,
+  mockSelectFrom,
+  mockUpdateReturning,
+  mockUpdateWhere,
+  mockUpdateSet,
+  mockDeleteWhere,
+} = vi.hoisted(() => {
+  const mockSelectLimit = vi.fn();
+  const mockSelectWhere = vi.fn().mockReturnValue({ limit: mockSelectLimit });
+  const mockSelectFrom = vi.fn().mockReturnValue({ where: mockSelectWhere });
+  const mockUpdateReturning = vi.fn();
+  const mockUpdateWhere = vi.fn().mockReturnValue({ returning: mockUpdateReturning });
+  const mockUpdateSet = vi.fn().mockReturnValue({ where: mockUpdateWhere });
+  const mockDeleteWhere = vi.fn().mockResolvedValue(undefined);
+  return {
+    mockGetSession: vi.fn(),
+    mockGetOAuthSettings: vi.fn(),
+    mockEncrypt: vi.fn().mockReturnValue("encrypted-creds"),
+    mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
+    mockValues: vi.fn(),
+    mockSelectLimit,
+    mockSelectWhere,
+    mockSelectFrom,
+    mockUpdateReturning,
+    mockUpdateWhere,
+    mockUpdateSet,
+    mockDeleteWhere,
+  };
+});
+
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
 }));
 
-const mockGetSession = vi.fn();
 vi.mock("@/lib/auth", () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
   auth: { api: { getSession: (...args: unknown[]) => mockGetSession(...args) } },
 }));
 
-const mockGetOAuthSettings = vi.fn();
 vi.mock("@/lib/integrations/oauth-settings", () => ({
   getOAuthSettings: (...args: unknown[]) => mockGetOAuthSettings(...args),
 }));
 
-const mockEncrypt = vi.fn().mockReturnValue("encrypted-creds");
 vi.mock("@/lib/encryption", () => ({
   encrypt: (...args: unknown[]) => mockEncrypt(...args),
   decrypt: vi.fn(),
   getOrCreateSecret: vi.fn().mockReturnValue(Buffer.alloc(32)),
 }));
 
-const mockAppendAuditLog = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
 }));
@@ -34,21 +67,36 @@ const mockConnection = {
   description: "",
   credentials: "encrypted-creds",
   data: { emailAddress: "user@gmail.com", provider: "gmail" },
+  status: "active",
   createdAt: new Date("2026-04-09"),
   updatedAt: new Date("2026-04-09"),
 };
 
-const mockValues = vi.fn();
+const mockPendingConnection = {
+  id: "pending-conn-id",
+  type: "google",
+  name: "Google (connecting…)",
+  description: "",
+  credentials: "encrypted-empty",
+  data: null,
+  status: "pending",
+  createdAt: new Date("2026-04-09"),
+  updatedAt: new Date("2026-04-09"),
+};
+
 vi.mock("@/db", () => ({
   db: {
     insert: vi.fn().mockReturnValue({
       values: (...args: unknown[]) => mockValues(...args),
     }),
+    update: vi.fn().mockReturnValue({ set: mockUpdateSet }),
+    select: vi.fn().mockReturnValue({ from: mockSelectFrom }),
+    delete: vi.fn().mockReturnValue({ where: mockDeleteWhere }),
   },
 }));
 
 vi.mock("@/db/schema", () => ({
-  integrationConnections: { id: "id" },
+  integrationConnections: { id: "id", status: "status" },
 }));
 
 // Mock global fetch for token exchange and profile fetching
@@ -103,6 +151,9 @@ describe("GET /api/integrations/oauth/callback", () => {
     mockValues.mockReturnValue({
       returning: vi.fn().mockResolvedValue([mockConnection]),
     });
+    // Default: select returns no pending record (fallback to INSERT path)
+    mockSelectLimit.mockResolvedValue([]);
+    mockUpdateReturning.mockResolvedValue([mockConnection]);
   });
 
   afterEach(() => {
@@ -228,7 +279,7 @@ describe("GET /api/integrations/oauth/callback", () => {
     expect(location.searchParams.get("error")).toBe("profile_fetch_failed");
   });
 
-  describe("successful flow", () => {
+  describe("successful flow — without oauth_pending_id cookie (INSERT fallback)", () => {
     beforeEach(() => {
       mockGetSession.mockResolvedValue(adminSession());
       mockGetOAuthSettings.mockResolvedValue({
@@ -278,7 +329,7 @@ describe("GET /api/integrations/oauth/callback", () => {
       );
     });
 
-    it("creates connection with encrypted credentials", async () => {
+    it("inserts new connection with encrypted credentials", async () => {
       await GET(
         makeRequest({ code: "auth-code-123", state: VALID_STATE }, `oauth_state=${VALID_STATE}`)
       );
@@ -346,6 +397,104 @@ describe("GET /api/integrations/oauth/callback", () => {
       expect(location.pathname).toBe("/settings");
       expect(location.searchParams.get("tab")).toBe("integrations");
       expect(location.searchParams.get("created")).toBe(mockConnection.id);
+    });
+  });
+
+  describe("successful flow — with oauth_pending_id cookie (UPDATE path)", () => {
+    beforeEach(() => {
+      mockGetSession.mockResolvedValue(adminSession());
+      mockGetOAuthSettings.mockResolvedValue({
+        clientId: "test-client-id",
+        clientSecret: "test-client-secret",
+      });
+      mockFetch
+        .mockResolvedValueOnce(mockTokenExchange())
+        .mockResolvedValueOnce(mockProfileFetch());
+      // Select finds the pending record
+      mockSelectLimit.mockResolvedValue([mockPendingConnection]);
+    });
+
+    it("updates existing pending record instead of inserting a new one", async () => {
+      await GET(
+        makeRequest(
+          { code: "auth-code-123", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=pending-conn-id`
+        )
+      );
+
+      expect(mockUpdateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          name: "user@gmail.com",
+          status: "active",
+          credentials: "encrypted-creds",
+          data: expect.objectContaining({
+            emailAddress: "user@gmail.com",
+            provider: "gmail",
+          }),
+        })
+      );
+      // INSERT should NOT have been called
+      expect(mockValues).not.toHaveBeenCalled();
+    });
+
+    it("deletes oauth_pending_id cookie after successful update", async () => {
+      const response = await GET(
+        makeRequest(
+          { code: "auth-code-123", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=pending-conn-id`
+        )
+      );
+
+      const setCookieHeader = response.headers.getSetCookie
+        ? response.headers.getSetCookie().join("; ")
+        : (response.headers.get("Set-Cookie") ?? "");
+      expect(setCookieHeader).toMatch(/oauth_pending_id=/);
+      expect(setCookieHeader).toMatch(/Max-Age=0/);
+    });
+
+    it("redirects to settings with updated connection id", async () => {
+      const response = await GET(
+        makeRequest(
+          { code: "auth-code-123", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=pending-conn-id`
+        )
+      );
+
+      expect(response.status).toBe(302);
+      const location = new URL(response.headers.get("Location")!);
+      expect(location.searchParams.get("created")).toBe(mockConnection.id);
+    });
+  });
+
+  describe("successful flow — oauth_pending_id points to non-existent record (INSERT fallback)", () => {
+    beforeEach(() => {
+      mockGetSession.mockResolvedValue(adminSession());
+      mockGetOAuthSettings.mockResolvedValue({
+        clientId: "test-client-id",
+        clientSecret: "test-client-secret",
+      });
+      mockFetch
+        .mockResolvedValueOnce(mockTokenExchange())
+        .mockResolvedValueOnce(mockProfileFetch());
+      // Select returns empty (record not found / already active)
+      mockSelectLimit.mockResolvedValue([]);
+    });
+
+    it("falls back to INSERT when pending record not found", async () => {
+      await GET(
+        makeRequest(
+          { code: "auth-code-123", state: VALID_STATE },
+          `oauth_state=${VALID_STATE}; oauth_pending_id=stale-id`
+        )
+      );
+
+      expect(mockValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "google",
+          name: "user@gmail.com",
+        })
+      );
+      expect(mockUpdateSet).not.toHaveBeenCalled();
     });
   });
 });

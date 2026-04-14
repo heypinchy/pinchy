@@ -231,4 +231,41 @@ describe("EmailPermissionSection", () => {
       expect(onChange).toHaveBeenCalledWith(null, false);
     });
   });
+
+  it("excludes pending connections from the connection selector", async () => {
+    const activeConnection = {
+      ...makeEmailConnection("email-1", "Gmail Work", "google"),
+      status: "active",
+    };
+    const pendingConnection = {
+      ...makeEmailConnection("email-pending", "Google (connecting…)", "google"),
+      status: "pending",
+    };
+    mockFetchResponses([activeConnection, pendingConnection]);
+    const onChange = vi.fn();
+
+    render(<EmailPermissionSection agentId="agent-1" onChange={onChange} />);
+    await waitFor(() => {
+      expect(screen.queryByText(/no email connections configured/i)).not.toBeInTheDocument();
+    });
+
+    // "Google (connecting…)" should NOT appear in the selector
+    expect(screen.queryByText("Google (connecting…)")).not.toBeInTheDocument();
+    // Active connection should appear
+    expect(screen.queryByText("Gmail Work")).not.toBeInTheDocument(); // It's in the Select (collapsed), so not visible directly
+  });
+
+  it("shows 'no email connections' when only pending connections exist", async () => {
+    const pendingConnection = {
+      ...makeEmailConnection("email-pending", "Google (connecting…)", "google"),
+      status: "pending",
+    };
+    mockFetchResponses([pendingConnection]);
+    const onChange = vi.fn();
+
+    render(<EmailPermissionSection agentId="agent-1" onChange={onChange} />);
+    await waitFor(() => {
+      expect(screen.getByText(/no email connections configured/i)).toBeInTheDocument();
+    });
+  });
 });

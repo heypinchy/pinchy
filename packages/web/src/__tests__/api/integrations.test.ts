@@ -68,6 +68,7 @@ const mockConnection = {
   description: "Test connection",
   credentials: "encrypted-creds",
   data: null,
+  status: "active",
   createdAt: new Date("2026-01-01"),
   updatedAt: new Date("2026-01-01"),
 };
@@ -166,6 +167,36 @@ describe("GET /api/integrations", () => {
     // Must NOT contain apiKey or uid
     expect(body[0].credentials).not.toHaveProperty("apiKey");
     expect(body[0].credentials).not.toHaveProperty("uid");
+  });
+
+  it("should include status field in each connection", async () => {
+    const { GET } = await import("@/app/api/integrations/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body[0]).toHaveProperty("status", "active");
+  });
+
+  it("should include pending connections in the list", async () => {
+    const pendingConnection = { ...mockConnection, id: "conn-pending", status: "pending" };
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([mockConnection, pendingConnection]) as Promise<
+        (typeof mockConnection)[]
+      > & { where: ReturnType<typeof vi.fn> };
+      result.where = vi.fn().mockResolvedValue([mockConnection, pendingConnection]);
+      return result;
+    });
+
+    const { GET } = await import("@/app/api/integrations/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toHaveLength(2);
+    expect(body.find((c: { status: string }) => c.status === "pending")).toBeDefined();
   });
 });
 

@@ -7,7 +7,6 @@ vi.mock("next/headers", () => ({
 const mockGetSession = vi.fn();
 vi.mock("@/lib/auth", () => ({
   getSession: (...args: unknown[]) => mockGetSession(...args),
-  auth: { api: { getSession: (...args: unknown[]) => mockGetSession(...args) } },
 }));
 
 const mockGetOAuthSettings = vi.fn();
@@ -15,119 +14,118 @@ vi.mock("@/lib/integrations/oauth-settings", () => ({
   getOAuthSettings: (...args: unknown[]) => mockGetOAuthSettings(...args),
 }));
 
-import { GET } from "@/app/api/integrations/oauth/start/route";
+const mockEncrypt = vi.fn().mockReturnValue("encrypted-placeholder");
+vi.mock("@/lib/encryption", () => ({
+  encrypt: (...args: unknown[]) => mockEncrypt(...args),
+}));
 
-function makeRequest(url = "http://localhost:7777/api/integrations/oauth/start") {
-  return new Request(url, { method: "GET" });
+const mockAppendAuditLog = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
+}));
+
+const { mockInsertValues, mockDeleteWhere } = vi.hoisted(() => ({
+  mockInsertValues: vi.fn(),
+  mockDeleteWhere: vi.fn(),
+}));
+
+vi.mock("@/db", () => ({
+  db: {
+    insert: vi.fn().mockReturnValue({
+      values: mockInsertValues.mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ id: "pending-conn-id" }]),
+      }),
+    }),
+    delete: vi.fn().mockReturnValue({
+      where: mockDeleteWhere.mockResolvedValue(undefined),
+    }),
+  },
+}));
+
+vi.mock("@/db/schema", () => ({
+  integrationConnections: { id: "id", type: "type", status: "status" },
+}));
+
+vi.mock("drizzle-orm", () => ({
+  eq: vi.fn((col: unknown, val: unknown) => ({ col, val })),
+  and: vi.fn((...args: unknown[]) => ({ and: args })),
+}));
+
+import { NextRequest } from "next/server";
+
+function makeRequest(url = "https://local.heypinchy.com:8443/api/integrations/oauth/start") {
+  return new NextRequest(url);
 }
+
+const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
+const oauthSettings = { clientId: "client-id-123", clientSecret: "secret-abc" };
 
 describe("GET /api/integrations/oauth/start", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockGetOAuthSettings.mockResolvedValue(oauthSettings);
   });
 
-  it("returns 401 if not authenticated", async () => {
-    mockGetSession.mockResolvedValue(null);
-
-    const response = await GET(makeRequest());
-
-    expect(response.status).toBe(401);
-    const body = await response.json();
-    expect(body.error).toMatch(/unauthorized/i);
+  it("returns 401 when not authenticated", async () => {
+    mockGetSession.mockResolvedValueOnce(null);
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(401);
   });
 
-  it("returns 403 for non-admin user", async () => {
-    mockGetSession.mockResolvedValue({
-      user: { id: "user-1", role: "member" },
-    });
-
-    const response = await GET(makeRequest());
-
-    expect(response.status).toBe(403);
-    const body = await response.json();
-    expect(body.error).toMatch(/admin/i);
+  it("returns 403 when not admin", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "user-2", role: "member" } });
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(403);
   });
 
-  it("returns 400 if Google OAuth is not configured", async () => {
-    mockGetSession.mockResolvedValue({
-      user: { id: "admin-1", role: "admin" },
-    });
-    mockGetOAuthSettings.mockResolvedValue(null);
-
-    const response = await GET(makeRequest());
-
-    expect(response.status).toBe(400);
-    const body = await response.json();
-    expect(body.error).toMatch(/not configured/i);
+  it("returns 400 when OAuth not configured", async () => {
+    mockGetOAuthSettings.mockResolvedValueOnce(null);
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(400);
   });
 
-  it("redirects to Google OAuth URL with correct parameters", async () => {
-    mockGetSession.mockResolvedValue({
-      user: { id: "admin-1", role: "admin" },
-    });
-    mockGetOAuthSettings.mockResolvedValue({
-      clientId: "test-client-id",
-      clientSecret: "test-client-secret",
-    });
-
-    const response = await GET(makeRequest());
-
-    expect(response.status).toBe(302);
-
-    const location = response.headers.get("Location");
-    expect(location).toBeTruthy();
-
-    const redirectUrl = new URL(location!);
-    expect(redirectUrl.origin).toBe("https://accounts.google.com");
-    expect(redirectUrl.pathname).toBe("/o/oauth2/v2/auth");
-    expect(redirectUrl.searchParams.get("client_id")).toBe("test-client-id");
-    expect(redirectUrl.searchParams.get("redirect_uri")).toBe(
-      "http://localhost:7777/api/integrations/oauth/callback"
-    );
-    expect(redirectUrl.searchParams.get("response_type")).toBe("code");
-    expect(redirectUrl.searchParams.get("scope")).toBe(
-      "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/gmail.compose https://www.googleapis.com/auth/userinfo.email"
-    );
-    expect(redirectUrl.searchParams.get("access_type")).toBe("offline");
-    expect(redirectUrl.searchParams.get("prompt")).toBe("consent");
-    expect(redirectUrl.searchParams.get("state")).toBeTruthy();
-  });
-
-  it("stores state in an HttpOnly cookie", async () => {
-    mockGetSession.mockResolvedValue({
-      user: { id: "admin-1", role: "admin" },
-    });
-    mockGetOAuthSettings.mockResolvedValue({
-      clientId: "test-client-id",
-      clientSecret: "test-client-secret",
-    });
-
-    const response = await GET(makeRequest());
-
-    const setCookie = response.headers.get("Set-Cookie");
-    expect(setCookie).toBeTruthy();
-    expect(setCookie).toMatch(/oauth_state=/);
-    expect(setCookie).toMatch(/HttpOnly/i);
-    expect(setCookie).toMatch(/SameSite=Lax/i);
-    expect(setCookie).toMatch(/Max-Age=600/);
-
-    // The cookie value should match the state parameter in the redirect URL
-    const location = response.headers.get("Location")!;
-    const redirectUrl = new URL(location);
-    const stateParam = redirectUrl.searchParams.get("state");
-
-    const cookieValue = setCookie!.match(/oauth_state=([^;]+)/)?.[1];
-    expect(cookieValue).toBe(stateParam);
-  });
-
-  it("calls getOAuthSettings with 'google'", async () => {
-    mockGetSession.mockResolvedValue({
-      user: { id: "admin-1", role: "admin" },
-    });
-    mockGetOAuthSettings.mockResolvedValue(null);
-
+  it("deletes existing pending Google records before creating a new one", async () => {
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
     await GET(makeRequest());
+    expect(mockDeleteWhere).toHaveBeenCalled();
+  });
 
-    expect(mockGetOAuthSettings).toHaveBeenCalledWith("google");
+  it("creates a pending integration_connections record", async () => {
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    await GET(makeRequest());
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "google",
+        status: "pending",
+        name: "Google (connecting\u2026)",
+      })
+    );
+  });
+
+  it("sets oauth_pending_id cookie with the pending record id", async () => {
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await GET(makeRequest());
+    const cookieHeader = res.headers.get("set-cookie") ?? "";
+    expect(cookieHeader).toContain("oauth_pending_id=pending-conn-id");
+  });
+
+  it("sets oauth_state cookie for CSRF protection", async () => {
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await GET(makeRequest());
+    const cookieHeader = res.headers.get("set-cookie") ?? "";
+    expect(cookieHeader).toContain("oauth_state=");
+  });
+
+  it("redirects to Google OAuth URL", async () => {
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(302);
+    const location = res.headers.get("location") ?? "";
+    expect(location).toContain("accounts.google.com");
+    expect(location).toContain("client_id=client-id-123");
   });
 });

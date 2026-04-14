@@ -343,4 +343,40 @@ describe("AddIntegrationDialog", () => {
       fetchSpy.mockRestore();
     });
   });
+
+  describe("initialType prop", () => {
+    it("opens directly at Google connect step when initialType='google'", () => {
+      render(<AddIntegrationDialog {...defaultProps} initialType="google" />);
+
+      // Should be on the connect step, NOT the type selection step
+      // The type-selection step shows "Odoo" and "Google" buttons
+      expect(screen.queryByText("Odoo")).not.toBeInTheDocument();
+
+      // Should show Google OAuth connect UI — look for either the connect button or setup form
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
+
+    it("back button closes dialog instead of going to type selection when initialType='google'", async () => {
+      const onOpenChange = vi.fn();
+      const user = userEvent.setup();
+
+      render(
+        <AddIntegrationDialog
+          open={true}
+          onOpenChange={onOpenChange}
+          onSuccess={vi.fn()}
+          initialType="google"
+        />
+      );
+
+      const backButton = screen.getByRole("button", { name: /back/i });
+      await user.click(backButton);
+
+      // Should call onOpenChange(false) to close the dialog
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+
+      // Should NOT show type selection (Odoo button)
+      expect(screen.queryByText("Odoo")).not.toBeInTheDocument();
+    });
+  });
 });

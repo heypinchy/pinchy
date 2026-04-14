@@ -2,7 +2,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "
 import { dirname } from "path";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
-import { eq } from "drizzle-orm";
+import { eq, ne } from "drizzle-orm";
 import { db } from "@/db";
 import {
   agents,
@@ -276,13 +276,15 @@ export async function regenerateOpenClawConfig() {
   // Note: pinchy-files is only included when agents use it (via pluginConfigs loop above).
 
   // Collect Odoo integration configs for agents with integration permissions
+  // Only include active connections — pending ones have no usable credentials
   const allPermissions = await db
     .select()
     .from(agentConnectionPermissions)
     .innerJoin(
       integrationConnections,
       eq(agentConnectionPermissions.connectionId, integrationConnections.id)
-    );
+    )
+    .where(ne(integrationConnections.status, "pending"));
 
   const odooAgentConfigs: Record<string, Record<string, unknown>> = {};
   const permsByAgent = new Map<

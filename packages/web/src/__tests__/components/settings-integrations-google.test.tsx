@@ -20,11 +20,24 @@ const googleConnection = {
   name: "invoices@company.com",
   description: "",
   credentials: "encrypted",
+  status: "active",
   data: {
     emailAddress: "invoices@company.com",
     provider: "gmail",
     connectedAt: "2026-04-13T12:00:00Z",
   },
+  createdAt: "2026-04-13T12:00:00Z",
+  updatedAt: "2026-04-13T12:00:00Z",
+};
+
+const pendingGoogleConnection = {
+  id: "conn-google-pending",
+  type: "google",
+  name: "Google (connecting…)",
+  description: "",
+  credentials: "encrypted",
+  status: "pending",
+  data: null,
   createdAt: "2026-04-13T12:00:00Z",
   updatedAt: "2026-04-13T12:00:00Z",
 };
@@ -35,6 +48,7 @@ const odooConnection = {
   name: "Production ERP",
   description: "",
   credentials: "encrypted",
+  status: "active",
   data: { lastSyncAt: "2026-04-13T12:00:00Z", categories: [] },
   createdAt: "2026-04-13T12:00:00Z",
   updatedAt: "2026-04-13T12:00:00Z",
@@ -139,6 +153,77 @@ describe("SettingsIntegrations — type-aware rendering", () => {
     // Google connections should NOT have Test Connection or Sync Schema
     expect(screen.queryByText("Test Connection")).not.toBeInTheDocument();
     expect(screen.queryByText("Sync Schema")).not.toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+});
+
+describe("SettingsIntegrations — pending Google connection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("shows 'Setup in progress' badge for pending Google connection", async () => {
+    const fetchSpy = mockFetchConnections([pendingGoogleConnection]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Google (connecting…)")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText("Setup in progress")).toBeInTheDocument();
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("shows 'Continue setup' and 'Remove' in dropdown for pending Google connection", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchConnections([pendingGoogleConnection]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Google (connecting…)")).toBeInTheDocument();
+    });
+
+    const row = screen.getByText("Google (connecting…)").closest("[class*='rounded-lg']")!;
+    const buttons = row.querySelectorAll("button");
+    const menuButton = buttons[buttons.length - 1];
+    await user.click(menuButton);
+
+    expect(screen.getByText("Continue setup")).toBeInTheDocument();
+    expect(screen.getByText("Remove")).toBeInTheDocument();
+
+    // Should NOT show Rename or Edit OAuth Credentials
+    expect(screen.queryByText("Rename")).not.toBeInTheDocument();
+    expect(screen.queryByText("Edit OAuth Credentials")).not.toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("clicking 'Continue setup' opens AddIntegrationDialog", async () => {
+    const user = userEvent.setup();
+    const fetchSpy = mockFetchConnections([pendingGoogleConnection]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Google (connecting…)")).toBeInTheDocument();
+    });
+
+    const row = screen.getByText("Google (connecting…)").closest("[class*='rounded-lg']")!;
+    const buttons = row.querySelectorAll("button");
+    const menuButton = buttons[buttons.length - 1];
+    await user.click(menuButton);
+
+    await user.click(screen.getByText("Continue setup"));
+
+    // AddIntegrationDialog should be open — look for dialog title or integration type buttons
+    await waitFor(() => {
+      expect(screen.getByRole("dialog")).toBeInTheDocument();
+    });
 
     fetchSpy.mockRestore();
   });

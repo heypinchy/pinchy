@@ -3,6 +3,10 @@ import { headers } from "next/headers";
 import { randomBytes } from "crypto";
 import { getSession } from "@/lib/auth";
 import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { db } from "@/db";
+import { integrationConnections } from "@/db/schema";
+import { encrypt } from "@/lib/encryption";
+import { eq, and } from "drizzle-orm";
 
 const GOOGLE_OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/gmail.readonly",
@@ -10,7 +14,6 @@ const GOOGLE_OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/userinfo.email",
 ].join(" ");
 
-// audit-exempt: read-only redirect, no state change — the callback endpoint logs the actual connection creation
 export async function GET(request: Request) {
   const session = await getSession({ headers: await headers() });
   if (!session?.user) {
@@ -24,6 +27,24 @@ export async function GET(request: Request) {
   if (!settings) {
     return NextResponse.json({ error: "Google OAuth not configured" }, { status: 400 });
   }
+
+  // Clean up any stale pending records before starting a new flow
+  await db
+    .delete(integrationConnections)
+    .where(
+      and(eq(integrationConnections.type, "google"), eq(integrationConnections.status, "pending"))
+    );
+
+  // Create a pending record so the connection is visible during the OAuth flow
+  const [pending] = await db
+    .insert(integrationConnections)
+    .values({
+      type: "google",
+      name: "Google (connecting…)",
+      status: "pending",
+      credentials: encrypt(JSON.stringify({})),
+    })
+    .returning({ id: integrationConnections.id });
 
   const state = randomBytes(32).toString("hex");
 
@@ -42,6 +63,13 @@ export async function GET(request: Request) {
   const response = NextResponse.redirect(authUrl.toString(), 302);
   const isSecure = requestUrl.protocol === "https:";
   response.cookies.set("oauth_state", state, {
+    httpOnly: true,
+    secure: isSecure,
+    sameSite: "lax",
+    maxAge: 600,
+    path: "/",
+  });
+  response.cookies.set("oauth_pending_id", pending.id, {
     httpOnly: true,
     secure: isSecure,
     sameSite: "lax",

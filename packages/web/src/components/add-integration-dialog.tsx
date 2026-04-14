@@ -36,7 +36,8 @@ import {
   parseOdooSubdomainHint,
   generateConnectionName,
 } from "@/lib/integrations/odoo-url";
-import { Loader2, CheckCircle2, AlertTriangle, Copy } from "lucide-react";
+import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { OdooIcon, GoogleIcon } from "./integration-icons";
 import { docsUrl } from "./docs-link";
 
@@ -118,6 +119,7 @@ function GoogleConnectStep({
   const [clientSecret, setClientSecret] = useState("");
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const { isCopied, copy } = useCopyToClipboard();
 
   useEffect(() => {
     if (!isSecure) return;
@@ -233,9 +235,16 @@ function GoogleConnectStep({
               variant="outline"
               size="icon"
               className="shrink-0"
-              onClick={() => navigator.clipboard.writeText(redirectUrl)}
+              onClick={() => {
+                copy(redirectUrl);
+                toast.success("Copied to clipboard");
+              }}
             >
-              <Copy className="h-4 w-4" />
+              {isCopied ? (
+                <Check className="h-4 w-4 text-green-600" />
+              ) : (
+                <Copy className="h-4 w-4" />
+              )}
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
@@ -356,11 +365,17 @@ interface AddIntegrationDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSuccess: () => void;
+  initialType?: "google";
 }
 
-export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddIntegrationDialogProps) {
-  const [step, setStep] = useState<WizardStep>("type");
-  const [selectedType, setSelectedType] = useState<string | null>(null);
+export function AddIntegrationDialog({
+  open,
+  onOpenChange,
+  onSuccess,
+  initialType,
+}: AddIntegrationDialogProps) {
+  const [step, setStep] = useState<WizardStep>(initialType ? "connect" : "type");
+  const [selectedType, setSelectedType] = useState<string | null>(initialType ?? null);
 
   // Connect step results
   const [connectionResult, setConnectionResult] = useState<{
@@ -403,8 +418,8 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
   });
 
   function resetAll() {
-    setStep("type");
-    setSelectedType(null);
+    setStep(initialType ? "connect" : "type");
+    setSelectedType(initialType ?? null);
     setConnectionResult(null);
     setConnecting(false);
     setSyncResult(null);
@@ -426,6 +441,11 @@ export function AddIntegrationDialog({ open, onOpenChange, onSuccess }: AddInteg
 
   function handleBack() {
     if (step === "connect") {
+      if (initialType) {
+        // No type-selection step to go back to — close the dialog instead
+        onOpenChange(false);
+        return;
+      }
       setSelectedType(null);
       setConnectionResult(null);
       setConnecting(false);

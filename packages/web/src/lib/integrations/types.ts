@@ -18,6 +18,7 @@ export interface IntegrationConnection {
     provider?: string;
     connectedAt?: string;
   } | null;
+  status: "active" | "pending";
   createdAt: string;
   updatedAt: string;
 }

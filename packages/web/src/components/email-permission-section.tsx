@@ -39,6 +39,7 @@ interface Connection {
   id: string;
   name: string;
   type: string;
+  status?: string;
   data: unknown;
 }
 
@@ -87,8 +88,10 @@ export function EmailPermissionSection({ agentId, onChange }: EmailPermissionSec
           allConnections = await connectionsRes.json();
         }
 
-        // Filter to email-type connections only
-        const emailConnections = allConnections.filter((c) => EMAIL_CONNECTION_TYPES.has(c.type));
+        // Filter to active email-type connections only (pending = setup incomplete)
+        const emailConnections = allConnections.filter(
+          (c) => EMAIL_CONNECTION_TYPES.has(c.type) && c.status !== "pending"
+        );
         setConnections(emailConnections);
 
         if (permsRes.ok) {

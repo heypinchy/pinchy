@@ -86,6 +86,7 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
       {
         id: "conn-1",
         type: "odoo",
+        status: "active",
         credentials: "encrypted-blob",
       },
     ]);
@@ -107,6 +108,22 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
     expect(res.status).toBe(404);
     const data = await res.json();
     expect(data.error).toBe("Connection not found");
+  });
+
+  it("returns 403 for pending connection", async () => {
+    mockDbSelectResult([
+      {
+        id: "conn-pending",
+        type: "google",
+        status: "pending",
+        credentials: "encrypted-blob",
+      },
+    ]);
+
+    const res = await GET(makeRequest("conn-pending"), makeParams("conn-pending"));
+    expect(res.status).toBe(403);
+    const data = await res.json();
+    expect(data.error).toBe("Connection not active");
   });
 
   it("returns 500 when decryption fails", async () => {
@@ -139,6 +156,7 @@ describe("GET /api/internal/integrations/:connectionId/credentials", () => {
         {
           id: "conn-google",
           type: "google",
+          status: "active",
           credentials: "encrypted-google-blob",
         },
       ]);

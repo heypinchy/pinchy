@@ -6,6 +6,7 @@ import { encrypt } from "@/lib/encryption";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
+import { eq, and } from "drizzle-orm";
 
 function errorRedirect(origin: string, error: string) {
   const url = new URL("/settings", origin);
@@ -87,7 +88,7 @@ export async function GET(request: Request) {
   const profileData = await profileResponse.json();
   const { emailAddress } = profileData;
 
-  // 8. Create integration connection in DB
+  // 8. Persist integration — UPDATE pending record if possible, otherwise INSERT
   const expiresAt = new Date(Date.now() + expires_in * 1000).toISOString();
   const encryptedCredentials = encrypt(
     JSON.stringify({
@@ -98,19 +99,58 @@ export async function GET(request: Request) {
     })
   );
 
-  const [connection] = await db
-    .insert(integrationConnections)
-    .values({
-      type: "google",
-      name: emailAddress,
-      credentials: encryptedCredentials,
-      data: {
-        emailAddress,
-        provider: "gmail",
-        connectedAt: new Date().toISOString(),
-      },
-    })
-    .returning();
+  const connectionData = {
+    emailAddress,
+    provider: "gmail",
+    connectedAt: new Date().toISOString(),
+  };
+
+  const pendingId = cookies["oauth_pending_id"];
+  let connection: typeof integrationConnections.$inferSelect;
+
+  if (pendingId) {
+    const rows = await db
+      .select()
+      .from(integrationConnections)
+      .where(
+        and(eq(integrationConnections.id, pendingId), eq(integrationConnections.status, "pending"))
+      )
+      .limit(1);
+
+    if (rows.length > 0) {
+      [connection] = await db
+        .update(integrationConnections)
+        .set({
+          name: emailAddress,
+          status: "active",
+          credentials: encryptedCredentials,
+          data: connectionData,
+          updatedAt: new Date(),
+        })
+        .where(eq(integrationConnections.id, pendingId))
+        .returning();
+    } else {
+      [connection] = await db
+        .insert(integrationConnections)
+        .values({
+          type: "google",
+          name: emailAddress,
+          credentials: encryptedCredentials,
+          data: connectionData,
+        })
+        .returning();
+    }
+  } else {
+    [connection] = await db
+      .insert(integrationConnections)
+      .values({
+        type: "google",
+        name: emailAddress,
+        credentials: encryptedCredentials,
+        data: connectionData,
+      })
+      .returning();
+  }
 
   // 9. Audit log
   appendAuditLog({
@@ -127,13 +167,18 @@ export async function GET(request: Request) {
     outcome: "success",
   }).catch(console.error);
 
-  // 10. Clean up cookie and redirect
+  // 10. Clean up cookies and redirect
   const successUrl = new URL("/settings", origin);
   successUrl.searchParams.set("tab", "integrations");
   successUrl.searchParams.set("created", connection.id);
 
   const response = NextResponse.redirect(successUrl.toString(), 302);
   response.cookies.set("oauth_state", "", {
+    httpOnly: true,
+    path: "/",
+    maxAge: 0,
+  });
+  response.cookies.set("oauth_pending_id", "", {
     httpOnly: true,
     path: "/",
     maxAge: 0,
