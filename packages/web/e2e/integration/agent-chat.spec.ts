@@ -20,14 +20,11 @@ test.describe("Agent chat — full integration", () => {
     await page.getByRole("button", { name: /sign in/i }).click();
     await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
 
-    // 3. Create a test agent via API with the fake Ollama model
+    // 3. Create a test agent via API (custom template = no plugin required)
     const agentRes = await page.request.post("/api/agents", {
       data: {
         name: "Integration Test Bot",
-        model: "ollama/fake-model:latest",
-        systemPrompt: "You are a test bot.",
-        visibility: "all",
-        allowedTools: [],
+        templateId: "custom",
       },
     });
     expect(agentRes.status()).toBe(201);
