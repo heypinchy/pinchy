@@ -83,6 +83,8 @@ vi.mock("@/lib/settings", () => ({
   setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/settings-timezone");
+
 vi.mock("@/lib/providers", () => ({
   PROVIDERS: {},
 }));
