@@ -440,3 +440,21 @@ export const notifications = pgTable(
     ),
   })
 );
+
+export const notificationRecipients = pgTable(
+  "notification_recipients",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    notificationId: uuid("notification_id")
+      .notNull()
+      .references(() => notifications.id, { onDelete: "cascade" }),
+    deliveredAt: timestamp("delivered_at").notNull().defaultNow(),
+    readAt: timestamp("read_at"),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.userId, table.notificationId] }),
+    userUnreadIdx: index("notification_recipients_user_unread_idx").on(table.userId, table.readAt),
+  })
+);
