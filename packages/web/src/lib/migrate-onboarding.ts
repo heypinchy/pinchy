@@ -19,9 +19,12 @@ export async function migrateExistingSmithers(): Promise<void> {
     if (!user || user.context !== null) continue;
 
     const isAdmin = user.role === "admin";
+    // docs_list / docs_read come from the pinchy-docs plugin, which is enabled
+    // automatically for every personal agent (see openclaw-config.ts). No need
+    // to list them here.
     const allowedTools = isAdmin
-      ? ["pinchy_save_user_context", "pinchy_save_org_context", "docs_list", "docs_read"]
-      : ["pinchy_save_user_context", "docs_list", "docs_read"];
+      ? ["pinchy_save_user_context", "pinchy_save_org_context"]
+      : ["pinchy_save_user_context"];
 
     await db.update(agents).set({ allowedTools }).where(eq(agents.id, agent.id));
 

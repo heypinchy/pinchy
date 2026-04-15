@@ -764,7 +764,7 @@ describe("regenerateOpenClawConfig", () => {
           model: "anthropic/claude-haiku-4-5-20251001",
           isPersonal: true,
           ownerId: "user-1",
-          allowedTools: ["pinchy_save_user_context", "docs_list", "docs_read"],
+          allowedTools: ["pinchy_save_user_context"],
           createdAt: new Date(),
         },
         {

@@ -17,16 +17,18 @@ describe("TOOL_REGISTRY", () => {
     expect(safe.map((t) => t.id)).toContain("pinchy_read");
   });
 
-  it("contains docs_list and docs_read as safe tools (no group, not denied)", () => {
+  it("does not expose docs_list / docs_read as admin-configurable tools", () => {
+    // The pinchy-docs plugin is enabled automatically for every personal
+    // agent (Smithers) via openclaw-config.ts — it is NOT steered by an
+    // agent's allowedTools. Surfacing these tools in the per-agent permission
+    // UI would imply admins can grant them to any agent, but the checkbox has
+    // no effect on non-personal agents. Keep them out of the registry so the
+    // UI doesn't lie about what can be controlled.
     const ids = TOOL_REGISTRY.map((t) => t.id);
-    expect(ids).toContain("docs_list");
-    expect(ids).toContain("docs_read");
-    const docsList = getToolById("docs_list");
-    const docsRead = getToolById("docs_read");
-    expect(docsList?.category).toBe("safe");
-    expect(docsRead?.category).toBe("safe");
-    expect(docsList?.group).toBeUndefined();
-    expect(docsRead?.group).toBeUndefined();
+    expect(ids).not.toContain("docs_list");
+    expect(ids).not.toContain("docs_read");
+    expect(getToolById("docs_list")).toBeUndefined();
+    expect(getToolById("docs_read")).toBeUndefined();
   });
 
   it("contains powerful tools", () => {
