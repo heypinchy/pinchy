@@ -14,6 +14,7 @@ import { SettingsIntegrations } from "@/components/settings-integrations";
 import { SettingsLicense } from "@/components/settings-license";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
+import { TimezoneSettings } from "@/components/timezone-settings";
 
 interface ProviderStatus {
   defaultProvider: string | null;
@@ -133,9 +134,16 @@ export function SettingsPageContent({
               {isAdmin && <TabsTrigger value="groups">Groups</TabsTrigger>}
               {isAdmin && <TabsTrigger value="integrations">Integrations</TabsTrigger>}
               {isAdmin && <TabsTrigger value="license">License</TabsTrigger>}
+              {isAdmin && <TabsTrigger value="organization">Organization</TabsTrigger>}
               {isAdmin && <TabsTrigger value="security">Security</TabsTrigger>}
             </TabsList>
           </div>
+
+          {isAdmin && (
+            <TabsContent value="organization">
+              <TimezoneSettings />
+            </TabsContent>
+          )}
 
           {isAdmin && (
             <TabsContent value="security">
