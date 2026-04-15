@@ -27,38 +27,40 @@ describe("isModelVisionCapable", () => {
   });
 
   describe("Ollama cloud vision models", () => {
-    it("should return true for kimi-k2.5 cloud", () => {
-      expect(isModelVisionCapable("ollama-cloud/kimi-k2.5:cloud")).toBe(true);
+    // Cloud model IDs are the bare names returned by https://ollama.com/v1/models
+    // — no ":cloud" / "-cloud" suffix since Ollama dropped them.
+    it("should return true for kimi-k2.5", () => {
+      expect(isModelVisionCapable("ollama-cloud/kimi-k2.5")).toBe(true);
     });
 
-    it("should return true for gemini-3-flash-preview cloud", () => {
-      expect(isModelVisionCapable("ollama-cloud/gemini-3-flash-preview:cloud")).toBe(true);
+    it("should return true for gemini-3-flash-preview", () => {
+      expect(isModelVisionCapable("ollama-cloud/gemini-3-flash-preview")).toBe(true);
     });
 
-    it("should return true for mistral-large-3 cloud", () => {
-      expect(isModelVisionCapable("ollama-cloud/mistral-large-3:675b-cloud")).toBe(true);
+    it("should return true for mistral-large-3", () => {
+      expect(isModelVisionCapable("ollama-cloud/mistral-large-3:675b")).toBe(true);
     });
 
-    it("should return true for qwen3.5 cloud", () => {
-      expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b-cloud")).toBe(true);
+    it("should return true for qwen3.5", () => {
+      expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b")).toBe(true);
     });
 
-    it("should return true for ministral-3 cloud", () => {
-      expect(isModelVisionCapable("ollama-cloud/ministral-3:14b-cloud")).toBe(true);
+    it("should return true for ministral-3", () => {
+      expect(isModelVisionCapable("ollama-cloud/ministral-3:14b")).toBe(true);
     });
 
-    it("should return true for qwen3-vl cloud", () => {
-      expect(isModelVisionCapable("ollama-cloud/qwen3-vl:235b-cloud")).toBe(true);
+    it("should return true for qwen3-vl", () => {
+      expect(isModelVisionCapable("ollama-cloud/qwen3-vl:235b")).toBe(true);
     });
 
-    it("should return true for gemma3 cloud", () => {
-      expect(isModelVisionCapable("ollama-cloud/gemma3:27b-cloud")).toBe(true);
+    it("should return true for gemma3", () => {
+      expect(isModelVisionCapable("ollama-cloud/gemma3:27b")).toBe(true);
     });
 
     it("should return false for non-vision Ollama cloud models", () => {
-      expect(isModelVisionCapable("ollama-cloud/deepseek-v3.2:cloud")).toBe(false);
-      expect(isModelVisionCapable("ollama-cloud/glm-4.7:cloud")).toBe(false);
-      expect(isModelVisionCapable("ollama-cloud/nemotron-3-nano:30b-cloud")).toBe(false);
+      expect(isModelVisionCapable("ollama-cloud/deepseek-v3.2")).toBe(false);
+      expect(isModelVisionCapable("ollama-cloud/glm-4.7")).toBe(false);
+      expect(isModelVisionCapable("ollama-cloud/nemotron-3-nano:30b")).toBe(false);
     });
   });
 

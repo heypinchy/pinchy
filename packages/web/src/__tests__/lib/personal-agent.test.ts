@@ -66,7 +66,7 @@ vi.mock("@/lib/provider-models", () => {
     anthropic: "anthropic/claude-haiku-4-5-20251001",
     openai: "openai/gpt-4o-mini",
     google: "google/gemini-2.5-flash",
-    "ollama-cloud": "ollama-cloud/gemini-3-flash-preview:cloud",
+    "ollama-cloud": "ollama-cloud/gemini-3-flash-preview",
     "ollama-local": "",
   };
   return {
@@ -102,7 +102,7 @@ vi.mock("@/lib/providers", () => ({
       name: "Ollama Cloud",
       settingsKey: "ollama_cloud_api_key",
       envVar: "OLLAMA_CLOUD_API_KEY",
-      defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+      defaultModel: "ollama-cloud/gemini-3-flash-preview",
       placeholder: "sk-...",
     },
     "ollama-local": {

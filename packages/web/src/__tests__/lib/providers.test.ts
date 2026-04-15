@@ -114,9 +114,7 @@ describe("PROVIDERS", () => {
     expect(PROVIDERS.anthropic.defaultModel).toBe("anthropic/claude-haiku-4-5-20251001");
     expect(PROVIDERS.openai.defaultModel).toBe("openai/gpt-4o-mini");
     expect(PROVIDERS.google.defaultModel).toBe("google/gemini-2.5-flash");
-    expect(PROVIDERS["ollama-cloud"].defaultModel).toBe(
-      "ollama-cloud/gemini-3-flash-preview:cloud"
-    );
+    expect(PROVIDERS["ollama-cloud"].defaultModel).toBe("ollama-cloud/gemini-3-flash-preview");
   });
 
   it("should have settings keys for all providers", () => {

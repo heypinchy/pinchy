@@ -39,7 +39,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     authType: "api-key",
     settingsKey: "ollama_cloud_api_key",
     envVar: "OLLAMA_CLOUD_API_KEY",
-    defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+    defaultModel: "ollama-cloud/gemini-3-flash-preview",
     placeholder: "sk-...",
   },
   "ollama-local": {

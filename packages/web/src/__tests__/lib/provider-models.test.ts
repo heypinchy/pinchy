@@ -27,7 +27,7 @@ vi.mock("@/lib/providers", () => ({
       name: "Ollama Cloud",
       settingsKey: "ollama_cloud_api_key",
       envVar: "OLLAMA_CLOUD_API_KEY",
-      defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+      defaultModel: "ollama-cloud/gemini-3-flash-preview",
       placeholder: "sk-...",
     },
     "ollama-local": {
@@ -240,6 +240,9 @@ describe("fetchProviderModels", () => {
   });
 
   it("fetches and transforms Ollama models from OpenAI-compatible endpoint", async () => {
+    // Real IDs as returned by https://ollama.com/v1/models today — no ":cloud"
+    // or "-cloud" suffixes, and names like "kimi-k2.5" live alongside newer
+    // variants like "kimi-k2:1t" and "kimi-k2-thinking".
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "ollama_cloud_api_key") return "sk-ollama-test";
       return null;
@@ -249,9 +252,12 @@ describe("fetchProviderModels", () => {
       new Response(
         JSON.stringify({
           data: [
-            { id: "gemini-3-flash-preview:cloud" },
-            { id: "kimi-k2.5:cloud" },
-            { id: "nemotron-3-nano:30b-cloud" }, // not in allowed list, filtered out
+            { id: "gemini-3-flash-preview" },
+            { id: "kimi-k2.5" },
+            { id: "kimi-k2:1t" }, // not in allowed list, filtered out
+            { id: "mistral-large-3:675b" },
+            { id: "qwen3.5:397b" },
+            { id: "nemotron-3-nano:30b" }, // not in allowed list, filtered out
           ],
         }),
         { status: 200 }
@@ -262,8 +268,10 @@ describe("fetchProviderModels", () => {
     const ollama = result.find((p) => p.id === "ollama-cloud");
     expect(ollama).toBeDefined();
     expect(ollama!.models).toEqual([
-      { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "gemini-3-flash-preview" },
-      { id: "ollama-cloud/kimi-k2.5:cloud", name: "kimi-k2.5" },
+      { id: "ollama-cloud/gemini-3-flash-preview", name: "gemini-3-flash-preview" },
+      { id: "ollama-cloud/kimi-k2.5", name: "kimi-k2.5" },
+      { id: "ollama-cloud/mistral-large-3:675b", name: "mistral-large-3:675b" },
+      { id: "ollama-cloud/qwen3.5:397b", name: "qwen3.5:397b" },
     ]);
   });
 
@@ -599,13 +607,11 @@ describe("selectDefaultModel", () => {
   it("falls back to hardcoded default when all flash candidates are preview versions (ollama)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
-      { id: "ollama-cloud/kimi-k2.5:cloud", name: "Kimi K2.5" },
-      { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "Gemini 3 Flash Preview" },
-      { id: "ollama-cloud/qwen3.5:397b-cloud", name: "Qwen 3.5 397B" },
+      { id: "ollama-cloud/kimi-k2.5", name: "Kimi K2.5" },
+      { id: "ollama-cloud/gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
+      { id: "ollama-cloud/qwen3.5:397b", name: "Qwen 3.5 397B" },
     ];
-    expect(selectDefaultModel("ollama-cloud", models)).toBe(
-      "ollama-cloud/gemini-3-flash-preview:cloud"
-    );
+    expect(selectDefaultModel("ollama-cloud", models)).toBe("ollama-cloud/gemini-3-flash-preview");
   });
 
   it("prefers stable versions over preview versions", async () => {
@@ -814,8 +820,8 @@ describe("vision capability detection", () => {
     expect(isModelVisionCapable("google/gemini-2.5-flash")).toBe(true);
 
     // ollama-cloud provider → all models vision-capable
-    expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b-cloud")).toBe(true);
-    expect(isModelVisionCapable("ollama-cloud/kimi-k2.5:cloud")).toBe(true);
+    expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b")).toBe(true);
+    expect(isModelVisionCapable("ollama-cloud/kimi-k2.5")).toBe(true);
 
     // Unknown provider → not vision-capable (conservative default)
     expect(isModelVisionCapable("unknown/model")).toBe(false);
