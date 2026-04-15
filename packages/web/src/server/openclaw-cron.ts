@@ -46,3 +46,10 @@ export async function upsertCronJob(input: UpsertCronJobInput): Promise<void> {
     await getOpenClawClient().request("cron.add", common);
   }
 }
+
+export async function removeCronJobByName(name: string): Promise<void> {
+  const existing = await listCronJobs({ namePrefix: name });
+  const match = existing.find((j) => j.name === name);
+  if (!match) return;
+  await getOpenClawClient().request("cron.remove", { id: match.id });
+}
