@@ -389,3 +389,30 @@ export const briefings = pgTable(
     enabledIdx: index("briefings_enabled_idx").on(table.enabled),
   })
 );
+
+export const briefingRuns = pgTable(
+  "briefing_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    briefingId: uuid("briefing_id")
+      .notNull()
+      .references(() => briefings.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    openclawJobId: text("openclaw_job_id").notNull(),
+    openclawRunId: text("openclaw_run_id").notNull(),
+    openclawSessionKey: text("openclaw_session_key").notNull(),
+    runAtMs: bigint("run_at_ms", { mode: "number" }).notNull(),
+    isTest: boolean("is_test").notNull().default(false),
+    notificationProcessedAt: timestamp("notification_processed_at"),
+  },
+  (table) => ({
+    runIdUnique: uniqueIndex("briefing_runs_openclaw_run_id_uniq").on(table.openclawRunId),
+    briefingIdRunAtIdx: index("briefing_runs_briefing_run_at_idx").on(
+      table.briefingId,
+      table.runAtMs
+    ),
+    sessionKeyIdx: index("briefing_runs_session_key_idx").on(table.openclawSessionKey),
+  })
+);
