@@ -23,7 +23,9 @@ vi.mock("@/lib/settings", () => ({
 }));
 
 vi.mock("@/lib/settings-timezone");
-vi.mock("@/lib/audit");
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
 
 import { auth } from "@/lib/auth";
 import * as tz from "@/lib/settings-timezone";
