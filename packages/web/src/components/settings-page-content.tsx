@@ -140,7 +140,7 @@ export function SettingsPageContent({
           </div>
 
           {isAdmin && (
-            <TabsContent value="organization">
+            <TabsContent value="organization" keepMounted>
               <TimezoneSettings />
             </TabsContent>
           )}
