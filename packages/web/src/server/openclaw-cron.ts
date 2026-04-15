@@ -56,7 +56,9 @@ export async function removeCronJobByName(name: string): Promise<void> {
 
 export async function forceRunCronJob(jobId: string): Promise<string> {
   const res = await getOpenClawClient().request("cron.run", { id: jobId, mode: "force" });
-  return (res as unknown as { result?: { runId?: string } }).result?.runId as string;
+  const runId = (res as unknown as { result?: { runId?: string } }).result?.runId;
+  if (!runId) throw new Error(`cron.run for job ${jobId} did not return a runId`);
+  return runId;
 }
 
 export interface CronRunEntry {

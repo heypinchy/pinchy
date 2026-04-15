@@ -22,4 +22,11 @@ describe("forceRunCronJob", () => {
     } as any);
     await expect(forceRunCronJob("missing")).rejects.toThrow(/job not found/);
   });
+
+  it("throws when gateway returns no runId", async () => {
+    vi.mocked(client.getOpenClawClient).mockReturnValue({
+      request: vi.fn().mockResolvedValue({ result: {} }),
+    } as any);
+    await expect(forceRunCronJob("job-abc")).rejects.toThrow(/runId/);
+  });
 });
