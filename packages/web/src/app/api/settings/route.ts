@@ -35,7 +35,7 @@ export async function POST(request: NextRequest) {
         actorId: sessionOrError.user.id!,
         eventType: "settings.updated",
         resource: "settings",
-        detail: { timezone: { from: previous, to: value } },
+        detail: { changes: { timezone: { from: previous, to: value } } },
         outcome: "success",
       })
     );

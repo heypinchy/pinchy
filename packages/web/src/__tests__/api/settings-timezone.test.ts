@@ -62,7 +62,7 @@ describe("POST /api/settings — timezone", () => {
     expect(audit.appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "settings.updated",
-        detail: { timezone: { from: "UTC", to: "Europe/Vienna" } },
+        detail: { changes: { timezone: { from: "UTC", to: "Europe/Vienna" } } },
         outcome: "success",
       })
     );
