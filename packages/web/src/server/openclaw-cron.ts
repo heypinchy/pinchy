@@ -92,7 +92,7 @@ export interface ListCronRunsOpts {
 }
 
 export async function listCronRuns(opts: ListCronRunsOpts = {}): Promise<CronRunEntry[]> {
-  const res = await getOpenClawClient().request("cron.runs", opts);
+  const res = await getOpenClawClient().request("cron.runs", { ...opts });
   return ((res as unknown as { result?: { runs?: CronRunEntry[] } }).result?.runs ??
     []) as CronRunEntry[];
 }
