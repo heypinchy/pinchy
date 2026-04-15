@@ -96,3 +96,19 @@ export async function listCronRuns(opts: ListCronRunsOpts = {}): Promise<CronRun
   return ((res as unknown as { result?: { runs?: CronRunEntry[] } }).result?.runs ??
     []) as CronRunEntry[];
 }
+
+export interface CronStatus {
+  enabled: number;
+  disabled: number;
+  running: number;
+  nextFireAtMs?: number;
+}
+
+export async function getCronStatus(): Promise<CronStatus> {
+  const res = await getOpenClawClient().request("cron.status", {});
+  return ((res as unknown as { result?: CronStatus }).result ?? {
+    enabled: 0,
+    disabled: 0,
+    running: 0,
+  }) as CronStatus;
+}
