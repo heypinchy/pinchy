@@ -17,3 +17,32 @@ export async function listCronJobs(opts?: { namePrefix?: string }): Promise<Cron
   }
   return jobs;
 }
+
+export interface UpsertCronJobInput {
+  name: string;
+  agentId: string;
+  schedule: { kind: "cron"; expr: string; tz: string };
+  sessionTarget: "isolated" | "main" | "current" | `session:${string}`;
+  payload: { kind: "agentTurn"; message: string };
+  enabled?: boolean;
+}
+
+export async function upsertCronJob(input: UpsertCronJobInput): Promise<void> {
+  const existing = await listCronJobs({ namePrefix: input.name });
+  const match = existing.find((j) => j.name === input.name);
+
+  const common = {
+    name: input.name,
+    agentId: input.agentId,
+    schedule: input.schedule,
+    sessionTarget: input.sessionTarget,
+    payload: input.payload,
+    enabled: input.enabled ?? true,
+  };
+
+  if (match) {
+    await getOpenClawClient().request("cron.update", { id: match.id, ...common });
+  } else {
+    await getOpenClawClient().request("cron.add", common);
+  }
+}
