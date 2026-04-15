@@ -1429,61 +1429,6 @@ describe("useWsRuntime", () => {
     });
   });
 
-  it("should send abort message over WebSocket when onCancel is called", () => {
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
-    const ws = wsInstances[0];
-
-    act(() => {
-      ws.onopen?.();
-    });
-
-    // Put the runtime in running state
-    act(() => {
-      result.current.runtime.onNew({
-        content: [{ type: "text", text: "Hello" }],
-        parentId: "root",
-      });
-    });
-
-    expect(result.current.runtime.isRunning).toBe(true);
-
-    // Trigger cancel
-    act(() => {
-      result.current.runtime.onCancel?.();
-    });
-
-    // Should have sent: history request (index 0), user message (index 1), abort (index 2)
-    const calls = ws.send.mock.calls.map((c: string[]) => JSON.parse(c[0]));
-    const abortCall = calls.find((c: { type: string }) => c.type === "abort");
-    expect(abortCall).toBeDefined();
-    expect(abortCall.agentId).toBe("agent-1");
-  });
-
-  it("should set isRunning to false immediately when onCancel is called", () => {
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
-    const ws = wsInstances[0];
-
-    act(() => {
-      ws.onopen?.();
-    });
-
-    act(() => {
-      result.current.runtime.onNew({
-        content: [{ type: "text", text: "Hello" }],
-        parentId: "root",
-      });
-    });
-
-    expect(result.current.runtime.isRunning).toBe(true);
-
-    act(() => {
-      result.current.runtime.onCancel?.();
-    });
-
-    // isRunning should be false immediately — before any server response
-    expect(result.current.runtime.isRunning).toBe(false);
-  });
-
   describe("openclaw restart messages", () => {
     it("should call triggerRestart when openclaw:restarting message is received", () => {
       renderHook(() => useWsRuntime("agent-1"));

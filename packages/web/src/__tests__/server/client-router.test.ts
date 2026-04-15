@@ -3,7 +3,6 @@ import { EventEmitter } from "events";
 
 const {
   mockChat,
-  mockChatAbort,
   mockSessionsHistory,
   mockSessionsList,
   mockFindFirst,
@@ -13,7 +12,6 @@ const {
   mockGetAgentGroupIds,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
-  mockChatAbort: vi.fn().mockResolvedValue(undefined),
   mockSessionsHistory: vi.fn(),
   mockSessionsList: vi.fn(),
   mockFindFirst: vi.fn(),
@@ -111,7 +109,6 @@ function createMockOpenClawClient(connected = true) {
   const emitter = new EventEmitter();
   const client = Object.assign(emitter, {
     chat: mockChat,
-    chatAbort: mockChatAbort,
     sessions: { history: mockSessionsHistory, list: mockSessionsList },
     isConnected: connected,
   });
@@ -1483,39 +1480,6 @@ describe("ClientRouter", () => {
     expect(sent).toHaveLength(1);
     expect(sent[0].type).toBe("history");
     expect(sent[0].messages).toEqual([]);
-  });
-
-  it("should call chatAbort with the correct session key when abort message is received", async () => {
-    const clientWs = createMockClientWs();
-
-    await router.handleMessage(clientWs as any, {
-      type: "abort",
-      agentId: "agent-1",
-    });
-
-    expect(mockChatAbort).toHaveBeenCalledWith("agent:agent-1:direct:user-1");
-    // No messages sent to client — abort is fire-and-forget
-    expect(clientWs.sent).toHaveLength(0);
-  });
-
-  it("should reject abort for inaccessible agent with access denied error", async () => {
-    const clientWs = createMockClientWs();
-    mockFindFirst.mockResolvedValue({
-      id: "agent-1",
-      name: "Personal Agent",
-      ownerId: "other-user",
-      isPersonal: true,
-    });
-
-    await router.handleMessage(clientWs as any, {
-      type: "abort",
-      agentId: "agent-1",
-    });
-
-    expect(mockChatAbort).not.toHaveBeenCalled();
-    const messages = clientWs.sent.map((s) => JSON.parse(s));
-    expect(messages[0].type).toBe("error");
-    expect(messages[0].message).toBe("Access denied");
   });
 
   describe("per-user context injection for shared agents", () => {

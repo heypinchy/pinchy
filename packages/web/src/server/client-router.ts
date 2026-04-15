@@ -36,12 +36,7 @@ interface HistoryRequestMessage {
   agentId: string;
 }
 
-interface AbortMessage {
-  type: "abort";
-  agentId: string;
-}
-
-type BrowserMessage = ChatMessage | HistoryRequestMessage | AbortMessage;
+type BrowserMessage = ChatMessage | HistoryRequestMessage;
 
 interface HistoryMessage {
   role: string;
@@ -100,12 +95,6 @@ export class ClientRouter {
 
     if (message.type === "history") {
       return this.handleHistory(clientWs, agent);
-    }
-
-    if (message.type === "abort") {
-      const sessionKey = this.computeSessionKey(message.agentId);
-      await this.openclawClient.chatAbort(sessionKey);
-      return;
     }
 
     const sessionKey = this.computeSessionKey(message.agentId);

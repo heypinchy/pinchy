@@ -360,18 +360,6 @@ export function useWsRuntime(agentId: string): {
     [agentId]
   );
 
-  const onCancel = useCallback(async () => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: "abort", agentId }));
-    }
-    setIsRunning(false);
-    if (delayTimerRef.current) {
-      clearTimeout(delayTimerRef.current);
-      delayTimerRef.current = null;
-    }
-    setIsDelayed(false);
-  }, [agentId]);
-
   const convertedMessages = useMemo(() => messages.map(convertMessage), [messages]);
 
   const runtime = useExternalStoreRuntime({
@@ -379,7 +367,6 @@ export function useWsRuntime(agentId: string): {
     isRunning,
     convertMessage: (msg: ThreadMessageLike) => msg,
     onNew,
-    onCancel,
     adapters: {
       attachments: attachmentAdapter,
     },
