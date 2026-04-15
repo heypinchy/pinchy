@@ -393,26 +393,69 @@ export async function regenerateOpenClawConfig() {
       baseUrl: "https://ollama.com/v1",
       apiKey: ollamaCloudKey,
       api: "openai-completions",
+      // Kept in sync with provider-models.ts ALLOWED_CLOUD_MODELS. Context
+      // windows come from the published model cards where known; the rest
+      // use a conservative 128k / 8k default (OpenClaw prunes conservatively
+      // when its hint is smaller than the real limit — safer than the
+      // opposite).
       models: [
+        { id: "deepseek-v3.2", name: "deepseek-v3.2", contextWindow: 131072, maxTokens: 8192 },
+        { id: "devstral-2:123b", name: "devstral-2:123b", contextWindow: 131072, maxTokens: 8192 },
         {
-          id: "gemini-3-flash-preview",
-          name: "Gemini 3 Flash Preview",
-          contextWindow: 1048576,
-          maxTokens: 65536,
-        },
-        { id: "kimi-k2.5", name: "Kimi K2.5", contextWindow: 262144, maxTokens: 8192 },
-        {
-          id: "mistral-large-3:675b",
-          name: "Mistral Large 3 675B",
+          id: "devstral-small-2:24b",
+          name: "devstral-small-2:24b",
           contextWindow: 131072,
           maxTokens: 8192,
         },
         {
-          id: "qwen3.5:397b",
-          name: "Qwen 3.5 397B",
-          contextWindow: 262144,
+          id: "gemini-3-flash-preview",
+          name: "gemini-3-flash-preview",
+          contextWindow: 1048576,
+          maxTokens: 65536,
+        },
+        { id: "gemma4:31b", name: "gemma4:31b", contextWindow: 131072, maxTokens: 8192 },
+        { id: "glm-4.7", name: "glm-4.7", contextWindow: 131072, maxTokens: 8192 },
+        { id: "glm-5", name: "glm-5", contextWindow: 131072, maxTokens: 8192 },
+        { id: "glm-5.1", name: "glm-5.1", contextWindow: 131072, maxTokens: 8192 },
+        { id: "kimi-k2.5", name: "kimi-k2.5", contextWindow: 262144, maxTokens: 8192 },
+        { id: "minimax-m2", name: "minimax-m2", contextWindow: 131072, maxTokens: 8192 },
+        { id: "minimax-m2.1", name: "minimax-m2.1", contextWindow: 131072, maxTokens: 8192 },
+        { id: "minimax-m2.5", name: "minimax-m2.5", contextWindow: 131072, maxTokens: 8192 },
+        { id: "minimax-m2.7", name: "minimax-m2.7", contextWindow: 131072, maxTokens: 8192 },
+        { id: "ministral-3:3b", name: "ministral-3:3b", contextWindow: 131072, maxTokens: 8192 },
+        { id: "ministral-3:8b", name: "ministral-3:8b", contextWindow: 131072, maxTokens: 8192 },
+        {
+          id: "ministral-3:14b",
+          name: "ministral-3:14b",
+          contextWindow: 131072,
           maxTokens: 8192,
         },
+        {
+          id: "nemotron-3-nano:30b",
+          name: "nemotron-3-nano:30b",
+          contextWindow: 131072,
+          maxTokens: 8192,
+        },
+        {
+          id: "nemotron-3-super",
+          name: "nemotron-3-super",
+          contextWindow: 131072,
+          maxTokens: 8192,
+        },
+        {
+          id: "qwen3-coder-next",
+          name: "qwen3-coder-next",
+          contextWindow: 131072,
+          maxTokens: 8192,
+        },
+        {
+          id: "qwen3-next:80b",
+          name: "qwen3-next:80b",
+          contextWindow: 131072,
+          maxTokens: 8192,
+        },
+        { id: "qwen3.5:397b", name: "qwen3.5:397b", contextWindow: 262144, maxTokens: 8192 },
+        { id: "rnj-1:8b", name: "rnj-1:8b", contextWindow: 131072, maxTokens: 8192 },
       ],
     };
   }

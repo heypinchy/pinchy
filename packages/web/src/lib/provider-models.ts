@@ -55,10 +55,28 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
   ],
   "ollama-cloud": [
-    { id: "ollama-cloud/gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
-    { id: "ollama-cloud/kimi-k2.5", name: "Kimi K2.5" },
-    { id: "ollama-cloud/mistral-large-3:675b", name: "Mistral Large 3 675B" },
-    { id: "ollama-cloud/qwen3.5:397b", name: "Qwen 3.5 397B" },
+    { id: "ollama-cloud/deepseek-v3.2", name: "deepseek-v3.2" },
+    { id: "ollama-cloud/devstral-2:123b", name: "devstral-2:123b" },
+    { id: "ollama-cloud/devstral-small-2:24b", name: "devstral-small-2:24b" },
+    { id: "ollama-cloud/gemini-3-flash-preview", name: "gemini-3-flash-preview" },
+    { id: "ollama-cloud/gemma4:31b", name: "gemma4:31b" },
+    { id: "ollama-cloud/glm-4.7", name: "glm-4.7" },
+    { id: "ollama-cloud/glm-5", name: "glm-5" },
+    { id: "ollama-cloud/glm-5.1", name: "glm-5.1" },
+    { id: "ollama-cloud/kimi-k2.5", name: "kimi-k2.5" },
+    { id: "ollama-cloud/minimax-m2", name: "minimax-m2" },
+    { id: "ollama-cloud/minimax-m2.1", name: "minimax-m2.1" },
+    { id: "ollama-cloud/minimax-m2.5", name: "minimax-m2.5" },
+    { id: "ollama-cloud/minimax-m2.7", name: "minimax-m2.7" },
+    { id: "ollama-cloud/ministral-3:3b", name: "ministral-3:3b" },
+    { id: "ollama-cloud/ministral-3:8b", name: "ministral-3:8b" },
+    { id: "ollama-cloud/ministral-3:14b", name: "ministral-3:14b" },
+    { id: "ollama-cloud/nemotron-3-nano:30b", name: "nemotron-3-nano:30b" },
+    { id: "ollama-cloud/nemotron-3-super", name: "nemotron-3-super" },
+    { id: "ollama-cloud/qwen3-coder-next", name: "qwen3-coder-next" },
+    { id: "ollama-cloud/qwen3-next:80b", name: "qwen3-next:80b" },
+    { id: "ollama-cloud/qwen3.5:397b", name: "qwen3.5:397b" },
+    { id: "ollama-cloud/rnj-1:8b", name: "rnj-1:8b" },
   ],
   "ollama-local": [],
 };
@@ -110,15 +128,34 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
     url: () => "https://ollama.com/v1/models",
     headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}` }),
     transform: (data) => {
-      // IDs as returned by the Ollama Cloud API. Ollama dropped the ":cloud"
-      // / "-cloud" suffixes during v0.4.x; this curated set is the subset we
-      // surface in the model picker. Everything else is hidden so agents
-      // don't pick models we haven't vetted for tool-calling.
+      // Allowlist mirrors the "tools" tag on ollama.com/search?c=tools&c=cloud.
+      // Only tool-capable models are surfaced so agents can never pick a
+      // model that silently fails on tool calls. The /v1/models endpoint
+      // doesn't expose capability metadata, so this list has to be curated
+      // and kept in sync with Ollama's published tool-capable set.
       const ALLOWED_CLOUD_MODELS = [
+        "deepseek-v3.2",
+        "devstral-2:123b",
+        "devstral-small-2:24b",
         "gemini-3-flash-preview",
+        "gemma4:31b",
+        "glm-4.7",
+        "glm-5",
+        "glm-5.1",
         "kimi-k2.5",
-        "mistral-large-3:675b",
+        "minimax-m2",
+        "minimax-m2.1",
+        "minimax-m2.5",
+        "minimax-m2.7",
+        "ministral-3:3b",
+        "ministral-3:8b",
+        "ministral-3:14b",
+        "nemotron-3-nano:30b",
+        "nemotron-3-super",
+        "qwen3-coder-next",
+        "qwen3-next:80b",
         "qwen3.5:397b",
+        "rnj-1:8b",
       ];
       return (data.data as { id: string }[])
         .filter((m) => ALLOWED_CLOUD_MODELS.includes(m.id))

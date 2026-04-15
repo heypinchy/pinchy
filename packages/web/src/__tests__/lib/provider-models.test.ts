@@ -239,10 +239,12 @@ describe("fetchProviderModels", () => {
     expect(google!.models).toEqual([{ id: "google/gemini-2.5-flash", name: "Gemini 2.0 Flash" }]);
   });
 
-  it("fetches and transforms Ollama models from OpenAI-compatible endpoint", async () => {
+  it("surfaces every tool-capable Ollama Cloud model and filters the rest", async () => {
+    // Allowlist mirrors the "tools" tag on ollama.com/search?c=tools&c=cloud.
     // Real IDs as returned by https://ollama.com/v1/models today — no ":cloud"
-    // or "-cloud" suffixes, and names like "kimi-k2.5" live alongside newer
-    // variants like "kimi-k2:1t" and "kimi-k2-thinking".
+    // or "-cloud" suffixes. Non-tool-capable models (kimi-k2:1t, gemma3:27b,
+    // cogito-2.1, mistral-large-3, qwen3-coder:480b, qwen3-vl:*) are filtered
+    // out so agents never pick a model that can't execute tool calls.
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "ollama_cloud_api_key") return "sk-ollama-test";
       return null;
@@ -252,12 +254,36 @@ describe("fetchProviderModels", () => {
       new Response(
         JSON.stringify({
           data: [
+            // Tool-capable — should appear
+            { id: "deepseek-v3.2" },
+            { id: "devstral-2:123b" },
+            { id: "devstral-small-2:24b" },
             { id: "gemini-3-flash-preview" },
+            { id: "gemma4:31b" },
+            { id: "glm-4.7" },
+            { id: "glm-5" },
+            { id: "glm-5.1" },
             { id: "kimi-k2.5" },
-            { id: "kimi-k2:1t" }, // not in allowed list, filtered out
-            { id: "mistral-large-3:675b" },
+            { id: "minimax-m2" },
+            { id: "minimax-m2.1" },
+            { id: "minimax-m2.5" },
+            { id: "minimax-m2.7" },
+            { id: "ministral-3:3b" },
+            { id: "ministral-3:8b" },
+            { id: "ministral-3:14b" },
+            { id: "nemotron-3-nano:30b" },
+            { id: "nemotron-3-super" },
+            { id: "qwen3-coder-next" },
+            { id: "qwen3-next:80b" },
             { id: "qwen3.5:397b" },
-            { id: "nemotron-3-nano:30b" }, // not in allowed list, filtered out
+            { id: "rnj-1:8b" },
+            // Not tool-capable per ollama.com — must be filtered out
+            { id: "kimi-k2:1t" },
+            { id: "mistral-large-3:675b" },
+            { id: "gemma3:27b" },
+            { id: "cogito-2.1:671b" },
+            { id: "qwen3-coder:480b" },
+            { id: "qwen3-vl:235b" },
           ],
         }),
         { status: 200 }
@@ -267,12 +293,42 @@ describe("fetchProviderModels", () => {
     const result = await fetchProviderModels();
     const ollama = result.find((p) => p.id === "ollama-cloud");
     expect(ollama).toBeDefined();
-    expect(ollama!.models).toEqual([
-      { id: "ollama-cloud/gemini-3-flash-preview", name: "gemini-3-flash-preview" },
-      { id: "ollama-cloud/kimi-k2.5", name: "kimi-k2.5" },
-      { id: "ollama-cloud/mistral-large-3:675b", name: "mistral-large-3:675b" },
-      { id: "ollama-cloud/qwen3.5:397b", name: "qwen3.5:397b" },
-    ]);
+    const ids = ollama!.models.map((m) => m.id);
+
+    // Every tool-capable model surfaces
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        "ollama-cloud/deepseek-v3.2",
+        "ollama-cloud/devstral-2:123b",
+        "ollama-cloud/devstral-small-2:24b",
+        "ollama-cloud/gemini-3-flash-preview",
+        "ollama-cloud/gemma4:31b",
+        "ollama-cloud/glm-4.7",
+        "ollama-cloud/glm-5",
+        "ollama-cloud/glm-5.1",
+        "ollama-cloud/kimi-k2.5",
+        "ollama-cloud/minimax-m2",
+        "ollama-cloud/minimax-m2.1",
+        "ollama-cloud/minimax-m2.5",
+        "ollama-cloud/minimax-m2.7",
+        "ollama-cloud/ministral-3:3b",
+        "ollama-cloud/ministral-3:8b",
+        "ollama-cloud/ministral-3:14b",
+        "ollama-cloud/nemotron-3-nano:30b",
+        "ollama-cloud/nemotron-3-super",
+        "ollama-cloud/qwen3-coder-next",
+        "ollama-cloud/qwen3-next:80b",
+        "ollama-cloud/qwen3.5:397b",
+        "ollama-cloud/rnj-1:8b",
+      ])
+    );
+    expect(ids).toHaveLength(22);
+
+    // Non-tool-capable models are filtered out
+    expect(ids).not.toContain("ollama-cloud/kimi-k2:1t");
+    expect(ids).not.toContain("ollama-cloud/mistral-large-3:675b");
+    expect(ids).not.toContain("ollama-cloud/gemma3:27b");
+    expect(ids).not.toContain("ollama-cloud/qwen3-coder:480b");
   });
 
   it("uses fallback models when API returns non-ok status", async () => {
