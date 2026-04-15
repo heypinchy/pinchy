@@ -416,3 +416,27 @@ export const briefingRuns = pgTable(
     sessionKeyIdx: index("briefing_runs_session_key_idx").on(table.openclawSessionKey),
   })
 );
+
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    briefingRunId: uuid("briefing_run_id").references(() => briefingRuns.id, {
+      onDelete: "set null",
+    }),
+    title: text("title").notNull(),
+    content: text("content").notNull(),
+    status: text("status").notNull(),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    agentIdCreatedAtIdx: index("notifications_agent_created_idx").on(
+      table.agentId,
+      table.createdAt
+    ),
+  })
+);
