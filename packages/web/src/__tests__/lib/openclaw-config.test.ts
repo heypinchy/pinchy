@@ -609,6 +609,53 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama-cloud"].models.length).toBeGreaterThan(0);
   });
 
+  it("writes every tool-capable Ollama Cloud model into the config", async () => {
+    // OpenClaw reads this list to know which cloud models exist and how to
+    // prune their context. A mismatch between what Pinchy's UI lets the
+    // admin pick and what OpenClaw knows about means the agent would run
+    // with default context hints (or refuse the model entirely). Keep the
+    // lists locked.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const modelIds = (config.models.providers["ollama-cloud"].models as Array<{ id: string }>).map(
+      (m) => m.id
+    );
+
+    expect(modelIds.sort()).toEqual(
+      [
+        "deepseek-v3.2",
+        "devstral-2:123b",
+        "devstral-small-2:24b",
+        "gemini-3-flash-preview",
+        "gemma4:31b",
+        "glm-4.7",
+        "glm-5",
+        "glm-5.1",
+        "kimi-k2.5",
+        "minimax-m2",
+        "minimax-m2.1",
+        "minimax-m2.5",
+        "minimax-m2.7",
+        "ministral-3:14b",
+        "ministral-3:3b",
+        "ministral-3:8b",
+        "nemotron-3-nano:30b",
+        "nemotron-3-super",
+        "qwen3-coder-next",
+        "qwen3-next:80b",
+        "qwen3.5:397b",
+        "rnj-1:8b",
+      ].sort()
+    );
+  });
+
   it("should not include models block when neither ollama provider is configured", async () => {
     mockedGetSetting.mockResolvedValue(null);
 

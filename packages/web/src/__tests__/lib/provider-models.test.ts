@@ -353,6 +353,49 @@ describe("fetchProviderModels", () => {
     ]);
   });
 
+  it("falls back to every tool-capable cloud model when Ollama Cloud API fails", async () => {
+    // If the API errors out (rate limit, transient 5xx, network hiccup), the
+    // fallback must still list every tool-capable model — otherwise a single
+    // flaky fetch would silently shrink the admin's model picker.
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-fallback";
+      return null;
+    });
+    vi.mocked(fetch).mockResolvedValue(new Response("boom", { status: 503 }));
+
+    const result = await fetchProviderModels();
+    const ollama = result.find((p) => p.id === "ollama-cloud");
+    expect(ollama).toBeDefined();
+    const ids = ollama!.models.map((m) => m.id);
+    expect(ids).toHaveLength(22);
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        "ollama-cloud/deepseek-v3.2",
+        "ollama-cloud/devstral-2:123b",
+        "ollama-cloud/devstral-small-2:24b",
+        "ollama-cloud/gemini-3-flash-preview",
+        "ollama-cloud/gemma4:31b",
+        "ollama-cloud/glm-4.7",
+        "ollama-cloud/glm-5",
+        "ollama-cloud/glm-5.1",
+        "ollama-cloud/kimi-k2.5",
+        "ollama-cloud/minimax-m2",
+        "ollama-cloud/minimax-m2.1",
+        "ollama-cloud/minimax-m2.5",
+        "ollama-cloud/minimax-m2.7",
+        "ollama-cloud/ministral-3:3b",
+        "ollama-cloud/ministral-3:8b",
+        "ollama-cloud/ministral-3:14b",
+        "ollama-cloud/nemotron-3-nano:30b",
+        "ollama-cloud/nemotron-3-super",
+        "ollama-cloud/qwen3-coder-next",
+        "ollama-cloud/qwen3-next:80b",
+        "ollama-cloud/qwen3.5:397b",
+        "ollama-cloud/rnj-1:8b",
+      ])
+    );
+  });
+
   it("caches results for subsequent calls", async () => {
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-test-key";
