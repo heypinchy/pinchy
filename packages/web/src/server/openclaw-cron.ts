@@ -53,3 +53,8 @@ export async function removeCronJobByName(name: string): Promise<void> {
   if (!match) return;
   await getOpenClawClient().request("cron.remove", { id: match.id });
 }
+
+export async function forceRunCronJob(jobId: string): Promise<string> {
+  const res = await getOpenClawClient().request("cron.run", { id: jobId, mode: "force" });
+  return (res as unknown as { result?: { runId?: string } }).result?.runId as string;
+}
