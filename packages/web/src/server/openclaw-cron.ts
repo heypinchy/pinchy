@@ -58,3 +58,41 @@ export async function forceRunCronJob(jobId: string): Promise<string> {
   const res = await getOpenClawClient().request("cron.run", { id: jobId, mode: "force" });
   return (res as unknown as { result?: { runId?: string } }).result?.runId as string;
 }
+
+export interface CronRunEntry {
+  runId: string;
+  jobId: string;
+  status: "ok" | "error" | "skipped";
+  error?: string;
+  summary?: string;
+  runAtMs: number;
+  durationMs?: number;
+  usage?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+    cache_read_tokens?: number;
+    cache_write_tokens?: number;
+  };
+  provider?: string;
+  model?: string;
+  sessionKey: string;
+  sessionId?: string;
+  delivered?: boolean;
+  deliveryStatus?: string;
+  deliveryError?: string;
+}
+
+export interface ListCronRunsOpts {
+  jobId?: string;
+  fromMs?: number;
+  toMs?: number;
+  status?: "ok" | "error" | "skipped";
+  limit?: number;
+}
+
+export async function listCronRuns(opts: ListCronRunsOpts = {}): Promise<CronRunEntry[]> {
+  const res = await getOpenClawClient().request("cron.runs", opts);
+  return ((res as unknown as { result?: { runs?: CronRunEntry[] } }).result?.runs ??
+    []) as CronRunEntry[];
+}
