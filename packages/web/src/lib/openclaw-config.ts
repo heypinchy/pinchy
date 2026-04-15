@@ -399,8 +399,14 @@ export async function regenerateOpenClawConfig() {
       // when its hint is smaller than the real limit — safer than the
       // opposite).
       models: [
+        {
+          id: "deepseek-v3.1:671b",
+          name: "deepseek-v3.1:671b",
+          contextWindow: 163840,
+          maxTokens: 8192,
+        },
         { id: "deepseek-v3.2", name: "deepseek-v3.2", contextWindow: 131072, maxTokens: 8192 },
-        { id: "devstral-2:123b", name: "devstral-2:123b", contextWindow: 131072, maxTokens: 8192 },
+        { id: "devstral-2:123b", name: "devstral-2:123b", contextWindow: 262144, maxTokens: 8192 },
         {
           id: "devstral-small-2:24b",
           name: "devstral-small-2:24b",
@@ -414,9 +420,18 @@ export async function regenerateOpenClawConfig() {
           maxTokens: 65536,
         },
         { id: "gemma4:31b", name: "gemma4:31b", contextWindow: 131072, maxTokens: 8192 },
+        { id: "glm-4.6", name: "glm-4.6", contextWindow: 131072, maxTokens: 8192 },
         { id: "glm-4.7", name: "glm-4.7", contextWindow: 131072, maxTokens: 8192 },
         { id: "glm-5", name: "glm-5", contextWindow: 131072, maxTokens: 8192 },
         { id: "glm-5.1", name: "glm-5.1", contextWindow: 131072, maxTokens: 8192 },
+        { id: "gpt-oss:20b", name: "gpt-oss:20b", contextWindow: 131072, maxTokens: 8192 },
+        { id: "gpt-oss:120b", name: "gpt-oss:120b", contextWindow: 131072, maxTokens: 8192 },
+        {
+          id: "kimi-k2-thinking",
+          name: "kimi-k2-thinking",
+          contextWindow: 262144,
+          maxTokens: 8192,
+        },
         { id: "kimi-k2.5", name: "kimi-k2.5", contextWindow: 262144, maxTokens: 8192 },
         { id: "minimax-m2", name: "minimax-m2", contextWindow: 131072, maxTokens: 8192 },
         { id: "minimax-m2.1", name: "minimax-m2.1", contextWindow: 131072, maxTokens: 8192 },
@@ -431,9 +446,15 @@ export async function regenerateOpenClawConfig() {
           maxTokens: 8192,
         },
         {
+          id: "mistral-large-3:675b",
+          name: "mistral-large-3:675b",
+          contextWindow: 131072,
+          maxTokens: 8192,
+        },
+        {
           id: "nemotron-3-nano:30b",
           name: "nemotron-3-nano:30b",
-          contextWindow: 131072,
+          contextWindow: 1048576,
           maxTokens: 8192,
         },
         {
@@ -449,9 +470,27 @@ export async function regenerateOpenClawConfig() {
           maxTokens: 8192,
         },
         {
+          id: "qwen3-coder:480b",
+          name: "qwen3-coder:480b",
+          contextWindow: 262144,
+          maxTokens: 8192,
+        },
+        {
           id: "qwen3-next:80b",
           name: "qwen3-next:80b",
           contextWindow: 131072,
+          maxTokens: 8192,
+        },
+        {
+          id: "qwen3-vl:235b",
+          name: "qwen3-vl:235b",
+          contextWindow: 262144,
+          maxTokens: 8192,
+        },
+        {
+          id: "qwen3-vl:235b-instruct",
+          name: "qwen3-vl:235b-instruct",
+          contextWindow: 262144,
           maxTokens: 8192,
         },
         { id: "qwen3.5:397b", name: "qwen3.5:397b", contextWindow: 262144, maxTokens: 8192 },

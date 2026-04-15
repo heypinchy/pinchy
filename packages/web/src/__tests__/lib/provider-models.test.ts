@@ -240,11 +240,12 @@ describe("fetchProviderModels", () => {
   });
 
   it("surfaces every tool-capable Ollama Cloud model and filters the rest", async () => {
-    // Allowlist mirrors the "tools" tag on ollama.com/search?c=tools&c=cloud.
-    // Real IDs as returned by https://ollama.com/v1/models today — no ":cloud"
-    // or "-cloud" suffixes. Non-tool-capable models (kimi-k2:1t, gemma3:27b,
-    // cogito-2.1, mistral-large-3, qwen3-coder:480b, qwen3-vl:*) are filtered
-    // out so agents never pick a model that can't execute tool calls.
+    // Allowlist is derived from each model's "tools" capability tag on its
+    // ollama.com/library/<name> page, not the aggregate search page — the
+    // search listing under c=tools&c=cloud is incomplete and omits several
+    // tool-capable cloud models (gpt-oss, qwen3-vl, mistral-large-3, etc.).
+    // Real IDs as returned by https://ollama.com/v1/models today — no
+    // ":cloud"/"-cloud" suffixes.
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "ollama_cloud_api_key") return "sk-ollama-test";
       return null;
@@ -255,14 +256,19 @@ describe("fetchProviderModels", () => {
         JSON.stringify({
           data: [
             // Tool-capable — should appear
+            { id: "deepseek-v3.1:671b" },
             { id: "deepseek-v3.2" },
             { id: "devstral-2:123b" },
             { id: "devstral-small-2:24b" },
             { id: "gemini-3-flash-preview" },
             { id: "gemma4:31b" },
+            { id: "glm-4.6" },
             { id: "glm-4.7" },
             { id: "glm-5" },
             { id: "glm-5.1" },
+            { id: "gpt-oss:20b" },
+            { id: "gpt-oss:120b" },
+            { id: "kimi-k2-thinking" },
             { id: "kimi-k2.5" },
             { id: "minimax-m2" },
             { id: "minimax-m2.1" },
@@ -271,19 +277,22 @@ describe("fetchProviderModels", () => {
             { id: "ministral-3:3b" },
             { id: "ministral-3:8b" },
             { id: "ministral-3:14b" },
+            { id: "mistral-large-3:675b" },
             { id: "nemotron-3-nano:30b" },
             { id: "nemotron-3-super" },
             { id: "qwen3-coder-next" },
+            { id: "qwen3-coder:480b" },
             { id: "qwen3-next:80b" },
+            { id: "qwen3-vl:235b" },
+            { id: "qwen3-vl:235b-instruct" },
             { id: "qwen3.5:397b" },
             { id: "rnj-1:8b" },
-            // Not tool-capable per ollama.com — must be filtered out
-            { id: "kimi-k2:1t" },
-            { id: "mistral-large-3:675b" },
-            { id: "gemma3:27b" },
+            // Not tool-capable per ollama.com library pages — must be filtered out
             { id: "cogito-2.1:671b" },
-            { id: "qwen3-coder:480b" },
-            { id: "qwen3-vl:235b" },
+            { id: "gemma3:27b" },
+            { id: "gemma3:12b" },
+            { id: "gemma3:4b" },
+            { id: "kimi-k2:1t" },
           ],
         }),
         { status: 200 }
@@ -298,14 +307,19 @@ describe("fetchProviderModels", () => {
     // Every tool-capable model surfaces
     expect(ids).toEqual(
       expect.arrayContaining([
+        "ollama-cloud/deepseek-v3.1:671b",
         "ollama-cloud/deepseek-v3.2",
         "ollama-cloud/devstral-2:123b",
         "ollama-cloud/devstral-small-2:24b",
         "ollama-cloud/gemini-3-flash-preview",
         "ollama-cloud/gemma4:31b",
+        "ollama-cloud/glm-4.6",
         "ollama-cloud/glm-4.7",
         "ollama-cloud/glm-5",
         "ollama-cloud/glm-5.1",
+        "ollama-cloud/gpt-oss:20b",
+        "ollama-cloud/gpt-oss:120b",
+        "ollama-cloud/kimi-k2-thinking",
         "ollama-cloud/kimi-k2.5",
         "ollama-cloud/minimax-m2",
         "ollama-cloud/minimax-m2.1",
@@ -314,21 +328,26 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/ministral-3:3b",
         "ollama-cloud/ministral-3:8b",
         "ollama-cloud/ministral-3:14b",
+        "ollama-cloud/mistral-large-3:675b",
         "ollama-cloud/nemotron-3-nano:30b",
         "ollama-cloud/nemotron-3-super",
         "ollama-cloud/qwen3-coder-next",
+        "ollama-cloud/qwen3-coder:480b",
         "ollama-cloud/qwen3-next:80b",
+        "ollama-cloud/qwen3-vl:235b",
+        "ollama-cloud/qwen3-vl:235b-instruct",
         "ollama-cloud/qwen3.5:397b",
         "ollama-cloud/rnj-1:8b",
       ])
     );
-    expect(ids).toHaveLength(22);
+    expect(ids).toHaveLength(31);
 
     // Non-tool-capable models are filtered out
     expect(ids).not.toContain("ollama-cloud/kimi-k2:1t");
-    expect(ids).not.toContain("ollama-cloud/mistral-large-3:675b");
     expect(ids).not.toContain("ollama-cloud/gemma3:27b");
-    expect(ids).not.toContain("ollama-cloud/qwen3-coder:480b");
+    expect(ids).not.toContain("ollama-cloud/gemma3:12b");
+    expect(ids).not.toContain("ollama-cloud/gemma3:4b");
+    expect(ids).not.toContain("ollama-cloud/cogito-2.1:671b");
   });
 
   it("uses fallback models when API returns non-ok status", async () => {
@@ -367,17 +386,22 @@ describe("fetchProviderModels", () => {
     const ollama = result.find((p) => p.id === "ollama-cloud");
     expect(ollama).toBeDefined();
     const ids = ollama!.models.map((m) => m.id);
-    expect(ids).toHaveLength(22);
+    expect(ids).toHaveLength(31);
     expect(ids).toEqual(
       expect.arrayContaining([
+        "ollama-cloud/deepseek-v3.1:671b",
         "ollama-cloud/deepseek-v3.2",
         "ollama-cloud/devstral-2:123b",
         "ollama-cloud/devstral-small-2:24b",
         "ollama-cloud/gemini-3-flash-preview",
         "ollama-cloud/gemma4:31b",
+        "ollama-cloud/glm-4.6",
         "ollama-cloud/glm-4.7",
         "ollama-cloud/glm-5",
         "ollama-cloud/glm-5.1",
+        "ollama-cloud/gpt-oss:20b",
+        "ollama-cloud/gpt-oss:120b",
+        "ollama-cloud/kimi-k2-thinking",
         "ollama-cloud/kimi-k2.5",
         "ollama-cloud/minimax-m2",
         "ollama-cloud/minimax-m2.1",
@@ -386,10 +410,14 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/ministral-3:3b",
         "ollama-cloud/ministral-3:8b",
         "ollama-cloud/ministral-3:14b",
+        "ollama-cloud/mistral-large-3:675b",
         "ollama-cloud/nemotron-3-nano:30b",
         "ollama-cloud/nemotron-3-super",
         "ollama-cloud/qwen3-coder-next",
+        "ollama-cloud/qwen3-coder:480b",
         "ollama-cloud/qwen3-next:80b",
+        "ollama-cloud/qwen3-vl:235b",
+        "ollama-cloud/qwen3-vl:235b-instruct",
         "ollama-cloud/qwen3.5:397b",
         "ollama-cloud/rnj-1:8b",
       ])
