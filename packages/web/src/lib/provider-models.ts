@@ -1,5 +1,6 @@
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
+import { TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS } from "@/lib/ollama-cloud-models";
 
 // Re-export vision utilities for backwards compatibility
 export { VISION_CAPABLE_PROVIDERS, isModelVisionCapable } from "@/lib/model-vision";
@@ -54,39 +55,10 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
     { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
   ],
-  "ollama-cloud": [
-    { id: "ollama-cloud/deepseek-v3.1:671b", name: "deepseek-v3.1:671b" },
-    { id: "ollama-cloud/deepseek-v3.2", name: "deepseek-v3.2" },
-    { id: "ollama-cloud/devstral-2:123b", name: "devstral-2:123b" },
-    { id: "ollama-cloud/devstral-small-2:24b", name: "devstral-small-2:24b" },
-    { id: "ollama-cloud/gemini-3-flash-preview", name: "gemini-3-flash-preview" },
-    { id: "ollama-cloud/gemma4:31b", name: "gemma4:31b" },
-    { id: "ollama-cloud/glm-4.6", name: "glm-4.6" },
-    { id: "ollama-cloud/glm-4.7", name: "glm-4.7" },
-    { id: "ollama-cloud/glm-5", name: "glm-5" },
-    { id: "ollama-cloud/glm-5.1", name: "glm-5.1" },
-    { id: "ollama-cloud/gpt-oss:20b", name: "gpt-oss:20b" },
-    { id: "ollama-cloud/gpt-oss:120b", name: "gpt-oss:120b" },
-    { id: "ollama-cloud/kimi-k2-thinking", name: "kimi-k2-thinking" },
-    { id: "ollama-cloud/kimi-k2.5", name: "kimi-k2.5" },
-    { id: "ollama-cloud/minimax-m2", name: "minimax-m2" },
-    { id: "ollama-cloud/minimax-m2.1", name: "minimax-m2.1" },
-    { id: "ollama-cloud/minimax-m2.5", name: "minimax-m2.5" },
-    { id: "ollama-cloud/minimax-m2.7", name: "minimax-m2.7" },
-    { id: "ollama-cloud/ministral-3:3b", name: "ministral-3:3b" },
-    { id: "ollama-cloud/ministral-3:8b", name: "ministral-3:8b" },
-    { id: "ollama-cloud/ministral-3:14b", name: "ministral-3:14b" },
-    { id: "ollama-cloud/mistral-large-3:675b", name: "mistral-large-3:675b" },
-    { id: "ollama-cloud/nemotron-3-nano:30b", name: "nemotron-3-nano:30b" },
-    { id: "ollama-cloud/nemotron-3-super", name: "nemotron-3-super" },
-    { id: "ollama-cloud/qwen3-coder-next", name: "qwen3-coder-next" },
-    { id: "ollama-cloud/qwen3-coder:480b", name: "qwen3-coder:480b" },
-    { id: "ollama-cloud/qwen3-next:80b", name: "qwen3-next:80b" },
-    { id: "ollama-cloud/qwen3-vl:235b", name: "qwen3-vl:235b" },
-    { id: "ollama-cloud/qwen3-vl:235b-instruct", name: "qwen3-vl:235b-instruct" },
-    { id: "ollama-cloud/qwen3.5:397b", name: "qwen3.5:397b" },
-    { id: "ollama-cloud/rnj-1:8b", name: "rnj-1:8b" },
-  ],
+  "ollama-cloud": TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS.map((id) => ({
+    id: `ollama-cloud/${id}`,
+    name: id,
+  })),
   "ollama-local": [],
 };
 
@@ -137,49 +109,13 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
     url: () => "https://ollama.com/v1/models",
     headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}` }),
     transform: (data) => {
-      // Derived from each model's "tools" capability tag on its
-      // ollama.com/library/<name> page. The aggregate search page
-      // (search?c=tools&c=cloud) is incomplete — it omits several tool-
-      // capable cloud models (gpt-oss, qwen3-vl, mistral-large-3, etc.) —
-      // so do NOT treat that search URL as the source of truth.
-      // Only tool-capable models are surfaced so agents can never pick a
-      // model that silently fails on tool calls. The /v1/models endpoint
-      // doesn't expose capability metadata, so this list has to be curated.
-      const ALLOWED_CLOUD_MODELS = [
-        "deepseek-v3.1:671b",
-        "deepseek-v3.2",
-        "devstral-2:123b",
-        "devstral-small-2:24b",
-        "gemini-3-flash-preview",
-        "gemma4:31b",
-        "glm-4.6",
-        "glm-4.7",
-        "glm-5",
-        "glm-5.1",
-        "gpt-oss:20b",
-        "gpt-oss:120b",
-        "kimi-k2-thinking",
-        "kimi-k2.5",
-        "minimax-m2",
-        "minimax-m2.1",
-        "minimax-m2.5",
-        "minimax-m2.7",
-        "ministral-3:3b",
-        "ministral-3:8b",
-        "ministral-3:14b",
-        "mistral-large-3:675b",
-        "nemotron-3-nano:30b",
-        "nemotron-3-super",
-        "qwen3-coder-next",
-        "qwen3-coder:480b",
-        "qwen3-next:80b",
-        "qwen3-vl:235b",
-        "qwen3-vl:235b-instruct",
-        "qwen3.5:397b",
-        "rnj-1:8b",
-      ];
+      // Filter by the curated tool-capable set — see
+      // @/lib/ollama-cloud-models.ts for the source list. The /v1/models
+      // endpoint doesn't expose capability metadata, so we can't infer
+      // tool-capability live; every new model has to be opted in there.
+      const allowed = new Set<string>(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS);
       return (data.data as { id: string }[])
-        .filter((m) => ALLOWED_CLOUD_MODELS.includes(m.id))
+        .filter((m) => allowed.has(m.id))
         .map((m) => ({
           id: `ollama-cloud/${m.id}`,
           name: m.id,

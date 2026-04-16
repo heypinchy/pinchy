@@ -665,6 +665,67 @@ describe("regenerateOpenClawConfig", () => {
     );
   });
 
+  it("writes the correct context window for each Ollama Cloud model", async () => {
+    // Context windows are taken from each model's ollama.com/library/<name>
+    // page. Pinchy must not exceed the real limit (Ollama would reject the
+    // request) and shouldn't under-report either (unnecessary compaction).
+    // Ollama's "NK" convention is N * 1024, which we preserve here.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const models = config.models.providers["ollama-cloud"].models as Array<{
+      id: string;
+      contextWindow: number;
+    }>;
+    const ctx = Object.fromEntries(models.map((m) => [m.id, m.contextWindow]));
+
+    // 32K — smallest in the list, was previously over-reported as 128K
+    expect(ctx["rnj-1:8b"]).toBe(32768);
+    // 128K
+    expect(ctx["gpt-oss:20b"]).toBe(131072);
+    expect(ctx["gpt-oss:120b"]).toBe(131072);
+    // 160K
+    expect(ctx["deepseek-v3.1:671b"]).toBe(163840);
+    expect(ctx["deepseek-v3.2"]).toBe(163840);
+    // 198K (GLM family, minimax-m2.5)
+    expect(ctx["glm-4.6"]).toBe(202752);
+    expect(ctx["glm-4.7"]).toBe(202752);
+    expect(ctx["glm-5"]).toBe(202752);
+    expect(ctx["glm-5.1"]).toBe(202752);
+    expect(ctx["minimax-m2.5"]).toBe(202752);
+    // 200K (other minimax variants)
+    expect(ctx["minimax-m2"]).toBe(204800);
+    expect(ctx["minimax-m2.1"]).toBe(204800);
+    expect(ctx["minimax-m2.7"]).toBe(204800);
+    // 256K — the most common class
+    expect(ctx["devstral-2:123b"]).toBe(262144);
+    expect(ctx["gemma4:31b"]).toBe(262144);
+    expect(ctx["kimi-k2-thinking"]).toBe(262144);
+    expect(ctx["kimi-k2.5"]).toBe(262144);
+    expect(ctx["ministral-3:3b"]).toBe(262144);
+    expect(ctx["ministral-3:8b"]).toBe(262144);
+    expect(ctx["ministral-3:14b"]).toBe(262144);
+    expect(ctx["mistral-large-3:675b"]).toBe(262144);
+    expect(ctx["nemotron-3-super"]).toBe(262144);
+    expect(ctx["qwen3-coder-next"]).toBe(262144);
+    expect(ctx["qwen3-coder:480b"]).toBe(262144);
+    expect(ctx["qwen3-next:80b"]).toBe(262144);
+    expect(ctx["qwen3-vl:235b"]).toBe(262144);
+    expect(ctx["qwen3-vl:235b-instruct"]).toBe(262144);
+    expect(ctx["qwen3.5:397b"]).toBe(262144);
+    // 384K
+    expect(ctx["devstral-small-2:24b"]).toBe(393216);
+    // 1M
+    expect(ctx["gemini-3-flash-preview"]).toBe(1048576);
+    expect(ctx["nemotron-3-nano:30b"]).toBe(1048576);
+  });
+
   it("should not include models block when neither ollama provider is configured", async () => {
     mockedGetSetting.mockResolvedValue(null);
 
