@@ -1,6 +1,13 @@
 name: Deploy Docs
 
 on:
+  # Fires automatically whenever the Release workflow publishes a new
+  # GitHub Release (softprops/action-gh-release in release.yml). Docs
+  # are kept in lockstep with releases, not main — edits to main between
+  # releases stay unpublished until the next tag. Manual runs stay
+  # available for one-off corrections (e.g. typo fix without a release).
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
