@@ -71,7 +71,7 @@ ENCRYPTION_KEY=
 # HMAC secret for audit trail signing (auto-generated if omitted)
 AUDIT_HMAC_SECRET=
 
-# Enterprise license key (optional — enables Groups, RBAC, agent access control)
+# Enterprise license key (optional — enables Groups, agent access control, basic RBAC)
 PINCHY_ENTERPRISE_KEY=
 ```
 
@@ -83,7 +83,7 @@ PINCHY_ENTERPRISE_KEY=
 
 **`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. Set explicitly if you need consistent signatures across deployments.
 
-**`PINCHY_ENTERPRISE_KEY`** — License key for enterprise features (Groups, RBAC, agent access control). Optional — can also be entered via **Settings → License** in the UI. See [Enterprise Setup](/guides/enterprise-setup/) for details.
+**`PINCHY_ENTERPRISE_KEY`** — License key for enterprise features (Groups, agent access control, basic RBAC — granular RBAC with custom roles is planned). Optional — can also be entered via **Settings → License** in the UI. See [Enterprise Setup](/guides/enterprise-setup/) for details.
 
 ### Data persistence
 

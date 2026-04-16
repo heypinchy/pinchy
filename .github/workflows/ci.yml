@@ -256,6 +256,80 @@ jobs:
           fi
           echo "Clean startup verified (restarts=$RESTART_COUNT, connection_errors=$ERROR_COUNT)"
 
+      # Regression guard for the openclaw-node deviceToken bug that broke the
+      # v0.4.1 demo. Pinchy had been running fine; an upgrade recreated both
+      # containers, gateway.auth.token got regenerated (race between Pinchy's
+      # regenerateOpenClawConfig and OpenClaw's ensure-gateway-token), and
+      # Pinchy could no longer authenticate because the old openclaw-node
+      # kept sending the bootstrap token instead of the per-device token
+      # issued at pairing. We force that rotation deterministically here by
+      # stripping gateway.auth.token from the persisted openclaw.json before
+      # the restart — OpenClaw will mint a fresh token on the way back up.
+      # Volumes are preserved, so paired.json (with the per-device token)
+      # survives — exactly the scenario that broke on demo.
+      - name: Force gateway.auth.token rotation + container recreate (regression guard)
+        run: |
+          echo "=== Stripping gateway.auth.token to force rotation on next start ==="
+          docker compose exec -T openclaw node -e '
+            const fs = require("fs");
+            const p = "/root/.openclaw/openclaw.json";
+            const c = JSON.parse(fs.readFileSync(p, "utf8"));
+            const before = c.gateway?.auth?.token?.slice(0,12) ?? "<none>";
+            if (c.gateway?.auth) delete c.gateway.auth.token;
+            fs.writeFileSync(p, JSON.stringify(c, null, 2));
+            console.log("stripped auth.token; was:", before);
+          '
+          echo "=== Stopping stack (volumes preserved) ==="
+          docker compose down
+          echo "=== Starting stack again ==="
+          docker compose up -d
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Wait for health after recreate
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7777/api/health; then
+              echo "Stack healthy after recreate"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Health check failed after container recreate"
+          docker compose ps
+          docker compose logs
+          exit 1
+
+      - name: Verify Pinchy reconnects to OpenClaw after recreate
+        run: |
+          # Watch the fresh logs (since this container start) for a successful
+          # connect. Any token_mismatch / token_missing means auth is broken.
+          for i in $(seq 1 60); do
+            RECENT=$(docker compose logs pinchy --since 120s 2>&1)
+            if echo "$RECENT" | grep -q "Connected to OpenClaw Gateway"; then
+              echo "Pinchy reconnected to OpenClaw (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy did not reconnect to OpenClaw within 120s after recreate"
+              echo "--- pinchy logs ---"
+              docker compose logs pinchy | tail -40
+              echo "--- openclaw logs ---"
+              docker compose logs openclaw | tail -40
+              exit 1
+            fi
+            sleep 2
+          done
+          # OpenClaw side must show no auth failures in this window.
+          OC_RECENT=$(docker compose logs openclaw --since 120s 2>&1)
+          if echo "$OC_RECENT" | grep -qE "reason=(token_mismatch|token_missing)"; then
+            echo "::error::OpenClaw rejected Pinchy's auth after recreate"
+            echo "$OC_RECENT" | grep -E "reason=" | tail -5
+            exit 1
+          fi
+          echo "Auth clean on reconnect — no token_mismatch / token_missing"
+
       - name: Tear down production
         if: always()
         run: docker compose down -v
