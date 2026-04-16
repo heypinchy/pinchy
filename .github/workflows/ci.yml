@@ -256,15 +256,29 @@ jobs:
           fi
           echo "Clean startup verified (restarts=$RESTART_COUNT, connection_errors=$ERROR_COUNT)"
 
-      # Regression guard for the openclaw-node deviceToken bug: this is exactly
-      # the scenario that broke the v0.4.1 demo — Pinchy had been running fine,
-      # an upgrade recreated both containers, and Pinchy could no longer
-      # authenticate to OpenClaw because it was still sending the gateway
-      # bootstrap token instead of the per-device token issued at pairing.
-      # The named volumes persist across down/up, so paired.json survives while
-      # both containers get fresh processes — same state as a real upgrade.
-      - name: Simulate container recreate (regression guard)
+      # Regression guard for the openclaw-node deviceToken bug that broke the
+      # v0.4.1 demo. Pinchy had been running fine; an upgrade recreated both
+      # containers, gateway.auth.token got regenerated (race between Pinchy's
+      # regenerateOpenClawConfig and OpenClaw's ensure-gateway-token), and
+      # Pinchy could no longer authenticate because the old openclaw-node
+      # kept sending the bootstrap token instead of the per-device token
+      # issued at pairing. We force that rotation deterministically here by
+      # stripping gateway.auth.token from the persisted openclaw.json before
+      # the restart — OpenClaw will mint a fresh token on the way back up.
+      # Volumes are preserved, so paired.json (with the per-device token)
+      # survives — exactly the scenario that broke on demo.
+      - name: Force gateway.auth.token rotation + container recreate (regression guard)
         run: |
+          echo "=== Stripping gateway.auth.token to force rotation on next start ==="
+          docker compose exec -T openclaw node -e '
+            const fs = require("fs");
+            const p = "/root/.openclaw/openclaw.json";
+            const c = JSON.parse(fs.readFileSync(p, "utf8"));
+            const before = c.gateway?.auth?.token?.slice(0,12) ?? "<none>";
+            if (c.gateway?.auth) delete c.gateway.auth.token;
+            fs.writeFileSync(p, JSON.stringify(c, null, 2));
+            console.log("stripped auth.token; was:", before);
+          '
           echo "=== Stopping stack (volumes preserved) ==="
           docker compose down
           echo "=== Starting stack again ==="
