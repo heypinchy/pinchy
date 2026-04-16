@@ -28,7 +28,9 @@ RUN chmod +x /start-openclaw.sh
 # this path came from a relative bind-mount in docker-compose.yml, which
 # only exists when the full repo is checked out next to compose.yml —
 # broken for every clean end-user install (cloud-init, curl-and-go).
-COPY docs/src/content/docs /pinchy-docs
+# TDD-RED-PROOF: temporarily disabled to verify end-user-install CI job
+# catches the regression. Will be restored in the next commit.
+# COPY docs/src/content/docs /pinchy-docs
 
 EXPOSE 18789
 

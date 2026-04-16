@@ -340,6 +340,93 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v
 
+  end-user-install:
+    name: End-user install simulation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build production images locally
+        run: |
+          docker build -t ghcr.io/heypinchy/pinchy:latest -f Dockerfile.pinchy .
+          docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
+
+      # Simulate what a real end-user deploy looks like: a fresh directory
+      # containing ONLY docker-compose.yml — no source tree, no .env file,
+      # no co-located repo. This catches bugs where compose.yml relies on
+      # relative bind-mounts (like the `./docs:/pinchy-docs` regression
+      # from PR #145) that silently resolve to empty directories in clean
+      # deploys while looking healthy in CI's normal repo-checkout runs.
+      - name: Prepare clean install directory
+        id: install-dir
+        run: |
+          INSTALL_DIR=$(mktemp -d)
+          cp docker-compose.yml "$INSTALL_DIR/"
+          echo "path=$INSTALL_DIR" >> "$GITHUB_OUTPUT"
+          echo "Clean install dir: $INSTALL_DIR"
+          ls -la "$INSTALL_DIR"
+
+      - name: Start stack from clean install dir
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: docker compose up -d
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Wait for health
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7777/api/health; then
+              echo "Stack healthy"
+              exit 0
+            fi
+            echo "Attempt $i: not ready yet"
+            if [ "$i" -eq 1 ] || [ $((i % 5)) -eq 0 ]; then
+              docker compose ps
+              docker compose logs --tail=20 pinchy
+            fi
+            sleep 2
+          done
+          echo "::error::Clean-install health check failed"
+          docker compose ps
+          docker compose logs
+          exit 1
+
+      - name: Assert all services running
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          RUNNING=$(docker compose ps --format json | jq -rs '[.[] | select(.State == "running")] | length')
+          echo "Running services: $RUNNING"
+          if [ "$RUNNING" -ne 3 ]; then
+            echo "::error::Expected 3 running services (pinchy, openclaw, db), got $RUNNING"
+            docker compose ps
+            exit 1
+          fi
+
+      - name: Assert pinchy-docs is populated in openclaw container
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          DOC_COUNT=$(docker compose exec -T openclaw sh -c 'find /pinchy-docs -name "*.mdx" 2>/dev/null | wc -l')
+          echo "/pinchy-docs .mdx files in running openclaw container: $DOC_COUNT"
+          if [ "$DOC_COUNT" -lt 10 ]; then
+            echo "::error::/pinchy-docs is empty or missing in a clean end-user install ($DOC_COUNT .mdx files). The openclaw image must ship docs — no relative bind-mount from compose.yml."
+            docker compose exec -T openclaw ls -la /pinchy-docs || true
+            exit 1
+          fi
+
+      - name: Tear down
+        if: always()
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: docker compose down -v
+
   odoo-e2e:
     name: Odoo E2E Tests
     runs-on: ubuntu-latest
