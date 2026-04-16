@@ -6,5 +6,9 @@ node_modules
 .env
 .env.*
 docs
+# …but ship the user-facing Markdown docs so Smithers' docs_list /
+# docs_read tools (pinchy-docs plugin in the openclaw image) can read
+# them without a repo-relative bind-mount.
+!docs/src/content/docs
 *.md
 !README.md
