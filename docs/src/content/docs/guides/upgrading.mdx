@@ -125,6 +125,55 @@ curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%
 docker compose pull && docker compose up -d
 ```
 
+<Aside type="note">
+  v0.4.0 switches from local Docker builds to pre-built images from GitHub
+  Container Registry (see "What's new" below). The `docker compose pull` above
+  fetches the new images automatically — no extra steps. The previously-built
+  local images stay on disk until you run `docker image prune` (safe to do after
+  the upgrade).
+</Aside>
+
+### If you deployed v0.3.0 without an SSH key
+
+A small number of early Hetzner deployments followed an older version of our guide that said "skip the SSH key." Those servers have no SSH access at all — the upgrade above can't run. Recover access like this:
+
+<Steps>
+
+1. **Reset the root password in Hetzner Cloud**
+
+   In the Hetzner Cloud Console, open your server's detail page. In the actions menu (top right, "···"), click **Reset Root Password**. Hetzner shows a one-time password — copy it.
+
+2. **Log in via the web console**
+
+   On the same detail page, click the `>_` icon to open a browser terminal. At the `login:` prompt enter `root`, then the password from step 1.
+
+3. **Install an SSH key**
+
+   If your GitHub account has an SSH key attached (Settings → SSH keys), this is the shortest path:
+
+   ```bash
+   ssh-import-id-gh YOUR_GITHUB_USERNAME
+   ```
+
+   It fetches every public key on your GitHub profile and writes them to `~/.ssh/authorized_keys` with the right permissions.
+
+   No GitHub keys? Create one locally (`ssh-keygen -t ed25519`) first and upload it to your GitHub account — the command above then works. Manual fallback: `mkdir -p ~/.ssh && curl -L github.com/YOUR_USER.keys >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`.
+
+4. **Verify SSH works from your local machine**
+
+   ```bash
+   ssh root@YOUR_SERVER_IP
+   ```
+
+   Once you're in via SSH, proceed with the standard upgrade above.
+
+</Steps>
+
+<Aside type="tip">
+  The [Deploy on Hetzner](/guides/deploy-hetzner/) guide now requires an SSH key
+  at server creation, so this recovery is a one-time fix for legacy deployments.
+</Aside>
+
 ### What's new in %%PINCHY_VERSION%%
 
 - **Telegram channels** — connect any agent to a Telegram bot. Users link their accounts with a pairing code and chat with agents from their phone. See [Set Up Telegram](/guides/telegram-setup/).

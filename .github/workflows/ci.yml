@@ -629,24 +629,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  audit:
+  # Vulnerability scan via osv-scanner — replaces the old `pnpm audit` step
+  # that broke when npm retired the /security/audits/quick endpoint (returns
+  # 410 unconditionally). osv-scanner reads pnpm-lock.yaml directly and
+  # queries the OSV database, so we don't need an npm install and don't
+  # depend on npm's legacy audit API.
+  vuln-scan:
     name: Security audit
+    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.5"
+    with:
+      scan-args: |-
+        --lockfile=./pnpm-lock.yaml
+        --lockfile=./docs/pnpm-lock.yaml
+    permissions:
+      actions: read
+      security-events: write
+      contents: read
+
+  repo-hygiene:
+    name: Repo hygiene
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Audit production dependencies
-        run: pnpm audit --prod
 
       - name: Check for local paths in codebase
         run: |
