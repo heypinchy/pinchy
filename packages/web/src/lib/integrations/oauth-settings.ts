@@ -1,4 +1,4 @@
-import { getSetting, setSetting } from "@/lib/settings";
+import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 
 export const GOOGLE_OAUTH_SETTINGS_KEY = "google_oauth_credentials";
 
@@ -38,4 +38,8 @@ export async function saveOAuthSettings(
   settings: OAuthSettings
 ): Promise<void> {
   await setSetting(SETTINGS_KEYS[provider], JSON.stringify(settings), true);
+}
+
+export async function deleteOAuthSettings(provider: "google"): Promise<void> {
+  await deleteSetting(SETTINGS_KEYS[provider]);
 }

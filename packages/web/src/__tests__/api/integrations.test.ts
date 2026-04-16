@@ -109,6 +109,12 @@ vi.mock("@/db/schema", () => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col: unknown, val: unknown) => ({ col, val })),
+  and: vi.fn((...args: unknown[]) => ({ and: args })),
+}));
+
+const mockDeleteOAuthSettings = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/integrations/oauth-settings", () => ({
+  deleteOAuthSettings: (...args: unknown[]) => mockDeleteOAuthSettings(...args),
 }));
 
 import { NextRequest } from "next/server";
@@ -564,6 +570,73 @@ describe("DELETE /api/integrations/[connectionId]", () => {
         }),
       })
     );
+  });
+
+  it("should clear OAuth settings when last Google connection is deleted", async () => {
+    const googleConnection = { ...mockConnection, id: "conn-google-1", type: "google" };
+    mockSelectFrom
+      .mockImplementationOnce(() => {
+        // First select: load connection by ID
+        const r = Promise.resolve([googleConnection]) as Promise<unknown[]> & {
+          where: ReturnType<typeof vi.fn>;
+        };
+        r.where = vi.fn().mockResolvedValue([googleConnection]);
+        return r;
+      })
+      .mockImplementationOnce(() => {
+        // Second select: count remaining Google connections → none left
+        const r = Promise.resolve([]) as Promise<unknown[]> & {
+          where: ReturnType<typeof vi.fn>;
+        };
+        r.where = vi.fn().mockResolvedValue([]);
+        return r;
+      });
+
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+    const response = await DELETE(
+      makeRequest("/api/integrations/conn-google-1", { method: "DELETE" }),
+      { params: Promise.resolve({ connectionId: "conn-google-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockDeleteOAuthSettings).toHaveBeenCalledWith("google");
+  });
+
+  it("should NOT clear OAuth settings when other Google connections still exist", async () => {
+    const googleConnection = { ...mockConnection, id: "conn-google-1", type: "google" };
+    const remainingGoogle = { ...mockConnection, id: "conn-google-2", type: "google" };
+    mockSelectFrom
+      .mockImplementationOnce(() => {
+        const r = Promise.resolve([googleConnection]) as Promise<unknown[]> & {
+          where: ReturnType<typeof vi.fn>;
+        };
+        r.where = vi.fn().mockResolvedValue([googleConnection]);
+        return r;
+      })
+      .mockImplementationOnce(() => {
+        // Still one Google connection remaining
+        const r = Promise.resolve([remainingGoogle]) as Promise<unknown[]> & {
+          where: ReturnType<typeof vi.fn>;
+        };
+        r.where = vi.fn().mockResolvedValue([remainingGoogle]);
+        return r;
+      });
+
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+    await DELETE(makeRequest("/api/integrations/conn-google-1", { method: "DELETE" }), {
+      params: Promise.resolve({ connectionId: "conn-google-1" }),
+    });
+
+    expect(mockDeleteOAuthSettings).not.toHaveBeenCalled();
+  });
+
+  it("should NOT clear OAuth settings when deleting a non-Google connection", async () => {
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+    await DELETE(makeRequest("/api/integrations/conn-1", { method: "DELETE" }), {
+      params: Promise.resolve({ connectionId: "conn-1" }),
+    });
+
+    expect(mockDeleteOAuthSettings).not.toHaveBeenCalled();
   });
 });
 
