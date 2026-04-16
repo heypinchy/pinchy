@@ -128,6 +128,22 @@ jobs:
           docker build -t ghcr.io/heypinchy/pinchy:latest -f Dockerfile.pinchy .
           docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
 
+      - name: Verify end-user install assets are self-contained in the image
+        run: |
+          # End-users deploy by curl-ing docker-compose.yml into /opt/pinchy/
+          # — no git clone, no source tree. Any relative bind-mount to repo
+          # paths silently resolves to an empty directory in that scenario,
+          # and Pinchy boots with (e.g.) an empty /pinchy-docs that Smithers
+          # can't read from. This check runs the image in isolation,
+          # bypassing compose and its bind-mounts, to prove the image ships
+          # everything it needs at runtime.
+          DOC_COUNT=$(docker run --rm --entrypoint sh ghcr.io/heypinchy/pinchy-openclaw:latest -c 'find /pinchy-docs -name "*.mdx" 2>/dev/null | wc -l')
+          echo "Docs baked into openclaw image: $DOC_COUNT .mdx files"
+          if [ "$DOC_COUNT" -lt 10 ]; then
+            echo "::error::/pinchy-docs is missing or empty in the openclaw image ($DOC_COUNT .mdx files found). The docker-compose.yml must not rely on relative bind-mounts to source paths — they break in clean end-user installs."
+            exit 1
+          fi
+
       - name: Start production stack
         run: docker compose up -d
         env:
