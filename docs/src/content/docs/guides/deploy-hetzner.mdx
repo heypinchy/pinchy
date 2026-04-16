@@ -62,17 +62,51 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
     Under **Image**, make sure **OS Images** is selected and pick **Ubuntu** (the latest LTS version).
 
-7.  **Skip SSH Keys (for now)**
+7.  **Add your SSH key (required)**
 
-    Scroll past the **Networking** and **SSH keys** sections — you can leave them at their defaults. You'll see a warning saying "No SSH key selected" — that's fine. The cloud-init script below handles everything automatically, and you won't need SSH access for the initial setup.
+    Scroll to the **SSH keys** section and attach an SSH key. This is required — without it you can't upgrade Pinchy later, hand out production secrets, or enable HTTPS. Hetzner never sets a root password on Ubuntu cloud images, so the SSH key is your only way in.
 
     <details>
 
-    <summary>When would I need SSH access?</summary>
+    <summary>I don't have an SSH key yet</summary>
 
-    SSH is needed later for production hardening (setting up HTTPS, pinning secrets, etc.). You can add an SSH key at any time via the Hetzner console, or use the **web console** (available on the server's detail page) for emergency access.
+    An SSH key is a pair of files that proves you are you when connecting to a server. It replaces passwords and is far more secure. Creating one takes under a minute.
+
+    **On your computer, open a terminal:**
+    - **Mac** — open **Terminal** (⌘+Space, type "Terminal")
+    - **Windows** — open **PowerShell** (Start menu)
+    - **Linux** — any terminal app
+
+    **Check if you already have a key:**
+
+    ```bash
+    cat ~/.ssh/id_ed25519.pub
+    ```
+
+    If you see a line starting with `ssh-ed25519`, you already have a key — copy the output and skip to the next step. If you get "No such file or directory", create one:
+
+    ```bash
+    ssh-keygen -t ed25519 -C "your-email@example.com"
+    ```
+
+    Press Enter three times to accept defaults (empty passphrase is fine for a throwaway demo; use one for production). Then display and copy the public key:
+
+    ```bash
+    cat ~/.ssh/id_ed25519.pub
+    ```
+
+    **Add it to Hetzner:**
+
+    Back in the Cloud Console, the SSH keys section has an **Add SSH Key** button. Paste the full public key (the `ssh-ed25519 AAAA…` line, including your email), give it a name, and save. It now appears in the list — tick its checkbox to attach it to this server.
 
     </details>
+
+    <Aside type="caution">
+      Skipping the SSH key leaves the server with no login path at all.
+      Hetzner's web console shows a `login:` prompt, but there's no password —
+      the only recovery is to use "Reset root password" in the Cloud Console
+      actions menu. Don't skip this step.
+    </Aside>
 
 8.  **Paste the setup script**
 

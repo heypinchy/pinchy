@@ -157,6 +157,15 @@ Everything else (version bumps in `package.json`, commit, tag, push) is handled 
 3. GitHub Actions creates the GitHub Release with auto-generated notes and deploys the docs automatically.
 4. Review the auto-generated release notes on GitHub — edit if needed to highlight breaking changes or upgrade steps.
 
+### First-time-only: publish container images
+
+GHCR creates packages as **private** on first push. If you ever add a new image name to `release.yml` (today we publish `pinchy` and `pinchy-openclaw`), do this **once** right after the first release that pushes it, otherwise `docker compose pull` on users' servers will fail with `unauthorized`:
+
+1. If the org's package-visibility policy disallows public packages, open [Org Settings → Packages](https://github.com/organizations/heypinchy/settings/packages) and allow "Public" under "Container image visibility."
+2. Visit the new package page at `https://github.com/heypinchy/pinchy/pkgs/container/<image-name>`, click **Package settings**, and under "Danger Zone" → **Change visibility** set it to **Public**.
+
+Once public, subsequent tag pushes (every release) inherit the visibility — no recurring step.
+
 ## Questions?
 
 Open a [Discussion](https://github.com/heypinchy/pinchy/discussions). We're happy to help.
