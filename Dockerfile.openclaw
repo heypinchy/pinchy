@@ -23,6 +23,13 @@ COPY config/ensure-gateway-token.js /ensure-gateway-token.js
 COPY config/start-openclaw.sh /start-openclaw.sh
 RUN chmod +x /start-openclaw.sh
 
+# Bake Pinchy's user-facing docs into the image so Smithers' docs_list /
+# docs_read tools (pinchy-docs plugin) work in every deploy. Previously
+# this path came from a relative bind-mount in docker-compose.yml, which
+# only exists when the full repo is checked out next to compose.yml —
+# broken for every clean end-user install (cloud-init, curl-and-go).
+COPY docs/src/content/docs /pinchy-docs
+
 EXPOSE 18789
 
 CMD ["/start-openclaw.sh"]

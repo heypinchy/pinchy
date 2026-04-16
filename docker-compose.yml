@@ -31,7 +31,6 @@ services:
       - openclaw-extensions:/root/.openclaw/extensions
       - pinchy-data:/data
       - pinchy-pdf-cache:/var/cache/pinchy-files
-      - ./docs/src/content/docs:/pinchy-docs:ro
     restart: unless-stopped
 
   db:
