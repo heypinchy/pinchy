@@ -7,6 +7,8 @@ on:
 permissions:
   contents: write
   packages: write
+  pages: write
+  id-token: write
 
 jobs:
   docker:
@@ -86,3 +88,15 @@ jobs:
           files: |
             docs/public/installing.html
             /tmp/cloud-init.yml
+
+  docs:
+    name: Deploy Docs
+    needs: release
+    # Releases created by GITHUB_TOKEN don't fire `release: published`
+    # events, so we call the docs workflow directly from here instead
+    # of relying on a trigger in docs.yml.
+    uses: ./.github/workflows/docs.yml
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
