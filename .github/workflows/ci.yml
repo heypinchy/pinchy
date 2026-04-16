@@ -636,17 +636,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
+      # npm retired the /security/audits/quick endpoint that `pnpm audit`
+      # still relies on — requests now return 410. osv-scanner reads the
+      # pnpm-lock.yaml directly and queries the OSV database, so it works
+      # without an `npm install` and without the dead npm endpoint. It
+      # scans every locked dep, not just prod — fine for us because we
+      # haven't shipped dev-only packages with known vulnerabilities.
+      - name: Audit dependencies
+        uses: google/osv-scanner-action@v2.3.5
         with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Audit production dependencies
-        run: pnpm audit --prod
+          scan-args: |-
+            --lockfile=./pnpm-lock.yaml
+            --lockfile=./docs/pnpm-lock.yaml
 
       - name: Check for local paths in codebase
         run: |
