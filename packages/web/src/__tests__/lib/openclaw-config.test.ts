@@ -726,6 +726,33 @@ describe("regenerateOpenClawConfig", () => {
     expect(ctx["nemotron-3-nano:30b"]).toBe(1048576);
   });
 
+  it("opts every Ollama Cloud model into streaming usage reporting", async () => {
+    // Ollama Cloud's /v1/chat/completions only emits a final `usage` chunk
+    // when the request carries `stream_options: { include_usage: true }`.
+    // OpenClaw adds that flag only when the model config opts in via
+    // `compat.supportsUsageInStreaming: true` — its own auto-detection
+    // treats configured non-OpenAI endpoints as "not supported" by default.
+    // Without this opt-in, sessions have no inputTokens/outputTokens, the
+    // poller records nothing, and Usage & Costs stays empty.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const models = config.models.providers["ollama-cloud"].models as Array<{
+      id: string;
+      compat?: { supportsUsageInStreaming?: boolean };
+    }>;
+
+    for (const model of models) {
+      expect(model.compat?.supportsUsageInStreaming).toBe(true);
+    }
+  });
+
   it("should not include models block when neither ollama provider is configured", async () => {
     mockedGetSetting.mockResolvedValue(null);
 

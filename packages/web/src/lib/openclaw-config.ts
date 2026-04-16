@@ -396,11 +396,20 @@ export async function regenerateOpenClawConfig() {
       api: "openai-completions",
       // Derived from TOOL_CAPABLE_OLLAMA_CLOUD_MODELS — see that file for
       // the source of each context window (ollama.com/library/<name>).
+      //
+      // `compat.supportsUsageInStreaming: true` is REQUIRED for usage
+      // tracking. OpenClaw's default compat detection treats any configured
+      // non-OpenAI endpoint as not supporting usage-in-streaming, so it
+      // never sends `stream_options: { include_usage: true }`. Ollama Cloud
+      // only emits the final usage chunk when that flag is present — without
+      // this opt-in, every session has zero tracked tokens and Usage & Costs
+      // stays empty. Verified live against https://ollama.com/v1/chat/completions.
       models: TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.map((m) => ({
         id: m.id,
         name: m.id,
         contextWindow: m.contextWindow,
         maxTokens: m.maxTokens,
+        compat: { supportsUsageInStreaming: true },
       })),
     };
   }
