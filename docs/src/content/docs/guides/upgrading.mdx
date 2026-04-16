@@ -116,12 +116,27 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.3.0 to %%PINCHY_VERSION%%
+## Upgrading from v0.4.0 to %%PINCHY_VERSION%%
 
 Standard upgrade — no breaking changes, no new required environment variables.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
+```
+
+### What's fixed in %%PINCHY_VERSION%%
+
+- **Smithers can read the platform docs again** — in every clean v0.4.0 install, Smithers' `docs_list` and `docs_read` tools pointed at an empty directory (relative bind-mount in `docker-compose.yml` resolved to nothing without a co-located source tree). The docs are now baked into the OpenClaw image itself, so this works in every deploy shape.
+- **Security patches** — transitive-dependency vulnerabilities flagged by osv-scanner were patched.
+- **Docs improvements** — the Hetzner deploy guide now requires an SSH key at server creation (the old "skip SSH keys" instruction left servers with no login path), and the upgrade guide gained a recovery path for legacy v0.3.0 deployments affected by that gap.
+
+## Upgrading from v0.3.0 to v0.4.0
+
+Standard upgrade — no breaking changes, no new required environment variables.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.0/docker-compose.yml -o docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -174,7 +189,7 @@ A small number of early Hetzner deployments followed an older version of our gui
   at server creation, so this recovery is a one-time fix for legacy deployments.
 </Aside>
 
-### What's new in %%PINCHY_VERSION%%
+### What's new in v0.4.0
 
 - **Telegram channels** — connect any agent to a Telegram bot. Users link their accounts with a pairing code and chat with agents from their phone. See [Set Up Telegram](/guides/telegram-setup/).
 - **Odoo ERP integration** — give agents scoped, permission-aware access to Odoo with 16 pre-built agent templates. See [Connect Odoo](/guides/connect-odoo/).
