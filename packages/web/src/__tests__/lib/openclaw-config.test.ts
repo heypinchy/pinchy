@@ -726,6 +726,108 @@ describe("regenerateOpenClawConfig", () => {
     expect(ctx["nemotron-3-nano:30b"]).toBe(1048576);
   });
 
+  it("writes reasoning, input (vision), and cost fields for every Ollama Cloud model", async () => {
+    // OpenClaw's ModelDefinitionConfig requires `reasoning`, `input`, and
+    // `cost` alongside contextWindow/maxTokens/compat. Without these the
+    // runtime falls back to silent defaults — vision-capable models get
+    // treated as text-only, reasoning models can't advertise thinking, and
+    // estimatedCostUsd stays 0 for every session. Verified per model on
+    // ollama.com/library/<name>.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const models = config.models.providers["ollama-cloud"].models as Array<{
+      id: string;
+      reasoning?: boolean;
+      input?: string[];
+      cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    }>;
+    const byId = Object.fromEntries(models.map((m) => [m.id, m]));
+
+    // Vision-capable cloud models per ollama.com/search?c=vision&c=cloud
+    const visionModels = [
+      "devstral-small-2:24b",
+      "gemini-3-flash-preview",
+      "gemma4:31b",
+      "kimi-k2.5",
+      "ministral-3:3b",
+      "ministral-3:8b",
+      "ministral-3:14b",
+      "mistral-large-3:675b",
+      "qwen3-vl:235b",
+      "qwen3-vl:235b-instruct",
+      "qwen3.5:397b",
+    ];
+    for (const id of visionModels) {
+      expect(byId[id].input).toEqual(["text", "image"]);
+    }
+    // Spot-check that text-only models stay text-only (gemma4 was the
+    // specific counter-example the user flagged during review)
+    expect(byId["rnj-1:8b"].input).toEqual(["text"]);
+    expect(byId["qwen3-coder:480b"].input).toEqual(["text"]);
+    expect(byId["deepseek-v3.2"].input).toEqual(["text"]);
+
+    // Reasoning-capable cloud models per ollama.com/search?c=thinking&c=cloud
+    const reasoningModels = [
+      "deepseek-v3.1:671b",
+      "deepseek-v3.2",
+      "gemini-3-flash-preview",
+      "gemma4:31b",
+      "glm-4.6",
+      "glm-4.7",
+      "glm-5",
+      "glm-5.1",
+      "gpt-oss:20b",
+      "gpt-oss:120b",
+      "kimi-k2-thinking",
+      "kimi-k2.5",
+      "minimax-m2",
+      "minimax-m2.5",
+      "minimax-m2.7",
+      "nemotron-3-nano:30b",
+      "nemotron-3-super",
+      "qwen3-next:80b",
+      "qwen3-vl:235b",
+      "qwen3-vl:235b-instruct",
+      "qwen3.5:397b",
+    ];
+    for (const id of reasoningModels) {
+      expect(byId[id].reasoning).toBe(true);
+    }
+    // Non-reasoning — qwen3-coder-next explicitly "Non-thinking mode only",
+    // ministral-3 / mistral-large-3 / devstral-* and rnj-1 not tagged,
+    // minimax-m2.1 absent from Ollama's thinking tag list.
+    const nonReasoningModels = [
+      "devstral-2:123b",
+      "devstral-small-2:24b",
+      "minimax-m2.1",
+      "ministral-3:3b",
+      "ministral-3:8b",
+      "ministral-3:14b",
+      "mistral-large-3:675b",
+      "qwen3-coder-next",
+      "qwen3-coder:480b",
+      "rnj-1:8b",
+    ];
+    for (const id of nonReasoningModels) {
+      expect(byId[id].reasoning).toBe(false);
+    }
+
+    // Ollama Cloud uses subscription pricing, not per-token billing (see
+    // ollama.com/pricing). Setting cost to zero is the honest value — a
+    // fabricated per-token rate would make the Usage dashboard lie about
+    // spend for users on the Free / Pro / Max plans.
+    for (const model of models) {
+      expect(model.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    }
+  });
+
   it("opts every Ollama Cloud model into streaming usage reporting", async () => {
     // Ollama Cloud's /v1/chat/completions only emits a final `usage` chunk
     // when the request carries `stream_options: { include_usage: true }`.

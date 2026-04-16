@@ -13,7 +13,7 @@ import {
 import { getSetting } from "@/lib/settings";
 import { decrypt } from "@/lib/encryption";
 import { computeDeniedGroups } from "@/lib/tool-registry";
-import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS } from "@/lib/ollama-cloud-models";
+import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
@@ -395,7 +395,7 @@ export async function regenerateOpenClawConfig() {
       apiKey: ollamaCloudKey,
       api: "openai-completions",
       // Derived from TOOL_CAPABLE_OLLAMA_CLOUD_MODELS — see that file for
-      // the source of each context window (ollama.com/library/<name>).
+      // the source of each capability (ollama.com/library/<name>).
       //
       // `compat.supportsUsageInStreaming: true` is REQUIRED for usage
       // tracking. OpenClaw's default compat detection treats any configured
@@ -404,11 +404,19 @@ export async function regenerateOpenClawConfig() {
       // only emits the final usage chunk when that flag is present — without
       // this opt-in, every session has zero tracked tokens and Usage & Costs
       // stays empty. Verified live against https://ollama.com/v1/chat/completions.
+      //
+      // `reasoning`, `input`, and `cost` are required fields of OpenClaw's
+      // ModelDefinitionConfig. Cost is zero because Ollama Cloud bills by
+      // subscription plan, not per token — a fabricated rate would mislead
+      // users reading the Usage dashboard.
       models: TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.map((m) => ({
         id: m.id,
         name: m.id,
         contextWindow: m.contextWindow,
         maxTokens: m.maxTokens,
+        reasoning: m.reasoning,
+        input: m.vision ? ["text", "image"] : ["text"],
+        cost: { ...OLLAMA_CLOUD_COST },
         compat: { supportsUsageInStreaming: true },
       })),
     };
