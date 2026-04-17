@@ -166,6 +166,49 @@ ollama pull qwen3.5:9b
   for tool-using agents.
 </Aside>
 
+## Models for agent templates
+
+Agent templates have model recommendations built in. When you create an agent from a template, Pinchy automatically picks a model that fits the template's needs — fast models for simple lookups, larger models for complex analysis.
+
+Some templates require specific capabilities that not all models support. If your installed models can't satisfy a template's requirements, the template card will appear greyed out with a tooltip explaining what's missing.
+
+### Vision templates
+
+The following templates analyze documents and images and require a model with vision support:
+
+- **Contract Analyzer** — reads and summarizes contract clauses
+- **Resume Screener** — extracts structured data from uploaded CVs
+- **Proposal Comparator** — compares multiple document uploads side by side
+- **Compliance Checker** — audits documents against policy requirements
+
+To enable these templates, pull a vision-capable model:
+
+```bash
+# Recommended: Qwen2.5-VL (strong vision + tool calling)
+ollama pull qwen2.5vl:7b
+
+# Alternative: LLaMA 3.2 Vision
+ollama pull llama3.2-vision:11b
+```
+
+Verify vision support before pulling:
+
+```bash
+ollama show qwen2.5vl:7b | grep vision
+```
+
+### Tier-to-size mapping
+
+Pinchy groups models into three tiers based on parameter count:
+
+| Tier      | Parameter range | Example             |
+| --------- | --------------- | ------------------- |
+| Fast      | < 10B           | `qwen3.5:9b`        |
+| Balanced  | 10B – 39B       | `qwen2.5-coder:32b` |
+| Reasoning | 40B+            | `qwen3.5:72b`       |
+
+Templates declare a preferred tier; Pinchy picks the best installed match. If no model at the preferred tier is installed, it falls back to whatever is available.
+
 ## Performance Expectations
 
 Local models are slower than cloud APIs — sometimes by an order of magnitude.
