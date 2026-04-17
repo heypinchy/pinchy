@@ -1,95 +1,211 @@
 ---
-title: Connect Email
+title: Connect Email (Gmail)
 description: Connect a Google account to Pinchy so agents can read, search, draft, and send emails via Gmail.
 ---
 
-This guide walks you through connecting a Google account to Pinchy so your agents can work with email — reading, searching, drafting, and sending messages via the Gmail API.
+import { Aside, Steps } from "@astrojs/starlight/components";
+
+This guide walks you through connecting a Gmail account to Pinchy so your agents can work with email — reading, searching, drafting, and sending messages.
+
+The setup has two parts: creating an OAuth app in Google Cloud (one-time), then connecting the account in Pinchy.
 
 ## Prerequisites
 
 - Pinchy is running with HTTPS enabled (see [Lock Pinchy to a Domain](/guides/domain-lock/))
 - You're logged in as an admin in Pinchy
-- You have access to a [Google Cloud Console](https://console.cloud.google.com/) project
+- A [Google Cloud Console](https://console.cloud.google.com/) account (free — any Google account works)
 
-:::caution
-Google OAuth requires HTTPS. The Add Integration wizard shows a warning and blocks the Google flow when Pinchy runs without HTTPS.
-:::
+<Aside type="caution">
+  Google OAuth requires HTTPS. The Add Integration wizard shows a warning and
+  blocks the Google flow when Pinchy runs without HTTPS.
+</Aside>
 
-## 1. Create a Google Cloud OAuth app
+## Part 1: Create a Google Cloud OAuth app
 
-Before Pinchy can connect to Google, you need to create an OAuth 2.0 application in Google Cloud Console. This is a one-time setup.
+Google requires you to register your Pinchy instance as an OAuth application before users can sign in with Google. This is a one-time step per Pinchy installation.
 
-1. Go to [Google Cloud Console](https://console.cloud.google.com/)
-2. Create a new project or select an existing one
-3. Navigate to **APIs & Services → OAuth consent screen** (Google may redirect you to **Auth Platform → Overview** — this is the same page under a new name)
-4. Configure the consent screen:
-   - **User type** — choose "Internal" (if using Google Workspace) or "External"
-   - Fill in the required fields (app name, support email)
-   - Add these scopes:
-     - `https://www.googleapis.com/auth/gmail.readonly`
-     - `https://www.googleapis.com/auth/gmail.compose`
-     - `https://www.googleapis.com/auth/userinfo.email`
-5. Navigate to **APIs & Services → Credentials**
-6. Click **Create Credentials → OAuth client ID**
-7. Select **Web application** as the application type
-8. Under **Authorized redirect URIs**, add:
+### 1.1 Open Google Cloud Console and select a project
+
+1. Go to [console.cloud.google.com](https://console.cloud.google.com/)
+2. In the top bar, click the project name (or **Select a project** if none is selected)
+3. Create a new project (e.g. "Pinchy") or select an existing one
+
+<Aside type="tip">
+  Create a dedicated project for Pinchy rather than reusing an existing one — it
+  keeps credentials organized and makes it easy to revoke access later.
+</Aside>
+
+### 1.2 Configure the Auth Platform
+
+Google Cloud uses the **Auth Platform** to manage OAuth consent screens and app identity. You need to set this up before creating credentials.
+
+1. In the left sidebar, navigate to **APIs & Services → OAuth consent screen**
+
+   Google will redirect you to **Auth Platform → Overview**. If you see the message _"Google Auth Platform noch nicht konfiguriert"_ (not yet configured), that's expected — click **Erste Schritte** (Get Started).
+
+2. Fill in the **App information**:
+   - **App name** — enter `Pinchy` (this name appears on the Google sign-in screen)
+   - **User support email** — select your email address
+
+3. Choose the **Audience** (who can use this OAuth app):
+
+   | Audience     | When to choose                                   | Notes                                                                                  |
+   | ------------ | ------------------------------------------------ | -------------------------------------------------------------------------------------- |
+   | **Internal** | Your company uses **Google Workspace** (G Suite) | Only people in your organization can connect — no Google review required. Recommended. |
+   | **External** | Personal Gmail accounts, or no Google Workspace  | Anyone with a Google account can connect. Read the note below before choosing this.    |
+
+   <Aside type="caution">
+     **External + Testing mode**: Google automatically puts new External apps
+     into "Testing" mode. In this mode, **refresh tokens expire after 7 days** —
+     which means the agent loses access to email every week and needs to be
+     reconnected manually. To fix this, you must either switch to "Internal" (if
+     you have Google Workspace) or [publish your
+     app](#publishing-an-external-app) after completing the setup.
+   </Aside>
+
+4. Enter a **Contact email** — Google uses this to notify you about changes to your project
+
+5. Check the box to agree to the **Google API Services User Data Policy** and click **Continue** (or **Create**)
+
+### 1.3 Add Gmail scopes
+
+Scopes define what data your OAuth app can access. You need to add the Gmail scopes that match the permissions you want to grant agents.
+
+1. In the Auth Platform sidebar, click **Data Access** (or navigate to the scopes section)
+2. Click **Add or remove scopes**
+3. In the filter, search for `gmail` and add these scopes:
+
+   | Scope                                            | Required for                   |
+   | ------------------------------------------------ | ------------------------------ |
+   | `https://www.googleapis.com/auth/gmail.readonly` | Read and search emails         |
+   | `https://www.googleapis.com/auth/gmail.compose`  | Create drafts and send emails  |
+   | `https://www.googleapis.com/auth/userinfo.email` | Identify the connected account |
+
+4. Click **Update** and then **Save**
+
+<Aside type="tip">
+  If you only want agents to read email (no sending), you can skip the
+  `gmail.compose` scope. You can always add it later if needed.
+</Aside>
+
+### 1.4 Add test users (External apps only)
+
+If you chose **External** audience, Google restricts access to explicitly approved test users while your app is in Testing mode.
+
+1. In the Auth Platform sidebar, click **Audience**
+2. Under **Test users**, click **Add users**
+3. Enter the Gmail address(es) of the accounts you want to connect to Pinchy
+4. Click **Save**
+
+<Aside type="note">
+  Test users see a warning screen ("This app isn't verified") before signing in.
+  This is expected for apps in Testing mode — users can click through it. Once
+  you publish the app, this warning disappears.
+</Aside>
+
+### 1.5 Create OAuth credentials
+
+Now you create the actual Client ID and Client Secret that you'll enter in Pinchy.
+
+1. In the left sidebar, navigate to **APIs & Services → Credentials**
+   (or in the new interface: **Auth Platform → Clients**)
+2. Click **Create Credentials → OAuth client ID**
+3. Under **Application type**, select **Web application**
+4. Give it a name (e.g. "Pinchy")
+5. Under **Authorized redirect URIs**, click **Add URI** and enter:
+
    ```
    https://your-pinchy-domain.com/api/integrations/oauth/callback
    ```
+
    Replace `your-pinchy-domain.com` with your actual Pinchy URL.
-9. Click **Create** and copy the **Client ID** and **Client Secret**
 
-:::note
-If you chose "External" user type, your OAuth app starts in "Testing" mode. Only users you add as test users can authorize. To remove this restriction, submit the app for Google's verification process.
-:::
+   <Aside type="tip">
+     You can find the exact redirect URI in Pinchy: go to **Settings →
+     Integrations → Add Integration → Google** — it's shown in step 1 of the
+     wizard with a copy button.
+   </Aside>
 
-## 2. Add a Google connection in Pinchy
+6. Click **Create**
 
-1. Go to **Settings → Integrations**
-2. Click **Add Integration** and select **Google**
-3. If this is your first Google connection, Pinchy asks you to configure OAuth credentials:
-   - Copy the **Redirect URI** shown in the wizard and add it to your Google Cloud app (under **Authorized redirect URIs**)
-   - Enter the **Client ID** and **Client Secret** from step 1
-   - Click **Save & Continue**
-4. Click **Connect Google Account**
-5. Google's consent screen opens — sign in with the Google account whose email the agent should access
-6. Grant the requested permissions
-7. You're redirected back to Pinchy — the connection appears in the integration list, showing the connected email address
+A dialog appears with your **Client ID** and **Client Secret**. **Copy both values now** — the Client Secret is only shown once. (If you lose it, you can create a new one in the credentials list.)
 
-The OAuth credentials are encrypted at rest and never leave your server. For subsequent Google connections, step 3 is skipped — you go straight to "Connect Google Account".
+---
 
-:::tip
-Use a shared mailbox or functional account (e.g. `invoices@yourcompany.com`) rather than a personal account. The agent will have access to all email in this account.
-:::
+## Part 2: Connect the account in Pinchy
 
-:::note
-To update your OAuth credentials later (e.g. for secret rotation), open the dropdown menu on any Google connection in the integrations list and select **Edit OAuth Credentials**. Changes apply to all Google connections.
-:::
+<Steps>
 
-## 3. Grant agent email permissions
+1.  **Open the Add Integration wizard**
 
-A connection alone doesn't give any agent access. You must explicitly grant it.
+    In Pinchy, go to **Settings → Integrations** and click **Add Integration**, then select **Google**.
 
-1. Open the agent you want to connect to email
-2. Click the gear icon to open **Agent Settings**
-3. Select the **Permissions** tab
-4. In the **Email** section:
-   - **Connection** — select the Google account you connected
-   - **Permissions** — check the operations this agent is allowed to perform:
+2.  **Enter your OAuth credentials**
 
-| Permission        | What it enables                            |
-| ----------------- | ------------------------------------------ |
-| **Read messages** | List, read, and search emails              |
-| **Create drafts** | Create draft emails (saved but not sent)   |
-| **Send messages** | Send emails immediately — cannot be undone |
+    Paste the **Client ID** and **Client Secret** from Part 1 and click **Save & Continue**.
 
-5. Click **Save**
+    Pinchy encrypts these credentials and stores them on your server — they never leave your infrastructure.
 
-:::caution
-**Send messages** is a powerful permission. The agent can send email from the connected account without human review. Consider using **Create drafts** instead and having a human review and send drafts manually.
-:::
+3.  **Connect a Google account**
 
-## 4. Test it
+    Click **Connect Google Account**. Google's sign-in screen opens — sign in with the Gmail account whose email the agent should access.
+
+    After signing in, grant the requested permissions. If your app is in Testing mode, you'll see a warning screen first — click **Continue** to proceed.
+
+4.  **Verify the connection**
+
+    You're redirected back to Pinchy. The integration list now shows the connected Gmail address with a green "Connected" status.
+
+</Steps>
+
+For subsequent Google connections (a second Gmail account), the OAuth credentials step is skipped — you go straight to "Connect Google Account".
+
+---
+
+## Part 3: Grant agent email permissions
+
+A connection alone doesn't give any agent access. You must explicitly grant permissions per agent.
+
+<Steps>
+
+1.  Open the agent you want to connect to email
+2.  Click the gear icon to open **Agent Settings**
+3.  Select the **Permissions** tab
+4.  In the **Email** section, select the connected account and check the operations this agent may perform:
+
+    | Permission        | What it enables                            |
+    | ----------------- | ------------------------------------------ |
+    | **Read messages** | List, read, and search emails              |
+    | **Create drafts** | Create draft emails (saved but not sent)   |
+    | **Send messages** | Send emails immediately — cannot be undone |
+
+5.  Click **Save**
+
+</Steps>
+
+<Aside type="caution">
+  **Send messages** is a powerful permission. The agent can send email from the
+  connected account without human review. Consider using **Create drafts**
+  instead — a human reviews and sends drafts manually.
+</Aside>
+
+---
+
+## Publishing an External app
+
+If you chose External audience and want to remove the 7-day token expiry and the "This app isn't verified" warning, you can publish your app.
+
+For apps that only use Gmail scopes, Google may require a security review before publishing. This process can take several weeks. An easier alternative for most Pinchy users is to switch to **Internal** audience (requires Google Workspace) — no review needed.
+
+To publish an External app:
+
+1. Go to **Auth Platform → Audience**
+2. Under **Publishing status**, click **Publish app**
+3. Follow the prompts — if your app uses restricted scopes (Gmail is restricted), Google will require a verification process
+
+---
+
+## Test it
 
 Open the agent's chat and try a few queries:
 
@@ -97,6 +213,8 @@ Open the agent's chat and try a few queries:
 - "Search for emails from max@example.com about invoices"
 - "Draft a reply to the last email saying we'll process it today"
 - "How many unread emails do I have?"
+
+---
 
 ## Available tools
 
@@ -110,11 +228,15 @@ When email permissions are granted, the agent gets access to these tools:
 | `email_draft`  | Draft               | Create a draft email. Can also create reply drafts with `replyTo`.                                    |
 | `email_send`   | Send                | Send an email immediately. Can also send replies with `replyTo`.                                      |
 
+---
+
 ## Token refresh
 
-Google access tokens expire after about one hour. Pinchy automatically refreshes expired tokens in the background — no action required. If a refresh fails (e.g. the Google account revoked access), the agent falls back to the last known token and logs an error.
+Google access tokens expire after about one hour. Pinchy automatically refreshes expired tokens in the background — no action required.
 
-To fix a revoked connection: remove the connection in **Settings → Integrations** and reconnect the Google account.
+If a refresh fails (e.g. the Google account revoked access, or the refresh token expired after 7 days in Testing mode), remove the connection in **Settings → Integrations** and reconnect the Google account.
+
+---
 
 ## What's next
 
