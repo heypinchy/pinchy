@@ -6,7 +6,7 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 
 export async function POST(request: NextRequest) {
   try {
-    const { name, email, password } = await request.json();
+    const { name, email, password, browserTimezone } = await request.json();
 
     if (!name || typeof name !== "string" || !name.trim()) {
       return NextResponse.json({ error: "Name is required" }, { status: 400 });
@@ -21,7 +21,12 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: passwordError }, { status: 400 });
     }
 
-    const user = await createAdmin(name.trim(), email, password);
+    const user = await createAdmin(
+      name.trim(),
+      email,
+      password,
+      typeof browserTimezone === "string" ? browserTimezone : undefined
+    );
     // Write OpenClaw config with the newly created Smithers agent so OpenClaw
     // knows about it when the container restarts or the file watcher picks it up.
     await regenerateOpenClawConfig().catch((err) => {

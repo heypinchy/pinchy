@@ -197,6 +197,13 @@
       "when": 1775884800000,
       "tag": "0026_ollama_cloud_rename",
       "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1776241633414,
+      "tag": "0028_parallel_rocket_racer",
+      "breakpoints": true
     }
   ]
 }
