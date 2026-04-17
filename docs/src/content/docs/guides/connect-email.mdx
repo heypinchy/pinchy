@@ -108,19 +108,7 @@ Now you create the actual Client ID and Client Secret that you'll enter in Pinch
    (alternatively: **APIs & Services → Credentials → Create Credentials → OAuth client ID**)
 2. Under **Application type**, select **Web application**
 3. Give it a name (e.g. "Pinchy")
-4. Under **Authorized redirect URIs**, click **Add URI** and enter:
-
-   ```
-   https://your-pinchy-domain.com/api/integrations/oauth/callback
-   ```
-
-   Replace `your-pinchy-domain.com` with your actual Pinchy URL.
-
-   <Aside type="tip">
-     You can find the exact redirect URI in Pinchy: go to **Settings →
-     Integrations → Add Integration → Google** — it's shown in step 1 of the
-     wizard with a copy button.
-   </Aside>
+4. Under **Authorized redirect URIs**, click **Add URI** and paste the redirect URI shown in the Pinchy wizard (Settings → Integrations → Add Integration → Google, step 1)
 
 5. Click **Create**
 
