@@ -140,6 +140,12 @@ Before running the release script, complete these manual steps:
 - [ ] Dependencies up to date (`pnpm outdated` — no critical/security updates pending)
 - [ ] If upgrading OpenClaw: version updated in `Dockerfile.openclaw`
 
+**Model resolver**
+- [ ] Every non-`custom` template in `AGENT_TEMPLATES` has a `modelHint` with a valid `tier` — run `pnpm test src/lib/__tests__/agent-templates.test.ts` and confirm green
+- [ ] Model IDs in `src/lib/model-resolver/providers/` still match live provider offerings — spot-check Anthropic/OpenAI/Google changelogs for deprecated model IDs
+- [ ] If new Ollama families gained popularity since last release, update `src/lib/model-resolver/families.ts` and `ollama-cloud.ts`
+- [ ] If a new LLM provider was added, a resolver file exists under `src/lib/model-resolver/providers/<provider>.ts` with tests
+
 **Documentation**
 - [ ] `docs/src/content/docs/guides/upgrading.mdx` — add a section for the new version (breaking changes, new env vars, migration notes)
 - [ ] `packages/web/src/lib/smithers-soul.ts` — update if user-facing features changed
