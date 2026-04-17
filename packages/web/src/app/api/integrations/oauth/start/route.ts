@@ -49,7 +49,11 @@ export async function GET(request: Request) {
   const state = randomBytes(32).toString("hex");
 
   const requestUrl = new URL(request.url);
-  const redirectUri = `${requestUrl.origin}/api/integrations/oauth/callback`;
+  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0].trim();
+  const forwardedHost = request.headers.get("x-forwarded-host") || request.headers.get("host");
+  const origin =
+    forwardedProto && forwardedHost ? `${forwardedProto}://${forwardedHost}` : requestUrl.origin;
+  const redirectUri = `${origin}/api/integrations/oauth/callback`;
 
   const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
   authUrl.searchParams.set("client_id", settings.clientId);

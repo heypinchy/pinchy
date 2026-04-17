@@ -17,7 +17,10 @@ function errorRedirect(origin: string, error: string) {
 
 export async function GET(request: Request) {
   const requestUrl = new URL(request.url);
-  const origin = requestUrl.origin;
+  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0].trim();
+  const forwardedHost = request.headers.get("x-forwarded-host") || request.headers.get("host");
+  const origin =
+    forwardedProto && forwardedHost ? `${forwardedProto}://${forwardedHost}` : requestUrl.origin;
 
   // 1. Validate admin session
   const session = await getSession({ headers: await headers() });

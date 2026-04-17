@@ -128,4 +128,28 @@ describe("GET /api/integrations/oauth/start", () => {
     expect(location).toContain("accounts.google.com");
     expect(location).toContain("client_id=client-id-123");
   });
+
+  it("uses X-Forwarded-Proto and X-Forwarded-Host for redirect_uri when behind a reverse proxy", async () => {
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    const req = new NextRequest("http://localhost:7777/api/integrations/oauth/start", {
+      headers: {
+        "x-forwarded-proto": "https",
+        "x-forwarded-host": "local.heypinchy.com:8443",
+      },
+    });
+    const res = await GET(req);
+    expect(res.status).toBe(302);
+    const location = res.headers.get("location") ?? "";
+    const redirectUri = new URL(location).searchParams.get("redirect_uri");
+    expect(redirectUri).toBe("https://local.heypinchy.com:8443/api/integrations/oauth/callback");
+  });
+
+  it("falls back to request origin when no forwarded headers present", async () => {
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await GET(makeRequest("https://pinchy.example.com/api/integrations/oauth/start"));
+    expect(res.status).toBe(302);
+    const location = res.headers.get("location") ?? "";
+    const redirectUri = new URL(location).searchParams.get("redirect_uri");
+    expect(redirectUri).toBe("https://pinchy.example.com/api/integrations/oauth/callback");
+  });
 });
