@@ -471,6 +471,20 @@ jobs:
             exit 1
           fi
 
+      - name: Assert pinchy binds to 127.0.0.1 by default (not 0.0.0.0)
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          # Docker bypasses UFW — only 127.0.0.1 binding prevents external access.
+          # This assertion catches any regression that re-exposes port 7777 globally.
+          BINDING=$(docker inspect \
+            --format '{{range $p, $c := .NetworkSettings.Ports}}{{range $c}}{{.HostIp}}{{end}}{{end}}' \
+            "$(docker compose ps -q pinchy)")
+          echo "Pinchy port binding host IP: $BINDING"
+          if [ "$BINDING" != "127.0.0.1" ]; then
+            echo "::error::Pinchy must bind to 127.0.0.1 by default (got '$BINDING'). Docker bypasses UFW, so 0.0.0.0 exposes the port to the internet regardless of firewall rules."
+            exit 1
+          fi
+
       - name: Assert pinchy-docs is populated in openclaw container
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: |
