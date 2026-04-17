@@ -2,7 +2,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "
 import { dirname } from "path";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
-import { eq } from "drizzle-orm";
+import { eq, ne } from "drizzle-orm";
 import { db } from "@/db";
 import {
   agents,
@@ -277,13 +277,15 @@ export async function regenerateOpenClawConfig() {
   // Note: pinchy-files is only included when agents use it (via pluginConfigs loop above).
 
   // Collect Odoo integration configs for agents with integration permissions
+  // Only include active connections — pending ones have no usable credentials
   const allPermissions = await db
     .select()
     .from(agentConnectionPermissions)
     .innerJoin(
       integrationConnections,
       eq(agentConnectionPermissions.connectionId, integrationConnections.id)
-    );
+    )
+    .where(ne(integrationConnections.status, "pending"));
 
   const odooAgentConfigs: Record<string, Record<string, unknown>> = {};
   const permsByAgent = new Map<
@@ -379,6 +381,60 @@ export async function regenerateOpenClawConfig() {
       enabled: true,
       config: {
         agents: odooAgentConfigs,
+      },
+    };
+  }
+
+  // Collect email integration configs for agents with email provider permissions.
+  // Unlike Odoo, email config does NOT include decrypted credentials — only
+  // connectionId + permissions. The plugin fetches credentials at runtime via
+  // the internal API (API-callback pattern).
+  const EMAIL_PROVIDER_TYPES = new Set(["google", "microsoft", "imap"]);
+  const emailPermsByAgent = new Map<string, { connectionId: string; ops: Map<string, string[]> }>();
+
+  for (const row of allPermissions) {
+    const perm = row.agent_connection_permissions;
+    const conn = row.integration_connections;
+
+    if (!EMAIL_PROVIDER_TYPES.has(conn.type)) continue;
+
+    if (!emailPermsByAgent.has(perm.agentId)) {
+      emailPermsByAgent.set(perm.agentId, {
+        connectionId: perm.connectionId,
+        ops: new Map(),
+      });
+    }
+    const agentPerms = emailPermsByAgent.get(perm.agentId)!;
+
+    if (!agentPerms.ops.has(perm.model)) {
+      agentPerms.ops.set(perm.model, []);
+    }
+    agentPerms.ops.get(perm.model)!.push(perm.operation);
+  }
+
+  const emailAgentConfigs: Record<
+    string,
+    { connectionId: string; permissions: Record<string, string[]> }
+  > = {};
+  for (const [agentId, data] of emailPermsByAgent) {
+    const permissions: Record<string, string[]> = {};
+    for (const [model, ops] of data.ops) {
+      permissions[model] = ops;
+    }
+    emailAgentConfigs[agentId] = {
+      connectionId: data.connectionId,
+      permissions,
+    };
+  }
+
+  if (Object.keys(emailAgentConfigs).length > 0) {
+    entries["pinchy-email"] = {
+      enabled: true,
+      config: {
+        apiBaseUrl:
+          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        gatewayToken,
+        agents: emailAgentConfigs,
       },
     };
   }

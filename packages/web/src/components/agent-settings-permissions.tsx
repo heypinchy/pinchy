@@ -9,6 +9,7 @@ import { DirectoryPicker } from "@/components/directory-picker";
 import { getToolsByCategory, getOdooToolsForAccessLevel } from "@/lib/tool-registry";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { OdooPermissionSection } from "@/components/odoo-permission-section";
+import { EmailPermissionSection } from "@/components/email-permission-section";
 
 interface PermissionsValues {
   allowedTools: string[];
@@ -50,6 +51,11 @@ export function AgentSettingsPermissions({
     permissions: Array<{ model: string; operation: string }>;
   } | null>(null);
   const [odooIsDirty, setOdooIsDirty] = useState(false);
+  const [emailIntegration, setEmailIntegration] = useState<{
+    connectionId: string;
+    permissions: Array<{ model: string; operation: string }>;
+  } | null>(null);
+  const [emailIsDirty, setEmailIsDirty] = useState(false);
 
   const initialKbToolsRef = useRef(initialKbTools);
   const initialAllowedPaths = useRef(agent.pluginConfig?.allowed_paths ?? []);
@@ -100,16 +106,27 @@ export function AgentSettingsPermissions({
         JSON.stringify([...initialKbToolsRef.current].sort()) ||
       JSON.stringify([...allowedPaths].sort()) !==
         JSON.stringify([...initialAllowedPaths.current].sort());
-    const isDirty = kbDirty || odooIsDirty;
+    const isDirty = kbDirty || odooIsDirty || emailIsDirty;
+    // Use whichever integration is configured (odoo or email)
+    const activeIntegration = odooIntegration ?? emailIntegration;
     onChange(
       {
         allowedTools: allAllowedTools,
         allowedPaths,
-        integrations: odooIntegration,
+        integrations: activeIntegration,
       },
       isDirty
     );
-  }, [allowedKbTools, allowedPaths, odooIntegration, odooIsDirty, onChange, computeAllowedTools]);
+  }, [
+    allowedKbTools,
+    allowedPaths,
+    odooIntegration,
+    odooIsDirty,
+    emailIntegration,
+    emailIsDirty,
+    onChange,
+    computeAllowedTools,
+  ]);
 
   function handleToolToggle(toolId: string) {
     setAllowedKbTools((prev) =>
@@ -130,6 +147,17 @@ export function AgentSettingsPermissions({
   ) {
     setOdooIntegration(values);
     setOdooIsDirty(isDirty);
+  }
+
+  function handleEmailChange(
+    values: {
+      connectionId: string;
+      permissions: Array<{ model: string; operation: string }>;
+    } | null,
+    isDirty: boolean
+  ) {
+    setEmailIntegration(values);
+    setEmailIsDirty(isDirty);
   }
 
   return (
@@ -182,6 +210,12 @@ export function AgentSettingsPermissions({
       <section className="space-y-4">
         <h3 className="text-lg font-semibold">Odoo</h3>
         <OdooPermissionSection agentId={agent.id} onChange={handleOdooChange} />
+      </section>
+
+      {/* Email section */}
+      <section className="space-y-4">
+        <h3 className="text-lg font-semibold">Email</h3>
+        <EmailPermissionSection agentId={agent.id} onChange={handleEmailChange} />
       </section>
     </div>
   );

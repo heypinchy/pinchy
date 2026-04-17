@@ -18,6 +18,7 @@ import { UserDetailSheet } from "@/components/user-detail-sheet";
 import { StatusBadge } from "@/components/status-badge";
 import { toast } from "sonner";
 import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 
 interface SettingsUsersProps {
   currentUserId: string;
@@ -74,6 +75,7 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const [loading, setLoading] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [resetLink, setResetLink] = useState<string | null>(null);
+  const { isCopied: isResetLinkCopied, copy: copyResetLink } = useCopyToClipboard();
   const [selectedUser, setSelectedUser] = useState<(UserListItem & { kind: "user" }) | null>(null);
   const [allGroups, setAllGroups] = useState<{ id: string; name: string }[]>([]);
   const [isEnterprise, setIsEnterprise] = useState(false);
@@ -160,12 +162,9 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
                 variant="outline"
                 size="sm"
                 className="mt-2"
-                onClick={() => {
-                  navigator.clipboard.writeText(resetLink);
-                  toast("Link copied to clipboard");
-                }}
+                onClick={() => copyResetLink(resetLink)}
               >
-                Copy
+                {isResetLinkCopied ? "Copied!" : "Copy"}
               </Button>
             </div>
           )}

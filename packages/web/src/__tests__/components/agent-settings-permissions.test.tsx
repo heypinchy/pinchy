@@ -17,6 +17,18 @@ vi.mock("@/components/odoo-permission-section", () => ({
   },
 }));
 
+vi.mock("@/components/email-permission-section", () => ({
+  EmailPermissionSection: ({
+    onChange,
+  }: {
+    agentId: string;
+    onChange: (v: unknown, d: boolean) => void;
+  }) => {
+    void onChange;
+    return <div data-testid="email-section">Email Section</div>;
+  },
+}));
+
 describe("AgentSettingsPermissions", () => {
   const defaultAgent = {
     id: "agent-1",
@@ -136,6 +148,19 @@ describe("AgentSettingsPermissions", () => {
 
     expect(screen.getByText("Odoo")).toBeInTheDocument();
     expect(screen.getByTestId("odoo-section")).toBeInTheDocument();
+  });
+
+  it("should render Email section", () => {
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Email")).toBeInTheDocument();
+    expect(screen.getByTestId("email-section")).toBeInTheDocument();
   });
 
   describe("vision warning", () => {

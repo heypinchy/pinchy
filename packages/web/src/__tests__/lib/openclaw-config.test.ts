@@ -30,7 +30,11 @@ vi.mock("@/db", () => ({
     select: vi.fn().mockImplementation(() => ({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockResolvedValue([]),
+          innerJoin: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve([]), {
+              where: vi.fn().mockResolvedValue([]),
+            })
+          ),
         })
       ),
     })),
@@ -89,11 +93,23 @@ const mockedMkdirSync = vi.mocked(mkdirSync);
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
 
-/** Helper: create a mock `from()` that returns a thenable with `.innerJoin()` */
+/**
+ * Helper: create a mock `innerJoin()` that returns a thenable supporting `.where()`.
+ * This models the new query chain: select().from().innerJoin().where().
+ */
+function mockInnerJoin(data: unknown[] = []) {
+  return vi.fn().mockReturnValue(
+    Object.assign(Promise.resolve(data), {
+      where: vi.fn().mockResolvedValue(data),
+    })
+  );
+}
+
+/** Helper: create a mock `from()` that returns a thenable with `.innerJoin()` and optional `.where()` */
 function mockFrom(data: unknown[] = []) {
   return vi.fn().mockImplementation(() =>
     Object.assign(Promise.resolve(data), {
-      innerJoin: vi.fn().mockResolvedValue([]),
+      innerJoin: mockInnerJoin([]),
     })
   );
 }
@@ -1172,7 +1188,7 @@ describe("pinchy-odoo config size", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+          innerJoin: mockInnerJoin(permissionsData),
         })
       ),
     } as never);
@@ -1266,7 +1282,7 @@ describe("pinchy-odoo config size", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+          innerJoin: mockInnerJoin(permissionsData),
         })
       ),
     } as never);
@@ -1385,11 +1401,11 @@ describe("restart-state integration", () => {
               { id: "agent-1", name: "Smithers", model: "m", allowedTools: [] },
               { id: "agent-2", name: "Support", model: "m", allowedTools: [] },
             ]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]) }
           );
         }
         return Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockResolvedValue([]),
+          innerJoin: mockInnerJoin([]),
         });
       }),
     } as never);
@@ -1443,7 +1459,7 @@ describe("restart-state integration", () => {
                 ownerId: "user-b",
               },
             ]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]) }
           );
         }
         // callCount 2 = agentConnectionPermissions (chained with innerJoin)
@@ -1454,11 +1470,11 @@ describe("restart-state integration", () => {
               { userId: "user-a", channel: "telegram", channelUserId: "111222333" },
               { userId: "user-b", channel: "telegram", channelUserId: "444555666" },
             ]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]) }
           );
         }
         return Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockResolvedValue([]),
+          innerJoin: mockInnerJoin([]),
         });
       }),
     } as never);
@@ -1539,7 +1555,7 @@ describe("restart-state integration", () => {
           // First call: agents table
           return Object.assign(
             Promise.resolve([{ id: "agent-1", name: "Smithers", model: "m", allowedTools: [] }]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]) }
           );
         }
         // callCount 2 = agentConnectionPermissions (chained with innerJoin)
@@ -1547,11 +1563,11 @@ describe("restart-state integration", () => {
         if (callCount === 3) {
           return Object.assign(
             Promise.resolve([{ userId: "user-1", channel: "telegram", channelUserId: "999888" }]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]) }
           );
         }
         return Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockResolvedValue([]),
+          innerJoin: mockInnerJoin([]),
         });
       }),
     } as never);
