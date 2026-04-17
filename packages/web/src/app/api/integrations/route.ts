@@ -32,10 +32,37 @@ export async function GET() {
 
   const connections = await db.select().from(integrationConnections);
 
-  const masked = connections.map((conn) => ({
-    ...conn,
-    credentials: maskCredentials(conn.credentials, decrypt),
-  }));
+  // Decrypt per row and isolate failures: if ENCRYPTION_KEY changed (e.g. an
+  // admin accidentally overrode the persisted key via .env), some rows can no
+  // longer be decrypted. A single poison row must NOT crash the whole list —
+  // that used to silently hide all integrations, including freshly-added ones
+  // that would decrypt fine. Flag unreadable rows so the UI can offer Delete.
+  const masked = connections.map((conn) => {
+    try {
+      return {
+        ...conn,
+        credentials: maskCredentials(conn.credentials, decrypt),
+        cannotDecrypt: false,
+      };
+    } catch (err) {
+      console.warn(
+        `[integrations] Cannot decrypt credentials for connection ${conn.id} (${conn.name}). ` +
+          `ENCRYPTION_KEY may have changed. The admin can delete this row via the UI.`,
+        err
+      );
+      return {
+        id: conn.id,
+        type: conn.type,
+        name: conn.name,
+        description: conn.description,
+        data: null,
+        createdAt: conn.createdAt,
+        updatedAt: conn.updatedAt,
+        credentials: null,
+        cannotDecrypt: true,
+      };
+    }
+  });
 
   return NextResponse.json(masked);
 }

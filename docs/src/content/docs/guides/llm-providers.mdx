@@ -69,7 +69,13 @@ Tokens used through every provider are recorded in the [Usage Dashboard](/guides
 
 ## Troubleshooting
 
+When a provider returns an error, Pinchy shows it directly in the chat as a distinct error card with the agent name and the provider's error message. Admins see a hint pointing to **Settings → LLM Provider**; non-admin users see a prompt to contact their administrator. Transient errors (rate limits, timeouts) suggest trying again.
+
 **"Invalid API key"** — Double-check the key with the provider's own dashboard. Anthropic keys start with `sk-ant-`, OpenAI keys with `sk-`, Google keys are typically `AIza...`.
+
+**"Your credit balance is too low"** — The provider account has run out of credits. Top up on the provider's billing page.
+
+**"Rate limit exceeded"** — Too many requests in a short window. Wait a moment and try again. If this happens often, check your plan's rate limits on the provider's dashboard.
 
 **"Could not reach the provider"** — Network problem between your Pinchy instance and the provider. If you're running behind a strict firewall, allowlist the provider's API hostname.
 

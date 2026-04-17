@@ -1,6 +1,7 @@
 import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
 import type { PersonalityPresetId } from "@/lib/personality-presets";
 import type { TemplateIconName } from "@/lib/template-icons";
+import type { ModelHint } from "@/lib/model-resolver/types";
 
 const ODOO_QUERY_INSTRUCTIONS = `## Mandatory Workflow
 1. **Always call \`odoo_schema\` first** before querying any model. This gives you the exact field names and types. Never guess field names — they differ from what you might expect (e.g., \`product_uom_qty\` not \`quantity\`, \`amount_total\` not \`total\`).
@@ -84,6 +85,8 @@ export interface AgentTemplate {
    * template is the only exception — it renders as a standalone link.
    */
   iconName?: TemplateIconName;
+  /** Per-template LLM hint used by the model resolver at agent-creation time. */
+  modelHint?: ModelHint;
 }
 
 /**
@@ -106,6 +109,7 @@ export interface OdooAgentTemplateSpec {
     model: string;
     operations: ReadonlyArray<OdooOperation>;
   }>;
+  modelHint?: ModelHint;
 }
 
 /**
@@ -157,6 +161,7 @@ export function createOdooTemplate(spec: OdooAgentTemplateSpec): AgentTemplate {
         operations: [...m.operations],
       })),
     },
+    ...(spec.modelHint !== undefined ? { modelHint: spec.modelHint } : {}),
   };
 }
 
@@ -177,6 +182,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
 - If the documents don't contain an answer, say so clearly
 - Prefer quoting relevant passages over paraphrasing
 - Structure longer answers with headings and bullet points`,
+    modelHint: { tier: "balanced", capabilities: ["tools"] },
   },
   "contract-analyzer": {
     iconName: "Scale",
@@ -199,6 +205,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
 - If a document is not a contract, say so clearly
 - Structure your analysis with clear headings for each clause category
 - Highlight deadlines, notice periods, and important dates`,
+    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   },
   "resume-screener": {
     iconName: "Users",
@@ -221,6 +228,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
 - Create concise candidate summaries with strengths and weaknesses
 - Be objective and focus on qualifications, not personal characteristics
 - When comparing candidates, use a consistent evaluation framework`,
+    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   },
   "proposal-comparator": {
     iconName: "GitCompareArrows",
@@ -245,6 +253,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
 - Flag vague or non-committal language in proposals
 - Present comparisons in tables for easy scanning
 - Summarize with a clear recommendation when asked`,
+    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   },
   "compliance-checker": {
     iconName: "ShieldCheck",
@@ -267,6 +276,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
 - Prioritize findings by severity: critical violations vs. minor gaps
 - Suggest what needs to be added or changed to achieve compliance
 - Track requirement coverage across multiple documents when asked`,
+    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   },
   "onboarding-guide": {
     iconName: "GraduationCap",
@@ -289,6 +299,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
 - Be welcoming and patient — assume the person is new and unfamiliar with internal jargon
 - Suggest related topics or documents that might be helpful
 - If the documents don't cover something, say so and suggest who to ask`,
+    modelHint: { tier: "balanced", capabilities: ["tools"] },
   },
   custom: {
     name: "Custom Agent",
@@ -298,6 +309,7 @@ export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
     defaultPersonality: "the-butler",
     defaultTagline: null,
     defaultAgentsMd: null,
+    // Deliberately no modelHint — user-built agent, provider default is appropriate
   },
   "odoo-sales-analyst": createOdooTemplate({
     iconName: "TrendingUp",
@@ -355,6 +367,7 @@ ${ODOO_RULES}`,
       { model: "product.template", operations: ["read"] },
       { model: "product.product", operations: ["read"] },
     ],
+    modelHint: { tier: "reasoning", taskType: "reasoning", capabilities: ["tools"] },
   }),
   "odoo-inventory-scout": createOdooTemplate({
     iconName: "Warehouse",
@@ -409,6 +422,7 @@ ${ODOO_RULES}`,
       { model: "stock.warehouse", operations: ["read"] },
       { model: "stock.location", operations: ["read"] },
     ],
+    modelHint: { tier: "fast", capabilities: ["tools"] },
   }),
   "odoo-finance-controller": createOdooTemplate({
     iconName: "Calculator",
@@ -458,6 +472,7 @@ ${ODOO_RULES}
       { model: "account.analytic.line", operations: ["read"] },
       { model: "account.analytic.account", operations: ["read"] },
     ],
+    modelHint: { tier: "reasoning", taskType: "reasoning", capabilities: ["tools"] },
   }),
   "odoo-crm-assistant": createOdooTemplate({
     iconName: "Handshake",
@@ -512,6 +527,7 @@ ${ODOO_RULES}
       { model: "mail.message", operations: ["read", "create"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },
     ],
+    modelHint: { tier: "balanced", capabilities: ["tools"] },
   }),
   "odoo-procurement-agent": createOdooTemplate({
     iconName: "ShoppingCart",
@@ -566,6 +582,7 @@ ${ODOO_RULES}
       { model: "res.partner", operations: ["read"] },
       { model: "product.product", operations: ["read"] },
     ],
+    modelHint: { tier: "balanced", capabilities: ["tools"] },
   }),
   "odoo-customer-service": createOdooTemplate({
     iconName: "Headset",
@@ -636,6 +653,7 @@ ${ODOO_RULES}
       { model: "res.partner", operations: ["read"] },
       { model: "mail.message", operations: ["read", "create"] },
     ],
+    modelHint: { tier: "balanced", capabilities: ["tools"] },
   }),
   "odoo-hr-analyst": createOdooTemplate({
     iconName: "UserCog",
@@ -692,6 +710,7 @@ ${ODOO_RULES}
       { model: "hr.attendance", operations: ["read"] },
       { model: "hr.contract", operations: ["read"] },
     ],
+    modelHint: { tier: "reasoning", taskType: "reasoning", capabilities: ["tools"] },
   }),
   "odoo-project-tracker": createOdooTemplate({
     iconName: "FolderKanban",
@@ -744,6 +763,7 @@ ${ODOO_RULES}
       { model: "account.analytic.line", operations: ["read"] },
       { model: "hr.employee", operations: ["read"] },
     ],
+    modelHint: { tier: "fast", capabilities: ["tools"] },
   }),
   "odoo-manufacturing-planner": createOdooTemplate({
     iconName: "Factory",
@@ -800,6 +820,7 @@ ${ODOO_RULES}
       { model: "stock.move", operations: ["read"] },
       { model: "stock.quant", operations: ["read"] },
     ],
+    modelHint: { tier: "balanced", capabilities: ["tools"] },
   }),
   "odoo-recruitment-coordinator": createOdooTemplate({
     iconName: "UserSearch",
@@ -858,6 +879,7 @@ ${ODOO_RULES}
       { model: "mail.activity", operations: ["read", "create", "write"] },
       { model: "mail.message", operations: ["read", "create"] },
     ],
+    modelHint: { tier: "balanced", capabilities: ["tools"] },
   }),
   "odoo-subscription-manager": createOdooTemplate({
     iconName: "Repeat",
@@ -910,6 +932,7 @@ ${ODOO_RULES}
       { model: "account.move", operations: ["read"] },
       { model: "res.partner", operations: ["read"] },
     ],
+    modelHint: { tier: "balanced", capabilities: ["tools"] },
   }),
   "odoo-pos-analyst": createOdooTemplate({
     iconName: "Store",
@@ -962,6 +985,7 @@ ${ODOO_RULES}
       { model: "pos.payment", operations: ["read"] },
       { model: "pos.payment.method", operations: ["read"] },
     ],
+    modelHint: { tier: "fast", capabilities: ["tools"] },
   }),
   "odoo-marketing-analyst": createOdooTemplate({
     iconName: "Megaphone",
@@ -1016,6 +1040,7 @@ ${ODOO_RULES}
       { model: "utm.source", operations: ["read"] },
       { model: "utm.medium", operations: ["read"] },
     ],
+    modelHint: { tier: "reasoning", taskType: "reasoning", capabilities: ["tools"] },
   }),
   "odoo-expense-auditor": createOdooTemplate({
     iconName: "Receipt",
@@ -1070,6 +1095,7 @@ ${ODOO_RULES}
       { model: "product.product", operations: ["read"] },
       { model: "account.analytic.account", operations: ["read"] },
     ],
+    modelHint: { tier: "reasoning", taskType: "reasoning", capabilities: ["tools"] },
   }),
   "odoo-fleet-manager": createOdooTemplate({
     iconName: "Car",
@@ -1120,6 +1146,7 @@ ${ODOO_RULES}
       { model: "fleet.vehicle.log.contract", operations: ["read"] },
       { model: "fleet.service.type", operations: ["read"] },
     ],
+    modelHint: { tier: "fast", capabilities: ["tools"] },
   }),
   "odoo-website-analyst": createOdooTemplate({
     iconName: "Globe",
@@ -1177,6 +1204,7 @@ ${ODOO_RULES}
       { model: "product.template", operations: ["read"] },
       { model: "website", operations: ["read"] },
     ],
+    modelHint: { tier: "balanced", capabilities: ["tools"] },
   }),
 };
 

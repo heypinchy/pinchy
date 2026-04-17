@@ -55,4 +55,17 @@ describe("SMITHERS_SOUL_MD", () => {
     expect(SMITHERS_SOUL_MD).not.toContain("When you learn the user's name");
     expect(SMITHERS_SOUL_MD).toContain("available in your context");
   });
+
+  it("does not duplicate platform knowledge that lives in the docs", () => {
+    // Docs are the single source of truth — Smithers reads them on demand via
+    // docs_list/docs_read. Inlining feature summaries here makes the SOUL drift
+    // from the docs and contradicts the "never guess, always read docs" rule.
+    expect(SMITHERS_SOUL_MD).not.toContain("### Audit Trail");
+    expect(SMITHERS_SOUL_MD).not.toContain("### Settings & Restarts");
+    expect(SMITHERS_SOUL_MD).not.toContain("### Domain & HTTPS");
+    expect(SMITHERS_SOUL_MD).not.toContain("### Context");
+    expect(SMITHERS_SOUL_MD).not.toContain("### Usage & Costs");
+    expect(SMITHERS_SOUL_MD).not.toContain("### Enterprise Features");
+    expect(SMITHERS_SOUL_MD).not.toContain("### Common Tasks");
+  });
 });

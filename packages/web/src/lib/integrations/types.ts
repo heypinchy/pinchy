@@ -9,7 +9,8 @@ export interface IntegrationConnection {
         db: string;
         login: string;
       }
-    | string;
+    | string
+    | null;
   data: {
     lastSyncAt?: string;
     models?: Array<{ model: string; name: string }>;
@@ -21,4 +22,5 @@ export interface IntegrationConnection {
   status: "active" | "pending";
   createdAt: string;
   updatedAt: string;
+  cannotDecrypt: boolean;
 }

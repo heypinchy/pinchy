@@ -5,6 +5,7 @@ import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { isEnterprise } from "@/lib/enterprise";
 import { appendAuditLog } from "@/lib/audit";
 import { SessionCache } from "@/server/session-cache";
+import { getErrorHint } from "@/server/error-hints";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -24,11 +25,18 @@ interface ContentPart {
   image_url?: { url: string };
 }
 
-interface BrowserMessage {
-  type: string;
+interface ChatMessage {
+  type: "message";
   content: string | ContentPart[];
   agentId: string;
 }
+
+interface HistoryRequestMessage {
+  type: "history";
+  agentId: string;
+}
+
+type BrowserMessage = ChatMessage | HistoryRequestMessage;
 
 interface HistoryMessage {
   role: string;
@@ -158,24 +166,63 @@ export class ClientRouter {
         messageId,
       });
 
-      // Periodic keep-alive: defeat browser/proxy idle timeouts during long
-      // pauses between agent turns (Ollama tool-use loops can take >60s).
-      // The interval is cleared in the finally block below.
-      const heartbeatInterval = setInterval(() => {
-        if (clientWs.readyState === WS_OPEN) {
-          this.sendToClient(clientWs, {
-            type: "thinking",
-            messageId,
-          });
-        }
-      }, THINKING_HEARTBEAT_MS);
+      // Heartbeat is intentionally deferred until the first chunk arrives.
+      // Starting it immediately would reset the client-side stuck timer even
+      // when OpenClaw's stream hangs before producing any output (e.g. after a
+      // restart), trapping the user in an infinite spinner. Once the first
+      // chunk arrives we know OpenClaw is actively responding, so heartbeats
+      // are safe to send between turns.
+      let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
       try {
+        // Debug shortcut: "__debug_error:<type>" messages bypass OpenClaw and
+        // inject a fake error chunk directly. Remove before going to production.
+        const DEBUG_ERRORS: Record<string, string> = {
+          billing:
+            "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
+          invalid_key: "Invalid API key provided. You must provide a valid API key.",
+          unauthorized: "Unauthorized: invalid x-api-key",
+          quota: "You exceeded your current quota, please check your plan and billing details.",
+          rate_limit: "Rate limit exceeded: Too many requests. Please retry after 60 seconds.",
+          timeout: "Request timeout: The server did not respond in time.",
+          overloaded: "The server is overloaded. Please try again later. (529)",
+          unknown: "Unexpected internal error: SIGPIPE broken pipe during inference.",
+        };
+        if (text.startsWith("__debug_error:")) {
+          const key = text.replace("__debug_error:", "").trim();
+          const fakeError =
+            DEBUG_ERRORS[key] ??
+            `Unknown debug error type: "${key}". Available: ${Object.keys(DEBUG_ERRORS).join(", ")}`;
+          await new Promise((r) => setTimeout(r, 600)); // brief fake thinking delay
+          this.sendToClient(clientWs, {
+            type: "error",
+            agentName: agent.name,
+            providerError: fakeError,
+            hint: getErrorHint(fakeError, this.userRole),
+            messageId,
+          });
+          return;
+        }
+
         for await (const chunk of stream) {
           // Stop consuming the stream if the browser disconnected — frees
           // server resources while letting OpenClaw finish on its side.
           if (clientWs.readyState !== WS_OPEN) {
             break;
+          }
+
+          // Start keep-alive heartbeats on the first chunk. Deferring until
+          // here ensures heartbeats only flow while OpenClaw is actively
+          // producing output — not while it may be hung before the first byte.
+          if (heartbeatInterval === null) {
+            heartbeatInterval = setInterval(() => {
+              if (clientWs.readyState === WS_OPEN) {
+                this.sendToClient(clientWs, {
+                  type: "thinking",
+                  messageId,
+                });
+              }
+            }, THINKING_HEARTBEAT_MS);
           }
 
           if (chunk.type === "text") {
@@ -193,8 +240,9 @@ export class ClientRouter {
             console.error("OpenClaw error chunk:", chunk.text);
             this.sendToClient(clientWs, {
               type: "error",
-              message:
-                "Something went wrong connecting to the agent. Try refreshing — if it persists, check the logs.",
+              agentName: agent.name,
+              providerError: chunk.text,
+              hint: getErrorHint(chunk.text, this.userRole),
               messageId,
             });
           }
@@ -222,7 +270,9 @@ export class ClientRouter {
           type: "complete",
         });
       } finally {
-        clearInterval(heartbeatInterval);
+        if (heartbeatInterval !== null) {
+          clearInterval(heartbeatInterval);
+        }
       }
     } catch (err) {
       this.sendToClient(clientWs, {

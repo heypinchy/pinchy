@@ -1,6 +1,6 @@
 {
   "name": "pinchy",
-  "version": "0.3.0",
+  "version": "0.4.4",
   "private": true,
   "description": "Enterprise AI agent platform built on OpenClaw",
   "scripts": {
@@ -15,7 +15,7 @@
   "keywords": [],
   "author": "Clemens Helm",
   "license": "AGPL-3.0",
-  "packageManager": "pnpm@10.29.3",
+  "packageManager": "pnpm@10.33.0",
   "devDependencies": {
     "husky": "^9.1.7",
     "lint-staged": "^16.4.0"
@@ -26,9 +26,16 @@
       "esbuild@<=0.24.2": ">=0.25.0",
       "undici@>=7.0.0 <7.24.0": ">=7.24.0",
       "kysely@>=0.26.0 <=0.28.13": ">=0.28.14",
+      "picomatch@<2.3.2": ">=2.3.2",
       "picomatch@>=4.0.0 <4.0.4": ">=4.0.4",
       "yaml@>=2.0.0 <2.8.3": ">=2.8.3",
-      "defu@<=6.1.4": ">=6.1.5"
+      "defu@<=6.1.4": ">=6.1.5",
+      "brace-expansion@<1.1.13": "^1.1.13",
+      "flatted@<3.4.2": "^3.4.2",
+      "typescript-eslint@>=8.0.0 <8.58.2": ">=8.58.2",
+      "@typescript-eslint/parser@>=8.0.0 <8.58.2": ">=8.58.2",
+      "@typescript-eslint/eslint-plugin@>=8.0.0 <8.58.2": ">=8.58.2",
+      "@typescript-eslint/typescript-estree@>=8.0.0 <8.58.2": ">=8.58.2"
     }
   },
   "lint-staged": {
@@ -38,7 +45,7 @@
     "packages/web/**/*.{ts,tsx,js,mjs,cjs,json,css,md}": [
       "pnpm -C packages/web exec prettier --write"
     ],
-    "docs/src/**/*.md": [
+    "docs/src/**/*.{mdx,md}": [
       "pnpm -C packages/web exec prettier --write"
     ],
     ".github/**/*.yml": [

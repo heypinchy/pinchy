@@ -14,7 +14,7 @@ This guide walks you through getting Pinchy up and running — from downloading 
 
 ```bash
 mkdir -p pinchy && cd pinchy
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/main/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
 ```
 
 ## 2. Start the stack
@@ -81,6 +81,13 @@ For example, a **Knowledge Base** agent can read text files, Markdown, and **PDF
 User and organization context (personal preferences, team structure, company conventions) is managed in **Settings → Context**, not in per-agent settings.
 
 To try it out, mount a directory with documents into the Pinchy container and create an agent from the Knowledge Base template. See the [Create a Knowledge Base Agent](/guides/create-knowledge-base-agent/) guide for the full walkthrough.
+
+## New in %%PINCHY_VERSION%%
+
+- **[Telegram Channels](/guides/telegram-setup/)** — Chat with your agents from Telegram, with user accounts linked via pairing code
+- **[Odoo Integration](/guides/connect-odoo/)** — Give agents scoped, permission-aware access to your Odoo ERP
+- **[Ollama (Local & Cloud)](/guides/ollama-setup/)** — Run agents fully air-gapped on your own hardware, or use Ollama Cloud models
+- **[Usage & Costs Dashboard](/guides/usage-dashboard/)** — Track token usage, estimated costs, and cache savings per agent and user
 
 ## What's next?
 

@@ -23,18 +23,11 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     category: "safe",
     requiresDirectories: true,
   },
-  {
-    id: "docs_list",
-    label: "List Pinchy documentation",
-    description: "List Pinchy platform documentation files (Smithers only)",
-    category: "safe",
-  },
-  {
-    id: "docs_read",
-    label: "Read Pinchy documentation",
-    description: "Read a Pinchy platform documentation file (Smithers only)",
-    category: "safe",
-  },
+
+  // Note: docs_list / docs_read are NOT listed here. They are provided by the
+  // pinchy-docs plugin, which is enabled automatically for personal agents
+  // (Smithers) via openclaw-config.ts. They are not admin-configurable per
+  // agent — the permission UI would misleadingly suggest otherwise.
 
   // Odoo integration tools (safe = read-only, powerful = write operations)
   {

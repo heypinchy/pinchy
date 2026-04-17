@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="20">
 <title>Pinchy is getting ready...</title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,400;0,500;0,600;1,400&display=swap');
@@ -179,7 +178,7 @@
     </div>
 
     <div class="footer">
-      This page refreshes automatically when Pinchy is ready.<br>
+      This page updates itself when Pinchy is ready — no refresh needed.<br>
       <a href="https://docs.heypinchy.com" target="_blank" rel="noopener">Documentation</a>
     </div>
   </div>
@@ -219,6 +218,32 @@
     }
     setInterval(updateSteps, 1000);
     updateSteps();
+
+    // Poll Pinchy's health endpoint. This page is served by Caddy's :9999
+    // fallback upstream. When Pinchy's primary upstream (127.0.0.1:7777)
+    // comes up, Caddy automatically switches — /api/health then returns 200
+    // instead of the fallback's 503. We never hard-reload on our own; the
+    // only reload happens after confirmed readiness, so the user never sees
+    // ERR_CONNECTION_REFUSED from a speculative refresh hitting a
+    // mid-restart Caddy.
+    const POLL_INTERVAL_MS = 2000;
+    let readySignaled = false;
+    async function pollReady() {
+      if (readySignaled) return;
+      try {
+        const resp = await fetch('/api/health', { cache: 'no-store' });
+        if (resp.ok) {
+          readySignaled = true;
+          window.location.reload();
+        }
+      } catch (err) {
+        // Network error (Caddy mid-restart, no listener yet, etc.) — stay
+        // put and try again. Catching means the interval keeps firing even
+        // after fetch rejections.
+      }
+    }
+    setInterval(pollReady, POLL_INTERVAL_MS);
+    pollReady();
   </script>
 </body>
 </html>

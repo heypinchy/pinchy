@@ -10,6 +10,8 @@ export interface TemplateItem {
   defaultTagline: string | null;
   available?: boolean;
   unavailableReason?: "no-connection" | "missing-modules" | null;
+  disabled?: boolean;
+  disabledReason?: string;
   iconName?: TemplateIconName;
 }
 

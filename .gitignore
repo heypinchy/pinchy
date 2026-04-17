@@ -56,4 +56,5 @@ docker-compose.local.yml
 # Standalone plugin lockfiles (plugins are installed with --ignore-workspace,
 # but we don't need to commit their lockfiles — CI rebuilds from package.json)
 packages/plugins/*/pnpm-lock.yaml
+packages/plugins/*/package-lock.json
 .pnpm-store/

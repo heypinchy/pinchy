@@ -40,7 +40,8 @@ export function Chat({
     : avatarUrl;
   const displayIsPersonal = liveAgent?.isPersonal ?? isPersonal;
 
-  const { runtime, isConnected, isDelayed, isHistoryLoaded } = useWsRuntime(agentId);
+  const { runtime, isConnected, isDelayed, isHistoryLoaded, reconnectExhausted } =
+    useWsRuntime(agentId);
 
   const statusMessage = !isConnected
     ? configuring
@@ -109,7 +110,12 @@ export function Chat({
             <div className="flex-1 min-h-0 animate-in fade-in duration-300">
               <Thread isHistoryLoaded={isHistoryLoaded} />
             </div>
-            {isDelayed && (
+            {reconnectExhausted && (
+              <div className="px-4 py-2 text-center text-xs text-destructive border-t bg-destructive/5">
+                Unable to reconnect. Please reload the page to resume chatting.
+              </div>
+            )}
+            {!reconnectExhausted && isDelayed && (
               <div className="px-4 py-2 text-center text-xs text-muted-foreground border-t">
                 The agent is taking longer than usual. This may be due to high demand.
               </div>

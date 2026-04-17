@@ -21,6 +21,7 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
+import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 import { appendAuditLog } from "@/lib/audit";
 import { getVisibleAgents } from "@/lib/visible-agents";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
@@ -96,11 +97,43 @@ export async function POST(request: NextRequest) {
   // Resolve personality preset from template
   const preset = getPersonalityPreset(template.defaultPersonality);
 
-  // Determine default model dynamically from provider's live model list
+  // Determine model: use template-aware resolver when modelHint is present,
+  // fall back to provider default for templates without a hint (e.g. "custom").
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
-  const model = defaultProvider
-    ? await getDefaultModel(defaultProvider)
-    : "anthropic/claude-haiku-4-5-20251001";
+
+  let model: string;
+  let modelSelectionSource: "template-hint" | "provider-default" = "provider-default";
+  let modelSelectionReason: string;
+
+  if (template.modelHint && defaultProvider) {
+    try {
+      const resolved = await resolveModelForTemplate({
+        hint: template.modelHint,
+        provider: defaultProvider,
+      });
+      model = resolved.model;
+      modelSelectionReason = resolved.reason;
+      modelSelectionSource = "template-hint";
+    } catch (err) {
+      if (err instanceof TemplateCapabilityUnavailableError) {
+        return NextResponse.json(
+          {
+            error: "template_capability_unavailable",
+            message: err.message,
+            missingCapabilities: err.missingCapabilities,
+            docsUrl: err.docsUrl,
+          },
+          { status: 400 }
+        );
+      }
+      throw err;
+    }
+  } else {
+    model = defaultProvider
+      ? await getDefaultModel(defaultProvider)
+      : "anthropic/claude-haiku-4-5-20251001";
+    modelSelectionReason = `provider-default (${defaultProvider ?? "anthropic fallback"})`;
+  }
 
   const [agent] = await db
     .insert(agents)
@@ -127,7 +160,16 @@ export async function POST(request: NextRequest) {
       actorId: session.user.id!,
       eventType: "agent.created",
       resource: `agent:${agent.id}`,
-      detail: { name: agent.name, model: agent.model, templateId },
+      detail: {
+        name: agent.name,
+        model: agent.model,
+        templateId,
+        modelSelection: {
+          source: modelSelectionSource,
+          hint: template.modelHint ?? null,
+          reason: modelSelectionReason,
+        },
+      },
       outcome: "success",
     })
   );

@@ -103,7 +103,24 @@ vi.mock("@/lib/settings", () => ({
 
 vi.mock("@/lib/provider-models", () => ({
   getDefaultModel: vi.fn().mockResolvedValue("anthropic/claude-haiku-4-5-20251001"),
+  getOllamaLocalModels: vi.fn().mockReturnValue([]),
 }));
+
+const { mockResolveModelForTemplate } = vi.hoisted(() => ({
+  mockResolveModelForTemplate: vi.fn().mockResolvedValue({
+    model: "anthropic/claude-sonnet-4-6",
+    reason: "anthropic: tier=balanced → claude-sonnet-4-6",
+    fallbackUsed: false,
+  }),
+}));
+
+vi.mock("@/lib/model-resolver", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/model-resolver")>();
+  return {
+    ...actual,
+    resolveModelForTemplate: mockResolveModelForTemplate,
+  };
+});
 
 vi.mock("@/lib/personality-presets", () => ({
   getPersonalityPreset: vi.fn((id: string) => {
@@ -150,6 +167,7 @@ import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { validateAllowedPaths } from "@/lib/path-validation";
 import { getDefaultModel } from "@/lib/provider-models";
+import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 import {
   ensureWorkspace,
   writeWorkspaceFile,
@@ -752,5 +770,115 @@ describe("POST /api/agents", () => {
     await POST(request);
 
     expect(permissionsInsertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it("uses resolver when template has modelHint", async () => {
+    mockResolveModelForTemplate.mockResolvedValueOnce({
+      model: "anthropic/claude-opus-4-6",
+      reason: "anthropic: tier=reasoning → claude-opus-4-6",
+      fallbackUsed: false,
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Finance Controller",
+        templateId: "odoo-finance-controller",
+        connectionId: "conn-1",
+      }),
+    });
+
+    mockValidateOdooTemplate.mockReturnValue({
+      valid: true,
+      warnings: [],
+      availableModels: [],
+      missingModels: [],
+    });
+    dbSelectFromMock.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([{ id: "conn-1", name: "Odoo", type: "odoo", data: {} }]),
+    });
+
+    await POST(request);
+
+    expect(mockResolveModelForTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ hint: expect.objectContaining({ tier: "reasoning" }) })
+    );
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "anthropic/claude-opus-4-6" })
+    );
+  });
+
+  it("falls back to getDefaultModel for custom template (no modelHint)", async () => {
+    vi.mocked(getDefaultModel).mockResolvedValueOnce("anthropic/claude-haiku-4-5-20251001");
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "My Agent", templateId: "custom" }),
+    });
+
+    await POST(request);
+
+    expect(mockResolveModelForTemplate).not.toHaveBeenCalled();
+    expect(getDefaultModel).toHaveBeenCalledWith("anthropic");
+  });
+
+  it("returns 400 with template_capability_unavailable when resolver throws", async () => {
+    mockResolveModelForTemplate.mockRejectedValueOnce(
+      new TemplateCapabilityUnavailableError(
+        ["vision"],
+        "ollama-local",
+        "https://docs.heypinchy.com/guides/ollama-setup#models-for-agent-templates"
+      )
+    );
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Contract Bot",
+        templateId: "contract-analyzer",
+        pluginConfig: { allowed_paths: ["/data/contracts/"] },
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("template_capability_unavailable");
+    expect(body.missingCapabilities).toContain("vision");
+    expect(body.docsUrl).toContain("ollama-setup");
+  });
+
+  it("audit log includes modelSelection source and reason", async () => {
+    const { appendAuditLog } = await import("@/lib/audit");
+    const spy = vi.mocked(appendAuditLog);
+
+    mockResolveModelForTemplate.mockResolvedValueOnce({
+      model: "anthropic/claude-sonnet-4-6",
+      reason: "anthropic: tier=balanced → claude-sonnet-4-6",
+      fallbackUsed: false,
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "KB Agent",
+        templateId: "knowledge-base",
+        pluginConfig: { allowed_paths: ["/data/docs/"] },
+      }),
+    });
+
+    await POST(request);
+
+    // after() defers the audit log — find the call
+    const call = spy.mock.calls.find(
+      ([arg]) => (arg as { eventType: string }).eventType === "agent.created"
+    );
+    expect(call).toBeDefined();
+    const detail = (call![0] as { detail: Record<string, unknown> }).detail;
+    expect(detail.modelSelection).toMatchObject({
+      source: "template-hint",
+      hint: expect.objectContaining({ tier: "balanced" }),
+      reason: expect.stringContaining("balanced"),
+    });
   });
 });

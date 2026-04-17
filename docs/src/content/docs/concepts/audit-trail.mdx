@@ -13,7 +13,7 @@ The audit trail is designed for **compliance and security**. It answers the ques
 
 ## What gets logged
 
-Pinchy logs event types across six categories:
+Pinchy logs event types across seven categories:
 
 ### Tool execution
 
@@ -91,6 +91,13 @@ column with the failure message. Status filtering applies to exports too.
 | `group.updated`         | A group's settings were changed               |
 | `group.deleted`         | A group was deleted                           |
 | `group.members_updated` | Members were added to or removed from a group |
+
+### Channel management
+
+| Event Type        | Description                                                                         |
+| ----------------- | ----------------------------------------------------------------------------------- |
+| `channel.created` | An agent was connected to an external channel (e.g. a Telegram bot token was added) |
+| `channel.deleted` | An agent was disconnected from a channel (or all channels of one type were removed) |
 
 ### Configuration
 

@@ -44,8 +44,33 @@ vi.mock("@/lib/integrations/odoo-connection-models", () => ({
   getConnectionModels: (...args: unknown[]) => mockGetConnectionModels(...args),
 }));
 
+vi.mock("@/lib/settings", () => ({
+  getSetting: vi.fn().mockResolvedValue("anthropic"),
+}));
+
+vi.mock("@/lib/provider-models", () => ({
+  getOllamaLocalModels: vi.fn().mockReturnValue([]),
+}));
+
+const { mockResolveModelForTemplate: mockResolveTemplate } = vi.hoisted(() => ({
+  mockResolveModelForTemplate: vi.fn().mockResolvedValue({
+    model: "anthropic/claude-sonnet-4-6",
+    reason: "test",
+    fallbackUsed: false,
+  }),
+}));
+
+vi.mock("@/lib/model-resolver", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/model-resolver")>();
+  return {
+    ...actual,
+    resolveModelForTemplate: mockResolveTemplate,
+  };
+});
+
 import { GET } from "@/app/api/templates/route";
 import { auth } from "@/lib/auth";
+import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 
 describe("GET /api/templates", () => {
   beforeEach(() => {
@@ -203,6 +228,31 @@ describe("GET /api/templates", () => {
     const custom = body.templates.find((t: { id: string }) => t.id === "custom");
     expect(custom.available).toBe(true);
     expect(custom.unavailableReason).toBeNull();
+  });
+
+  it("marks template as disabled when resolver throws TemplateCapabilityUnavailableError", async () => {
+    mockResolveTemplate.mockImplementation(({ hint }: { hint: { capabilities?: string[] } }) => {
+      if (hint.capabilities?.includes("vision")) {
+        throw new TemplateCapabilityUnavailableError(
+          ["vision"],
+          "ollama-local",
+          "https://docs.heypinchy.com/guides/ollama-setup#models-for-agent-templates"
+        );
+      }
+      return Promise.resolve({ model: "x", reason: "test", fallbackUsed: false });
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const contract = body.templates.find((t: { id: string }) => t.id === "contract-analyzer");
+    expect(contract.disabled).toBe(true);
+    expect(contract.disabledReason).toContain("vision");
+
+    // Non-vision templates should not be disabled
+    const kb = body.templates.find((t: { id: string }) => t.id === "knowledge-base");
+    expect(kb.disabled).toBe(false);
   });
 
   it("always includes non-odoo templates", async () => {

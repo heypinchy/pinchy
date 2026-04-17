@@ -29,6 +29,18 @@ You also need:
   Verify with `docker --version` — it should say **Docker**, not Podman.
 </Aside>
 
+## What gets deployed
+
+Pinchy runs as three Docker containers:
+
+| Container    | Role                                                                                                  |
+| ------------ | ----------------------------------------------------------------------------------------------------- |
+| **pinchy**   | Web UI, REST API, and WebSocket bridge. This is what users interact with.                             |
+| **openclaw** | The AI agent runtime — manages agents, sessions, plugins, and model calls. Only reachable internally. |
+| **db**       | PostgreSQL 17 database. Stores users, agents, settings, and audit logs. Only reachable internally.    |
+
+All three start together via Docker Compose. Only the `pinchy` container publishes a port; the other two communicate over an internal Docker network.
+
 ## Deploy Pinchy
 
 <Steps>
@@ -60,11 +72,59 @@ You also need:
      together
    </details>
 
-2. **Download and start Pinchy**
+2. **Download the Docker Compose file**
 
    ```bash
    mkdir -p /opt/pinchy
    curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o /opt/pinchy/docker-compose.yml
+   ```
+
+3. **Pin your secrets before first start**
+
+   Pinchy uses three secrets:
+
+   | Secret               | Purpose                                              |
+   | -------------------- | ---------------------------------------------------- |
+   | `DB_PASSWORD`        | PostgreSQL database password                         |
+   | `BETTER_AUTH_SECRET` | Signs user sessions                                  |
+   | `ENCRYPTION_KEY`     | Encrypts LLM provider API keys at rest (AES-256-GCM) |
+
+   If you don't set them, Pinchy auto-generates `BETTER_AUTH_SECRET` and `ENCRYPTION_KEY` and persists them as files in a Docker volume (`pinchy-secrets`). This works fine for normal operation — **but** if that volume is ever deleted (e.g. during a server migration or an accidental `docker compose down -v`), the generated secrets are lost and encrypted data becomes unreadable. `DB_PASSWORD` defaults to a weak development value.
+
+   For production, pin all three explicitly:
+
+   ```bash
+   nano /opt/pinchy/.env
+   ```
+
+   Add these lines (run `openssl rand -hex 32` three times to generate each value):
+
+   ```bash
+   DB_PASSWORD=<output of openssl rand -hex 32>
+   BETTER_AUTH_SECRET=<output of openssl rand -hex 32>
+   ENCRYPTION_KEY=<output of openssl rand -hex 32>
+   ```
+
+   Save and lock down the file:
+
+   ```bash
+   chmod 600 /opt/pinchy/.env
+   ```
+
+   <Aside type="caution">
+     Set `DB_PASSWORD` before the database is created for the first time.
+     Changing it later requires updating the password inside PostgreSQL too.
+   </Aside>
+
+   <Aside type="tip">
+     Back up your `.env` file somewhere safe (e.g. a password manager). If you
+     lose `ENCRYPTION_KEY`, all stored LLM provider API keys become
+     unrecoverable.
+   </Aside>
+
+4. **Pull and start Pinchy**
+
+   ```bash
    cd /opt/pinchy
    docker compose pull
    docker compose up -d
@@ -73,13 +133,12 @@ You also need:
    Pulling the pre-built images takes about 30 seconds.
 
    <details>
-     <summary>What do these commands do?</summary>- `mkdir -p /opt/pinchy` —
-     creates the directory for Pinchy - `curl` — downloads the Docker Compose
-     file from GitHub - `docker compose pull` — downloads the pre-built Pinchy
-     images - `docker compose up -d` — starts all services in the background
+     <summary>What do these commands do?</summary>- `docker compose pull` —
+     downloads the pre-built Pinchy images - `docker compose up -d` — starts all
+     services in the background
    </details>
 
-3. **Verify all services are running**
+5. **Verify all services are running**
 
    ```bash
    docker compose ps
@@ -95,11 +154,23 @@ You also need:
 
    Look for: `Pinchy ready on http://localhost:7777`
 
-4. **Open the setup wizard**
+6. **Open the setup wizard**
 
-   Visit `http://<your-server-ip>:7777` in your browser. Replace `<your-server-ip>` with your server's actual IP address.
+   Pinchy binds to `127.0.0.1:7777` by default so it is only reachable from localhost. Open a temporary SSH tunnel from your local machine to reach it:
+
+   ```bash
+   ssh -L 7777:localhost:7777 root@<your-server-ip>
+   ```
+
+   Then visit `http://localhost:7777` in your browser while that SSH session is open.
 
    The setup wizard will guide you through creating your admin account and configuring your first LLM provider. You'll need your API key (from Anthropic, OpenAI, or Google) ready.
+
+   <Aside type="tip">
+     If you have a domain ready and want to skip straight to HTTPS, set up
+     [Caddy](#set-up-https-with-caddy) first — then run the setup wizard over
+     HTTPS instead.
+   </Aside>
 
 </Steps>
 
@@ -107,11 +178,22 @@ That's it — Pinchy is running! The rest of this guide covers production harden
 
 ## Production setup
 
-The steps above get Pinchy working, but for production use you should add HTTPS, a firewall, and pinned secrets.
+The steps above get Pinchy working, but for production use you should add HTTPS, a firewall, and a domain lock.
 
 ### Set up HTTPS with Caddy
 
-Never expose Pinchy directly on port 7777 in production. Use a reverse proxy that handles HTTPS for you. We recommend [Caddy](https://caddyserver.com/) because it automatically gets and renews SSL certificates — zero configuration.
+Use a reverse proxy that handles HTTPS for you. We recommend [Caddy](https://caddyserver.com/) because it automatically gets and renews SSL certificates — zero configuration.
+
+Pinchy already binds to `127.0.0.1:7777` by default — only reachable from localhost. This is exactly what you want when Caddy sits in front of it. No port configuration needed.
+
+<Aside type="caution">
+  Do **not** set `PINCHY_PORT=0.0.0.0:7777` in your `.env`. Docker manages its
+  own iptables rules and bypasses host firewall tools like UFW — a `0.0.0.0`
+  binding exposes Pinchy to the internet regardless of your firewall. Keep the
+  default localhost binding.
+</Aside>
+
+Install Caddy:
 
 ```bash
 apt-get install -y caddy
@@ -149,45 +231,17 @@ A reverse proxy sits between the internet and Pinchy. When someone visits your d
 3. Caddy forwards the request to **Pinchy** on port 7777 (internal only)
 4. Pinchy sends the response back through Caddy
 
-This way, Pinchy never needs to deal with SSL certificates, and port 7777 is never exposed to the internet.
+This way, Pinchy never needs to deal with SSL certificates directly.
 
 </details>
 
 See the [Hardening Guide](/guides/hardening/#reverse-proxy-with-tls) for nginx examples and advanced configuration.
 
-### Pin secrets
+### Lock your domain
 
-By default, Pinchy auto-generates secrets on first start and persists them in Docker volumes. For production, pin your own secrets so they don't depend on Docker volumes surviving. Add these lines to your `.env` file:
+Once HTTPS is working, lock Pinchy to your domain so it only responds to requests from your configured domain name. Open **Settings → Security** in the Pinchy web UI and enter your domain (e.g. `pinchy.example.com`).
 
-```bash
-nano /opt/pinchy/.env
-```
-
-```bash
-# Database password (default: pinchy_dev)
-DB_PASSWORD=<replace with output of the command below>
-
-# Session secret
-BETTER_AUTH_SECRET=<replace with output of the command below>
-
-# Encryption key for API keys at rest
-ENCRYPTION_KEY=<replace with output of the command below>
-```
-
-Generate each secret by running this command (run it three times, once for each secret):
-
-```bash
-openssl rand -hex 32
-```
-
-Copy each output and paste it as the value in your `.env` file. Then restart:
-
-```bash
-cd /opt/pinchy
-docker compose down && docker compose up -d
-```
-
-See [Installation — Environment variables](/installation/#environment-variables) for the full reference.
+After saving, Pinchy will reject requests from any other origin with a 403 error. This prevents someone from accessing your Pinchy instance by its raw IP address or via a different hostname.
 
 ### Configure a firewall
 
@@ -214,6 +268,19 @@ Everything else is blocked — including port 7777, which is now only reachable 
   depth.
 </Aside>
 
+### Enable automatic security updates
+
+Keep the host OS patched without manual intervention:
+
+```bash
+apt-get install -y unattended-upgrades
+dpkg-reconfigure -plow unattended-upgrades
+```
+
+Select **Yes** when prompted. Ubuntu will now install security updates automatically and reboot overnight when a kernel update requires it.
+
+See the [Hardening Guide](/guides/hardening/) for further production hardening — Docker security options, network isolation, disk encryption, monitoring, and backup automation.
+
 ### Add swap (recommended for 4 GB servers)
 
 Swap is disk space that your server can use as extra memory when RAM runs low. On servers with only 4 GB RAM, adding swap provides a safety net during heavy agent workloads:
@@ -230,18 +297,37 @@ The last line ensures swap is re-enabled after a server reboot.
 
 ## Updating Pinchy
 
-To update to a new release:
+<Aside type="caution">
+  Always back up your database before upgrading. This is your rollback safety
+  net if a migration goes wrong.
+</Aside>
 
 ```bash
 cd /opt/pinchy
+docker compose exec db pg_dump -U pinchy pinchy > backup-$(date +%Y%m%d).sql
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
 docker compose pull
 docker compose up -d
 ```
 
-Pinchy runs database migrations automatically on startup — no manual steps needed. See the [Upgrade Guide](/guides/upgrading/) for version-specific notes.
+Pinchy runs database migrations automatically on startup — no manual steps needed. See the [Upgrade Guide](/guides/upgrading/) for version-specific notes, rollback instructions, and how to set up automated backups.
 
 ## Troubleshooting
+
+### Checking logs
+
+Docker Compose makes logs easy to access:
+
+```bash
+# All services
+docker compose logs -f
+
+# Single service (pinchy, openclaw, or db)
+docker compose logs pinchy --tail 100
+
+# Filter for errors
+docker compose logs pinchy 2>&1 | grep -i error
+```
 
 ### Pinchy container exits immediately
 
@@ -267,3 +353,17 @@ proxy_set_header Connection "upgrade";
 ```
 
 Caddy handles WebSocket upgrades automatically.
+
+### Agent doesn't respond
+
+Check if the OpenClaw container is running:
+
+```bash
+docker compose ps openclaw
+docker compose logs openclaw --tail 50
+```
+
+Common causes:
+
+- **No LLM provider configured** — open Settings and add an API key
+- **API key invalid or out of credits** — the chat shows a specific error card with details

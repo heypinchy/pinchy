@@ -1,5 +1,6 @@
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
+import { TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS } from "@/lib/ollama-cloud-models";
 
 // Re-export vision utilities for backwards compatibility
 export { VISION_CAPABLE_PROVIDERS, isModelVisionCapable } from "@/lib/model-vision";
@@ -54,12 +55,10 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
     { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
   ],
-  "ollama-cloud": [
-    { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "Gemini 3 Flash Preview" },
-    { id: "ollama-cloud/kimi-k2.5:cloud", name: "Kimi K2.5" },
-    { id: "ollama-cloud/mistral-large-3:675b-cloud", name: "Mistral Large 3 675B" },
-    { id: "ollama-cloud/qwen3.5:397b-cloud", name: "Qwen 3.5 397B" },
-  ],
+  "ollama-cloud": TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS.map((id) => ({
+    id: `ollama-cloud/${id}`,
+    name: id,
+  })),
   "ollama-local": [],
 };
 
@@ -110,18 +109,16 @@ const PROVIDER_FETCH_CONFIG: Record<ProviderName, ProviderFetchConfig> = {
     url: () => "https://ollama.com/v1/models",
     headers: (apiKey) => ({ Authorization: `Bearer ${apiKey}` }),
     transform: (data) => {
-      // IDs as returned by the Ollama Cloud API (already include :cloud or -cloud suffix)
-      const ALLOWED_CLOUD_MODELS = [
-        "gemini-3-flash-preview:cloud",
-        "kimi-k2.5:cloud",
-        "mistral-large-3:675b-cloud",
-        "qwen3.5:397b-cloud",
-      ];
+      // Filter by the curated tool-capable set — see
+      // @/lib/ollama-cloud-models.ts for the source list. The /v1/models
+      // endpoint doesn't expose capability metadata, so we can't infer
+      // tool-capability live; every new model has to be opted in there.
+      const allowed = new Set<string>(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS);
       return (data.data as { id: string }[])
-        .filter((m) => ALLOWED_CLOUD_MODELS.includes(m.id))
+        .filter((m) => allowed.has(m.id))
         .map((m) => ({
           id: `ollama-cloud/${m.id}`,
-          name: m.id.replace(/(-cloud|:cloud)$/, ""),
+          name: m.id,
         }))
         .sort((a, b) => a.name.localeCompare(b.name));
     },
@@ -154,7 +151,7 @@ const DEFAULT_MODEL_PATTERNS: Record<ProviderName, RegExp> = {
   anthropic: /haiku/,
   openai: /gpt-.*-mini/,
   google: /gemini-.*-flash/,
-  "ollama-cloud": /flash.*cloud/,
+  "ollama-cloud": /flash/,
   "ollama-local": /.*/,
 };
 

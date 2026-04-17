@@ -188,7 +188,11 @@ export function NewAgentForm() {
         const res = await fetch("/api/integrations");
         if (res.ok) {
           const data = await res.json();
-          const odoo = (data as OdooConnection[]).filter((c: OdooConnection) => c.type === "odoo");
+          // Hide unreadable rows from the agent-creation flow — they can't be used
+          // and would show as "undefined URL". Admins clean them up in Settings.
+          const odoo = (data as OdooConnection[]).filter(
+            (c: OdooConnection) => c.type === "odoo" && !c.cannotDecrypt
+          );
           setOdooConnections(odoo);
 
           // Auto-select if only one connection

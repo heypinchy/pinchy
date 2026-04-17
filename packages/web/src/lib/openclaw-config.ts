@@ -13,6 +13,7 @@ import {
 import { getSetting } from "@/lib/settings";
 import { decrypt } from "@/lib/encryption";
 import { computeDeniedGroups } from "@/lib/tool-registry";
+import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
@@ -323,7 +324,23 @@ export async function regenerateOpenClawConfig() {
     if (!firstConnection) continue;
 
     const conn = firstConnection.connection;
-    const decryptedCreds = JSON.parse(decrypt(conn.credentials));
+
+    // Robust against key rotation: if this connection's credentials can't be
+    // decrypted, skip it — the alternative is crashing the whole config
+    // regeneration, which leaves every agent broken. The admin can see and
+    // delete the orphaned row via Settings → Integrations.
+    let decryptedCreds: { url: string; db: string; uid: number; apiKey: string };
+    try {
+      decryptedCreds = JSON.parse(decrypt(conn.credentials));
+    } catch (err) {
+      console.warn(
+        `[openclaw-config] Skipping agent ${agentId}'s Odoo connection ${conn.id} ` +
+          `(${conn.name}) — credentials can't be decrypted. ENCRYPTION_KEY may have ` +
+          `changed. Admin must delete and re-add the integration.`,
+        err
+      );
+      continue;
+    }
     const permissions: Record<string, string[]> = {};
     for (const [model, ops] of firstConnection.ops) {
       permissions[model] = ops;
@@ -449,27 +466,31 @@ export async function regenerateOpenClawConfig() {
       baseUrl: "https://ollama.com/v1",
       apiKey: ollamaCloudKey,
       api: "openai-completions",
-      models: [
-        {
-          id: "gemini-3-flash-preview:cloud",
-          name: "Gemini 3 Flash Preview",
-          contextWindow: 1048576,
-          maxTokens: 65536,
-        },
-        { id: "kimi-k2.5:cloud", name: "Kimi K2.5", contextWindow: 262144, maxTokens: 8192 },
-        {
-          id: "mistral-large-3:675b-cloud",
-          name: "Mistral Large 3 675B",
-          contextWindow: 131072,
-          maxTokens: 8192,
-        },
-        {
-          id: "qwen3.5:397b-cloud",
-          name: "Qwen 3.5 397B",
-          contextWindow: 262144,
-          maxTokens: 8192,
-        },
-      ],
+      // Derived from TOOL_CAPABLE_OLLAMA_CLOUD_MODELS — see that file for
+      // the source of each capability (ollama.com/library/<name>).
+      //
+      // `compat.supportsUsageInStreaming: true` is REQUIRED for usage
+      // tracking. OpenClaw's default compat detection treats any configured
+      // non-OpenAI endpoint as not supporting usage-in-streaming, so it
+      // never sends `stream_options: { include_usage: true }`. Ollama Cloud
+      // only emits the final usage chunk when that flag is present — without
+      // this opt-in, every session has zero tracked tokens and Usage & Costs
+      // stays empty. Verified live against https://ollama.com/v1/chat/completions.
+      //
+      // `reasoning`, `input`, and `cost` are required fields of OpenClaw's
+      // ModelDefinitionConfig. Cost is zero because Ollama Cloud bills by
+      // subscription plan, not per token — a fabricated rate would mislead
+      // users reading the Usage dashboard.
+      models: TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.map((m) => ({
+        id: m.id,
+        name: m.id,
+        contextWindow: m.contextWindow,
+        maxTokens: m.maxTokens,
+        reasoning: m.reasoning,
+        input: m.vision ? ["text", "image"] : ["text"],
+        cost: { ...OLLAMA_CLOUD_COST },
+        compat: { supportsUsageInStreaming: true },
+      })),
     };
   }
 
