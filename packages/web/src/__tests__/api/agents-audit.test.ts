@@ -158,6 +158,11 @@ describe("POST /api/agents audit logging", () => {
         name: "Test Agent",
         model: "anthropic/claude-haiku-4-5-20251001",
         templateId: "custom",
+        modelSelection: {
+          source: "provider-default",
+          hint: null,
+          reason: "provider-default (anthropic)",
+        },
       },
     });
   });
