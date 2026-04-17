@@ -42,7 +42,7 @@ runcmd:
   - echo "DB_PASSWORD=$(openssl rand -hex 32)" >> /opt/pinchy/.env
   - echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> /opt/pinchy/.env
   - echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> /opt/pinchy/.env
-  - echo "PINCHY_PORT=80:7777" >> /opt/pinchy/.env
+  - echo "PINCHY_PORT=0.0.0.0:80" >> /opt/pinchy/.env
   - chmod 600 /opt/pinchy/.env
 
   # Download compose file and pull images (loading page still visible during download)
