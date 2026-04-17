@@ -41,13 +41,14 @@ Google Cloud uses the **Auth Platform** to manage OAuth consent screens and app 
 
 1. In the left sidebar, navigate to **APIs & Services → OAuth consent screen**
 
-   Google will redirect you to **Auth Platform → Overview**. If you see the message _"Google Auth Platform not yet configured"_, that's expected — click **Get Started**.
+   Google redirects you to **Auth Platform → Overview**. If you see _"Google Auth Platform not yet configured"_, click **Get Started**.
 
-2. Fill in the **App information**:
+2. Under **Branding**, fill in:
    - **App name** — enter `Pinchy` (this name appears on the Google sign-in screen)
    - **User support email** — select your email address
+   - Click **Save**
 
-3. Choose the **Audience** (who can use this OAuth app):
+3. Under **Audience**, choose who can use this OAuth app:
 
    | Audience     | When to choose                                   | Notes                                                                                  |
    | ------------ | ------------------------------------------------ | -------------------------------------------------------------------------------------- |
@@ -63,15 +64,11 @@ Google Cloud uses the **Auth Platform** to manage OAuth consent screens and app 
      app](#publishing-an-external-app) after completing the setup.
    </Aside>
 
-4. Enter a **Contact email** — Google uses this to notify you about changes to your project
-
-5. Check the box to agree to the **Google API Services User Data Policy** and click **Continue** (or **Create**)
-
 ### 1.3 Add Gmail scopes
 
 Scopes define what data your OAuth app can access. You need to add the Gmail scopes that match the permissions you want to grant agents.
 
-1. In the Auth Platform sidebar, click **Data Access** (or navigate to the scopes section)
+1. In the Auth Platform sidebar, click **Data Access**
 2. Click **Add or remove scopes**
 3. In the filter, search for `gmail` and add these scopes:
 
@@ -107,12 +104,11 @@ If you chose **External** audience, Google restricts access to explicitly approv
 
 Now you create the actual Client ID and Client Secret that you'll enter in Pinchy.
 
-1. In the left sidebar, navigate to **APIs & Services → Credentials**
-   (or in the new interface: **Auth Platform → Clients**)
-2. Click **Create Credentials → OAuth client ID**
-3. Under **Application type**, select **Web application**
-4. Give it a name (e.g. "Pinchy")
-5. Under **Authorized redirect URIs**, click **Add URI** and enter:
+1. In the Auth Platform sidebar, click **Clients**, then **Create client**
+   (alternatively: **APIs & Services → Credentials → Create Credentials → OAuth client ID**)
+2. Under **Application type**, select **Web application**
+3. Give it a name (e.g. "Pinchy")
+4. Under **Authorized redirect URIs**, click **Add URI** and enter:
 
    ```
    https://your-pinchy-domain.com/api/integrations/oauth/callback
@@ -126,7 +122,7 @@ Now you create the actual Client ID and Client Secret that you'll enter in Pinch
      wizard with a copy button.
    </Aside>
 
-6. Click **Create**
+5. Click **Create**
 
 A dialog appears with your **Client ID** and **Client Secret**. **Copy both values now** — the Client Secret is only shown once. (If you lose it, you can create a new one in the credentials list.)
 
