@@ -41,8 +41,12 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
+const { mockDecrypt } = vi.hoisted(() => ({
+  mockDecrypt: vi.fn((val: string) => val),
+}));
+
 vi.mock("@/lib/encryption", () => ({
-  decrypt: (val: string) => val,
+  decrypt: (val: string) => mockDecrypt(val),
   encrypt: (val: string) => val,
   getOrCreateSecret: vi.fn().mockReturnValue(Buffer.alloc(32)),
 }));
@@ -1190,6 +1194,103 @@ describe("pinchy-odoo config size", () => {
     // Config should be small (no field definitions bloating it)
     const configSize = written.length;
     expect(configSize).toBeLessThan(5000); // Without schema: ~2-3KB. With schema it would be 100KB+
+  });
+
+  it("skips agents whose Odoo connection can't be decrypted instead of crashing the whole config regeneration", async () => {
+    // Regression: if ENCRYPTION_KEY changes, conn.credentials can't be decrypted.
+    // Previously the thrown error bubbled up and regenerateOpenClawConfig()
+    // crashed — which meant EVERY agent's config stopped regenerating, not just
+    // the one with the broken Odoo link. Now we skip the unreadable agent and
+    // keep the rest of the config alive.
+    const agentsData = [
+      {
+        id: "good-agent",
+        name: "Good Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+      {
+        id: "broken-agent",
+        name: "Broken Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "good-agent",
+          connectionId: "conn-good",
+          model: "sale.order",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-good",
+          type: "odoo",
+          name: "Readable Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://good.odoo",
+            db: "prod",
+            uid: 2,
+            apiKey: "good-key",
+          }),
+          data: { models: [], lastSyncAt: "2026-04-01T00:00:00Z" },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+      {
+        agent_connection_permissions: {
+          agentId: "broken-agent",
+          connectionId: "conn-broken",
+          model: "sale.order",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-broken",
+          type: "odoo",
+          name: "Unreadable Odoo",
+          description: "",
+          credentials: "POISONED_BY_KEY_ROTATION",
+          data: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+        })
+      ),
+    } as never);
+
+    // Fail decryption only for the broken connection's ciphertext
+    mockDecrypt.mockImplementation((val: string) => {
+      if (val === "POISONED_BY_KEY_ROTATION") {
+        throw new Error("Unsupported state or unable to authenticate data");
+      }
+      return val;
+    });
+
+    await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
+
+    const written = mockedWriteFileSync.mock.calls.at(-1)?.[1] as string;
+    const config = JSON.parse(written);
+    const odooAgents = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents ?? {};
+
+    expect(odooAgents["good-agent"]).toBeDefined();
+    expect(odooAgents["good-agent"].connection.url).toBe("https://good.odoo");
+    expect(odooAgents["broken-agent"]).toBeUndefined();
+
+    // Reset for subsequent tests
+    mockDecrypt.mockImplementation((val: string) => val);
   });
 });
 

@@ -322,7 +322,23 @@ export async function regenerateOpenClawConfig() {
     if (!firstConnection) continue;
 
     const conn = firstConnection.connection;
-    const decryptedCreds = JSON.parse(decrypt(conn.credentials));
+
+    // Robust against key rotation: if this connection's credentials can't be
+    // decrypted, skip it — the alternative is crashing the whole config
+    // regeneration, which leaves every agent broken. The admin can see and
+    // delete the orphaned row via Settings → Integrations.
+    let decryptedCreds: { url: string; db: string; uid: number; apiKey: string };
+    try {
+      decryptedCreds = JSON.parse(decrypt(conn.credentials));
+    } catch (err) {
+      console.warn(
+        `[openclaw-config] Skipping agent ${agentId}'s Odoo connection ${conn.id} ` +
+          `(${conn.name}) — credentials can't be decrypted. ENCRYPTION_KEY may have ` +
+          `changed. Admin must delete and re-add the integration.`,
+        err
+      );
+      continue;
+    }
     const permissions: Record<string, string[]> = {};
     for (const [model, ops] of firstConnection.ops) {
       permissions[model] = ops;

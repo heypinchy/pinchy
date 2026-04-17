@@ -167,6 +167,76 @@ describe("GET /api/integrations", () => {
     expect(body[0].credentials).not.toHaveProperty("apiKey");
     expect(body[0].credentials).not.toHaveProperty("uid");
   });
+
+  it("flags a row instead of crashing when its credentials can't be decrypted", async () => {
+    // Regression: if the ENCRYPTION_KEY changes (deliberately or accidentally),
+    // existing rows can't be decrypted. The .map(decrypt) previously threw,
+    // returning 500 — so the UI silently rendered "No integrations configured yet"
+    // and ALL other rows disappeared too, including ones encrypted with the
+    // current key. The endpoint must degrade gracefully, one row at a time.
+    const unreadable = { ...mockConnection, id: "unreadable-1", name: "Old Odoo" };
+    const readable = { ...mockConnection, id: "readable-1", name: "New Odoo" };
+
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([unreadable, readable]) as Promise<
+        (typeof mockConnection)[]
+      > & { where: ReturnType<typeof vi.fn> };
+      result.where = vi.fn().mockResolvedValue([unreadable, readable]);
+      return result;
+    });
+    mockDecrypt.mockImplementationOnce(() => {
+      throw new Error("Unsupported state or unable to authenticate data");
+    });
+
+    const { GET } = await import("@/app/api/integrations/route");
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body).toHaveLength(2);
+
+    const u = body.find((r: { id: string }) => r.id === "unreadable-1");
+    expect(u).toMatchObject({
+      id: "unreadable-1",
+      name: "Old Odoo",
+      cannotDecrypt: true,
+      credentials: null,
+    });
+
+    const r = body.find((r: { id: string }) => r.id === "readable-1");
+    expect(r).toMatchObject({
+      id: "readable-1",
+      name: "New Odoo",
+      cannotDecrypt: false,
+      credentials: { url: "https://odoo.example.com", db: "prod", login: "admin" },
+    });
+  });
+
+  it("never exposes credentials for an unreadable row", async () => {
+    // Defense in depth: even if decrypt fails, we must not return partial
+    // ciphertext or apiKey fragments. The row carries name/id only.
+    const unreadable = { ...mockConnection, id: "unreadable-1", credentials: "poisoned:data" };
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([unreadable]) as Promise<(typeof mockConnection)[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([unreadable]);
+      return result;
+    });
+    mockDecrypt.mockImplementationOnce(() => {
+      throw new Error("auth tag failed");
+    });
+
+    const { GET } = await import("@/app/api/integrations/route");
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body[0].credentials).toBeNull();
+    const serialized = JSON.stringify(body);
+    expect(serialized).not.toContain("poisoned");
+    expect(serialized).not.toContain("apiKey");
+  });
 });
 
 describe("POST /api/integrations", () => {

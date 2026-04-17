@@ -22,7 +22,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { MoreHorizontal, Plus, Plug, CheckCircle2, Loader2 } from "lucide-react";
+import { MoreHorizontal, Plus, Plug, CheckCircle2, Loader2, AlertTriangle } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 // toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
@@ -112,6 +112,37 @@ export function SettingsIntegrations() {
           ) : (
             <div className="space-y-3">
               {connections.map((conn) => {
+                if (conn.cannotDecrypt) {
+                  return (
+                    <div
+                      key={conn.id}
+                      className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 space-y-2"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <AlertTriangle className="h-5 w-5 shrink-0 text-destructive" />
+                          <span className="text-sm font-medium">{conn.name}</span>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-destructive border-destructive/50 hover:bg-destructive/10"
+                          onClick={() => setDeleteTarget(conn)}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                      <p className="text-sm text-destructive/90">
+                        This integration can&apos;t be read. It was encrypted with a different{" "}
+                        <code className="rounded bg-destructive/10 px-1 py-0.5 text-xs">
+                          ENCRYPTION_KEY
+                        </code>{" "}
+                        than the one this server is using now. Delete it and re-add the connection
+                        to restore access.
+                      </p>
+                    </div>
+                  );
+                }
                 const categories = getAccessibleCategoryLabels(conn.data);
                 return (
                   <div key={conn.id} className="rounded-lg border p-4 space-y-2">
