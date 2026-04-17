@@ -2,7 +2,7 @@ services:
   pinchy:
     image: ghcr.io/heypinchy/pinchy:latest
     ports:
-      - "${PINCHY_PORT:-7777}:7777"
+      - "${PINCHY_PORT:-127.0.0.1:7777}:7777"
     environment:
       - DATABASE_URL=postgresql://pinchy:${DB_PASSWORD:-pinchy_dev}@db:5432/pinchy
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-}
