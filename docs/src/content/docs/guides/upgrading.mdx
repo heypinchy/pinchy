@@ -116,16 +116,37 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.4.1 to %%PINCHY_VERSION%%
-
-Standard upgrade — no breaking changes, no new required environment variables.
+## Upgrading from v0.4.2 to %%PINCHY_VERSION%%
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
-### What's fixed in %%PINCHY_VERSION%%
+### Port binding change — action required if you use direct port access
+
+The default port binding changed from `0.0.0.0:7777` to `127.0.0.1:7777`. After upgrading, Pinchy will only accept connections from localhost.
+
+**If you have a reverse proxy (Caddy, nginx):** No action needed — this is how it should be.
+
+**If you access Pinchy directly on port 7777** (no reverse proxy): Add this line to `/opt/pinchy/.env` to restore the previous behavior:
+
+```bash
+PINCHY_PORT=0.0.0.0:7777
+```
+
+We strongly recommend [setting up a reverse proxy](/guides/vps-deployment/#set-up-https-with-caddy) instead. Docker bypasses host firewall rules (UFW), so `0.0.0.0:7777` exposes the port to the internet regardless of your firewall configuration.
+
+## Upgrading from v0.4.1 to v0.4.2
+
+Standard upgrade — no breaking changes, no new required environment variables.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.2/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
+```
+
+### What's fixed in v0.4.2
 
 - **Pinchy reconnects cleanly after the OpenClaw container is recreated** — on upgrades that replaced the OpenClaw container, Pinchy would repeatedly log `token_mismatch` / `token_missing` and refuse to connect to the gateway. Root cause: once a device is paired, OpenClaw accepts only the per-device token it issued at pairing, not the gateway bootstrap token from `openclaw.json`. Pinchy's client library now persists that per-device token alongside the device identity and sends it on reconnect, and discards it automatically if OpenClaw ever rejects it so re-pairing just works. (`openclaw-node` bumped from 0.3.1 to 0.4.0.)
 
