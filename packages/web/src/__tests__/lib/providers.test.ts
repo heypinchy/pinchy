@@ -77,23 +77,41 @@ describe("validateProviderKey", () => {
     );
   });
 
-  it("should return valid for valid Ollama key", async () => {
-    vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 200 }));
+  // Ollama Cloud's /v1/models is a public catalog — it returns 200 with the full
+  // model list regardless of whether the Bearer token is valid. Validating against
+  // that endpoint accepted any string as a valid key. The real auth boundary is
+  // /v1/chat/completions: auth is checked before body validation, so an empty
+  // body with a valid key gets 400, and with an invalid key gets 401.
+  it("should validate Ollama Cloud keys via chat/completions (auth-protected), not models (public catalog)", async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      new Response('{"error":"messages required"}', { status: 400 })
+    );
     const result = await validateProviderKey("ollama-cloud", "sk-ollama-valid");
     expect(result).toEqual({ valid: true });
     expect(fetch).toHaveBeenCalledWith(
-      "https://ollama.com/v1/models",
+      "https://ollama.com/v1/chat/completions",
       expect.objectContaining({
+        method: "POST",
         headers: expect.objectContaining({
           Authorization: "Bearer sk-ollama-valid",
+          "Content-Type": "application/json",
         }),
       })
     );
   });
 
-  it("should return invalid_key for invalid Ollama key", async () => {
-    vi.mocked(fetch).mockResolvedValue(new Response("{}", { status: 401 }));
-    const result = await validateProviderKey("ollama-cloud", "sk-ollama-invalid");
+  it("should reject Ollama Cloud key when chat endpoint returns 401, even if models catalog would return 200", async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const u = String(url);
+      // Mirror real Ollama Cloud behavior:
+      // - /v1/models: public catalog, returns 200 for any Bearer token.
+      // - /v1/chat/completions: auth-protected, returns 401 for bad tokens.
+      if (u.includes("/v1/chat/completions")) {
+        return new Response("unauthorized", { status: 401 });
+      }
+      return new Response("{}", { status: 200 });
+    });
+    const result = await validateProviderKey("ollama-cloud", "bogus-key");
     expect(result).toEqual({ valid: false, error: "invalid_key" });
   });
 
