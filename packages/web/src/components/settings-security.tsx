@@ -247,7 +247,7 @@ export function SettingsSecurity() {
             Lock this domain
           </Button>
           <a
-            href="https://docs.heypinchy.com/guides/vps-deployment/#set-up-https-with-caddy"
+            href="https://docs.heypinchy.com/guides/domain-lock/"
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm text-primary underline"
