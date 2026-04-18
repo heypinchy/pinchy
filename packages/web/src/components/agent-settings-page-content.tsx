@@ -66,10 +66,10 @@ interface PersonalityValues {
 interface PermissionsValues {
   allowedTools: string[];
   allowedPaths: string[];
-  integrations: {
+  integrations: Array<{
     connectionId: string;
     permissions: Array<{ model: string; operation: string }>;
-  } | null;
+  }>;
 }
 
 interface AccessValues {
@@ -249,17 +249,19 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
         agentPatch.allowedTools = permissionsDraft.current.allowedTools;
         agentPatch.pluginConfig = { allowed_paths: permissionsDraft.current.allowedPaths };
 
-        // Save or clear integration permissions
-        if (permissionsDraft.current.integrations) {
-          savePromises.push(
-            fetch(`/api/agents/${agentId}/integrations`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(permissionsDraft.current.integrations),
-            })
-          );
+        // Save each active integration separately, or clear all if none
+        if (permissionsDraft.current.integrations.length > 0) {
+          for (const integration of permissionsDraft.current.integrations) {
+            savePromises.push(
+              fetch(`/api/agents/${agentId}/integrations`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(integration),
+              })
+            );
+          }
         } else {
-          // Clear integration permissions when connection is removed
+          // Clear all integration permissions when no connections are configured
           savePromises.push(
             fetch(`/api/agents/${agentId}/integrations`, {
               method: "DELETE",

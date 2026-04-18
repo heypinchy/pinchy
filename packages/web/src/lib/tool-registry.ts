@@ -143,6 +143,38 @@ export function computeDeniedGroups(_allowedToolIds: string[]): string[] {
   return [...ALL_GROUPS, ...STANDALONE_DENY];
 }
 
+// --- Email operation helpers ---
+
+const EMAIL_READ_TOOLS = ["email_list", "email_read", "email_search"] as const;
+const EMAIL_DRAFT_TOOLS = ["email_draft"] as const;
+const EMAIL_SEND_TOOLS = ["email_send"] as const;
+
+/**
+ * Returns the email_* tool IDs that should be enabled for the given
+ * semantic operations (e.g. ["read", "draft"]).
+ */
+export function getEmailToolsForOperations(operations: string[]): string[] {
+  const tools: string[] = [];
+  const ops = new Set(operations);
+  if (ops.has("read")) tools.push(...EMAIL_READ_TOOLS);
+  if (ops.has("draft")) tools.push(...EMAIL_DRAFT_TOOLS);
+  if (ops.has("send")) tools.push(...EMAIL_SEND_TOOLS);
+  return tools;
+}
+
+/**
+ * Given a set of email_* tool IDs, detect which semantic operations they
+ * correspond to. Inverse of getEmailToolsForOperations.
+ */
+export function detectEmailOperations(allowedToolIds: string[]): string[] {
+  const emailIds = new Set(allowedToolIds.filter((id) => id.startsWith("email_")));
+  const ops: string[] = [];
+  if (EMAIL_READ_TOOLS.some((t) => emailIds.has(t))) ops.push("read");
+  if (EMAIL_DRAFT_TOOLS.some((t) => emailIds.has(t))) ops.push("draft");
+  if (EMAIL_SEND_TOOLS.some((t) => emailIds.has(t))) ops.push("send");
+  return ops;
+}
+
 // --- Odoo access level helpers ---
 
 export type OdooAccessLevel = "read-only" | "read-write" | "full" | "custom";

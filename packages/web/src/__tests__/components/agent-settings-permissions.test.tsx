@@ -242,14 +242,14 @@ describe("AgentSettingsPermissions", () => {
         expect(onChange).toHaveBeenCalledWith(
           expect.objectContaining({
             allowedTools: expect.arrayContaining(["pinchy_ls"]),
-            integrations: null,
+            integrations: [],
           }),
           true
         );
       });
     });
 
-    it("should call onChange with isDirty=false and integrations=null on mount when no changes", () => {
+    it("should call onChange with isDirty=false and empty integrations on mount when no changes", () => {
       const onChange = vi.fn();
       render(
         <AgentSettingsPermissions
@@ -260,7 +260,36 @@ describe("AgentSettingsPermissions", () => {
       );
 
       expect(onChange).toHaveBeenCalledWith(
-        { allowedTools: [], allowedPaths: [], integrations: null },
+        { allowedTools: [], allowedPaths: [], integrations: [] },
+        false
+      );
+    });
+
+    it("should exclude email_* tools from KB tools and allowedTools output", () => {
+      const onChange = vi.fn();
+      const agentWithEmailTools = {
+        ...defaultAgent,
+        allowedTools: ["email_list", "email_read", "email_search", "email_draft"],
+      };
+
+      render(
+        <AgentSettingsPermissions
+          agent={agentWithEmailTools}
+          directories={defaultDirectories}
+          onChange={onChange}
+        />
+      );
+
+      // email_* tools should not appear as KB checkboxes
+      expect(screen.queryByLabelText("Email: List messages")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Email: Read message")).not.toBeInTheDocument();
+
+      // allowedTools in onChange should not contain email_* tools (they come
+      // from the email integration, not from the KB tools state)
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allowedTools: [],
+        }),
         false
       );
     });

@@ -6,7 +6,11 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle } from "lucide-react";
 import { DirectoryPicker } from "@/components/directory-picker";
-import { getToolsByCategory, getOdooToolsForAccessLevel } from "@/lib/tool-registry";
+import {
+  getToolsByCategory,
+  getOdooToolsForAccessLevel,
+  getEmailToolsForOperations,
+} from "@/lib/tool-registry";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { OdooPermissionSection } from "@/components/odoo-permission-section";
 import { EmailPermissionSection } from "@/components/email-permission-section";
@@ -14,10 +18,10 @@ import { EmailPermissionSection } from "@/components/email-permission-section";
 interface PermissionsValues {
   allowedTools: string[];
   allowedPaths: string[];
-  integrations: {
+  integrations: Array<{
     connectionId: string;
     permissions: Array<{ model: string; operation: string }>;
-  } | null;
+  }>;
 }
 
 interface AgentSettingsPermissionsProps {
@@ -39,8 +43,10 @@ export function AgentSettingsPermissions({
   // KB tools = non-integration safe tools only
   const kbTools = getToolsByCategory("safe").filter((t) => !t.integration);
 
-  // Filter initial allowedTools to only KB tools (exclude odoo_*)
-  const initialKbTools = agent.allowedTools.filter((id) => !id.startsWith("odoo_"));
+  // Filter initial allowedTools to only KB tools (exclude odoo_* and email_*)
+  const initialKbTools = agent.allowedTools.filter(
+    (id) => !id.startsWith("odoo_") && !id.startsWith("email_")
+  );
 
   const [allowedKbTools, setAllowedKbTools] = useState<string[]>(initialKbTools);
   const [allowedPaths, setAllowedPaths] = useState<string[]>(
@@ -62,18 +68,22 @@ export function AgentSettingsPermissions({
 
   const hasKbToolChecked = kbTools.some((tool) => allowedKbTools.includes(tool.id));
 
-  // Compute the combined allowedTools array (KB tools + odoo tools based on integration)
+  // Compute the combined allowedTools array (KB tools + odoo tools + email tools)
   const computeAllowedTools = useCallback(
     (
       currentKbTools: string[],
-      integration: {
+      odoo: {
+        connectionId: string;
+        permissions: Array<{ model: string; operation: string }>;
+      } | null,
+      email: {
         connectionId: string;
         permissions: Array<{ model: string; operation: string }>;
       } | null
     ): string[] => {
       let odooToolIds: string[] = [];
-      if (integration && integration.permissions.length > 0) {
-        const ops = new Set(integration.permissions.map((p) => p.operation));
+      if (odoo && odoo.permissions.length > 0) {
+        const ops = new Set(odoo.permissions.map((p) => p.operation));
         const hasRead = ops.has("read");
         const hasCreate = ops.has("create");
         const hasWrite = ops.has("write");
@@ -93,27 +103,38 @@ export function AgentSettingsPermissions({
           if (hasDelete) odooToolIds.push("odoo_delete");
         }
       }
-      return [...currentKbTools, ...odooToolIds];
+
+      let emailToolIds: string[] = [];
+      if (email && email.permissions.length > 0) {
+        emailToolIds = getEmailToolsForOperations(email.permissions.map((p) => p.operation));
+      }
+
+      return [...currentKbTools, ...odooToolIds, ...emailToolIds];
     },
     []
   );
 
   // Notify parent after every state change (and on mount)
   useEffect(() => {
-    const allAllowedTools = computeAllowedTools(allowedKbTools, odooIntegration);
+    const allAllowedTools = computeAllowedTools(allowedKbTools, odooIntegration, emailIntegration);
     const kbDirty =
       JSON.stringify([...allowedKbTools].sort()) !==
         JSON.stringify([...initialKbToolsRef.current].sort()) ||
       JSON.stringify([...allowedPaths].sort()) !==
         JSON.stringify([...initialAllowedPaths.current].sort());
     const isDirty = kbDirty || odooIsDirty || emailIsDirty;
-    // Use whichever integration is configured (odoo or email)
-    const activeIntegration = odooIntegration ?? emailIntegration;
+    // Collect all active integrations
+    const integrations: Array<{
+      connectionId: string;
+      permissions: Array<{ model: string; operation: string }>;
+    }> = [];
+    if (odooIntegration) integrations.push(odooIntegration);
+    if (emailIntegration) integrations.push(emailIntegration);
     onChange(
       {
         allowedTools: allAllowedTools,
         allowedPaths,
-        integrations: activeIntegration,
+        integrations,
       },
       isDirty
     );

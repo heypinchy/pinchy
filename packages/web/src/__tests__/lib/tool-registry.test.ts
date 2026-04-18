@@ -8,6 +8,8 @@ import {
   getOdooToolsForAccessLevel,
   detectOdooAccessLevel,
   getEmailTools,
+  getEmailToolsForOperations,
+  detectEmailOperations,
 } from "@/lib/tool-registry";
 
 describe("TOOL_REGISTRY", () => {
@@ -258,5 +260,73 @@ describe("Odoo access level helpers", () => {
     const tools = getEmailTools();
     expect(tools).toHaveLength(5);
     expect(tools.every((t) => t.integration === "email")).toBe(true);
+  });
+});
+
+describe("Email operation helpers", () => {
+  describe("getEmailToolsForOperations", () => {
+    it("returns read tools for 'read' operation", () => {
+      expect(getEmailToolsForOperations(["read"])).toEqual([
+        "email_list",
+        "email_read",
+        "email_search",
+      ]);
+    });
+
+    it("returns draft tool for 'draft' operation", () => {
+      expect(getEmailToolsForOperations(["draft"])).toEqual(["email_draft"]);
+    });
+
+    it("returns send tool for 'send' operation", () => {
+      expect(getEmailToolsForOperations(["send"])).toEqual(["email_send"]);
+    });
+
+    it("returns all tools for all operations", () => {
+      expect(getEmailToolsForOperations(["read", "draft", "send"])).toEqual([
+        "email_list",
+        "email_read",
+        "email_search",
+        "email_draft",
+        "email_send",
+      ]);
+    });
+
+    it("returns empty for empty input", () => {
+      expect(getEmailToolsForOperations([])).toEqual([]);
+    });
+
+    it("ignores unknown operations", () => {
+      expect(getEmailToolsForOperations(["list", "search"])).toEqual([]);
+    });
+  });
+
+  describe("detectEmailOperations", () => {
+    it("detects read from any read tool", () => {
+      expect(detectEmailOperations(["email_list"])).toEqual(["read"]);
+      expect(detectEmailOperations(["email_read"])).toEqual(["read"]);
+      expect(detectEmailOperations(["email_search"])).toEqual(["read"]);
+    });
+
+    it("detects draft from email_draft", () => {
+      expect(detectEmailOperations(["email_draft"])).toEqual(["draft"]);
+    });
+
+    it("detects send from email_send", () => {
+      expect(detectEmailOperations(["email_send"])).toEqual(["send"]);
+    });
+
+    it("detects multiple operations from mixed tool IDs", () => {
+      expect(
+        detectEmailOperations(["email_list", "email_read", "email_search", "email_draft"])
+      ).toEqual(["read", "draft"]);
+    });
+
+    it("returns empty for non-email tools", () => {
+      expect(detectEmailOperations(["pinchy_ls", "odoo_read"])).toEqual([]);
+    });
+
+    it("returns empty for empty input", () => {
+      expect(detectEmailOperations([])).toEqual([]);
+    });
   });
 });

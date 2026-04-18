@@ -301,14 +301,14 @@ describe("AgentSettingsPage", () => {
     });
   });
 
-  it("should call DELETE on integrations endpoint when permissions dirty with null integrations", async () => {
+  it("should call DELETE on integrations endpoint when permissions dirty with empty integrations", async () => {
     render(<AgentSettingsPage />);
     await waitFor(() => screen.getByText("Agent Settings"));
 
-    // Simulate permissions tab dirty with null integrations (connection removed)
+    // Simulate permissions tab dirty with empty integrations (no connections configured)
     act(() => {
       _capturedOnChangePermissions?.(
-        { allowedTools: [], allowedPaths: [], integrations: null },
+        { allowedTools: [], allowedPaths: [], integrations: [] },
         true
       );
     });
@@ -347,10 +347,12 @@ describe("AgentSettingsPage", () => {
         {
           allowedTools: [],
           allowedPaths: [],
-          integrations: {
-            connectionId: "conn-1",
-            permissions: [{ model: "res.partner", operation: "read" }],
-          },
+          integrations: [
+            {
+              connectionId: "conn-1",
+              permissions: [{ model: "res.partner", operation: "read" }],
+            },
+          ],
         },
         true
       );
