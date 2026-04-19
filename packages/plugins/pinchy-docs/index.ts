@@ -5,9 +5,22 @@ interface PluginToolContext {
   agentId?: string;
 }
 
+interface DocSource {
+  id: string;
+  label: string;
+  path: string;
+}
+
+interface AgentSourceConfig {
+  sources?: string[];  // source IDs this agent can access; undefined = all
+}
+
 interface PluginConfig {
-  docsPath: string;
-  agents: Record<string, Record<string, unknown>>;
+  // New multi-source format
+  sources?: DocSource[];
+  agents: Record<string, AgentSourceConfig>;
+  // Legacy single-source format (backwards compat)
+  docsPath?: string;
 }
 
 interface PluginApi {
@@ -185,14 +198,14 @@ const plugin = {
       if (
         value &&
         typeof value === "object" &&
-        "docsPath" in value &&
-        "agents" in value
+        "agents" in value &&
+        ("docsPath" in value || "sources" in value)
       ) {
         return { ok: true as const, value };
       }
       return {
         ok: false as const,
-        errors: ["Missing required keys in config (docsPath, agents)"],
+        errors: ["Missing required keys in config (agents, and either docsPath or sources)"],
       };
     },
   },
@@ -201,7 +214,18 @@ const plugin = {
     const config = api.pluginConfig;
     if (!config) return;
 
-    const { docsPath, agents } = config;
+    // Normalize legacy single-source config to multi-source
+    const sources: DocSource[] = config.sources
+      ? config.sources
+      : config.docsPath
+        ? [{ id: "pinchy", label: "Pinchy Docs", path: config.docsPath }]
+        : [];
+
+    if (sources.length === 0) return;
+
+    const { agents } = config;
+    // Temporary: use first source path until full source-scoping is implemented
+    const docsPath = sources[0].path;
 
     api.registerTool(
       (ctx: PluginToolContext) => {

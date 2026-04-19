@@ -6,7 +6,8 @@ import { join } from "path";
 const mockRegisterTool = vi.fn();
 
 function createMockApi(config: {
-  docsPath: string;
+  docsPath?: string;
+  sources?: Array<{ id: string; label: string; path: string }>;
   agents: Record<string, Record<string, unknown>>;
 }) {
   return {
@@ -442,5 +443,21 @@ describe("pinchy-docs plugin", () => {
     expect(plugin.id).toBe("pinchy-docs");
     expect(plugin.name).toBe("Pinchy Docs");
     expect(plugin.configSchema).toBeDefined();
+  });
+
+  it("registers tools with multi-source config", async () => {
+    const api = createMockApi({
+      sources: [
+        { id: "pinchy", label: "Pinchy Docs", path: docsRoot },
+      ],
+      agents: { "agent-1": { sources: ["pinchy"] } },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    expect(mockRegisterTool).toHaveBeenCalledTimes(2);
+    const names = mockRegisterTool.mock.calls.map((c: any[]) => c[1]?.name);
+    expect(names).toContain("docs_list");
+    expect(names).toContain("docs_read");
   });
 });
