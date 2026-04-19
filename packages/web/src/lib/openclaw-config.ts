@@ -16,6 +16,7 @@ import { computeDeniedGroups } from "@/lib/tool-registry";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
+import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 
@@ -237,35 +238,6 @@ export async function regenerateOpenClawConfig() {
     };
   }
 
-  // Build pinchy-docs multi-source config
-  const docSources: Array<{ id: string; label: string; path: string }> = [];
-  const agentDocConfig: Record<string, { sources: string[] }> = {};
-
-  // Source 1: Pinchy platform docs (for personal agents / Smithers)
-  docSources.push({
-    id: "pinchy",
-    label: "Pinchy Platform Documentation",
-    path: "/pinchy-docs",
-  });
-
-  // Personal agents (Smithers) get pinchy docs
-  const personalAgentIds = allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => a.id);
-  for (const id of personalAgentIds) {
-    agentDocConfig[id] = { sources: ["pinchy"] };
-  }
-
-  // TODO(Task 6): Add Odoo integration doc sources and wire them to Odoo agents
-
-  if (Object.keys(agentDocConfig).length > 0) {
-    entries["pinchy-docs"] = {
-      enabled: true,
-      config: {
-        sources: docSources,
-        agents: agentDocConfig,
-      },
-    };
-  }
-
   // Only include pinchy-context when agents use it. Including disabled plugins
   // with config causes OpenClaw to spam "disabled in config but config is present".
   if (contextPluginAgents) {
@@ -395,6 +367,80 @@ export async function regenerateOpenClawConfig() {
       enabled: true,
       config: {
         agents: odooAgentConfigs,
+      },
+    };
+  }
+
+  // Build pinchy-docs multi-source config (after Odoo agent configs are populated)
+  const ODOO_DOC_SOURCES: Record<string, { id: string; label: string; path: string }> = {
+    accounting: {
+      id: "odoo-accounting",
+      label: "Odoo Accounting Best Practices",
+      path: "/integration-docs/odoo/accounting",
+    },
+    sales: {
+      id: "odoo-sales",
+      label: "Odoo Sales Best Practices",
+      path: "/integration-docs/odoo/sales",
+    },
+    inventory: {
+      id: "odoo-inventory",
+      label: "Odoo Inventory Best Practices",
+      path: "/integration-docs/odoo/inventory",
+    },
+  };
+
+  const docSources: Array<{ id: string; label: string; path: string }> = [];
+  const agentDocConfig: Record<string, { sources: string[] }> = {};
+
+  // Source 1: Pinchy platform docs (for personal agents / Smithers)
+  docSources.push({
+    id: "pinchy",
+    label: "Pinchy Platform Documentation",
+    path: "/pinchy-docs",
+  });
+
+  // Personal agents (Smithers) get pinchy docs
+  const personalAgentIds = allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => a.id);
+  for (const id of personalAgentIds) {
+    agentDocConfig[id] = { sources: ["pinchy"] };
+  }
+
+  // For each Odoo agent, add doc sources based on model category access
+  for (const [agentId, odooConfig] of Object.entries(odooAgentConfigs)) {
+    const permissions = odooConfig.permissions as Record<string, string[]>;
+    const modelNames = Object.keys(permissions);
+
+    // Find which doc categories have at least one accessible model
+    const odooSourceIds: string[] = [];
+    for (const cat of MODEL_CATEGORIES) {
+      const docSource = ODOO_DOC_SOURCES[cat.id];
+      if (!docSource) continue;
+      if (cat.models.some((m) => modelNames.includes(m.model))) {
+        // Add source if not already in the list
+        if (!docSources.find((s) => s.id === docSource.id)) {
+          docSources.push(docSource);
+        }
+        odooSourceIds.push(docSource.id);
+      }
+    }
+
+    if (odooSourceIds.length > 0) {
+      if (agentDocConfig[agentId]) {
+        // Agent already has sources (e.g., personal Odoo agent with pinchy docs)
+        agentDocConfig[agentId].sources.push(...odooSourceIds);
+      } else {
+        agentDocConfig[agentId] = { sources: odooSourceIds };
+      }
+    }
+  }
+
+  if (Object.keys(agentDocConfig).length > 0) {
+    entries["pinchy-docs"] = {
+      enabled: true,
+      config: {
+        sources: docSources,
+        agents: agentDocConfig,
       },
     };
   }
