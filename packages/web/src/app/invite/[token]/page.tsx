@@ -100,7 +100,7 @@ export default function InviteClaimPage() {
               <CardContent>
                 <Form {...form}>
                   <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-                    {error && <p className="text-destructive">{error}</p>}
+                    {error && <p className="text-sm text-destructive">{error}</p>}
 
                     <FormField
                       control={form.control}
