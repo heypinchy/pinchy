@@ -1036,11 +1036,181 @@ describe("regenerateOpenClawConfig", () => {
 
     expect(config.plugins.entries["pinchy-docs"]).toBeDefined();
     expect(config.plugins.entries["pinchy-docs"].enabled).toBe(true);
-    expect(config.plugins.entries["pinchy-docs"].config.docsPath).toBe("/pinchy-docs");
-    expect(config.plugins.entries["pinchy-docs"].config.agents).toEqual({
-      "smithers-1": {},
-    });
+    const docsConfig = config.plugins.entries["pinchy-docs"].config;
+    expect(docsConfig.sources).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "pinchy", path: "/pinchy-docs" })])
+    );
+    expect(docsConfig.agents["smithers-1"].sources).toContain("pinchy");
     expect(config.plugins.allow).toContain("pinchy-docs");
+  });
+
+  it("builds multi-source pinchy-docs config with sources array for personal agents", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "smithers-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          isPersonal: true,
+          ownerId: "user-1",
+          allowedTools: ["pinchy_save_user_context"],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const docsConfig = config.plugins.entries["pinchy-docs"].config;
+
+    // New format: sources array (not docsPath)
+    expect(docsConfig.sources).toBeDefined();
+    expect(docsConfig.docsPath).toBeUndefined(); // old format must be gone
+
+    // Pinchy source must exist
+    const pincySource = docsConfig.sources.find((s: any) => s.id === "pinchy");
+    expect(pincySource).toBeDefined();
+    expect(pincySource.path).toBe("/pinchy-docs");
+
+    // Agent gets pinchy source
+    expect(docsConfig.agents["smithers-1"]).toBeDefined();
+    expect(docsConfig.agents["smithers-1"].sources).toContain("pinchy");
+  });
+
+  it("adds odoo-accounting doc source for agent with account.move read permission", async () => {
+    const agentsData = [
+      {
+        id: "finance-agent",
+        name: "Finance Controller",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        isPersonal: false,
+        ownerId: null,
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "finance-agent",
+          connectionId: "conn-1",
+          model: "account.move",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-1",
+          type: "odoo",
+          name: "Acme Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://odoo.example.com",
+            db: "acme",
+            uid: 2,
+            apiKey: "test-key",
+          }),
+          data: {
+            models: [
+              {
+                model: "account.move",
+                name: "Invoices & Entries",
+                fields: [],
+                access: { read: true, create: false, write: false, delete: false },
+              },
+            ],
+            lastSyncAt: "2026-04-01T00:00:00Z",
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const docsPlugin = config.plugins.entries["pinchy-docs"];
+    expect(docsPlugin).toBeDefined();
+    expect(docsPlugin.enabled).toBe(true);
+
+    const docsConfig = docsPlugin.config;
+    const odooSource = docsConfig.sources.find((s: any) => s.id === "odoo-accounting");
+    expect(odooSource).toBeDefined();
+    expect(odooSource.path).toBe("/integration-docs/odoo/accounting");
+
+    const agentConfig = docsConfig.agents["finance-agent"];
+    expect(agentConfig).toBeDefined();
+    expect(agentConfig.sources).toContain("odoo-accounting");
+  });
+
+  it("does not add pinchy-docs for Odoo agent with no matching doc categories", async () => {
+    const agentsData = [
+      {
+        id: "mail-agent",
+        name: "Mail Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        isPersonal: false,
+        ownerId: null,
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "mail-agent",
+          connectionId: "conn-1",
+          model: "mail.message", // mail category has no doc source
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-1",
+          type: "odoo",
+          name: "Acme Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://odoo.example.com",
+            db: "acme",
+            uid: 2,
+            apiKey: "test-key",
+          }),
+          data: { models: [], lastSyncAt: "2026-04-01T00:00:00Z" },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    // mail category has no doc source, so pinchy-docs should not be emitted
+    // (no personal agents either, so the whole plugin is absent)
+    expect(config.plugins.entries["pinchy-docs"]).toBeUndefined();
   });
 });
 

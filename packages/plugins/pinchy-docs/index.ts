@@ -5,9 +5,22 @@ interface PluginToolContext {
   agentId?: string;
 }
 
+interface DocSource {
+  id: string;
+  label: string;
+  path: string;
+}
+
+interface AgentSourceConfig {
+  sources?: string[];  // source IDs this agent can access; empty array = no access; undefined = no access
+}
+
 interface PluginConfig {
-  docsPath: string;
-  agents: Record<string, Record<string, unknown>>;
+  // New multi-source format
+  sources?: DocSource[];
+  agents: Record<string, AgentSourceConfig>;
+  // Legacy single-source format (backwards compat)
+  docsPath?: string;
 }
 
 interface PluginApi {
@@ -64,7 +77,7 @@ function parseFrontmatter(content: string): { title: string; description: string
   return { title, description };
 }
 
-function listMdxFiles(root: string): DocEntry[] {
+function listDocs(root: string): DocEntry[] {
   const results: DocEntry[] = [];
 
   function walk(dir: string, relBase: string) {
@@ -79,7 +92,7 @@ function listMdxFiles(root: string): DocEntry[] {
       const relPath = relBase ? `${relBase}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         walk(fullPath, relPath);
-      } else if (entry.isFile() && entry.name.endsWith(".mdx")) {
+      } else if (entry.isFile() && (entry.name.endsWith(".mdx") || entry.name.endsWith(".md"))) {
         try {
           const content = readFileSync(fullPath, "utf-8");
           const { title, description } = parseFrontmatter(content);
@@ -179,20 +192,20 @@ const plugin = {
   id: "pinchy-docs",
   name: "Pinchy Docs",
   description:
-    "On-demand access to Pinchy platform documentation for personal assistants.",
+    "On-demand access to documentation for agents — platform docs, integration guides, and best practices.",
   configSchema: {
     validate: (value: unknown) => {
       if (
         value &&
         typeof value === "object" &&
-        "docsPath" in value &&
-        "agents" in value
+        "agents" in value &&
+        ("docsPath" in value || "sources" in value)
       ) {
         return { ok: true as const, value };
       }
       return {
         ok: false as const,
-        errors: ["Missing required keys in config (docsPath, agents)"],
+        errors: ["Missing required keys in config (agents, and either docsPath or sources)"],
       };
     },
   },
@@ -201,7 +214,16 @@ const plugin = {
     const config = api.pluginConfig;
     if (!config) return;
 
-    const { docsPath, agents } = config;
+    // Normalize legacy single-source config to multi-source
+    const sources: DocSource[] = config.sources
+      ? config.sources
+      : config.docsPath
+        ? [{ id: "pinchy", label: "Pinchy Docs", path: config.docsPath }]
+        : [];
+
+    if (sources.length === 0) return;
+
+    const { agents } = config;
 
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -211,19 +233,40 @@ const plugin = {
 
         return {
           name: "docs_list",
-          label: "List Pinchy Documentation",
+          label: "List Available Documentation",
           description:
-            "List all available Pinchy platform documentation files. Returns a JSON array with the path, title, and description of each doc page. Use this first to discover what docs exist, then read specific files with docs_read.",
+            "List all documentation available to you — platform guides, integration best practices, " +
+            "and domain-specific how-tos. Returns titles and descriptions grouped by source. " +
+            "Use this when you are unsure how to perform a task correctly (e.g., how to book VAT, " +
+            "how to create a credit note). Then use docs_read to read the specific document you need. " +
+            "This is lightweight — call it whenever you need guidance.",
           parameters: {
             type: "object",
             properties: {},
           },
           async execute() {
             try {
-              const files = listMdxFiles(docsPath);
+              const agentConfig = agents[agentId];
+              const allowedSourceIds = agentConfig?.sources as string[] | undefined;
+
+              const sourceDocs = sources
+                .filter((s) => allowedSourceIds?.includes(s.id) ?? false)
+                .map((source) => {
+                  const files = listDocs(source.path);
+                  return {
+                    source: source.id,
+                    label: source.label,
+                    docs: files.map((f) => ({
+                      ...f,
+                      path: `${source.id}/${f.path}`,
+                    })),
+                  };
+                })
+                .filter((s) => s.docs.length > 0);
+
               return {
                 content: [
-                  { type: "text", text: JSON.stringify(files, null, 2) },
+                  { type: "text", text: JSON.stringify(sourceDocs, null, 2) },
                 ],
               };
             } catch (error) {
@@ -248,52 +291,87 @@ const plugin = {
 
         return {
           name: "docs_read",
-          label: "Read Pinchy Documentation",
+          label: "Read Documentation",
           description:
-            "Read a single Pinchy platform documentation file by its relative path (as returned by docs_list). Returns the full file content including frontmatter.",
+            "Read a single documentation page by its path (as shown by docs_list). Returns the file content with frontmatter and MDX syntax stripped. Read one document at a time — only what you need for the current question. Each read consumes conversation context, so be selective.",
           parameters: {
             type: "object",
             properties: {
               path: {
                 type: "string",
                 description:
-                  "Relative path to the doc file (e.g. 'guides/ollama-setup.mdx')",
+                  "Path to the doc file in 'sourceId/relative/path.md' format (as shown by docs_list).",
               },
             },
             required: ["path"],
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
-            const relPath = params.path as string;
-            const safe = resolveSafe(docsPath, relPath);
+            const rawPath = params.path as string;
+
+            // Parse "sourceId/relative/path.md" format
+            const slashIdx = rawPath.indexOf("/");
+            if (slashIdx === -1) {
+              return {
+                isError: true,
+                content: [{ type: "text", text: `Invalid path format: "${rawPath}". Use "sourceId/path/to/file.md".` }],
+              };
+            }
+
+            const sourceId = rawPath.slice(0, slashIdx);
+            const relPath = rawPath.slice(slashIdx + 1);
+
+            // Check agent has access to this source
+            const agentConfig = agents[agentId];
+            const allowedSourceIds = agentConfig?.sources as string[] | undefined;
+            if (!allowedSourceIds?.includes(sourceId)) {
+              return {
+                isError: true,
+                content: [{ type: "text", text: `Access denied: source "${sourceId}" is not available for this agent.` }],
+              };
+            }
+
+            // Find the source
+            const source = sources.find((s) => s.id === sourceId);
+            if (!source) {
+              return {
+                isError: true,
+                content: [{ type: "text", text: `Unknown source: "${sourceId}". Use docs_list to see available sources.` }],
+              };
+            }
+
+            // Existing resolveSafe + read logic, using source.path as root
+            const safe = resolveSafe(source.path, relPath);
             if (!safe) {
               return {
                 isError: true,
                 content: [
                   {
                     type: "text",
-                    text: `Invalid path: ${relPath}. Path must be a relative path inside the docs directory.`,
+                    text: `Invalid path: ${rawPath}. Path must be a relative path inside the docs directory.`,
                   },
                 ],
               };
             }
+
             try {
               const stat = statSync(safe);
               if (!stat.isFile()) {
                 return {
                   isError: true,
-                  content: [{ type: "text", text: `Not a file: ${relPath}` }],
+                  content: [{ type: "text", text: `Not a file: ${rawPath}` }],
                 };
               }
-              const content = readFileSync(safe, "utf-8");
-              return { content: [{ type: "text", text: preprocessMdx(content) }] };
+              const raw = readFileSync(safe, "utf-8");
+              const content = preprocessMdx(raw);
+              return {
+                content: [{ type: "text", text: content }],
+              };
             } catch (error) {
               const message =
                 error instanceof Error ? error.message : "Unknown error";
               return {
                 isError: true,
-                content: [
-                  { type: "text", text: `File not found: ${relPath} (${message})` },
-                ],
+                content: [{ type: "text", text: `File not found: "${rawPath}" (${message}). Use docs_list to see available files.` }],
               };
             }
           },

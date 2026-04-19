@@ -6,7 +6,8 @@ import { join } from "path";
 const mockRegisterTool = vi.fn();
 
 function createMockApi(config: {
-  docsPath: string;
+  docsPath?: string;
+  sources?: Array<{ id: string; label: string; path: string }>;
   agents: Record<string, Record<string, unknown>>;
 }) {
   return {
@@ -43,8 +44,8 @@ afterEach(() => {
   rmSync(docsRoot, { recursive: true, force: true });
 });
 
-function writeMdx(relPath: string, frontmatter: Record<string, string>, body: string) {
-  const fullPath = join(docsRoot, relPath);
+function writeMdxAt(root: string, relPath: string, frontmatter: Record<string, string>, body: string) {
+  const fullPath = join(root, relPath);
   mkdirSync(join(fullPath, ".."), { recursive: true });
   const fmLines = Object.entries(frontmatter)
     .map(([k, v]) => `${k}: ${v}`)
@@ -52,9 +53,13 @@ function writeMdx(relPath: string, frontmatter: Record<string, string>, body: st
   writeFileSync(fullPath, `---\n${fmLines}\n---\n${body}`, "utf-8");
 }
 
+function writeMdx(relPath: string, frontmatter: Record<string, string>, body: string) {
+  writeMdxAt(docsRoot, relPath, frontmatter, body);
+}
+
 describe("pinchy-docs plugin", () => {
   it("registers docs_list and docs_read as tool factories", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -65,7 +70,7 @@ describe("pinchy-docs plugin", () => {
   });
 
   it("docs_list factory returns tool for allowed agent", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -78,7 +83,7 @@ describe("pinchy-docs plugin", () => {
   });
 
   it("docs_list factory returns null for non-allowed agent", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -93,7 +98,7 @@ describe("pinchy-docs plugin", () => {
     writeMdx("foo.mdx", { title: "Foo", description: "Foo description" }, "body");
     writeMdx("bar.mdx", { title: "Bar", description: "Bar description" }, "body");
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -103,17 +108,20 @@ describe("pinchy-docs plugin", () => {
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", {});
     const parsed = JSON.parse(result.content[0].text);
+    // New grouped format: [{source, label, docs: [...]}]
     expect(Array.isArray(parsed)).toBe(true);
-    expect(parsed).toHaveLength(2);
-    const foo = parsed.find((p: any) => p.path === "foo.mdx");
-    expect(foo).toEqual({ path: "foo.mdx", title: "Foo", description: "Foo description" });
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].source).toBe("pinchy");
+    expect(parsed[0].docs).toHaveLength(2);
+    const foo = parsed[0].docs.find((d: any) => d.path === "pinchy/foo.mdx");
+    expect(foo).toEqual({ path: "pinchy/foo.mdx", title: "Foo", description: "Foo description" });
   });
 
   it("docs_list recurses into subdirectories", async () => {
     writeMdx("guides/setup.mdx", { title: "Setup", description: "Setup guide" }, "body");
     writeMdx("reference/api.mdx", { title: "API", description: "API reference" }, "body");
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -123,16 +131,17 @@ describe("pinchy-docs plugin", () => {
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", {});
     const parsed = JSON.parse(result.content[0].text);
-    const paths = parsed.map((p: any) => p.path).sort();
-    expect(paths).toEqual(["guides/setup.mdx", "reference/api.mdx"]);
+    // New grouped format: unwrap docs from the single source group
+    expect(parsed).toHaveLength(1);
+    const paths = parsed[0].docs.map((d: any) => d.path).sort();
+    expect(paths).toEqual(["pinchy/guides/setup.mdx", "pinchy/reference/api.mdx"]);
   });
 
-  it("docs_list ignores non-mdx files", async () => {
+  it("docs_list ignores non-doc files", async () => {
     writeMdx("foo.mdx", { title: "Foo", description: "x" }, "body");
-    writeFileSync(join(docsRoot, "ignored.txt"), "not mdx", "utf-8");
-    writeFileSync(join(docsRoot, "ignored.md"), "not mdx", "utf-8");
+    writeFileSync(join(docsRoot, "ignored.txt"), "not a doc", "utf-8");
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -142,14 +151,16 @@ describe("pinchy-docs plugin", () => {
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", {});
     const parsed = JSON.parse(result.content[0].text);
+    // New grouped format: one source group with one doc
     expect(parsed).toHaveLength(1);
-    expect(parsed[0].path).toBe("foo.mdx");
+    expect(parsed[0].docs).toHaveLength(1);
+    expect(parsed[0].docs[0].path).toBe("pinchy/foo.mdx");
   });
 
   it("docs_read returns file content for valid relative path", async () => {
     writeMdx("foo.mdx", { title: "Foo", description: "x" }, "Hello world");
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -157,7 +168,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
     // Frontmatter is stripped — see "docs_read strips frontmatter" — so the
     // returned content should be the body only. Title/description live in
     // docs_list output.
@@ -165,7 +176,7 @@ describe("pinchy-docs plugin", () => {
   });
 
   it("docs_read rejects path traversal with ..", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -173,7 +184,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "../etc/passwd" });
+    const result = await tool.execute("call-1", { path: "pinchy/../etc/passwd" });
     expect(result.content[0].text.toLowerCase()).toContain("invalid");
     expect(result.isError).toBe(true);
   });
@@ -193,7 +204,7 @@ describe("pinchy-docs plugin", () => {
       return;
     }
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -201,7 +212,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "leak.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/leak.mdx" });
 
     expect(result.content[0].text.toLowerCase()).toContain("invalid");
     expect(result.isError).toBe(true);
@@ -211,7 +222,7 @@ describe("pinchy-docs plugin", () => {
   });
 
   it("docs_read rejects absolute paths", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -219,7 +230,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "/etc/passwd" });
+    const result = await tool.execute("call-1", { path: "pinchy//etc/passwd" });
     expect(result.content[0].text.toLowerCase()).toContain("invalid");
     expect(result.isError).toBe(true);
   });
@@ -227,7 +238,7 @@ describe("pinchy-docs plugin", () => {
   it("docs_read marks directory-instead-of-file as error", async () => {
     mkdirSync(join(docsRoot, "subdir"), { recursive: true });
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -235,13 +246,13 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "subdir" });
+    const result = await tool.execute("call-1", { path: "pinchy/subdir" });
     expect(result.content[0].text.toLowerCase()).toContain("not a file");
     expect(result.isError).toBe(true);
   });
 
   it("docs_read returns error for nonexistent file", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -249,13 +260,13 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "nonexistent.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/nonexistent.mdx" });
     expect(result.content[0].text.toLowerCase()).toMatch(/not found|no such/);
     expect(result.isError).toBe(true);
   });
 
   it("docs_read factory returns null for non-allowed agent", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -273,7 +284,7 @@ describe("pinchy-docs plugin", () => {
       "Hello world."
     );
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -281,7 +292,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
 
     expect(result.content[0].text).toContain("Hello world.");
     expect(result.content[0].text).not.toContain("---");
@@ -301,7 +312,7 @@ describe("pinchy-docs plugin", () => {
       ].join("\n")
     );
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -309,7 +320,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
 
     expect(result.content[0].text).toContain("Real content here.");
     expect(result.content[0].text).not.toContain("import {");
@@ -332,7 +343,7 @@ describe("pinchy-docs plugin", () => {
       ].join("\n")
     );
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -340,7 +351,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
 
     expect(result.content[0].text).toContain("Pinchy agents require models with tool calling support.");
     expect(result.content[0].text).toContain("First step");
@@ -370,7 +381,7 @@ describe("pinchy-docs plugin", () => {
       ].join("\n")
     );
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -378,7 +389,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
 
     expect(result.content[0].text).toContain("## Setup");
     expect(result.content[0].text).toContain("```bash");
@@ -402,7 +413,7 @@ describe("pinchy-docs plugin", () => {
       ].join("\n")
     );
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -410,7 +421,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
 
     expect(result.content[0].text).toContain('<Aside type="note">Hello</Aside>');
   });
@@ -422,7 +433,7 @@ describe("pinchy-docs plugin", () => {
       ["First.", "", "", "", "", "Second."].join("\n")
     );
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -430,7 +441,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
 
     expect(result.content[0].text).not.toMatch(/\n\n\n/);
     expect(result.content[0].text).toContain("First.");
@@ -442,5 +453,237 @@ describe("pinchy-docs plugin", () => {
     expect(plugin.id).toBe("pinchy-docs");
     expect(plugin.name).toBe("Pinchy Docs");
     expect(plugin.configSchema).toBeDefined();
+  });
+
+  it("registers tools with multi-source config", async () => {
+    const api = createMockApi({
+      sources: [
+        { id: "pinchy", label: "Pinchy Docs", path: docsRoot },
+      ],
+      agents: { "agent-1": { sources: ["pinchy"] } },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    expect(mockRegisterTool).toHaveBeenCalledTimes(2);
+    const names = mockRegisterTool.mock.calls.map((c: any[]) => c[1]?.name);
+    expect(names).toContain("docs_list");
+    expect(names).toContain("docs_read");
+  });
+
+  it("docs_read reads from the correct source by prefix", async () => {
+    const odooRoot = mkdtempSync(join(tmpdir(), "pinchy-docs-odoo-"));
+    writeMdxAt(odooRoot, "vat.mdx", { title: "VAT" }, "VAT content here.");
+
+    const api = createMockApi({
+      sources: [
+        { id: "pinchy", label: "Pinchy Docs", path: docsRoot },
+        { id: "odoo-acct", label: "Odoo Accounting", path: odooRoot },
+      ],
+      agents: { "agent-1": { sources: ["odoo-acct"] } },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_read"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", { path: "odoo-acct/vat.mdx" });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("VAT content here.");
+
+    rmSync(odooRoot, { recursive: true, force: true });
+  });
+
+  it("docs_read rejects access to a source the agent is not allowed", async () => {
+    writeMdx("secret.mdx", { title: "Secret" }, "Secret content");
+
+    const api = createMockApi({
+      sources: [
+        { id: "pinchy", label: "Pinchy Docs", path: docsRoot },
+      ],
+      agents: { "agent-1": { sources: [] } },  // no sources allowed
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_read"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", { path: "pinchy/secret.mdx" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Access denied");  // add this line
+    expect(result.content[0].text).not.toContain("Secret content");
+  });
+
+  it("docs_read returns error for path without source prefix", async () => {
+    const api = createMockApi({
+      sources: [{ id: "pinchy", label: "Pinchy Docs", path: docsRoot }],
+      agents: { "agent-1": { sources: ["pinchy"] } },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_read"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", { path: "justAFile.mdx" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Invalid path format");
+  });
+
+  it("docs_list includes .md files alongside .mdx files", async () => {
+    writeMdx("guide.mdx", { title: "MDX Guide", description: "An MDX doc" }, "body");
+    // Write a plain .md file using writeMdxAt
+    writeMdxAt(docsRoot, "howto.md", { title: "MD Guide", description: "A Markdown doc" }, "body");
+
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_list"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", {});
+    const parsed = JSON.parse(result.content[0].text);
+    const allDocs = parsed.flatMap((s: any) => s.docs);
+
+    expect(allDocs).toHaveLength(2);
+    expect(allDocs.find((d: any) => d.path.endsWith("guide.mdx"))).toBeTruthy();
+    expect(allDocs.find((d: any) => d.path.endsWith("howto.md"))).toBeTruthy();
+  });
+
+  it("docs_list description mentions best practices and docs_read", async () => {
+    const api = createMockApi({
+      sources: [{ id: "pinchy", label: "Pinchy Docs", path: docsRoot }],
+      agents: { "agent-1": { sources: ["pinchy"] } },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_list"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+
+    expect(tool.description).toContain("best practices");
+    expect(tool.description).toContain("docs_read");
+  });
+
+  it("docs_list returns files grouped by source", async () => {
+    // Create two separate doc roots for two sources
+    const odooRoot = mkdtempSync(join(tmpdir(), "pinchy-docs-odoo-"));
+    writeMdxAt(odooRoot, "vat.mdx", { title: "VAT Booking", description: "How to book VAT" }, "body");
+    writeMdxAt(odooRoot, "invoicing.mdx", { title: "Invoicing", description: "Invoice basics" }, "body");
+
+    const api = createMockApi({
+      sources: [
+        { id: "pinchy", label: "Pinchy Docs", path: docsRoot },
+        { id: "odoo-accounting", label: "Odoo 17 Accounting", path: odooRoot },
+      ],
+      agents: { "agent-1": { sources: ["odoo-accounting"] } },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_list"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", {});
+    const parsed = JSON.parse(result.content[0].text);
+
+    // Should only see odoo-accounting, not pinchy
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].source).toBe("odoo-accounting");
+    expect(parsed[0].label).toBe("Odoo 17 Accounting");
+    expect(parsed[0].docs).toHaveLength(2);
+    expect(parsed[0].docs.find((d: any) => d.title === "VAT Booking")).toBeTruthy();
+
+    rmSync(odooRoot, { recursive: true, force: true });
+  });
+
+  it("docs_list returns empty result for agent with undefined sources", async () => {
+    writeMdx("doc.mdx", { title: "Doc", description: "A doc" }, "content");
+
+    const api = createMockApi({
+      sources: [{ id: "pinchy", label: "Pinchy Docs", path: docsRoot }],
+      agents: { "agent-1": {} },  // no sources key = undefined
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_list"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", {});
+    const parsed = JSON.parse(result.content[0].text);
+
+    // undefined sources = no access = empty list
+    expect(parsed).toHaveLength(0);
+  });
+});
+
+describe("multi-source integration", () => {
+  it("full pipeline: list sources, read from correct source, reject unauthorized source", async () => {
+    // Setup two sources
+    const accountingRoot = mkdtempSync(join(tmpdir(), "pinchy-docs-acct-"));
+    const salesRoot = mkdtempSync(join(tmpdir(), "pinchy-docs-sales-"));
+    writeMdxAt(accountingRoot, "vat.md", { title: "VAT Guide", description: "VAT how-to" }, "VAT content");
+    writeMdxAt(salesRoot, "quotations.md", { title: "Quotations", description: "Quote guide" }, "Quote content");
+
+    const api = createMockApi({
+      sources: [
+        { id: "odoo-accounting", label: "Odoo Accounting", path: accountingRoot },
+        { id: "odoo-sales", label: "Odoo Sales", path: salesRoot },
+      ],
+      agents: {
+        "finance-agent": { sources: ["odoo-accounting"] },
+        "sales-agent": { sources: ["odoo-sales"] },
+      },
+    });
+
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const listFactory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_list")?.[0];
+    const readFactory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
+
+    // Finance agent sees only accounting
+    const financeList = listFactory({ agentId: "finance-agent" });
+    const listResult = await financeList.execute("c1", {});
+    const sources = JSON.parse(listResult.content[0].text);
+    expect(sources).toHaveLength(1);
+    expect(sources[0].source).toBe("odoo-accounting");
+    expect(sources[0].docs[0].path).toBe("odoo-accounting/vat.md");
+
+    // Finance agent can read accounting docs
+    const financeRead = readFactory({ agentId: "finance-agent" });
+    const readResult = await financeRead.execute("c2", { path: "odoo-accounting/vat.md" });
+    expect(readResult.isError).toBeFalsy();
+    expect(readResult.content[0].text).toContain("VAT content");
+
+    // Finance agent cannot read sales docs
+    const deniedResult = await financeRead.execute("c3", { path: "odoo-sales/quotations.md" });
+    expect(deniedResult.isError).toBe(true);
+    expect(deniedResult.content[0].text).toContain("Access denied");
+
+    // Sales agent sees only sales
+    const salesList = listFactory({ agentId: "sales-agent" });
+    const salesListResult = await salesList.execute("c4", {});
+    const salesSources = JSON.parse(salesListResult.content[0].text);
+    expect(salesSources).toHaveLength(1);
+    expect(salesSources[0].source).toBe("odoo-sales");
+
+    rmSync(accountingRoot, { recursive: true, force: true });
+    rmSync(salesRoot, { recursive: true, force: true });
   });
 });
