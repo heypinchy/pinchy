@@ -237,15 +237,31 @@ export async function regenerateOpenClawConfig() {
     };
   }
 
-  // Enable pinchy-docs for all personal agents (Smithers) so they can read
-  // platform documentation on demand. The plugin scopes itself to listed agents.
+  // Build pinchy-docs multi-source config
+  const docSources: Array<{ id: string; label: string; path: string }> = [];
+  const agentDocConfig: Record<string, { sources: string[] }> = {};
+
+  // Source 1: Pinchy platform docs (for personal agents / Smithers)
+  docSources.push({
+    id: "pinchy",
+    label: "Pinchy Platform Documentation",
+    path: "/pinchy-docs",
+  });
+
+  // Personal agents (Smithers) get pinchy docs
   const personalAgentIds = allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => a.id);
-  if (personalAgentIds.length > 0) {
+  for (const id of personalAgentIds) {
+    agentDocConfig[id] = { sources: ["pinchy"] };
+  }
+
+  // TODO(Task 6): Add Odoo integration doc sources and wire them to Odoo agents
+
+  if (Object.keys(agentDocConfig).length > 0) {
     entries["pinchy-docs"] = {
       enabled: true,
       config: {
-        docsPath: "/pinchy-docs",
-        agents: Object.fromEntries(personalAgentIds.map((id) => [id, {}])),
+        sources: docSources,
+        agents: agentDocConfig,
       },
     };
   }

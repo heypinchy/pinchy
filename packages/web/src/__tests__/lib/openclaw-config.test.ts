@@ -1036,11 +1036,48 @@ describe("regenerateOpenClawConfig", () => {
 
     expect(config.plugins.entries["pinchy-docs"]).toBeDefined();
     expect(config.plugins.entries["pinchy-docs"].enabled).toBe(true);
-    expect(config.plugins.entries["pinchy-docs"].config.docsPath).toBe("/pinchy-docs");
-    expect(config.plugins.entries["pinchy-docs"].config.agents).toEqual({
-      "smithers-1": {},
-    });
+    const docsConfig = config.plugins.entries["pinchy-docs"].config;
+    expect(docsConfig.sources).toEqual(
+      expect.arrayContaining([expect.objectContaining({ id: "pinchy", path: "/pinchy-docs" })])
+    );
+    expect(docsConfig.agents["smithers-1"].sources).toContain("pinchy");
     expect(config.plugins.allow).toContain("pinchy-docs");
+  });
+
+  it("builds multi-source pinchy-docs config with sources array for personal agents", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "smithers-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          isPersonal: true,
+          ownerId: "user-1",
+          allowedTools: ["pinchy_save_user_context"],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const docsConfig = config.plugins.entries["pinchy-docs"].config;
+
+    // New format: sources array (not docsPath)
+    expect(docsConfig.sources).toBeDefined();
+    expect(docsConfig.docsPath).toBeUndefined(); // old format must be gone
+
+    // Pinchy source must exist
+    const pincySource = docsConfig.sources.find((s: any) => s.id === "pinchy");
+    expect(pincySource).toBeDefined();
+    expect(pincySource.path).toBe("/pinchy-docs");
+
+    // Agent gets pinchy source
+    expect(docsConfig.agents["smithers-1"]).toBeDefined();
+    expect(docsConfig.agents["smithers-1"].sources).toContain("pinchy");
   });
 });
 
