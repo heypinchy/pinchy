@@ -137,7 +137,7 @@ export function UserDetailSheet({
     const res = await fetch(`/api/users/${user.id}/reset`, { method: "POST" });
     if (res.ok) {
       const data = await res.json();
-      setResetLink(`${window.location.origin}/invite/${data.token}`);
+      setResetLink(`${window.location.origin}/reset/${data.token}`);
     } else {
       toast.error("Failed to reset password");
     }
