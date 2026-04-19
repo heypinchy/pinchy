@@ -34,7 +34,8 @@ const inviteClaimSchema = z
 type InviteClaimValues = z.infer<typeof inviteClaimSchema>;
 
 export default function InviteClaimPage() {
-  const { token } = useParams();
+  const params = useParams();
+  const token = Array.isArray(params.token) ? params.token[0] : params.token;
   const router = useRouter();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);

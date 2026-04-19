@@ -299,7 +299,7 @@ describe("UserDetailSheet", () => {
       json: async () => ({ token: "abc123" }),
     });
 
-    // Mock window.location.origin
+    const originalLocation = window.location;
     Object.defineProperty(window, "location", {
       value: { origin: "https://demo.heypinchy.com" },
       writable: true,
@@ -322,5 +322,7 @@ describe("UserDetailSheet", () => {
     await waitFor(() => {
       expect(screen.getByText("https://demo.heypinchy.com/reset/abc123")).toBeInTheDocument();
     });
+
+    Object.defineProperty(window, "location", { value: originalLocation, writable: true });
   });
 });

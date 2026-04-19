@@ -146,8 +146,8 @@ describe("Reset Password Page", () => {
 
     await waitFor(() => {
       expect(screen.getByText("Password reset!")).toBeInTheDocument();
+      expect(screen.getByText("You can now sign in with your new password.")).toBeInTheDocument();
     });
-    expect(screen.getByText("You can now sign in with your new password.")).toBeInTheDocument();
   });
 
   it("should redirect to /login via 'Continue to sign in' button after success", async () => {
