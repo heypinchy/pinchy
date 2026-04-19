@@ -137,10 +137,9 @@ describe("pinchy-docs plugin", () => {
     expect(paths).toEqual(["pinchy/guides/setup.mdx", "pinchy/reference/api.mdx"]);
   });
 
-  it("docs_list ignores non-mdx files", async () => {
+  it("docs_list ignores non-doc files", async () => {
     writeMdx("foo.mdx", { title: "Foo", description: "x" }, "body");
-    writeFileSync(join(docsRoot, "ignored.txt"), "not mdx", "utf-8");
-    writeFileSync(join(docsRoot, "ignored.md"), "not mdx", "utf-8");
+    writeFileSync(join(docsRoot, "ignored.txt"), "not a doc", "utf-8");
 
     const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
     const { default: plugin } = await import("./index");
@@ -537,6 +536,28 @@ describe("pinchy-docs plugin", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Invalid path format");
+  });
+
+  it("docs_list includes .md files alongside .mdx files", async () => {
+    writeMdx("guide.mdx", { title: "MDX Guide", description: "An MDX doc" }, "body");
+    // Write a plain .md file using writeMdxAt
+    writeMdxAt(docsRoot, "howto.md", { title: "MD Guide", description: "A Markdown doc" }, "body");
+
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_list"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", {});
+    const parsed = JSON.parse(result.content[0].text);
+    const allDocs = parsed.flatMap((s: any) => s.docs);
+
+    expect(allDocs).toHaveLength(2);
+    expect(allDocs.find((d: any) => d.path.endsWith("guide.mdx"))).toBeTruthy();
+    expect(allDocs.find((d: any) => d.path.endsWith("howto.md"))).toBeTruthy();
   });
 
   it("docs_list description mentions best practices and docs_read", async () => {

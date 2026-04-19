@@ -92,7 +92,7 @@ function listDocs(root: string): DocEntry[] {
       const relPath = relBase ? `${relBase}/${entry.name}` : entry.name;
       if (entry.isDirectory()) {
         walk(fullPath, relPath);
-      } else if (entry.isFile() && entry.name.endsWith(".mdx")) {
+      } else if (entry.isFile() && (entry.name.endsWith(".mdx") || entry.name.endsWith(".md"))) {
         try {
           const content = readFileSync(fullPath, "utf-8");
           const { title, description } = parseFrontmatter(content);
