@@ -25,7 +25,8 @@ const resetSchema = z
 type ResetValues = z.infer<typeof resetSchema>;
 
 export default function ResetPasswordPage() {
-  const { token } = useParams();
+  const params = useParams();
+  const token = Array.isArray(params.token) ? params.token[0] : params.token;
   const router = useRouter();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
