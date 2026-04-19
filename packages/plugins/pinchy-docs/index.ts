@@ -242,7 +242,7 @@ const plugin = {
           },
           async execute() {
             try {
-              const agentConfig = agents[agentId!];
+              const agentConfig = agents[agentId];
               const allowedSourceIds = agentConfig?.sources as string[] | undefined;
 
               const sourceDocs = sources

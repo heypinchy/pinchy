@@ -44,15 +44,6 @@ afterEach(() => {
   rmSync(docsRoot, { recursive: true, force: true });
 });
 
-function writeMdx(relPath: string, frontmatter: Record<string, string>, body: string) {
-  const fullPath = join(docsRoot, relPath);
-  mkdirSync(join(fullPath, ".."), { recursive: true });
-  const fmLines = Object.entries(frontmatter)
-    .map(([k, v]) => `${k}: ${v}`)
-    .join("\n");
-  writeFileSync(fullPath, `---\n${fmLines}\n---\n${body}`, "utf-8");
-}
-
 function writeMdxAt(root: string, relPath: string, frontmatter: Record<string, string>, body: string) {
   const fullPath = join(root, relPath);
   mkdirSync(join(fullPath, ".."), { recursive: true });
@@ -60,6 +51,10 @@ function writeMdxAt(root: string, relPath: string, frontmatter: Record<string, s
     .map(([k, v]) => `${k}: ${v}`)
     .join("\n");
   writeFileSync(fullPath, `---\n${fmLines}\n---\n${body}`, "utf-8");
+}
+
+function writeMdx(relPath: string, frontmatter: Record<string, string>, body: string) {
+  writeMdxAt(docsRoot, relPath, frontmatter, body);
 }
 
 describe("pinchy-docs plugin", () => {
