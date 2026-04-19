@@ -192,7 +192,7 @@ const plugin = {
   id: "pinchy-docs",
   name: "Pinchy Docs",
   description:
-    "On-demand access to Pinchy platform documentation for personal assistants.",
+    "On-demand access to documentation for agents — platform docs, integration guides, and best practices.",
   configSchema: {
     validate: (value: unknown) => {
       if (
@@ -224,7 +224,7 @@ const plugin = {
     if (sources.length === 0) return;
 
     const { agents } = config;
-    // Temporary: use first source path until full source-scoping is implemented
+    // TODO(Task 2): replace with per-source iteration in docs_list and docs_read
     const docsPath = sources[0].path;
 
     api.registerTool(

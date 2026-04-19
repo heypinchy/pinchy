@@ -31,6 +31,7 @@
         }
       }
     },
-    "required": ["agents"]
+    "required": ["agents"],
+    "additionalProperties": false
   }
 }
