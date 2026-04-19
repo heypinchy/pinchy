@@ -113,6 +113,36 @@ describe("useOdooPermissions", () => {
     expect(partner).toEqual({ read: true, create: false, write: false, delete: false });
   });
 
+  it("ignores permissions for non-odoo connections (e.g. email)", async () => {
+    // Agent has only email permissions — the Odoo hook must NOT adopt them,
+    // otherwise the parent ends up sending two PUTs to the same connectionId
+    // and triggers a unique-constraint violation on save.
+    const emailConnection = {
+      id: "email-conn-1",
+      name: "Gmail",
+      type: "google",
+      data: null,
+    };
+    mockFetchResponses(
+      [emailConnection],
+      [
+        {
+          connectionId: "email-conn-1",
+          connectionName: "Gmail",
+          connectionType: "google",
+          permissions: [{ model: "email", modelName: "Email", operation: "read" }],
+        },
+      ]
+    );
+
+    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    await act(async () => {});
+
+    expect(result.current.connectionId).toBe("");
+    expect(result.current.addedModels.size).toBe(0);
+    expect(result.current.getPermissions()).toEqual([]);
+  });
+
   it("resets models and access level when connection changes", async () => {
     mockFetchResponses(CONNECTIONS, [
       {

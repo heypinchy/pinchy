@@ -109,15 +109,24 @@ export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
           fetch(`/api/agents/${agentId}/integrations`),
         ]);
 
+        let odooConnections: Connection[] = [];
         if (connectionsRes.ok) {
-          const data = await connectionsRes.json();
-          setConnections(data);
+          const allConnections: Connection[] = await connectionsRes.json();
+          odooConnections = allConnections.filter((c) => c.type === "odoo");
+          setConnections(odooConnections);
         }
 
         if (permsRes.ok) {
           const data = await permsRes.json();
-          if (data.length > 0) {
-            const connId = data[0].connectionId;
+          // Only adopt permissions for odoo-type connections. Without this filter,
+          // the hook would pick up non-odoo entries (e.g. email) and cause the
+          // parent to send duplicate PUTs to the same connectionId on save.
+          const odooConnectionIds = new Set(odooConnections.map((c) => c.id));
+          const odooEntry = data.find((entry: { connectionId: string }) =>
+            odooConnectionIds.has(entry.connectionId)
+          );
+          if (odooEntry) {
+            const connId = odooEntry.connectionId;
             setConnectionIdState(connId);
             initialConnectionId.current = connId;
 
@@ -125,7 +134,7 @@ export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
             const models = new Map<string, OperationFlags>();
             const permSet = new Set<string>();
 
-            for (const perm of data[0].permissions) {
+            for (const perm of odooEntry.permissions) {
               permSet.add(`${perm.model}:${perm.operation}`);
               if (!models.has(perm.model)) {
                 models.set(perm.model, {
