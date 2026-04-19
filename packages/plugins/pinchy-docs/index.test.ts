@@ -610,3 +610,59 @@ describe("pinchy-docs plugin", () => {
     rmSync(odooRoot, { recursive: true, force: true });
   });
 });
+
+describe("multi-source integration", () => {
+  it("full pipeline: list sources, read from correct source, reject unauthorized source", async () => {
+    // Setup two sources
+    const accountingRoot = mkdtempSync(join(tmpdir(), "pinchy-docs-acct-"));
+    const salesRoot = mkdtempSync(join(tmpdir(), "pinchy-docs-sales-"));
+    writeMdxAt(accountingRoot, "vat.md", { title: "VAT Guide", description: "VAT how-to" }, "VAT content");
+    writeMdxAt(salesRoot, "quotations.md", { title: "Quotations", description: "Quote guide" }, "Quote content");
+
+    const api = createMockApi({
+      sources: [
+        { id: "odoo-accounting", label: "Odoo Accounting", path: accountingRoot },
+        { id: "odoo-sales", label: "Odoo Sales", path: salesRoot },
+      ],
+      agents: {
+        "finance-agent": { sources: ["odoo-accounting"] },
+        "sales-agent": { sources: ["odoo-sales"] },
+      },
+    });
+
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const listFactory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_list")?.[0];
+    const readFactory = mockRegisterTool.mock.calls.find((c: any[]) => c[1]?.name === "docs_read")?.[0];
+
+    // Finance agent sees only accounting
+    const financeList = listFactory({ agentId: "finance-agent" });
+    const listResult = await financeList.execute("c1", {});
+    const sources = JSON.parse(listResult.content[0].text);
+    expect(sources).toHaveLength(1);
+    expect(sources[0].source).toBe("odoo-accounting");
+    expect(sources[0].docs[0].path).toBe("odoo-accounting/vat.md");
+
+    // Finance agent can read accounting docs
+    const financeRead = readFactory({ agentId: "finance-agent" });
+    const readResult = await financeRead.execute("c2", { path: "odoo-accounting/vat.md" });
+    expect(readResult.isError).toBeFalsy();
+    expect(readResult.content[0].text).toContain("VAT content");
+
+    // Finance agent cannot read sales docs
+    const deniedResult = await financeRead.execute("c3", { path: "odoo-sales/quotations.md" });
+    expect(deniedResult.isError).toBe(true);
+    expect(deniedResult.content[0].text).toContain("Access denied");
+
+    // Sales agent sees only sales
+    const salesList = listFactory({ agentId: "sales-agent" });
+    const salesListResult = await salesList.execute("c4", {});
+    const salesSources = JSON.parse(salesListResult.content[0].text);
+    expect(salesSources).toHaveLength(1);
+    expect(salesSources[0].source).toBe("odoo-sales");
+
+    rmSync(accountingRoot, { recursive: true, force: true });
+    rmSync(salesRoot, { recursive: true, force: true });
+  });
+});
