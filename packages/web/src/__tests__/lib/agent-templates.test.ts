@@ -359,18 +359,22 @@ describe("Odoo templates", () => {
     }
   });
 
-  it("sales analyst AGENTS.md mentions sale.order model", () => {
+  it("sales analyst has sale.order and res.partner in requiredModels", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
     const t = getTemplate("odoo-sales-analyst")!;
-    expect(t.defaultAgentsMd).toContain("sale.order");
-    expect(t.defaultAgentsMd).toContain("res.partner");
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("sale.order");
+    expect(models).toContain("res.partner");
   });
 
-  it("sales analyst AGENTS.md instructs on product margin calculation", () => {
+  it("sales analyst references docs for domain knowledge (margin analysis, field names)", () => {
+    // Margin analysis and field-name specifics (list_price, standard_price) moved to
+    // docs — the template delegates to docs_list/docs_read instead of hardcoding them.
     const t = getTemplate("odoo-sales-analyst")!;
-    // Margin = list_price (sale) − standard_price (cost) per product
-    expect(t.defaultAgentsMd).toContain("standard_price");
-    expect(t.defaultAgentsMd).toContain("list_price");
-    expect(t.defaultAgentsMd).toMatch(/margin/i);
+    expect(t.defaultAgentsMd).toContain("docs_list");
+    expect(t.defaultAgentsMd).toContain("docs_read");
+    expect(t.defaultAgentsMd).toContain("odoo_schema");
   });
 
   it("sales analyst requires product.template for margin analysis", () => {
@@ -381,28 +385,41 @@ describe("Odoo templates", () => {
     expect(hasProductTemplate).toBe(true);
   });
 
-  it("inventory scout AGENTS.md mentions stock models", () => {
+  it("inventory scout has stock.quant and stock.picking in requiredModels", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
     const t = getTemplate("odoo-inventory-scout")!;
-    expect(t.defaultAgentsMd).toContain("stock.quant");
-    expect(t.defaultAgentsMd).toContain("stock.picking");
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("stock.quant");
+    expect(models).toContain("stock.picking");
   });
 
-  it("finance controller AGENTS.md mentions account models", () => {
+  it("finance controller has account.move and account.payment in requiredModels", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
     const t = getTemplate("odoo-finance-controller")!;
-    expect(t.defaultAgentsMd).toContain("account.move");
-    expect(t.defaultAgentsMd).toContain("account.payment");
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("account.move");
+    expect(models).toContain("account.payment");
   });
 
-  it("CRM assistant AGENTS.md mentions crm.lead and write capabilities", () => {
+  it("CRM assistant has crm.lead in requiredModels and documents write capabilities", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
+    // Write capabilities are still documented in the ## Capabilities section.
     const t = getTemplate("odoo-crm-assistant")!;
-    expect(t.defaultAgentsMd).toContain("crm.lead");
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("crm.lead");
     expect(t.defaultAgentsMd).toMatch(/create|CREATE/i);
   });
 
-  it("procurement agent AGENTS.md mentions purchase.order", () => {
+  it("procurement agent has purchase.order and product.supplierinfo in requiredModels", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
     const t = getTemplate("odoo-procurement-agent")!;
-    expect(t.defaultAgentsMd).toContain("purchase.order");
-    expect(t.defaultAgentsMd).toContain("product.supplierinfo");
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("purchase.order");
+    expect(models).toContain("product.supplierinfo");
   });
 
   it("customer service AGENTS.md mentions helpdesk.ticket", () => {
@@ -543,29 +560,41 @@ describe("Additional Odoo templates (10 new)", () => {
     }
   });
 
-  // Domain-specific assertions: each template must mention its signature models
-  it("HR Analyst mentions hr.employee and hr.leave", () => {
+  // Domain-specific assertions: each template must have its signature models in requiredModels
+  it("HR Analyst has hr.employee and hr.leave in requiredModels", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
     const t = getTemplate("odoo-hr-analyst")!;
-    expect(t.defaultAgentsMd).toContain("hr.employee");
-    expect(t.defaultAgentsMd).toContain("hr.leave");
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("hr.employee");
+    expect(models).toContain("hr.leave");
   });
 
-  it("Project Tracker mentions project.project and project.task", () => {
+  it("Project Tracker has project.project and project.task in requiredModels", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
     const t = getTemplate("odoo-project-tracker")!;
-    expect(t.defaultAgentsMd).toContain("project.project");
-    expect(t.defaultAgentsMd).toContain("project.task");
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("project.project");
+    expect(models).toContain("project.task");
   });
 
-  it("Manufacturing Planner mentions mrp.production and mrp.bom", () => {
+  it("Manufacturing Planner has mrp.production and mrp.bom in requiredModels", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
     const t = getTemplate("odoo-manufacturing-planner")!;
-    expect(t.defaultAgentsMd).toContain("mrp.production");
-    expect(t.defaultAgentsMd).toContain("mrp.bom");
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("mrp.production");
+    expect(models).toContain("mrp.bom");
   });
 
-  it("Recruitment Coordinator mentions hr.applicant and hr.job (read-write)", () => {
+  it("Recruitment Coordinator has hr.applicant and hr.job in requiredModels (read-write)", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
     const t = getTemplate("odoo-recruitment-coordinator")!;
-    expect(t.defaultAgentsMd).toContain("hr.applicant");
-    expect(t.defaultAgentsMd).toContain("hr.job");
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("hr.applicant");
+    expect(models).toContain("hr.job");
     expect(t.odooConfig!.accessLevel).toBe("read-write");
   });
 
@@ -595,21 +624,31 @@ describe("Additional Odoo templates (10 new)", () => {
     }
   });
 
-  it("POS Analyst mentions pos.order and pos.session", () => {
+  it("POS Analyst has pos.order and pos.session in requiredModels", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
     const t = getTemplate("odoo-pos-analyst")!;
-    expect(t.defaultAgentsMd).toContain("pos.order");
-    expect(t.defaultAgentsMd).toContain("pos.session");
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("pos.order");
+    expect(models).toContain("pos.session");
   });
 
-  it("Marketing Analyst mentions mailing.mailing and mailing.trace", () => {
+  it("Marketing Analyst has mailing.mailing and mailing.trace in requiredModels", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
     const t = getTemplate("odoo-marketing-analyst")!;
-    expect(t.defaultAgentsMd).toContain("mailing.mailing");
-    expect(t.defaultAgentsMd).toContain("mailing.trace");
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("mailing.mailing");
+    expect(models).toContain("mailing.trace");
   });
 
-  it("Expense Auditor mentions hr.expense and policy/flag language", () => {
+  it("Expense Auditor has hr.expense in requiredModels and flags policy/suspicious language", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
+    // Policy/flag language is still present in the role description and rules.
     const t = getTemplate("odoo-expense-auditor")!;
-    expect(t.defaultAgentsMd).toContain("hr.expense");
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("hr.expense");
     expect(t.defaultAgentsMd).toMatch(/policy|flag|violat|suspicious|unusual/i);
   });
 
@@ -624,10 +663,13 @@ describe("Additional Odoo templates (10 new)", () => {
     expect(t.defaultAgentsMd).toMatch(/some (orgs|organizations)|if your org|convention/i);
   });
 
-  it("Fleet Manager mentions fleet.vehicle and service log models", () => {
+  it("Fleet Manager has fleet.vehicle and service log models in requiredModels", () => {
+    // Model names previously checked in defaultAgentsMd are now discovered via
+    // odoo_schema at runtime. The source of truth is requiredModels (controls access).
     const t = getTemplate("odoo-fleet-manager")!;
-    expect(t.defaultAgentsMd).toContain("fleet.vehicle");
-    expect(t.defaultAgentsMd).toMatch(/fleet\.vehicle\.log/);
+    const models = t.odooConfig!.requiredModels.map((m) => m.model);
+    expect(models).toContain("fleet.vehicle");
+    expect(models.some((m) => m.startsWith("fleet.vehicle.log"))).toBe(true);
   });
 
   it("Website Analyst mentions website_id filter on sale.order", () => {
@@ -797,6 +839,23 @@ describe("Odoo template drift invariants", () => {
       }
     }
     expect(drifted).toEqual([]);
+  });
+});
+
+describe("docs_list/docs_read references", () => {
+  it("all Odoo templates reference docs_list and docs_read in their defaultAgentsMd", () => {
+    const odooTemplateKeys = Object.keys(AGENT_TEMPLATES).filter((key) => key.startsWith("odoo-"));
+    expect(odooTemplateKeys.length).toBeGreaterThan(0);
+
+    for (const key of odooTemplateKeys) {
+      const template = AGENT_TEMPLATES[key];
+      expect(template.defaultAgentsMd, `Template ${key} should mention docs_list`).toContain(
+        "docs_list"
+      );
+      expect(template.defaultAgentsMd, `Template ${key} should mention docs_read`).toContain(
+        "docs_read"
+      );
+    }
   });
 });
 
