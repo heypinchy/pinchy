@@ -289,7 +289,7 @@ const plugin = {
           name: "docs_read",
           label: "Read Pinchy Documentation",
           description:
-            "Read a single Pinchy platform documentation file by its relative path (as returned by docs_list). Returns the full file content including frontmatter.",
+            "Read a single documentation page by its path (as shown by docs_list). Returns the file content with frontmatter and MDX syntax stripped. Read one document at a time — only what you need for the current question. Each read consumes conversation context, so be selective.",
           parameters: {
             type: "object",
             properties: {

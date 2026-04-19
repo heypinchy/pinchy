@@ -517,7 +517,26 @@ describe("pinchy-docs plugin", () => {
     const result = await tool.execute("call-1", { path: "pinchy/secret.mdx" });
 
     expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Access denied");  // add this line
     expect(result.content[0].text).not.toContain("Secret content");
+  });
+
+  it("docs_read returns error for path without source prefix", async () => {
+    const api = createMockApi({
+      sources: [{ id: "pinchy", label: "Pinchy Docs", path: docsRoot }],
+      agents: { "agent-1": { sources: ["pinchy"] } },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_read"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", { path: "justAFile.mdx" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Invalid path format");
   });
 
   it("docs_list returns files grouped by source", async () => {
