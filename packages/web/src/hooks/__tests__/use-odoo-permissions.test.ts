@@ -143,6 +143,41 @@ describe("useOdooPermissions", () => {
     expect(result.current.getPermissions()).toEqual([]);
   });
 
+  it("picks the odoo entry when both email and odoo permissions exist", async () => {
+    // Mixed integrations: ensure the hook selects the odoo entry regardless of
+    // its position in the response, not just the first element.
+    const emailConnection = {
+      id: "email-conn-1",
+      name: "Gmail",
+      type: "google",
+      data: null,
+    };
+    mockFetchResponses(
+      [emailConnection, ...CONNECTIONS],
+      [
+        {
+          connectionId: "email-conn-1",
+          connectionName: "Gmail",
+          connectionType: "google",
+          permissions: [{ model: "email", modelName: "Email", operation: "read" }],
+        },
+        {
+          connectionId: "conn-1",
+          connectionName: "Staging",
+          connectionType: "odoo",
+          permissions: [{ model: "sale.order", modelName: "Sale Orders", operation: "read" }],
+        },
+      ]
+    );
+
+    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    await act(async () => {});
+
+    expect(result.current.connectionId).toBe("conn-1");
+    expect(result.current.addedModels.size).toBe(1);
+    expect(result.current.addedModels.has("sale.order")).toBe(true);
+  });
+
   it("resets models and access level when connection changes", async () => {
     mockFetchResponses(CONNECTIONS, [
       {
