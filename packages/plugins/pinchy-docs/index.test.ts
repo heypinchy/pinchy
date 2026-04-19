@@ -539,6 +539,23 @@ describe("pinchy-docs plugin", () => {
     expect(result.content[0].text).toContain("Invalid path format");
   });
 
+  it("docs_list description mentions best practices and docs_read", async () => {
+    const api = createMockApi({
+      sources: [{ id: "pinchy", label: "Pinchy Docs", path: docsRoot }],
+      agents: { "agent-1": { sources: ["pinchy"] } },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_list"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+
+    expect(tool.description).toContain("best practices");
+    expect(tool.description).toContain("docs_read");
+  });
+
   it("docs_list returns files grouped by source", async () => {
     // Create two separate doc roots for two sources
     const odooRoot = mkdtempSync(join(tmpdir(), "pinchy-docs-odoo-"));

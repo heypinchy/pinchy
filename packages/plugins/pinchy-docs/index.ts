@@ -233,9 +233,13 @@ const plugin = {
 
         return {
           name: "docs_list",
-          label: "List Pinchy Documentation",
+          label: "List Available Documentation",
           description:
-            "List all available Pinchy platform documentation files. Returns a JSON array with the path, title, and description of each doc page. Use this first to discover what docs exist, then read specific files with docs_read.",
+            "List all documentation available to you — platform guides, integration best practices, " +
+            "and domain-specific how-tos. Returns titles and descriptions grouped by source. " +
+            "Use this when you are unsure how to perform a task correctly (e.g., how to book VAT, " +
+            "how to create a credit note). Then use docs_read to read the specific document you need. " +
+            "This is lightweight — call it whenever you need guidance.",
           parameters: {
             type: "object",
             properties: {},
@@ -287,7 +291,7 @@ const plugin = {
 
         return {
           name: "docs_read",
-          label: "Read Pinchy Documentation",
+          label: "Read Documentation",
           description:
             "Read a single documentation page by its path (as shown by docs_list). Returns the file content with frontmatter and MDX syntax stripped. Read one document at a time — only what you need for the current question. Each read consumes conversation context, so be selective.",
           parameters: {
