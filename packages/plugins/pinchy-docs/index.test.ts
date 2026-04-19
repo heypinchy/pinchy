@@ -53,6 +53,15 @@ function writeMdx(relPath: string, frontmatter: Record<string, string>, body: st
   writeFileSync(fullPath, `---\n${fmLines}\n---\n${body}`, "utf-8");
 }
 
+function writeMdxAt(root: string, relPath: string, frontmatter: Record<string, string>, body: string) {
+  const fullPath = join(root, relPath);
+  mkdirSync(join(fullPath, ".."), { recursive: true });
+  const fmLines = Object.entries(frontmatter)
+    .map(([k, v]) => `${k}: ${v}`)
+    .join("\n");
+  writeFileSync(fullPath, `---\n${fmLines}\n---\n${body}`, "utf-8");
+}
+
 describe("pinchy-docs plugin", () => {
   it("registers docs_list and docs_read as tool factories", async () => {
     const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
@@ -104,9 +113,12 @@ describe("pinchy-docs plugin", () => {
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", {});
     const parsed = JSON.parse(result.content[0].text);
+    // New grouped format: [{source, label, docs: [...]}]
     expect(Array.isArray(parsed)).toBe(true);
-    expect(parsed).toHaveLength(2);
-    const foo = parsed.find((p: any) => p.path === "foo.mdx");
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].source).toBe("pinchy");
+    expect(parsed[0].docs).toHaveLength(2);
+    const foo = parsed[0].docs.find((d: any) => d.path === "foo.mdx");
     expect(foo).toEqual({ path: "foo.mdx", title: "Foo", description: "Foo description" });
   });
 
@@ -124,7 +136,9 @@ describe("pinchy-docs plugin", () => {
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", {});
     const parsed = JSON.parse(result.content[0].text);
-    const paths = parsed.map((p: any) => p.path).sort();
+    // New grouped format: unwrap docs from the single source group
+    expect(parsed).toHaveLength(1);
+    const paths = parsed[0].docs.map((d: any) => d.path).sort();
     expect(paths).toEqual(["guides/setup.mdx", "reference/api.mdx"]);
   });
 
@@ -143,8 +157,10 @@ describe("pinchy-docs plugin", () => {
     const tool = factory({ agentId: "agent-1" });
     const result = await tool.execute("call-1", {});
     const parsed = JSON.parse(result.content[0].text);
+    // New grouped format: one source group with one doc
     expect(parsed).toHaveLength(1);
-    expect(parsed[0].path).toBe("foo.mdx");
+    expect(parsed[0].docs).toHaveLength(1);
+    expect(parsed[0].docs[0].path).toBe("foo.mdx");
   });
 
   it("docs_read returns file content for valid relative path", async () => {
@@ -459,5 +475,38 @@ describe("pinchy-docs plugin", () => {
     const names = mockRegisterTool.mock.calls.map((c: any[]) => c[1]?.name);
     expect(names).toContain("docs_list");
     expect(names).toContain("docs_read");
+  });
+
+  it("docs_list returns files grouped by source", async () => {
+    // Create two separate doc roots for two sources
+    const odooRoot = mkdtempSync(join(tmpdir(), "pinchy-docs-odoo-"));
+    writeMdxAt(odooRoot, "vat.mdx", { title: "VAT Booking", description: "How to book VAT" }, "body");
+    writeMdxAt(odooRoot, "invoicing.mdx", { title: "Invoicing", description: "Invoice basics" }, "body");
+
+    const api = createMockApi({
+      sources: [
+        { id: "pinchy", label: "Pinchy Docs", path: docsRoot },
+        { id: "odoo-accounting", label: "Odoo 17 Accounting", path: odooRoot },
+      ],
+      agents: { "agent-1": { sources: ["odoo-accounting"] } },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_list"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", {});
+    const parsed = JSON.parse(result.content[0].text);
+
+    // Should only see odoo-accounting, not pinchy
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0].source).toBe("odoo-accounting");
+    expect(parsed[0].label).toBe("Odoo 17 Accounting");
+    expect(parsed[0].docs).toHaveLength(2);
+    expect(parsed[0].docs.find((d: any) => d.title === "VAT Booking")).toBeTruthy();
+
+    rmSync(odooRoot, { recursive: true, force: true });
   });
 });

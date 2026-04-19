@@ -77,7 +77,7 @@ function parseFrontmatter(content: string): { title: string; description: string
   return { title, description };
 }
 
-function listMdxFiles(root: string): DocEntry[] {
+function listDocs(root: string): DocEntry[] {
   const results: DocEntry[] = [];
 
   function walk(dir: string, relBase: string) {
@@ -224,8 +224,6 @@ const plugin = {
     if (sources.length === 0) return;
 
     const { agents } = config;
-    // TODO(Task 2): replace with per-source iteration in docs_list and docs_read
-    const docsPath = sources[0].path;
 
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -244,10 +242,24 @@ const plugin = {
           },
           async execute() {
             try {
-              const files = listMdxFiles(docsPath);
+              const agentConfig = agents[agentId!];
+              const allowedSourceIds = agentConfig?.sources as string[] | undefined;
+
+              const sourceDocs = sources
+                .filter((s) => !allowedSourceIds || allowedSourceIds.includes(s.id))
+                .map((source) => {
+                  const files = listDocs(source.path);
+                  return {
+                    source: source.id,
+                    label: source.label,
+                    docs: files,
+                  };
+                })
+                .filter((s) => s.docs.length > 0);
+
               return {
                 content: [
-                  { type: "text", text: JSON.stringify(files, null, 2) },
+                  { type: "text", text: JSON.stringify(sourceDocs, null, 2) },
                 ],
               };
             } catch (error) {
@@ -288,6 +300,8 @@ const plugin = {
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             const relPath = params.path as string;
+            // TODO(Task 3): support per-source path resolution
+            const docsPath = sources[0].path;
             const safe = resolveSafe(docsPath, relPath);
             if (!safe) {
               return {
