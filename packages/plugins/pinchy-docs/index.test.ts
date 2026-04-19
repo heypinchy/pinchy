@@ -113,8 +113,8 @@ describe("pinchy-docs plugin", () => {
     expect(parsed).toHaveLength(1);
     expect(parsed[0].source).toBe("pinchy");
     expect(parsed[0].docs).toHaveLength(2);
-    const foo = parsed[0].docs.find((d: any) => d.path === "foo.mdx");
-    expect(foo).toEqual({ path: "foo.mdx", title: "Foo", description: "Foo description" });
+    const foo = parsed[0].docs.find((d: any) => d.path === "pinchy/foo.mdx");
+    expect(foo).toEqual({ path: "pinchy/foo.mdx", title: "Foo", description: "Foo description" });
   });
 
   it("docs_list recurses into subdirectories", async () => {
@@ -134,7 +134,7 @@ describe("pinchy-docs plugin", () => {
     // New grouped format: unwrap docs from the single source group
     expect(parsed).toHaveLength(1);
     const paths = parsed[0].docs.map((d: any) => d.path).sort();
-    expect(paths).toEqual(["guides/setup.mdx", "reference/api.mdx"]);
+    expect(paths).toEqual(["pinchy/guides/setup.mdx", "pinchy/reference/api.mdx"]);
   });
 
   it("docs_list ignores non-mdx files", async () => {
@@ -155,7 +155,7 @@ describe("pinchy-docs plugin", () => {
     // New grouped format: one source group with one doc
     expect(parsed).toHaveLength(1);
     expect(parsed[0].docs).toHaveLength(1);
-    expect(parsed[0].docs[0].path).toBe("foo.mdx");
+    expect(parsed[0].docs[0].path).toBe("pinchy/foo.mdx");
   });
 
   it("docs_read returns file content for valid relative path", async () => {
@@ -169,7 +169,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
     // Frontmatter is stripped — see "docs_read strips frontmatter" — so the
     // returned content should be the body only. Title/description live in
     // docs_list output.
@@ -185,7 +185,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "../etc/passwd" });
+    const result = await tool.execute("call-1", { path: "pinchy/../etc/passwd" });
     expect(result.content[0].text.toLowerCase()).toContain("invalid");
     expect(result.isError).toBe(true);
   });
@@ -213,7 +213,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "leak.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/leak.mdx" });
 
     expect(result.content[0].text.toLowerCase()).toContain("invalid");
     expect(result.isError).toBe(true);
@@ -231,7 +231,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "/etc/passwd" });
+    const result = await tool.execute("call-1", { path: "pinchy//etc/passwd" });
     expect(result.content[0].text.toLowerCase()).toContain("invalid");
     expect(result.isError).toBe(true);
   });
@@ -247,7 +247,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "subdir" });
+    const result = await tool.execute("call-1", { path: "pinchy/subdir" });
     expect(result.content[0].text.toLowerCase()).toContain("not a file");
     expect(result.isError).toBe(true);
   });
@@ -261,7 +261,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "nonexistent.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/nonexistent.mdx" });
     expect(result.content[0].text.toLowerCase()).toMatch(/not found|no such/);
     expect(result.isError).toBe(true);
   });
@@ -293,7 +293,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
 
     expect(result.content[0].text).toContain("Hello world.");
     expect(result.content[0].text).not.toContain("---");
@@ -321,7 +321,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
 
     expect(result.content[0].text).toContain("Real content here.");
     expect(result.content[0].text).not.toContain("import {");
@@ -352,7 +352,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
 
     expect(result.content[0].text).toContain("Pinchy agents require models with tool calling support.");
     expect(result.content[0].text).toContain("First step");
@@ -390,7 +390,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
 
     expect(result.content[0].text).toContain("## Setup");
     expect(result.content[0].text).toContain("```bash");
@@ -422,7 +422,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
 
     expect(result.content[0].text).toContain('<Aside type="note">Hello</Aside>');
   });
@@ -442,7 +442,7 @@ describe("pinchy-docs plugin", () => {
       (c: any[]) => c[1]?.name === "docs_read"
     )?.[0];
     const tool = factory({ agentId: "agent-1" });
-    const result = await tool.execute("call-1", { path: "foo.mdx" });
+    const result = await tool.execute("call-1", { path: "pinchy/foo.mdx" });
 
     expect(result.content[0].text).not.toMatch(/\n\n\n/);
     expect(result.content[0].text).toContain("First.");
@@ -470,6 +470,54 @@ describe("pinchy-docs plugin", () => {
     const names = mockRegisterTool.mock.calls.map((c: any[]) => c[1]?.name);
     expect(names).toContain("docs_list");
     expect(names).toContain("docs_read");
+  });
+
+  it("docs_read reads from the correct source by prefix", async () => {
+    const odooRoot = mkdtempSync(join(tmpdir(), "pinchy-docs-odoo-"));
+    writeMdxAt(odooRoot, "vat.mdx", { title: "VAT" }, "VAT content here.");
+
+    const api = createMockApi({
+      sources: [
+        { id: "pinchy", label: "Pinchy Docs", path: docsRoot },
+        { id: "odoo-acct", label: "Odoo Accounting", path: odooRoot },
+      ],
+      agents: { "agent-1": { sources: ["odoo-acct"] } },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_read"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", { path: "odoo-acct/vat.mdx" });
+
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("VAT content here.");
+
+    rmSync(odooRoot, { recursive: true, force: true });
+  });
+
+  it("docs_read rejects access to a source the agent is not allowed", async () => {
+    writeMdx("secret.mdx", { title: "Secret" }, "Secret content");
+
+    const api = createMockApi({
+      sources: [
+        { id: "pinchy", label: "Pinchy Docs", path: docsRoot },
+      ],
+      agents: { "agent-1": { sources: [] } },  // no sources allowed
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_read"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", { path: "pinchy/secret.mdx" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).not.toContain("Secret content");
   });
 
   it("docs_list returns files grouped by source", async () => {

@@ -252,7 +252,10 @@ const plugin = {
                   return {
                     source: source.id,
                     label: source.label,
-                    docs: files,
+                    docs: files.map((f) => ({
+                      ...f,
+                      path: `${source.id}/${f.path}`,
+                    })),
                   };
                 })
                 .filter((s) => s.docs.length > 0);
@@ -293,45 +296,78 @@ const plugin = {
               path: {
                 type: "string",
                 description:
-                  "Relative path to the doc file (e.g. 'guides/ollama-setup.mdx')",
+                  "Path to the doc file in 'sourceId/relative/path.md' format (as shown by docs_list).",
               },
             },
             required: ["path"],
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
-            const relPath = params.path as string;
-            // TODO(Task 3): support per-source path resolution
-            const docsPath = sources[0].path;
-            const safe = resolveSafe(docsPath, relPath);
+            const rawPath = params.path as string;
+
+            // Parse "sourceId/relative/path.md" format
+            const slashIdx = rawPath.indexOf("/");
+            if (slashIdx === -1) {
+              return {
+                isError: true,
+                content: [{ type: "text", text: `Invalid path format: "${rawPath}". Use "sourceId/path/to/file.md".` }],
+              };
+            }
+
+            const sourceId = rawPath.slice(0, slashIdx);
+            const relPath = rawPath.slice(slashIdx + 1);
+
+            // Check agent has access to this source
+            const agentConfig = agents[agentId];
+            const allowedSourceIds = agentConfig?.sources as string[] | undefined;
+            if (allowedSourceIds && !allowedSourceIds.includes(sourceId)) {
+              return {
+                isError: true,
+                content: [{ type: "text", text: `Access denied: source "${sourceId}" is not available for this agent.` }],
+              };
+            }
+
+            // Find the source
+            const source = sources.find((s) => s.id === sourceId);
+            if (!source) {
+              return {
+                isError: true,
+                content: [{ type: "text", text: `Unknown source: "${sourceId}". Use docs_list to see available sources.` }],
+              };
+            }
+
+            // Existing resolveSafe + read logic, using source.path as root
+            const safe = resolveSafe(source.path, relPath);
             if (!safe) {
               return {
                 isError: true,
                 content: [
                   {
                     type: "text",
-                    text: `Invalid path: ${relPath}. Path must be a relative path inside the docs directory.`,
+                    text: `Invalid path: ${rawPath}. Path must be a relative path inside the docs directory.`,
                   },
                 ],
               };
             }
+
             try {
               const stat = statSync(safe);
               if (!stat.isFile()) {
                 return {
                   isError: true,
-                  content: [{ type: "text", text: `Not a file: ${relPath}` }],
+                  content: [{ type: "text", text: `Not a file: ${rawPath}` }],
                 };
               }
-              const content = readFileSync(safe, "utf-8");
-              return { content: [{ type: "text", text: preprocessMdx(content) }] };
+              const raw = readFileSync(safe, "utf-8");
+              const content = preprocessMdx(raw);
+              return {
+                content: [{ type: "text", text: content }],
+              };
             } catch (error) {
               const message =
                 error instanceof Error ? error.message : "Unknown error";
               return {
                 isError: true,
-                content: [
-                  { type: "text", text: `File not found: ${relPath} (${message})` },
-                ],
+                content: [{ type: "text", text: `File not found: "${rawPath}" (${message}). Use docs_list to see available files.` }],
               };
             }
           },
