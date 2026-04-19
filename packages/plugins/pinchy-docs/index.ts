@@ -12,7 +12,7 @@ interface DocSource {
 }
 
 interface AgentSourceConfig {
-  sources?: string[];  // source IDs this agent can access; undefined = all
+  sources?: string[];  // source IDs this agent can access; empty array = no access; undefined = no access
 }
 
 interface PluginConfig {
@@ -250,7 +250,7 @@ const plugin = {
               const allowedSourceIds = agentConfig?.sources as string[] | undefined;
 
               const sourceDocs = sources
-                .filter((s) => !allowedSourceIds || allowedSourceIds.includes(s.id))
+                .filter((s) => allowedSourceIds?.includes(s.id) ?? false)
                 .map((source) => {
                   const files = listDocs(source.path);
                   return {
@@ -323,7 +323,7 @@ const plugin = {
             // Check agent has access to this source
             const agentConfig = agents[agentId];
             const allowedSourceIds = agentConfig?.sources as string[] | undefined;
-            if (allowedSourceIds && !allowedSourceIds.includes(sourceId)) {
+            if (!allowedSourceIds?.includes(sourceId)) {
               return {
                 isError: true,
                 content: [{ type: "text", text: `Access denied: source "${sourceId}" is not available for this agent.` }],

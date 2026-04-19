@@ -372,6 +372,10 @@ export async function regenerateOpenClawConfig() {
   }
 
   // Build pinchy-docs multi-source config (after Odoo agent configs are populated)
+  // ODOO_DOC_SOURCES maps model categories to doc source directories.
+  // Accounting docs exist at /integration-docs/odoo/accounting/.
+  // Sales and inventory directories exist but are currently empty —
+  // add .md files there to activate docs for those agents.
   const ODOO_DOC_SOURCES: Record<string, { id: string; label: string; path: string }> = {
     accounting: {
       id: "odoo-accounting",
@@ -394,16 +398,16 @@ export async function regenerateOpenClawConfig() {
   const agentDocConfig: Record<string, { sources: string[] }> = {};
 
   // Source 1: Pinchy platform docs (for personal agents / Smithers)
-  docSources.push({
-    id: "pinchy",
-    label: "Pinchy Platform Documentation",
-    path: "/pinchy-docs",
-  });
-
-  // Personal agents (Smithers) get pinchy docs
   const personalAgentIds = allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => a.id);
-  for (const id of personalAgentIds) {
-    agentDocConfig[id] = { sources: ["pinchy"] };
+  if (personalAgentIds.length > 0) {
+    docSources.push({
+      id: "pinchy",
+      label: "Pinchy Platform Documentation",
+      path: "/pinchy-docs",
+    });
+    for (const id of personalAgentIds) {
+      agentDocConfig[id] = { sources: ["pinchy"] };
+    }
   }
 
   // For each Odoo agent, add doc sources based on model category access

@@ -1142,85 +1142,16 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    const docsConfig = config.plugins.entries["pinchy-docs"]?.config;
-    expect(docsConfig).toBeDefined();
-
-    const odooSource = docsConfig.sources.find((s: any) => s.id === "odoo-accounting");
-    expect(odooSource).toBeDefined();
-    expect(odooSource.path).toBe("/integration-docs/odoo/accounting");
-
-    expect(docsConfig.agents["finance-agent"]).toBeDefined();
-    expect(docsConfig.agents["finance-agent"].sources).toContain("odoo-accounting");
-  });
-
-  it("includes Odoo agent in pinchy-docs plugin agents with correct doc sources", async () => {
-    const agentsData = [
-      {
-        id: "finance-agent",
-        name: "Finance Controller",
-        model: "anthropic/claude-haiku-4-5-20251001",
-        isPersonal: false,
-        ownerId: null,
-        allowedTools: ["odoo_read"],
-        createdAt: new Date(),
-      },
-    ];
-
-    const permissionsData = [
-      {
-        agent_connection_permissions: {
-          agentId: "finance-agent",
-          connectionId: "conn-1",
-          model: "account.move",
-          operation: "read",
-        },
-        integration_connections: {
-          id: "conn-1",
-          type: "odoo",
-          name: "Acme Odoo",
-          description: "",
-          credentials: JSON.stringify({
-            url: "https://odoo.example.com",
-            db: "acme",
-            uid: 2,
-            apiKey: "test-key",
-          }),
-          data: {
-            models: [
-              {
-                model: "account.move",
-                name: "Invoices & Entries",
-                fields: [],
-                access: { read: true, create: false, write: false, delete: false },
-              },
-            ],
-            lastSyncAt: "2026-04-01T00:00:00Z",
-          },
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      },
-    ];
-
-    mockedDb.select.mockReturnValue({
-      from: vi.fn().mockImplementation(() =>
-        Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockResolvedValue(permissionsData),
-        })
-      ),
-    } as never);
-
-    await regenerateOpenClawConfig();
-
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
-    const config = JSON.parse(written);
-
     const docsPlugin = config.plugins.entries["pinchy-docs"];
     expect(docsPlugin).toBeDefined();
     expect(docsPlugin.enabled).toBe(true);
 
-    // The agent must be listed in the pinchy-docs agents config
-    const agentConfig = docsPlugin.config.agents["finance-agent"];
+    const docsConfig = docsPlugin.config;
+    const odooSource = docsConfig.sources.find((s: any) => s.id === "odoo-accounting");
+    expect(odooSource).toBeDefined();
+    expect(odooSource.path).toBe("/integration-docs/odoo/accounting");
+
+    const agentConfig = docsConfig.agents["finance-agent"];
     expect(agentConfig).toBeDefined();
     expect(agentConfig.sources).toContain("odoo-accounting");
   });

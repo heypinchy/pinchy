@@ -59,7 +59,7 @@ function writeMdx(relPath: string, frontmatter: Record<string, string>, body: st
 
 describe("pinchy-docs plugin", () => {
   it("registers docs_list and docs_read as tool factories", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -70,7 +70,7 @@ describe("pinchy-docs plugin", () => {
   });
 
   it("docs_list factory returns tool for allowed agent", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -83,7 +83,7 @@ describe("pinchy-docs plugin", () => {
   });
 
   it("docs_list factory returns null for non-allowed agent", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -98,7 +98,7 @@ describe("pinchy-docs plugin", () => {
     writeMdx("foo.mdx", { title: "Foo", description: "Foo description" }, "body");
     writeMdx("bar.mdx", { title: "Bar", description: "Bar description" }, "body");
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -121,7 +121,7 @@ describe("pinchy-docs plugin", () => {
     writeMdx("guides/setup.mdx", { title: "Setup", description: "Setup guide" }, "body");
     writeMdx("reference/api.mdx", { title: "API", description: "API reference" }, "body");
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -141,7 +141,7 @@ describe("pinchy-docs plugin", () => {
     writeMdx("foo.mdx", { title: "Foo", description: "x" }, "body");
     writeFileSync(join(docsRoot, "ignored.txt"), "not a doc", "utf-8");
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -160,7 +160,7 @@ describe("pinchy-docs plugin", () => {
   it("docs_read returns file content for valid relative path", async () => {
     writeMdx("foo.mdx", { title: "Foo", description: "x" }, "Hello world");
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -176,7 +176,7 @@ describe("pinchy-docs plugin", () => {
   });
 
   it("docs_read rejects path traversal with ..", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -204,7 +204,7 @@ describe("pinchy-docs plugin", () => {
       return;
     }
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -222,7 +222,7 @@ describe("pinchy-docs plugin", () => {
   });
 
   it("docs_read rejects absolute paths", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -238,7 +238,7 @@ describe("pinchy-docs plugin", () => {
   it("docs_read marks directory-instead-of-file as error", async () => {
     mkdirSync(join(docsRoot, "subdir"), { recursive: true });
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -252,7 +252,7 @@ describe("pinchy-docs plugin", () => {
   });
 
   it("docs_read returns error for nonexistent file", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -266,7 +266,7 @@ describe("pinchy-docs plugin", () => {
   });
 
   it("docs_read factory returns null for non-allowed agent", async () => {
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -284,7 +284,7 @@ describe("pinchy-docs plugin", () => {
       "Hello world."
     );
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -312,7 +312,7 @@ describe("pinchy-docs plugin", () => {
       ].join("\n")
     );
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -343,7 +343,7 @@ describe("pinchy-docs plugin", () => {
       ].join("\n")
     );
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -381,7 +381,7 @@ describe("pinchy-docs plugin", () => {
       ].join("\n")
     );
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -413,7 +413,7 @@ describe("pinchy-docs plugin", () => {
       ].join("\n")
     );
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -433,7 +433,7 @@ describe("pinchy-docs plugin", () => {
       ["First.", "", "", "", "", "Second."].join("\n")
     );
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -543,7 +543,7 @@ describe("pinchy-docs plugin", () => {
     // Write a plain .md file using writeMdxAt
     writeMdxAt(docsRoot, "howto.md", { title: "MD Guide", description: "A Markdown doc" }, "body");
 
-    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": {} } });
+    const api = createMockApi({ docsPath: docsRoot, agents: { "agent-1": { sources: ["pinchy"] } } });
     const { default: plugin } = await import("./index");
     plugin.register!(api as any);
 
@@ -608,6 +608,27 @@ describe("pinchy-docs plugin", () => {
     expect(parsed[0].docs.find((d: any) => d.title === "VAT Booking")).toBeTruthy();
 
     rmSync(odooRoot, { recursive: true, force: true });
+  });
+
+  it("docs_list returns empty result for agent with undefined sources", async () => {
+    writeMdx("doc.mdx", { title: "Doc", description: "A doc" }, "content");
+
+    const api = createMockApi({
+      sources: [{ id: "pinchy", label: "Pinchy Docs", path: docsRoot }],
+      agents: { "agent-1": {} },  // no sources key = undefined
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "docs_list"
+    )?.[0];
+    const tool = factory({ agentId: "agent-1" });
+    const result = await tool.execute("call-1", {});
+    const parsed = JSON.parse(result.content[0].text);
+
+    // undefined sources = no access = empty list
+    expect(parsed).toHaveLength(0);
   });
 });
 
