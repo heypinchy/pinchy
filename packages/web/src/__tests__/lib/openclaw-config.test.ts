@@ -1152,6 +1152,135 @@ describe("regenerateOpenClawConfig", () => {
     expect(docsConfig.agents["finance-agent"]).toBeDefined();
     expect(docsConfig.agents["finance-agent"].sources).toContain("odoo-accounting");
   });
+
+  it("includes Odoo agent in pinchy-docs plugin agents with correct doc sources", async () => {
+    const agentsData = [
+      {
+        id: "finance-agent",
+        name: "Finance Controller",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        isPersonal: false,
+        ownerId: null,
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "finance-agent",
+          connectionId: "conn-1",
+          model: "account.move",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-1",
+          type: "odoo",
+          name: "Acme Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://odoo.example.com",
+            db: "acme",
+            uid: 2,
+            apiKey: "test-key",
+          }),
+          data: {
+            models: [
+              {
+                model: "account.move",
+                name: "Invoices & Entries",
+                fields: [],
+                access: { read: true, create: false, write: false, delete: false },
+              },
+            ],
+            lastSyncAt: "2026-04-01T00:00:00Z",
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const docsPlugin = config.plugins.entries["pinchy-docs"];
+    expect(docsPlugin).toBeDefined();
+    expect(docsPlugin.enabled).toBe(true);
+
+    // The agent must be listed in the pinchy-docs agents config
+    const agentConfig = docsPlugin.config.agents["finance-agent"];
+    expect(agentConfig).toBeDefined();
+    expect(agentConfig.sources).toContain("odoo-accounting");
+  });
+
+  it("does not add pinchy-docs for Odoo agent with no matching doc categories", async () => {
+    const agentsData = [
+      {
+        id: "mail-agent",
+        name: "Mail Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        isPersonal: false,
+        ownerId: null,
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "mail-agent",
+          connectionId: "conn-1",
+          model: "mail.message", // mail category has no doc source
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-1",
+          type: "odoo",
+          name: "Acme Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://odoo.example.com",
+            db: "acme",
+            uid: 2,
+            apiKey: "test-key",
+          }),
+          data: { models: [], lastSyncAt: "2026-04-01T00:00:00Z" },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    // mail category has no doc source, so pinchy-docs should not be emitted
+    // (no personal agents either, so the whole plugin is absent)
+    expect(config.plugins.entries["pinchy-docs"]).toBeUndefined();
+  });
 });
 
 describe("sanitizeOpenClawConfig", () => {
