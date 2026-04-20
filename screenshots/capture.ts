@@ -185,4 +185,15 @@ test.describe("Feature screenshots", () => {
     }
     await screenshot(page, "provider-settings.png");
   });
+
+  test("agent templates", async ({ page }) => {
+    await page.goto(`${BASE_URL}/agents/new`);
+    // Wait for the template grid to render — "Or start from scratch" appears after categories
+    await page
+      .getByRole("button", { name: /start from scratch/i })
+      .waitFor({ state: "visible", timeout: 15000 })
+      .catch(() => {});
+    await page.waitForTimeout(1500);
+    await screenshot(page, "agent-templates.png");
+  });
 });
