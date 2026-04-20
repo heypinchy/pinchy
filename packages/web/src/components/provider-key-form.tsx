@@ -195,6 +195,7 @@ export function ProviderKeyForm({
   const [validationStatus, setValidationStatus] = useState<"idle" | "success" | "error">("idle");
   const [error, setError] = useState("");
   const [authMethod, setAuthMethod] = useState<"api-key" | "subscription">("api-key");
+  const [showReplaceDialog, setShowReplaceDialog] = useState(false);
   const [subscriptionStatus, setSubscriptionStatus] = useState<{
     connected: boolean;
     accountEmail?: string;
@@ -331,7 +332,13 @@ export function ProviderKeyForm({
             <Label>Authentication Method</Label>
             <RadioGroup
               value={authMethod}
-              onValueChange={(v) => setAuthMethod(v as "api-key" | "subscription")}
+              onValueChange={(v) => {
+                if (v === "subscription" && configuredProviders?.openai?.configured === true) {
+                  setShowReplaceDialog(true);
+                } else {
+                  setAuthMethod(v as "api-key" | "subscription");
+                }
+              }}
               className="flex gap-4"
             >
               <div className="flex items-center space-x-2">
@@ -402,9 +409,18 @@ export function ProviderKeyForm({
               !subscriptionStatus?.connected &&
               !subscriptionLoading && (
                 <OpenAiSubscriptionFlow
-                  onConnected={({ accountEmail }) => {
-                    setSubscriptionStatus({ connected: true, accountEmail });
+                  onConnected={async ({ accountEmail }) => {
                     toast.success(`Connected as ${accountEmail}`);
+                    const res = await fetch("/api/providers/openai/subscription");
+                    if (res.ok) {
+                      const data = (await res.json()) as {
+                        connected: boolean;
+                        accountEmail?: string;
+                        connectedAt?: string;
+                        refreshFailureCount?: number;
+                      };
+                      setSubscriptionStatus(data.connected ? data : null);
+                    }
                     onSuccess();
                   }}
                 />
@@ -568,6 +584,30 @@ export function ProviderKeyForm({
           </>
         )}
       </form>
+
+      <AlertDialog open={showReplaceDialog} onOpenChange={setShowReplaceDialog}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Replace API key?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will replace your existing OpenAI API key. You can switch back anytime.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel onClick={() => setShowReplaceDialog(false)}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                setShowReplaceDialog(false);
+                setAuthMethod("subscription");
+              }}
+            >
+              Continue
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Form>
   );
 }
