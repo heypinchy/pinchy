@@ -331,6 +331,16 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       // Start global usage poller. Idempotent — a reconnect won't spawn a
       // second poller. The poller handles sessions.list() failures gracefully.
       startUsagePoller(openclawClient!);
+
+      const REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+      const { refreshStaleTokens } = await import("./src/lib/openai-subscription-refresh");
+      refreshStaleTokens().catch((err) =>
+        console.error("[subscription-refresh] initial run:", err)
+      );
+      const refreshInterval = setInterval(() => {
+        refreshStaleTokens().catch((err) => console.error("[subscription-refresh]:", err));
+      }, REFRESH_INTERVAL_MS);
+      registerShutdownHandlers([() => clearInterval(refreshInterval)]);
     });
 
     setupOpenClawDisconnectHandler(openclawClient, sessionMap);
