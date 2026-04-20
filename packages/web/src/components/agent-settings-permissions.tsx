@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -10,15 +10,16 @@ import {
   getToolsByCategory,
   getOdooToolsForAccessLevel,
   getPipedriveToolsForAccessLevel,
+  getEmailToolsForOperations,
 } from "@/lib/tool-registry";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import {
   IntegrationPermissionSection,
   type IntegrationPermValues,
 } from "@/components/integration-permission-section";
+import { EmailPermissionSection } from "@/components/email-permission-section";
 import type {
   IntegrationPermissionsConfig,
-  IntegrationConnection,
   IntegrationEntity,
 } from "@/hooks/use-integration-permissions";
 import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
@@ -73,7 +74,6 @@ function categorizeOdooEntities(
     }
   }
 
-  // Any entities not in any category
   const categorized = new Set(MODEL_CATEGORIES.flatMap((c) => c.models.map((m) => m.model)));
   const uncategorized = entities.filter((e) => !categorized.has(e.id));
   if (uncategorized.length > 0) {
@@ -100,7 +100,6 @@ function categorizePipedriveEntities(
     }
   }
 
-  // Any entities not in any category
   const categorized = new Set(ENTITY_CATEGORIES.flatMap((c) => c.entities.map((e) => e.entity)));
   const uncategorized = entities.filter((e) => !categorized.has(e.id));
   if (uncategorized.length > 0) {
@@ -196,17 +195,27 @@ const INTEGRATION_CONFIGS: IntegrationTypeConfig[] = [
   },
 ];
 
-// All integration tool prefixes (used to filter them from KB tools)
-const INTEGRATION_TOOL_PREFIXES = INTEGRATION_CONFIGS.map((c) => `${c.type}_`);
+// Integration tool prefixes that are managed by generic + email sections — filtered out of KB tools.
+const INTEGRATION_TOOL_PREFIXES = [...INTEGRATION_CONFIGS.map((c) => `${c.type}_`), "email_"];
 
 export interface PermissionsValues {
   allowedTools: string[];
   allowedPaths: string[];
-  integrations: Record<
-    string,
-    { connectionId: string; permissions: Array<{ model: string; operation: string }> }
-  > | null;
+  integrations: Array<{
+    connectionId: string;
+    permissions: Array<{ model: string; operation: string }>;
+  }>;
 }
+
+interface Connection {
+  id: string;
+  name: string;
+  type: string;
+  status?: string;
+  data?: unknown;
+}
+
+const EMAIL_CONNECTION_TYPES = new Set(["google", "microsoft", "imap"]);
 
 interface AgentSettingsPermissionsProps {
   agent: {
@@ -216,12 +225,16 @@ interface AgentSettingsPermissionsProps {
     pluginConfig: { allowed_paths?: string[] } | null;
   };
   directories: Array<{ path: string; name: string }>;
+  connections: Connection[];
+  isAdmin: boolean;
   onChange: (values: PermissionsValues, isDirty: boolean) => void;
 }
 
 export function AgentSettingsPermissions({
   agent,
   directories,
+  connections,
+  isAdmin,
   onChange,
 }: AgentSettingsPermissionsProps) {
   // KB tools = non-integration safe tools only
@@ -237,49 +250,45 @@ export function AgentSettingsPermissions({
     agent.pluginConfig?.allowed_paths ?? []
   );
 
-  // Per-integration state
+  // Per-integration state for generic-backed types (odoo, pipedrive)
   const [integrationStates, setIntegrationStates] = useState<
     Record<string, IntegrationPermValues | null>
   >({});
   const [integrationDirtyStates, setIntegrationDirtyStates] = useState<Record<string, boolean>>({});
 
-  // Track which integration types have connections (loaded on mount)
-  const [connectionsByType, setConnectionsByType] = useState<
-    Record<string, IntegrationConnection[]>
-  >({});
-  const [connectionsLoading, setConnectionsLoading] = useState(true);
+  // Dedicated email state (email has a different UX model than the generic section)
+  const [emailIntegration, setEmailIntegration] = useState<{
+    connectionId: string;
+    permissions: Array<{ model: string; operation: string }>;
+  } | null>(null);
+  const [emailIsDirty, setEmailIsDirty] = useState(false);
 
   const initialKbToolsRef = useRef(initialKbTools);
   const initialAllowedPaths = useRef(agent.pluginConfig?.allowed_paths ?? []);
 
   const hasKbToolChecked = kbTools.some((tool) => allowedKbTools.includes(tool.id));
 
-  // Fetch all connections on mount and group by type
-  useEffect(() => {
-    async function loadConnections() {
-      try {
-        const res = await fetch("/api/integrations");
-        if (res.ok) {
-          const data = (await res.json()) as IntegrationConnection[];
-          const grouped: Record<string, IntegrationConnection[]> = {};
-          for (const conn of data) {
-            if (!grouped[conn.type]) grouped[conn.type] = [];
-            grouped[conn.type].push(conn);
-          }
-          setConnectionsByType(grouped);
-        }
-      } finally {
-        setConnectionsLoading(false);
-      }
+  // Partition active (non-pending) connections by integration family
+  const { connectionsByType, emailConnections } = useMemo(() => {
+    const active = connections.filter((c) => c.status !== "pending");
+    const byType: Record<string, Connection[]> = {};
+    for (const conn of active) {
+      if (!byType[conn.type]) byType[conn.type] = [];
+      byType[conn.type].push(conn);
     }
-    loadConnections();
-  }, []);
+    const emails = active.filter((c) => EMAIL_CONNECTION_TYPES.has(c.type));
+    return { connectionsByType: byType, emailConnections: emails };
+  }, [connections]);
 
-  // Compute the combined allowedTools array (KB tools + integration tools)
+  // Compute the combined allowedTools array (KB tools + generic integration tools + email tools)
   const computeAllowedTools = useCallback(
     (
       currentKbTools: string[],
-      intStates: Record<string, IntegrationPermValues | null>
+      intStates: Record<string, IntegrationPermValues | null>,
+      email: {
+        connectionId: string;
+        permissions: Array<{ model: string; operation: string }>;
+      } | null
     ): string[] => {
       const allIntegrationToolIds: string[] = [];
       for (const [type, state] of Object.entries(intStates)) {
@@ -289,40 +298,44 @@ export function AgentSettingsPermissions({
           allIntegrationToolIds.push(...config.getToolsForPermissions(state.permissions));
         }
       }
-      return [...currentKbTools, ...allIntegrationToolIds];
+      const emailToolIds =
+        email && email.permissions.length > 0
+          ? getEmailToolsForOperations(email.permissions.map((p) => p.operation))
+          : [];
+      return [...currentKbTools, ...allIntegrationToolIds, ...emailToolIds];
     },
     []
   );
 
   // Notify parent after every state change (and on mount)
   useEffect(() => {
-    const allAllowedTools = computeAllowedTools(allowedKbTools, integrationStates);
+    const allAllowedTools = computeAllowedTools(
+      allowedKbTools,
+      integrationStates,
+      emailIntegration
+    );
     const kbDirty =
       JSON.stringify([...allowedKbTools].sort()) !==
         JSON.stringify([...initialKbToolsRef.current].sort()) ||
       JSON.stringify([...allowedPaths].sort()) !==
         JSON.stringify([...initialAllowedPaths.current].sort());
     const anyIntegrationDirty = Object.values(integrationDirtyStates).some((d) => d);
-    const isDirty = kbDirty || anyIntegrationDirty;
+    const isDirty = kbDirty || anyIntegrationDirty || emailIsDirty;
 
-    // Build integrations record: only include types that have a configured state
-    const integrationsRecord: Record<
-      string,
-      { connectionId: string; permissions: Array<{ model: string; operation: string }> }
-    > = {};
-    let hasAnyIntegration = false;
-    for (const [type, state] of Object.entries(integrationStates)) {
-      if (state) {
-        integrationsRecord[type] = state;
-        hasAnyIntegration = true;
-      }
+    const integrations: Array<{
+      connectionId: string;
+      permissions: Array<{ model: string; operation: string }>;
+    }> = [];
+    for (const state of Object.values(integrationStates)) {
+      if (state) integrations.push(state);
     }
+    if (emailIntegration) integrations.push(emailIntegration);
 
     onChange(
       {
         allowedTools: allAllowedTools,
         allowedPaths,
-        integrations: hasAnyIntegration ? integrationsRecord : null,
+        integrations,
       },
       isDirty
     );
@@ -331,6 +344,8 @@ export function AgentSettingsPermissions({
     allowedPaths,
     integrationStates,
     integrationDirtyStates,
+    emailIntegration,
+    emailIsDirty,
     onChange,
     computeAllowedTools,
   ]);
@@ -352,10 +367,22 @@ export function AgentSettingsPermissions({
     };
   }
 
-  // Determine which integration configs to render (only those with connections)
-  const visibleIntegrations = connectionsLoading
-    ? []
-    : INTEGRATION_CONFIGS.filter((config) => (connectionsByType[config.type]?.length ?? 0) > 0);
+  function handleEmailChange(
+    values: {
+      connectionId: string;
+      permissions: Array<{ model: string; operation: string }>;
+    } | null,
+    isDirty: boolean
+  ) {
+    setEmailIntegration(values);
+    setEmailIsDirty(isDirty);
+  }
+
+  // Render only integration types that have at least one active connection
+  const visibleIntegrations = INTEGRATION_CONFIGS.filter(
+    (config) => (connectionsByType[config.type]?.length ?? 0) > 0
+  );
+  const showEmail = emailConnections.length > 0;
 
   return (
     <div className="space-y-8">
@@ -403,7 +430,7 @@ export function AgentSettingsPermissions({
         )}
       </section>
 
-      {/* Integration sections — rendered dynamically based on available connections */}
+      {/* Generic integration sections (Odoo, Pipedrive) */}
       {visibleIntegrations.map((config) => (
         <section key={config.type} className="space-y-4">
           <h3 className="text-lg font-semibold">{config.label}</h3>
@@ -413,7 +440,12 @@ export function AgentSettingsPermissions({
             label={config.label}
             entityLabel={config.entityLabel}
             entityLabelSingular={config.entityLabelSingular}
-            connections={connectionsByType[config.type] ?? []}
+            connections={(connectionsByType[config.type] ?? []).map((c) => ({
+              id: c.id,
+              name: c.name,
+              type: c.type,
+              data: c.data,
+            }))}
             hookConfig={config.hookConfig}
             operations={config.operations}
             operationLabels={config.operationLabels}
@@ -423,6 +455,29 @@ export function AgentSettingsPermissions({
           />
         </section>
       ))}
+
+      {/* Email section — dedicated UX (single model, 3 operations) */}
+      {showEmail && (
+        <section className="space-y-4">
+          <h3 className="text-lg font-semibold">Email</h3>
+          <EmailPermissionSection
+            agentId={agent.id}
+            connections={emailConnections}
+            onChange={handleEmailChange}
+          />
+        </section>
+      )}
+
+      {/* Admin-only discoverability link */}
+      {isAdmin && (
+        <p className="text-sm text-muted-foreground">
+          Need more capabilities?{" "}
+          <a href="/settings?tab=integrations" className="underline hover:text-foreground">
+            Add an integration
+          </a>{" "}
+          in Settings.
+        </p>
+      )}
     </div>
   );
 }

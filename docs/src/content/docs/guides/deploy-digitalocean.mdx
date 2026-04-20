@@ -3,7 +3,8 @@ title: Deploy Pinchy on DigitalOcean
 description: Deploy a self-hosted AI agent platform on DigitalOcean. Step-by-step guide from Droplet creation to running Pinchy with Docker.
 ---
 
-import { Aside, Steps } from "@astrojs/starlight/components";
+import { Aside, Code, Steps } from "@astrojs/starlight/components";
+import cloudInitScript from "../../../snippets/cloud-init.yml?raw";
 
 DigitalOcean is a solid choice for running Pinchy — straightforward interface, predictable pricing, and data centers on multiple continents. If your team is distributed or you want to keep your AI agents close to your users, DigitalOcean's global footprint makes that easy.
 
@@ -66,42 +67,7 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
     Expand **Advanced Options** and check **Add Initialization scripts (free)**. Paste the following script into the text field. It automatically installs Docker, deploys Pinchy, sets up a firewall, and adds swap.
 
-    ```yaml
-    #cloud-config
-    runcmd:
-      - mkdir -p /opt/pinchy-loading
-      - curl -fsSL https://github.com/heypinchy/pinchy/releases/download/%%PINCHY_VERSION%%/installing.html -o /opt/pinchy-loading/index.html
-      - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /opt/pinchy-loading/index.html
-      - cd /opt/pinchy-loading && python3 -m http.server 80 &
-      - echo $! > /tmp/loading-server.pid
-      - apt-get update -qq
-      - apt-get install -y -qq docker.io docker-compose-v2 ufw
-      - echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
-      - echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
-      - apt-get install -y -qq iptables-persistent
-      - ufw allow OpenSSH
-      - ufw allow 80/tcp
-      - ufw allow 443/tcp
-      - ufw allow 7777/tcp
-      - ufw --force enable
-      - systemctl enable docker
-      - systemctl start docker
-      - fallocate -l 2G /swapfile
-      - chmod 600 /swapfile
-      - mkswap /swapfile
-      - swapon /swapfile
-      - echo '/swapfile none swap sw 0 0' >> /etc/fstab
-      - mkdir -p /opt/pinchy
-      - curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o /opt/pinchy/docker-compose.yml
-      - cd /opt/pinchy && docker compose pull
-      - cd /opt/pinchy && docker compose up -d
-      - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
-      - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
-      - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
-      - iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
-      - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
-      - netfilter-persistent save
-    ```
+    <Code code={cloudInitScript} lang="yaml" title="cloud-init.yml" />
 
 7.  **Set the hostname and create the Droplet**
 
@@ -121,11 +87,11 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
 ## Production setup
 
-The steps above get Pinchy running over plain HTTP. For production use, you should add HTTPS and pin your secrets. Follow the [VPS Deployment Guide — Production setup](/guides/vps-deployment/#production-setup) for:
+The steps above get Pinchy running over plain HTTP. The cloud-init script already pinned your secrets (`DB_PASSWORD`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`) in `/opt/pinchy/.env` and installed Caddy as a reverse proxy.
 
-- **HTTPS with Caddy** — automatic SSL certificates for your domain
-- **Pinning secrets** — so your encryption keys don't depend on Docker volumes
-- **Removing the iptables redirect** — once Caddy is running, remove the port 80→7777 redirect
+To enable HTTPS, follow the [HTTPS setup steps in the Hetzner guide](/guides/deploy-hetzner/#set-up-https-with-caddy) — the cloud-init flow is identical: edit `/etc/caddy/Caddyfile`, replace `:80` with your domain, and reload Caddy. Let's Encrypt is automatic.
+
+See the [VPS Deployment Guide — Production setup](/guides/vps-deployment/#production-setup) for further hardening (domain lock, automatic security updates).
 
 <details>
 <summary>How do I connect to my Droplet to run these commands?</summary>

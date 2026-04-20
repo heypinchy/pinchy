@@ -60,10 +60,10 @@ export interface IntegrationPermissionSectionProps {
   onChange: (values: IntegrationPermValues | null, isDirty: boolean) => void;
 }
 
-// Note: `integrationType`, `label`, and `connections` are accepted as props for
-// the parent to control rendering (e.g. section headings, conditional display).
-// The component itself uses `hookConfig` (which embeds the type) and the hook
-// fetches connections internally.
+// `integrationType` and `label` are accepted as props for section headings.
+// `connections` is passed into the hook so the parent stays the single source
+// of truth — the hook only fetches per-agent permissions, not the global
+// connection list.
 
 /** Default categorization: single flat group. */
 function flatGroup(
@@ -78,6 +78,7 @@ export function IntegrationPermissionSection({
   agentId,
   entityLabel,
   entityLabelSingular,
+  connections: injectedConnections,
   hookConfig,
   operations,
   operationLabels,
@@ -101,7 +102,7 @@ export function IntegrationPermissionSection({
     getEntityAccess,
     getPermissions,
     isDirty,
-  } = useIntegrationPermissions(hookConfig, agentId);
+  } = useIntegrationPermissions(hookConfig, agentId, injectedConnections);
 
   const [addEntityOpen, setAddEntityOpen] = useState(false);
 

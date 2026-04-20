@@ -12,6 +12,7 @@ import {
   maskPipedriveCredentials,
 } from "@/lib/integrations/pipedrive-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { deleteOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { z } from "zod";
 
 const updateIntegrationSchema = z.object({
@@ -164,6 +165,17 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
   }
 
   await db.delete(integrationConnections).where(eq(integrationConnections.id, connectionId));
+
+  // Clear OAuth settings when the last Google connection is removed
+  if (existing.type === "google") {
+    const remainingGoogle = await db
+      .select()
+      .from(integrationConnections)
+      .where(eq(integrationConnections.type, "google"));
+    if (remainingGoogle.length === 0) {
+      await deleteOAuthSettings("google");
+    }
+  }
 
   appendAuditLog({
     actorType: "user",

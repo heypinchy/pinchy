@@ -7,6 +7,9 @@ import {
   getOdooTools,
   getOdooToolsForAccessLevel,
   detectOdooAccessLevel,
+  getEmailTools,
+  getEmailToolsForOperations,
+  detectEmailOperations,
 } from "@/lib/tool-registry";
 
 describe("TOOL_REGISTRY", () => {
@@ -17,16 +20,18 @@ describe("TOOL_REGISTRY", () => {
     expect(safe.map((t) => t.id)).toContain("pinchy_read");
   });
 
-  it("contains docs_list and docs_read as safe tools (no group, not denied)", () => {
+  it("does not expose docs_list / docs_read as admin-configurable tools", () => {
+    // The pinchy-docs plugin is enabled automatically for every personal
+    // agent (Smithers) via openclaw-config.ts — it is NOT steered by an
+    // agent's allowedTools. Surfacing these tools in the per-agent permission
+    // UI would imply admins can grant them to any agent, but the checkbox has
+    // no effect on non-personal agents. Keep them out of the registry so the
+    // UI doesn't lie about what can be controlled.
     const ids = TOOL_REGISTRY.map((t) => t.id);
-    expect(ids).toContain("docs_list");
-    expect(ids).toContain("docs_read");
-    const docsList = getToolById("docs_list");
-    const docsRead = getToolById("docs_read");
-    expect(docsList?.category).toBe("safe");
-    expect(docsRead?.category).toBe("safe");
-    expect(docsList?.group).toBeUndefined();
-    expect(docsRead?.group).toBeUndefined();
+    expect(ids).not.toContain("docs_list");
+    expect(ids).not.toContain("docs_read");
+    expect(getToolById("docs_list")).toBeUndefined();
+    expect(getToolById("docs_read")).toBeUndefined();
   });
 
   it("contains powerful tools", () => {
@@ -43,7 +48,10 @@ describe("TOOL_REGISTRY", () => {
     expect(ids).toContain("pipedrive_merge");
     expect(ids).toContain("pipedrive_relate");
     expect(ids).toContain("pipedrive_convert");
-    expect(powerful.length).toBe(9);
+    // Email write tools
+    expect(ids).toContain("email_draft");
+    expect(ids).toContain("email_send");
+    expect(powerful.length).toBe(11);
   });
 
   it("does not contain any OpenClaw native tools", () => {
@@ -144,7 +152,8 @@ describe("Odoo access level helpers", () => {
 
   it("non-integration tools don't have integration set", () => {
     const nonIntegrationTools = TOOL_REGISTRY.filter(
-      (t) => !t.id.startsWith("odoo_") && !t.id.startsWith("pipedrive_")
+      (t) =>
+        !t.id.startsWith("odoo_") && !t.id.startsWith("pipedrive_") && !t.id.startsWith("email_")
     );
     for (const tool of nonIntegrationTools) {
       expect(tool.integration).toBeUndefined();
@@ -232,5 +241,101 @@ describe("Odoo access level helpers", () => {
 
   it("detectOdooAccessLevel returns 'custom' when no odoo tools present", () => {
     expect(detectOdooAccessLevel(["pinchy_ls", "pinchy_read"])).toBe("custom");
+  });
+
+  // --- Email tools ---
+
+  it("email tools are registered in TOOL_REGISTRY", () => {
+    const emailTools = TOOL_REGISTRY.filter((t) => t.integration === "email");
+    expect(emailTools).toHaveLength(5);
+
+    const ids = emailTools.map((t) => t.id);
+    expect(ids).toContain("email_list");
+    expect(ids).toContain("email_read");
+    expect(ids).toContain("email_search");
+    expect(ids).toContain("email_draft");
+    expect(ids).toContain("email_send");
+  });
+
+  it("email read tools are safe category, send is powerful", () => {
+    expect(getToolById("email_list")?.category).toBe("safe");
+    expect(getToolById("email_read")?.category).toBe("safe");
+    expect(getToolById("email_search")?.category).toBe("safe");
+    expect(getToolById("email_draft")?.category).toBe("powerful");
+    expect(getToolById("email_send")?.category).toBe("powerful");
+  });
+
+  it("getEmailTools() returns exactly 5 tools", () => {
+    const tools = getEmailTools();
+    expect(tools).toHaveLength(5);
+    expect(tools.every((t) => t.integration === "email")).toBe(true);
+  });
+});
+
+describe("Email operation helpers", () => {
+  describe("getEmailToolsForOperations", () => {
+    it("returns read tools for 'read' operation", () => {
+      expect(getEmailToolsForOperations(["read"])).toEqual([
+        "email_list",
+        "email_read",
+        "email_search",
+      ]);
+    });
+
+    it("returns draft tool for 'draft' operation", () => {
+      expect(getEmailToolsForOperations(["draft"])).toEqual(["email_draft"]);
+    });
+
+    it("returns send tool for 'send' operation", () => {
+      expect(getEmailToolsForOperations(["send"])).toEqual(["email_send"]);
+    });
+
+    it("returns all tools for all operations", () => {
+      expect(getEmailToolsForOperations(["read", "draft", "send"])).toEqual([
+        "email_list",
+        "email_read",
+        "email_search",
+        "email_draft",
+        "email_send",
+      ]);
+    });
+
+    it("returns empty for empty input", () => {
+      expect(getEmailToolsForOperations([])).toEqual([]);
+    });
+
+    it("ignores unknown operations", () => {
+      expect(getEmailToolsForOperations(["list", "search"])).toEqual([]);
+    });
+  });
+
+  describe("detectEmailOperations", () => {
+    it("detects read from any read tool", () => {
+      expect(detectEmailOperations(["email_list"])).toEqual(["read"]);
+      expect(detectEmailOperations(["email_read"])).toEqual(["read"]);
+      expect(detectEmailOperations(["email_search"])).toEqual(["read"]);
+    });
+
+    it("detects draft from email_draft", () => {
+      expect(detectEmailOperations(["email_draft"])).toEqual(["draft"]);
+    });
+
+    it("detects send from email_send", () => {
+      expect(detectEmailOperations(["email_send"])).toEqual(["send"]);
+    });
+
+    it("detects multiple operations from mixed tool IDs", () => {
+      expect(
+        detectEmailOperations(["email_list", "email_read", "email_search", "email_draft"])
+      ).toEqual(["read", "draft"]);
+    });
+
+    it("returns empty for non-email tools", () => {
+      expect(detectEmailOperations(["pinchy_ls", "odoo_read"])).toEqual([]);
+    });
+
+    it("returns empty for empty input", () => {
+      expect(detectEmailOperations([])).toEqual([]);
+    });
   });
 });

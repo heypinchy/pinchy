@@ -82,8 +82,11 @@ export interface UseOdooPermissionsReturn {
 
 // --- Thin wrapper ---
 
-export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
-  const generic = useIntegrationPermissions(ODOO_CONFIG, agentId);
+export function useOdooPermissions(
+  agentId: string,
+  connections?: Connection[]
+): UseOdooPermissionsReturn {
+  const generic = useIntegrationPermissions(ODOO_CONFIG, agentId, connections);
 
   return {
     connections: generic.connections as Connection[],

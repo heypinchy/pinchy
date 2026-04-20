@@ -30,7 +30,11 @@ vi.mock("@/db", () => ({
     select: vi.fn().mockImplementation(() => ({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockResolvedValue([]),
+          innerJoin: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve([]), {
+              where: vi.fn().mockResolvedValue([]),
+            })
+          ),
         })
       ),
     })),
@@ -41,8 +45,12 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
+const { mockDecrypt } = vi.hoisted(() => ({
+  mockDecrypt: vi.fn((val: string) => val),
+}));
+
 vi.mock("@/lib/encryption", () => ({
-  decrypt: (val: string) => val,
+  decrypt: (val: string) => mockDecrypt(val),
   encrypt: (val: string) => val,
   getOrCreateSecret: vi.fn().mockReturnValue(Buffer.alloc(32)),
 }));
@@ -60,7 +68,7 @@ vi.mock("@/lib/provider-models", () => {
     anthropic: "anthropic/claude-haiku-4-5-20251001",
     openai: "openai/gpt-4o-mini",
     google: "google/gemini-2.5-flash",
-    "ollama-cloud": "ollama-cloud/gemini-3-flash-preview:cloud",
+    "ollama-cloud": "ollama-cloud/gemini-3-flash-preview",
     "ollama-local": "",
   };
   return {
@@ -85,11 +93,23 @@ const mockedMkdirSync = vi.mocked(mkdirSync);
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
 
-/** Helper: create a mock `from()` that returns a thenable with `.innerJoin()` */
+/**
+ * Helper: create a mock `innerJoin()` that returns a thenable supporting `.where()`.
+ * This models the new query chain: select().from().innerJoin().where().
+ */
+function mockInnerJoin(data: unknown[] = []) {
+  return vi.fn().mockReturnValue(
+    Object.assign(Promise.resolve(data), {
+      where: vi.fn().mockResolvedValue(data),
+    })
+  );
+}
+
+/** Helper: create a mock `from()` that returns a thenable with `.innerJoin()` and optional `.where()` */
 function mockFrom(data: unknown[] = []) {
   return vi.fn().mockImplementation(() =>
     Object.assign(Promise.resolve(data), {
-      innerJoin: vi.fn().mockResolvedValue([]),
+      innerJoin: mockInnerJoin([]),
     })
   );
 }
@@ -609,6 +629,252 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama-cloud"].models.length).toBeGreaterThan(0);
   });
 
+  it("writes every tool-capable Ollama Cloud model into the config", async () => {
+    // OpenClaw reads this list to know which cloud models exist and how to
+    // prune their context. A mismatch between what Pinchy's UI lets the
+    // admin pick and what OpenClaw knows about means the agent would run
+    // with default context hints (or refuse the model entirely). Keep the
+    // lists locked.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const modelIds = (config.models.providers["ollama-cloud"].models as Array<{ id: string }>).map(
+      (m) => m.id
+    );
+
+    expect(modelIds.sort()).toEqual(
+      [
+        "deepseek-v3.1:671b",
+        "deepseek-v3.2",
+        "devstral-2:123b",
+        "devstral-small-2:24b",
+        "gemini-3-flash-preview",
+        "gemma4:31b",
+        "glm-4.6",
+        "glm-4.7",
+        "glm-5",
+        "glm-5.1",
+        "gpt-oss:120b",
+        "gpt-oss:20b",
+        "kimi-k2-thinking",
+        "kimi-k2.5",
+        "minimax-m2",
+        "minimax-m2.1",
+        "minimax-m2.5",
+        "minimax-m2.7",
+        "ministral-3:14b",
+        "ministral-3:3b",
+        "ministral-3:8b",
+        "mistral-large-3:675b",
+        "nemotron-3-nano:30b",
+        "nemotron-3-super",
+        "qwen3-coder-next",
+        "qwen3-coder:480b",
+        "qwen3-next:80b",
+        "qwen3-vl:235b",
+        "qwen3-vl:235b-instruct",
+        "qwen3.5:397b",
+        "rnj-1:8b",
+      ].sort()
+    );
+  });
+
+  it("writes the correct context window for each Ollama Cloud model", async () => {
+    // Context windows are taken from each model's ollama.com/library/<name>
+    // page. Pinchy must not exceed the real limit (Ollama would reject the
+    // request) and shouldn't under-report either (unnecessary compaction).
+    // Ollama's "NK" convention is N * 1024, which we preserve here.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const models = config.models.providers["ollama-cloud"].models as Array<{
+      id: string;
+      contextWindow: number;
+    }>;
+    const ctx = Object.fromEntries(models.map((m) => [m.id, m.contextWindow]));
+
+    // 32K — smallest in the list, was previously over-reported as 128K
+    expect(ctx["rnj-1:8b"]).toBe(32768);
+    // 128K
+    expect(ctx["gpt-oss:20b"]).toBe(131072);
+    expect(ctx["gpt-oss:120b"]).toBe(131072);
+    // 160K
+    expect(ctx["deepseek-v3.1:671b"]).toBe(163840);
+    expect(ctx["deepseek-v3.2"]).toBe(163840);
+    // 198K (GLM family, minimax-m2.5)
+    expect(ctx["glm-4.6"]).toBe(202752);
+    expect(ctx["glm-4.7"]).toBe(202752);
+    expect(ctx["glm-5"]).toBe(202752);
+    expect(ctx["glm-5.1"]).toBe(202752);
+    expect(ctx["minimax-m2.5"]).toBe(202752);
+    // 200K (other minimax variants)
+    expect(ctx["minimax-m2"]).toBe(204800);
+    expect(ctx["minimax-m2.1"]).toBe(204800);
+    expect(ctx["minimax-m2.7"]).toBe(204800);
+    // 256K — the most common class
+    expect(ctx["devstral-2:123b"]).toBe(262144);
+    expect(ctx["gemma4:31b"]).toBe(262144);
+    expect(ctx["kimi-k2-thinking"]).toBe(262144);
+    expect(ctx["kimi-k2.5"]).toBe(262144);
+    expect(ctx["ministral-3:3b"]).toBe(262144);
+    expect(ctx["ministral-3:8b"]).toBe(262144);
+    expect(ctx["ministral-3:14b"]).toBe(262144);
+    expect(ctx["mistral-large-3:675b"]).toBe(262144);
+    expect(ctx["nemotron-3-super"]).toBe(262144);
+    expect(ctx["qwen3-coder-next"]).toBe(262144);
+    expect(ctx["qwen3-coder:480b"]).toBe(262144);
+    expect(ctx["qwen3-next:80b"]).toBe(262144);
+    expect(ctx["qwen3-vl:235b"]).toBe(262144);
+    expect(ctx["qwen3-vl:235b-instruct"]).toBe(262144);
+    expect(ctx["qwen3.5:397b"]).toBe(262144);
+    // 384K
+    expect(ctx["devstral-small-2:24b"]).toBe(393216);
+    // 1M
+    expect(ctx["gemini-3-flash-preview"]).toBe(1048576);
+    expect(ctx["nemotron-3-nano:30b"]).toBe(1048576);
+  });
+
+  it("writes reasoning, input (vision), and cost fields for every Ollama Cloud model", async () => {
+    // OpenClaw's ModelDefinitionConfig requires `reasoning`, `input`, and
+    // `cost` alongside contextWindow/maxTokens/compat. Without these the
+    // runtime falls back to silent defaults — vision-capable models get
+    // treated as text-only, reasoning models can't advertise thinking, and
+    // estimatedCostUsd stays 0 for every session. Verified per model on
+    // ollama.com/library/<name>.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const models = config.models.providers["ollama-cloud"].models as Array<{
+      id: string;
+      reasoning?: boolean;
+      input?: string[];
+      cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    }>;
+    const byId = Object.fromEntries(models.map((m) => [m.id, m]));
+
+    // Vision-capable cloud models per ollama.com/search?c=vision&c=cloud
+    const visionModels = [
+      "devstral-small-2:24b",
+      "gemini-3-flash-preview",
+      "gemma4:31b",
+      "kimi-k2.5",
+      "ministral-3:3b",
+      "ministral-3:8b",
+      "ministral-3:14b",
+      "mistral-large-3:675b",
+      "qwen3-vl:235b",
+      "qwen3-vl:235b-instruct",
+      "qwen3.5:397b",
+    ];
+    for (const id of visionModels) {
+      expect(byId[id].input).toEqual(["text", "image"]);
+    }
+    // Spot-check that text-only models stay text-only (gemma4 was the
+    // specific counter-example the user flagged during review)
+    expect(byId["rnj-1:8b"].input).toEqual(["text"]);
+    expect(byId["qwen3-coder:480b"].input).toEqual(["text"]);
+    expect(byId["deepseek-v3.2"].input).toEqual(["text"]);
+
+    // Reasoning-capable cloud models per ollama.com/search?c=thinking&c=cloud
+    const reasoningModels = [
+      "deepseek-v3.1:671b",
+      "deepseek-v3.2",
+      "gemini-3-flash-preview",
+      "gemma4:31b",
+      "glm-4.6",
+      "glm-4.7",
+      "glm-5",
+      "glm-5.1",
+      "gpt-oss:20b",
+      "gpt-oss:120b",
+      "kimi-k2-thinking",
+      "kimi-k2.5",
+      "minimax-m2",
+      "minimax-m2.5",
+      "minimax-m2.7",
+      "nemotron-3-nano:30b",
+      "nemotron-3-super",
+      "qwen3-next:80b",
+      "qwen3-vl:235b",
+      "qwen3-vl:235b-instruct",
+      "qwen3.5:397b",
+    ];
+    for (const id of reasoningModels) {
+      expect(byId[id].reasoning).toBe(true);
+    }
+    // Non-reasoning — qwen3-coder-next explicitly "Non-thinking mode only",
+    // ministral-3 / mistral-large-3 / devstral-* and rnj-1 not tagged,
+    // minimax-m2.1 absent from Ollama's thinking tag list.
+    const nonReasoningModels = [
+      "devstral-2:123b",
+      "devstral-small-2:24b",
+      "minimax-m2.1",
+      "ministral-3:3b",
+      "ministral-3:8b",
+      "ministral-3:14b",
+      "mistral-large-3:675b",
+      "qwen3-coder-next",
+      "qwen3-coder:480b",
+      "rnj-1:8b",
+    ];
+    for (const id of nonReasoningModels) {
+      expect(byId[id].reasoning).toBe(false);
+    }
+
+    // Ollama Cloud uses subscription pricing, not per-token billing (see
+    // ollama.com/pricing). Setting cost to zero is the honest value — a
+    // fabricated per-token rate would make the Usage dashboard lie about
+    // spend for users on the Free / Pro / Max plans.
+    for (const model of models) {
+      expect(model.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    }
+  });
+
+  it("opts every Ollama Cloud model into streaming usage reporting", async () => {
+    // Ollama Cloud's /v1/chat/completions only emits a final `usage` chunk
+    // when the request carries `stream_options: { include_usage: true }`.
+    // OpenClaw adds that flag only when the model config opts in via
+    // `compat.supportsUsageInStreaming: true` — its own auto-detection
+    // treats configured non-OpenAI endpoints as "not supported" by default.
+    // Without this opt-in, sessions have no inputTokens/outputTokens, the
+    // poller records nothing, and Usage & Costs stays empty.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const models = config.models.providers["ollama-cloud"].models as Array<{
+      id: string;
+      compat?: { supportsUsageInStreaming?: boolean };
+    }>;
+
+    for (const model of models) {
+      expect(model.compat?.supportsUsageInStreaming).toBe(true);
+    }
+  });
+
   it("should not include models block when neither ollama provider is configured", async () => {
     mockedGetSetting.mockResolvedValue(null);
 
@@ -764,7 +1030,7 @@ describe("regenerateOpenClawConfig", () => {
           model: "anthropic/claude-haiku-4-5-20251001",
           isPersonal: true,
           ownerId: "user-1",
-          allowedTools: ["pinchy_save_user_context", "docs_list", "docs_read"],
+          allowedTools: ["pinchy_save_user_context"],
           createdAt: new Date(),
         },
         {
@@ -922,7 +1188,7 @@ describe("pinchy-odoo config size", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+          innerJoin: mockInnerJoin(permissionsData),
         })
       ),
     } as never);
@@ -944,6 +1210,103 @@ describe("pinchy-odoo config size", () => {
     // Config should be small (no field definitions bloating it)
     const configSize = written.length;
     expect(configSize).toBeLessThan(5000); // Without schema: ~2-3KB. With schema it would be 100KB+
+  });
+
+  it("skips agents whose Odoo connection can't be decrypted instead of crashing the whole config regeneration", async () => {
+    // Regression: if ENCRYPTION_KEY changes, conn.credentials can't be decrypted.
+    // Previously the thrown error bubbled up and regenerateOpenClawConfig()
+    // crashed — which meant EVERY agent's config stopped regenerating, not just
+    // the one with the broken Odoo link. Now we skip the unreadable agent and
+    // keep the rest of the config alive.
+    const agentsData = [
+      {
+        id: "good-agent",
+        name: "Good Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+      {
+        id: "broken-agent",
+        name: "Broken Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "good-agent",
+          connectionId: "conn-good",
+          model: "sale.order",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-good",
+          type: "odoo",
+          name: "Readable Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://good.odoo",
+            db: "prod",
+            uid: 2,
+            apiKey: "good-key",
+          }),
+          data: { models: [], lastSyncAt: "2026-04-01T00:00:00Z" },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+      {
+        agent_connection_permissions: {
+          agentId: "broken-agent",
+          connectionId: "conn-broken",
+          model: "sale.order",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-broken",
+          type: "odoo",
+          name: "Unreadable Odoo",
+          description: "",
+          credentials: "POISONED_BY_KEY_ROTATION",
+          data: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: mockInnerJoin(permissionsData),
+        })
+      ),
+    } as never);
+
+    // Fail decryption only for the broken connection's ciphertext
+    mockDecrypt.mockImplementation((val: string) => {
+      if (val === "POISONED_BY_KEY_ROTATION") {
+        throw new Error("Unsupported state or unable to authenticate data");
+      }
+      return val;
+    });
+
+    await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
+
+    const written = mockedWriteFileSync.mock.calls.at(-1)?.[1] as string;
+    const config = JSON.parse(written);
+    const odooAgents = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents ?? {};
+
+    expect(odooAgents["good-agent"]).toBeDefined();
+    expect(odooAgents["good-agent"].connection.url).toBe("https://good.odoo");
+    expect(odooAgents["broken-agent"]).toBeUndefined();
+
+    // Reset for subsequent tests
+    mockDecrypt.mockImplementation((val: string) => val);
   });
 });
 
@@ -1052,7 +1415,7 @@ describe("pinchy-pipedrive config", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+          innerJoin: mockInnerJoin(permissionsData),
         })
       ),
     } as never);
@@ -1175,7 +1538,7 @@ describe("pinchy-pipedrive config", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+          innerJoin: mockInnerJoin(permissionsData),
         })
       ),
     } as never);
@@ -1290,11 +1653,11 @@ describe("restart-state integration", () => {
               { id: "agent-1", name: "Smithers", model: "m", allowedTools: [] },
               { id: "agent-2", name: "Support", model: "m", allowedTools: [] },
             ]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]) }
           );
         }
         return Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockResolvedValue([]),
+          innerJoin: mockInnerJoin([]),
         });
       }),
     } as never);
@@ -1348,7 +1711,7 @@ describe("restart-state integration", () => {
                 ownerId: "user-b",
               },
             ]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]) }
           );
         }
         // callCount 2 = agentConnectionPermissions (chained with innerJoin)
@@ -1359,11 +1722,11 @@ describe("restart-state integration", () => {
               { userId: "user-a", channel: "telegram", channelUserId: "111222333" },
               { userId: "user-b", channel: "telegram", channelUserId: "444555666" },
             ]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]) }
           );
         }
         return Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockResolvedValue([]),
+          innerJoin: mockInnerJoin([]),
         });
       }),
     } as never);
@@ -1444,7 +1807,7 @@ describe("restart-state integration", () => {
           // First call: agents table
           return Object.assign(
             Promise.resolve([{ id: "agent-1", name: "Smithers", model: "m", allowedTools: [] }]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]) }
           );
         }
         // callCount 2 = agentConnectionPermissions (chained with innerJoin)
@@ -1452,11 +1815,11 @@ describe("restart-state integration", () => {
         if (callCount === 3) {
           return Object.assign(
             Promise.resolve([{ userId: "user-1", channel: "telegram", channelUserId: "999888" }]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]) }
           );
         }
         return Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockResolvedValue([]),
+          innerJoin: mockInnerJoin([]),
         });
       }),
     } as never);

@@ -1,6 +1,13 @@
 name: Deploy Docs
 
 on:
+  # Called from release.yml after a release is published, so docs stay in
+  # lockstep with releases. Edits to main between releases stay unpublished
+  # until the next tag. We can't use the `release: published` trigger here
+  # because releases created by GITHUB_TOKEN don't fire workflow events.
+  # Manual runs stay available for one-off corrections (e.g. typo fix
+  # without a release).
+  workflow_call:
   workflow_dispatch:
 
 permissions:

@@ -95,8 +95,10 @@ If you need to roll back after an upgrade:
 
 3. **Pull the previous version**
 
+   Replace `vX.Y.Z` with the version you want to roll back to (check the [Releases page](https://github.com/heypinchy/pinchy/releases)):
+
    ```bash
-   curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.1.0/docker-compose.yml -o docker-compose.yml
+   curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/vX.Y.Z/docker-compose.yml -o docker-compose.yml
    docker compose pull
    ```
 
@@ -114,7 +116,7 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.2.1 to %%PINCHY_VERSION%%
+## Upgrading from v0.4.3 to %%PINCHY_VERSION%%
 
 Standard upgrade — no breaking changes, no new required environment variables.
 
@@ -123,7 +125,140 @@ curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%
 docker compose pull && docker compose up -d
 ```
 
-### What's new in %%PINCHY_VERSION%%
+### What's fixed in %%PINCHY_VERSION%%
+
+- **Integrations list no longer blanks out when one row can't be decrypted** — if the `ENCRYPTION_KEY` ever changed (e.g. accidentally overridden via `.env`), one un-decryptable row in `integration_connections` silently caused `GET /api/integrations` to return 500, and the UI fell back to "No integrations configured yet" for every integration — including freshly-added ones that would decrypt fine. Each row is now decrypted in isolation; unreadable rows surface in Settings → Integrations as a warning card with a Delete action so admins can recover without DB access. `regenerateOpenClawConfig()` got the same per-row isolation, so one broken connection no longer takes down every agent's config.
+
+## Upgrading from v0.4.2 to v0.4.3
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.3/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
+```
+
+### Port binding change — action required if you use direct port access
+
+The default port binding changed from `0.0.0.0:7777` to `127.0.0.1:7777`. After upgrading, Pinchy will only accept connections from localhost.
+
+**If you have a reverse proxy (Caddy, nginx):** No action needed — this is how it should be.
+
+**If you access Pinchy directly on port 7777** (no reverse proxy): Add this line to `/opt/pinchy/.env` to restore the previous behavior:
+
+```bash
+PINCHY_PORT=0.0.0.0:7777
+```
+
+We strongly recommend [setting up a reverse proxy](/guides/vps-deployment/#set-up-https-with-caddy) instead. Docker bypasses host firewall rules (UFW), so `0.0.0.0:7777` exposes the port to the internet regardless of your firewall configuration.
+
+## Upgrading from v0.4.1 to v0.4.2
+
+Standard upgrade — no breaking changes, no new required environment variables.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.2/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
+```
+
+### What's fixed in v0.4.2
+
+- **Pinchy reconnects cleanly after the OpenClaw container is recreated** — on upgrades that replaced the OpenClaw container, Pinchy would repeatedly log `token_mismatch` / `token_missing` and refuse to connect to the gateway. Root cause: once a device is paired, OpenClaw accepts only the per-device token it issued at pairing, not the gateway bootstrap token from `openclaw.json`. Pinchy's client library now persists that per-device token alongside the device identity and sends it on reconnect, and discards it automatically if OpenClaw ever rejects it so re-pairing just works. (`openclaw-node` bumped from 0.3.1 to 0.4.0.)
+
+## Upgrading from v0.4.0 to v0.4.1
+
+Standard upgrade — no breaking changes, no new required environment variables.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.1/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
+```
+
+### What's fixed in v0.4.1
+
+- **Smithers can read the platform docs again** — in every clean v0.4.0 install, Smithers' `docs_list` and `docs_read` tools pointed at an empty directory (relative bind-mount in `docker-compose.yml` resolved to nothing without a co-located source tree). The docs are now baked into the OpenClaw image itself, so this works in every deploy shape.
+- **Security patches** — transitive-dependency vulnerabilities flagged by osv-scanner were patched.
+- **Docs improvements** — the Hetzner deploy guide now requires an SSH key at server creation (the old "skip SSH keys" instruction left servers with no login path), and the upgrade guide gained a recovery path for legacy v0.3.0 deployments affected by that gap.
+
+## Upgrading from v0.3.0 to v0.4.0
+
+Standard upgrade — no breaking changes, no new required environment variables.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.0/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
+```
+
+<Aside type="note">
+  v0.4.0 switches from local Docker builds to pre-built images from GitHub
+  Container Registry (see "What's new" below). The `docker compose pull` above
+  fetches the new images automatically — no extra steps. The previously-built
+  local images stay on disk until you run `docker image prune` (safe to do after
+  the upgrade).
+</Aside>
+
+### If you deployed v0.3.0 without an SSH key
+
+A small number of early Hetzner deployments followed an older version of our guide that said "skip the SSH key." Those servers have no SSH access at all — the upgrade above can't run. Recover access like this:
+
+<Steps>
+
+1. **Reset the root password in Hetzner Cloud**
+
+   In the Hetzner Cloud Console, open your server's detail page. In the actions menu (top right, "···"), click **Reset Root Password**. Hetzner shows a one-time password — copy it.
+
+2. **Log in via the web console**
+
+   On the same detail page, click the `>_` icon to open a browser terminal. At the `login:` prompt enter `root`, then the password from step 1.
+
+3. **Install an SSH key**
+
+   If your GitHub account has an SSH key attached (Settings → SSH keys), this is the shortest path:
+
+   ```bash
+   ssh-import-id-gh YOUR_GITHUB_USERNAME
+   ```
+
+   It fetches every public key on your GitHub profile and writes them to `~/.ssh/authorized_keys` with the right permissions.
+
+   No GitHub keys? Create one locally (`ssh-keygen -t ed25519`) first and upload it to your GitHub account — the command above then works. Manual fallback: `mkdir -p ~/.ssh && curl -L github.com/YOUR_USER.keys >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys`.
+
+4. **Verify SSH works from your local machine**
+
+   ```bash
+   ssh root@YOUR_SERVER_IP
+   ```
+
+   Once you're in via SSH, proceed with the standard upgrade above.
+
+</Steps>
+
+<Aside type="tip">
+  The [Deploy on Hetzner](/guides/deploy-hetzner/) guide now requires an SSH key
+  at server creation, so this recovery is a one-time fix for legacy deployments.
+</Aside>
+
+### What's new in v0.4.0
+
+- **Telegram channels** — connect any agent to a Telegram bot. Users link their accounts with a pairing code and chat with agents from their phone. See [Set Up Telegram](/guides/telegram-setup/).
+- **Odoo ERP integration** — give agents scoped, permission-aware access to Odoo with 16 pre-built agent templates. See [Connect Odoo](/guides/connect-odoo/).
+- **Ollama (local and cloud)** — run agents fully air-gapped on your own hardware, or use Ollama Cloud's hosted open-source models. See [Set Up Local Ollama](/guides/ollama-setup/) and [Manage LLM Providers](/guides/llm-providers/).
+- **Usage dashboard improvements** — cache-token tracking, source breakdown (chat vs. system vs. plugin), and a background poller that captures OpenClaw usage even for work that doesn't flow through the web UI.
+- **Domain lock and insecure-mode banner** — lock Pinchy to a canonical HTTPS hostname; a warning banner appears when running without HTTPS on a bound IP/domain. See [Lock Pinchy to a Domain](/guides/domain-lock/).
+- **Audit log event status** — every audit entry (not just tool calls) now shows success/failure with filterable status. Entries from earlier versions show a neutral placeholder.
+- **Disconnect recovery during chat** — if the OpenClaw gateway disconnects mid-conversation, Pinchy detects it, tells the user, and recovers automatically when the gateway returns.
+- **LLM provider errors surfaced in chat** — provider failures (invalid key, rate limit, no credits) now appear as a clear error card in the chat with an admin hint, instead of failing silently.
+- **Pre-built Docker images on GHCR** — `docker compose pull` fetches images directly from GHCR (no local build step), making upgrades faster.
+- **OpenClaw runtime updated** to 2026.4.12.
+
+## Upgrading from v0.2.1 to v0.3.0
+
+Standard upgrade — no breaking changes, no new required environment variables.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.3.0/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
+```
+
+### What's new in v0.3.0
 
 - **Usage & Cost Stats dashboard** — admins can view token usage and estimated costs per agent and per user at `/usage`.
 - **Smart PDF reading** — Knowledge Base agents can now extract text from PDFs automatically.

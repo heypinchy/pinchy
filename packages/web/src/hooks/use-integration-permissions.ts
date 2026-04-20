@@ -110,9 +110,12 @@ export interface UseIntegrationPermissionsReturn {
 
 export function useIntegrationPermissions(
   config: IntegrationPermissionsConfig,
-  agentId: string
+  agentId: string,
+  injectedConnections?: IntegrationConnection[]
 ): UseIntegrationPermissionsReturn {
-  const [connections, setConnections] = useState<IntegrationConnection[]>([]);
+  const [connections, setConnections] = useState<IntegrationConnection[]>(
+    injectedConnections ? injectedConnections.filter((c) => c.type === config.type) : []
+  );
   const [connectionId, setConnectionIdState] = useState("");
   const [accessLevel, setAccessLevelState] = useState<AccessLevel>("read-only");
   const [addedEntities, setAddedEntities] = useState<Map<string, OperationFlags>>(new Map());
@@ -125,6 +128,10 @@ export function useIntegrationPermissions(
   // Stable ref to config to avoid re-running the effect when config object identity changes
   const configRef = useRef(config);
   configRef.current = config;
+
+  // Stable ref to injected connections so updates after mount don't re-run the effect
+  const injectedConnectionsRef = useRef(injectedConnections);
+  injectedConnectionsRef.current = injectedConnections;
 
   // Build full-access flags for current operations
   const fullAccess = useMemo(() => {
@@ -139,13 +146,16 @@ export function useIntegrationPermissions(
   useEffect(() => {
     async function load() {
       const cfg = configRef.current;
+      const injected = injectedConnectionsRef.current;
       try {
-        const [connectionsRes, permsRes] = await Promise.all([
-          fetch("/api/integrations"),
-          fetch(`/api/agents/${agentId}/integrations`),
-        ]);
+        // Only fetch connections if not injected. Always fetch per-agent permissions.
+        const connectionsPromise = injected ? Promise.resolve(null) : fetch("/api/integrations");
+        const permsPromise = fetch(`/api/agents/${agentId}/integrations`);
+        const [connectionsRes, permsRes] = await Promise.all([connectionsPromise, permsPromise]);
 
-        if (connectionsRes.ok) {
+        if (injected) {
+          setConnections(injected.filter((c) => c.type === cfg.type));
+        } else if (connectionsRes && connectionsRes.ok) {
           const data = await connectionsRes.json();
           // Filter by config type
           const filtered = (data as IntegrationConnection[]).filter((c) => c.type === cfg.type);

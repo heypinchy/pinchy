@@ -123,6 +123,87 @@ describe("agent-templates", () => {
   it("custom should have null defaultAgentsMd", () => {
     expect(AGENT_TEMPLATES["custom"].defaultAgentsMd).toBeNull();
   });
+
+  describe("email templates", () => {
+    const emailTemplateIds = [
+      "email-assistant",
+      "email-sales-assistant",
+      "email-support-assistant",
+    ];
+
+    it("all three email templates exist", () => {
+      for (const id of emailTemplateIds) {
+        expect(AGENT_TEMPLATES[id], `template "${id}" should exist`).toBeDefined();
+      }
+    });
+
+    it("all email templates use pinchy-email pluginId", () => {
+      for (const id of emailTemplateIds) {
+        expect(AGENT_TEMPLATES[id].pluginId, `${id} pluginId`).toBe("pinchy-email");
+      }
+    });
+
+    it("all email templates include email_list, email_read, email_search, email_draft tools", () => {
+      const required = ["email_list", "email_read", "email_search", "email_draft"];
+      for (const id of emailTemplateIds) {
+        for (const tool of required) {
+          expect(AGENT_TEMPLATES[id].allowedTools, `${id} should include ${tool}`).toContain(tool);
+        }
+      }
+    });
+
+    it("no email template includes email_send (safety: drafts only)", () => {
+      for (const id of emailTemplateIds) {
+        expect(AGENT_TEMPLATES[id].allowedTools).not.toContain("email_send");
+      }
+    });
+
+    it("all email templates require an email connection", () => {
+      for (const id of emailTemplateIds) {
+        expect(
+          (AGENT_TEMPLATES[id] as { requiresEmailConnection?: boolean }).requiresEmailConnection,
+          `${id} requiresEmailConnection`
+        ).toBe(true);
+      }
+    });
+
+    it("email-assistant uses the-butler personality", () => {
+      expect(AGENT_TEMPLATES["email-assistant"].defaultPersonality).toBe("the-butler");
+    });
+
+    it("email-sales-assistant uses the-pilot personality", () => {
+      expect(AGENT_TEMPLATES["email-sales-assistant"].defaultPersonality).toBe("the-pilot");
+    });
+
+    it("email-support-assistant uses the-coach personality", () => {
+      expect(AGENT_TEMPLATES["email-support-assistant"].defaultPersonality).toBe("the-coach");
+    });
+
+    it("all email templates have a non-Bot iconName", () => {
+      for (const id of emailTemplateIds) {
+        expect(AGENT_TEMPLATES[id].iconName, `${id} iconName`).toBeDefined();
+        expect(AGENT_TEMPLATES[id].iconName, `${id} should not use Bot fallback`).not.toBe("Bot");
+      }
+    });
+
+    it("all email templates have a defaultGreetingMessage", () => {
+      for (const id of emailTemplateIds) {
+        expect(
+          AGENT_TEMPLATES[id].defaultGreetingMessage,
+          `${id} defaultGreetingMessage`
+        ).toBeTruthy();
+      }
+    });
+
+    it("all email templates have balanced model hint with tools capability", () => {
+      for (const id of emailTemplateIds) {
+        expect(AGENT_TEMPLATES[id].modelHint).toMatchObject({
+          tier: "balanced",
+          capabilities: expect.arrayContaining(["tools"]),
+        });
+      }
+    });
+  });
 });
 
 describe("generateAgentsMd", () => {

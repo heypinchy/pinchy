@@ -1,3 +1,4 @@
+import "@testing-library/jest-dom";
 import { vi } from "vitest";
 
 // Ensure consistent date/time behavior across all test environments

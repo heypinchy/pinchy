@@ -44,8 +44,33 @@ vi.mock("@/lib/integrations/odoo-connection-models", () => ({
   getConnectionModels: (...args: unknown[]) => mockGetConnectionModels(...args),
 }));
 
+vi.mock("@/lib/settings", () => ({
+  getSetting: vi.fn().mockResolvedValue("anthropic"),
+}));
+
+vi.mock("@/lib/provider-models", () => ({
+  getOllamaLocalModels: vi.fn().mockReturnValue([]),
+}));
+
+const { mockResolveModelForTemplate: mockResolveTemplate } = vi.hoisted(() => ({
+  mockResolveModelForTemplate: vi.fn().mockResolvedValue({
+    model: "anthropic/claude-sonnet-4-6",
+    reason: "test",
+    fallbackUsed: false,
+  }),
+}));
+
+vi.mock("@/lib/model-resolver", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/model-resolver")>();
+  return {
+    ...actual,
+    resolveModelForTemplate: mockResolveTemplate,
+  };
+});
+
 import { GET } from "@/app/api/templates/route";
 import { auth } from "@/lib/auth";
+import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 
 describe("GET /api/templates", () => {
   beforeEach(() => {
@@ -205,6 +230,31 @@ describe("GET /api/templates", () => {
     expect(custom.unavailableReason).toBeNull();
   });
 
+  it("marks template as disabled when resolver throws TemplateCapabilityUnavailableError", async () => {
+    mockResolveTemplate.mockImplementation(({ hint }: { hint: { capabilities?: string[] } }) => {
+      if (hint.capabilities?.includes("vision")) {
+        throw new TemplateCapabilityUnavailableError(
+          ["vision"],
+          "ollama-local",
+          "https://docs.heypinchy.com/guides/ollama-setup#models-for-agent-templates"
+        );
+      }
+      return Promise.resolve({ model: "x", reason: "test", fallbackUsed: false });
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const contract = body.templates.find((t: { id: string }) => t.id === "contract-analyzer");
+    expect(contract.disabled).toBe(true);
+    expect(contract.disabledReason).toContain("vision");
+
+    // Non-vision templates should not be disabled
+    const kb = body.templates.find((t: { id: string }) => t.id === "knowledge-base");
+    expect(kb.disabled).toBe(false);
+  });
+
   it("always includes non-odoo templates", async () => {
     // Without Odoo connection
     mockLimit.mockResolvedValue([]);
@@ -226,5 +276,63 @@ describe("GET /api/templates", () => {
     const ids2 = body2.templates.map((t: { id: string }) => t.id);
     expect(ids2).toContain("knowledge-base");
     expect(ids2).toContain("custom");
+  });
+
+  it("marks email templates as unavailable when no email connection exists", async () => {
+    // No Odoo, no email connections
+    mockLimit.mockResolvedValue([]);
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const emailTemplates = body.templates.filter(
+      (t: { requiresEmailConnection?: boolean }) => t.requiresEmailConnection
+    );
+    expect(emailTemplates.length).toBeGreaterThan(0);
+    for (const t of emailTemplates) {
+      expect(t.available).toBe(false);
+      expect(t.unavailableReason).toBe("no-connection");
+    }
+  });
+
+  it("marks email templates as available when email connection exists", async () => {
+    // First call: Odoo (none), second call: email (one)
+    mockLimit.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: "email-conn-1" }]);
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const emailAssistant = body.templates.find((t: { id: string }) => t.id === "email-assistant");
+    expect(emailAssistant).toBeDefined();
+    expect(emailAssistant.available).toBe(true);
+    expect(emailAssistant.unavailableReason).toBeNull();
+  });
+
+  it("includes requiresEmailConnection flag in email template response", async () => {
+    mockLimit.mockResolvedValue([]);
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const emailAssistant = body.templates.find((t: { id: string }) => t.id === "email-assistant");
+    expect(emailAssistant).toBeDefined();
+    expect(emailAssistant.requiresEmailConnection).toBe(true);
+  });
+
+  it("email templates have requiresDirectories=false (no file-access plugin)", async () => {
+    mockLimit.mockResolvedValue([]);
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    for (const id of ["email-assistant", "email-sales-assistant", "email-support-assistant"]) {
+      const t = body.templates.find((t: { id: string }) => t.id === id);
+      expect(t, `${id} should be in response`).toBeDefined();
+      expect(t.requiresDirectories, `${id} requiresDirectories`).toBe(false);
+    }
   });
 });

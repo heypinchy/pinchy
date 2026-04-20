@@ -86,6 +86,22 @@ This format is used for both personal and shared agents. Each user always gets t
 
 The `agentId` segment must always be the Pinchy agent UUID. The `scope` segment is free-form but should follow the patterns above for consistency.
 
+### Connection resilience
+
+The browser-to-Pinchy WebSocket connection includes several layers of protection against network instability:
+
+**Keep-alive heartbeats** — Once the first response chunk arrives, Pinchy sends a `{ type: "thinking" }` message to the browser every 15 seconds for the duration of the request. This defeats browser and proxy idle-timeout disconnects during long pauses between agent turns (e.g. slow local Ollama models running a tool-use loop). Heartbeats are intentionally deferred until the first chunk — starting them earlier would prevent the stuck-request timeout from firing when OpenClaw is unresponsive before it sends anything.
+
+**OpenClaw disconnect propagation** — If Pinchy loses its connection to OpenClaw while a stream is in progress, it immediately closes all active browser WebSockets. This triggers the browser's existing disconnect-recovery path (disconnect error + auto-reconnect) without waiting for the server-side stream to time out. openclaw-node's chat generator hangs indefinitely when OpenClaw disappears, so the close is the only reliable way to surface the error quickly.
+
+**Auto-reconnect with exponential backoff** — If the connection drops, the browser automatically reconnects. Delays start at 1 second and double with each attempt, capped at 5 seconds, up to 10 attempts total. On reconnect, conversation history is re-fetched from the server and any partial streamed message is replaced with the canonical server version.
+
+**Disconnect recovery** — If the WebSocket closes while a response is being streamed, an inline error appears in the chat so the user knows the response may have been interrupted. If OpenClaw finished processing the request before the disconnect, the error is automatically replaced by the complete response when history reloads after reconnect.
+
+**Stuck-request timeout** — If 60 seconds pass without any response activity (no chunks and no thinking heartbeats), the spinner stops and an error is shown prompting the user to send the message again. Heartbeats reset the timer between turns, so a slow-but-alive agent is never killed prematurely.
+
+**Reconnect exhausted** — After 10 failed reconnect attempts, a persistent banner prompts the user to reload the page.
+
 ### Session lifecycle and compaction
 
 Sessions grow with each message. OpenClaw tracks the full conversation in JSONL files and sends the relevant context to the LLM provider with each request. Over time, this increases token usage and cost.

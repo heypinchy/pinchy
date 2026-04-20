@@ -84,10 +84,11 @@ test.describe.serial("Telegram Integration", () => {
     });
 
     expect(response).toBeTruthy();
-    // Extract pairing code from bot response (format: "Pairing code: XXXXXXXX")
+    // Extract pairing code from bot response. OpenClaw 2026.4+ wraps the code
+    // in <pre><code>…</code></pre> for Telegram HTML mode, so we strip tags.
     const codeMatch = response.match(/Pairing code:\s*(\S+)/i);
     expect(codeMatch).toBeTruthy();
-    lastPairingCode = codeMatch![1];
+    lastPairingCode = codeMatch![1].replace(/<[^>]+>/g, "").trim();
     console.log(`[test] Bot pairing response, code: ${lastPairingCode}`);
   });
 
@@ -160,10 +161,10 @@ test.describe.serial("Telegram Integration", () => {
     });
 
     expect(response).toBeTruthy();
-    // Extract new pairing code from response
+    // Extract new pairing code from response (strip HTML tags for 2026.4+ compat)
     const codeMatch = response.match(/Pairing code:\s*(\S+)/i);
     expect(codeMatch).toBeTruthy();
-    lastPairingCode = codeMatch![1];
+    lastPairingCode = codeMatch![1].replace(/<[^>]+>/g, "").trim();
     console.log(`[test] Post-unlink response, new code: ${lastPairingCode}`);
   });
 
@@ -263,7 +264,8 @@ test.describe.serial("Multi-Bot Telegram", () => {
     expect(response).toBeTruthy();
     const codeMatch = response.match(/Pairing code:\s*(\S+)/i);
     expect(codeMatch).toBeTruthy();
-    console.log(`[multi-bot] Second bot pairing code: ${codeMatch![1]}`);
+    const code = codeMatch![1].replace(/<[^>]+>/g, "").trim();
+    console.log(`[multi-bot] Second bot pairing code: ${code}`);
   });
 
   // Tagged @channel-restart: Adding a second account triggers OpenClaw channel restart

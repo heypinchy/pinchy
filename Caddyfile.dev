@@ -1,3 +1,4 @@
-pinchy.local {
+local.heypinchy.com {
+	tls internal
 	reverse_proxy pinchy:7777
 }

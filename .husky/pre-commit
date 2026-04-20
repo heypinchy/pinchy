@@ -9,4 +9,12 @@ if echo "$ADDED_LINES" | grep -qE '/Users/|C:/Users/'; then
   exit 1
 fi
 
+# If HOME is not writable (e.g. OrbStack containers where HOME is overridden to a
+# root-owned path), point pnpm to the user's actual writable home directory.
+# On macOS/Windows HOME is always writable, so this block never runs there.
+if [ ! -w "$HOME" ]; then
+  export PNPM_HOME="/home/$(id -un)/.local/share/pnpm"
+  mkdir -p "$PNPM_HOME"
+fi
+
 npx lint-staged

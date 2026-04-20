@@ -284,6 +284,40 @@ describe("SettingsUsers", () => {
     expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
   });
 
+  it("should show copied feedback when invite link Copy button is clicked", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      writable: true,
+      configurable: true,
+    });
+
+    mockFetchForUsers(mockUsers, mockInvites);
+    render(<SettingsUsers currentUserId="user-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Invite User" })).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole("button", { name: "Invite User" }));
+    await waitFor(() => expect(screen.getByLabelText("Role")).toBeInTheDocument());
+
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ token: "invite-token-abc" }),
+    } as Response);
+    await user.click(screen.getByRole("button", { name: "Create Invite" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("http://localhost:7777/invite/invite-token-abc")).toBeInTheDocument()
+    );
+
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Copied!" })).toBeInTheDocument();
+    });
+  });
+
   it("should render group badges for users", async () => {
     mockFetchForUsers(mockUsers, mockInvites, { enterprise: true });
     render(<SettingsUsers currentUserId="user-1" />);

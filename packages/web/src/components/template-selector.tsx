@@ -3,7 +3,9 @@
 import Link from "next/link";
 import { Card, CardContent } from "@/components/ui/card";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { ArrowRight, Bot, ChevronRight } from "lucide-react";
+import { cn } from "@/lib/utils";
 import {
   groupTemplatesByCategory,
   getAccessBadgeProps,
@@ -25,20 +27,25 @@ function TemplateCard({
 }) {
   const IconComponent = template.iconName ? TEMPLATE_ICON_COMPONENTS[template.iconName] : Bot;
   const badge = getAccessBadgeProps(template);
+  const isDisabled = template.disabled === true;
 
-  return (
+  const card = (
     <Card
       role="button"
       tabIndex={0}
-      className="cursor-pointer transition-colors hover:border-primary"
-      onClick={() => onSelect(template.id)}
+      aria-disabled={isDisabled ? "true" : undefined}
+      className={cn(
+        "transition-colors",
+        isDisabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer hover:border-primary"
+      )}
+      onClick={isDisabled ? undefined : () => onSelect(template.id)}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return;
         if (e.key === " ") e.preventDefault();
       }}
       onKeyUp={(e) => {
         if (e.target !== e.currentTarget) return;
-        if (e.key === "Enter" || e.key === " ") onSelect(template.id);
+        if (!isDisabled && (e.key === "Enter" || e.key === " ")) onSelect(template.id);
       }}
     >
       <CardContent className="flex flex-col items-center text-center p-4">
@@ -49,6 +56,19 @@ function TemplateCard({
       </CardContent>
     </Card>
   );
+
+  if (isDisabled && template.disabledReason) {
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>{card}</TooltipTrigger>
+          <TooltipContent>{template.disabledReason}</TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
+
+  return card;
 }
 
 function UnavailableTriggerText({ templates }: { templates: TemplateItem[] }) {

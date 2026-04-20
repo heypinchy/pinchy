@@ -13,6 +13,7 @@ vi.mock("@/components/integration-permission-section", () => ({
     agentId: string;
     integrationType: string;
     label: string;
+    connections: unknown[];
     onChange: (v: unknown, d: boolean) => void;
   }) => {
     void onChange;
@@ -20,17 +21,21 @@ vi.mock("@/components/integration-permission-section", () => ({
   },
 }));
 
-// Mock fetch for connections loading
-const mockFetch = vi.fn();
+vi.mock("@/components/email-permission-section", () => ({
+  EmailPermissionSection: ({
+    onChange,
+  }: {
+    agentId: string;
+    connections: unknown[];
+    onChange: (v: unknown, d: boolean) => void;
+  }) => {
+    void onChange;
+    return <div data-testid="email-section">Email Section</div>;
+  },
+}));
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // Default: no connections → no integration sections shown
-  mockFetch.mockResolvedValue({
-    ok: true,
-    json: async () => [],
-  });
-  global.fetch = mockFetch;
 });
 
 describe("AgentSettingsPermissions", () => {
@@ -48,11 +53,35 @@ describe("AgentSettingsPermissions", () => {
     { path: "/data/reports", name: "reports" },
   ];
 
+  const odooConnection = {
+    id: "conn-odoo",
+    name: "Odoo Sales",
+    type: "odoo",
+    status: "active",
+    data: null,
+  };
+  const pipedriveConnection = {
+    id: "conn-pipedrive",
+    name: "Pipedrive CRM",
+    type: "pipedrive",
+    status: "active",
+    data: null,
+  };
+  const googleConnection = {
+    id: "conn-google",
+    name: "Google Workspace",
+    type: "google",
+    status: "active",
+    data: null,
+  };
+
   it("should render Knowledge Base heading with checkboxes for KB tools", () => {
     render(
       <AgentSettingsPermissions
         agent={defaultAgent}
         directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
         onChange={vi.fn()}
       />
     );
@@ -67,6 +96,8 @@ describe("AgentSettingsPermissions", () => {
       <AgentSettingsPermissions
         agent={defaultAgent}
         directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
         onChange={vi.fn()}
       />
     );
@@ -82,6 +113,8 @@ describe("AgentSettingsPermissions", () => {
       <AgentSettingsPermissions
         agent={defaultAgent}
         directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
         onChange={vi.fn()}
       />
     );
@@ -95,6 +128,8 @@ describe("AgentSettingsPermissions", () => {
       <AgentSettingsPermissions
         agent={defaultAgent}
         directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
         onChange={vi.fn()}
       />
     );
@@ -110,17 +145,16 @@ describe("AgentSettingsPermissions", () => {
       <AgentSettingsPermissions
         agent={defaultAgent}
         directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
         onChange={vi.fn()}
       />
     );
 
-    // DirectoryPicker should not be visible initially (no safe tools checked)
     expect(screen.queryByText("Allowed Directories")).not.toBeInTheDocument();
 
-    // Check a safe tool
     await userEvent.click(screen.getByLabelText("List approved directories"));
 
-    // DirectoryPicker should now be visible
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
   });
 
@@ -129,6 +163,8 @@ describe("AgentSettingsPermissions", () => {
       <AgentSettingsPermissions
         agent={defaultAgent}
         directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
         onChange={vi.fn()}
       />
     );
@@ -147,6 +183,8 @@ describe("AgentSettingsPermissions", () => {
       <AgentSettingsPermissions
         agent={agentWithTools}
         directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
         onChange={vi.fn()}
       />
     );
@@ -154,90 +192,143 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
   });
 
-  it("should render Odoo section when Odoo connections exist", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => [{ id: "conn-1", name: "My Odoo", type: "odoo", data: null }],
+  describe("conditional integration sections", () => {
+    it("hides all integration sections when no integration connections exist", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText("Odoo")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("integration-section-odoo")).not.toBeInTheDocument();
+      expect(screen.queryByText("Pipedrive")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("integration-section-pipedrive")).not.toBeInTheDocument();
+      expect(screen.queryByText("Email")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("email-section")).not.toBeInTheDocument();
     });
 
-    render(
-      <AgentSettingsPermissions
-        agent={defaultAgent}
-        directories={defaultDirectories}
-        onChange={vi.fn()}
-      />
-    );
+    it("shows only Odoo section when only Odoo connection exists", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[odooConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
 
-    await waitFor(() => {
       expect(screen.getByText("Odoo")).toBeInTheDocument();
       expect(screen.getByTestId("integration-section-odoo")).toBeInTheDocument();
-    });
-  });
-
-  it("should render Pipedrive section when Pipedrive connections exist", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => [{ id: "conn-2", name: "My Pipedrive", type: "pipedrive", data: null }],
+      expect(screen.queryByText("Pipedrive")).not.toBeInTheDocument();
+      expect(screen.queryByText("Email")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("email-section")).not.toBeInTheDocument();
     });
 
-    render(
-      <AgentSettingsPermissions
-        agent={defaultAgent}
-        directories={defaultDirectories}
-        onChange={vi.fn()}
-      />
-    );
+    it("shows only Pipedrive section when only Pipedrive connection exists", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[pipedriveConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
 
-    await waitFor(() => {
       expect(screen.getByText("Pipedrive")).toBeInTheDocument();
       expect(screen.getByTestId("integration-section-pipedrive")).toBeInTheDocument();
-    });
-  });
-
-  it("should render both integration sections when both have connections", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => [
-        { id: "conn-1", name: "My Odoo", type: "odoo", data: null },
-        { id: "conn-2", name: "My Pipedrive", type: "pipedrive", data: null },
-      ],
+      expect(screen.queryByText("Odoo")).not.toBeInTheDocument();
+      expect(screen.queryByText("Email")).not.toBeInTheDocument();
     });
 
-    render(
-      <AgentSettingsPermissions
-        agent={defaultAgent}
-        directories={defaultDirectories}
-        onChange={vi.fn()}
-      />
-    );
+    it("shows only Email section when only Google connection exists", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[googleConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
 
-    await waitFor(() => {
+      expect(screen.getByText("Email")).toBeInTheDocument();
+      expect(screen.getByTestId("email-section")).toBeInTheDocument();
+      expect(screen.queryByText("Odoo")).not.toBeInTheDocument();
+      expect(screen.queryByText("Pipedrive")).not.toBeInTheDocument();
+    });
+
+    it("shows all sections when all connection types exist", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[odooConnection, pipedriveConnection, googleConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
       expect(screen.getByText("Odoo")).toBeInTheDocument();
+      expect(screen.getByTestId("integration-section-odoo")).toBeInTheDocument();
       expect(screen.getByText("Pipedrive")).toBeInTheDocument();
+      expect(screen.getByTestId("integration-section-pipedrive")).toBeInTheDocument();
+      expect(screen.getByText("Email")).toBeInTheDocument();
+      expect(screen.getByTestId("email-section")).toBeInTheDocument();
+    });
+
+    it("ignores pending connections for section visibility", () => {
+      const pendingGoogle = { ...googleConnection, status: "pending" };
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[pendingGoogle]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByText("Email")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("email-section")).not.toBeInTheDocument();
     });
   });
 
-  it("should not render integration sections when no connections exist", async () => {
-    mockFetch.mockResolvedValue({
-      ok: true,
-      json: async () => [],
+  describe("discovery link", () => {
+    it("shows admin-only link to Integrations settings", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      const link = screen.getByRole("link", { name: /add an integration/i });
+      expect(link).toHaveAttribute("href", "/settings?tab=integrations");
     });
 
-    render(
-      <AgentSettingsPermissions
-        agent={defaultAgent}
-        directories={defaultDirectories}
-        onChange={vi.fn()}
-      />
-    );
+    it("hides the discovery link when the viewer is not admin", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[]}
+          isAdmin={false}
+          onChange={vi.fn()}
+        />
+      );
 
-    // Wait for connections to load
-    await waitFor(() => {
-      expect(mockFetch).toHaveBeenCalledWith("/api/integrations");
+      expect(screen.queryByRole("link", { name: /add an integration/i })).not.toBeInTheDocument();
     });
-
-    expect(screen.queryByText("Odoo")).not.toBeInTheDocument();
-    expect(screen.queryByText("Pipedrive")).not.toBeInTheDocument();
   });
 
   describe("vision warning", () => {
@@ -251,6 +342,8 @@ describe("AgentSettingsPermissions", () => {
             model: "ollama/llama3.1:8b",
           }}
           directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
           onChange={vi.fn()}
         />
       );
@@ -267,6 +360,8 @@ describe("AgentSettingsPermissions", () => {
             model: "anthropic/claude-sonnet-4-6",
           }}
           directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
           onChange={vi.fn()}
         />
       );
@@ -283,6 +378,8 @@ describe("AgentSettingsPermissions", () => {
             model: "ollama/llama3.1:8b",
           }}
           directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
           onChange={vi.fn()}
         />
       );
@@ -297,6 +394,8 @@ describe("AgentSettingsPermissions", () => {
         <AgentSettingsPermissions
           agent={defaultAgent}
           directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
           onChange={onChange}
         />
       );
@@ -309,6 +408,8 @@ describe("AgentSettingsPermissions", () => {
         <AgentSettingsPermissions
           agent={defaultAgent}
           directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
           onChange={onChange}
         />
       );
@@ -319,25 +420,55 @@ describe("AgentSettingsPermissions", () => {
         expect(onChange).toHaveBeenCalledWith(
           expect.objectContaining({
             allowedTools: expect.arrayContaining(["pinchy_ls"]),
-            integrations: null,
+            integrations: [],
           }),
           true
         );
       });
     });
 
-    it("should call onChange with isDirty=false and integrations=null on mount when no changes", () => {
+    it("should call onChange with isDirty=false and empty integrations on mount when no changes", () => {
       const onChange = vi.fn();
       render(
         <AgentSettingsPermissions
           agent={defaultAgent}
           directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
           onChange={onChange}
         />
       );
 
       expect(onChange).toHaveBeenCalledWith(
-        { allowedTools: [], allowedPaths: [], integrations: null },
+        { allowedTools: [], allowedPaths: [], integrations: [] },
+        false
+      );
+    });
+
+    it("should exclude email_* tools from KB tools and allowedTools output", () => {
+      const onChange = vi.fn();
+      const agentWithEmailTools = {
+        ...defaultAgent,
+        allowedTools: ["email_list", "email_read", "email_search", "email_draft"],
+      };
+
+      render(
+        <AgentSettingsPermissions
+          agent={agentWithEmailTools}
+          directories={defaultDirectories}
+          connections={[]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      expect(screen.queryByLabelText("Email: List messages")).not.toBeInTheDocument();
+      expect(screen.queryByLabelText("Email: Read message")).not.toBeInTheDocument();
+
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allowedTools: [],
+        }),
         false
       );
     });

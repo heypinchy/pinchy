@@ -74,8 +74,25 @@ vi.mock("@/lib/smithers-soul", () => ({
   SMITHERS_SOUL_MD: "# Smithers\n\nTest soul content",
 }));
 
+vi.mock("@/lib/openclaw-config", () => ({
+  regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/settings", () => ({
+  getSetting: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("@/lib/providers", () => ({
+  PROVIDERS: {},
+}));
+
+vi.mock("@/lib/provider-models", () => ({
+  getDefaultModel: vi.fn().mockResolvedValue("ollama-local/test-model"),
+}));
+
 import { ensureWorkspace } from "@/lib/workspace";
 import { auth } from "@/lib/auth";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 
 import { db } from "@/db";
 
@@ -204,6 +221,20 @@ describe("POST /api/setup", () => {
 
     expect(response.status).toBe(400);
     expect(data.error).toBe("Password must be at least 8 characters");
+  });
+
+  it("should call regenerateOpenClawConfig after creating admin and agent", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+    vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
+
+    const request = makeRequest({
+      name: "Admin User",
+      email: "admin@test.com",
+      password: "password123",
+    });
+    await POST(request as any);
+
+    expect(regenerateOpenClawConfig).toHaveBeenCalledOnce();
   });
 
   it("should return 403 when setup is already complete", async () => {
