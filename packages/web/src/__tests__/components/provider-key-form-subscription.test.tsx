@@ -180,5 +180,64 @@ describe("ProviderKeyForm — OpenAI subscription", () => {
     );
   });
 
+  it("shows reconnect banner when refreshFailureCount >= 2", async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          connected: true,
+          accountEmail: "x@y.com",
+          connectedAt: "2026-04-20T09:00:00Z",
+          refreshFailureCount: 2,
+        })
+      )
+    );
+    render(<ProviderKeyForm onSuccess={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: /OpenAI/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Your ChatGPT subscription needs to be reconnected/i)
+      ).toBeInTheDocument()
+    );
+    expect(screen.getByText(/Token refresh failed 2 or more times/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Reconnect$/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Dismiss$/i })).toBeInTheDocument();
+  });
+
+  it("Dismiss button hides the banner without resetting server state", async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          connected: true,
+          accountEmail: "x@y.com",
+          connectedAt: "2026-04-20T09:00:00Z",
+          refreshFailureCount: 3,
+        })
+      )
+    );
+    render(<ProviderKeyForm onSuccess={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: /OpenAI/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Your ChatGPT subscription needs to be reconnected/i)
+      ).toBeInTheDocument()
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: /^Dismiss$/i }));
+
+    expect(
+      screen.queryByText(/Your ChatGPT subscription needs to be reconnected/i)
+    ).not.toBeInTheDocument();
+
+    // No DELETE or PATCH was made — only the initial GET
+    const allCalls = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls as [
+      string,
+      RequestInit?,
+    ][];
+    const mutatingCalls = allCalls.filter(
+      ([, init]) => init?.method === "DELETE" || init?.method === "PATCH"
+    );
+    expect(mutatingCalls).toHaveLength(0);
+  });
+
   // TODO: covered by E2E — onConnected re-fetch can't be unit tested without full OAuth simulation
 });

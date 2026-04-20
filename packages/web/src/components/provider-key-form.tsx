@@ -28,6 +28,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 
 const providerKeySchema = z.object({
   apiKey: z.string().min(1, "Required"),
@@ -205,6 +206,7 @@ export function ProviderKeyForm({
   const [showReplaceDialog, setShowReplaceDialog] = useState(false);
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus | null>(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
   const [affectedAgents, setAffectedAgents] = useState<{ id: string; name: string }[]>([]);
   const { triggerRestart } = useRestart();
 
@@ -315,6 +317,7 @@ export function ProviderKeyForm({
                       setError("");
                       setSubscriptionStatus(null);
                       setAffectedAgents([]);
+                      setDismissed(false);
                     }}
                   >
                     {config.name}
@@ -360,16 +363,49 @@ export function ProviderKeyForm({
           <>
             {provider === "openai" &&
               authMethod === "subscription" &&
+              subscriptionStatus?.connected &&
+              (subscriptionStatus.refreshFailureCount ?? 0) >= 2 &&
+              !dismissed && (
+                <Alert variant="destructive">
+                  <AlertTitle>Your ChatGPT subscription needs to be reconnected</AlertTitle>
+                  <AlertDescription>
+                    <p>
+                      Token refresh failed 2 or more times. Disconnect and reconnect to restore
+                      access.
+                    </p>
+                    <div className="flex gap-2 mt-3">
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        onClick={() => {
+                          setDismissed(false);
+                          setSubscriptionStatus(null);
+                          setAuthMethod("subscription");
+                        }}
+                      >
+                        Reconnect
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setDismissed(true)}
+                      >
+                        Dismiss
+                      </Button>
+                    </div>
+                  </AlertDescription>
+                </Alert>
+              )}
+
+            {provider === "openai" &&
+              authMethod === "subscription" &&
               subscriptionStatus?.connected && (
                 <div className="rounded-md border p-4 space-y-3">
                   <p className="text-sm">
                     Connected as <strong>{subscriptionStatus.accountEmail}</strong>
                   </p>
-                  {(subscriptionStatus.refreshFailureCount ?? 0) >= 2 && (
-                    <p className="text-sm text-destructive">
-                      Token refresh failed. Please reconnect your subscription.
-                    </p>
-                  )}
                   <AlertDialog>
                     <AlertDialogTrigger asChild>
                       <Button
