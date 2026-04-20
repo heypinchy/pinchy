@@ -15,6 +15,7 @@ export async function pollForToken(params: {
   endpoint?: string;
   maxAttempts?: number;
 }): Promise<TokenSet> {
+  // Verified from openai/codex codex-rs/login source — proprietary path, differs from RFC 8628 default
   const endpoint = params.endpoint ?? "https://auth.openai.com/api/accounts/deviceauth/token";
   const maxAttempts = params.maxAttempts ?? 180;
 

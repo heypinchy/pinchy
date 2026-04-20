@@ -38,6 +38,12 @@ describe("pollForToken", () => {
     expect(result.expires).toBeGreaterThan(Date.now());
     expect(result.accountId).toBe("acc-1");
     expect(result.accountEmail).toBe("user@example.com");
+
+    const [url, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit & { body: string }];
+    expect(url).toBe("https://auth.openai.com/api/accounts/deviceauth/token");
+    expect(init.body).toContain("grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Adevice_code");
+    expect(init.body).toContain("device_code=d1");
+    expect(init.body).toContain("client_id=c1");
   });
 
   it("keeps polling while server returns authorization_pending", async () => {
