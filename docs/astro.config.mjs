@@ -119,6 +119,7 @@ export default defineConfig({
             { label: 'User Management', slug: 'guides/user-management' },
             { label: 'Smithers Onboarding', slug: 'guides/smithers-onboarding' },
             { label: 'Manage LLM Providers', slug: 'guides/llm-providers' },
+            { label: 'Connect ChatGPT Subscription', slug: 'guides/connect-chatgpt-subscription' },
             { label: 'Set Up Telegram', slug: 'guides/telegram-setup' },
             { label: 'Set Up Local Ollama', slug: 'guides/ollama-setup' },
             { label: 'Usage & Costs Dashboard', slug: 'guides/usage-dashboard' },

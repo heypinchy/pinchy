@@ -1,0 +1,91 @@
+---
+title: Connect ChatGPT Subscription
+description: Use your ChatGPT Plus or Pro subscription with Pinchy instead of paying per-token API charges.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+If you have a ChatGPT Plus or Pro subscription, you can connect it to Pinchy and use it as a model provider — no separate API key needed. Instead of per-token billing, your agents draw from the same shared compute pool your ChatGPT subscription provides.
+
+<Aside type="caution">
+  A ChatGPT subscription gives you access to a **shared compute pool**, not
+  dedicated API capacity. The rate limits are lower than a paid API plan and are
+  enforced differently. For high-throughput use cases, a standard OpenAI API key
+  is the better choice.
+</Aside>
+
+## When to use this
+
+This is the right option when:
+
+- You already pay for ChatGPT Plus ($20/mo) or Pro ($100/mo or $200/mo)
+- Your team's usage is low-to-moderate (a few dozen messages per day)
+- You want to try Pinchy with OpenAI models before committing to API billing
+
+Use a regular OpenAI API key instead if you need predictable throughput, are running background automation, or expect heavy concurrent usage.
+
+## Prerequisites
+
+- Admin role in Pinchy
+- An active ChatGPT Plus or Pro subscription
+- A browser handy during the connection flow (device authorization opens a browser page)
+
+## Connect your subscription
+
+`TODO: screenshot — Settings → Providers → OpenAI, subscription toggle visible`
+
+1. Go to **Settings → Providers → OpenAI**
+2. Toggle **ChatGPT Subscription** (instead of "API Key")
+3. Click **Connect with ChatGPT**
+4. A device code and URL appear in Pinchy
+
+`TODO: screenshot — device code UI with QR code and URL`
+
+5. Open the URL shown (or scan the QR code) in a browser where you're logged into ChatGPT
+6. Enter the code on OpenAI's authorization page and click **Authorize**
+7. Return to Pinchy — the provider shows **Connected as your@email.com**
+
+`TODO: screenshot — connected state with email shown`
+
+Pinchy stores the resulting OAuth tokens encrypted at rest. The tokens are automatically refreshed before they expire — you won't need to reconnect on a regular basis.
+
+## Rate limits
+
+ChatGPT subscriptions have chat-style rate limits. These apply to your entire subscription across all uses, including direct ChatGPT usage.
+
+| Plan              | Approximate limit              |
+| ----------------- | ------------------------------ |
+| **Plus** ($20/mo) | ~80–200 messages per 5 hours   |
+| **Pro** ($100/mo) | ~100–500 messages per 5 hours  |
+| **Pro** ($200/mo) | ~500–2000 messages per 5 hours |
+
+These figures vary by model and are subject to change by OpenAI. Messages from your Pinchy agents count against the same pool as your regular ChatGPT conversations.
+
+<Aside type="note">
+  These are informal estimates based on observed behavior. OpenAI doesn't
+  publish subscription rate limits, so actual limits may differ. If you hit
+  limits frequently, consider switching to an API key with a paid tier.
+</Aside>
+
+## Disconnect
+
+If you want to remove the subscription connection:
+
+1. Go to **Settings → Providers → OpenAI**
+2. Click **Disconnect** in the connected state panel
+
+Any agents using a ChatGPT subscription model will fall back to requiring a model reassignment. Pinchy won't silently reassign agents — you'll need to update each affected agent's model in its settings.
+
+## Troubleshooting
+
+**"Reconnect" banner appears in Settings**
+
+The token refresh failed. Click **Disconnect**, then follow the connection steps again. This usually happens if you revoked access in your OpenAI account settings, changed your password, or your subscription lapsed.
+
+**Token expired after a while**
+
+OAuth tokens from the device authorization flow are valid for approximately 60 days. Pinchy refreshes them automatically before expiry. If auto-refresh fails repeatedly (you see the reconnect banner more than once after reconnecting), check that your OpenAI account still has an active subscription and that no security policy has restricted third-party app access.
+
+**Connection not completing**
+
+Make sure you're logged into ChatGPT in your browser with an account that has an active Plus or Pro subscription. Free-tier accounts can't be used here. If the code expires before you authorize it, close the dialog in Pinchy and click **Connect with ChatGPT** again to generate a new code.
