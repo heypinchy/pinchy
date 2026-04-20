@@ -35,6 +35,13 @@ const providerKeySchema = z.object({
 
 type ProviderKeyFormValues = z.infer<typeof providerKeySchema>;
 
+interface SubscriptionStatus {
+  connected: boolean;
+  accountEmail?: string;
+  connectedAt?: string;
+  refreshFailureCount?: number;
+}
+
 interface ProviderStep {
   label: string;
   optional?: boolean;
@@ -60,7 +67,7 @@ const PROVIDERS: Record<
     name: "Anthropic",
     placeholder: "sk-ant-...",
     prefix: "sk-ant-",
-    authType: "api-key" as const,
+    authType: "api-key",
     guide: {
       keyUrl: "https://platform.claude.com/settings/keys",
       steps: [
@@ -79,7 +86,7 @@ const PROVIDERS: Record<
     name: "OpenAI",
     placeholder: "sk-...",
     prefix: "sk-",
-    authType: "api-key" as const,
+    authType: "api-key",
     guide: {
       keyUrl: "https://platform.openai.com/api-keys",
       steps: [
@@ -98,7 +105,7 @@ const PROVIDERS: Record<
     name: "Google",
     placeholder: "AIza...",
     prefix: "AIza",
-    authType: "api-key" as const,
+    authType: "api-key",
     guide: {
       keyUrl: "https://aistudio.google.com/apikey",
       steps: [
@@ -116,7 +123,7 @@ const PROVIDERS: Record<
     name: "Ollama Cloud",
     placeholder: "sk-...",
     prefix: "sk-",
-    authType: "api-key" as const,
+    authType: "api-key",
     guide: {
       keyUrl: "https://ollama.com/settings/keys",
       steps: [
@@ -134,7 +141,7 @@ const PROVIDERS: Record<
     name: "Ollama (Local)",
     placeholder: "http://host.docker.internal:11434",
     prefix: "",
-    authType: "url" as const,
+    authType: "url",
     guide: {
       keyUrl: "https://docs.heypinchy.com/guides/ollama-setup/",
       steps: [
@@ -196,12 +203,7 @@ export function ProviderKeyForm({
   const [error, setError] = useState("");
   const [authMethod, setAuthMethod] = useState<"api-key" | "subscription">("api-key");
   const [showReplaceDialog, setShowReplaceDialog] = useState(false);
-  const [subscriptionStatus, setSubscriptionStatus] = useState<{
-    connected: boolean;
-    accountEmail?: string;
-    connectedAt?: string;
-    refreshFailureCount?: number;
-  } | null>(null);
+  const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus | null>(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState(false);
   const { triggerRestart } = useRestart();
 
@@ -226,7 +228,7 @@ export function ProviderKeyForm({
         setSubscriptionStatus(data as typeof subscriptionStatus);
         if (data.connected) setAuthMethod("subscription");
       } catch {
-        // Network error or fetch not available in test env — ignore
+        // ignore — network error
       } finally {
         setSubscriptionLoading(false);
       }
@@ -310,7 +312,6 @@ export function ProviderKeyForm({
                       setGuideOpen(false);
                       setValidationStatus("idle");
                       setError("");
-                      setAuthMethod("api-key");
                       setSubscriptionStatus(null);
                     }}
                   >
@@ -413,12 +414,7 @@ export function ProviderKeyForm({
                     toast.success(`Connected as ${accountEmail}`);
                     const res = await fetch("/api/providers/openai/subscription");
                     if (res.ok) {
-                      const data = (await res.json()) as {
-                        connected: boolean;
-                        accountEmail?: string;
-                        connectedAt?: string;
-                        refreshFailureCount?: number;
-                      };
+                      const data = (await res.json()) as SubscriptionStatus;
                       setSubscriptionStatus(data.connected ? data : null);
                     }
                     onSuccess();
