@@ -19,6 +19,10 @@ export default defineConfig({
     alias: {
       "@": path.resolve(__dirname, "./src"),
       "odoo-node": path.resolve(__dirname, "./node_modules/odoo-node"),
+      "@pinchy/openai-subscription-oauth": path.resolve(
+        __dirname,
+        "../openai-subscription-oauth/src/index.ts"
+      ),
     },
   },
 });
