@@ -81,8 +81,9 @@ describe("POST /api/providers/openai/subscription/start", () => {
     await POST(new Request("http://localhost/", { method: "POST" }));
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
+        eventType: "config.changed",
         outcome: "failure",
-        error: { message: "network error" },
+        detail: expect.objectContaining({ event: "subscription_start_failed" }),
       })
     );
   });
