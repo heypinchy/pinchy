@@ -27,8 +27,6 @@ export async function POST(request: Request) {
       maxAttempts: 1,
     });
 
-    deletePendingFlow(flowId);
-
     // Hard-exclusive: remove existing API key if present
     const existingApiKey = await getSetting(PROVIDERS.openai.settingsKey);
     if (existingApiKey) {
@@ -58,6 +56,10 @@ export async function POST(request: Request) {
     });
 
     await regenerateOpenClawConfig();
+
+    // Only delete the pending flow after all storage operations have succeeded,
+    // so the user can retry if storage fails mid-way.
+    deletePendingFlow(flowId);
 
     await appendAuditLog({
       actorType: "user",
