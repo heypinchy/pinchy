@@ -32,6 +32,7 @@ import { Separator } from "@/components/ui/separator";
 import { StatusBadge } from "@/components/status-badge";
 import { toast } from "sonner";
 import type { UserListItem, UserGroup } from "@/lib/user-list";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 
 interface UserDetailSheetProps {
   user: UserListItem & { kind: "user" };
@@ -59,6 +60,7 @@ export function UserDetailSheet({
   const [saving, setSaving] = useState(false);
   const [showDeactivateConfirm, setShowDeactivateConfirm] = useState(false);
   const [resetLink, setResetLink] = useState<string | null>(null);
+  const { isCopied: isResetLinkCopied, copy: copyResetLink } = useCopyToClipboard();
 
   const isOwnAccount = user.id === currentUserId;
   const isDeactivated = user.status === "deactivated";
@@ -238,12 +240,9 @@ export function UserDetailSheet({
                   variant="outline"
                   size="sm"
                   className="mt-2"
-                  onClick={() => {
-                    navigator.clipboard.writeText(resetLink);
-                    toast("Link copied to clipboard");
-                  }}
+                  onClick={() => copyResetLink(resetLink)}
                 >
-                  Copy
+                  {isResetLinkCopied ? "Copied!" : "Copy"}
                 </Button>
               </div>
             )}

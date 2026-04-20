@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { NewAgentForm } from "@/components/new-agent-form";
@@ -237,6 +237,23 @@ describe("NewAgentForm — tagline field", () => {
     });
   });
 
+  it("pre-fills tagline from template when page is loaded with ?template= in URL (reload scenario)", async () => {
+    // Simulate a page reload with template already in URL: templates load AFTER initial render,
+    // so selectedTemplate is set but selectedTemplateObj is undefined on first effect run.
+    mockSearchParams.current = new URLSearchParams("template=knowledge-base");
+
+    render(<NewAgentForm />);
+
+    // Tagline should be pre-filled from static template data (no API wait needed)
+    await waitFor(() => {
+      expect(screen.getByLabelText(/tagline/i)).toHaveValue("Answer questions from your docs");
+    });
+
+    // Flush remaining async effects (name prefill + fetchDirectories) so they
+    // complete before the mock is torn down in afterEach.
+    await act(async () => {});
+  });
+
   it("shows empty tagline field when template has null defaultTagline", async () => {
     render(<NewAgentForm />);
 
@@ -248,6 +265,70 @@ describe("NewAgentForm — tagline field", () => {
 
     await waitFor(() => {
       expect(screen.getByLabelText(/tagline/i)).toHaveValue("");
+    });
+  });
+
+  it("auto-selects email connection and includes connectionId in POST for email templates", async () => {
+    const emailTemplates = [
+      ...mockTemplates,
+      {
+        id: "email-assistant",
+        name: "Email Assistant",
+        description: "Read, search, and draft emails",
+        requiresDirectories: false,
+        requiresEmailConnection: true,
+        defaultTagline: "Read, search, and draft emails from your Gmail inbox",
+      },
+    ];
+
+    fetchSpy.mockImplementation(async (url, init) => {
+      if (String(url) === "/api/templates") {
+        return {
+          ok: true,
+          json: async () => ({ templates: emailTemplates }),
+        } as Response;
+      }
+      if (String(url) === "/api/integrations") {
+        return {
+          ok: true,
+          json: async () => [{ id: "email-conn-1", name: "Gmail Work", type: "google" }],
+        } as Response;
+      }
+      if (String(url) === "/api/agents" && init?.method === "POST") {
+        return {
+          ok: true,
+          json: async () => ({ id: "new-agent-id" }),
+        } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Email Assistant")).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText("Email Assistant"));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
+
+    const nameInput = screen.getByLabelText(/name/i);
+    await userEvent.clear(nameInput);
+    await userEvent.type(nameInput, "Hermes");
+
+    await userEvent.click(screen.getByRole("button", { name: /create/i }));
+
+    await waitFor(() => {
+      const postCall = fetchSpy.mock.calls.find(
+        ([u, i]) => String(u) === "/api/agents" && i?.method === "POST"
+      );
+      expect(postCall).toBeDefined();
+      const body = JSON.parse(postCall![1]!.body as string);
+      expect(body.connectionId).toBe("email-conn-1");
+      expect(body.templateId).toBe("email-assistant");
     });
   });
 

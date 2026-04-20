@@ -54,9 +54,9 @@ Open [http://localhost:7777](http://localhost:7777). Code changes in `packages/w
 
 To test HTTPS-related features locally:
 
-1. Add `127.0.0.1 pinchy.local` to your `/etc/hosts` file
+1. Add `127.0.0.1 local.heypinchy.com` to your `/etc/hosts` file
 2. Start the stack as usual — Caddy is included automatically
-3. Access Pinchy at `https://pinchy.local:8443`
+3. Access Pinchy at `https://local.heypinchy.com:8443`
 4. Your browser will warn about the self-signed certificate — accept it once
 
 Regular development at `http://localhost:7777` continues to work unchanged.

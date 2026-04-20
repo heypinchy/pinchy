@@ -11,6 +11,7 @@ import { SettingsContext } from "@/components/settings-context";
 import { SettingsProfile } from "@/components/settings-profile";
 import { SettingsGroups } from "@/components/settings-groups";
 import { SettingsIntegrations } from "@/components/settings-integrations";
+
 import { SettingsLicense } from "@/components/settings-license";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";

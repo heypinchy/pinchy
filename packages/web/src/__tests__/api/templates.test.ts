@@ -277,4 +277,62 @@ describe("GET /api/templates", () => {
     expect(ids2).toContain("knowledge-base");
     expect(ids2).toContain("custom");
   });
+
+  it("marks email templates as unavailable when no email connection exists", async () => {
+    // No Odoo, no email connections
+    mockLimit.mockResolvedValue([]);
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const emailTemplates = body.templates.filter(
+      (t: { requiresEmailConnection?: boolean }) => t.requiresEmailConnection
+    );
+    expect(emailTemplates.length).toBeGreaterThan(0);
+    for (const t of emailTemplates) {
+      expect(t.available).toBe(false);
+      expect(t.unavailableReason).toBe("no-connection");
+    }
+  });
+
+  it("marks email templates as available when email connection exists", async () => {
+    // First call: Odoo (none), second call: email (one)
+    mockLimit.mockResolvedValueOnce([]).mockResolvedValueOnce([{ id: "email-conn-1" }]);
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const emailAssistant = body.templates.find((t: { id: string }) => t.id === "email-assistant");
+    expect(emailAssistant).toBeDefined();
+    expect(emailAssistant.available).toBe(true);
+    expect(emailAssistant.unavailableReason).toBeNull();
+  });
+
+  it("includes requiresEmailConnection flag in email template response", async () => {
+    mockLimit.mockResolvedValue([]);
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    const emailAssistant = body.templates.find((t: { id: string }) => t.id === "email-assistant");
+    expect(emailAssistant).toBeDefined();
+    expect(emailAssistant.requiresEmailConnection).toBe(true);
+  });
+
+  it("email templates have requiresDirectories=false (no file-access plugin)", async () => {
+    mockLimit.mockResolvedValue([]);
+
+    const request = new NextRequest("http://localhost:7777/api/templates");
+    const response = await GET(request);
+    const body = await response.json();
+
+    for (const id of ["email-assistant", "email-sales-assistant", "email-support-assistant"]) {
+      const t = body.templates.find((t: { id: string }) => t.id === id);
+      expect(t, `${id} should be in response`).toBeDefined();
+      expect(t.requiresDirectories, `${id} requiresDirectories`).toBe(false);
+    }
+  });
 });

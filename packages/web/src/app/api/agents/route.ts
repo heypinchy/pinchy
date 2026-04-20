@@ -25,6 +25,7 @@ import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/l
 import { appendAuditLog } from "@/lib/audit";
 import { getVisibleAgents } from "@/lib/visible-agents";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
+import { detectEmailOperations } from "@/lib/tool-registry";
 
 export async function GET() {
   const session = await getSession({ headers: await headers() });
@@ -69,8 +70,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Unknown template: ${templateId}` }, { status: 400 });
   }
 
-  // Templates with pluginId require directory selection
-  if (template.pluginId) {
+  // Only file-access plugin requires directory selection
+  if (template.pluginId === "pinchy-files") {
     const paths = pluginConfig?.allowed_paths;
     if (!Array.isArray(paths) || paths.length === 0) {
       return NextResponse.json(
@@ -90,6 +91,14 @@ export async function POST(request: NextRequest) {
   if (template.requiresOdooConnection && !connectionId) {
     return NextResponse.json(
       { error: "An Odoo connection is required for this template" },
+      { status: 400 }
+    );
+  }
+
+  // Email templates require a connection
+  if (template.requiresEmailConnection && !connectionId) {
+    return NextResponse.json(
+      { error: "An email connection is required for this template" },
       { status: 400 }
     );
   }
@@ -219,6 +228,36 @@ export async function POST(request: NextRequest) {
           outcome: "success",
         }).catch(console.error);
       }
+    }
+  }
+
+  // Auto-configure email permissions when template requires email connection
+  if (template.requiresEmailConnection && connectionId) {
+    const emailOps = detectEmailOperations(template.allowedTools);
+
+    if (emailOps.length > 0) {
+      const permissionRows = emailOps.map((op) => ({
+        agentId: agent.id,
+        connectionId,
+        model: "email",
+        operation: op,
+      }));
+
+      await db.insert(agentConnectionPermissions).values(permissionRows);
+
+      appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: `agent:${agent.id}`,
+        detail: {
+          action: "agent_integration_permissions_auto_configured",
+          agentId: agent.id,
+          connectionId,
+          permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
+        },
+        outcome: "success",
+      }).catch(console.error);
     }
   }
 

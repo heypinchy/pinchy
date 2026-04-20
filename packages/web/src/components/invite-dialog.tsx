@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -47,7 +48,7 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
   const [inviteLink, setInviteLink] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
-  const [copied, setCopied] = useState(false);
+  const { isCopied: copied, copy: copyInviteLink } = useCopyToClipboard();
   const [isEnterprise, setIsEnterprise] = useState<boolean | null>(null);
   const [groups, setGroups] = useState<{ id: string; name: string }[]>([]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<string[]>([]);
@@ -65,7 +66,6 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
       form.reset();
       setInviteLink(null);
       setError(null);
-      setCopied(false);
       setSelectedGroupIds([]);
     }
   }, [open, form]);
@@ -127,12 +127,8 @@ export function InviteDialog({ open, onOpenChange }: InviteDialogProps) {
     }
   }
 
-  async function handleCopy() {
-    if (inviteLink) {
-      await navigator.clipboard.writeText(inviteLink);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
+  function handleCopy() {
+    if (inviteLink) copyInviteLink(inviteLink);
   }
 
   function handleOpenChange(nextOpen: boolean) {
