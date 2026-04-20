@@ -7,6 +7,7 @@ import { getSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS } from "@/lib/providers";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { appendAuditLog } from "@/lib/audit";
+import { migrateAgentsToCodex } from "@/lib/openai-model-migration";
 
 export async function POST(request: Request) {
   const session = await requireAdmin();
@@ -56,6 +57,7 @@ export async function POST(request: Request) {
     });
 
     await regenerateOpenClawConfig();
+    const migrated = await migrateAgentsToCodex();
 
     // Only delete the pending flow after all storage operations have succeeded,
     // so the user can retry if storage fails mid-way.
@@ -79,6 +81,7 @@ export async function POST(request: Request) {
       status: "complete",
       accountEmail: tokens.accountEmail,
       accountId: tokens.accountId,
+      migratedAgents: migrated,
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

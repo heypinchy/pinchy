@@ -3,6 +3,7 @@ import { requireAdmin } from "@/lib/api-auth";
 import { getOpenAiSubscription, deleteOpenAiSubscription } from "@/lib/openai-subscription";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { appendAuditLog } from "@/lib/audit";
+import { migrateAgentsToApiKey } from "@/lib/openai-model-migration";
 
 export async function GET() {
   const session = await requireAdmin();
@@ -30,6 +31,7 @@ export async function DELETE() {
 
   await deleteOpenAiSubscription();
   await regenerateOpenClawConfig();
+  const migrated = await migrateAgentsToApiKey();
 
   void appendAuditLog({
     actorType: "user",
@@ -45,5 +47,5 @@ export async function DELETE() {
     },
   });
 
-  return NextResponse.json({ success: true });
+  return NextResponse.json({ success: true, migratedAgents: migrated });
 }

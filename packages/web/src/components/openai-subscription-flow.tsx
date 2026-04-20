@@ -12,15 +12,23 @@ interface StartResponse {
   expiresIn: number;
 }
 
+interface MigratedAgent {
+  id: string;
+  name: string;
+  from: string;
+  to: string;
+}
+
 interface PollResponse {
   status: "pending" | "complete" | "failed";
   accountEmail?: string;
   accountId?: string;
   reason?: string;
+  migratedAgents?: MigratedAgent[];
 }
 
 export function OpenAiSubscriptionFlow(props: {
-  onConnected: (info: { accountEmail: string }) => void;
+  onConnected: (info: { accountEmail: string; migratedAgents: MigratedAgent[] }) => void;
   onCancel?: () => void;
 }) {
   const [flow, setFlow] = useState<StartResponse | null>(null);
@@ -49,7 +57,10 @@ export function OpenAiSubscriptionFlow(props: {
         });
         const body = (await res.json()) as PollResponse;
         if (body.status === "complete" && body.accountEmail) {
-          props.onConnected({ accountEmail: body.accountEmail });
+          props.onConnected({
+            accountEmail: body.accountEmail,
+            migratedAgents: body.migratedAgents ?? [],
+          });
           return;
         }
         if (body.status === "failed") {

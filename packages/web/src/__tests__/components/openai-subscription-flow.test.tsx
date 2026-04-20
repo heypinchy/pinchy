@@ -67,9 +67,14 @@ describe("OpenAiSubscriptionFlow", () => {
 
     render(<OpenAiSubscriptionFlow onConnected={onConnected} />);
     await userEvent.click(screen.getByRole("button", { name: /Connect with ChatGPT/i }));
-    await waitFor(() => expect(onConnected).toHaveBeenCalledWith({ accountEmail: "u@e.com" }), {
-      timeout: 3000,
-    });
+    await waitFor(
+      () =>
+        expect(onConnected).toHaveBeenCalledWith({
+          accountEmail: "u@e.com",
+          migratedAgents: [],
+        }),
+      { timeout: 3000 }
+    );
   });
 
   it("shows error message when start request fails", async () => {

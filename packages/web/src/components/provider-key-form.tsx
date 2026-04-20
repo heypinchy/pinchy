@@ -423,10 +423,19 @@ export function ProviderKeyForm({
                               toast.error("Failed to disconnect. Please try again.");
                               return;
                             }
+                            const data = (await res.json()) as {
+                              success: boolean;
+                              migratedAgents?: { id: string; name: string }[];
+                            };
+                            const count = data.migratedAgents?.length ?? 0;
+                            const msg =
+                              count > 0
+                                ? `Subscription disconnected — ${count} agent${count === 1 ? "" : "s"} migrated back to API key models`
+                                : "Subscription disconnected";
                             setSubscriptionStatus({ connected: false });
                             setAuthMethod("api-key");
                             setAffectedAgents([]);
-                            toast.success("Subscription disconnected");
+                            toast.success(msg);
                             onSuccess();
                           }}
                         >
@@ -443,8 +452,12 @@ export function ProviderKeyForm({
               !subscriptionStatus?.connected &&
               !subscriptionLoading && (
                 <OpenAiSubscriptionFlow
-                  onConnected={async ({ accountEmail }) => {
-                    toast.success(`Connected as ${accountEmail}`);
+                  onConnected={async ({ accountEmail, migratedAgents }) => {
+                    const msg =
+                      migratedAgents.length > 0
+                        ? `Connected as ${accountEmail} — ${migratedAgents.length} agent${migratedAgents.length === 1 ? "" : "s"} migrated to Codex models`
+                        : `Connected as ${accountEmail}`;
+                    toast.success(msg);
                     const res = await fetch("/api/providers/openai/subscription");
                     if (res.ok) {
                       const data = (await res.json()) as SubscriptionStatus;

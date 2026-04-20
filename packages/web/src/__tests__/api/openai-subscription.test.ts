@@ -11,11 +11,15 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 vi.mock("@/lib/audit", () => ({ appendAuditLog: vi.fn().mockResolvedValue(undefined) }));
+vi.mock("@/lib/openai-model-migration", () => ({
+  migrateAgentsToApiKey: vi.fn().mockResolvedValue([]),
+}));
 
 import { DELETE, GET } from "@/app/api/providers/openai/subscription/route";
 import * as sub from "@/lib/openai-subscription";
 import * as audit from "@/lib/audit";
 import * as ocConfig from "@/lib/openclaw-config";
+import * as migration from "@/lib/openai-model-migration";
 
 const mockSub = {
   accessToken: "a",
@@ -34,8 +38,17 @@ beforeEach(() => {
 describe("DELETE /api/providers/openai/subscription", () => {
   it("deletes subscription, regenerates config, and emits audit event", async () => {
     vi.mocked(sub.getOpenAiSubscription).mockResolvedValue(mockSub);
+    vi.mocked(migration.migrateAgentsToApiKey).mockResolvedValue([
+      { id: "a1", name: "Agent One", from: "openai-codex/gpt-4o", to: "openai/gpt-4o" },
+    ]);
     const res = await DELETE();
     expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(body.migratedAgents).toEqual([
+      { id: "a1", name: "Agent One", from: "openai-codex/gpt-4o", to: "openai/gpt-4o" },
+    ]);
+    expect(migration.migrateAgentsToApiKey).toHaveBeenCalled();
     expect(sub.deleteOpenAiSubscription).toHaveBeenCalled();
     expect(ocConfig.regenerateOpenClawConfig).toHaveBeenCalled();
     expect(audit.appendAuditLog).toHaveBeenCalledWith(

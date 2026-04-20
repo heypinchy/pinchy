@@ -19,6 +19,9 @@ vi.mock("@/lib/audit", () => ({ appendAuditLog: vi.fn().mockResolvedValue(undefi
 vi.mock("@pinchy/openai-subscription-oauth", () => ({
   pollForToken: vi.fn(),
 }));
+vi.mock("@/lib/openai-model-migration", () => ({
+  migrateAgentsToCodex: vi.fn().mockResolvedValue([]),
+}));
 
 import { POST } from "@/app/api/providers/openai/subscription/poll/route";
 import { createPendingFlow, clearPendingFlows } from "@/lib/openai-oauth-state";
@@ -26,6 +29,7 @@ import * as oauth from "@pinchy/openai-subscription-oauth";
 import * as sub from "@/lib/openai-subscription";
 import * as audit from "@/lib/audit";
 import * as settings from "@/lib/settings";
+import * as migration from "@/lib/openai-model-migration";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -70,10 +74,17 @@ describe("POST /api/providers/openai/subscription/poll", () => {
       accountId: "acc",
       accountEmail: "u@e.com",
     });
+    vi.mocked(migration.migrateAgentsToCodex).mockResolvedValue([
+      { id: "a1", name: "Agent One", from: "openai/gpt-4o", to: "openai-codex/gpt-4o" },
+    ]);
     const res = await POST(makeRequest({ flowId }));
     const body = await res.json();
     expect(body.status).toBe("complete");
     expect(body.accountEmail).toBe("u@e.com");
+    expect(body.migratedAgents).toEqual([
+      { id: "a1", name: "Agent One", from: "openai/gpt-4o", to: "openai-codex/gpt-4o" },
+    ]);
+    expect(migration.migrateAgentsToCodex).toHaveBeenCalled();
     expect(sub.setOpenAiSubscription).toHaveBeenCalled();
     expect(audit.appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
