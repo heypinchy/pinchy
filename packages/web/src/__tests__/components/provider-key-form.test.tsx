@@ -351,7 +351,6 @@ describe("ProviderKeyForm", () => {
 
       fireEvent.click(screen.getByRole("button", { name: /openai/i }));
 
-      expect(screen.getByLabelText(/api key/i)).toBeInTheDocument();
       expect(screen.getByPlaceholderText("sk-...")).toBeInTheDocument();
     });
 
@@ -384,6 +383,12 @@ describe("ProviderKeyForm", () => {
     });
 
     it("should show configured indicator and success toast after successful save", async () => {
+      // First call: subscription status fetch (triggered when OpenAI is selected)
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ connected: false }),
+      } as Response);
+      // Second call: the actual API key save
       vi.mocked(global.fetch).mockResolvedValueOnce({
         ok: true,
         json: async () => ({ success: true }),
@@ -392,7 +397,7 @@ describe("ProviderKeyForm", () => {
       render(<ProviderKeyForm onSuccess={onSuccess} configuredProviders={configuredProviders} />);
 
       fireEvent.click(screen.getByRole("button", { name: /openai/i }));
-      fireEvent.change(screen.getByLabelText(/api key/i), {
+      fireEvent.change(screen.getByPlaceholderText("sk-..."), {
         target: { value: "sk-new-key" },
       });
       fireEvent.click(screen.getByRole("button", { name: /save/i }));

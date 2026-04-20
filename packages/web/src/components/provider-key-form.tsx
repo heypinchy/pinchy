@@ -14,6 +14,9 @@ import { Lock, ChevronDown, ExternalLink, CircleCheck, CircleX, Globe } from "lu
 import { useRestart } from "@/components/restart-provider";
 import { ReportIssueLink } from "@/components/report-issue-link";
 import type { ProviderName } from "@/lib/providers";
+import { PROVIDERS as LIB_PROVIDERS } from "@/lib/providers";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { OpenAiSubscriptionFlow } from "@/components/openai-subscription-flow";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -191,6 +194,14 @@ export function ProviderKeyForm({
   const [removing, setRemoving] = useState(false);
   const [validationStatus, setValidationStatus] = useState<"idle" | "success" | "error">("idle");
   const [error, setError] = useState("");
+  const [authMethod, setAuthMethod] = useState<"api-key" | "subscription">("api-key");
+  const [subscriptionStatus, setSubscriptionStatus] = useState<{
+    connected: boolean;
+    accountEmail?: string;
+    connectedAt?: string;
+    refreshFailureCount?: number;
+  } | null>(null);
+  const [subscriptionLoading, setSubscriptionLoading] = useState(false);
   const { triggerRestart } = useRestart();
 
   const form = useForm<ProviderKeyFormValues>({
@@ -203,6 +214,23 @@ export function ProviderKeyForm({
   useEffect(() => {
     onDirtyChange?.(!!provider && apiKeyValue.trim().length > 0);
   }, [provider, apiKeyValue, onDirtyChange]);
+
+  useEffect(() => {
+    if (provider !== "openai") return;
+    setSubscriptionLoading(true);
+    (async () => {
+      try {
+        const r = await fetch("/api/providers/openai/subscription");
+        const data = await r.json();
+        setSubscriptionStatus(data as typeof subscriptionStatus);
+        if (data.connected) setAuthMethod("subscription");
+      } catch {
+        // Network error or fetch not available in test env — ignore
+      } finally {
+        setSubscriptionLoading(false);
+      }
+    })();
+  }, [provider]);
 
   const isConfigured = provider ? configuredProviders?.[provider]?.configured === true : false;
   const isUrlProvider = provider ? PROVIDERS[provider].authType === "url" : false;
@@ -281,6 +309,8 @@ export function ProviderKeyForm({
                       setGuideOpen(false);
                       setValidationStatus("idle");
                       setError("");
+                      setAuthMethod("api-key");
+                      setSubscriptionStatus(null);
                     }}
                   >
                     {config.name}
@@ -296,156 +326,244 @@ export function ProviderKeyForm({
           </div>
         </div>
 
+        {provider === "openai" && LIB_PROVIDERS.openai.authMethods.includes("subscription") && (
+          <div className="space-y-2">
+            <Label>Authentication Method</Label>
+            <RadioGroup
+              value={authMethod}
+              onValueChange={(v) => setAuthMethod(v as "api-key" | "subscription")}
+              className="flex gap-4"
+            >
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="api-key" id="auth-api-key" />
+                <Label htmlFor="auth-api-key">API Key</Label>
+              </div>
+              <div className="flex items-center space-x-2">
+                <RadioGroupItem value="subscription" id="auth-subscription" />
+                <Label htmlFor="auth-subscription">ChatGPT Subscription</Label>
+              </div>
+            </RadioGroup>
+          </div>
+        )}
+
         {provider && (
           <>
-            <FormField
-              control={form.control}
-              name="apiKey"
-              render={({ field }) => (
-                <FormItem className="space-y-2">
-                  <FormLabel>{isUrlProvider ? "Ollama URL" : "API Key"}</FormLabel>
-                  <div className="flex items-center gap-2">
-                    <FormControl>
-                      <Input
-                        type={isUrlProvider ? "text" : "password"}
-                        placeholder={maskedPlaceholder}
-                        className="flex-1"
-                        {...field}
-                      />
-                    </FormControl>
-                    {validationStatus === "error" && !loading && (
-                      <CircleX
-                        className="size-5 text-destructive shrink-0"
-                        data-testid="key-error-indicator"
-                      />
-                    )}
-                    {validationStatus !== "error" &&
-                      (isConfigured || validationStatus === "success") &&
-                      !loading && (
-                        <CircleCheck
-                          className="size-5 text-green-600 shrink-0"
-                          data-testid="key-configured-indicator"
-                        />
-                      )}
-                  </div>
-                  <p className="text-xs text-muted-foreground flex items-center gap-1">
-                    {isUrlProvider ? (
-                      <>
-                        <Globe className="size-3" />
-                        Your URL is stored on your server. No data is sent to external services.
-                      </>
-                    ) : (
-                      <>
-                        <Lock className="size-3" />
-                        Your API key is encrypted at rest and never leaves your server.
-                      </>
-                    )}
+            {provider === "openai" &&
+              authMethod === "subscription" &&
+              subscriptionStatus?.connected && (
+                <div className="rounded-md border p-4 space-y-3">
+                  <p className="text-sm">
+                    Connected as <strong>{subscriptionStatus.accountEmail}</strong>
                   </p>
-                </FormItem>
-              )}
-            />
-
-            {error && (
-              <div className="flex items-start justify-between gap-2">
-                <p className="text-sm text-destructive">{error}</p>
-                <ReportIssueLink error={error} />
-              </div>
-            )}
-
-            <Collapsible open={guideOpen} onOpenChange={setGuideOpen}>
-              <CollapsibleTrigger className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
-                <ChevronDown
-                  className={`size-4 transition-transform ${guideOpen ? "rotate-180" : ""}`}
-                />
-                {isUrlProvider ? "Need help setting up?" : "Need help getting a key?"}
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <div className="mt-3 space-y-3 rounded-md border p-3 text-sm">
-                  <ol className="space-y-1.5 list-decimal list-inside text-muted-foreground">
-                    {PROVIDERS[provider].guide.steps.map((step) => (
-                      <li key={step.label}>
-                        {step.link ? renderStepWithLink(step.label, step.link) : step.label}
-                        {step.optional && (
-                          <span className="text-xs text-muted-foreground/60"> (optional)</span>
-                        )}
-                      </li>
-                    ))}
-                  </ol>
-                  <a
-                    href={PROVIDERS[provider].guide.keyUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
-                  >
-                    {isUrlProvider ? "Setup guide" : `Go to ${PROVIDERS[provider].name}`}
-                    <ExternalLink className="size-3" />
-                  </a>
+                  {(subscriptionStatus.refreshFailureCount ?? 0) >= 2 && (
+                    <p className="text-sm text-destructive">
+                      Token refresh failed. Please reconnect your subscription.
+                    </p>
+                  )}
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="text-destructive hover:text-destructive"
+                      >
+                        Disconnect
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>Disconnect ChatGPT subscription?</AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This will remove the subscription connection. You can reconnect anytime.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                          variant="destructive"
+                          onClick={async () => {
+                            await fetch("/api/providers/openai/subscription", { method: "DELETE" });
+                            setSubscriptionStatus({ connected: false });
+                            setAuthMethod("api-key");
+                            toast.success("Subscription disconnected");
+                            onSuccess();
+                          }}
+                        >
+                          Disconnect
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
                 </div>
-              </CollapsibleContent>
-            </Collapsible>
+              )}
 
-            <Button type="submit" disabled={!apiKeyValue.trim() || loading} className="w-full">
-              {loading ? "Validating..." : configuredProviders ? "Save & restart" : submitLabel}
-            </Button>
-            {configuredProviders && (
-              <p className="text-xs text-muted-foreground text-center">
-                Saving will briefly restart the agent runtime.
-              </p>
-            )}
+            {provider === "openai" &&
+              authMethod === "subscription" &&
+              !subscriptionStatus?.connected &&
+              !subscriptionLoading && (
+                <OpenAiSubscriptionFlow
+                  onConnected={({ accountEmail }) => {
+                    setSubscriptionStatus({ connected: true, accountEmail });
+                    toast.success(`Connected as ${accountEmail}`);
+                    onSuccess();
+                  }}
+                />
+              )}
 
-            {configuredProviders && isConfigured && (
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="w-full text-destructive hover:text-destructive"
-                    disabled={removing}
-                  >
-                    {removing ? "Removing..." : isUrlProvider ? "Remove URL" : "Remove key"}
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>
-                      {isUrlProvider ? "Remove URL?" : "Remove API key?"}
-                    </AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This will remove your {provider ? PROVIDERS[provider].name : ""}{" "}
-                      {isUrlProvider ? "URL" : "API key"}. If this is the active provider, agents
-                      will be switched to another configured provider.
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      variant="destructive"
-                      onClick={async () => {
-                        setRemoving(true);
-                        try {
-                          const res = await fetch("/api/settings/providers", {
-                            method: "DELETE",
-                            headers: { "Content-Type": "application/json" },
-                            body: JSON.stringify({ provider }),
-                          });
-                          if (!res.ok) {
-                            const data = await res.json();
-                            throw new Error(data.error || "Failed to remove key");
-                          }
-                          triggerRestart();
-                          onSuccess();
-                        } catch (err) {
-                          toast.error(err instanceof Error ? err.message : "Failed to remove key");
-                        } finally {
-                          setRemoving(false);
-                        }
-                      }}
-                    >
-                      Remove
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
+            {!(provider === "openai" && authMethod === "subscription") && (
+              <>
+                <FormField
+                  control={form.control}
+                  name="apiKey"
+                  render={({ field }) => (
+                    <FormItem className="space-y-2">
+                      <FormLabel>{isUrlProvider ? "Ollama URL" : "API Key"}</FormLabel>
+                      <div className="flex items-center gap-2">
+                        <FormControl>
+                          <Input
+                            type={isUrlProvider ? "text" : "password"}
+                            placeholder={maskedPlaceholder}
+                            className="flex-1"
+                            {...field}
+                          />
+                        </FormControl>
+                        {validationStatus === "error" && !loading && (
+                          <CircleX
+                            className="size-5 text-destructive shrink-0"
+                            data-testid="key-error-indicator"
+                          />
+                        )}
+                        {validationStatus !== "error" &&
+                          (isConfigured || validationStatus === "success") &&
+                          !loading && (
+                            <CircleCheck
+                              className="size-5 text-green-600 shrink-0"
+                              data-testid="key-configured-indicator"
+                            />
+                          )}
+                      </div>
+                      <p className="text-xs text-muted-foreground flex items-center gap-1">
+                        {isUrlProvider ? (
+                          <>
+                            <Globe className="size-3" />
+                            Your URL is stored on your server. No data is sent to external services.
+                          </>
+                        ) : (
+                          <>
+                            <Lock className="size-3" />
+                            Your API key is encrypted at rest and never leaves your server.
+                          </>
+                        )}
+                      </p>
+                    </FormItem>
+                  )}
+                />
+
+                {error && (
+                  <div className="flex items-start justify-between gap-2">
+                    <p className="text-sm text-destructive">{error}</p>
+                    <ReportIssueLink error={error} />
+                  </div>
+                )}
+
+                <Collapsible open={guideOpen} onOpenChange={setGuideOpen}>
+                  <CollapsibleTrigger className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors cursor-pointer">
+                    <ChevronDown
+                      className={`size-4 transition-transform ${guideOpen ? "rotate-180" : ""}`}
+                    />
+                    {isUrlProvider ? "Need help setting up?" : "Need help getting a key?"}
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <div className="mt-3 space-y-3 rounded-md border p-3 text-sm">
+                      <ol className="space-y-1.5 list-decimal list-inside text-muted-foreground">
+                        {PROVIDERS[provider].guide.steps.map((step) => (
+                          <li key={step.label}>
+                            {step.link ? renderStepWithLink(step.label, step.link) : step.label}
+                            {step.optional && (
+                              <span className="text-xs text-muted-foreground/60"> (optional)</span>
+                            )}
+                          </li>
+                        ))}
+                      </ol>
+                      <a
+                        href={PROVIDERS[provider].guide.keyUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                      >
+                        {isUrlProvider ? "Setup guide" : `Go to ${PROVIDERS[provider].name}`}
+                        <ExternalLink className="size-3" />
+                      </a>
+                    </div>
+                  </CollapsibleContent>
+                </Collapsible>
+
+                <Button type="submit" disabled={!apiKeyValue.trim() || loading} className="w-full">
+                  {loading ? "Validating..." : configuredProviders ? "Save & restart" : submitLabel}
+                </Button>
+                {configuredProviders && (
+                  <p className="text-xs text-muted-foreground text-center">
+                    Saving will briefly restart the agent runtime.
+                  </p>
+                )}
+
+                {configuredProviders && isConfigured && (
+                  <AlertDialog>
+                    <AlertDialogTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        className="w-full text-destructive hover:text-destructive"
+                        disabled={removing}
+                      >
+                        {removing ? "Removing..." : isUrlProvider ? "Remove URL" : "Remove key"}
+                      </Button>
+                    </AlertDialogTrigger>
+                    <AlertDialogContent>
+                      <AlertDialogHeader>
+                        <AlertDialogTitle>
+                          {isUrlProvider ? "Remove URL?" : "Remove API key?"}
+                        </AlertDialogTitle>
+                        <AlertDialogDescription>
+                          This will remove your {provider ? PROVIDERS[provider].name : ""}{" "}
+                          {isUrlProvider ? "URL" : "API key"}. If this is the active provider,
+                          agents will be switched to another configured provider.
+                        </AlertDialogDescription>
+                      </AlertDialogHeader>
+                      <AlertDialogFooter>
+                        <AlertDialogCancel>Cancel</AlertDialogCancel>
+                        <AlertDialogAction
+                          variant="destructive"
+                          onClick={async () => {
+                            setRemoving(true);
+                            try {
+                              const res = await fetch("/api/settings/providers", {
+                                method: "DELETE",
+                                headers: { "Content-Type": "application/json" },
+                                body: JSON.stringify({ provider }),
+                              });
+                              if (!res.ok) {
+                                const data = await res.json();
+                                throw new Error(data.error || "Failed to remove key");
+                              }
+                              triggerRestart();
+                              onSuccess();
+                            } catch (err) {
+                              toast.error(
+                                err instanceof Error ? err.message : "Failed to remove key"
+                              );
+                            } finally {
+                              setRemoving(false);
+                            }
+                          }}
+                        >
+                          Remove
+                        </AlertDialogAction>
+                      </AlertDialogFooter>
+                    </AlertDialogContent>
+                  </AlertDialog>
+                )}
+              </>
             )}
           </>
         )}
