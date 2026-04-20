@@ -45,10 +45,9 @@ Unlike Odoo, Web Search has no multi-step sync or schema discovery. You enter yo
 
 Each agent can have its own web search configuration:
 
-- **Allowed Domains** — restrict searches and fetches to specific domains
-- **Excluded Domains** — block specific domains from results
+- **Domain restrictions** — one list where each domain is marked **Include** (agent may only access these) or **Exclude** (agent is blocked from these); modes can be combined
 - **Freshness** — limit results to a time window (last day, week, month, or year)
-- **Language / Region** — bias results toward a language or geographic region
+- **Language / Region** — bias results toward a language or geographic region (full ISO lists, searchable)
 
 These filters are stored per agent, so you can have a support agent restricted to your docs site while a research agent has unrestricted access.
 

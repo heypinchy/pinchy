@@ -12,194 +12,294 @@ describe("WebSearchPermissionSection", () => {
     hasApiKey: true,
   };
 
-  it("renders allowed domains and excluded domains inputs", () => {
-    render(<WebSearchPermissionSection {...defaultProps} />);
+  describe("empty state", () => {
+    it("shows unrestricted-access message and Add restriction button when no domains are set", () => {
+      render(<WebSearchPermissionSection {...defaultProps} />);
 
-    expect(screen.getByLabelText("Allowed Domains")).toBeInTheDocument();
-    expect(screen.getByLabelText("Excluded Domains")).toBeInTheDocument();
+      expect(screen.getByText(/this agent can browse the entire web/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /add restriction/i })).toBeInTheDocument();
+      expect(screen.queryByLabelText("Add domain")).not.toBeInTheDocument();
+    });
+
+    it("reveals the domain input after clicking Add restriction", async () => {
+      render(<WebSearchPermissionSection {...defaultProps} />);
+
+      await userEvent.click(screen.getByRole("button", { name: /add restriction/i }));
+
+      expect(screen.getByLabelText("Add domain")).toBeInTheDocument();
+    });
+
+    it("renders the input directly (no empty state) when domains already exist", () => {
+      render(
+        <WebSearchPermissionSection
+          {...defaultProps}
+          config={{ allowedDomains: ["example.com"] }}
+        />
+      );
+
+      expect(screen.getByLabelText("Add domain")).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /add restriction/i })).not.toBeInTheDocument();
+    });
   });
 
-  it("renders freshness, language, and region dropdowns", () => {
-    render(<WebSearchPermissionSection {...defaultProps} />);
-
-    expect(screen.getByLabelText("Freshness")).toBeInTheDocument();
-    expect(screen.getByLabelText("Language")).toBeInTheDocument();
-    expect(screen.getByLabelText("Region")).toBeInTheDocument();
-  });
-
-  it("can add a domain tag to allowed domains", async () => {
-    const onChange = vi.fn();
-    render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
-
-    const input = screen.getByLabelText("Allowed Domains");
-    await userEvent.type(input, "example.com{Enter}");
-
-    expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ allowedDomains: ["example.com"] })
-    );
-  });
-
-  it("can remove a domain tag from allowed domains", async () => {
-    const onChange = vi.fn();
-    render(
-      <WebSearchPermissionSection
-        {...defaultProps}
-        config={{ allowedDomains: ["example.com", "test.com"] }}
-        onChange={onChange}
-      />
-    );
-
-    // Both tags should be visible
-    expect(screen.getByText("example.com")).toBeInTheDocument();
-    expect(screen.getByText("test.com")).toBeInTheDocument();
-
-    // Remove the first one
-    const removeButtons = screen.getAllByLabelText(/^Remove /);
-    await userEvent.click(removeButtons[0]);
-
-    expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ allowedDomains: ["test.com"] })
-    );
-  });
-
-  it("can add a domain tag to excluded domains", async () => {
-    const onChange = vi.fn();
-    render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
-
-    const input = screen.getByLabelText("Excluded Domains");
-    await userEvent.type(input, "bad.com{Enter}");
-
-    expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ excludedDomains: ["bad.com"] })
-    );
-  });
-
-  it("can remove a domain tag from excluded domains", async () => {
-    const onChange = vi.fn();
-    render(
-      <WebSearchPermissionSection
-        {...defaultProps}
-        config={{ excludedDomains: ["bad.com", "spam.com"] }}
-        onChange={onChange}
-      />
-    );
-
-    expect(screen.getByText("bad.com")).toBeInTheDocument();
-    expect(screen.getByText("spam.com")).toBeInTheDocument();
-
-    // Remove buttons for excluded domains (after any allowed domain remove buttons)
-    const removeButtons = screen.getAllByLabelText(/^Remove /);
-    await userEvent.click(removeButtons[0]);
-
-    expect(onChange).toHaveBeenCalledWith(
-      expect.objectContaining({ excludedDomains: ["spam.com"] })
-    );
-  });
-
-  it("does not add duplicate domains", async () => {
-    const onChange = vi.fn();
-    render(
-      <WebSearchPermissionSection
-        {...defaultProps}
-        config={{ allowedDomains: ["example.com"] }}
-        onChange={onChange}
-      />
-    );
-
-    const input = screen.getByLabelText("Allowed Domains");
-    await userEvent.type(input, "example.com{Enter}");
-
-    // onChange should never have been called with a duplicate entry
-    const allCalls = onChange.mock.calls;
-    for (const call of allCalls) {
-      const domains = call[0]?.allowedDomains;
-      if (domains) {
-        expect(new Set(domains).size).toBe(domains.length);
-      }
+  describe("adding domains", () => {
+    async function expandInput() {
+      await userEvent.click(screen.getByRole("button", { name: /add restriction/i }));
     }
+
+    it("adds an Include domain to allowedDomains by default", async () => {
+      const onChange = vi.fn();
+      render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
+      await expandInput();
+
+      await userEvent.type(screen.getByLabelText("Add domain"), "example.com{Enter}");
+
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({ allowedDomains: ["example.com"] })
+      );
+    });
+
+    it("adds a domain when the Add button is clicked", async () => {
+      const onChange = vi.fn();
+      render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
+      await expandInput();
+
+      await userEvent.type(screen.getByLabelText("Add domain"), "example.com");
+      await userEvent.click(screen.getByRole("button", { name: /^add$/i }));
+
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({ allowedDomains: ["example.com"] })
+      );
+    });
+
+    it("disables the Add button when input is empty", async () => {
+      render(<WebSearchPermissionSection {...defaultProps} />);
+      await expandInput();
+
+      expect(screen.getByRole("button", { name: /^add$/i })).toBeDisabled();
+    });
+
+    it("adds to excludedDomains when mode is switched to Exclude", async () => {
+      const onChange = vi.fn();
+      render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
+      await expandInput();
+
+      await userEvent.click(screen.getByRole("radio", { name: /exclude/i }));
+      await userEvent.type(screen.getByLabelText("Add domain"), "bad.com{Enter}");
+
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({ excludedDomains: ["bad.com"] })
+      );
+    });
+
+    it("clears the input after adding a domain", async () => {
+      render(<WebSearchPermissionSection {...defaultProps} />);
+      await expandInput();
+
+      const input = screen.getByLabelText("Add domain");
+      await userEvent.type(input, "example.com{Enter}");
+
+      expect(input).toHaveValue("");
+    });
+
+    it("rejects invalid domains", async () => {
+      const onChange = vi.fn();
+      render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
+      await expandInput();
+
+      await userEvent.type(screen.getByLabelText("Add domain"), "not a domain!!!{Enter}");
+
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("rejects bare words without a dot", async () => {
+      const onChange = vi.fn();
+      render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
+      await expandInput();
+
+      await userEvent.type(screen.getByLabelText("Add domain"), "localhost{Enter}");
+
+      expect(onChange).not.toHaveBeenCalled();
+    });
+
+    it("does not add duplicates across both lists", async () => {
+      const onChange = vi.fn();
+      render(
+        <WebSearchPermissionSection
+          {...defaultProps}
+          config={{ allowedDomains: ["example.com"] }}
+          onChange={onChange}
+        />
+      );
+
+      await userEvent.type(screen.getByLabelText("Add domain"), "example.com{Enter}");
+
+      expect(onChange).not.toHaveBeenCalled();
+    });
   });
 
-  it("shows info banner when hasApiKey is false", () => {
-    render(<WebSearchPermissionSection {...defaultProps} hasApiKey={false} />);
-
-    expect(screen.getByText(/web search requires a Brave Search API key/i)).toBeInTheDocument();
+  describe("restriction scope hint", () => {
+    it("clarifies that restrictions apply to both tools", () => {
+      render(<WebSearchPermissionSection {...defaultProps} />);
+      expect(screen.getByText(/applies to both tools/i)).toBeInTheDocument();
+    });
   });
 
-  it("does not show info banner when hasApiKey is true", () => {
-    render(<WebSearchPermissionSection {...defaultProps} hasApiKey={true} />);
+  describe("chip display and interaction", () => {
+    it("renders allowed domains as Include chips and excluded as Exclude chips", () => {
+      render(
+        <WebSearchPermissionSection
+          {...defaultProps}
+          config={{
+            allowedDomains: ["docs.example.com"],
+            excludedDomains: ["spam.net"],
+          }}
+        />
+      );
 
-    expect(
-      screen.queryByText(/web search requires a Brave Search API key/i)
-    ).not.toBeInTheDocument();
+      const allowedChip = screen.getByText("docs.example.com").closest("[data-chip-mode]");
+      const excludedChip = screen.getByText("spam.net").closest("[data-chip-mode]");
+      expect(allowedChip).toHaveAttribute("data-chip-mode", "include");
+      expect(excludedChip).toHaveAttribute("data-chip-mode", "exclude");
+    });
+
+    it("has an explanatory title tooltip on each chip", () => {
+      render(
+        <WebSearchPermissionSection
+          {...defaultProps}
+          config={{
+            allowedDomains: ["good.com"],
+            excludedDomains: ["bad.com"],
+          }}
+        />
+      );
+
+      const includeChip = screen.getByText("good.com").closest("[data-chip-mode]");
+      const excludeChip = screen.getByText("bad.com").closest("[data-chip-mode]");
+      expect(includeChip).toHaveAttribute("title", expect.stringMatching(/allowed to access/i));
+      expect(excludeChip).toHaveAttribute("title", expect.stringMatching(/blocked/i));
+    });
+
+    it("has a title tooltip hinting that the mode button toggles", () => {
+      render(
+        <WebSearchPermissionSection
+          {...defaultProps}
+          config={{ allowedDomains: ["example.com"] }}
+        />
+      );
+
+      expect(screen.getByLabelText("Toggle example.com to Exclude")).toHaveAttribute(
+        "title",
+        expect.stringMatching(/switch to exclude/i)
+      );
+    });
+
+    it("removes a chip when its X button is clicked", async () => {
+      const onChange = vi.fn();
+      render(
+        <WebSearchPermissionSection
+          {...defaultProps}
+          config={{ allowedDomains: ["example.com", "test.com"] }}
+          onChange={onChange}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Remove example.com"));
+
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({ allowedDomains: ["test.com"] })
+      );
+    });
+
+    it("toggles a chip from Include to Exclude when the mode button is clicked", async () => {
+      const onChange = vi.fn();
+      render(
+        <WebSearchPermissionSection
+          {...defaultProps}
+          config={{ allowedDomains: ["example.com"], excludedDomains: [] }}
+          onChange={onChange}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Toggle example.com to Exclude"));
+
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allowedDomains: [],
+          excludedDomains: ["example.com"],
+        })
+      );
+    });
+
+    it("toggles a chip from Exclude to Include when the mode button is clicked", async () => {
+      const onChange = vi.fn();
+      render(
+        <WebSearchPermissionSection
+          {...defaultProps}
+          config={{ allowedDomains: [], excludedDomains: ["bad.com"] }}
+          onChange={onChange}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Toggle bad.com to Include"));
+
+      expect(onChange).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allowedDomains: ["bad.com"],
+          excludedDomains: [],
+        })
+      );
+    });
   });
 
-  it("shows security warning when showSecurityWarning is true", () => {
-    render(<WebSearchPermissionSection {...defaultProps} showSecurityWarning={true} />);
+  describe("advanced options", () => {
+    it("hides Freshness, Language, and Region by default", () => {
+      render(<WebSearchPermissionSection {...defaultProps} />);
 
-    expect(
-      screen.getByText(/malicious web content could attempt to extract data/i)
-    ).toBeInTheDocument();
+      const trigger = screen.getByRole("button", { name: /advanced options/i });
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+    });
+
+    it("shows Freshness, Language, and Region after expanding", async () => {
+      render(<WebSearchPermissionSection {...defaultProps} />);
+
+      await userEvent.click(screen.getByRole("button", { name: /advanced options/i }));
+
+      expect(screen.getByLabelText("Freshness")).toBeInTheDocument();
+      expect(screen.getByLabelText("Language")).toBeInTheDocument();
+      expect(screen.getByLabelText("Region")).toBeInTheDocument();
+    });
   });
 
-  it("hides security warning when showSecurityWarning is false", () => {
-    render(<WebSearchPermissionSection {...defaultProps} showSecurityWarning={false} />);
+  describe("banners", () => {
+    it("shows info banner when hasApiKey is false", () => {
+      render(<WebSearchPermissionSection {...defaultProps} hasApiKey={false} />);
 
-    expect(
-      screen.queryByText(/malicious web content could attempt to extract data/i)
-    ).not.toBeInTheDocument();
-  });
+      expect(screen.getByText(/web search requires a Brave Search API key/i)).toBeInTheDocument();
+    });
 
-  it("renders existing config values as tags", () => {
-    render(
-      <WebSearchPermissionSection
-        {...defaultProps}
-        config={{
-          allowedDomains: ["docs.example.com"],
-          excludedDomains: ["spam.net"],
-        }}
-      />
-    );
+    it("does not show info banner when hasApiKey is true", () => {
+      render(<WebSearchPermissionSection {...defaultProps} hasApiKey={true} />);
 
-    expect(screen.getByText("docs.example.com")).toBeInTheDocument();
-    expect(screen.getByText("spam.net")).toBeInTheDocument();
-  });
+      expect(
+        screen.queryByText(/web search requires a Brave Search API key/i)
+      ).not.toBeInTheDocument();
+    });
 
-  it("clears input after adding a domain", async () => {
-    render(<WebSearchPermissionSection {...defaultProps} />);
+    it("shows security warning when showSecurityWarning is true", () => {
+      render(<WebSearchPermissionSection {...defaultProps} showSecurityWarning={true} />);
 
-    const input = screen.getByLabelText("Allowed Domains");
-    await userEvent.type(input, "example.com{Enter}");
+      expect(
+        screen.getByText(/malicious web content could attempt to extract data/i)
+      ).toBeInTheDocument();
+    });
 
-    expect(input).toHaveValue("");
-  });
+    it("hides security warning when showSecurityWarning is false", () => {
+      render(<WebSearchPermissionSection {...defaultProps} showSecurityWarning={false} />);
 
-  it("does not add a domain with invalid format (special chars)", async () => {
-    const onChange = vi.fn();
-    render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
-
-    const input = screen.getByLabelText("Allowed Domains");
-    await userEvent.type(input, "not a domain!!!{Enter}");
-
-    expect(onChange).not.toHaveBeenCalled();
-  });
-
-  it("does not add a bare word without a dot", async () => {
-    const onChange = vi.fn();
-    render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
-
-    const input = screen.getByLabelText("Allowed Domains");
-    await userEvent.type(input, "localhost{Enter}");
-
-    expect(onChange).not.toHaveBeenCalled();
-  });
-
-  it("does not add an empty string as a domain", async () => {
-    const onChange = vi.fn();
-    render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
-
-    const input = screen.getByLabelText("Allowed Domains");
-    await userEvent.type(input, "{Enter}");
-
-    expect(onChange).not.toHaveBeenCalled();
+      expect(
+        screen.queryByText(/malicious web content could attempt to extract data/i)
+      ).not.toBeInTheDocument();
+    });
   });
 });

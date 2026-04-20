@@ -51,33 +51,31 @@ If no Brave Search API key is configured, you'll see an info banner in the Web S
 
 ## 4. Configure per-agent filters
 
-When you enable web search tools for an agent, additional filter options appear below the checkboxes. These let you control what the agent can search and fetch.
+When you enable web search tools for an agent, additional filter options appear below the checkboxes. These let you control what the agent can search and fetch. Restrictions apply to **both** Search the web and Fetch web pages.
 
-### Allowed Domains
+### Domain restrictions
 
-Restrict web access to specific domains. When set, the agent can only search and fetch pages from these domains. Type a domain and press Enter to add it.
+By default, an agent with web tools can browse the entire web. To restrict access, click **Add restriction** and enter domains one at a time. Each entry becomes a chip that you can mark as:
 
-**Use cases:**
+- **Include** (green `+`) — the agent may only access these domains
+- **Exclude** (red `−`) — the agent is blocked from these domains
 
-- Restrict an agent to your company documentation site (`docs.yourcompany.com`)
-- Limit a support agent to your product's knowledge base and status page
-- Confine research to trusted industry sources
+Switch the toggle before adding a domain, or click the `+`/`−` icon on an existing chip to flip its mode. Remove a chip with the `×` button.
 
-### Excluded Domains
-
-Block specific domains. The agent can access everything except these. Type a domain and press Enter to add it.
+**Combining modes:** Include and Exclude work together. `+example.com` with `−blog.example.com` means "the whole example.com domain except the blog subdomain." If no Include chips exist, everything outside the Exclude list is allowed. If Include chips exist, only those domains (minus any Excludes within them) are allowed.
 
 **Use cases:**
 
-- Block social media sites (`twitter.com`, `reddit.com`) to keep agents focused
-- Exclude competitor websites
-- Remove low-quality content farms from results
+- Include `docs.yourcompany.com` — restrict an agent to your own documentation
+- Include `wikipedia.org` + `arxiv.org` — confine research to trusted sources
+- Exclude `twitter.com`, `reddit.com` — keep agents focused by blocking social media
+- Exclude specific competitor sites while allowing the rest of the web
 
-:::note
-If both Allowed Domains and Excluded Domains are set, Allowed Domains take priority — the agent can only access allowed domains, and excluded domains within that set are additionally blocked.
-:::
+### Advanced options
 
-### Freshness
+The **Freshness**, **Language**, and **Region** dropdowns are collapsed by default. Click **Advanced options** to expand them.
+
+#### Freshness
 
 Filter search results by recency:
 
@@ -91,9 +89,9 @@ Filter search results by recency:
 
 Useful for agents that need current information — set "Last week" for a news monitoring agent, or "Last month" for a market research agent.
 
-### Language and Region
+#### Language and Region
 
-Bias search results toward a specific language and/or geographic region. These filters influence ranking, not hard filtering — results in other languages or regions may still appear if they're highly relevant.
+Searchable dropdowns covering the full ISO 639-1 language list and ISO 3166-1 country list. Bias search results toward a specific language and/or geographic region. These filters influence ranking, not hard filtering — results in other languages or regions may still appear if they're highly relevant. Note that Brave Search supports a subset of these codes; unsupported values are silently ignored by the API.
 
 ## Security considerations
 
@@ -107,7 +105,7 @@ This is a real risk in any system where an AI agent can both read private data a
 
 **Mitigation strategies:**
 
-- Use **Allowed Domains** to restrict fetch access to known, trusted sites
+- Use **Include** chips in Domain restrictions to limit fetch access to known, trusted sites
 - Only enable **Search the web** without **Fetch web pages** if the agent doesn't need to read full page content
 - Avoid combining web fetch with access to highly sensitive data (credentials, financial records)
 

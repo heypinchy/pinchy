@@ -39,10 +39,10 @@ Web search tools give the agent access to live web information via the Brave Sea
 | **Search the web**  | Query Brave Search and return ranked results (`pinchy_web_search`)    |
 | **Fetch web pages** | Download and extract readable content from a URL (`pinchy_web_fetch`) |
 
-When web search tools are enabled, additional per-agent filters appear: Allowed Domains, Excluded Domains, Freshness, Language, and Region. See [Set Up Web Search](/guides/web-search-setup/) for details.
+When web search tools are enabled, additional per-agent filters appear: Domain restrictions (with Include/Exclude modes per domain), Freshness, Language, and Region. See [Set Up Web Search](/guides/web-search-setup/) for details.
 
 :::caution[Data exfiltration risk]
-If an agent has **Fetch web pages** enabled alongside access to sensitive data (files or Odoo records), Pinchy shows a security warning. A malicious web page could contain instructions that trick the agent into encoding private data into a URL. Mitigate this by restricting web access to specific domains via the **Allowed Domains** filter.
+If an agent has **Fetch web pages** enabled alongside access to sensitive data (files or Odoo records), Pinchy shows a security warning. A malicious web page could contain instructions that trick the agent into encoding private data into a URL. Mitigate this by adding **Include** domain restrictions that limit the agent to known, trusted sites.
 :::
 
 ### Powerful Tools
@@ -114,7 +114,7 @@ Web search tools are enabled individually per agent via checkboxes in the Permis
 | **Search the web**  | `pinchy_web_search` | Query Brave Search for relevant results |
 | **Fetch web pages** | `pinchy_web_fetch`  | Download and read content from a URL    |
 
-Each agent can also have per-agent filters (Allowed Domains, Excluded Domains, Freshness, Language, Region) that control what the agent can access. See [Set Up Web Search](/guides/web-search-setup/) for configuration details.
+Each agent can also have per-agent filters (Domain restrictions with Include/Exclude modes, Freshness, Language, Region) that control what the agent can access. See [Set Up Web Search](/guides/web-search-setup/) for configuration details.
 
 For details on setting up connections, see [Integrations](/concepts/integrations/).
 
