@@ -36,6 +36,61 @@ const ODOO_DOC_SOURCES: Record<string, { id: string; label: string; path: string
     label: "Odoo Inventory Best Practices",
     path: "/integration-docs/odoo/inventory",
   },
+  crm: {
+    id: "odoo-crm",
+    label: "Odoo CRM Best Practices",
+    path: "/integration-docs/odoo/crm",
+  },
+  purchase: {
+    id: "odoo-purchase",
+    label: "Odoo Purchase Best Practices",
+    path: "/integration-docs/odoo/purchase",
+  },
+  hr: {
+    id: "odoo-hr",
+    label: "Odoo HR Best Practices",
+    path: "/integration-docs/odoo/hr",
+  },
+  manufacturing: {
+    id: "odoo-manufacturing",
+    label: "Odoo Manufacturing Best Practices",
+    path: "/integration-docs/odoo/manufacturing",
+  },
+  project: {
+    id: "odoo-project",
+    label: "Odoo Project & Timesheets",
+    path: "/integration-docs/odoo/project",
+  },
+  expenses: {
+    id: "odoo-expenses",
+    label: "Odoo Expenses Best Practices",
+    path: "/integration-docs/odoo/expenses",
+  },
+  recruitment: {
+    id: "odoo-recruitment",
+    label: "Odoo Recruitment Best Practices",
+    path: "/integration-docs/odoo/recruitment",
+  },
+  pos: {
+    id: "odoo-pos",
+    label: "Odoo Point of Sale Best Practices",
+    path: "/integration-docs/odoo/pos",
+  },
+  marketing: {
+    id: "odoo-marketing",
+    label: "Odoo Marketing Best Practices",
+    path: "/integration-docs/odoo/marketing",
+  },
+  fleet: {
+    id: "odoo-fleet",
+    label: "Odoo Fleet Best Practices",
+    path: "/integration-docs/odoo/fleet",
+  },
+  website: {
+    id: "odoo-website",
+    label: "Odoo Website & E-Commerce",
+    path: "/integration-docs/odoo/website",
+  },
 };
 
 /**

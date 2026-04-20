@@ -1228,6 +1228,234 @@ describe("regenerateOpenClawConfig", () => {
     // (no personal agents either, so the whole plugin is absent)
     expect(config.plugins.entries["pinchy-docs"]).toBeUndefined();
   });
+
+  it("adds odoo-manufacturing doc source for agent with mrp.production read permission", async () => {
+    const agentsData = [
+      {
+        id: "manufacturing-agent",
+        name: "Manufacturing Controller",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        isPersonal: false,
+        ownerId: null,
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "manufacturing-agent",
+          connectionId: "conn-1",
+          model: "mrp.production",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-1",
+          type: "odoo",
+          name: "Acme Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://odoo.example.com",
+            db: "acme",
+            uid: 2,
+            apiKey: "test-key",
+          }),
+          data: {
+            models: [
+              {
+                model: "mrp.production",
+                name: "Manufacturing Orders",
+                fields: [],
+                access: { read: true, create: false, write: false, delete: false },
+              },
+            ],
+            lastSyncAt: "2026-04-01T00:00:00Z",
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: mockInnerJoin(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const docsPlugin = config.plugins.entries["pinchy-docs"];
+    expect(docsPlugin).toBeDefined();
+    expect(docsPlugin.enabled).toBe(true);
+
+    const docsConfig = docsPlugin.config;
+    const mfgSource = docsConfig.sources.find((s: any) => s.id === "odoo-manufacturing");
+    expect(mfgSource).toBeDefined();
+    expect(mfgSource.path).toBe("/integration-docs/odoo/manufacturing");
+
+    const agentConfig = docsConfig.agents["manufacturing-agent"];
+    expect(agentConfig).toBeDefined();
+    expect(agentConfig.sources).toContain("odoo-manufacturing");
+  });
+
+  it("adds odoo-fleet doc source for agent with fleet.vehicle read permission", async () => {
+    const agentsData = [
+      {
+        id: "fleet-agent",
+        name: "Fleet Manager",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        isPersonal: false,
+        ownerId: null,
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "fleet-agent",
+          connectionId: "conn-1",
+          model: "fleet.vehicle",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-1",
+          type: "odoo",
+          name: "Acme Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://odoo.example.com",
+            db: "acme",
+            uid: 2,
+            apiKey: "test-key",
+          }),
+          data: {
+            models: [
+              {
+                model: "fleet.vehicle",
+                name: "Vehicles",
+                fields: [],
+                access: { read: true, create: false, write: false, delete: false },
+              },
+            ],
+            lastSyncAt: "2026-04-01T00:00:00Z",
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: mockInnerJoin(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const docsPlugin = config.plugins.entries["pinchy-docs"];
+    expect(docsPlugin).toBeDefined();
+    expect(docsPlugin.enabled).toBe(true);
+
+    const docsConfig = docsPlugin.config;
+    const fleetSource = docsConfig.sources.find((s: any) => s.id === "odoo-fleet");
+    expect(fleetSource).toBeDefined();
+    expect(fleetSource.path).toBe("/integration-docs/odoo/fleet");
+
+    const agentConfig = docsConfig.agents["fleet-agent"];
+    expect(agentConfig).toBeDefined();
+    expect(agentConfig.sources).toContain("odoo-fleet");
+  });
+
+  it("adds odoo-website doc source for agent with website model read permission", async () => {
+    const agentsData = [
+      {
+        id: "website-agent",
+        name: "Website Manager",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        isPersonal: false,
+        ownerId: null,
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "website-agent",
+          connectionId: "conn-1",
+          model: "website.visitor",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-1",
+          type: "odoo",
+          name: "Acme Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://odoo.example.com",
+            db: "acme",
+            uid: 2,
+            apiKey: "test-key",
+          }),
+          data: {
+            models: [
+              {
+                model: "website.visitor",
+                name: "Visitors",
+                fields: [],
+                access: { read: true, create: false, write: false, delete: false },
+              },
+            ],
+            lastSyncAt: "2026-04-01T00:00:00Z",
+          },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: mockInnerJoin(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const docsPlugin = config.plugins.entries["pinchy-docs"];
+    expect(docsPlugin).toBeDefined();
+    expect(docsPlugin.enabled).toBe(true);
+
+    const docsConfig = docsPlugin.config;
+    const websiteSource = docsConfig.sources.find((s: any) => s.id === "odoo-website");
+    expect(websiteSource).toBeDefined();
+    expect(websiteSource.path).toBe("/integration-docs/odoo/website");
+
+    const agentConfig = docsConfig.agents["website-agent"];
+    expect(agentConfig).toBeDefined();
+    expect(agentConfig.sources).toContain("odoo-website");
+  });
 });
 
 describe("sanitizeOpenClawConfig", () => {
