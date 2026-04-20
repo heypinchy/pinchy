@@ -116,16 +116,31 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.4.3 to %%PINCHY_VERSION%%
+## Upgrading from v0.4.4 to v0.5.0
 
 Standard upgrade — no breaking changes, no new required environment variables.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.5.0/docker-compose.yml -o docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
-### What's fixed in %%PINCHY_VERSION%%
+### What's new in v0.5.0
+
+- **OpenAI ChatGPT subscription support** — Admins can now connect a ChatGPT Plus or Pro subscription via OAuth Device Code Flow in Settings → Providers → OpenAI. No API key required. See [Connect ChatGPT Subscription](/guides/connect-chatgpt-subscription) for setup instructions.
+- **Automatic model migration** — When you switch between API key and subscription auth, Pinchy automatically migrates your agents' models between `openai/*` and `openai-codex/*` equivalents.
+- **Proactive token refresh** — Subscription tokens are refreshed automatically every 15 minutes when they're within 30 minutes of expiry. If refresh fails repeatedly, a reconnect banner appears in Settings.
+
+## Upgrading from v0.4.3 to v0.4.4
+
+Standard upgrade — no breaking changes, no new required environment variables.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.4/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
+```
+
+### What's fixed in v0.4.4
 
 - **Integrations list no longer blanks out when one row can't be decrypted** — if the `ENCRYPTION_KEY` ever changed (e.g. accidentally overridden via `.env`), one un-decryptable row in `integration_connections` silently caused `GET /api/integrations` to return 500, and the UI fell back to "No integrations configured yet" for every integration — including freshly-added ones that would decrypt fine. Each row is now decrypted in isolation; unreadable rows surface in Settings → Integrations as a warning card with a Delete action so admins can recover without DB access. `regenerateOpenClawConfig()` got the same per-row isolation, so one broken connection no longer takes down every agent's config.
 
