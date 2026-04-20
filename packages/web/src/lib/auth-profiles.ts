@@ -22,16 +22,17 @@ export function writeAuthProfiles(params: { openaiCodex: OpenAiCodexProfile | nu
     return;
   }
 
+  const { access, refresh, expires, accountId } = params.openaiCodex;
   const payload = {
     version: 1,
     profiles: {
       "openai-codex:default": {
         type: "oauth",
         provider: "openai-codex",
-        access: params.openaiCodex!.access,
-        refresh: params.openaiCodex!.refresh,
-        expires: params.openaiCodex!.expires,
-        accountId: params.openaiCodex!.accountId,
+        access,
+        refresh,
+        expires,
+        accountId,
       },
     },
   };
