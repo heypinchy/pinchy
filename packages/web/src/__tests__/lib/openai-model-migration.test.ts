@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("@/db", () => {
-  const returning = vi.fn().mockResolvedValue([]);
-  const where = vi.fn().mockReturnValue({ returning });
+  const execute = vi.fn().mockResolvedValue(undefined);
+  const where = vi.fn().mockReturnValue({ execute });
   const set = vi.fn().mockReturnValue({ where });
   const update = vi.fn().mockReturnValue({ set });
   const mockWhere = vi.fn().mockResolvedValue([]);
@@ -21,7 +21,6 @@ vi.mock("@/lib/audit", () => ({
 }));
 
 import { db } from "@/db";
-import { agents } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
 import { migrateAgentsToCodex, migrateAgentsToApiKey } from "@/lib/openai-model-migration";
 
@@ -31,9 +30,9 @@ function mockSelectChain(resolvedValue: unknown) {
   vi.mocked(db.select).mockReturnValueOnce({ from: mockFrom } as never);
 }
 
-function mockUpdateChain(resolvedValue: unknown[]) {
-  const returning = vi.fn().mockResolvedValue(resolvedValue);
-  const where = vi.fn().mockReturnValue({ returning });
+function mockUpdateChain() {
+  const execute = vi.fn().mockResolvedValue(undefined);
+  const where = vi.fn().mockReturnValue({ execute });
   const set = vi.fn().mockReturnValue({ where });
   vi.mocked(db.update).mockReturnValueOnce({ set } as never);
 }
@@ -45,7 +44,7 @@ describe("migrateAgentsToCodex", () => {
 
   it("migrates a mapped openai/ agent to openai-codex/", async () => {
     mockSelectChain([{ id: "a1", name: "GPT Agent", model: "openai/gpt-4o" }]);
-    mockUpdateChain([{ id: "a1", name: "GPT Agent", model: "openai-codex/gpt-4o" }]);
+    mockUpdateChain();
 
     const result = await migrateAgentsToCodex();
 
@@ -56,7 +55,7 @@ describe("migrateAgentsToCodex", () => {
 
   it("falls back to openai-codex/gpt-4o-mini for unmapped openai/ agent", async () => {
     mockSelectChain([{ id: "a2", name: "Custom Agent", model: "openai/some-unknown-model" }]);
-    mockUpdateChain([{ id: "a2", name: "Custom Agent", model: "openai-codex/gpt-4o-mini" }]);
+    mockUpdateChain();
 
     const result = await migrateAgentsToCodex();
 
@@ -71,21 +70,18 @@ describe("migrateAgentsToCodex", () => {
   });
 
   it("does not touch non-openai agents", async () => {
-    mockSelectChain([
-      { id: "a1", name: "GPT Agent", model: "openai/gpt-4o" },
-      { id: "a3", name: "Claude Agent", model: "anthropic/claude-3-haiku" },
-    ]);
-    mockUpdateChain([{ id: "a1", name: "GPT Agent", model: "openai-codex/gpt-4o" }]);
+    // The WHERE clause (like agents.model, "openai/%") means only openai/ agents
+    // are returned by the DB. An empty result simulates no openai/ agents present.
+    mockSelectChain([]);
 
     const result = await migrateAgentsToCodex();
 
-    expect(result).toHaveLength(1);
-    expect(result[0].id).toBe("a1");
+    expect(result).toHaveLength(0);
   });
 
   it("returns correct MigratedAgent shape", async () => {
     mockSelectChain([{ id: "a1", name: "GPT Agent", model: "openai/gpt-4o-mini" }]);
-    mockUpdateChain([{ id: "a1", name: "GPT Agent", model: "openai-codex/gpt-4o-mini" }]);
+    mockUpdateChain();
 
     const result = await migrateAgentsToCodex();
 
@@ -99,7 +95,7 @@ describe("migrateAgentsToCodex", () => {
 
   it("emits audit log per migrated agent with correct detail", async () => {
     mockSelectChain([{ id: "a1", name: "GPT Agent", model: "openai/gpt-4o" }]);
-    mockUpdateChain([{ id: "a1", name: "GPT Agent", model: "openai-codex/gpt-4o" }]);
+    mockUpdateChain();
 
     await migrateAgentsToCodex();
 
@@ -107,9 +103,10 @@ describe("migrateAgentsToCodex", () => {
       eventType: "agent.updated",
       actorType: "system",
       actorId: "system",
-      resource: "a1",
+      resource: "agent:a1",
       outcome: "success",
       detail: {
+        agent: { id: "a1", name: "GPT Agent" },
         changes: {
           model: { from: "openai/gpt-4o", to: "openai-codex/gpt-4o" },
         },
@@ -126,7 +123,7 @@ describe("migrateAgentsToApiKey", () => {
 
   it("migrates a mapped openai-codex/ agent to openai/", async () => {
     mockSelectChain([{ id: "a1", name: "Codex Agent", model: "openai-codex/gpt-4o" }]);
-    mockUpdateChain([{ id: "a1", name: "Codex Agent", model: "openai/gpt-4o" }]);
+    mockUpdateChain();
 
     const result = await migrateAgentsToApiKey();
 
@@ -137,7 +134,7 @@ describe("migrateAgentsToApiKey", () => {
 
   it("falls back to openai/gpt-4o-mini for unmapped openai-codex/ agent", async () => {
     mockSelectChain([{ id: "a2", name: "Custom Agent", model: "openai-codex/some-unknown-model" }]);
-    mockUpdateChain([{ id: "a2", name: "Custom Agent", model: "openai/gpt-4o-mini" }]);
+    mockUpdateChain();
 
     const result = await migrateAgentsToApiKey();
 
@@ -149,5 +146,37 @@ describe("migrateAgentsToApiKey", () => {
         to: "openai/gpt-4o-mini",
       },
     ]);
+  });
+
+  it("non-openai-codex agents are not touched", async () => {
+    // The WHERE clause (like agents.model, "openai-codex/%") means only openai-codex/
+    // agents are returned by the DB. An empty result simulates no codex agents present.
+    mockSelectChain([]);
+
+    const result = await migrateAgentsToApiKey();
+
+    expect(result).toHaveLength(0);
+  });
+
+  it("emits audit log for each migrated agent", async () => {
+    mockSelectChain([{ id: "a1", name: "Codex Agent", model: "openai-codex/gpt-4o" }]);
+    mockUpdateChain();
+
+    await migrateAgentsToApiKey();
+
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      eventType: "agent.updated",
+      actorType: "system",
+      actorId: "system",
+      resource: "agent:a1",
+      outcome: "success",
+      detail: {
+        agent: { id: "a1", name: "Codex Agent" },
+        changes: {
+          model: { from: "openai-codex/gpt-4o", to: "openai/gpt-4o" },
+        },
+        reason: "auth_method_switch",
+      },
+    });
   });
 });

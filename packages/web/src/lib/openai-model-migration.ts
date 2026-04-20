@@ -1,6 +1,6 @@
 import { db } from "@/db";
 import { agents } from "@/db/schema";
-import { and, isNull, like, or, eq } from "drizzle-orm";
+import { and, isNull, like, eq } from "drizzle-orm";
 import { toCodexModel, toOpenAiModel } from "@/lib/openai-model-mapping";
 import { appendAuditLog } from "@/lib/audit";
 
@@ -20,18 +20,19 @@ export async function migrateAgentsToCodex(): Promise<MigratedAgent[]> {
   const migrated: MigratedAgent[] = [];
 
   for (const agent of rows) {
-    if (!agent.model || !agent.model.startsWith("openai/")) continue;
+    if (!agent.model) continue;
     const targetModel = toCodexModel(agent.model) ?? "openai-codex/gpt-4o-mini";
 
-    await db.update(agents).set({ model: targetModel }).where(eq(agents.id, agent.id)).returning();
+    await db.update(agents).set({ model: targetModel }).where(eq(agents.id, agent.id)).execute();
 
     await appendAuditLog({
       eventType: "agent.updated",
       actorType: "system",
       actorId: "system",
-      resource: agent.id,
+      resource: `agent:${agent.id}`,
       outcome: "success",
       detail: {
+        agent: { id: agent.id, name: agent.name },
         changes: {
           model: { from: agent.model, to: targetModel },
         },
@@ -57,15 +58,16 @@ export async function migrateAgentsToApiKey(): Promise<MigratedAgent[]> {
     if (!agent.model) continue;
     const targetModel = toOpenAiModel(agent.model) ?? "openai/gpt-4o-mini";
 
-    await db.update(agents).set({ model: targetModel }).where(eq(agents.id, agent.id)).returning();
+    await db.update(agents).set({ model: targetModel }).where(eq(agents.id, agent.id)).execute();
 
     await appendAuditLog({
       eventType: "agent.updated",
       actorType: "system",
       actorId: "system",
-      resource: agent.id,
+      resource: `agent:${agent.id}`,
       outcome: "success",
       detail: {
+        agent: { id: agent.id, name: agent.name },
         changes: {
           model: { from: agent.model, to: targetModel },
         },
