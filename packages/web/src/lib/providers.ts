@@ -2,7 +2,8 @@ export type ProviderName = "anthropic" | "openai" | "google" | "ollama-cloud" | 
 
 interface ProviderConfig {
   name: string;
-  authType: "api-key" | "url";
+  authType: "api-key" | "url"; // keep for backward compatibility
+  authMethods: ("api-key" | "url" | "subscription")[];
   settingsKey: string;
   envVar: string;
   defaultModel: string;
@@ -13,6 +14,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
   anthropic: {
     name: "Anthropic",
     authType: "api-key",
+    authMethods: ["api-key"],
     settingsKey: "anthropic_api_key",
     envVar: "ANTHROPIC_API_KEY",
     defaultModel: "anthropic/claude-haiku-4-5-20251001",
@@ -21,6 +23,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
   openai: {
     name: "OpenAI",
     authType: "api-key",
+    authMethods: ["api-key", "subscription"],
     settingsKey: "openai_api_key",
     envVar: "OPENAI_API_KEY",
     defaultModel: "openai/gpt-4o-mini",
@@ -29,6 +32,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
   google: {
     name: "Google",
     authType: "api-key",
+    authMethods: ["api-key"],
     settingsKey: "google_api_key",
     envVar: "GEMINI_API_KEY",
     defaultModel: "google/gemini-2.5-flash",
@@ -37,6 +41,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
   "ollama-cloud": {
     name: "Ollama Cloud",
     authType: "api-key",
+    authMethods: ["api-key"],
     settingsKey: "ollama_cloud_api_key",
     envVar: "OLLAMA_CLOUD_API_KEY",
     defaultModel: "ollama-cloud/gemini-3-flash-preview",
@@ -45,6 +50,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
   "ollama-local": {
     name: "Ollama (Local)",
     authType: "url",
+    authMethods: ["url"],
     settingsKey: "ollama_local_url",
     envVar: "",
     defaultModel: "",
