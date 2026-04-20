@@ -6,6 +6,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { ShieldCheck, ShieldAlert, Loader2 } from "lucide-react";
 import { toast } from "sonner";
+import { docsUrl } from "@/components/docs-link";
 
 interface DomainStatus {
   domain: string | null;
@@ -247,7 +248,7 @@ export function SettingsSecurity() {
             Lock this domain
           </Button>
           <a
-            href="https://docs.heypinchy.com/guides/domain-lock/"
+            href={docsUrl("guides/domain-lock")}
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm text-primary underline"

@@ -289,17 +289,13 @@ export class ClientRouter {
   ): Promise<void> {
     const sessionKey = this.computeSessionKey(agent.id);
 
-    try {
-      await this.waitForConnection();
-
-      // Always fetch history directly from OpenClaw — the session cache
-      // can miss sessions (e.g. after agent switching or timing gaps)
+    const fetchAndParseHistory = async () => {
       const result = (await this.openclawClient.sessions.history(sessionKey)) as {
         messages?: HistoryMessage[];
       };
       const rawMessages = result?.messages ?? [];
 
-      const messages = rawMessages
+      return rawMessages
         .filter((msg) => msg.role === "user" || msg.role === "assistant")
         .map((msg) => {
           let content: string;
@@ -327,21 +323,88 @@ export class ClientRouter {
           };
         })
         .filter((msg) => msg.content);
+    };
+
+    const sendGreeting = async () => {
+      const greeting = await this.getPersonalizedGreeting(agent.greetingMessage);
+      const greetingMessages = greeting ? [{ role: "assistant", content: greeting }] : [];
+      this.sendToClient(clientWs, { type: "history", messages: greetingMessages });
+    };
+
+    // Tracks whether this session is known to exist (from cache or live check).
+    // When true and history is temporarily unavailable (e.g. during an OpenClaw
+    // restart), we send an empty history instead of a greeting so the client
+    // preserves its existing messages rather than replacing them with a greeting.
+    let sessionKnown = false;
+
+    try {
+      await this.waitForConnection();
+
+      // Always fetch history directly from OpenClaw — the session cache
+      // can miss sessions (e.g. after agent switching or timing gaps)
+      let messages = await fetchAndParseHistory();
+
+      if (messages.length === 0) {
+        // Determine whether to retry. The cache may be empty after a Pinchy restart
+        // (seedSessionCache races with this request), so fall back to a live check
+        // via sessions.list() when the cache is cold.
+        sessionKnown = this.sessionCache.has(sessionKey);
+
+        if (!sessionKnown) {
+          try {
+            const listResult = (await this.openclawClient.sessions.list()) as {
+              sessions?: { key: string }[];
+            };
+            const sessions = listResult?.sessions ?? [];
+            this.sessionCache.refresh(sessions);
+            sessionKnown = this.sessionCache.has(sessionKey);
+          } catch {
+            // sessions.list() failed — proceed without retry
+          }
+        }
+
+        // If session is confirmed (via cache or live check), retry once after a
+        // brief delay in case OpenClaw just restarted and hasn't re-indexed yet.
+        if (sessionKnown) {
+          await new Promise((r) => setTimeout(r, 2000));
+          messages = await fetchAndParseHistory();
+        }
+      }
 
       if (messages.length > 0) {
         this.sessionCache.add(sessionKey);
         this.sendToClient(clientWs, { type: "history", messages });
+      } else if (sessionKnown) {
+        // Session exists but history is temporarily unavailable (e.g. during an
+        // OpenClaw restart). Signal the client so it can retry rather than
+        // showing a blank chat or replacing existing messages with a greeting.
+        this.sendToClient(clientWs, { type: "history", messages: [], sessionKnown: true });
       } else {
-        // No history — show greeting for new conversations
-        const greeting = await this.getPersonalizedGreeting(agent.greetingMessage);
-        const greetingMessages = greeting ? [{ role: "assistant", content: greeting }] : [];
-        this.sendToClient(clientWs, { type: "history", messages: greetingMessages });
+        // No session known — show greeting for new conversations
+        await sendGreeting();
       }
     } catch (err) {
-      // If history fetch fails (e.g. session doesn't exist), fall back to greeting
-      const greeting = await this.getPersonalizedGreeting(agent.greetingMessage);
-      const greetingMessages = greeting ? [{ role: "assistant", content: greeting }] : [];
-      this.sendToClient(clientWs, { type: "history", messages: greetingMessages });
+      // If session was previously known, the error is likely a restart race —
+      // retry once, then send empty history (not greeting) so the client keeps
+      // its existing messages.
+      if (this.sessionCache.has(sessionKey)) {
+        let retryMessages: Awaited<ReturnType<typeof fetchAndParseHistory>> = [];
+        try {
+          await new Promise((r) => setTimeout(r, 2000));
+          retryMessages = await fetchAndParseHistory();
+        } catch {
+          // Retry also failed — session known but history unavailable
+        }
+        if (retryMessages.length > 0) {
+          this.sendToClient(clientWs, { type: "history", messages: retryMessages });
+        } else {
+          // History unavailable for known session — don't send greeting.
+          // Signal the client so it can retry rather than showing a blank chat.
+          this.sendToClient(clientWs, { type: "history", messages: [], sessionKnown: true });
+        }
+        return;
+      }
+      await sendGreeting();
     }
   }
 

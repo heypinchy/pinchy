@@ -25,6 +25,14 @@ export async function GET(request: NextRequest) {
 
   const hasOdooConnection = odooConnections.length > 0;
 
+  const emailConnections = await db
+    .select({ id: integrationConnections.id })
+    .from(integrationConnections)
+    .where(eq(integrationConnections.type, "google"))
+    .limit(1);
+
+  const hasEmailConnection = emailConnections.length > 0;
+
   // Load connection models for Odoo availability check
   const connectionModels = hasOdooConnection ? await getConnectionModels() : null;
 
@@ -37,7 +45,10 @@ export async function GET(request: NextRequest) {
       let available = true;
       let unavailableReason: "no-connection" | "missing-modules" | null = null;
 
-      if (template.requiresOdooConnection && !hasOdooConnection) {
+      if (template.requiresEmailConnection && !hasEmailConnection) {
+        available = false;
+        unavailableReason = "no-connection";
+      } else if (template.requiresOdooConnection && !hasOdooConnection) {
         available = false;
         unavailableReason = "no-connection";
       } else if (template.odooConfig && connectionModels) {
@@ -65,8 +76,9 @@ export async function GET(request: NextRequest) {
         id,
         name: template.name,
         description: template.description,
-        requiresDirectories: template.pluginId !== null,
+        requiresDirectories: template.pluginId === "pinchy-files",
         requiresOdooConnection: template.requiresOdooConnection ?? false,
+        requiresEmailConnection: template.requiresEmailConnection ?? false,
         odooAccessLevel: template.odooConfig?.accessLevel,
         defaultTagline: template.defaultTagline,
         available,

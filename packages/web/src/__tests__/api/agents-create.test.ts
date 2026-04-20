@@ -743,6 +743,67 @@ describe("POST /api/agents", () => {
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 
+  it("should create an email-assistant agent without pluginConfig (no directory required)", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Hermes",
+        templateId: "email-assistant",
+        connectionId: "email-conn-1",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+    expect(validateAllowedPaths).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when email template used without connectionId", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Hermes",
+        templateId: "email-assistant",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/connection/i);
+  });
+
+  it("auto-configures email permissions when creating email agent with connectionId", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Hermes",
+        templateId: "email-assistant",
+        connectionId: "email-conn-1",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    // Email templates use semantic operations (read, draft, send) — not per-tool
+    // operations (list, search, etc.). The plugin checks these semantic ops.
+    expect(permissionsInsertValuesMock).toHaveBeenCalledWith([
+      expect.objectContaining({
+        agentId: "new-agent-id",
+        connectionId: "email-conn-1",
+        model: "email",
+        operation: "read",
+      }),
+      expect.objectContaining({
+        agentId: "new-agent-id",
+        connectionId: "email-conn-1",
+        model: "email",
+        operation: "draft",
+      }),
+    ]);
+  });
+
   it("returns 400 when Odoo template used without connectionId", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",

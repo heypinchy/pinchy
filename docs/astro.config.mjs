@@ -129,6 +129,7 @@ export default defineConfig({
             { label: 'Upgrading', slug: 'guides/upgrading' },
             { label: 'Hardening', slug: 'guides/hardening' },
             { label: 'HTTPS & Domain Lock', slug: 'guides/domain-lock' },
+            { label: 'Connect Email (Gmail)', slug: 'guides/connect-email' },
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
           ],
         },

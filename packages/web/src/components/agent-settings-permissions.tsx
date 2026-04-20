@@ -1,23 +1,39 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { AlertTriangle } from "lucide-react";
 import { DirectoryPicker } from "@/components/directory-picker";
-import { getToolsByCategory, getOdooToolsForAccessLevel } from "@/lib/tool-registry";
+import {
+  getToolsByCategory,
+  getOdooToolsForAccessLevel,
+  getEmailToolsForOperations,
+} from "@/lib/tool-registry";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { OdooPermissionSection } from "@/components/odoo-permission-section";
+import { EmailPermissionSection } from "@/components/email-permission-section";
+import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions";
 
 interface PermissionsValues {
   allowedTools: string[];
   allowedPaths: string[];
-  integrations: {
+  integrations: Array<{
     connectionId: string;
     permissions: Array<{ model: string; operation: string }>;
-  } | null;
+  }>;
 }
+
+interface Connection {
+  id: string;
+  name: string;
+  type: string;
+  status?: string;
+  data?: unknown;
+}
+
+const EMAIL_CONNECTION_TYPES = new Set(["google", "microsoft", "imap"]);
 
 interface AgentSettingsPermissionsProps {
   agent: {
@@ -27,19 +43,25 @@ interface AgentSettingsPermissionsProps {
     pluginConfig: { allowed_paths?: string[] } | null;
   };
   directories: Array<{ path: string; name: string }>;
+  connections: Connection[];
+  isAdmin: boolean;
   onChange: (values: PermissionsValues, isDirty: boolean) => void;
 }
 
 export function AgentSettingsPermissions({
   agent,
   directories,
+  connections,
+  isAdmin,
   onChange,
 }: AgentSettingsPermissionsProps) {
   // KB tools = non-integration safe tools only
   const kbTools = getToolsByCategory("safe").filter((t) => !t.integration);
 
-  // Filter initial allowedTools to only KB tools (exclude odoo_*)
-  const initialKbTools = agent.allowedTools.filter((id) => !id.startsWith("odoo_"));
+  // Filter initial allowedTools to only KB tools (exclude odoo_* and email_*)
+  const initialKbTools = agent.allowedTools.filter(
+    (id) => !id.startsWith("odoo_") && !id.startsWith("email_")
+  );
 
   const [allowedKbTools, setAllowedKbTools] = useState<string[]>(initialKbTools);
   const [allowedPaths, setAllowedPaths] = useState<string[]>(
@@ -50,24 +72,45 @@ export function AgentSettingsPermissions({
     permissions: Array<{ model: string; operation: string }>;
   } | null>(null);
   const [odooIsDirty, setOdooIsDirty] = useState(false);
+  const [emailIntegration, setEmailIntegration] = useState<{
+    connectionId: string;
+    permissions: Array<{ model: string; operation: string }>;
+  } | null>(null);
+  const [emailIsDirty, setEmailIsDirty] = useState(false);
 
   const initialKbToolsRef = useRef(initialKbTools);
   const initialAllowedPaths = useRef(agent.pluginConfig?.allowed_paths ?? []);
 
   const hasKbToolChecked = kbTools.some((tool) => allowedKbTools.includes(tool.id));
 
-  // Compute the combined allowedTools array (KB tools + odoo tools based on integration)
+  // Partition active (non-pending) connections by integration type
+  const { odooConnections, emailConnections } = useMemo(() => {
+    const active = connections.filter((c) => c.status !== "pending");
+    return {
+      odooConnections: active.filter((c) => c.type === "odoo") as OdooConnection[],
+      emailConnections: active.filter((c) => EMAIL_CONNECTION_TYPES.has(c.type)),
+    };
+  }, [connections]);
+
+  const showOdoo = odooConnections.length > 0;
+  const showEmail = emailConnections.length > 0;
+
+  // Compute the combined allowedTools array (KB tools + odoo tools + email tools)
   const computeAllowedTools = useCallback(
     (
       currentKbTools: string[],
-      integration: {
+      odoo: {
+        connectionId: string;
+        permissions: Array<{ model: string; operation: string }>;
+      } | null,
+      email: {
         connectionId: string;
         permissions: Array<{ model: string; operation: string }>;
       } | null
     ): string[] => {
       let odooToolIds: string[] = [];
-      if (integration && integration.permissions.length > 0) {
-        const ops = new Set(integration.permissions.map((p) => p.operation));
+      if (odoo && odoo.permissions.length > 0) {
+        const ops = new Set(odoo.permissions.map((p) => p.operation));
         const hasRead = ops.has("read");
         const hasCreate = ops.has("create");
         const hasWrite = ops.has("write");
@@ -87,29 +130,51 @@ export function AgentSettingsPermissions({
           if (hasDelete) odooToolIds.push("odoo_delete");
         }
       }
-      return [...currentKbTools, ...odooToolIds];
+
+      let emailToolIds: string[] = [];
+      if (email && email.permissions.length > 0) {
+        emailToolIds = getEmailToolsForOperations(email.permissions.map((p) => p.operation));
+      }
+
+      return [...currentKbTools, ...odooToolIds, ...emailToolIds];
     },
     []
   );
 
   // Notify parent after every state change (and on mount)
   useEffect(() => {
-    const allAllowedTools = computeAllowedTools(allowedKbTools, odooIntegration);
+    const allAllowedTools = computeAllowedTools(allowedKbTools, odooIntegration, emailIntegration);
     const kbDirty =
       JSON.stringify([...allowedKbTools].sort()) !==
         JSON.stringify([...initialKbToolsRef.current].sort()) ||
       JSON.stringify([...allowedPaths].sort()) !==
         JSON.stringify([...initialAllowedPaths.current].sort());
-    const isDirty = kbDirty || odooIsDirty;
+    const isDirty = kbDirty || odooIsDirty || emailIsDirty;
+    // Collect all active integrations
+    const integrations: Array<{
+      connectionId: string;
+      permissions: Array<{ model: string; operation: string }>;
+    }> = [];
+    if (odooIntegration) integrations.push(odooIntegration);
+    if (emailIntegration) integrations.push(emailIntegration);
     onChange(
       {
         allowedTools: allAllowedTools,
         allowedPaths,
-        integrations: odooIntegration,
+        integrations,
       },
       isDirty
     );
-  }, [allowedKbTools, allowedPaths, odooIntegration, odooIsDirty, onChange, computeAllowedTools]);
+  }, [
+    allowedKbTools,
+    allowedPaths,
+    odooIntegration,
+    odooIsDirty,
+    emailIntegration,
+    emailIsDirty,
+    onChange,
+    computeAllowedTools,
+  ]);
 
   function handleToolToggle(toolId: string) {
     setAllowedKbTools((prev) =>
@@ -130,6 +195,17 @@ export function AgentSettingsPermissions({
   ) {
     setOdooIntegration(values);
     setOdooIsDirty(isDirty);
+  }
+
+  function handleEmailChange(
+    values: {
+      connectionId: string;
+      permissions: Array<{ model: string; operation: string }>;
+    } | null,
+    isDirty: boolean
+  ) {
+    setEmailIntegration(values);
+    setEmailIsDirty(isDirty);
   }
 
   return (
@@ -178,11 +254,40 @@ export function AgentSettingsPermissions({
         )}
       </section>
 
-      {/* Odoo section */}
-      <section className="space-y-4">
-        <h3 className="text-lg font-semibold">Odoo</h3>
-        <OdooPermissionSection agentId={agent.id} onChange={handleOdooChange} />
-      </section>
+      {/* Odoo section — only when at least one active Odoo connection exists */}
+      {showOdoo && (
+        <section className="space-y-4">
+          <h3 className="text-lg font-semibold">Odoo</h3>
+          <OdooPermissionSection
+            agentId={agent.id}
+            connections={odooConnections}
+            onChange={handleOdooChange}
+          />
+        </section>
+      )}
+
+      {/* Email section — only when at least one active email-type connection exists */}
+      {showEmail && (
+        <section className="space-y-4">
+          <h3 className="text-lg font-semibold">Email</h3>
+          <EmailPermissionSection
+            agentId={agent.id}
+            connections={emailConnections}
+            onChange={handleEmailChange}
+          />
+        </section>
+      )}
+
+      {/* Admin-only discoverability link */}
+      {isAdmin && (
+        <p className="text-sm text-muted-foreground">
+          Need more capabilities?{" "}
+          <a href="/settings?tab=integrations" className="underline hover:text-foreground">
+            Add an integration
+          </a>{" "}
+          in Settings.
+        </p>
+      )}
     </div>
   );
 }

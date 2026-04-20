@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
-import { useOdooPermissions } from "../use-odoo-permissions";
+import { useOdooPermissions, type Connection } from "../use-odoo-permissions";
 
-// Mock fetch
+// Mock fetch — only used for /api/agents/:id/integrations (per-agent permissions)
 const mockFetch = vi.fn();
 vi.stubGlobal("fetch", mockFetch);
 
@@ -14,7 +14,7 @@ function makeConnection(
     name: string;
     access?: { read: boolean; create: boolean; write: boolean; delete: boolean };
   }>
-) {
+): Connection {
   return {
     id,
     name,
@@ -41,19 +41,13 @@ const SAMPLE_MODELS = [
   },
 ];
 
-const CONNECTIONS = [
+const CONNECTIONS: Connection[] = [
   makeConnection("conn-1", "Staging", SAMPLE_MODELS),
   makeConnection("conn-2", "Production", [{ model: "res.partner", name: "Contacts" }]),
 ];
 
-function mockFetchResponses(connections: unknown[] = CONNECTIONS, agentPerms: unknown[] = []) {
+function mockAgentPerms(agentPerms: unknown[] = []) {
   mockFetch.mockImplementation((url: string) => {
-    if (url === "/api/integrations") {
-      return Promise.resolve({
-        ok: true,
-        json: () => Promise.resolve(connections),
-      });
-    }
     if (url.match(/\/api\/agents\/.*\/integrations/)) {
       return Promise.resolve({
         ok: true,
@@ -71,12 +65,11 @@ describe("useOdooPermissions", () => {
 
   // --- Connection loading ---
 
-  it("loads connections on mount", async () => {
-    mockFetchResponses();
+  it("uses the connections passed as an argument", async () => {
+    mockAgentPerms();
 
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
 
-    // Should be loading initially
     expect(result.current.loading).toBe(true);
 
     await act(async () => {});
@@ -87,7 +80,7 @@ describe("useOdooPermissions", () => {
   });
 
   it("loads existing permissions on mount", async () => {
-    mockFetchResponses(CONNECTIONS, [
+    mockAgentPerms([
       {
         connectionId: "conn-1",
         connectionName: "Staging",
@@ -100,7 +93,7 @@ describe("useOdooPermissions", () => {
       },
     ]);
 
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     expect(result.current.connectionId).toBe("conn-1");
@@ -113,8 +106,32 @@ describe("useOdooPermissions", () => {
     expect(partner).toEqual({ read: true, create: false, write: false, delete: false });
   });
 
-  it("resets models and access level when connection changes", async () => {
-    mockFetchResponses(CONNECTIONS, [
+  it("ignores permissions for non-odoo connections (e.g. email)", async () => {
+    mockAgentPerms([
+      {
+        connectionId: "email-conn-1",
+        connectionName: "Gmail",
+        connectionType: "google",
+        permissions: [{ model: "email", modelName: "Email", operation: "read" }],
+      },
+    ]);
+
+    const { result } = renderHook(() => useOdooPermissions("agent-1", []));
+    await act(async () => {});
+
+    expect(result.current.connectionId).toBe("");
+    expect(result.current.addedModels.size).toBe(0);
+    expect(result.current.getPermissions()).toEqual([]);
+  });
+
+  it("picks the odoo entry when both email and odoo permissions exist", async () => {
+    mockAgentPerms([
+      {
+        connectionId: "email-conn-1",
+        connectionName: "Gmail",
+        connectionType: "google",
+        permissions: [{ model: "email", modelName: "Email", operation: "read" }],
+      },
       {
         connectionId: "conn-1",
         connectionName: "Staging",
@@ -123,7 +140,25 @@ describe("useOdooPermissions", () => {
       },
     ]);
 
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
+    await act(async () => {});
+
+    expect(result.current.connectionId).toBe("conn-1");
+    expect(result.current.addedModels.size).toBe(1);
+    expect(result.current.addedModels.has("sale.order")).toBe(true);
+  });
+
+  it("resets models and access level when connection changes", async () => {
+    mockAgentPerms([
+      {
+        connectionId: "conn-1",
+        connectionName: "Staging",
+        connectionType: "odoo",
+        permissions: [{ model: "sale.order", modelName: "Sale Orders", operation: "read" }],
+      },
+    ]);
+
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     expect(result.current.addedModels.size).toBe(1);
@@ -140,8 +175,8 @@ describe("useOdooPermissions", () => {
   // --- Access Level ---
 
   it("setAccessLevel('read-only') sets all added models to read only", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
@@ -157,7 +192,6 @@ describe("useOdooPermissions", () => {
       result.current.setAccessLevel("full");
     });
 
-    // Now switch to read-only
     act(() => {
       result.current.setAccessLevel("read-only");
     });
@@ -169,8 +203,8 @@ describe("useOdooPermissions", () => {
   });
 
   it("setAccessLevel('read-write') sets all added models to read, create, write", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
@@ -191,15 +225,14 @@ describe("useOdooPermissions", () => {
   });
 
   it("setAccessLevel('full') sets all added models to all operations", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
       result.current.setConnectionId("conn-1");
     });
 
-    // res.partner has full access rights, so full level works completely
     act(() => {
       result.current.addModel("res.partner");
     });
@@ -214,8 +247,7 @@ describe("useOdooPermissions", () => {
   });
 
   it("detects access level from existing permissions on load", async () => {
-    // All models have read+create+write → read-write
-    mockFetchResponses(CONNECTIONS, [
+    mockAgentPerms([
       {
         connectionId: "conn-1",
         connectionName: "Staging",
@@ -231,14 +263,14 @@ describe("useOdooPermissions", () => {
       },
     ]);
 
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     expect(result.current.accessLevel).toBe("read-write");
   });
 
   it("detects 'custom' access level when models have mixed operations", async () => {
-    mockFetchResponses(CONNECTIONS, [
+    mockAgentPerms([
       {
         connectionId: "conn-1",
         connectionName: "Staging",
@@ -251,7 +283,7 @@ describe("useOdooPermissions", () => {
       },
     ]);
 
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     expect(result.current.accessLevel).toBe("custom");
@@ -260,15 +292,14 @@ describe("useOdooPermissions", () => {
   // --- Add/Remove Models ---
 
   it("addModel adds a model with operations based on current access level", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
       result.current.setConnectionId("conn-1");
     });
 
-    // Default access level is read-only
     act(() => {
       result.current.addModel("sale.order");
     });
@@ -280,7 +311,6 @@ describe("useOdooPermissions", () => {
       delete: false,
     });
 
-    // Change to full, then add another
     act(() => {
       result.current.setAccessLevel("full");
     });
@@ -298,20 +328,18 @@ describe("useOdooPermissions", () => {
   });
 
   it("addAllModels adds all available models", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
       result.current.setConnectionId("conn-1");
     });
 
-    // Add one model first
     act(() => {
       result.current.addModel("sale.order");
     });
 
-    // Now add all — should add the remaining ones
     act(() => {
       result.current.addAllModels();
     });
@@ -323,8 +351,8 @@ describe("useOdooPermissions", () => {
   });
 
   it("removeModel removes a model", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
@@ -346,15 +374,14 @@ describe("useOdooPermissions", () => {
   });
 
   it("availableModels excludes already-added models", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
       result.current.setConnectionId("conn-1");
     });
 
-    // Initially all 3 are available
     expect(result.current.availableModels).toHaveLength(3);
 
     act(() => {
@@ -368,8 +395,8 @@ describe("useOdooPermissions", () => {
   // --- Toggle Operations ---
 
   it("toggleOperation toggles a single operation", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
@@ -380,7 +407,6 @@ describe("useOdooPermissions", () => {
       result.current.addModel("sale.order");
     });
 
-    // Initially read-only: read=true, create=false
     expect(result.current.addedModels.get("sale.order")!.create).toBe(false);
 
     act(() => {
@@ -389,7 +415,6 @@ describe("useOdooPermissions", () => {
 
     expect(result.current.addedModels.get("sale.order")!.create).toBe(true);
 
-    // Toggle back
     act(() => {
       result.current.toggleOperation("sale.order", "create");
     });
@@ -398,8 +423,8 @@ describe("useOdooPermissions", () => {
   });
 
   it("toggleOperation switches access level to custom when it diverges from preset", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
@@ -411,14 +436,12 @@ describe("useOdooPermissions", () => {
       result.current.addModel("res.partner");
     });
 
-    // Set to read-write
     act(() => {
       result.current.setAccessLevel("read-write");
     });
 
     expect(result.current.accessLevel).toBe("read-write");
 
-    // Now uncheck write on one model — should switch to custom
     act(() => {
       result.current.toggleOperation("sale.order", "write");
     });
@@ -427,8 +450,8 @@ describe("useOdooPermissions", () => {
   });
 
   it("toggleOperation detects when operations match a preset again", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
@@ -439,7 +462,6 @@ describe("useOdooPermissions", () => {
       result.current.addModel("sale.order");
     });
 
-    // Start at read-only, toggle create+write on
     act(() => {
       result.current.toggleOperation("sale.order", "create");
     });
@@ -448,15 +470,14 @@ describe("useOdooPermissions", () => {
       result.current.toggleOperation("sale.order", "write");
     });
 
-    // Now all models have read+create+write → should detect read-write
     expect(result.current.accessLevel).toBe("read-write");
   });
 
   // --- Output ---
 
   it("getPermissions returns flat array of {model, operation} tuples", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
@@ -483,8 +504,8 @@ describe("useOdooPermissions", () => {
   });
 
   it("isDirty is false when connection selected but no models added", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     expect(result.current.isDirty).toBe(false);
@@ -493,13 +514,12 @@ describe("useOdooPermissions", () => {
       result.current.setConnectionId("conn-1");
     });
 
-    // Connection without models is not a saveable config → not dirty
     expect(result.current.isDirty).toBe(false);
   });
 
   it("isDirty is true when connection selected AND models added", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
@@ -514,8 +534,8 @@ describe("useOdooPermissions", () => {
   });
 
   it("getPermissions returns empty array when no models added", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
@@ -526,7 +546,7 @@ describe("useOdooPermissions", () => {
   });
 
   it("isDirty is false when loaded permissions match current state", async () => {
-    mockFetchResponses(CONNECTIONS, [
+    mockAgentPerms([
       {
         connectionId: "conn-1",
         connectionName: "Staging",
@@ -535,7 +555,7 @@ describe("useOdooPermissions", () => {
       },
     ]);
 
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     expect(result.current.isDirty).toBe(false);
@@ -544,9 +564,9 @@ describe("useOdooPermissions", () => {
   // --- Edge cases ---
 
   it("no connections returns empty state", async () => {
-    mockFetchResponses([], []);
+    mockAgentPerms();
 
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    const { result } = renderHook(() => useOdooPermissions("agent-1", []));
     await act(async () => {});
 
     expect(result.current.connections).toHaveLength(0);
@@ -554,9 +574,11 @@ describe("useOdooPermissions", () => {
   });
 
   it("connection without synced models returns empty models", async () => {
-    mockFetchResponses([makeConnection("conn-no-models", "No Models", undefined)], []);
+    mockAgentPerms();
 
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    const { result } = renderHook(() =>
+      useOdooPermissions("agent-1", [makeConnection("conn-no-models", "No Models", undefined)])
+    );
     await act(async () => {});
 
     act(() => {
@@ -569,21 +591,18 @@ describe("useOdooPermissions", () => {
   // --- Access restrictions ---
 
   it("addModel respects access restrictions", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
       result.current.setConnectionId("conn-1");
     });
 
-    // access level read-write → wants read+create+write
     act(() => {
       result.current.setAccessLevel("read-write");
     });
 
-    // sale.order has delete=false but that doesn't matter for read-write
-    // account.move has create=false, write=false → those should stay false
     act(() => {
       result.current.addModel("account.move");
     });
@@ -593,8 +612,8 @@ describe("useOdooPermissions", () => {
   });
 
   it("setAccessLevel respects access restrictions", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
@@ -606,7 +625,6 @@ describe("useOdooPermissions", () => {
       result.current.addModel("res.partner");
     });
 
-    // Set to full — sale.order has delete=false, so delete should stay false
     act(() => {
       result.current.setAccessLevel("full");
     });
@@ -614,14 +632,13 @@ describe("useOdooPermissions", () => {
     const saleOrder = result.current.addedModels.get("sale.order");
     expect(saleOrder).toEqual({ read: true, create: true, write: true, delete: false });
 
-    // res.partner has full access, so all should be true
     const partner = result.current.addedModels.get("res.partner");
     expect(partner).toEqual({ read: true, create: true, write: true, delete: true });
   });
 
   it("toggleOperation is no-op for restricted operations", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
@@ -632,7 +649,6 @@ describe("useOdooPermissions", () => {
       result.current.addModel("account.move");
     });
 
-    // account.move has create=false in access — toggling create should be no-op
     act(() => {
       result.current.toggleOperation("account.move", "create");
     });
@@ -641,8 +657,8 @@ describe("useOdooPermissions", () => {
   });
 
   it("addAllModels respects per-model access restrictions", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
@@ -657,7 +673,6 @@ describe("useOdooPermissions", () => {
       result.current.addAllModels();
     });
 
-    // sale.order: delete=false in access
     expect(result.current.addedModels.get("sale.order")).toEqual({
       read: true,
       create: true,
@@ -665,7 +680,6 @@ describe("useOdooPermissions", () => {
       delete: false,
     });
 
-    // res.partner: full access
     expect(result.current.addedModels.get("res.partner")).toEqual({
       read: true,
       create: true,
@@ -673,7 +687,6 @@ describe("useOdooPermissions", () => {
       delete: true,
     });
 
-    // account.move: only read allowed
     expect(result.current.addedModels.get("account.move")).toEqual({
       read: true,
       create: false,
@@ -683,10 +696,12 @@ describe("useOdooPermissions", () => {
   });
 
   it("getModelAccess returns full access for models without access field", async () => {
+    mockAgentPerms();
     const modelsWithoutAccess = [{ model: "sale.order", name: "Sale Orders" }];
-    mockFetchResponses([makeConnection("conn-legacy", "Legacy", modelsWithoutAccess)]);
 
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    const { result } = renderHook(() =>
+      useOdooPermissions("agent-1", [makeConnection("conn-legacy", "Legacy", modelsWithoutAccess)])
+    );
     await act(async () => {});
 
     act(() => {
@@ -698,15 +713,14 @@ describe("useOdooPermissions", () => {
   });
 
   it("addAllModels does not re-add already existing models", async () => {
-    mockFetchResponses();
-    const { result } = renderHook(() => useOdooPermissions("agent-1"));
+    mockAgentPerms();
+    const { result } = renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
     await act(async () => {});
 
     act(() => {
       result.current.setConnectionId("conn-1");
     });
 
-    // Set to full, add res.partner (which has full access rights)
     act(() => {
       result.current.setAccessLevel("full");
     });
@@ -715,24 +729,30 @@ describe("useOdooPermissions", () => {
       result.current.addModel("res.partner");
     });
 
-    // Now toggle off delete on that model — access level re-detects as read-write
     act(() => {
       result.current.toggleOperation("res.partner", "delete");
     });
 
     expect(result.current.accessLevel).toBe("read-write");
 
-    // addAllModels should NOT overwrite the customized res.partner
     act(() => {
       result.current.addAllModels();
     });
 
-    // res.partner should still have custom ops (delete off)
     const partner = result.current.addedModels.get("res.partner");
     expect(partner!.delete).toBe(false);
 
-    // sale.order gets read-write ops clamped by its access (delete=false anyway)
     const saleOrder = result.current.addedModels.get("sale.order");
     expect(saleOrder).toEqual({ read: true, create: true, write: true, delete: false });
+  });
+
+  it("does not call /api/integrations (connections come from argument)", async () => {
+    mockAgentPerms();
+
+    renderHook(() => useOdooPermissions("agent-1", CONNECTIONS));
+    await act(async () => {});
+
+    const calls = mockFetch.mock.calls.map((c) => c[0] as string);
+    expect(calls).not.toContain("/api/integrations");
   });
 });

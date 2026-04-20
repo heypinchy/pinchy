@@ -15,6 +15,7 @@ import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect
 import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
+import { seedSessionCache } from "./src/server/session-cache-seeder";
 
 logCapture.install();
 
@@ -331,6 +332,13 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       // Start global usage poller. Idempotent — a reconnect won't spawn a
       // second poller. The poller handles sessions.list() failures gracefully.
       startUsagePoller(openclawClient!);
+
+      // Seed session cache from OpenClaw's known sessions so that the retry
+      // logic in handleHistory works correctly on cold start (e.g. after a
+      // Pinchy restart when the cache would otherwise be empty).
+      seedSessionCache(openclawClient!, sessionCache).catch(() => {
+        // Non-critical — cache fills as users interact
+      });
     });
 
     setupOpenClawDisconnectHandler(openclawClient, sessionMap);

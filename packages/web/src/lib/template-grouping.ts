@@ -6,6 +6,7 @@ export interface TemplateItem {
   description: string;
   requiresDirectories: boolean;
   requiresOdooConnection?: boolean;
+  requiresEmailConnection?: boolean;
   odooAccessLevel?: string;
   defaultTagline: string | null;
   available?: boolean;
@@ -23,8 +24,14 @@ export interface AccessBadgeProps {
 }
 
 export function getAccessBadgeProps(
-  template: Pick<TemplateItem, "requiresDirectories" | "requiresOdooConnection" | "odooAccessLevel">
+  template: Pick<
+    TemplateItem,
+    "requiresDirectories" | "requiresOdooConnection" | "requiresEmailConnection" | "odooAccessLevel"
+  >
 ): AccessBadgeProps | null {
+  if (template.requiresEmailConnection) {
+    return { label: "Gmail · Read & Draft", variant: "green" };
+  }
   if (template.requiresOdooConnection) {
     switch (template.odooAccessLevel) {
       case "read-write":
@@ -49,8 +56,18 @@ export interface PermissionItem {
 }
 
 export function getPermissionPreviewItems(
-  template: Pick<TemplateItem, "requiresDirectories" | "requiresOdooConnection" | "odooAccessLevel">
+  template: Pick<
+    TemplateItem,
+    "requiresDirectories" | "requiresOdooConnection" | "requiresEmailConnection" | "odooAccessLevel"
+  >
 ): PermissionItem[] {
+  if (template.requiresEmailConnection) {
+    return [
+      { icon: "check", text: "Read emails from connected Gmail account" },
+      { icon: "check", text: "Create draft emails" },
+      { icon: "cross", text: "Cannot send emails directly" },
+    ];
+  }
   if (template.requiresOdooConnection) {
     switch (template.odooAccessLevel) {
       case "full":
@@ -87,7 +104,8 @@ export type CategoryId =
   | "hr-recruiting"
   | "operations"
   | "marketing-web"
-  | "knowledge-compliance";
+  | "knowledge-compliance"
+  | "email";
 
 const CATEGORY_DEFINITIONS: readonly { id: CategoryId; label: string }[] = [
   { id: "sales-customers", label: "Sales & Customers" },
@@ -96,6 +114,7 @@ const CATEGORY_DEFINITIONS: readonly { id: CategoryId; label: string }[] = [
   { id: "operations", label: "Operations" },
   { id: "marketing-web", label: "Marketing & Web" },
   { id: "knowledge-compliance", label: "Knowledge & Compliance" },
+  { id: "email", label: "Email" },
 ];
 
 const TEMPLATE_CATEGORY_MAP: Record<string, CategoryId> = {
@@ -121,6 +140,9 @@ const TEMPLATE_CATEGORY_MAP: Record<string, CategoryId> = {
   "contract-analyzer": "knowledge-compliance",
   "proposal-comparator": "knowledge-compliance",
   "compliance-checker": "knowledge-compliance",
+  "email-assistant": "email",
+  "email-sales-assistant": "email",
+  "email-support-assistant": "email",
 };
 
 export interface TemplateCategory {

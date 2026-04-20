@@ -79,6 +79,43 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     category: "powerful",
     integration: "odoo",
   },
+
+  // Email integration tools
+  {
+    id: "email_list",
+    label: "Email: List messages",
+    description: "List emails from connected inbox",
+    category: "safe",
+    integration: "email",
+  },
+  {
+    id: "email_read",
+    label: "Email: Read message",
+    description: "Read full email content",
+    category: "safe",
+    integration: "email",
+  },
+  {
+    id: "email_search",
+    label: "Email: Search",
+    description: "Search emails with query",
+    category: "safe",
+    integration: "email",
+  },
+  {
+    id: "email_draft",
+    label: "Email: Create draft",
+    description: "Create email draft (does not send)",
+    category: "powerful",
+    integration: "email",
+  },
+  {
+    id: "email_send",
+    label: "Email: Send",
+    description: "Send email directly",
+    category: "powerful",
+    integration: "email",
+  },
 ];
 
 const ALL_GROUPS = ["group:runtime", "group:fs", "group:web"] as const;
@@ -106,6 +143,38 @@ export function computeDeniedGroups(_allowedToolIds: string[]): string[] {
   return [...ALL_GROUPS, ...STANDALONE_DENY];
 }
 
+// --- Email operation helpers ---
+
+const EMAIL_READ_TOOLS = ["email_list", "email_read", "email_search"] as const;
+const EMAIL_DRAFT_TOOLS = ["email_draft"] as const;
+const EMAIL_SEND_TOOLS = ["email_send"] as const;
+
+/**
+ * Returns the email_* tool IDs that should be enabled for the given
+ * semantic operations (e.g. ["read", "draft"]).
+ */
+export function getEmailToolsForOperations(operations: string[]): string[] {
+  const tools: string[] = [];
+  const ops = new Set(operations);
+  if (ops.has("read")) tools.push(...EMAIL_READ_TOOLS);
+  if (ops.has("draft")) tools.push(...EMAIL_DRAFT_TOOLS);
+  if (ops.has("send")) tools.push(...EMAIL_SEND_TOOLS);
+  return tools;
+}
+
+/**
+ * Given a set of email_* tool IDs, detect which semantic operations they
+ * correspond to. Inverse of getEmailToolsForOperations.
+ */
+export function detectEmailOperations(allowedToolIds: string[]): string[] {
+  const emailIds = new Set(allowedToolIds.filter((id) => id.startsWith("email_")));
+  const ops: string[] = [];
+  if (EMAIL_READ_TOOLS.some((t) => emailIds.has(t))) ops.push("read");
+  if (EMAIL_DRAFT_TOOLS.some((t) => emailIds.has(t))) ops.push("draft");
+  if (EMAIL_SEND_TOOLS.some((t) => emailIds.has(t))) ops.push("send");
+  return ops;
+}
+
 // --- Odoo access level helpers ---
 
 export type OdooAccessLevel = "read-only" | "read-write" | "full" | "custom";
@@ -117,6 +186,11 @@ const ODOO_DELETE_TOOLS = ["odoo_delete"] as const;
 /** Returns all Odoo tool definitions from the registry. */
 export function getOdooTools(): ToolDefinition[] {
   return TOOL_REGISTRY.filter((t) => t.integration === "odoo");
+}
+
+/** Returns all email tool definitions from the registry. */
+export function getEmailTools(): ToolDefinition[] {
+  return TOOL_REGISTRY.filter((t) => t.integration === "email");
 }
 
 /** Returns the odoo_* tool IDs that should be enabled for the given access level. */

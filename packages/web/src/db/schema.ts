@@ -293,6 +293,7 @@ export const integrationConnections = pgTable("integration_connections", {
   description: text("description").notNull().default(""),
   credentials: text("credentials").notNull(), // AES-256-GCM encrypted JSON
   data: jsonb("data"), // Type-specific, Zod-validated (schema cache)
+  status: text("status").notNull().default("active"), // 'active' | 'pending'
   createdAt: timestamp("created_at").defaultNow(),
   updatedAt: timestamp("updated_at").defaultNow(),
 });

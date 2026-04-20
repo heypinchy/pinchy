@@ -66,6 +66,18 @@ describe("getAccessBadgeProps", () => {
     });
     expect(result).toBeNull();
   });
+
+  it("returns green 'Gmail · Read & Draft' for email template", () => {
+    const result = getAccessBadgeProps({
+      id: "email-assistant",
+      name: "Email Assistant",
+      description: "Read and draft emails",
+      requiresDirectories: false,
+      requiresEmailConnection: true,
+      defaultTagline: null,
+    });
+    expect(result).toEqual({ label: "Gmail · Read & Draft", variant: "green" });
+  });
 });
 
 describe("getPermissionPreviewItems", () => {
@@ -121,6 +133,18 @@ describe("getPermissionPreviewItems", () => {
       requiresDirectories: false,
     });
     expect(result).toEqual([]);
+  });
+
+  it("returns email capabilities for email template", () => {
+    const result = getPermissionPreviewItems({
+      requiresDirectories: false,
+      requiresEmailConnection: true,
+    });
+    expect(result).toEqual([
+      { icon: "check", text: "Read emails from connected Gmail account" },
+      { icon: "check", text: "Create draft emails" },
+      { icon: "cross", text: "Cannot send emails directly" },
+    ]);
   });
 });
 
@@ -265,5 +289,20 @@ describe("groupTemplatesByCategory", () => {
   it("returns null custom when no custom template exists", () => {
     const result = groupTemplatesByCategory([salesTemplate]);
     expect(result.custom).toBeNull();
+  });
+
+  it("assigns email-assistant to Email category", () => {
+    const emailTemplate = {
+      id: "email-assistant",
+      name: "Email Assistant",
+      description: "Read and draft emails",
+      requiresDirectories: false,
+      requiresEmailConnection: true,
+      defaultTagline: "Read and draft emails",
+      available: true,
+    };
+    const result = groupTemplatesByCategory([emailTemplate]);
+    expect(result.categories).toHaveLength(1);
+    expect(result.categories[0].label).toBe("Email");
   });
 });

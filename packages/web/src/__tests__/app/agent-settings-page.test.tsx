@@ -301,14 +301,14 @@ describe("AgentSettingsPage", () => {
     });
   });
 
-  it("should call DELETE on integrations endpoint when permissions dirty with null integrations", async () => {
+  it("should call DELETE on integrations endpoint when permissions dirty with empty integrations", async () => {
     render(<AgentSettingsPage />);
     await waitFor(() => screen.getByText("Agent Settings"));
 
-    // Simulate permissions tab dirty with null integrations (connection removed)
+    // Simulate permissions tab dirty with empty integrations (no connections configured)
     act(() => {
       _capturedOnChangePermissions?.(
-        { allowedTools: [], allowedPaths: [], integrations: null },
+        { allowedTools: [], allowedPaths: [], integrations: [] },
         true
       );
     });
@@ -347,10 +347,12 @@ describe("AgentSettingsPage", () => {
         {
           allowedTools: [],
           allowedPaths: [],
-          integrations: {
-            connectionId: "conn-1",
-            permissions: [{ model: "res.partner", operation: "read" }],
-          },
+          integrations: [
+            {
+              connectionId: "conn-1",
+              permissions: [{ model: "res.partner", operation: "read" }],
+            },
+          ],
         },
         true
       );
@@ -381,6 +383,59 @@ describe("AgentSettingsPage", () => {
           (c) => c.url.includes("/api/agents/agent-1/integrations") && c.method === "DELETE"
         )
       ).toBe(false);
+    });
+  });
+
+  it("should save integrations before agent PATCH so config regen reads updated permissions", async () => {
+    render(<AgentSettingsPage />);
+    await waitFor(() => screen.getByText("Agent Settings"));
+
+    act(() => {
+      _capturedOnChangePermissions?.(
+        {
+          allowedTools: ["email_draft"],
+          allowedPaths: [],
+          integrations: [
+            {
+              connectionId: "conn-1",
+              permissions: [{ model: "email", operation: "draft" }],
+            },
+          ],
+        },
+        true
+      );
+    });
+
+    await waitFor(() => screen.getByRole("button", { name: /save & restart/i }));
+
+    // Track whether agent PATCH starts before integration PUT finishes.
+    // If they run in parallel, the PATCH would start while the PUT is still pending.
+    let integrationPutResolved = false;
+    let patchStartedBeforePutResolved = false;
+
+    fetchSpy.mockImplementation(async (url, opts) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      const method = (opts as RequestInit)?.method ?? "GET";
+      if (urlStr.includes("/api/agents/agent-1/integrations") && method === "PUT") {
+        // Simulate async work to create a window for detecting parallelism
+        await new Promise((r) => setTimeout(r, 50));
+        integrationPutResolved = true;
+      } else if (urlStr.includes("/api/agents/agent-1") && method === "PATCH") {
+        if (!integrationPutResolved) {
+          patchStartedBeforePutResolved = true;
+        }
+      }
+      return { ok: true, json: async () => ({}) } as Response;
+    });
+
+    await userEvent.click(screen.getByRole("button", { name: /save & restart/i }));
+    await waitFor(() => screen.getByText(/apply changes and restart/i));
+    const confirmButtons = screen.getAllByRole("button", { name: /save & restart/i });
+    await userEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+    await waitFor(() => {
+      expect(integrationPutResolved).toBe(true);
+      expect(patchStartedBeforePutResolved).toBe(false);
     });
   });
 
