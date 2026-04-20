@@ -13,6 +13,8 @@ import {
   pgView,
   primaryKey,
   check,
+  uuid,
+  bigint,
 } from "drizzle-orm/pg-core";
 import { isNull, sql, relations } from "drizzle-orm";
 
@@ -357,4 +359,102 @@ export const usageRecords = pgTable(
 
 export const activeAgents = pgView("active_agents").as((qb) =>
   qb.select().from(agents).where(isNull(agents.deletedAt))
+);
+
+// ── Background Jobs ──────────────────────────────────────────────────
+
+export const briefings = pgTable(
+  "briefings",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    schedule: text("schedule").notNull(),
+    prompt: text("prompt").notNull(),
+    enabled: boolean("enabled").notNull().default(true),
+    lastRunAt: timestamp("last_run_at"),
+    lastRunStatus: text("last_run_status"),
+    lastSyncedAt: timestamp("last_synced_at"),
+    syncError: text("sync_error"),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => users.id),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    updatedAt: timestamp("updated_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    agentIdIdx: index("briefings_agent_id_idx").on(table.agentId),
+    enabledIdx: index("briefings_enabled_idx").on(table.enabled),
+  })
+);
+
+export const briefingRuns = pgTable(
+  "briefing_runs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    briefingId: uuid("briefing_id")
+      .notNull()
+      .references(() => briefings.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    openclawJobId: text("openclaw_job_id").notNull(),
+    openclawRunId: text("openclaw_run_id").notNull(),
+    openclawSessionKey: text("openclaw_session_key").notNull(),
+    runAtMs: bigint("run_at_ms", { mode: "number" }).notNull(),
+    isTest: boolean("is_test").notNull().default(false),
+    notificationProcessedAt: timestamp("notification_processed_at"),
+  },
+  (table) => ({
+    runIdUnique: uniqueIndex("briefing_runs_openclaw_run_id_uniq").on(table.openclawRunId),
+    briefingIdRunAtIdx: index("briefing_runs_briefing_run_at_idx").on(
+      table.briefingId,
+      table.runAtMs
+    ),
+    sessionKeyIdx: index("briefing_runs_session_key_idx").on(table.openclawSessionKey),
+  })
+);
+
+export const notifications = pgTable(
+  "notifications",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    briefingRunId: uuid("briefing_run_id").references(() => briefingRuns.id, {
+      onDelete: "set null",
+    }),
+    title: text("title").notNull(),
+    content: text("content").notNull(),
+    status: text("status").notNull(),
+    errorMessage: text("error_message"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => ({
+    agentIdCreatedAtIdx: index("notifications_agent_created_idx").on(
+      table.agentId,
+      table.createdAt
+    ),
+  })
+);
+
+export const notificationRecipients = pgTable(
+  "notification_recipients",
+  {
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    notificationId: uuid("notification_id")
+      .notNull()
+      .references(() => notifications.id, { onDelete: "cascade" }),
+    deliveredAt: timestamp("delivered_at").notNull().defaultNow(),
+    readAt: timestamp("read_at"),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.userId, table.notificationId] }),
+    userUnreadIdx: index("notification_recipients_user_unread_idx").on(table.userId, table.readAt),
+  })
 );
