@@ -172,4 +172,34 @@ describe("WebSearchPermissionSection", () => {
 
     expect(input).toHaveValue("");
   });
+
+  it("does not add a domain with invalid format (special chars)", async () => {
+    const onChange = vi.fn();
+    render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
+
+    const input = screen.getByLabelText("Allowed Domains");
+    await userEvent.type(input, "not a domain!!!{Enter}");
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("does not add a bare word without a dot", async () => {
+    const onChange = vi.fn();
+    render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
+
+    const input = screen.getByLabelText("Allowed Domains");
+    await userEvent.type(input, "localhost{Enter}");
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("does not add an empty string as a domain", async () => {
+    const onChange = vi.fn();
+    render(<WebSearchPermissionSection {...defaultProps} onChange={onChange} />);
+
+    const input = screen.getByLabelText("Allowed Domains");
+    await userEvent.type(input, "{Enter}");
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
 });

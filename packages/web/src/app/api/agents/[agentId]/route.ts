@@ -13,6 +13,7 @@ import { db } from "@/db";
 import { agentGroups, groups, type AgentPluginConfig } from "@/db/schema";
 import { getAgentGroupIds } from "@/lib/groups";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
+import { isValidDomain } from "@/lib/domain-validation";
 
 export async function GET(
   request: NextRequest,
@@ -60,6 +61,31 @@ export async function PATCH(
   }
 
   const body = await request.json();
+
+  // Validate pluginConfig structure if provided
+  if (body.pluginConfig !== undefined && body.pluginConfig !== null) {
+    if (typeof body.pluginConfig !== "object" || Array.isArray(body.pluginConfig)) {
+      return NextResponse.json({ error: "pluginConfig must be an object" }, { status: 400 });
+    }
+    const webCfg = body.pluginConfig["pinchy-web"];
+    if (webCfg !== undefined) {
+      const { allowedDomains, excludedDomains } = webCfg as Record<string, unknown>;
+      if (
+        allowedDomains !== undefined &&
+        (!Array.isArray(allowedDomains) ||
+          !(allowedDomains as unknown[]).every((d) => typeof d === "string" && isValidDomain(d)))
+      ) {
+        return NextResponse.json({ error: "Invalid domain in allowedDomains" }, { status: 400 });
+      }
+      if (
+        excludedDomains !== undefined &&
+        (!Array.isArray(excludedDomains) ||
+          !(excludedDomains as unknown[]).every((d) => typeof d === "string" && isValidDomain(d)))
+      ) {
+        return NextResponse.json({ error: "Invalid domain in excludedDomains" }, { status: 400 });
+      }
+    }
+  }
 
   if (
     body.name !== undefined &&
@@ -148,6 +174,13 @@ export async function PATCH(
     const oldTools = existingAgent.allowedTools ?? [];
     if (JSON.stringify(oldTools) !== JSON.stringify(data.allowedTools)) {
       changes.allowedTools = { from: oldTools, to: data.allowedTools };
+    }
+  }
+  if (data.pluginConfig !== undefined) {
+    const oldConfig = existingAgent.pluginConfig ?? null;
+    const newConfig = data.pluginConfig ?? null;
+    if (JSON.stringify(oldConfig) !== JSON.stringify(newConfig)) {
+      changes.pluginConfig = { from: oldConfig, to: newConfig };
     }
   }
 

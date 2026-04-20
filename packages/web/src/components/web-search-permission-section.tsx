@@ -14,6 +14,7 @@ import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import type { AgentPluginConfig } from "@/db/schema";
+import { isValidDomain } from "@/lib/domain-validation";
 
 type WebSearchConfig = NonNullable<AgentPluginConfig["pinchy-web"]>;
 
@@ -87,7 +88,7 @@ function DomainTagInput({
     if (e.key === "Enter") {
       e.preventDefault();
       const domain = inputValue.trim().toLowerCase();
-      if (domain && !domains.includes(domain)) {
+      if (domain && isValidDomain(domain) && !domains.includes(domain)) {
         onAdd(domain);
       }
       setInputValue("");
