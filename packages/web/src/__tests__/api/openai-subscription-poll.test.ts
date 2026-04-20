@@ -81,6 +81,7 @@ describe("POST /api/providers/openai/subscription/poll", () => {
     const body = await res.json();
     expect(body.status).toBe("complete");
     expect(body.accountEmail).toBe("u@e.com");
+    expect(body.accountId).toBe("acc");
     expect(body.migratedAgents).toEqual([
       { id: "a1", name: "Agent One", from: "openai/gpt-4o", to: "openai-codex/gpt-4o" },
     ]);

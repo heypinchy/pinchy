@@ -435,6 +435,7 @@ export function ProviderKeyForm({
                             setSubscriptionStatus({ connected: false });
                             setAuthMethod("api-key");
                             setAffectedAgents([]);
+                            // OpenClaw hot-reloads from auth-profiles.json via regenerateOpenClawConfig — no restart needed
                             toast.success(msg);
                             onSuccess();
                           }}

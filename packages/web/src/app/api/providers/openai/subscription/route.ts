@@ -33,7 +33,7 @@ export async function DELETE() {
   await regenerateOpenClawConfig();
   const migrated = await migrateAgentsToApiKey();
 
-  void appendAuditLog({
+  await appendAuditLog({
     actorType: "user",
     actorId: session.user.id,
     eventType: "config.changed",
