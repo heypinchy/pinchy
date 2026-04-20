@@ -5,16 +5,25 @@ import { z } from "zod";
 import { OdooClient } from "odoo-node";
 import { getSession } from "@/lib/auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { getPipedriveBaseUrl } from "@/lib/integrations/pipedrive-api";
 
-const testCredentialsSchema = z.object({
-  type: z.literal("odoo"),
-  credentials: z.object({
-    url: z.string().url(),
-    db: z.string().min(1),
-    login: z.string().min(1),
-    apiKey: z.string().min(1),
+const testCredentialsSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("odoo"),
+    credentials: z.object({
+      url: z.string().url(),
+      db: z.string().min(1),
+      login: z.string().min(1),
+      apiKey: z.string().min(1),
+    }),
   }),
-});
+  z.object({
+    type: z.literal("pipedrive"),
+    credentials: z.object({
+      apiToken: z.string().min(1),
+    }),
+  }),
+]);
 
 export async function POST(request: NextRequest) {
   const session = await getSession({ headers: await headers() });
@@ -34,6 +43,36 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (parsed.data.type === "pipedrive") {
+    const { apiToken } = parsed.data.credentials;
+
+    try {
+      const response = await fetch(`${getPipedriveBaseUrl()}/v1/users/me`, {
+        headers: { "x-api-token": apiToken },
+      });
+      const data = await response.json();
+
+      if (!data.success) {
+        return NextResponse.json({
+          success: false,
+          error: data.error || "Authentication failed",
+        });
+      }
+
+      return NextResponse.json({
+        success: true,
+        companyDomain: data.data.company_domain,
+        companyName: data.data.company_name,
+        userId: data.data.id,
+        userName: data.data.name,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Connection failed";
+      return NextResponse.json({ success: false, error: message });
+    }
+  }
+
+  // Odoo
   const { credentials } = parsed.data;
 
   const urlCheck = validateExternalUrl(credentials.url);

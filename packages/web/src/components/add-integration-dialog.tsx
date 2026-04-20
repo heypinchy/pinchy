@@ -38,7 +38,7 @@ import {
 } from "@/lib/integrations/odoo-url";
 import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
-import { OdooIcon, GoogleIcon } from "./integration-icons";
+import { OdooIcon, PipedriveIcon, GoogleIcon } from "./integration-icons";
 import { docsUrl } from "./docs-link";
 
 interface IntegrationType {
@@ -56,6 +56,12 @@ const INTEGRATION_TYPES: IntegrationType[] = [
     icon: OdooIcon,
   },
   {
+    id: "pipedrive",
+    name: "Pipedrive",
+    description: "Connect your Pipedrive CRM to manage deals, contacts, and pipeline data.",
+    icon: PipedriveIcon,
+  },
+  {
     id: "google",
     name: "Google",
     description: "Connect your Google account to sync email via Gmail.",
@@ -67,16 +73,22 @@ const INTEGRATION_TYPES: IntegrationType[] = [
 
 type WizardStep = "type" | "connect" | "sync" | "done";
 
-// --- Connect form schema (no name/description — auto-generated) ---
+// --- Connect form schemas ---
 
-const connectFormSchema = z.object({
+const odooConnectFormSchema = z.object({
   url: z.string().url("Must be a valid URL"),
   login: z.string().min(1, "Email is required"),
   apiKey: z.string().min(1, "API key is required"),
   db: z.string().min(1, "Database is required"),
 });
 
-type ConnectFormValues = z.infer<typeof connectFormSchema>;
+type OdooConnectFormValues = z.infer<typeof odooConnectFormSchema>;
+
+const pipedriveConnectFormSchema = z.object({
+  apiToken: z.string().min(1, "API token is required"),
+});
+
+type PipedriveConnectFormValues = z.infer<typeof pipedriveConnectFormSchema>;
 
 // --- Step indicator ---
 
@@ -98,6 +110,16 @@ function StepIndicator({
       <span>{label}</span>
     </div>
   );
+}
+
+// --- Sync category result (generic across integration types) ---
+
+interface SyncCategoryResult {
+  id: string;
+  label: string;
+  accessible: boolean;
+  accessibleItems: string[];
+  totalItems: number;
 }
 
 // --- Google Connect Step ---
@@ -379,21 +401,20 @@ export function AddIntegrationDialog({
 
   // Connect step results
   const [connectionResult, setConnectionResult] = useState<{
-    uid: number;
-    version: string;
+    uid?: number;
+    version?: string;
+    companyDomain?: string;
+    companyName?: string;
+    userId?: number;
+    userName?: string;
   } | null>(null);
   const [connecting, setConnecting] = useState(false);
 
   // Sync step results
   const [syncResult, setSyncResult] = useState<{
-    models: number;
-    categories: Array<{
-      id: string;
-      label: string;
-      accessible: boolean;
-      accessibleModels: string[];
-      totalModels: number;
-    }>;
+    models?: number;
+    entities?: number;
+    categories: SyncCategoryResult[];
   } | null>(null);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncData, setSyncData] = useState<unknown>(null);
@@ -401,19 +422,26 @@ export function AddIntegrationDialog({
   // Done step
   const [connectionName, setConnectionName] = useState("");
 
-  // DB detection
+  // DB detection (Odoo-specific)
   const [dbFetchState, setDbFetchState] = useState<"idle" | "loading" | "done" | "failed">("idle");
   const [fetchedDatabases, setFetchedDatabases] = useState<string[]>([]);
 
   const isSecure = typeof window !== "undefined" && window.location.protocol === "https:";
 
-  const form = useForm<ConnectFormValues>({
-    resolver: zodResolver(connectFormSchema),
+  const odooForm = useForm<OdooConnectFormValues>({
+    resolver: zodResolver(odooConnectFormSchema),
     defaultValues: {
       url: "",
       login: "",
       apiKey: "",
       db: "",
+    },
+  });
+
+  const pipedriveForm = useForm<PipedriveConnectFormValues>({
+    resolver: zodResolver(pipedriveConnectFormSchema),
+    defaultValues: {
+      apiToken: "",
     },
   });
 
@@ -429,7 +457,8 @@ export function AddIntegrationDialog({
     setConnectionName("");
     setDbFetchState("idle");
     setFetchedDatabases([]);
-    form.reset();
+    odooForm.reset();
+    pipedriveForm.reset();
   }
 
   function handleClose(isOpen: boolean) {
@@ -451,19 +480,20 @@ export function AddIntegrationDialog({
       setConnecting(false);
       setDbFetchState("idle");
       setFetchedDatabases([]);
-      form.reset();
+      odooForm.reset();
+      pipedriveForm.reset();
       setStep("type");
     }
   }
 
-  // --- URL blur: fetch databases ---
+  // --- URL blur: fetch databases (Odoo-specific) ---
 
   async function handleUrlBlur(raw: string) {
     const url = normalizeOdooUrl(raw);
     if (!url) return;
 
     if (url !== raw) {
-      form.setValue("url", url);
+      odooForm.setValue("url", url);
     }
 
     setDbFetchState("loading");
@@ -483,9 +513,9 @@ export function AddIntegrationDialog({
 
         const hint = parseOdooSubdomainHint(url);
         if (hint && data.databases.includes(hint)) {
-          form.setValue("db", hint);
+          odooForm.setValue("db", hint);
         } else if (data.databases.length === 1) {
-          form.setValue("db", data.databases[0]);
+          odooForm.setValue("db", data.databases[0]);
         }
       } else {
         setDbFetchState("failed");
@@ -495,10 +525,10 @@ export function AddIntegrationDialog({
     }
   }
 
-  // --- Step 1: Connect ---
+  // --- Step 1: Connect (Odoo) ---
 
-  async function onConnect(values: ConnectFormValues) {
-    form.clearErrors("root");
+  async function onOdooConnect(values: OdooConnectFormValues) {
+    odooForm.clearErrors("root");
     setConnecting(true);
 
     try {
@@ -506,7 +536,7 @@ export function AddIntegrationDialog({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          type: selectedType,
+          type: "odoo",
           credentials: {
             url: values.url,
             db: values.db,
@@ -519,7 +549,7 @@ export function AddIntegrationDialog({
       const testData = await testRes.json();
 
       if (!testRes.ok || !testData.success) {
-        form.setError("root", {
+        odooForm.setError("root", {
           message: testData.error || "Connection test failed",
         });
         setConnecting(false);
@@ -529,21 +559,61 @@ export function AddIntegrationDialog({
       setConnectionResult({ uid: testData.uid, version: testData.version });
       setConnecting(false);
       setStep("sync");
-      // Trigger sync immediately — no useEffect needed
-      runSyncPreview(testData.uid);
+      runOdooSyncPreview(testData.uid);
     } catch {
-      form.setError("root", { message: "Connection test failed" });
+      odooForm.setError("root", { message: "Connection test failed" });
       setConnecting(false);
     }
   }
 
-  // --- Step 2: Sync (preview only — nothing saved yet) ---
+  // --- Step 1: Connect (Pipedrive) ---
 
-  async function runSyncPreview(uid: number) {
+  async function onPipedriveConnect(values: PipedriveConnectFormValues) {
+    pipedriveForm.clearErrors("root");
+    setConnecting(true);
+
+    try {
+      const testRes = await fetch("/api/integrations/test-credentials", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "pipedrive",
+          credentials: { apiToken: values.apiToken },
+        }),
+      });
+
+      const testData = await testRes.json();
+
+      if (!testRes.ok || !testData.success) {
+        pipedriveForm.setError("root", {
+          message: testData.error || "Connection test failed",
+        });
+        setConnecting(false);
+        return;
+      }
+
+      setConnectionResult({
+        companyDomain: testData.companyDomain,
+        companyName: testData.companyName,
+        userId: testData.userId,
+        userName: testData.userName,
+      });
+      setConnecting(false);
+      setStep("sync");
+      runPipedriveSyncPreview(values.apiToken);
+    } catch {
+      pipedriveForm.setError("root", { message: "Connection test failed" });
+      setConnecting(false);
+    }
+  }
+
+  // --- Step 2: Sync Preview (Odoo) ---
+
+  async function runOdooSyncPreview(uid: number) {
     setSyncError(null);
 
     try {
-      const values = form.getValues();
+      const values = odooForm.getValues();
 
       const res = await fetch("/api/integrations/sync-preview", {
         method: "POST",
@@ -563,9 +633,66 @@ export function AddIntegrationDialog({
       const data = await res.json();
 
       if (data.success) {
-        setSyncResult({ models: data.models, categories: data.categories ?? [] });
+        const categories: SyncCategoryResult[] = (data.categories ?? []).map(
+          (cat: {
+            id: string;
+            label: string;
+            accessible: boolean;
+            accessibleModels: string[];
+            totalModels: number;
+          }) => ({
+            id: cat.id,
+            label: cat.label,
+            accessible: cat.accessible,
+            accessibleItems: cat.accessibleModels,
+            totalItems: cat.totalModels,
+          })
+        );
+        setSyncResult({ models: data.models, categories });
         setSyncData(data.data);
-        // Stay on sync step — user clicks "Continue" to proceed
+      } else {
+        setSyncError(data.error || "Schema sync failed");
+      }
+    } catch {
+      setSyncError("Schema sync failed");
+    }
+  }
+
+  // --- Step 2: Sync Preview (Pipedrive) ---
+
+  async function runPipedriveSyncPreview(apiToken: string) {
+    setSyncError(null);
+
+    try {
+      const res = await fetch("/api/integrations/sync-preview", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "pipedrive",
+          credentials: { apiToken },
+        }),
+      });
+
+      const data = await res.json();
+
+      if (data.success) {
+        const categories: SyncCategoryResult[] = (data.categories ?? []).map(
+          (cat: {
+            id: string;
+            label: string;
+            accessible: boolean;
+            accessibleEntities: string[];
+            totalEntities: number;
+          }) => ({
+            id: cat.id,
+            label: cat.label,
+            accessible: cat.accessible,
+            accessibleItems: cat.accessibleEntities,
+            totalItems: cat.totalEntities,
+          })
+        );
+        setSyncResult({ entities: data.entities, categories });
+        setSyncData(data.data);
       } else {
         setSyncError(data.error || "Schema sync failed");
       }
@@ -581,7 +708,27 @@ export function AddIntegrationDialog({
   async function handleDone() {
     setSaving(true);
     try {
-      const values = form.getValues();
+      let credentials: unknown;
+
+      if (selectedType === "pipedrive") {
+        const values = pipedriveForm.getValues();
+        credentials = {
+          apiToken: values.apiToken,
+          companyDomain: connectionResult?.companyDomain,
+          companyName: connectionResult?.companyName,
+          userId: connectionResult?.userId,
+          userName: connectionResult?.userName,
+        };
+      } else {
+        const values = odooForm.getValues();
+        credentials = {
+          url: values.url,
+          db: values.db,
+          login: values.login,
+          apiKey: values.apiKey,
+          uid: connectionResult?.uid,
+        };
+      }
 
       const res = await fetch("/api/integrations", {
         method: "POST",
@@ -590,13 +737,7 @@ export function AddIntegrationDialog({
           type: selectedType,
           name: connectionName,
           description: "",
-          credentials: {
-            url: values.url,
-            db: values.db,
-            login: values.login,
-            apiKey: values.apiKey,
-            uid: connectionResult?.uid,
-          },
+          credentials,
           data: syncData,
         }),
       });
@@ -617,12 +758,15 @@ export function AddIntegrationDialog({
     }
   }
 
-  // --- Permission error detection ---
+  // --- Permission error detection (Odoo-specific) ---
   const isPermissionError =
+    selectedType === "odoo" &&
     syncError &&
     (syncError.includes("ir.model") ||
       syncError.includes("Access") ||
       syncError.includes("permission"));
+
+  const typeName = INTEGRATION_TYPES.find((t) => t.id === selectedType)?.name ?? "";
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
@@ -665,18 +809,18 @@ export function AddIntegrationDialog({
         {step === "connect" && selectedType === "odoo" && (
           <>
             <DialogHeader>
-              <DialogTitle>Connect Odoo</DialogTitle>
+              <DialogTitle>Connect {typeName}</DialogTitle>
               <DialogDescription>
-                Enter the connection details for your Odoo instance.
+                Enter the connection details for your {typeName} instance.
               </DialogDescription>
             </DialogHeader>
 
             <StepIndicator current={1} total={3} label="Connect" />
 
-            <Form {...form}>
-              <form onSubmit={form.handleSubmit(onConnect)} className="space-y-4">
+            <Form {...odooForm}>
+              <form onSubmit={odooForm.handleSubmit(onOdooConnect)} className="space-y-4">
                 <FormField
-                  control={form.control}
+                  control={odooForm.control}
                   name="url"
                   render={({ field }) => (
                     <FormItem>
@@ -699,7 +843,7 @@ export function AddIntegrationDialog({
                 />
 
                 <FormField
-                  control={form.control}
+                  control={odooForm.control}
                   name="login"
                   render={({ field }) => (
                     <FormItem>
@@ -713,7 +857,7 @@ export function AddIntegrationDialog({
                 />
 
                 <FormField
-                  control={form.control}
+                  control={odooForm.control}
                   name="apiKey"
                   render={({ field }) => (
                     <FormItem>
@@ -727,7 +871,7 @@ export function AddIntegrationDialog({
                 {/* Database field: hidden by default, shown when multiple DBs found or fetch failed */}
                 {dbFetchState === "failed" && (
                   <FormField
-                    control={form.control}
+                    control={odooForm.control}
                     name="db"
                     render={({ field }) => (
                       <FormItem>
@@ -747,7 +891,7 @@ export function AddIntegrationDialog({
 
                 {dbFetchState === "done" && fetchedDatabases.length > 1 && (
                   <FormField
-                    control={form.control}
+                    control={odooForm.control}
                     name="db"
                     render={({ field }) => (
                       <FormItem>
@@ -775,8 +919,67 @@ export function AddIntegrationDialog({
                   />
                 )}
 
-                {form.formState.errors.root && (
-                  <p className="text-sm text-destructive">{form.formState.errors.root.message}</p>
+                {odooForm.formState.errors.root && (
+                  <p className="text-sm text-destructive">
+                    {odooForm.formState.errors.root.message}
+                  </p>
+                )}
+
+                <div className="flex justify-between pt-2">
+                  <Button type="button" variant="ghost" onClick={handleBack}>
+                    Back
+                  </Button>
+                  <div className="flex gap-2">
+                    <Button type="button" variant="outline" onClick={() => handleClose(false)}>
+                      Cancel
+                    </Button>
+                    <Button type="submit" disabled={connecting}>
+                      {connecting ? (
+                        <>
+                          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                          Connecting...
+                        </>
+                      ) : (
+                        "Connect"
+                      )}
+                    </Button>
+                  </div>
+                </div>
+              </form>
+            </Form>
+          </>
+        )}
+
+        {/* Step 1: Connect (Pipedrive) */}
+        {step === "connect" && selectedType === "pipedrive" && (
+          <>
+            <DialogHeader>
+              <DialogTitle>Connect {typeName}</DialogTitle>
+              <DialogDescription>
+                Enter the connection details for your {typeName} instance.
+              </DialogDescription>
+            </DialogHeader>
+
+            <StepIndicator current={1} total={3} label="Connect" />
+
+            <Form {...pipedriveForm}>
+              <form onSubmit={pipedriveForm.handleSubmit(onPipedriveConnect)} className="space-y-4">
+                <FormField
+                  control={pipedriveForm.control}
+                  name="apiToken"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>API Token</FormLabel>
+                      <PasswordInput placeholder="Your Pipedrive API token" {...field} />
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                {pipedriveForm.formState.errors.root && (
+                  <p className="text-sm text-destructive">
+                    {pipedriveForm.formState.errors.root.message}
+                  </p>
                 )}
 
                 <div className="flex justify-between pt-2">
@@ -826,13 +1029,11 @@ export function AddIntegrationDialog({
         {step === "sync" && (
           <>
             <DialogHeader>
-              <DialogTitle>
-                Connect {INTEGRATION_TYPES.find((t) => t.id === selectedType)?.name}
-              </DialogTitle>
+              <DialogTitle>Connect {typeName}</DialogTitle>
               <DialogDescription>
                 {syncResult
                   ? "Here\u2019s what your agents can access."
-                  : "Checking which data your Odoo user can access\u2026"}
+                  : `Checking which data your ${typeName} user can access\u2026`}
               </DialogDescription>
             </DialogHeader>
 
@@ -843,7 +1044,7 @@ export function AddIntegrationDialog({
               {!syncError && !syncResult && (
                 <div className="flex flex-col items-center gap-3 py-6">
                   <Loader2 className="h-8 w-8 animate-spin text-muted-foreground" />
-                  <p className="text-sm text-muted-foreground">Syncing models from Odoo...</p>
+                  <p className="text-sm text-muted-foreground">Syncing data from {typeName}...</p>
                 </div>
               )}
 
@@ -862,7 +1063,7 @@ export function AddIntegrationDialog({
                             <CheckCircle2 className="h-4 w-4 translate-y-[1px] text-green-600 dark:text-green-400" />
                             <span className="text-sm font-medium">{cat.label}</span>
                             <span className="text-xs leading-5 text-muted-foreground">
-                              {cat.accessibleModels.join(", ")}
+                              {cat.accessibleItems.join(", ")}
                             </span>
                           </div>
                         ))}
@@ -889,7 +1090,15 @@ export function AddIntegrationDialog({
                   <div className="flex justify-end">
                     <Button
                       onClick={() => {
-                        setConnectionName(generateConnectionName(form.getValues().url));
+                        if (selectedType === "pipedrive") {
+                          setConnectionName(
+                            connectionResult?.companyName
+                              ? `${connectionResult.companyName} Pipedrive`
+                              : "Pipedrive"
+                          );
+                        } else {
+                          setConnectionName(generateConnectionName(odooForm.getValues().url));
+                        }
                         setStep("done");
                       }}
                     >
@@ -899,7 +1108,7 @@ export function AddIntegrationDialog({
                 </>
               )}
 
-              {/* Permission error */}
+              {/* Permission error (Odoo-specific) */}
               {syncError && isPermissionError && (
                 <>
                   <div className="flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950">
@@ -915,7 +1124,7 @@ export function AddIntegrationDialog({
                         <p className="font-medium">How to fix:</p>
                         <ol className="mt-1 list-decimal pl-5 space-y-1">
                           <li>In Odoo, go to Settings &rarr; Users &amp; Companies &rarr; Users</li>
-                          <li>Select the API user ({form.getValues().login})</li>
+                          <li>Select the API user ({odooForm.getValues().login})</li>
                           <li>
                             On the &quot;Access Rights&quot; tab, enable the modules you need (e.g.
                             Sales, Inventory, Contacts)
@@ -928,9 +1137,9 @@ export function AddIntegrationDialog({
                   <div className="flex justify-end">
                     <Button
                       onClick={() => {
-                        if (!connectionResult) return;
+                        if (!connectionResult?.uid) return;
                         setSyncError(null);
-                        runSyncPreview(connectionResult.uid);
+                        runOdooSyncPreview(connectionResult.uid);
                       }}
                     >
                       Retry
@@ -952,9 +1161,12 @@ export function AddIntegrationDialog({
                   <div className="flex justify-end">
                     <Button
                       onClick={() => {
-                        if (!connectionResult) return;
                         setSyncError(null);
-                        runSyncPreview(connectionResult.uid);
+                        if (selectedType === "pipedrive") {
+                          runPipedriveSyncPreview(pipedriveForm.getValues().apiToken);
+                        } else if (connectionResult?.uid) {
+                          runOdooSyncPreview(connectionResult.uid);
+                        }
                       }}
                     >
                       Retry
@@ -970,9 +1182,7 @@ export function AddIntegrationDialog({
         {step === "done" && (
           <>
             <DialogHeader>
-              <DialogTitle>
-                Connect {INTEGRATION_TYPES.find((t) => t.id === selectedType)?.name}
-              </DialogTitle>
+              <DialogTitle>Connect {typeName}</DialogTitle>
               <DialogDescription>Almost done — give your integration a name.</DialogDescription>
             </DialogHeader>
 

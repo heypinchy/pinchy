@@ -7,6 +7,10 @@ import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog } from "@/lib/audit";
 import { odooCredentialsSchema, maskCredentials } from "@/lib/integrations/odoo-schema";
+import {
+  pipedriveCredentialsSchema,
+  maskPipedriveCredentials,
+} from "@/lib/integrations/pipedrive-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { deleteOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { z } from "zod";
@@ -14,7 +18,7 @@ import { z } from "zod";
 const updateIntegrationSchema = z.object({
   name: z.string().min(1).max(100).optional(),
   description: z.string().max(500).optional(),
-  credentials: odooCredentialsSchema.optional(),
+  credentials: z.object({}).passthrough().optional(),
 });
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
@@ -40,7 +44,10 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
 
   return NextResponse.json({
     ...connection,
-    credentials: maskCredentials(connection.credentials, decrypt),
+    credentials:
+      connection.type === "pipedrive"
+        ? maskPipedriveCredentials(connection.credentials, decrypt)
+        : maskCredentials(connection.credentials, decrypt),
   });
 }
 
@@ -90,11 +97,23 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
     }
   }
   if (parsed.data.credentials !== undefined) {
-    const urlCheck = validateExternalUrl(parsed.data.credentials.url);
-    if (!urlCheck.valid) {
-      return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+    // Validate credentials match connection type
+    const credSchema =
+      existing.type === "pipedrive" ? pipedriveCredentialsSchema : odooCredentialsSchema;
+    const credParsed = credSchema.safeParse(parsed.data.credentials);
+    if (!credParsed.success) {
+      return NextResponse.json(
+        { error: "Credentials do not match connection type" },
+        { status: 400 }
+      );
     }
-    updateData.credentials = encrypt(JSON.stringify(parsed.data.credentials));
+    if (existing.type === "odoo" && "url" in credParsed.data) {
+      const urlCheck = validateExternalUrl(credParsed.data.url);
+      if (!urlCheck.valid) {
+        return NextResponse.json({ error: urlCheck.error }, { status: 400 });
+      }
+    }
+    updateData.credentials = encrypt(JSON.stringify(credParsed.data));
     changes.credentials = { from: "[redacted]", to: "[redacted]" };
   }
 
@@ -117,7 +136,10 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
 
   return NextResponse.json({
     ...updated,
-    credentials: maskCredentials(updated.credentials, decrypt),
+    credentials:
+      updated.type === "pipedrive"
+        ? maskPipedriveCredentials(updated.credentials, decrypt)
+        : maskCredentials(updated.credentials, decrypt),
   });
 }
 

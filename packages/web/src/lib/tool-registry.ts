@@ -80,6 +80,78 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     integration: "odoo",
   },
 
+  // Pipedrive integration tools (safe = read-only, powerful = write operations)
+  {
+    id: "pipedrive_schema",
+    label: "Pipedrive: Browse schema",
+    description: "Discover available Pipedrive entities and their fields",
+    category: "safe",
+    integration: "pipedrive",
+  },
+  {
+    id: "pipedrive_read",
+    label: "Pipedrive: Read data",
+    description: "Query records from Pipedrive with filters",
+    category: "safe",
+    integration: "pipedrive",
+  },
+  {
+    id: "pipedrive_search",
+    label: "Pipedrive: Search",
+    description: "Global search across all Pipedrive entities",
+    category: "safe",
+    integration: "pipedrive",
+  },
+  {
+    id: "pipedrive_summary",
+    label: "Pipedrive: Summary & stats",
+    description: "Deal summaries, pipeline statistics, and conversion rates",
+    category: "safe",
+    integration: "pipedrive",
+  },
+  {
+    id: "pipedrive_create",
+    label: "Pipedrive: Create records",
+    description: "Create new records in Pipedrive",
+    category: "powerful",
+    integration: "pipedrive",
+  },
+  {
+    id: "pipedrive_update",
+    label: "Pipedrive: Update records",
+    description: "Modify existing records in Pipedrive",
+    category: "powerful",
+    integration: "pipedrive",
+  },
+  {
+    id: "pipedrive_delete",
+    label: "Pipedrive: Delete records",
+    description: "Delete records from Pipedrive",
+    category: "powerful",
+    integration: "pipedrive",
+  },
+  {
+    id: "pipedrive_merge",
+    label: "Pipedrive: Merge duplicates",
+    description: "Merge duplicate deals, persons, or organizations",
+    category: "powerful",
+    integration: "pipedrive",
+  },
+  {
+    id: "pipedrive_relate",
+    label: "Pipedrive: Manage relationships",
+    description: "Add products to deals, manage participants and followers",
+    category: "powerful",
+    integration: "pipedrive",
+  },
+  {
+    id: "pipedrive_convert",
+    label: "Pipedrive: Convert records",
+    description: "Convert leads to deals and vice versa",
+    category: "powerful",
+    integration: "pipedrive",
+  },
+
   // Email integration tools
   {
     id: "email_list",
@@ -220,6 +292,63 @@ export function detectOdooAccessLevel(allowedToolIds: string[]): OdooAccessLevel
 
   for (const [level, tools] of presets) {
     if (odooSet.size === tools.length && tools.every((t) => odooSet.has(t))) {
+      return level;
+    }
+  }
+
+  return "custom";
+}
+
+// --- Pipedrive access level helpers ---
+
+export type PipedriveAccessLevel = "read-only" | "read-write" | "full" | "custom";
+
+const PIPEDRIVE_READ_TOOLS = [
+  "pipedrive_schema",
+  "pipedrive_read",
+  "pipedrive_search",
+  "pipedrive_summary",
+] as const;
+const PIPEDRIVE_WRITE_TOOLS = [
+  "pipedrive_create",
+  "pipedrive_update",
+  "pipedrive_relate",
+  "pipedrive_convert",
+] as const;
+const PIPEDRIVE_DELETE_TOOLS = ["pipedrive_delete", "pipedrive_merge"] as const;
+
+/** Returns all Pipedrive tool definitions from the registry. */
+export function getPipedriveTools(): ToolDefinition[] {
+  return TOOL_REGISTRY.filter((t) => t.integration === "pipedrive");
+}
+
+/** Returns the pipedrive_* tool IDs that should be enabled for the given access level. */
+export function getPipedriveToolsForAccessLevel(level: PipedriveAccessLevel): string[] {
+  switch (level) {
+    case "read-only":
+      return [...PIPEDRIVE_READ_TOOLS];
+    case "read-write":
+      return [...PIPEDRIVE_READ_TOOLS, ...PIPEDRIVE_WRITE_TOOLS];
+    case "full":
+      return [...PIPEDRIVE_READ_TOOLS, ...PIPEDRIVE_WRITE_TOOLS, ...PIPEDRIVE_DELETE_TOOLS];
+    case "custom":
+      return ["pipedrive_schema"];
+  }
+}
+
+/** Given a set of allowed tool IDs, detect which PipedriveAccessLevel they correspond to. */
+export function detectPipedriveAccessLevel(allowedToolIds: string[]): PipedriveAccessLevel {
+  const pipedriveIds = allowedToolIds.filter((id) => id.startsWith("pipedrive_"));
+  const pipedriveSet = new Set(pipedriveIds);
+
+  const presets: [PipedriveAccessLevel, readonly string[]][] = [
+    ["full", getPipedriveToolsForAccessLevel("full")],
+    ["read-write", getPipedriveToolsForAccessLevel("read-write")],
+    ["read-only", getPipedriveToolsForAccessLevel("read-only")],
+  ];
+
+  for (const [level, tools] of presets) {
+    if (pipedriveSet.size === tools.length && tools.every((t) => pipedriveSet.has(t))) {
       return level;
     }
   }

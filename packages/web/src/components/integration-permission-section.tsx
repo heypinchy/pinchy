@@ -24,83 +24,87 @@ import {
 } from "@/components/ui/command";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import {
-  useOdooPermissions,
-  type Operation,
-  type OdooModel,
-  type Connection,
-} from "@/hooks/use-odoo-permissions";
-import type { OdooAccessLevel } from "@/lib/tool-registry";
-import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
+  useIntegrationPermissions,
+  type IntegrationPermissionsConfig,
+  type IntegrationConnection,
+  type IntegrationEntity,
+  type AccessLevel,
+} from "@/hooks/use-integration-permissions";
 
-const OPERATIONS: readonly Operation[] = ["read", "create", "write", "delete"];
-
-const ACCESS_LEVEL_OPTIONS: { value: OdooAccessLevel; label: string }[] = [
+const ACCESS_LEVEL_OPTIONS: { value: AccessLevel; label: string }[] = [
   { value: "read-only", label: "Read-only" },
   { value: "read-write", label: "Read & Write" },
   { value: "full", label: "Full" },
   { value: "custom", label: "Custom" },
 ];
 
-/** Group models by their MODEL_CATEGORIES category. Uncategorized models go into "Other". */
-function groupModelsByCategory(models: OdooModel[]): Array<{ label: string; models: OdooModel[] }> {
-  const modelSet = new Set(models.map((m) => m.model));
-  const groups: Array<{ label: string; models: OdooModel[] }> = [];
-
-  for (const cat of MODEL_CATEGORIES) {
-    const catModels = cat.models
-      .filter((m) => modelSet.has(m.model))
-      .map((m) => models.find((am) => am.model === m.model)!)
-      .filter(Boolean);
-    if (catModels.length > 0) {
-      groups.push({ label: cat.label, models: catModels });
-    }
-  }
-
-  // Any models not in any category
-  const categorized = new Set(MODEL_CATEGORIES.flatMap((c) => c.models.map((m) => m.model)));
-  const uncategorized = models.filter((m) => !categorized.has(m.model));
-  if (uncategorized.length > 0) {
-    groups.push({ label: "Other", models: uncategorized });
-  }
-
-  return groups;
+export interface IntegrationPermValues {
+  connectionId: string;
+  permissions: Array<{ model: string; operation: string }>;
 }
 
-interface OdooPermissionSectionProps {
+export interface IntegrationPermissionSectionProps {
   agentId: string;
-  connections: Connection[];
-  onChange: (
-    values: {
-      connectionId: string;
-      permissions: Array<{ model: string; operation: string }>;
-    } | null,
-    isDirty: boolean
-  ) => void;
+  integrationType: string;
+  label: string;
+  entityLabel: string;
+  entityLabelSingular: string;
+  connections: IntegrationConnection[];
+  hookConfig: IntegrationPermissionsConfig;
+  operations: readonly string[];
+  operationLabels: Record<string, string>;
+  categorizeEntities?: (
+    entities: IntegrationEntity[]
+  ) => Array<{ label: string; entities: IntegrationEntity[] }>;
+  restrictionTooltip?: string;
+  onChange: (values: IntegrationPermValues | null, isDirty: boolean) => void;
 }
 
-export function OdooPermissionSection({
+// `integrationType` and `label` are accepted as props for section headings.
+// `connections` is passed into the hook so the parent stays the single source
+// of truth — the hook only fetches per-agent permissions, not the global
+// connection list.
+
+/** Default categorization: single flat group. */
+function flatGroup(
+  entities: IntegrationEntity[],
+  entityLabel: string
+): Array<{ label: string; entities: IntegrationEntity[] }> {
+  if (entities.length === 0) return [];
+  return [{ label: entityLabel, entities }];
+}
+
+export function IntegrationPermissionSection({
   agentId,
-  connections,
+  entityLabel,
+  entityLabelSingular,
+  connections: injectedConnections,
+  hookConfig,
+  operations,
+  operationLabels,
+  categorizeEntities,
+  restrictionTooltip = "Not available — restricted by connection permissions",
   onChange,
-}: OdooPermissionSectionProps) {
+}: IntegrationPermissionSectionProps) {
   const {
+    connections,
     connectionId,
     accessLevel,
-    addedModels,
-    availableModels,
+    addedEntities,
+    availableEntities,
     loading,
     setConnectionId,
     setAccessLevel,
-    addModel,
-    addAllModels,
-    removeModel,
+    addEntity,
+    addAllEntities,
+    removeEntity,
     toggleOperation,
-    getModelAccess,
+    getEntityAccess,
     getPermissions,
     isDirty,
-  } = useOdooPermissions(agentId, connections);
+  } = useIntegrationPermissions(hookConfig, agentId, injectedConnections);
 
-  const [addModelOpen, setAddModelOpen] = useState(false);
+  const [addEntityOpen, setAddEntityOpen] = useState(false);
 
   // Stable ref for onChange to avoid infinite re-render loops
   const onChangeRef = useRef(onChange);
@@ -109,22 +113,22 @@ export function OdooPermissionSection({
   });
 
   // Notify parent of changes
-  // Connection without models = not configured → report null
+  // Connection without entities = not configured -> report null
   useEffect(() => {
     if (loading) return;
     const perms = getPermissions();
     const hasConfig = connectionId && perms.length > 0;
     onChangeRef.current(hasConfig ? { connectionId, permissions: perms } : null, isDirty);
-  }, [connectionId, addedModels, loading, getPermissions, isDirty]);
+  }, [connectionId, addedEntities, loading, getPermissions, isDirty]);
 
   if (loading) {
-    return <div className="text-muted-foreground py-4">Loading Odoo configuration...</div>;
+    return <div className="text-muted-foreground py-4">Loading configuration...</div>;
   }
 
   if (connections.length === 0) {
     return (
       <div className="space-y-2 py-4">
-        <p className="text-muted-foreground">No Odoo connections configured.</p>
+        <p className="text-muted-foreground">No connections configured.</p>
         <p className="text-sm text-muted-foreground">
           Go to{" "}
           <a href="/settings?tab=integrations" className="underline hover:text-foreground">
@@ -136,11 +140,15 @@ export function OdooPermissionSection({
     );
   }
 
-  // Get the selected connection to check for synced models
+  // Get the selected connection to check for synced entities
   const selectedConnection = connections.find((c) => c.id === connectionId);
-  const hasModels = selectedConnection?.data?.models
-    ? selectedConnection.data.models.length > 0
-    : false;
+  const connectionEntities = selectedConnection?.data
+    ? hookConfig.getEntitiesFromData(selectedConnection.data)
+    : [];
+  const hasEntities = connectionEntities.length > 0;
+
+  // Categorize function (use provided one or flat fallback)
+  const categorize = categorizeEntities ?? ((e: IntegrationEntity[]) => flatGroup(e, entityLabel));
 
   return (
     <div className="space-y-6">
@@ -174,7 +182,7 @@ export function OdooPermissionSection({
         </div>
       </div>
 
-      {/* Only show access level + models when a connection is selected */}
+      {/* Only show access level + entities when a connection is selected */}
       {connectionId && (
         <>
           {/* Access level */}
@@ -182,7 +190,7 @@ export function OdooPermissionSection({
             <Label>Access</Label>
             <RadioGroup
               value={accessLevel}
-              onValueChange={(v) => setAccessLevel(v as OdooAccessLevel)}
+              onValueChange={(v) => setAccessLevel(v as AccessLevel)}
               className="flex flex-wrap gap-4"
             >
               {ACCESS_LEVEL_OPTIONS.map((opt) => (
@@ -196,66 +204,72 @@ export function OdooPermissionSection({
             </RadioGroup>
           </div>
 
-          {/* No models synced warning */}
-          {!hasModels && (
+          {/* No entities synced warning */}
+          {!hasEntities && (
             <p className="text-sm text-muted-foreground">
-              No models available. Sync the connection schema in Settings &gt; Integrations first.
+              No {entityLabel.toLowerCase()} available. Sync the connection schema in Settings &gt;
+              Integrations first.
             </p>
           )}
 
-          {/* Models section */}
-          {hasModels && (
+          {/* Entities section */}
+          {hasEntities && (
             <div className="space-y-4">
-              <Label>Models</Label>
+              <Label>{entityLabel}</Label>
 
-              {/* Model table */}
-              {addedModels.size > 0 && (
+              {/* Entity table */}
+              {addedEntities.size > 0 && (
                 <div className="rounded-md border">
                   {/* Header */}
-                  <div className="grid grid-cols-[1fr_60px_60px_60px_60px_40px] gap-2 border-b px-4 py-2 text-sm font-medium text-muted-foreground">
-                    <span>Model</span>
-                    <span className="text-center">Read</span>
-                    <span className="text-center">Create</span>
-                    <span className="text-center">Write</span>
-                    <span className="text-center">Delete</span>
+                  <div
+                    className={`grid gap-2 border-b px-4 py-2 text-sm font-medium text-muted-foreground`}
+                    style={{
+                      gridTemplateColumns: `1fr ${operations.map(() => "60px").join(" ")} 40px`,
+                    }}
+                  >
+                    <span>{entityLabelSingular}</span>
+                    {operations.map((op) => (
+                      <span key={op} className="text-center">
+                        {operationLabels[op] ?? op}
+                      </span>
+                    ))}
                     <span />
                   </div>
 
                   {/* Rows */}
                   <div className="max-h-[400px] overflow-y-auto">
-                    {Array.from(addedModels.entries()).map(([modelId, ops]) => {
-                      // Look up display name and category from connection models
-                      const modelInfo = selectedConnection?.data?.models?.find(
-                        (m) => m.model === modelId
-                      );
-                      const displayName = modelInfo?.name ?? modelId;
-                      const category = MODEL_CATEGORIES.find((c) =>
-                        c.models.some((m) => m.model === modelId)
-                      );
-                      const modelAccess = getModelAccess(modelId);
+                    {Array.from(addedEntities.entries()).map(([entityId, ops]) => {
+                      // Look up display name from connection entities
+                      const entityInfo = connectionEntities.find((e) => e.id === entityId);
+                      const displayName = entityInfo?.name ?? entityId;
+                      const category = entityInfo?.category;
+                      const entityAccess = getEntityAccess(entityId);
 
                       return (
                         <div
-                          key={modelId}
-                          className="grid grid-cols-[1fr_60px_60px_60px_60px_40px] gap-2 border-b px-4 py-2 last:border-b-0 items-center"
+                          key={entityId}
+                          className="grid gap-2 border-b px-4 py-2 last:border-b-0 items-center"
+                          style={{
+                            gridTemplateColumns: `1fr ${operations.map(() => "60px").join(" ")} 40px`,
+                          }}
                         >
                           <div>
                             <div className="text-sm font-medium">
                               {category && (
                                 <span className="text-muted-foreground font-normal">
-                                  {category.label}:{" "}
+                                  {category}:{" "}
                                 </span>
                               )}
                               {displayName}
                             </div>
-                            <div className="text-xs text-muted-foreground">{modelId}</div>
+                            <div className="text-xs text-muted-foreground">{entityId}</div>
                           </div>
-                          {OPERATIONS.map((op) => {
-                            const restricted = !modelAccess[op];
+                          {operations.map((op) => {
+                            const restricted = !entityAccess[op];
                             const checkbox = (
                               <Checkbox
                                 checked={ops[op]}
-                                onCheckedChange={() => toggleOperation(modelId, op)}
+                                onCheckedChange={() => toggleOperation(entityId, op)}
                                 disabled={restricted}
                                 aria-label={`${op} ${displayName}`}
                               />
@@ -269,9 +283,7 @@ export function OdooPermissionSection({
                                       <TooltipTrigger asChild>
                                         <span>{checkbox}</span>
                                       </TooltipTrigger>
-                                      <TooltipContent>
-                                        Not available — Odoo user lacks this permission
-                                      </TooltipContent>
+                                      <TooltipContent>{restrictionTooltip}</TooltipContent>
                                     </Tooltip>
                                   </TooltipProvider>
                                 ) : (
@@ -285,7 +297,7 @@ export function OdooPermissionSection({
                               variant="ghost"
                               size="icon"
                               className="h-6 w-6"
-                              onClick={() => removeModel(modelId)}
+                              onClick={() => removeEntity(entityId)}
                               aria-label={`Remove ${displayName}`}
                             >
                               <X className="h-4 w-4" />
@@ -298,35 +310,35 @@ export function OdooPermissionSection({
                 </div>
               )}
 
-              {/* Add model controls */}
+              {/* Add entity controls */}
               <div className="flex items-center gap-2">
-                <Popover open={addModelOpen} onOpenChange={setAddModelOpen}>
+                <Popover open={addEntityOpen} onOpenChange={setAddEntityOpen}>
                   <PopoverTrigger asChild>
-                    <Button variant="outline" size="sm" disabled={availableModels.length === 0}>
+                    <Button variant="outline" size="sm" disabled={availableEntities.length === 0}>
                       <Plus className="mr-1 h-4 w-4" />
-                      Add model...
+                      Add {entityLabelSingular.toLowerCase()}...
                       <ChevronsUpDown className="ml-1 h-4 w-4 opacity-50" />
                     </Button>
                   </PopoverTrigger>
                   <PopoverContent className="w-[300px] p-0" align="start">
                     <Command>
-                      <CommandInput placeholder="Search models..." />
+                      <CommandInput placeholder={`Search ${entityLabel.toLowerCase()}...`} />
                       <CommandList>
-                        <CommandEmpty>No models found.</CommandEmpty>
-                        {groupModelsByCategory(availableModels).map(({ label, models }) => (
+                        <CommandEmpty>No {entityLabel.toLowerCase()} found.</CommandEmpty>
+                        {categorize(availableEntities).map(({ label: groupLabel, entities }) => (
                           <CommandGroup
-                            key={label}
+                            key={groupLabel}
                             heading={
                               <span className="flex items-center justify-between">
-                                <span>{label}</span>
-                                {models.length > 1 && (
+                                <span>{groupLabel}</span>
+                                {entities.length > 1 && (
                                   <button
                                     type="button"
                                     className="text-xs font-normal text-primary hover:underline"
                                     onPointerDown={(e) => {
                                       e.preventDefault();
-                                      for (const m of models) addModel(m.model);
-                                      setAddModelOpen(false);
+                                      for (const entity of entities) addEntity(entity.id);
+                                      setAddEntityOpen(false);
                                     }}
                                   >
                                     Add all
@@ -335,18 +347,18 @@ export function OdooPermissionSection({
                               </span>
                             }
                           >
-                            {models.map((m) => (
+                            {entities.map((entity) => (
                               <CommandItem
-                                key={m.model}
-                                value={`${label} ${m.name} ${m.model}`}
+                                key={entity.id}
+                                value={`${groupLabel} ${entity.name} ${entity.id}`}
                                 onSelect={() => {
-                                  addModel(m.model);
-                                  setAddModelOpen(false);
+                                  addEntity(entity.id);
+                                  setAddEntityOpen(false);
                                 }}
                               >
                                 <div>
-                                  <div className="text-sm">{m.name}</div>
-                                  <div className="text-xs text-muted-foreground">{m.model}</div>
+                                  <div className="text-sm">{entity.name}</div>
+                                  <div className="text-xs text-muted-foreground">{entity.id}</div>
                                 </div>
                               </CommandItem>
                             ))}
@@ -360,10 +372,10 @@ export function OdooPermissionSection({
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={addAllModels}
-                  disabled={availableModels.length === 0}
+                  onClick={addAllEntities}
+                  disabled={availableEntities.length === 0}
                 >
-                  Add all models
+                  Add all {entityLabel.toLowerCase()}
                 </Button>
               </div>
             </div>

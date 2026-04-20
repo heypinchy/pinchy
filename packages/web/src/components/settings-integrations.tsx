@@ -35,9 +35,23 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 // toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { EditOAuthDialog } from "./edit-oauth-dialog";
-import { GoogleIcon, OdooIcon } from "./integration-icons";
+import { GoogleIcon, OdooIcon, PipedriveIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
-import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
+import { getAccessibleCategoryLabels as getOdooCategoryLabels } from "@/lib/integrations/odoo-sync";
+import { getAccessibleCategoryLabels as getPipedriveCategoryLabels } from "@/lib/integrations/pipedrive-sync";
+
+function IntegrationIcon({ type }: { type: string }) {
+  switch (type) {
+    case "odoo":
+      return <OdooIcon className="h-6 w-12 shrink-0" />;
+    case "pipedrive":
+      return <PipedriveIcon className="h-6 w-6 shrink-0" />;
+    case "google":
+      return <GoogleIcon className="h-6 w-6 shrink-0" />;
+    default:
+      return <Plug className="h-6 w-6 shrink-0" />;
+  }
+}
 
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
@@ -154,16 +168,15 @@ export function SettingsIntegrations() {
                     </div>
                   );
                 }
-                const categories = getAccessibleCategoryLabels(conn.data);
+                const categories =
+                  conn.type === "pipedrive"
+                    ? getPipedriveCategoryLabels(conn.data)
+                    : getOdooCategoryLabels(conn.data);
                 return (
                   <div key={conn.id} className="rounded-lg border p-4 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        {conn.type === "google" ? (
-                          <GoogleIcon className="h-6 w-6 shrink-0" />
-                        ) : (
-                          <OdooIcon className="h-6 w-12 shrink-0" />
-                        )}
+                        <IntegrationIcon type={conn.type} />
                         <span className="text-sm font-medium">{conn.name}</span>
                       </div>
                       <DropdownMenu>
@@ -268,11 +281,11 @@ export function SettingsIntegrations() {
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <span className="cursor-default underline decoration-dotted underline-offset-4">
-                                  Synced {formatRelativeTime(conn.data.lastSyncAt)}
+                                  Synced {formatRelativeTime(conn.data.lastSyncAt as string)}
                                 </span>
                               </TooltipTrigger>
                               <TooltipContent>
-                                <p>{new Date(conn.data.lastSyncAt).toLocaleString()}</p>
+                                <p>{new Date(conn.data.lastSyncAt as string).toLocaleString()}</p>
                               </TooltipContent>
                             </Tooltip>
                           </>

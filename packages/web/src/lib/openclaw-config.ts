@@ -385,6 +385,85 @@ export async function regenerateOpenClawConfig() {
     };
   }
 
+  // Collect Pipedrive integration configs for agents with integration permissions
+  const pipedriveAgentConfigs: Record<string, Record<string, unknown>> = {};
+  const pdPermsByAgent = new Map<
+    string,
+    Map<
+      string,
+      { connection: typeof integrationConnections.$inferSelect; ops: Map<string, string[]> }
+    >
+  >();
+
+  for (const row of allPermissions) {
+    const perm = row.agent_connection_permissions;
+    const conn = row.integration_connections;
+
+    if (conn.type !== "pipedrive") continue;
+
+    if (!pdPermsByAgent.has(perm.agentId)) {
+      pdPermsByAgent.set(perm.agentId, new Map());
+    }
+    const agentPerms = pdPermsByAgent.get(perm.agentId)!;
+
+    if (!agentPerms.has(perm.connectionId)) {
+      agentPerms.set(perm.connectionId, { connection: conn, ops: new Map() });
+    }
+    const connPerms = agentPerms.get(perm.connectionId)!;
+
+    if (!connPerms.ops.has(perm.model)) {
+      connPerms.ops.set(perm.model, []);
+    }
+    connPerms.ops.get(perm.model)!.push(perm.operation);
+  }
+
+  // Build plugin config per agent (using first connection — single connection per agent for now)
+  for (const [agentId, connections] of pdPermsByAgent) {
+    const [firstConnection] = connections.values();
+    if (!firstConnection) continue;
+
+    const conn = firstConnection.connection;
+    const decryptedCreds = JSON.parse(decrypt(conn.credentials));
+    const permissions: Record<string, string[]> = {};
+    for (const [entity, ops] of firstConnection.ops) {
+      permissions[entity] = ops;
+    }
+
+    // Build lightweight entity name map — only for entities with permissions
+    const entityNames: Record<string, string> = {};
+    if (conn.data && typeof conn.data === "object") {
+      const data = conn.data as {
+        entities?: Array<{ entity: string; name: string }>;
+      };
+      if (data.entities) {
+        for (const e of data.entities) {
+          if (permissions[e.entity]) {
+            entityNames[e.entity] = e.name;
+          }
+        }
+      }
+    }
+
+    pipedriveAgentConfigs[agentId] = {
+      connection: {
+        name: conn.name,
+        apiToken: decryptedCreds.apiToken,
+        companyDomain: decryptedCreds.companyDomain,
+      },
+      permissions,
+      entityNames,
+    };
+  }
+
+  if (Object.keys(pipedriveAgentConfigs).length > 0) {
+    entries["pinchy-pipedrive"] = {
+      enabled: true,
+      config: {
+        agents: pipedriveAgentConfigs,
+      },
+    };
+  }
+
   // Collect email integration configs for agents with email provider permissions.
   // Unlike Odoo, email config does NOT include decrypted credentials — only
   // connectionId + permissions. The plugin fetches credentials at runtime via

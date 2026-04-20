@@ -5,17 +5,26 @@ import { z } from "zod";
 import { getSession } from "@/lib/auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
+import { fetchPipedriveSchema } from "@/lib/integrations/pipedrive-sync";
 
-const syncPreviewSchema = z.object({
-  type: z.literal("odoo"),
-  credentials: z.object({
-    url: z.string().url(),
-    db: z.string().min(1),
-    login: z.string().min(1),
-    apiKey: z.string().min(1),
-    uid: z.number().int().positive(),
+const syncPreviewSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("odoo"),
+    credentials: z.object({
+      url: z.string().url(),
+      db: z.string().min(1),
+      login: z.string().min(1),
+      apiKey: z.string().min(1),
+      uid: z.number().int().positive(),
+    }),
   }),
-});
+  z.object({
+    type: z.literal("pipedrive"),
+    credentials: z.object({
+      apiToken: z.string().min(1),
+    }),
+  }),
+]);
 
 export async function POST(request: NextRequest) {
   const session = await getSession({ headers: await headers() });
@@ -35,6 +44,12 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (parsed.data.type === "pipedrive") {
+    const result = await fetchPipedriveSchema(parsed.data.credentials.apiToken);
+    return NextResponse.json(result);
+  }
+
+  // Odoo path
   const { credentials } = parsed.data;
 
   const urlCheck = validateExternalUrl(credentials.url);

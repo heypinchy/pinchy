@@ -131,6 +131,7 @@ export default defineConfig({
             { label: 'HTTPS & Domain Lock', slug: 'guides/domain-lock' },
             { label: 'Connect Email (Gmail)', slug: 'guides/connect-email' },
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
+            { label: 'Connect Pipedrive', slug: 'guides/connect-pipedrive' },
           ],
         },
         {

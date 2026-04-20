@@ -1,19 +1,23 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentSettingsPermissions } from "@/components/agent-settings-permissions";
 
-vi.mock("@/components/odoo-permission-section", () => ({
-  OdooPermissionSection: ({
+// Mock the IntegrationPermissionSection to avoid fetch calls from the hook
+vi.mock("@/components/integration-permission-section", () => ({
+  IntegrationPermissionSection: ({
+    label,
     onChange,
   }: {
     agentId: string;
+    integrationType: string;
+    label: string;
     connections: unknown[];
     onChange: (v: unknown, d: boolean) => void;
   }) => {
     void onChange;
-    return <div data-testid="odoo-section">Odoo Section</div>;
+    return <div data-testid={`integration-section-${label.toLowerCase()}`}>{label} Section</div>;
   },
 }));
 
@@ -29,6 +33,10 @@ vi.mock("@/components/email-permission-section", () => ({
     return <div data-testid="email-section">Email Section</div>;
   },
 }));
+
+beforeEach(() => {
+  vi.clearAllMocks();
+});
 
 describe("AgentSettingsPermissions", () => {
   const defaultAgent = {
@@ -49,6 +57,13 @@ describe("AgentSettingsPermissions", () => {
     id: "conn-odoo",
     name: "Odoo Sales",
     type: "odoo",
+    status: "active",
+    data: null,
+  };
+  const pipedriveConnection = {
+    id: "conn-pipedrive",
+    name: "Pipedrive CRM",
+    type: "pipedrive",
     status: "active",
     data: null,
   };
@@ -91,6 +106,21 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.queryByLabelText("Odoo: Read data")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Odoo: Count records")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Odoo: Aggregate data")).not.toBeInTheDocument();
+  });
+
+  it("should not render pipedrive tools as checkboxes", () => {
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={defaultDirectories}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+
+    expect(screen.queryByLabelText("Pipedrive: Browse schema")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Pipedrive: Read data")).not.toBeInTheDocument();
   });
 
   it("should not render Powerful Tools section (OpenClaw native tools removed)", () => {
@@ -163,7 +193,7 @@ describe("AgentSettingsPermissions", () => {
   });
 
   describe("conditional integration sections", () => {
-    it("hides Odoo and Email sections when no integration connections exist", () => {
+    it("hides all integration sections when no integration connections exist", () => {
       render(
         <AgentSettingsPermissions
           agent={defaultAgent}
@@ -175,7 +205,9 @@ describe("AgentSettingsPermissions", () => {
       );
 
       expect(screen.queryByText("Odoo")).not.toBeInTheDocument();
-      expect(screen.queryByTestId("odoo-section")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("integration-section-odoo")).not.toBeInTheDocument();
+      expect(screen.queryByText("Pipedrive")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("integration-section-pipedrive")).not.toBeInTheDocument();
       expect(screen.queryByText("Email")).not.toBeInTheDocument();
       expect(screen.queryByTestId("email-section")).not.toBeInTheDocument();
     });
@@ -192,9 +224,27 @@ describe("AgentSettingsPermissions", () => {
       );
 
       expect(screen.getByText("Odoo")).toBeInTheDocument();
-      expect(screen.getByTestId("odoo-section")).toBeInTheDocument();
+      expect(screen.getByTestId("integration-section-odoo")).toBeInTheDocument();
+      expect(screen.queryByText("Pipedrive")).not.toBeInTheDocument();
       expect(screen.queryByText("Email")).not.toBeInTheDocument();
       expect(screen.queryByTestId("email-section")).not.toBeInTheDocument();
+    });
+
+    it("shows only Pipedrive section when only Pipedrive connection exists", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[pipedriveConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText("Pipedrive")).toBeInTheDocument();
+      expect(screen.getByTestId("integration-section-pipedrive")).toBeInTheDocument();
+      expect(screen.queryByText("Odoo")).not.toBeInTheDocument();
+      expect(screen.queryByText("Email")).not.toBeInTheDocument();
     });
 
     it("shows only Email section when only Google connection exists", () => {
@@ -211,22 +261,24 @@ describe("AgentSettingsPermissions", () => {
       expect(screen.getByText("Email")).toBeInTheDocument();
       expect(screen.getByTestId("email-section")).toBeInTheDocument();
       expect(screen.queryByText("Odoo")).not.toBeInTheDocument();
-      expect(screen.queryByTestId("odoo-section")).not.toBeInTheDocument();
+      expect(screen.queryByText("Pipedrive")).not.toBeInTheDocument();
     });
 
-    it("shows both Odoo and Email sections when both connections exist", () => {
+    it("shows all sections when all connection types exist", () => {
       render(
         <AgentSettingsPermissions
           agent={defaultAgent}
           directories={defaultDirectories}
-          connections={[odooConnection, googleConnection]}
+          connections={[odooConnection, pipedriveConnection, googleConnection]}
           isAdmin={true}
           onChange={vi.fn()}
         />
       );
 
       expect(screen.getByText("Odoo")).toBeInTheDocument();
-      expect(screen.getByTestId("odoo-section")).toBeInTheDocument();
+      expect(screen.getByTestId("integration-section-odoo")).toBeInTheDocument();
+      expect(screen.getByText("Pipedrive")).toBeInTheDocument();
+      expect(screen.getByTestId("integration-section-pipedrive")).toBeInTheDocument();
       expect(screen.getByText("Email")).toBeInTheDocument();
       expect(screen.getByTestId("email-section")).toBeInTheDocument();
     });

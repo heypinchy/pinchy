@@ -18,6 +18,13 @@ RUN cd /tmp/pinchy-odoo && npm install --omit=dev && \
     cp -r /tmp/pinchy-odoo/node_modules /opt/pinchy-odoo-deps/ && \
     rm -rf /tmp/pinchy-odoo
 
+# Install pinchy-pipedrive plugin dependencies (currently none, but keeps pattern consistent)
+COPY packages/plugins/pinchy-pipedrive/package.json /tmp/pinchy-pipedrive/package.json
+RUN cd /tmp/pinchy-pipedrive && npm install --omit=dev && \
+    mkdir -p /opt/pinchy-pipedrive-deps && \
+    cp -r /tmp/pinchy-pipedrive/node_modules /opt/pinchy-pipedrive-deps/ && \
+    rm -rf /tmp/pinchy-pipedrive
+
 # Install pinchy-email plugin dependencies
 COPY packages/plugins/pinchy-email/package.json /tmp/pinchy-email/package.json
 RUN cd /tmp/pinchy-email && npm install --omit=dev && \
