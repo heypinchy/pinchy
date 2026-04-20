@@ -15,6 +15,7 @@ vi.mock("@/lib/audit", () => ({ appendAuditLog: vi.fn().mockResolvedValue(undefi
 import { DELETE, GET } from "@/app/api/providers/openai/subscription/route";
 import * as sub from "@/lib/openai-subscription";
 import * as audit from "@/lib/audit";
+import * as ocConfig from "@/lib/openclaw-config";
 
 const mockSub = {
   accessToken: "a",
@@ -36,6 +37,7 @@ describe("DELETE /api/providers/openai/subscription", () => {
     const res = await DELETE();
     expect(res.status).toBe(200);
     expect(sub.deleteOpenAiSubscription).toHaveBeenCalled();
+    expect(ocConfig.regenerateOpenClawConfig).toHaveBeenCalled();
     expect(audit.appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "config.changed",

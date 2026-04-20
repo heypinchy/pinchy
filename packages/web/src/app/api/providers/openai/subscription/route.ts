@@ -31,7 +31,7 @@ export async function DELETE() {
   await deleteOpenAiSubscription();
   await regenerateOpenClawConfig();
 
-  await appendAuditLog({
+  void appendAuditLog({
     actorType: "user",
     actorId: session.user.id,
     eventType: "config.changed",
