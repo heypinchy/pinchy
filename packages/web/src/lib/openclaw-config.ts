@@ -16,6 +16,8 @@ import { computeDeniedGroups } from "@/lib/tool-registry";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
+import { getOpenAiSubscription } from "@/lib/openai-subscription";
+import { writeAuthProfiles } from "@/lib/auth-profiles";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 
@@ -533,6 +535,22 @@ export async function regenerateOpenClawConfig() {
       ...(Object.keys(identityLinks).length > 0 && { identityLinks }),
     };
   }
+
+  // Emit auth-profiles.json so OpenClaw can authenticate with OpenAI via
+  // the user's subscription OAuth tokens (ChatGPT Plus / Pro / Max).
+  // Called before the early-return below so subscription token changes are
+  // always reflected even when the main openclaw.json content is unchanged.
+  const subscription = await getOpenAiSubscription();
+  writeAuthProfiles({
+    openaiCodex: subscription
+      ? {
+          access: subscription.accessToken,
+          refresh: subscription.refreshToken,
+          expires: new Date(subscription.expiresAt).getTime(),
+          accountId: subscription.accountId,
+        }
+      : null,
+  });
 
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts
   const newContent = JSON.stringify(config, null, 2);

@@ -72,6 +72,14 @@ vi.mock("@/lib/provider-models", () => {
   };
 });
 
+vi.mock("@/lib/openai-subscription", () => ({
+  getOpenAiSubscription: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("@/lib/auth-profiles", () => ({
+  writeAuthProfiles: vi.fn(),
+}));
+
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import {
   regenerateOpenClawConfig,
@@ -80,6 +88,8 @@ import {
 } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
+import { getOpenAiSubscription } from "@/lib/openai-subscription";
+import { writeAuthProfiles } from "@/lib/auth-profiles";
 
 const mockedWriteFileSync = vi.mocked(writeFileSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
@@ -88,6 +98,8 @@ const mockedMkdirSync = vi.mocked(mkdirSync);
 
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
+const mockedGetOpenAiSubscription = vi.mocked(getOpenAiSubscription);
+const mockedWriteAuthProfiles = vi.mocked(writeAuthProfiles);
 
 /** Helper: create a mock `from()` that returns a thenable with `.innerJoin()` */
 function mockFrom(data: unknown[] = []) {
@@ -1642,5 +1654,53 @@ describe("updateIdentityLinks", () => {
     updateIdentityLinks({ "user-1": ["telegram:123"] });
 
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe("auth-profiles.json emission", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("writes auth-profiles.json when an OpenAI subscription is active", async () => {
+    const expiresAt = new Date(Date.now() + 3600000).toISOString();
+    mockedGetOpenAiSubscription.mockResolvedValue({
+      accessToken: "at",
+      refreshToken: "rt",
+      expiresAt,
+      accountId: "acc-1",
+      accountEmail: "u@e.com",
+      connectedAt: new Date().toISOString(),
+      refreshFailureCount: 0,
+    });
+
+    await regenerateOpenClawConfig();
+
+    expect(mockedWriteAuthProfiles).toHaveBeenCalledWith({
+      openaiCodex: {
+        access: "at",
+        refresh: "rt",
+        expires: new Date(expiresAt).getTime(),
+        accountId: "acc-1",
+      },
+    });
+  });
+
+  it("removes auth-profiles.json when subscription is cleared", async () => {
+    mockedGetOpenAiSubscription.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    expect(mockedWriteAuthProfiles).toHaveBeenCalledWith({
+      openaiCodex: null,
+    });
   });
 });
