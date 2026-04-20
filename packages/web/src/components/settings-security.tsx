@@ -248,7 +248,7 @@ export function SettingsSecurity() {
             Lock this domain
           </Button>
           <a
-            href={docsUrl("guides/vps-deployment", "set-up-https-with-caddy")}
+            href={docsUrl("guides/domain-lock")}
             target="_blank"
             rel="noopener noreferrer"
             className="text-sm text-primary underline"

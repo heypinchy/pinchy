@@ -239,9 +239,7 @@ See the [Hardening Guide](/guides/hardening/#reverse-proxy-with-tls) for nginx e
 
 ### Lock your domain
 
-Once HTTPS is working, lock Pinchy to your domain so it only responds to requests from your configured domain name. Open **Settings → Security** in the Pinchy web UI and enter your domain (e.g. `pinchy.example.com`).
-
-After saving, Pinchy will reject requests from any other origin with a 403 error. This prevents someone from accessing your Pinchy instance by its raw IP address or via a different hostname.
+Once HTTPS is working, lock Pinchy to your domain so it only responds to requests on that exact hostname. This enables secure cookies, HSTS, and origin checks as a package. See the [HTTPS & Domain Lock guide](/guides/domain-lock/#lock-the-domain) for the full walkthrough — in short: open **Settings → Security** and click **Lock to this domain**.
 
 ### Configure a firewall
 
