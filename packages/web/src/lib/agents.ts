@@ -2,7 +2,7 @@ export { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
 
 import { db } from "@/db";
 import { agents, type AgentPluginConfig } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { eq, isNull, or, and, like } from "drizzle-orm";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
 import {
@@ -21,6 +21,18 @@ export interface UpdateAgentInput {
   avatarSeed?: string | null;
   personalityPresetId?: string | null;
   visibility?: string;
+}
+
+export async function getAgentsUsingOpenAiProvider(): Promise<{ id: string; name: string }[]> {
+  return db
+    .select({ id: agents.id, name: agents.name })
+    .from(agents)
+    .where(
+      and(
+        isNull(agents.deletedAt),
+        or(like(agents.model, "openai/%"), like(agents.model, "openai-codex/%"))
+      )
+    );
 }
 
 export async function deleteAgent(id: string) {

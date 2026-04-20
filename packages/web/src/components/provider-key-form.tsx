@@ -205,6 +205,7 @@ export function ProviderKeyForm({
   const [showReplaceDialog, setShowReplaceDialog] = useState(false);
   const [subscriptionStatus, setSubscriptionStatus] = useState<SubscriptionStatus | null>(null);
   const [subscriptionLoading, setSubscriptionLoading] = useState(false);
+  const [affectedAgents, setAffectedAgents] = useState<{ id: string; name: string }[]>([]);
   const { triggerRestart } = useRestart();
 
   const form = useForm<ProviderKeyFormValues>({
@@ -374,6 +375,17 @@ export function ProviderKeyForm({
                         type="button"
                         variant="ghost"
                         className="text-destructive hover:text-destructive"
+                        onClick={async () => {
+                          try {
+                            const r = await fetch("/api/providers/openai/subscription/agents");
+                            if (r.ok) {
+                              const data = await r.json();
+                              setAffectedAgents(data as { id: string; name: string }[]);
+                            }
+                          } catch {
+                            // ignore — best-effort
+                          }
+                        }}
                       >
                         Disconnect
                       </Button>
@@ -385,6 +397,18 @@ export function ProviderKeyForm({
                           This will remove the subscription connection. You can reconnect anytime.
                         </AlertDialogDescription>
                       </AlertDialogHeader>
+                      {affectedAgents.length > 0 && (
+                        <div className="text-sm text-muted-foreground">
+                          <p className="mb-1">
+                            The following agents use OpenAI and will lose access:
+                          </p>
+                          <ul className="list-disc list-inside space-y-0.5">
+                            {affectedAgents.map((a) => (
+                              <li key={a.id}>{a.name}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
                       <AlertDialogFooter>
                         <AlertDialogCancel>Cancel</AlertDialogCancel>
                         <AlertDialogAction
@@ -393,6 +417,7 @@ export function ProviderKeyForm({
                             await fetch("/api/providers/openai/subscription", { method: "DELETE" });
                             setSubscriptionStatus({ connected: false });
                             setAuthMethod("api-key");
+                            setAffectedAgents([]);
                             toast.success("Subscription disconnected");
                             onSuccess();
                           }}

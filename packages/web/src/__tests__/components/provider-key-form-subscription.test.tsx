@@ -85,5 +85,63 @@ describe("ProviderKeyForm — OpenAI subscription", () => {
     expect(screen.queryByRole("button", { name: /Connect with ChatGPT/i })).not.toBeInTheDocument();
   });
 
+  it("shows affected agents list in disconnect dialog when agents use OpenAI", async () => {
+    // First call: subscription status; second call: affected agents
+    (globalThis.fetch as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            connected: true,
+            accountEmail: "u@e.com",
+            connectedAt: "2026-04-20T09:00:00Z",
+            refreshFailureCount: 0,
+          })
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify([
+            { id: "a1", name: "GPT Agent" },
+            { id: "a2", name: "Codex Agent" },
+          ])
+        )
+      );
+
+    render(<ProviderKeyForm onSuccess={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: /OpenAI/i }));
+    await waitFor(() => expect(screen.getByText(/Connected as/i)).toBeInTheDocument());
+
+    // Open the disconnect dialog
+    await userEvent.click(screen.getByRole("button", { name: /Disconnect/i }));
+
+    // Should show affected agents
+    await waitFor(() => expect(screen.getByText("GPT Agent")).toBeInTheDocument());
+    expect(screen.getByText("Codex Agent")).toBeInTheDocument();
+  });
+
+  it("does not show agent list in disconnect dialog when no agents use OpenAI", async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            connected: true,
+            accountEmail: "u@e.com",
+            connectedAt: "2026-04-20T09:00:00Z",
+            refreshFailureCount: 0,
+          })
+        )
+      )
+      .mockResolvedValueOnce(new Response(JSON.stringify([])));
+
+    render(<ProviderKeyForm onSuccess={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: /OpenAI/i }));
+    await waitFor(() => expect(screen.getByText(/Connected as/i)).toBeInTheDocument());
+
+    await userEvent.click(screen.getByRole("button", { name: /Disconnect/i }));
+
+    // Should not show any agent list items
+    await waitFor(() => expect(screen.queryByRole("listitem")).not.toBeInTheDocument());
+  });
+
   // TODO: covered by E2E — onConnected re-fetch can't be unit tested without full OAuth simulation
 });
