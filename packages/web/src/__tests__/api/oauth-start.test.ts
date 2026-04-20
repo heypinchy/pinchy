@@ -53,8 +53,17 @@ vi.mock("drizzle-orm", () => ({
 
 import { NextRequest } from "next/server";
 
-function makeRequest(url = "https://local.heypinchy.com:8443/api/integrations/oauth/start") {
-  return new NextRequest(url);
+function makeRequest(
+  url = "https://local.heypinchy.com:8443/api/integrations/oauth/start",
+  cookies?: Record<string, string>
+) {
+  const headers: Record<string, string> = {};
+  if (cookies) {
+    headers["Cookie"] = Object.entries(cookies)
+      .map(([k, v]) => `${k}=${v}`)
+      .join("; ");
+  }
+  return new NextRequest(url, { headers });
 }
 
 const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
@@ -88,10 +97,16 @@ describe("GET /api/integrations/oauth/start", () => {
     expect(res.status).toBe(400);
   });
 
-  it("deletes existing pending Google records before creating a new one", async () => {
+  it("deletes the user's previous pending record when oauth_pending_id cookie is present", async () => {
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    await GET(makeRequest(undefined, { oauth_pending_id: "previous-pending-id" }));
+    expect(mockDeleteWhere).toHaveBeenCalled();
+  });
+
+  it("does not delete any records when no previous oauth_pending_id cookie is present", async () => {
     const { GET } = await import("@/app/api/integrations/oauth/start/route");
     await GET(makeRequest());
-    expect(mockDeleteWhere).toHaveBeenCalled();
+    expect(mockDeleteWhere).not.toHaveBeenCalled();
   });
 
   it("creates a pending integration_connections record", async () => {

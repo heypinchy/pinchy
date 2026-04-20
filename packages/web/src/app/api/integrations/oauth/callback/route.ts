@@ -21,6 +21,7 @@ export async function GET(request: Request) {
   const forwardedHost = request.headers.get("x-forwarded-host") || request.headers.get("host");
   const origin =
     forwardedProto && forwardedHost ? `${forwardedProto}://${forwardedHost}` : requestUrl.origin;
+  const isSecure = (forwardedProto ?? requestUrl.protocol.replace(":", "")) === "https";
 
   // 1. Validate admin session
   const session = await getSession({ headers: await headers() });
@@ -73,6 +74,18 @@ export async function GET(request: Request) {
   });
 
   if (!tokenResponse.ok) {
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "config.changed",
+      resource: "integration:google",
+      detail: {
+        action: "integration_oauth_failed",
+        type: "google",
+        error: { message: "token_exchange_failed" },
+      },
+      outcome: "failure",
+    }).catch(console.error);
     return errorRedirect(origin, "token_exchange_failed");
   }
 
@@ -85,6 +98,18 @@ export async function GET(request: Request) {
   });
 
   if (!profileResponse.ok) {
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "config.changed",
+      resource: "integration:google",
+      detail: {
+        action: "integration_oauth_failed",
+        type: "google",
+        error: { message: "profile_fetch_failed" },
+      },
+      outcome: "failure",
+    }).catch(console.error);
     return errorRedirect(origin, "profile_fetch_failed");
   }
 
@@ -178,11 +203,15 @@ export async function GET(request: Request) {
   const response = NextResponse.redirect(successUrl.toString(), 302);
   response.cookies.set("oauth_state", "", {
     httpOnly: true,
+    secure: isSecure,
+    sameSite: "lax",
     path: "/",
     maxAge: 0,
   });
   response.cookies.set("oauth_pending_id", "", {
     httpOnly: true,
+    secure: isSecure,
+    sameSite: "lax",
     path: "/",
     maxAge: 0,
   });

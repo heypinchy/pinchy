@@ -260,6 +260,27 @@ describe("GET /api/integrations/oauth/callback", () => {
     expect(location.searchParams.get("error")).toBe("token_exchange_failed");
   });
 
+  it("logs audit failure when token exchange fails", async () => {
+    mockGetSession.mockResolvedValue(adminSession());
+    mockGetOAuthSettings.mockResolvedValue({
+      clientId: "test-client-id",
+      clientSecret: "test-client-secret",
+    });
+    mockFetch.mockResolvedValueOnce({
+      ok: false,
+      json: vi.fn().mockResolvedValue({ error: "invalid_grant" }),
+    });
+
+    await GET(makeRequest({ code: "bad-code", state: VALID_STATE }, `oauth_state=${VALID_STATE}`));
+
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorId: "admin-1",
+        outcome: "failure",
+      })
+    );
+  });
+
   it("redirects with error if profile fetch fails", async () => {
     mockGetSession.mockResolvedValue(adminSession());
     mockGetOAuthSettings.mockResolvedValue({
@@ -277,6 +298,28 @@ describe("GET /api/integrations/oauth/callback", () => {
     expect(response.status).toBe(302);
     const location = new URL(response.headers.get("Location")!);
     expect(location.searchParams.get("error")).toBe("profile_fetch_failed");
+  });
+
+  it("logs audit failure when profile fetch fails", async () => {
+    mockGetSession.mockResolvedValue(adminSession());
+    mockGetOAuthSettings.mockResolvedValue({
+      clientId: "test-client-id",
+      clientSecret: "test-client-secret",
+    });
+    mockFetch
+      .mockResolvedValueOnce(mockTokenExchange())
+      .mockResolvedValueOnce({ ok: false, json: vi.fn().mockResolvedValue({}) });
+
+    await GET(
+      makeRequest({ code: "valid-code", state: VALID_STATE }, `oauth_state=${VALID_STATE}`)
+    );
+
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorId: "admin-1",
+        outcome: "failure",
+      })
+    );
   });
 
   describe("successful flow — without oauth_pending_id cookie (INSERT fallback)", () => {
@@ -385,6 +428,22 @@ describe("GET /api/integrations/oauth/callback", () => {
       expect(setCookie).toBeTruthy();
       expect(setCookie).toMatch(/oauth_state=/);
       expect(setCookie).toMatch(/Max-Age=0/);
+    });
+
+    it("cookie cleanup sets Secure and SameSite=Lax on HTTPS", async () => {
+      const response = await GET(
+        new Request(
+          `https://pinchy.example.com/api/integrations/oauth/callback?code=auth-code-123&state=${VALID_STATE}`,
+          { headers: { Cookie: `oauth_state=${VALID_STATE}` } }
+        )
+      );
+
+      const setCookieHeaders = response.headers.getSetCookie
+        ? response.headers.getSetCookie()
+        : [response.headers.get("Set-Cookie") ?? ""];
+      const allCookies = setCookieHeaders.join("; ");
+      expect(allCookies).toMatch(/Secure/i);
+      expect(allCookies).toMatch(/SameSite=Lax/i);
     });
 
     it("redirects to settings with created connection id", async () => {

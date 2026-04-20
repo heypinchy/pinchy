@@ -28,12 +28,25 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: "Google OAuth not configured" }, { status: 400 });
   }
 
-  // Clean up any stale pending records before starting a new flow
-  await db
-    .delete(integrationConnections)
-    .where(
-      and(eq(integrationConnections.type, "google"), eq(integrationConnections.status, "pending"))
-    );
+  // Clean up the user's own previous pending record (if any) before starting a new flow.
+  // Only delete the specific record from a previous attempt — avoid touching other admins' pending records.
+  const cookieHeader = request.headers.get("Cookie") ?? "";
+  const existingPendingId = Object.fromEntries(
+    cookieHeader.split(";").map((c) => {
+      const [key, ...rest] = c.trim().split("=");
+      return [key, rest.join("=")];
+    })
+  )["oauth_pending_id"];
+  if (existingPendingId) {
+    await db
+      .delete(integrationConnections)
+      .where(
+        and(
+          eq(integrationConnections.id, existingPendingId),
+          eq(integrationConnections.status, "pending")
+        )
+      );
+  }
 
   // Create a pending record so the connection is visible during the OAuth flow
   const [pending] = await db
