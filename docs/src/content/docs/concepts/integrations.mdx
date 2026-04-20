@@ -5,16 +5,26 @@ description: How Pinchy connects to external systems and manages data access.
 
 ## What are integrations?
 
-Integrations connect Pinchy to external systems — ERPs, CRMs, search engines, databases — so agents can query real business data and access live information. Instead of giving agents direct access, Pinchy provides a controlled bridge: the admin sets up a connection once, then decides which agents can use it and what they're allowed to do.
+Integrations connect Pinchy to external systems — ERPs, email accounts, CRMs, search engines — so agents can work with real business data and access live information. Instead of giving agents direct access, Pinchy provides a controlled bridge: the admin sets up a connection once, then decides which agents can use it and what they're allowed to do.
 
-Currently supported: **Web Search (Brave)** and **Odoo**. More integrations are planned.
+## Supported integrations
+
+| Integration            | Connection method | Guide                                          |
+| ---------------------- | ----------------- | ---------------------------------------------- |
+| **Google (Gmail)**     | OAuth 2.0         | [Connect Email](/guides/connect-email/)        |
+| **Odoo**               | API key           | [Connect Odoo](/guides/connect-odoo/)          |
+| **Web Search (Brave)** | API key           | [Set Up Web Search](/guides/web-search-setup/) |
+
+:::note
+**Integrations vs. Channels.** This page is about _data integrations_ — how agents access external business systems. If you're looking for _communication channels_ (how users reach their agents from outside the Pinchy web UI), see [Set Up Telegram](/guides/telegram-setup/). LLM providers like OpenAI, Anthropic, Google, and Ollama (local and cloud) are configured separately via [Manage LLM Providers](/guides/llm-providers/).
+:::
 
 ## Connections vs. permissions
 
 These are two separate concepts:
 
-- **Connection** — a global setting an admin creates once. It stores the credentials and knows which data models are available. Think of it as "Pinchy can talk to this system."
-- **Permissions** — per-agent settings that control what each agent can do with that connection. Think of it as "this agent can search the web but not fetch arbitrary pages" or "this agent can read sales orders but not delete contacts."
+- **Connection** — a global setting an admin creates once. It stores the credentials and knows how to talk to the external system. Think of it as "Pinchy can talk to this system."
+- **Permissions** — per-agent settings that control what each agent can do with that connection. Think of it as "this agent can read emails but not send them" or "this agent can search the web but not fetch arbitrary pages."
 
 Creating a connection doesn't give any agent access. You must explicitly grant access in each agent's Permissions tab.
 
@@ -90,18 +100,9 @@ Re-syncing may remove models that are no longer accessible. Agents that were con
 
 All integration credentials are handled with the same rigor as provider API keys:
 
-- **Encryption** — credentials are encrypted with AES-256-GCM before being stored in the database. They never appear in logs or API responses.
-- **Audit trail** — every tool invocation is logged: which tool was called, with what parameters, and whether it succeeded or failed. The result data itself is **not** logged — only the operation metadata. All audit rows are HMAC-SHA256 signed.
-- **Least privilege** — the Odoo API key inherits the permissions of the Odoo user who created it. Create a dedicated Odoo user with minimal permissions for the best security posture.
+- **Encryption** — credentials are encrypted with AES-256-GCM before being stored in the database. They never appear in logs, config files, or API responses.
+- **Audit trail** — connection creation and permission changes are logged. All audit rows are HMAC-SHA256 signed.
+- **Least privilege** — each integration enforces its own permission model. Agents start with zero access and must be granted specific operations explicitly.
+- **Token isolation** — OAuth tokens and API keys stay in Pinchy's encrypted database. They are never written to the OpenClaw config file — plugins fetch them on-demand via an internal API.
 
-### Agent Templates
-
-Templates bundle permissions, tools, and instructions into a ready-to-use agent configuration. Instead of manually selecting access levels and models, you pick a template (e.g. "Sales Analyst" or "Fleet Manager") and Pinchy sets everything up for you.
-
-Pinchy ships with 16 Odoo templates spanning Sales, Inventory, Finance, HR, Marketing, and E-Commerce. Templates are only visible when at least one Odoo connection exists, and each template is validated against the connected instance — if required Odoo modules aren't installed, the template is dimmed and can't be selected until you install the missing modules and re-sync.
-
-For the full list of available templates and setup instructions, see [Connect Odoo — Agent Templates](/guides/connect-odoo/#agent-templates).
-
-:::note
-For a step-by-step setup guide, see [Connect Odoo](/guides/connect-odoo/).
-:::
+See [Agent Permissions](/concepts/agent-permissions/) for the full allow-list model and how integration tools fit in.

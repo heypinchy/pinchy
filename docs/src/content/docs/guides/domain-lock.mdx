@@ -1,41 +1,97 @@
 ---
-title: Lock Pinchy to a Domain (HTTPS)
-description: Restrict your Pinchy instance to a single HTTPS domain for production — secure cookies, HSTS, and origin checks are enabled automatically.
+title: HTTPS & Domain Lock
+description: Set up HTTPS with Caddy and lock your Pinchy instance to a single domain — secure cookies, HSTS, and origin checks are enabled automatically.
 ---
 
-import { Aside } from "@astrojs/starlight/components";
+import { Aside, Steps } from "@astrojs/starlight/components";
 
-Out of the box Pinchy accepts requests on any host that reaches it. That's fine for local development but unsafe in production: CSRF tokens and auth cookies need a known origin to be fully effective. The **Domain Lock** feature pins a Pinchy instance to exactly one HTTPS domain and turns on the rest of the production security profile as a package.
+Out of the box Pinchy accepts requests on any host over plain HTTP. That's fine for local development but unsafe in production. This guide walks you through two steps that secure your instance: **HTTPS** via a reverse proxy (so all traffic is encrypted) and **Domain Lock** (so Pinchy only responds to your chosen domain).
+
+## Set up HTTPS with Caddy
+
+HTTPS encrypts all traffic between browsers and your server. Pinchy doesn't handle TLS itself — a reverse proxy sits in front of it and takes care of certificates. We recommend [Caddy](https://caddyserver.com/) because it automatically gets and renews Let's Encrypt certificates with zero configuration.
+
+<Aside type="tip">
+  If you deployed via the [Hetzner](/guides/deploy-hetzner/) or
+  [DigitalOcean](/guides/deploy-digitalocean/) guides, Caddy is already
+  installed — skip to [editing the Caddyfile](#configure-your-domain).
+</Aside>
+
+### Install Caddy
+
+```bash
+apt-get install -y caddy
+```
+
+### Configure your domain
+
+Make sure your domain's DNS A record points to your server's IP address. Then edit the Caddy configuration:
+
+```bash
+nano /etc/caddy/Caddyfile
+```
+
+Replace the contents with (use your actual domain):
+
+```
+pinchy.example.com {
+    reverse_proxy localhost:7777
+}
+```
+
+Save the file (Ctrl+O, Enter, Ctrl+X in nano) and restart Caddy:
+
+```bash
+systemctl restart caddy
+```
+
+Caddy automatically provisions Let's Encrypt certificates for your domain. After a few seconds, visit `https://pinchy.example.com` — you should see Pinchy with a valid HTTPS certificate.
+
+<Aside type="caution">
+  Do **not** set `PINCHY_PORT=0.0.0.0:7777` in your `.env`. Docker manages its
+  own iptables rules and bypasses host firewall tools like UFW — a `0.0.0.0`
+  binding exposes Pinchy to the internet regardless of your firewall. Keep the
+  default `127.0.0.1:7777` binding so only Caddy can reach Pinchy.
+</Aside>
+
+<details>
+<summary>What's a reverse proxy and why do I need one?</summary>
+
+A reverse proxy sits between the internet and Pinchy. When someone visits your domain:
+
+1. Their browser connects to **Caddy** on port 443 (HTTPS)
+2. Caddy handles the SSL certificate and encryption
+3. Caddy forwards the request to **Pinchy** on port 7777 (internal only)
+4. Pinchy sends the response back through Caddy
+
+This way, Pinchy never needs to deal with SSL certificates directly.
+
+</details>
+
+See the [Hardening Guide](/guides/hardening/#reverse-proxy-with-tls) for nginx examples and advanced configuration.
 
 ## What domain lock does
 
-Once you lock a domain:
+Once HTTPS is working, the next step is locking Pinchy to that domain. Domain Lock pins your instance to exactly one HTTPS domain and turns on the rest of the production security profile as a package:
 
 - Only requests whose `Host` header matches the locked domain reach the app. Everything else gets a `403 Access Denied` page.
 - Cookies are issued with `Secure` and `SameSite=Lax`.
 - HSTS is advertised so modern browsers refuse to connect over plain HTTP.
 - Origin checks are enforced on state-changing requests.
-- A warning banner on every page goes away once HTTPS is actually in place.
 
 You don't have to configure any of these individually — locking the domain flips them all on.
 
-## Prerequisites
-
-<Aside type="caution">
-  You must be reaching Pinchy over HTTPS *before* you lock the domain. If you
-  try to lock from a plain HTTP session, Pinchy will refuse — otherwise you'd
-  immediately lock yourself out.
-</Aside>
-
-Set up HTTPS first. For most deployments that means a reverse proxy (Caddy, Nginx, Traefik) terminating TLS in front of Pinchy. See [Deploy on Hetzner Cloud](/guides/deploy-hetzner/) or [Deploy on DigitalOcean](/guides/deploy-digitalocean/) for end-to-end setups that include TLS.
-
 ## Lock the domain
+
+<Steps>
 
 1. Sign in as an admin on the HTTPS domain you want to lock to
 2. Go to **Settings → Security**
 3. The page shows your current host and whether the connection is HTTPS
 4. Click **Lock to this domain**
 5. Pinchy restarts briefly to apply the new security profile — the page will reload automatically
+
+</Steps>
 
 From this point on, only the locked domain can reach the app.
 

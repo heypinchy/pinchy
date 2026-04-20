@@ -201,8 +201,15 @@
     {
       "idx": 28,
       "version": "7",
+      "when": 1776147600000,
+      "tag": "0027_pending_integration_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
       "when": 1776278400000,
-      "tag": "0027_plugin_config_namespace",
+      "tag": "0028_plugin_config_namespace",
       "breakpoints": true
     }
   ]

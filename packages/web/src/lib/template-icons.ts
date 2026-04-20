@@ -22,6 +22,7 @@ import {
   Receipt,
   Car,
   Globe,
+  Mail,
   type LucideIcon,
 } from "lucide-react";
 
@@ -60,6 +61,7 @@ export const TEMPLATE_ICON_COMPONENTS = {
   Receipt,
   Car,
   Globe,
+  Mail,
 } as const satisfies Record<string, LucideIcon>;
 
 export type TemplateIconName = keyof typeof TEMPLATE_ICON_COMPONENTS;

@@ -22,11 +22,20 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import { MoreHorizontal, Plus, Plug, CheckCircle2, Loader2 } from "lucide-react";
+import {
+  MoreHorizontal,
+  Plus,
+  Plug,
+  CheckCircle2,
+  Loader2,
+  Clock,
+  AlertTriangle,
+} from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 // toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
-import { OdooIcon, BraveIcon } from "./integration-icons";
+import { EditOAuthDialog } from "./edit-oauth-dialog";
+import { BraveIcon, GoogleIcon, OdooIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
 
@@ -55,6 +64,8 @@ export function SettingsIntegrations() {
   const [deleteTarget, setDeleteTarget] = useState<IntegrationConnection | null>(null);
   const [renameTarget, setRenameTarget] = useState<IntegrationConnection | null>(null);
   const [renameName, setRenameName] = useState("");
+  const [showOAuthEdit, setShowOAuthEdit] = useState(false);
+  const [resumeGoogleSetup, setResumeGoogleSetup] = useState(false);
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -112,19 +123,54 @@ export function SettingsIntegrations() {
           ) : (
             <div className="space-y-3">
               {connections.map((conn) => {
+                if (conn.cannotDecrypt) {
+                  return (
+                    <div
+                      key={conn.id}
+                      className="rounded-lg border border-destructive/30 bg-destructive/5 p-4 space-y-2"
+                    >
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          <AlertTriangle className="h-5 w-5 shrink-0 text-destructive" />
+                          <span className="text-sm font-medium">{conn.name}</span>
+                        </div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="text-destructive border-destructive/50 hover:bg-destructive/10"
+                          onClick={() => setDeleteTarget(conn)}
+                        >
+                          Delete
+                        </Button>
+                      </div>
+                      <p className="text-sm text-destructive/90">
+                        This integration can&apos;t be read. It was encrypted with a different{" "}
+                        <code className="rounded bg-destructive/10 px-1 py-0.5 text-xs">
+                          ENCRYPTION_KEY
+                        </code>{" "}
+                        than the one this server is using now. Delete it and re-add the connection
+                        to restore access.
+                      </p>
+                    </div>
+                  );
+                }
                 const isOdoo = conn.type === "odoo";
                 const categories = isOdoo ? getAccessibleCategoryLabels(conn.data) : [];
                 const lastSyncAt =
                   isOdoo && conn.data && typeof conn.data.lastSyncAt === "string"
                     ? conn.data.lastSyncAt
                     : null;
-                const Icon = conn.type === "web-search" ? BraveIcon : OdooIcon;
-
                 return (
                   <div key={conn.id} className="rounded-lg border p-4 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        <Icon className="h-6 w-12 shrink-0" />
+                        {conn.type === "google" ? (
+                          <GoogleIcon className="h-6 w-6 shrink-0" />
+                        ) : conn.type === "web-search" ? (
+                          <BraveIcon className="h-6 w-6 shrink-0" />
+                        ) : (
+                          <OdooIcon className="h-6 w-12 shrink-0" />
+                        )}
                         <span className="text-sm font-medium">{conn.name}</span>
                       </div>
                       <DropdownMenu>
@@ -134,40 +180,74 @@ export function SettingsIntegrations() {
                           </Button>
                         </DropdownMenuTrigger>
                         <DropdownMenuContent align="end">
-                          <DropdownMenuItem
-                            onClick={() => {
-                              setRenameTarget(conn);
-                              setRenameName(conn.name);
-                            }}
-                          >
-                            Rename
-                          </DropdownMenuItem>
-                          <DropdownMenuItem
-                            onClick={() => testConnection(conn.id)}
-                            disabled={testing === conn.id}
-                          >
-                            {testing === conn.id ? "Testing..." : "Test Connection"}
-                          </DropdownMenuItem>
-                          {isOdoo && (
-                            <DropdownMenuItem
-                              onClick={() => syncSchema(conn.id)}
-                              disabled={syncing === conn.id}
-                            >
-                              {syncing === conn.id ? "Syncing..." : "Sync Schema"}
-                            </DropdownMenuItem>
+                          {conn.type === "google" && conn.status === "pending" ? (
+                            <>
+                              <DropdownMenuItem onClick={() => setResumeGoogleSetup(true)}>
+                                Continue setup
+                              </DropdownMenuItem>
+                              <DropdownMenuItem
+                                className="text-destructive"
+                                onClick={() => setDeleteTarget(conn)}
+                              >
+                                Remove
+                              </DropdownMenuItem>
+                            </>
+                          ) : (
+                            <>
+                              <DropdownMenuItem
+                                onClick={() => {
+                                  setRenameTarget(conn);
+                                  setRenameName(conn.name);
+                                }}
+                              >
+                                Rename
+                              </DropdownMenuItem>
+                              {conn.type === "google" ? (
+                                <DropdownMenuItem onClick={() => setShowOAuthEdit(true)}>
+                                  Edit OAuth Credentials
+                                </DropdownMenuItem>
+                              ) : (
+                                <>
+                                  <DropdownMenuItem
+                                    onClick={() => testConnection(conn.id)}
+                                    disabled={testing === conn.id}
+                                  >
+                                    {testing === conn.id ? "Testing..." : "Test Connection"}
+                                  </DropdownMenuItem>
+                                  {isOdoo && (
+                                    <DropdownMenuItem
+                                      onClick={() => syncSchema(conn.id)}
+                                      disabled={syncing === conn.id}
+                                    >
+                                      {syncing === conn.id ? "Syncing..." : "Sync Schema"}
+                                    </DropdownMenuItem>
+                                  )}
+                                </>
+                              )}
+                              <DropdownMenuItem
+                                className="text-destructive"
+                                onClick={() => setDeleteTarget(conn)}
+                              >
+                                Delete
+                              </DropdownMenuItem>
+                            </>
                           )}
-                          <DropdownMenuItem
-                            className="text-destructive"
-                            onClick={() => setDeleteTarget(conn)}
-                          >
-                            Delete
-                          </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
                     </div>
                     <TooltipProvider>
                       <div className="flex items-center gap-1.5 text-sm text-muted-foreground">
-                        {testing === conn.id ? (
+                        {conn.type === "google" && conn.status === "pending" ? (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-700 dark:border-amber-700 dark:bg-amber-950 dark:text-amber-300">
+                            <Clock className="h-3 w-3" />
+                            Setup in progress
+                          </span>
+                        ) : conn.type === "google" ? (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+                            <span>Connected</span>
+                          </>
+                        ) : testing === conn.id ? (
                           <>
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                             <span>Testing connection...</span>
@@ -233,6 +313,16 @@ export function SettingsIntegrations() {
         existingTypes={connections.map((c) => c.type)}
       />
 
+      <AddIntegrationDialog
+        open={resumeGoogleSetup}
+        onOpenChange={setResumeGoogleSetup}
+        onSuccess={() => {
+          fetchConnections();
+          setResumeGoogleSetup(false);
+        }}
+        initialType="google"
+      />
+
       <Dialog open={!!renameTarget} onOpenChange={(open) => !open && setRenameTarget(null)}>
         <DialogContent className="sm:max-w-sm">
           <DialogHeader>
@@ -276,6 +366,8 @@ export function SettingsIntegrations() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      <EditOAuthDialog open={showOAuthEdit} onOpenChange={setShowOAuthEdit} />
     </div>
   );
 }

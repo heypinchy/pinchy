@@ -204,6 +204,21 @@ Never commit `.env` files or secrets to version control. The `.gitignore` in the
 
 Pinchy's Docker Compose setup uses an internal network. PostgreSQL and OpenClaw are not exposed to the host network.
 
+### Localhost binding (default since v0.4.3)
+
+Pinchy's default port binding is `127.0.0.1:7777`, which means it only accepts connections from localhost. A reverse proxy (Caddy, nginx) running on the same host forwards traffic from ports 80/443 to Pinchy on 7777.
+
+:::caution
+Docker manages its own iptables rules and bypasses host firewall tools like UFW. A binding of `0.0.0.0:7777` (without the `127.0.0.1:` prefix) exposes the port to the internet regardless of UFW rules. Always use the localhost binding when a reverse proxy is in front of Pinchy.
+:::
+
+If you need to override the binding temporarily (e.g. for initial setup without a reverse proxy), set `PINCHY_PORT` in your `.env`:
+
+```bash
+# Expose on all interfaces — only for initial setup, remove before production
+PINCHY_PORT=0.0.0.0:7777
+```
+
 ### Verify network isolation
 
 ```bash
@@ -211,7 +226,7 @@ Pinchy's Docker Compose setup uses an internal network. PostgreSQL and OpenClaw 
 docker compose ps --format "table {{.Name}}\t{{.Ports}}"
 ```
 
-Only the `pinchy` service should show a published port (7777 by default). The `db` and `openclaw` services should show no published ports, or only `127.0.0.1:PORT` bindings.
+The `pinchy` service should show `127.0.0.1:7777->7777/tcp`. The `db` and `openclaw` services should show no published ports.
 
 ### Custom Docker network
 
@@ -240,9 +255,7 @@ services:
 
 The `internal: true` flag prevents containers on that network from reaching the internet. The `pinchy` service bridges both networks — it can reach the database and OpenClaw internally, while also serving HTTP traffic.
 
-:::note
-Binding to `127.0.0.1:7777` ensures the Pinchy Web service is only reachable from localhost. The reverse proxy running on the same host forwards traffic from port 443.
-:::
+See the [VPS Deployment guide](/guides/vps-deployment/#set-up-https-with-caddy) for the complete production setup walkthrough.
 
 ## AUDIT_HMAC_SECRET configuration
 

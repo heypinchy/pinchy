@@ -13,6 +13,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { Lock, ChevronDown, ExternalLink, CircleCheck, CircleX, Globe } from "lucide-react";
 import { useRestart } from "@/components/restart-provider";
 import { ReportIssueLink } from "@/components/report-issue-link";
+import { docsUrl } from "@/components/docs-link";
 import type { ProviderName } from "@/lib/providers";
 import {
   AlertDialog,
@@ -133,7 +134,7 @@ const PROVIDERS: Record<
     prefix: "",
     authType: "url" as const,
     guide: {
-      keyUrl: "https://docs.heypinchy.com/guides/ollama-setup/",
+      keyUrl: docsUrl("guides/ollama-setup"),
       steps: [
         {
           label: "Install Ollama from ollama.com",

@@ -2,7 +2,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "
 import { dirname } from "path";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
-import { eq } from "drizzle-orm";
+import { eq, ne } from "drizzle-orm";
 import { db } from "@/db";
 import {
   agents,
@@ -14,6 +14,7 @@ import { getSetting } from "@/lib/settings";
 import { decrypt } from "@/lib/encryption";
 import { computeDeniedGroups } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
+import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
@@ -280,13 +281,15 @@ export async function regenerateOpenClawConfig() {
   // Note: pinchy-files is only included when agents use it (via pluginConfigs loop above).
 
   // Collect Odoo integration configs for agents with integration permissions
+  // Only include active connections — pending ones have no usable credentials
   const allPermissions = await db
     .select()
     .from(agentConnectionPermissions)
     .innerJoin(
       integrationConnections,
       eq(agentConnectionPermissions.connectionId, integrationConnections.id)
-    );
+    )
+    .where(ne(integrationConnections.status, "pending"));
 
   const odooAgentConfigs: Record<string, Record<string, unknown>> = {};
   const permsByAgent = new Map<
@@ -325,7 +328,23 @@ export async function regenerateOpenClawConfig() {
     if (!firstConnection) continue;
 
     const conn = firstConnection.connection;
-    const decryptedCreds = JSON.parse(decrypt(conn.credentials));
+
+    // Robust against key rotation: if this connection's credentials can't be
+    // decrypted, skip it — the alternative is crashing the whole config
+    // regeneration, which leaves every agent broken. The admin can see and
+    // delete the orphaned row via Settings → Integrations.
+    let decryptedCreds: { url: string; db: string; uid: number; apiKey: string };
+    try {
+      decryptedCreds = JSON.parse(decrypt(conn.credentials));
+    } catch (err) {
+      console.warn(
+        `[openclaw-config] Skipping agent ${agentId}'s Odoo connection ${conn.id} ` +
+          `(${conn.name}) — credentials can't be decrypted. ENCRYPTION_KEY may have ` +
+          `changed. Admin must delete and re-add the integration.`,
+        err
+      );
+      continue;
+    }
     const permissions: Record<string, string[]> = {};
     for (const [model, ops] of firstConnection.ops) {
       permissions[model] = ops;
@@ -378,33 +397,105 @@ export async function regenerateOpenClawConfig() {
 
   if (webSearchConnections.length > 0) {
     const webConn = webSearchConnections[0];
-    const decryptedWebCreds = JSON.parse(decrypt(webConn.credentials));
-    const webAgentConfigs: Record<string, Record<string, unknown>> = {};
 
-    for (const agent of allAgents) {
-      const allowedTools = (agent.allowedTools as string[]) || [];
-      const hasWebSearch = allowedTools.includes("pinchy_web_search");
-      const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
+    // Robust against key rotation: skip the web-search plugin entirely if the
+    // stored credentials can't be decrypted. Without a valid API key the
+    // plugin would crash on every tool call — better to disable it and let
+    // the admin delete/re-add the connection via Settings → Integrations.
+    let decryptedWebCreds: { apiKey: string } | null = null;
+    try {
+      decryptedWebCreds = JSON.parse(decrypt(webConn.credentials));
+    } catch (err) {
+      console.warn(
+        `[openclaw-config] Skipping Web Search integration ${webConn.id} (${webConn.name}) — ` +
+          `credentials can't be decrypted. ENCRYPTION_KEY may have changed. Admin must ` +
+          `delete and re-add the integration.`,
+        err
+      );
+    }
 
-      if (hasWebSearch || hasWebFetch) {
-        const webConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-web"] ?? {};
-        const tools: string[] = [];
-        if (hasWebSearch) tools.push("pinchy_web_search");
-        if (hasWebFetch) tools.push("pinchy_web_fetch");
+    if (decryptedWebCreds) {
+      const webAgentConfigs: Record<string, Record<string, unknown>> = {};
 
-        webAgentConfigs[agent.id] = { tools, ...webConfig };
+      for (const agent of allAgents) {
+        const allowedTools = (agent.allowedTools as string[]) || [];
+        const hasWebSearch = allowedTools.includes("pinchy_web_search");
+        const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
+
+        if (hasWebSearch || hasWebFetch) {
+          const webConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-web"] ?? {};
+          const tools: string[] = [];
+          if (hasWebSearch) tools.push("pinchy_web_search");
+          if (hasWebFetch) tools.push("pinchy_web_fetch");
+
+          webAgentConfigs[agent.id] = { tools, ...webConfig };
+        }
+      }
+
+      if (Object.keys(webAgentConfigs).length > 0) {
+        entries["pinchy-web"] = {
+          enabled: true,
+          config: {
+            braveApiKey: decryptedWebCreds.apiKey,
+            agents: webAgentConfigs,
+          },
+        };
       }
     }
+  }
 
-    if (Object.keys(webAgentConfigs).length > 0) {
-      entries["pinchy-web"] = {
-        enabled: true,
-        config: {
-          braveApiKey: decryptedWebCreds.apiKey,
-          agents: webAgentConfigs,
-        },
-      };
+  // Collect email integration configs for agents with email provider permissions.
+  // Unlike Odoo, email config does NOT include decrypted credentials — only
+  // connectionId + permissions. The plugin fetches credentials at runtime via
+  // the internal API (API-callback pattern).
+  const EMAIL_PROVIDER_TYPES = new Set(["google", "microsoft", "imap"]);
+  const emailPermsByAgent = new Map<string, { connectionId: string; ops: Map<string, string[]> }>();
+
+  for (const row of allPermissions) {
+    const perm = row.agent_connection_permissions;
+    const conn = row.integration_connections;
+
+    if (!EMAIL_PROVIDER_TYPES.has(conn.type)) continue;
+
+    if (!emailPermsByAgent.has(perm.agentId)) {
+      emailPermsByAgent.set(perm.agentId, {
+        connectionId: perm.connectionId,
+        ops: new Map(),
+      });
     }
+    const agentPerms = emailPermsByAgent.get(perm.agentId)!;
+
+    if (!agentPerms.ops.has(perm.model)) {
+      agentPerms.ops.set(perm.model, []);
+    }
+    agentPerms.ops.get(perm.model)!.push(perm.operation);
+  }
+
+  const emailAgentConfigs: Record<
+    string,
+    { connectionId: string; permissions: Record<string, string[]> }
+  > = {};
+  for (const [agentId, data] of emailPermsByAgent) {
+    const permissions: Record<string, string[]> = {};
+    for (const [model, ops] of data.ops) {
+      permissions[model] = ops;
+    }
+    emailAgentConfigs[agentId] = {
+      connectionId: data.connectionId,
+      permissions,
+    };
+  }
+
+  if (Object.keys(emailAgentConfigs).length > 0) {
+    entries["pinchy-email"] = {
+      enabled: true,
+      config: {
+        apiBaseUrl:
+          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        gatewayToken,
+        agents: emailAgentConfigs,
+      },
+    };
   }
 
   // Build the allow list from: (1) plugins we have entries for, and (2)
@@ -434,27 +525,31 @@ export async function regenerateOpenClawConfig() {
       baseUrl: "https://ollama.com/v1",
       apiKey: ollamaCloudKey,
       api: "openai-completions",
-      models: [
-        {
-          id: "gemini-3-flash-preview:cloud",
-          name: "Gemini 3 Flash Preview",
-          contextWindow: 1048576,
-          maxTokens: 65536,
-        },
-        { id: "kimi-k2.5:cloud", name: "Kimi K2.5", contextWindow: 262144, maxTokens: 8192 },
-        {
-          id: "mistral-large-3:675b-cloud",
-          name: "Mistral Large 3 675B",
-          contextWindow: 131072,
-          maxTokens: 8192,
-        },
-        {
-          id: "qwen3.5:397b-cloud",
-          name: "Qwen 3.5 397B",
-          contextWindow: 262144,
-          maxTokens: 8192,
-        },
-      ],
+      // Derived from TOOL_CAPABLE_OLLAMA_CLOUD_MODELS — see that file for
+      // the source of each capability (ollama.com/library/<name>).
+      //
+      // `compat.supportsUsageInStreaming: true` is REQUIRED for usage
+      // tracking. OpenClaw's default compat detection treats any configured
+      // non-OpenAI endpoint as not supporting usage-in-streaming, so it
+      // never sends `stream_options: { include_usage: true }`. Ollama Cloud
+      // only emits the final usage chunk when that flag is present — without
+      // this opt-in, every session has zero tracked tokens and Usage & Costs
+      // stays empty. Verified live against https://ollama.com/v1/chat/completions.
+      //
+      // `reasoning`, `input`, and `cost` are required fields of OpenClaw's
+      // ModelDefinitionConfig. Cost is zero because Ollama Cloud bills by
+      // subscription plan, not per token — a fabricated rate would mislead
+      // users reading the Usage dashboard.
+      models: TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.map((m) => ({
+        id: m.id,
+        name: m.id,
+        contextWindow: m.contextWindow,
+        maxTokens: m.maxTokens,
+        reasoning: m.reasoning,
+        input: m.vision ? ["text", "image"] : ["text"],
+        cost: { ...OLLAMA_CLOUD_COST },
+        compat: { supportsUsageInStreaming: true },
+      })),
     };
   }
 

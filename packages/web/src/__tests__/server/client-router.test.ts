@@ -238,7 +238,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -509,6 +508,46 @@ describe("ClientRouter", () => {
     }
   });
 
+  it("should not send heartbeats before the first chunk arrives so the client stuck-timer fires when OpenClaw hangs", async () => {
+    vi.useFakeTimers();
+    try {
+      const clientWs = createMockClientWs();
+      let resolveStream: () => void = () => {};
+
+      async function* hangingStream() {
+        // Never yields a chunk — simulates OpenClaw being unresponsive after a restart
+        await new Promise<void>((r) => (resolveStream = r));
+      }
+      mockChat.mockReturnValue(hangingStream());
+
+      const handlePromise = router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      // Let synchronous code (including initial thinking) run
+      await vi.advanceTimersByTimeAsync(0);
+
+      const afterInitial = clientWs.sent.map((s) => JSON.parse(s));
+      expect(afterInitial.filter((m: any) => m.type === "thinking")).toHaveLength(1);
+
+      // Advance well past one heartbeat interval — no additional thinking should
+      // fire because no chunk has arrived from OpenClaw yet. Without this fix the
+      // heartbeat would reset the client stuck-timer indefinitely.
+      await vi.advanceTimersByTimeAsync(20_000);
+
+      const afterInterval = clientWs.sent.map((s) => JSON.parse(s));
+      expect(afterInterval.filter((m: any) => m.type === "thinking")).toHaveLength(1);
+
+      // Clean up
+      resolveStream();
+      await handlePromise;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("should send a thinking message before consuming the stream so the UI can show a spinner", async () => {
     const clientWs = createMockClientWs();
     let firstSent: unknown = null;
@@ -672,19 +711,25 @@ describe("ClientRouter", () => {
   });
 
   it("should return empty history when session has no messages", async () => {
-    const clientWs = createMockClientWs();
-    mockSessionsHistory.mockResolvedValue({ messages: [] });
+    vi.useFakeTimers();
+    try {
+      const clientWs = createMockClientWs();
+      mockSessionsHistory.mockResolvedValue({ messages: [] });
 
-    await router.handleMessage(clientWs as any, {
-      type: "history",
-      content: "",
-      agentId: "agent-1",
-    });
+      const messagePromise = router.handleMessage(clientWs as any, {
+        type: "history",
+        agentId: "agent-1",
+      });
+      await vi.advanceTimersByTimeAsync(2100);
+      await messagePromise;
 
-    const sent = clientWs.sent.map((s) => JSON.parse(s));
-    expect(sent).toHaveLength(1);
-    expect(sent[0].type).toBe("history");
-    expect(sent[0].messages).toEqual([]);
+      const sent = clientWs.sent.map((s) => JSON.parse(s));
+      expect(sent).toHaveLength(1);
+      expect(sent[0].type).toBe("history");
+      expect(sent[0].messages).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("should still handle regular message type after adding history support", async () => {
@@ -795,7 +840,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -818,7 +862,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -840,7 +883,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -860,7 +902,6 @@ describe("ClientRouter", () => {
 
     await router.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -887,7 +928,6 @@ describe("ClientRouter", () => {
 
     await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -914,7 +954,6 @@ describe("ClientRouter", () => {
 
     await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -944,7 +983,6 @@ describe("ClientRouter", () => {
 
     await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1048,23 +1086,29 @@ describe("ClientRouter", () => {
   });
 
   it("should fall back to empty history when history fetch fails and no greeting", async () => {
-    const clientWs = createMockClientWs();
-    mockFindFirst.mockResolvedValue({
-      ...defaultAgent,
-      greetingMessage: null,
-    });
-    mockSessionsHistory.mockRejectedValue(new Error("Gateway unavailable"));
+    vi.useFakeTimers();
+    try {
+      const clientWs = createMockClientWs();
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        greetingMessage: null,
+      });
+      mockSessionsHistory.mockRejectedValue(new Error("Gateway unavailable"));
 
-    await router.handleMessage(clientWs as any, {
-      type: "history",
-      content: "",
-      agentId: "agent-1",
-    });
+      const messagePromise = router.handleMessage(clientWs as any, {
+        type: "history",
+        agentId: "agent-1",
+      });
+      await vi.advanceTimersByTimeAsync(2100);
+      await messagePromise;
 
-    const sent = clientWs.sent.map((s) => JSON.parse(s));
-    expect(sent).toHaveLength(1);
-    expect(sent[0].type).toBe("history");
-    expect(sent[0].messages).toEqual([]);
+      const sent = clientWs.sent.map((s) => JSON.parse(s));
+      expect(sent).toHaveLength(1);
+      expect(sent[0].type).toBe("history");
+      expect(sent[0].messages).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("should sanitize internal error messages before sending to client", async () => {
@@ -1087,7 +1131,9 @@ describe("ClientRouter", () => {
     expect(errorMsg.message).toBe("Something went wrong. Please try again.");
   });
 
-  it("should fall back to greeting when history fetch throws an error", async () => {
+  it("should fall back to greeting when history fetch throws for unknown session", async () => {
+    const freshCache = new SessionCache();
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
     const clientWs = createMockClientWs();
     mockFindFirst.mockResolvedValue({
       ...defaultAgent,
@@ -1095,12 +1141,233 @@ describe("ClientRouter", () => {
     });
     mockSessionsHistory.mockRejectedValue(new Error("Internal: /root/.openclaw/config error"));
 
-    await router.handleMessage(clientWs as any, {
+    await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].type).toBe("history");
+    expect(sent[0].messages).toEqual([{ role: "assistant", content: "Hello!" }]);
+  });
+
+  it("should retry history fetch when session is known to cache but first attempt fails", async () => {
+    vi.useFakeTimers();
+    try {
+      // Session was previously active (known to cache)
+      sessionCache.add("agent:agent-1:direct:user-1");
+
+      const clientWs = createMockClientWs();
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        greetingMessage: "Hello!",
+      });
+
+      // First call fails (OpenClaw still restarting), second succeeds
+      mockSessionsHistory
+        .mockRejectedValueOnce(new Error("connection reset"))
+        .mockResolvedValueOnce({
+          messages: [
+            { role: "user", content: "Hi there" },
+            { role: "assistant", content: "Hello! How can I help?" },
+          ],
+        });
+
+      const messagePromise = router.handleMessage(clientWs as any, {
+        type: "history",
+        agentId: "agent-1",
+      });
+      await vi.advanceTimersByTimeAsync(2100);
+      await messagePromise;
+
+      expect(mockSessionsHistory).toHaveBeenCalledTimes(2);
+      const sent = clientWs.sent.map((s) => JSON.parse(s));
+      expect(sent[0].type).toBe("history");
+      expect(sent[0].messages).toHaveLength(2);
+      expect(sent[0].messages[0].content).toBe("Hi there");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should retry when session is known to cache but history returns empty", async () => {
+    vi.useFakeTimers();
+    try {
+      sessionCache.add("agent:agent-1:direct:user-1");
+
+      const clientWs = createMockClientWs();
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        greetingMessage: "Hello!",
+      });
+
+      // First call returns empty (OpenClaw hasn't indexed yet), second returns history
+      mockSessionsHistory.mockResolvedValueOnce({ messages: [] }).mockResolvedValueOnce({
+        messages: [
+          { role: "user", content: "Hi" },
+          { role: "assistant", content: "Hey!" },
+        ],
+      });
+
+      const messagePromise = router.handleMessage(clientWs as any, {
+        type: "history",
+        agentId: "agent-1",
+      });
+      await vi.advanceTimersByTimeAsync(2100);
+      await messagePromise;
+
+      expect(mockSessionsHistory).toHaveBeenCalledTimes(2);
+      const sent = clientWs.sent.map((s) => JSON.parse(s));
+      expect(sent[0].type).toBe("history");
+      expect(sent[0].messages).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should send empty history (not greeting) when session known but retry also fails", async () => {
+    vi.useFakeTimers();
+    try {
+      sessionCache.add("agent:agent-1:direct:user-1");
+
+      const clientWs = createMockClientWs();
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        greetingMessage: "Hello!",
+      });
+
+      // Both attempts fail
+      mockSessionsHistory
+        .mockRejectedValueOnce(new Error("fail 1"))
+        .mockRejectedValueOnce(new Error("fail 2"));
+
+      const messagePromise = router.handleMessage(clientWs as any, {
+        type: "history",
+        agentId: "agent-1",
+      });
+      await vi.advanceTimersByTimeAsync(2100);
+      await messagePromise;
+
+      expect(mockSessionsHistory).toHaveBeenCalledTimes(2);
+      const sent = clientWs.sent.map((s) => JSON.parse(s));
+      expect(sent[0].type).toBe("history");
+      // Session is known — signal client to retry rather than overwriting real history.
+      expect(sent[0].messages).toEqual([]);
+      expect(sent[0].sessionKnown).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should send empty history (not greeting) when session known but history remains empty after retry", async () => {
+    // This is the core settings-save bug: after permissions change, OpenClaw restarts.
+    // The browser WS reconnects but history is temporarily unavailable during the restart.
+    // The server must NOT send a greeting — the client will preserve its existing messages.
+    vi.useFakeTimers();
+    try {
+      sessionCache.add("agent:agent-1:direct:user-1");
+
+      const clientWs = createMockClientWs();
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        greetingMessage: "Hello! I'm Smithers.",
+      });
+
+      // Both history fetches return empty (OpenClaw still restarting)
+      mockSessionsHistory.mockResolvedValue({ messages: [] });
+
+      const messagePromise = router.handleMessage(clientWs as any, {
+        type: "history",
+        agentId: "agent-1",
+      });
+      await vi.advanceTimersByTimeAsync(2100);
+      await messagePromise;
+
+      expect(mockSessionsHistory).toHaveBeenCalledTimes(2);
+      const sent = clientWs.sent.map((s) => JSON.parse(s));
+      expect(sent).toHaveLength(1);
+      expect(sent[0].type).toBe("history");
+      // Must send empty array — NOT the greeting. Signal client to retry.
+      expect(sent[0].messages).toEqual([]);
+      expect(sent[0].sessionKnown).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should retry history via sessions.list fallback when cache is empty but session exists in OpenClaw", async () => {
+    // Scenario: Pinchy was restarted (empty cache). seedSessionCache() raced with
+    // this request and lost — the session exists in OpenClaw but the cache is empty.
+    // sessions.list() is the live fallback check.
+    vi.useFakeTimers();
+    try {
+      const freshCache = new SessionCache();
+      const freshRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        freshCache
+      );
+      const clientWs = createMockClientWs();
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        greetingMessage: "Hello!",
+      });
+
+      // First sessions.history() returns empty (OpenClaw still re-indexing after restart)
+      // Second call (after retry delay) returns the actual history
+      mockSessionsHistory.mockResolvedValueOnce({ messages: [] }).mockResolvedValueOnce({
+        messages: [
+          { role: "user", content: "Hi" },
+          { role: "assistant", content: "Hey there!" },
+        ],
+      });
+
+      // sessions.list() confirms the session exists
+      mockSessionsList.mockResolvedValue({
+        sessions: [{ key: "agent:agent-1:direct:user-1" }],
+      });
+
+      const messagePromise = freshRouter.handleMessage(clientWs as any, {
+        type: "history",
+        agentId: "agent-1",
+      });
+      await vi.advanceTimersByTimeAsync(2100);
+      await messagePromise;
+
+      expect(mockSessionsList).toHaveBeenCalledOnce();
+      expect(mockSessionsHistory).toHaveBeenCalledTimes(2);
+      const sent = clientWs.sent.map((s) => JSON.parse(s));
+      expect(sent[0].type).toBe("history");
+      expect(sent[0].messages).toHaveLength(2);
+      expect(sent[0].messages[0].content).toBe("Hi");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("should send greeting immediately when cache is empty and session not in sessions.list", async () => {
+    // No session in cache and sessions.list confirms it doesn't exist — new session,
+    // show greeting without retry delay.
+    const freshCache = new SessionCache();
+    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
+    const clientWs = createMockClientWs();
+    mockFindFirst.mockResolvedValue({
+      ...defaultAgent,
+      greetingMessage: "Hello!",
+    });
+
+    // No history and session does not exist
+    mockSessionsHistory.mockResolvedValue({ messages: [] });
+    mockSessionsList.mockResolvedValue({ sessions: [] });
+
+    await freshRouter.handleMessage(clientWs as any, {
+      type: "history",
+      agentId: "agent-1",
+    });
+
+    expect(mockSessionsList).toHaveBeenCalledOnce();
+    expect(mockSessionsHistory).toHaveBeenCalledTimes(1); // no retry
     const sent = clientWs.sent.map((s) => JSON.parse(s));
     expect(sent[0].type).toBe("history");
     expect(sent[0].messages).toEqual([{ role: "assistant", content: "Hello!" }]);
@@ -1127,7 +1394,6 @@ describe("ClientRouter", () => {
     const clientWs = createMockClientWs();
     await disconnectedRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1136,7 +1402,9 @@ describe("ClientRouter", () => {
     expect(sent[0].type).toBe("history");
   });
 
-  it("should return greeting after timeout when OpenClaw does not reconnect for history", async () => {
+  it("should send empty history (not greeting) after timeout when session is known but OpenClaw unavailable", async () => {
+    // Session is in cache (from beforeEach), so even if OpenClaw times out we must
+    // not replace real history with a greeting on reconnect.
     vi.useFakeTimers();
 
     const disconnectedClient = createMockOpenClawClient(false);
@@ -1154,18 +1422,19 @@ describe("ClientRouter", () => {
     const clientWs = createMockClientWs();
     const messagePromise = disconnectedRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
-    // Advance past the connection timeout
-    await vi.advanceTimersByTimeAsync(11_000);
+    // Advance past the connection timeout (10s) + retry delay (2s)
+    await vi.advanceTimersByTimeAsync(13_000);
     await messagePromise;
 
     const sent = clientWs.sent.map((s) => JSON.parse(s));
     expect(sent).toHaveLength(1);
     expect(sent[0].type).toBe("history");
-    expect(sent[0].messages).toEqual([{ role: "assistant", content: "Hello!" }]);
+    // Session known — signal client to retry rather than overwriting real history.
+    expect(sent[0].messages).toEqual([]);
+    expect(sent[0].sessionKnown).toBe(true);
 
     vi.useRealTimers();
   });
@@ -1299,7 +1568,6 @@ describe("ClientRouter", () => {
     const clientWs = createMockClientWs();
     await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1348,7 +1616,6 @@ describe("ClientRouter", () => {
     const clientWs = createMockClientWs();
     await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1358,16 +1625,19 @@ describe("ClientRouter", () => {
     expect(sent[0].messages).toHaveLength(2);
   });
 
-  it("should send error to client when stream yields an error chunk after all retries", async () => {
+  it("should forward provider error text from error chunk with agent name", async () => {
     const clientWs = createMockClientWs();
     const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
 
-    mockChat.mockImplementation(() => {
-      return (async function* () {
-        yield { type: "error" as const, text: "INVALID_REQUEST: model overloaded" };
-      })();
-    });
+    async function* fakeStream() {
+      yield {
+        type: "error" as const,
+        text: "Your credit balance is too low to access the API",
+      };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
 
     await router.handleMessage(clientWs as any, {
       type: "message",
@@ -1378,19 +1648,98 @@ describe("ClientRouter", () => {
     const messages = clientWs.sent.map((s) => JSON.parse(s));
     const errorMsg = messages.find((m: any) => m.type === "error");
     expect(errorMsg).toBeDefined();
-    expect(errorMsg.message).toContain("Something went wrong");
-    expect(errorMsg.message).not.toContain("INVALID_REQUEST");
-    expect(errorMsg.message).not.toContain("overloaded");
+    expect(errorMsg.agentName).toBe("Smithers");
+    expect(errorMsg.providerError).toContain("Your credit balance is too low");
+    expect(errorMsg.hint).toBe("Please contact your administrator.");
     expect(errorMsg.messageId).toBeTruthy();
 
-    // Should log the actual error server-side
     expect(consoleSpy).toHaveBeenCalledWith(
       expect.stringContaining("OpenClaw error chunk"),
-      expect.stringContaining("INVALID_REQUEST")
+      expect.stringContaining("credit balance")
     );
 
     consoleSpy.mockRestore();
     logSpy.mockRestore();
+  });
+
+  it("should return admin hint for provider errors when user is admin", async () => {
+    const adminRouter = new ClientRouter(
+      mockOpenClawClient as any,
+      "admin-user",
+      "admin",
+      sessionCache
+    );
+    const clientWs = createMockClientWs();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    async function* fakeStream() {
+      yield { type: "error" as const, text: "Invalid API key provided" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await adminRouter.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const errorMsg = messages.find((m: any) => m.type === "error");
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.hint).toBe("Go to Settings > Providers to check your API configuration.");
+
+    consoleSpy.mockRestore();
+  });
+
+  it("should return try-again hint for transient errors", async () => {
+    const clientWs = createMockClientWs();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    async function* fakeStream() {
+      yield { type: "error" as const, text: "Rate limit exceeded, please try again later" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const errorMsg = messages.find((m: any) => m.type === "error");
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.hint).toBe("Try again in a moment.");
+
+    consoleSpy.mockRestore();
+  });
+
+  it("should return null hint for unrecognized errors", async () => {
+    const clientWs = createMockClientWs();
+    const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    async function* fakeStream() {
+      yield { type: "error" as const, text: "Something completely unexpected happened" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Hi",
+      agentId: "agent-1",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const errorMsg = messages.find((m: any) => m.type === "error");
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.agentName).toBe("Smithers");
+    expect(errorMsg.providerError).toContain("Something completely unexpected happened");
+    expect(errorMsg.hint).toBeNull();
+
+    consoleSpy.mockRestore();
   });
 
   it("should return empty history when history fetch fails and no greeting", async () => {
@@ -1406,7 +1755,6 @@ describe("ClientRouter", () => {
     const clientWs = createMockClientWs();
     await freshRouter.handleMessage(clientWs as any, {
       type: "history",
-      content: "",
       agentId: "agent-1",
     });
 
@@ -1665,7 +2013,6 @@ describe("ClientRouter", () => {
       const clientWs = createMockClientWs();
       await freshRouter.handleMessage(clientWs as any, {
         type: "history",
-        content: "",
         agentId: "agent-1",
       });
 
@@ -1721,7 +2068,6 @@ describe("ClientRouter", () => {
       const clientWs = createMockClientWs();
       await freshRouter.handleMessage(clientWs as any, {
         type: "history",
-        content: "",
         agentId: "agent-1",
       });
 
@@ -1752,7 +2098,8 @@ describe("ClientRouter", () => {
       const messages = clientWs.sent.map((s) => JSON.parse(s));
       const errorMsg = messages.find((m: any) => m.type === "error");
       expect(errorMsg).toBeDefined();
-      expect(errorMsg.message).toContain("Something went wrong");
+      expect(errorMsg.agentName).toBe("Smithers");
+      expect(errorMsg.providerError).toBe("JSON parse error");
       // No retry — single attempt only
       expect(mockChat).toHaveBeenCalledTimes(1);
 

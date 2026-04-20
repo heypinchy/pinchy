@@ -46,6 +46,14 @@ interface Directory {
   name: string;
 }
 
+interface Connection {
+  id: string;
+  name: string;
+  type: string;
+  status?: string;
+  data?: unknown;
+}
+
 interface Provider {
   id: string;
   name: string;
@@ -67,10 +75,10 @@ interface PersonalityValues {
 interface PermissionsValues {
   allowedTools: string[];
   allowedPaths: string[];
-  integrations: {
+  integrations: Array<{
     connectionId: string;
     permissions: Array<{ model: string; operation: string }>;
-  } | null;
+  }>;
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
 }
 
@@ -106,6 +114,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
   const [soulContent, setSoulContent] = useState("");
   const [agentsContent, setAgentsContent] = useState("");
   const [directories, setDirectories] = useState<Directory[]>([]);
+  const [connections, setConnections] = useState<Connection[]>([]);
   const [loading, setLoading] = useState(true);
 
   // Accumulated draft values from each tab
@@ -122,12 +131,13 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
 
   const fetchData = useCallback(async () => {
     try {
-      const [agentRes, modelsRes, soulRes, agentsRes, dirRes] = await Promise.all([
+      const [agentRes, modelsRes, soulRes, agentsRes, dirRes, connRes] = await Promise.all([
         fetch(`/api/agents/${agentId}`),
         fetch("/api/providers/models"),
         fetch(`/api/agents/${agentId}/files/SOUL.md`),
         fetch(`/api/agents/${agentId}/files/AGENTS.md`),
         fetch("/api/data-directories"),
+        fetch("/api/integrations"),
       ]);
 
       if (agentRes.ok) setAgent(await agentRes.json());
@@ -146,6 +156,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
       if (dirRes.ok) {
         const data = await dirRes.json();
         setDirectories(data.directories || []);
+      }
+      if (connRes.ok) {
+        const data = await connRes.json();
+        setConnections(Array.isArray(data) ? data : []);
       }
     } finally {
       setLoading(false);
@@ -234,7 +248,10 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
     setShowConfirmDialog(false);
 
     try {
-      const savePromises: Promise<Response>[] = [];
+      // Integration saves must complete before the agent PATCH: the PATCH triggers
+      // regenerateOpenClawConfig() which reads integration permissions from the DB.
+      // Saving integrations first ensures the config reflects the latest state.
+      const integrationPromises: Promise<Response>[] = [];
 
       // Build unified agent PATCH body
       const agentPatch: Record<string, unknown> = {};
@@ -255,18 +272,20 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
           "pinchy-web": permissionsDraft.current.webSearchConfig,
         };
 
-        // Save or clear integration permissions
-        if (permissionsDraft.current.integrations) {
-          savePromises.push(
-            fetch(`/api/agents/${agentId}/integrations`, {
-              method: "PUT",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(permissionsDraft.current.integrations),
-            })
-          );
+        // Save each active integration separately, or clear all if none
+        if (permissionsDraft.current.integrations.length > 0) {
+          for (const integration of permissionsDraft.current.integrations) {
+            integrationPromises.push(
+              fetch(`/api/agents/${agentId}/integrations`, {
+                method: "PUT",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(integration),
+              })
+            );
+          }
         } else {
-          // Clear integration permissions when connection is removed
-          savePromises.push(
+          // Clear all integration permissions when no connections are configured
+          integrationPromises.push(
             fetch(`/api/agents/${agentId}/integrations`, {
               method: "DELETE",
             })
@@ -278,8 +297,14 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
         agentPatch.groupIds = accessDraft.current.groupIds;
       }
 
+      // Phase 1: Save integration permissions to DB (no config regen yet)
+      const integrationResults = await Promise.all(integrationPromises);
+
+      // Phase 2: Agent PATCH + file saves (PATCH triggers single config regen)
+      const otherPromises: Promise<Response>[] = [];
+
       if (Object.keys(agentPatch).length > 0) {
-        savePromises.push(
+        otherPromises.push(
           fetch(`/api/agents/${agentId}`, {
             method: "PATCH",
             headers: { "Content-Type": "application/json" },
@@ -289,7 +314,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
       }
 
       if (dirtyTabs.has("personality") && personalityDraft.current) {
-        savePromises.push(
+        otherPromises.push(
           fetch(`/api/agents/${agentId}/files/SOUL.md`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -299,7 +324,7 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
       }
 
       if (dirtyTabs.has("instructions") && instructionsDraft.current !== null) {
-        savePromises.push(
+        otherPromises.push(
           fetch(`/api/agents/${agentId}/files/AGENTS.md`, {
             method: "PUT",
             headers: { "Content-Type": "application/json" },
@@ -308,7 +333,8 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
         );
       }
 
-      const results = await Promise.all(savePromises);
+      const otherResults = await Promise.all(otherPromises);
+      const results = [...integrationResults, ...otherResults];
 
       if (results.some((r) => !r.ok)) {
         toast.error("Failed to save some settings");
@@ -434,6 +460,8 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
               <AgentSettingsPermissions
                 agent={agent}
                 directories={directories}
+                connections={connections}
+                isAdmin={isAdmin}
                 onChange={handlePermissionsChange}
               />
             </TabsContent>

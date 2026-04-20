@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
+import { docsUrl } from "@/components/docs-link";
 
 const mockSearchParams = { current: new URLSearchParams() };
 
@@ -151,7 +152,7 @@ describe("NewAgentForm", () => {
       expect(screen.getByText(/mount.*folders/i)).toBeInTheDocument();
       expect(screen.getByRole("link", { name: /how to mount data directories/i })).toHaveAttribute(
         "href",
-        "https://docs.heypinchy.com/guides/mount-data-directories/"
+        docsUrl("guides/mount-data-directories")
       );
     });
   });
@@ -255,7 +256,7 @@ describe("NewAgentForm", () => {
 
     expect(
       screen.getByRole("link", { name: /learn more about knowledge base agents/i })
-    ).toHaveAttribute("href", "https://docs.heypinchy.com/guides/create-knowledge-base-agent/");
+    ).toHaveAttribute("href", docsUrl("guides/create-knowledge-base-agent"));
   });
 
   it("should NOT show directory picker for custom template", async () => {

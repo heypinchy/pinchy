@@ -3,8 +3,24 @@ export interface IntegrationConnection {
   type: string;
   name: string;
   description: string;
-  credentials: Record<string, string | boolean>;
-  data: Record<string, unknown> | null;
+  credentials:
+    | {
+        url: string;
+        db: string;
+        login: string;
+      }
+    | string
+    | null;
+  data: {
+    lastSyncAt?: string;
+    models?: Array<{ model: string; name: string }>;
+    categories?: unknown[];
+    emailAddress?: string;
+    provider?: string;
+    connectedAt?: string;
+  } | null;
+  status: "active" | "pending";
   createdAt: string;
   updatedAt: string;
+  cannotDecrypt: boolean;
 }

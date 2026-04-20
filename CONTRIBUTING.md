@@ -54,9 +54,9 @@ Open [http://localhost:7777](http://localhost:7777). Code changes in `packages/w
 
 To test HTTPS-related features locally:
 
-1. Add `127.0.0.1 pinchy.local` to your `/etc/hosts` file
+1. Add `127.0.0.1 local.heypinchy.com` to your `/etc/hosts` file
 2. Start the stack as usual — Caddy is included automatically
-3. Access Pinchy at `https://pinchy.local:8443`
+3. Access Pinchy at `https://local.heypinchy.com:8443`
 4. Your browser will warn about the self-signed certificate — accept it once
 
 Regular development at `http://localhost:7777` continues to work unchanged.
@@ -140,6 +140,12 @@ Before running the release script, complete these manual steps:
 - [ ] Dependencies up to date (`pnpm outdated` — no critical/security updates pending)
 - [ ] If upgrading OpenClaw: version updated in `Dockerfile.openclaw`
 
+**Model resolver**
+- [ ] Every non-`custom` template in `AGENT_TEMPLATES` has a `modelHint` with a valid `tier` — run `pnpm test src/lib/__tests__/agent-templates.test.ts` and confirm green
+- [ ] Model IDs in `src/lib/model-resolver/providers/` still match live provider offerings — spot-check Anthropic/OpenAI/Google changelogs for deprecated model IDs
+- [ ] If new Ollama families gained popularity since last release, update `src/lib/model-resolver/families.ts` and `ollama-cloud.ts`
+- [ ] If a new LLM provider was added, a resolver file exists under `src/lib/model-resolver/providers/<provider>.ts` with tests
+
 **Documentation**
 - [ ] `docs/src/content/docs/guides/upgrading.mdx` — add a section for the new version (breaking changes, new env vars, migration notes)
 - [ ] `packages/web/src/lib/smithers-soul.ts` — update if user-facing features changed
@@ -156,6 +162,15 @@ Everything else (version bumps in `package.json`, commit, tag, push) is handled 
    The script checks: clean working tree, on `main`, CI green, tag not already taken — then bumps versions, commits, tags, and pushes.
 3. GitHub Actions creates the GitHub Release with auto-generated notes and deploys the docs automatically.
 4. Review the auto-generated release notes on GitHub — edit if needed to highlight breaking changes or upgrade steps.
+
+### First-time-only: publish container images
+
+GHCR creates packages as **private** on first push. If you ever add a new image name to `release.yml` (today we publish `pinchy` and `pinchy-openclaw`), do this **once** right after the first release that pushes it, otherwise `docker compose pull` on users' servers will fail with `unauthorized`:
+
+1. If the org's package-visibility policy disallows public packages, open [Org Settings → Packages](https://github.com/organizations/heypinchy/settings/packages) and allow "Public" under "Container image visibility."
+2. Visit the new package page at `https://github.com/heypinchy/pinchy/pkgs/container/<image-name>`, click **Package settings**, and under "Danger Zone" → **Change visibility** set it to **Public**.
+
+Once public, subsequent tag pushes (every release) inherit the visibility — no recurring step.
 
 ## Questions?
 

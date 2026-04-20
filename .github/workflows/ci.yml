@@ -117,6 +117,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/docker-mirror
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -127,6 +129,22 @@ jobs:
         run: |
           docker build -t ghcr.io/heypinchy/pinchy:latest -f Dockerfile.pinchy .
           docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
+
+      - name: Verify end-user install assets are self-contained in the image
+        run: |
+          # End-users deploy by curl-ing docker-compose.yml into /opt/pinchy/
+          # — no git clone, no source tree. Any relative bind-mount to repo
+          # paths silently resolves to an empty directory in that scenario,
+          # and Pinchy boots with (e.g.) an empty /pinchy-docs that Smithers
+          # can't read from. This check runs the image in isolation,
+          # bypassing compose and its bind-mounts, to prove the image ships
+          # everything it needs at runtime.
+          DOC_COUNT=$(docker run --rm --entrypoint sh ghcr.io/heypinchy/pinchy-openclaw:latest -c 'find /pinchy-docs -name "*.mdx" 2>/dev/null | wc -l')
+          echo "Docs baked into openclaw image: $DOC_COUNT .mdx files"
+          if [ "$DOC_COUNT" -lt 10 ]; then
+            echo "::error::/pinchy-docs is missing or empty in the openclaw image ($DOC_COUNT .mdx files found). The docker-compose.yml must not rely on relative bind-mounts to source paths — they break in clean end-user installs."
+            exit 1
+          fi
 
       - name: Start production stack
         run: docker compose up -d
@@ -240,6 +258,80 @@ jobs:
           fi
           echo "Clean startup verified (restarts=$RESTART_COUNT, connection_errors=$ERROR_COUNT)"
 
+      # Regression guard for the openclaw-node deviceToken bug that broke the
+      # v0.4.1 demo. Pinchy had been running fine; an upgrade recreated both
+      # containers, gateway.auth.token got regenerated (race between Pinchy's
+      # regenerateOpenClawConfig and OpenClaw's ensure-gateway-token), and
+      # Pinchy could no longer authenticate because the old openclaw-node
+      # kept sending the bootstrap token instead of the per-device token
+      # issued at pairing. We force that rotation deterministically here by
+      # stripping gateway.auth.token from the persisted openclaw.json before
+      # the restart — OpenClaw will mint a fresh token on the way back up.
+      # Volumes are preserved, so paired.json (with the per-device token)
+      # survives — exactly the scenario that broke on demo.
+      - name: Force gateway.auth.token rotation + container recreate (regression guard)
+        run: |
+          echo "=== Stripping gateway.auth.token to force rotation on next start ==="
+          docker compose exec -T openclaw node -e '
+            const fs = require("fs");
+            const p = "/root/.openclaw/openclaw.json";
+            const c = JSON.parse(fs.readFileSync(p, "utf8"));
+            const before = c.gateway?.auth?.token?.slice(0,12) ?? "<none>";
+            if (c.gateway?.auth) delete c.gateway.auth.token;
+            fs.writeFileSync(p, JSON.stringify(c, null, 2));
+            console.log("stripped auth.token; was:", before);
+          '
+          echo "=== Stopping stack (volumes preserved) ==="
+          docker compose down
+          echo "=== Starting stack again ==="
+          docker compose up -d
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Wait for health after recreate
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7777/api/health; then
+              echo "Stack healthy after recreate"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::Health check failed after container recreate"
+          docker compose ps
+          docker compose logs
+          exit 1
+
+      - name: Verify Pinchy reconnects to OpenClaw after recreate
+        run: |
+          # Watch the fresh logs (since this container start) for a successful
+          # connect. Any token_mismatch / token_missing means auth is broken.
+          for i in $(seq 1 60); do
+            RECENT=$(docker compose logs pinchy --since 120s 2>&1)
+            if echo "$RECENT" | grep -q "Connected to OpenClaw Gateway"; then
+              echo "Pinchy reconnected to OpenClaw (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy did not reconnect to OpenClaw within 120s after recreate"
+              echo "--- pinchy logs ---"
+              docker compose logs pinchy | tail -40
+              echo "--- openclaw logs ---"
+              docker compose logs openclaw | tail -40
+              exit 1
+            fi
+            sleep 2
+          done
+          # OpenClaw side must show no auth failures in this window.
+          OC_RECENT=$(docker compose logs openclaw --since 120s 2>&1)
+          if echo "$OC_RECENT" | grep -qE "reason=(token_mismatch|token_missing)"; then
+            echo "::error::OpenClaw rejected Pinchy's auth after recreate"
+            echo "$OC_RECENT" | grep -E "reason=" | tail -5
+            exit 1
+          fi
+          echo "Auth clean on reconnect — no token_mismatch / token_missing"
+
       - name: Tear down production
         if: always()
         run: docker compose down -v
@@ -324,12 +416,117 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml down -v
 
+  end-user-install:
+    name: End-user install simulation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/docker-mirror
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build production images locally
+        run: |
+          docker build -t ghcr.io/heypinchy/pinchy:latest -f Dockerfile.pinchy .
+          docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
+
+      # Simulate what a real end-user deploy looks like: a fresh directory
+      # containing ONLY docker-compose.yml — no source tree, no .env file,
+      # no co-located repo. This catches bugs where compose.yml relies on
+      # relative bind-mounts (like the `./docs:/pinchy-docs` regression
+      # from PR #145) that silently resolve to empty directories in clean
+      # deploys while looking healthy in CI's normal repo-checkout runs.
+      - name: Prepare clean install directory
+        id: install-dir
+        run: |
+          INSTALL_DIR=$(mktemp -d)
+          cp docker-compose.yml "$INSTALL_DIR/"
+          echo "path=$INSTALL_DIR" >> "$GITHUB_OUTPUT"
+          echo "Clean install dir: $INSTALL_DIR"
+          ls -la "$INSTALL_DIR"
+
+      - name: Start stack from clean install dir
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: docker compose up -d
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Wait for health
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7777/api/health; then
+              echo "Stack healthy"
+              exit 0
+            fi
+            echo "Attempt $i: not ready yet"
+            if [ "$i" -eq 1 ] || [ $((i % 5)) -eq 0 ]; then
+              docker compose ps
+              docker compose logs --tail=20 pinchy
+            fi
+            sleep 2
+          done
+          echo "::error::Clean-install health check failed"
+          docker compose ps
+          docker compose logs
+          exit 1
+
+      - name: Assert all services running
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          RUNNING=$(docker compose ps --format json | jq -rs '[.[] | select(.State == "running")] | length')
+          echo "Running services: $RUNNING"
+          if [ "$RUNNING" -ne 3 ]; then
+            echo "::error::Expected 3 running services (pinchy, openclaw, db), got $RUNNING"
+            docker compose ps
+            exit 1
+          fi
+
+      - name: Assert pinchy binds to 127.0.0.1 by default (not 0.0.0.0)
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          # Docker bypasses UFW — only 127.0.0.1 binding prevents external access.
+          # This assertion catches any regression that re-exposes port 7777 globally.
+          BINDING=$(docker inspect \
+            --format '{{range $p, $c := .NetworkSettings.Ports}}{{range $c}}{{.HostIp}}{{end}}{{end}}' \
+            "$(docker compose ps -q pinchy)")
+          echo "Pinchy port binding host IP: $BINDING"
+          if [ "$BINDING" != "127.0.0.1" ]; then
+            echo "::error::Pinchy must bind to 127.0.0.1 by default (got '$BINDING'). Docker bypasses UFW, so 0.0.0.0 exposes the port to the internet regardless of firewall rules."
+            exit 1
+          fi
+
+      - name: Assert pinchy-docs is populated in openclaw container
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          DOC_COUNT=$(docker compose exec -T openclaw sh -c 'find /pinchy-docs -name "*.mdx" 2>/dev/null | wc -l')
+          echo "/pinchy-docs .mdx files in running openclaw container: $DOC_COUNT"
+          if [ "$DOC_COUNT" -lt 10 ]; then
+            echo "::error::/pinchy-docs is empty or missing in a clean end-user install ($DOC_COUNT .mdx files). The openclaw image must ship docs — no relative bind-mount from compose.yml."
+            docker compose exec -T openclaw ls -la /pinchy-docs || true
+            exit 1
+          fi
+
+      - name: Tear down
+        if: always()
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: docker compose down -v
+
   odoo-e2e:
     name: Odoo E2E Tests
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/docker-mirror
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -423,6 +620,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: ./.github/actions/docker-mirror
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
@@ -505,6 +704,75 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml down -v
 
+  integration:
+    name: Integration Tests (OpenClaw + Fake Ollama)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/docker-mirror
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build OpenClaw image
+        run: docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
+
+      # On Linux, host.docker.internal doesn't resolve outside containers by default.
+      # Add it to /etc/hosts so Pinchy (host process) can reach the fake Ollama the
+      # same way OpenClaw (Docker container) does.
+      - name: Add host.docker.internal to /etc/hosts
+        run: echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
+
+      # Pre-start Docker stack + migrate DB BEFORE Playwright launches the webServer.
+      # Playwright starts webServer before globalSetup, so Pinchy would try to connect
+      # to the DB before it exists unless we pre-provision it here.
+      - name: Pre-start integration Docker stack
+        run: |
+          mkdir -p /tmp/pinchy-integration-openclaw/workspaces
+          docker compose -f docker-compose.integration.yml up -d --wait
+
+      - name: Create and migrate integration DB
+        run: |
+          PGPASSWORD=pinchy_dev psql -h localhost -p 5435 -U pinchy -d pinchy \
+            -c "DROP DATABASE IF EXISTS pinchy_integration_test WITH (FORCE);" \
+            -c "CREATE DATABASE pinchy_integration_test;"
+          DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5435/pinchy_integration_test \
+            pnpm -C packages/web db:migrate
+
+      - name: Install Playwright Chromium
+        run: pnpm -C packages/web exec playwright install chromium --with-deps
+
+      - name: Run integration tests
+        run: pnpm -C packages/web test:integration
+        env:
+          CI: true
+
+      - name: Show Docker logs on failure
+        if: failure()
+        run: |
+          echo "=== OpenClaw logs ==="
+          docker compose -f docker-compose.integration.yml logs openclaw 2>/dev/null || true
+          echo "=== DB logs ==="
+          docker compose -f docker-compose.integration.yml logs db 2>/dev/null || true
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.integration.yml down 2>/dev/null || true
+
   ollama-integration:
     name: Ollama integration tests
     runs-on: ubuntu-latest
@@ -558,28 +826,33 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: "--no-progress '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev'"
+          args: "--no-progress --max-retries 3 --retry-wait-time 5 '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev'"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-  audit:
+  # Vulnerability scan via osv-scanner — replaces the old `pnpm audit` step
+  # that broke when npm retired the /security/audits/quick endpoint (returns
+  # 410 unconditionally). osv-scanner reads pnpm-lock.yaml directly and
+  # queries the OSV database, so we don't need an npm install and don't
+  # depend on npm's legacy audit API.
+  vuln-scan:
     name: Security audit
+    uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.5"
+    with:
+      scan-args: |-
+        --lockfile=./pnpm-lock.yaml
+        --lockfile=./docs/pnpm-lock.yaml
+    permissions:
+      actions: read
+      security-events: write
+      contents: read
+
+  repo-hygiene:
+    name: Repo hygiene
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
-
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
-
-      - name: Audit production dependencies
-        run: pnpm audit --prod
 
       - name: Check for local paths in codebase
         run: |

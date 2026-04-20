@@ -89,8 +89,10 @@ export interface UseOdooPermissionsReturn {
   isDirty: boolean;
 }
 
-export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
-  const [connections, setConnections] = useState<Connection[]>([]);
+export function useOdooPermissions(
+  agentId: string,
+  connections: Connection[]
+): UseOdooPermissionsReturn {
   const [connectionId, setConnectionIdState] = useState("");
   const [accessLevel, setAccessLevelState] = useState<OdooAccessLevel>("read-only");
   const [addedModels, setAddedModels] = useState<Map<string, OperationFlags>>(new Map());
@@ -100,24 +102,23 @@ export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
   const initialConnectionId = useRef("");
   const initialPermissions = useRef<Set<string>>(new Set());
 
-  // Load connections and existing permissions
+  // Load existing per-agent permissions
   useEffect(() => {
     async function load() {
       try {
-        const [connectionsRes, permsRes] = await Promise.all([
-          fetch("/api/integrations"),
-          fetch(`/api/agents/${agentId}/integrations`),
-        ]);
-
-        if (connectionsRes.ok) {
-          const data = await connectionsRes.json();
-          setConnections(data);
-        }
+        const permsRes = await fetch(`/api/agents/${agentId}/integrations`);
 
         if (permsRes.ok) {
           const data = await permsRes.json();
-          if (data.length > 0) {
-            const connId = data[0].connectionId;
+          // Only adopt permissions for the odoo connections we were given.
+          // Without this filter, the hook would pick up non-odoo entries
+          // (e.g. email) and cause the parent to send duplicate PUTs.
+          const odooConnectionIds = new Set(connections.map((c) => c.id));
+          const odooEntry = data.find((entry: { connectionId: string }) =>
+            odooConnectionIds.has(entry.connectionId)
+          );
+          if (odooEntry) {
+            const connId = odooEntry.connectionId;
             setConnectionIdState(connId);
             initialConnectionId.current = connId;
 
@@ -125,7 +126,7 @@ export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
             const models = new Map<string, OperationFlags>();
             const permSet = new Set<string>();
 
-            for (const perm of data[0].permissions) {
+            for (const perm of odooEntry.permissions) {
               permSet.add(`${perm.model}:${perm.operation}`);
               if (!models.has(perm.model)) {
                 models.set(perm.model, {
@@ -151,7 +152,7 @@ export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
       }
     }
     load();
-  }, [agentId]);
+  }, [agentId, connections]);
 
   // Get the selected connection object
   const selectedConnection = useMemo(

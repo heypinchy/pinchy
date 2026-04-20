@@ -1,0 +1,37 @@
+# docker-compose.integration.yml
+# Minimal stack for integration tests: OpenClaw + DB only.
+# Pinchy is started by Playwright's webServer on the host.
+# Fake Ollama runs on the host, accessible via host.docker.internal.
+services:
+  openclaw:
+    image: ghcr.io/heypinchy/pinchy-openclaw:latest
+    ports:
+      - "18790:18789"
+    volumes:
+      # Shared config dir: Pinchy (host) writes here, OpenClaw reads here
+      - /tmp/pinchy-integration-openclaw:/root/.openclaw
+      # Plugin source bind-mounts (same as dev)
+      - ./packages/plugins/pinchy-files:/root/.openclaw/extensions/pinchy-files
+      - ./packages/plugins/pinchy-context:/root/.openclaw/extensions/pinchy-context
+      - ./packages/plugins/pinchy-audit:/root/.openclaw/extensions/pinchy-audit
+      - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
+      - ./packages/plugins/pinchy-odoo:/root/.openclaw/extensions/pinchy-odoo
+    # Allow OpenClaw to reach host services (fake Ollama) on Linux
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  db:
+    image: postgres:17
+    ports:
+      - "5435:5432"
+    environment:
+      - POSTGRES_DB=pinchy
+      - POSTGRES_USER=pinchy
+      - POSTGRES_PASSWORD=pinchy_dev
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pinchy"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+    tmpfs:
+      - /var/lib/postgresql/data # in-memory — faster, no cleanup needed

@@ -9,6 +9,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
+import { deleteOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { z } from "zod";
 
 const baseUpdateSchema = z.object({
@@ -172,6 +173,17 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
   }
 
   await db.delete(integrationConnections).where(eq(integrationConnections.id, connectionId));
+
+  // Clear OAuth settings when the last Google connection is removed
+  if (existing.type === "google") {
+    const remainingGoogle = await db
+      .select()
+      .from(integrationConnections)
+      .where(eq(integrationConnections.type, "google"));
+    if (remainingGoogle.length === 0) {
+      await deleteOAuthSettings("google");
+    }
+  }
 
   appendAuditLog({
     actorType: "user",

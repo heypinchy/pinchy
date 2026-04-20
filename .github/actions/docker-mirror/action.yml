@@ -1,0 +1,19 @@
+name: Configure Docker Hub mirror
+description: >
+  Points the runner's Docker daemon at mirror.gcr.io as a pull-through cache
+  for Docker Hub. Sidesteps the 200 pulls/6h rate limit that throttled CI
+  whenever several jobs built images in parallel (we hit it during the
+  v0.4.2 release prep). Google operates mirror.gcr.io as a public cache
+  with the same path layout as Docker Hub, so no Dockerfile changes are
+  needed — the daemon transparently fetches from the mirror and falls
+  back to Docker Hub on a miss.
+runs:
+  using: composite
+  steps:
+    - name: Configure Docker daemon registry mirror
+      shell: bash
+      run: |
+        sudo mkdir -p /etc/docker
+        echo '{"registry-mirrors":["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json >/dev/null
+        sudo systemctl restart docker
+        until docker info >/dev/null 2>&1; do sleep 1; done
