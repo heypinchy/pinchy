@@ -1381,6 +1381,190 @@ describe("regenerateOpenClawConfig", () => {
     expect(agentConfig.sources).toContain("odoo-fleet");
   });
 
+  it("adds email doc source for agent with gmail email permission", async () => {
+    const agentsData = [
+      {
+        id: "support-agent",
+        name: "Support Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        isPersonal: false,
+        ownerId: null,
+        allowedTools: [],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "support-agent",
+          connectionId: "conn-google-1",
+          model: "email",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-google-1",
+          type: "google",
+          name: "Company Gmail",
+          description: "",
+          credentials: JSON.stringify({ accessToken: "token" }),
+          data: null,
+          status: "active",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: mockInnerJoin(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const docsPlugin = config.plugins.entries["pinchy-docs"];
+    expect(docsPlugin).toBeDefined();
+    expect(docsPlugin.enabled).toBe(true);
+
+    const docsConfig = docsPlugin.config;
+    const emailSource = docsConfig.sources.find((s: any) => s.id === "email");
+    expect(emailSource).toBeDefined();
+    expect(emailSource.path).toBe("/integration-docs/email");
+
+    const agentConfig = docsConfig.agents["support-agent"];
+    expect(agentConfig).toBeDefined();
+    expect(agentConfig.sources).toContain("email");
+  });
+
+  it("does not add email doc source for agent without email permissions", async () => {
+    const agentsData = [
+      {
+        id: "odoo-only-agent",
+        name: "Finance Controller",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        isPersonal: false,
+        ownerId: null,
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "odoo-only-agent",
+          connectionId: "conn-1",
+          model: "account.move",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-1",
+          type: "odoo",
+          name: "Acme Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://odoo.example.com",
+            db: "acme",
+            uid: 2,
+            apiKey: "test-key",
+          }),
+          data: { models: [], lastSyncAt: "2026-04-01T00:00:00Z" },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: mockInnerJoin(permissionsData),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const docsConfig = config.plugins.entries["pinchy-docs"]?.config;
+    const emailSource = docsConfig?.sources?.find((s: any) => s.id === "email");
+    expect(emailSource).toBeUndefined();
+  });
+
+  it("adds files doc source for agent with pinchy_ls in allowedTools", async () => {
+    const agentsData = [
+      {
+        id: "kb-agent",
+        name: "HR Knowledge Base",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        isPersonal: false,
+        ownerId: null,
+        pluginConfig: { allowed_paths: ["/data/hr-docs/"] },
+        allowedTools: ["pinchy_ls", "pinchy_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(agentsData),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const docsPlugin = config.plugins.entries["pinchy-docs"];
+    expect(docsPlugin).toBeDefined();
+    expect(docsPlugin.enabled).toBe(true);
+
+    const docsConfig = docsPlugin.config;
+    const filesSource = docsConfig.sources.find((s: any) => s.id === "files");
+    expect(filesSource).toBeDefined();
+    expect(filesSource.path).toBe("/integration-docs/files");
+
+    const agentConfig = docsConfig.agents["kb-agent"];
+    expect(agentConfig).toBeDefined();
+    expect(agentConfig.sources).toContain("files");
+  });
+
+  it("does not add files doc source for agent without file tools", async () => {
+    const agentsData = [
+      {
+        id: "chat-agent",
+        name: "Chat Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        isPersonal: false,
+        ownerId: null,
+        pluginConfig: null,
+        allowedTools: [],
+        createdAt: new Date(),
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(agentsData),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const docsConfig = config.plugins.entries["pinchy-docs"]?.config;
+    const filesSource = docsConfig?.sources?.find((s: any) => s.id === "files");
+    expect(filesSource).toBeUndefined();
+  });
+
   it("adds odoo-website doc source for agent with website model read permission", async () => {
     const agentsData = [
       {

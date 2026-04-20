@@ -20,6 +20,18 @@ import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 
+const EMAIL_DOC_SOURCE = {
+  id: "email",
+  label: "Email Integration Best Practices",
+  path: "/integration-docs/email",
+};
+
+const FILES_DOC_SOURCE = {
+  id: "files",
+  label: "File Access Best Practices",
+  path: "/integration-docs/files",
+};
+
 const ODOO_DOC_SOURCES: Record<string, { id: string; label: string; path: string }> = {
   accounting: {
     id: "odoo-accounting",
@@ -207,6 +219,8 @@ export async function regenerateOpenClawConfig() {
   // Build agents list with OpenClaw-side workspace paths, tools.deny, and plugin configs
   const pluginConfigs: Record<string, Record<string, Record<string, unknown>>> = {};
   let contextPluginAgents: Record<string, { tools: string[]; userId: string }> | undefined;
+  const docSources: Array<{ id: string; label: string; path: string }> = [];
+  const agentDocConfig: Record<string, { sources: string[] }> = {};
 
   const agentsList = allAgents.map((agent) => {
     const agentEntry: Record<string, unknown> = {
@@ -234,6 +248,18 @@ export async function regenerateOpenClawConfig() {
         pluginConfigs["pinchy-files"] = {};
       }
       pluginConfigs["pinchy-files"][agent.id] = agent.pluginConfig as Record<string, unknown>;
+    }
+    if (hasFileTools) {
+      if (!docSources.find((s) => s.id === FILES_DOC_SOURCE.id)) {
+        docSources.push(FILES_DOC_SOURCE);
+      }
+      if (agentDocConfig[agent.id]) {
+        if (!agentDocConfig[agent.id].sources.includes(FILES_DOC_SOURCE.id)) {
+          agentDocConfig[agent.id].sources.push(FILES_DOC_SOURCE.id);
+        }
+      } else {
+        agentDocConfig[agent.id] = { sources: [FILES_DOC_SOURCE.id] };
+      }
     }
 
     // Collect plugin config for agents that have context tools (pinchy_save_*)
@@ -500,12 +526,26 @@ export async function regenerateOpenClawConfig() {
     };
   }
 
+  // Wire email doc source for agents that have email provider permissions
+  for (const agentId of emailPermsByAgent.keys()) {
+    if (!docSources.find((s) => s.id === EMAIL_DOC_SOURCE.id)) {
+      docSources.push(EMAIL_DOC_SOURCE);
+    }
+    if (agentDocConfig[agentId]) {
+      if (!agentDocConfig[agentId].sources.includes(EMAIL_DOC_SOURCE.id)) {
+        agentDocConfig[agentId].sources.push(EMAIL_DOC_SOURCE.id);
+      }
+    } else {
+      agentDocConfig[agentId] = { sources: [EMAIL_DOC_SOURCE.id] };
+    }
+  }
+
   // Build pinchy-docs multi-source config (after Odoo agent configs are populated).
   // ODOO_DOC_SOURCES maps model categories to doc source directories.
   // Accounting docs exist at /integration-docs/odoo/accounting/.
   // Add .md files to the sales/inventory directories to activate docs for those agents.
-  const docSources: Array<{ id: string; label: string; path: string }> = [];
-  const agentDocConfig: Record<string, { sources: string[] }> = {};
+  // (docSources and agentDocConfig are declared above the agent loop so file-tools
+  // wiring can populate them during the map pass.)
 
   // Source 1: Pinchy platform docs (for personal agents / Smithers)
   const personalAgentIds = allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => a.id);
