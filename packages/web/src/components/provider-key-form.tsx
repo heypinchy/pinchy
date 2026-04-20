@@ -376,10 +376,9 @@ export function ProviderKeyForm({
                     <div className="flex gap-2 mt-3">
                       <Button
                         type="button"
-                        variant="destructive"
+                        variant="outline"
                         size="sm"
                         onClick={() => {
-                          setDismissed(false);
                           setSubscriptionStatus(null);
                           setAuthMethod("subscription");
                         }}
