@@ -2,6 +2,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProviderKeyForm } from "@/components/provider-key-form";
+import { toast } from "sonner";
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 const originalFetch = globalThis.fetch;
 beforeEach(() => {
@@ -141,6 +144,40 @@ describe("ProviderKeyForm — OpenAI subscription", () => {
 
     // Should not show any agent list items
     await waitFor(() => expect(screen.queryByRole("listitem")).not.toBeInTheDocument());
+  });
+
+  it("shows error toast when disconnect API call fails", async () => {
+    (globalThis.fetch as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            connected: true,
+            accountEmail: "x@y.com",
+            connectedAt: "2026-04-20T09:00:00Z",
+            refreshFailureCount: 0,
+          })
+        )
+      )
+      // agents pre-fetch
+      .mockResolvedValueOnce(new Response(JSON.stringify([])))
+      // DELETE subscription → 500
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "Internal error" }), { status: 500 })
+      );
+
+    render(<ProviderKeyForm onSuccess={vi.fn()} />);
+    await userEvent.click(screen.getByRole("button", { name: /OpenAI/i }));
+    await waitFor(() => expect(screen.getByText(/Connected as/i)).toBeInTheDocument());
+
+    // Open disconnect dialog
+    await userEvent.click(screen.getByRole("button", { name: /Disconnect/i }));
+    // Wait for dialog then confirm disconnect (dialog action button)
+    const disconnectButtons = await screen.findAllByRole("button", { name: /Disconnect/i });
+    await userEvent.click(disconnectButtons[disconnectButtons.length - 1]);
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith("Failed to disconnect. Please try again.")
+    );
   });
 
   // TODO: covered by E2E — onConnected re-fetch can't be unit tested without full OAuth simulation

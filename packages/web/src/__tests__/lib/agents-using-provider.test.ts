@@ -12,6 +12,7 @@ vi.mock("@/db/schema", async (importOriginal) => {
 });
 
 import { db } from "@/db";
+import { agents } from "@/db/schema";
 import { getAgentsUsingOpenAiProvider } from "@/lib/agents";
 
 function mockSelectChain(resolvedValue: unknown) {
@@ -69,6 +70,6 @@ describe("getAgentsUsingOpenAiProvider", () => {
 
     await getAgentsUsingOpenAiProvider();
 
-    expect(mockFrom).toHaveBeenCalled();
+    expect(mockFrom).toHaveBeenCalledWith(agents);
   });
 });

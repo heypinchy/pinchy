@@ -314,6 +314,7 @@ export function ProviderKeyForm({
                       setValidationStatus("idle");
                       setError("");
                       setSubscriptionStatus(null);
+                      setAffectedAgents([]);
                     }}
                   >
                     {config.name}
@@ -376,6 +377,7 @@ export function ProviderKeyForm({
                         variant="ghost"
                         className="text-destructive hover:text-destructive"
                         onClick={async () => {
+                          // pre-fetch before dialog opens to avoid loading delay on confirm
                           try {
                             const r = await fetch("/api/providers/openai/subscription/agents");
                             if (r.ok) {
@@ -414,7 +416,13 @@ export function ProviderKeyForm({
                         <AlertDialogAction
                           variant="destructive"
                           onClick={async () => {
-                            await fetch("/api/providers/openai/subscription", { method: "DELETE" });
+                            const res = await fetch("/api/providers/openai/subscription", {
+                              method: "DELETE",
+                            });
+                            if (!res.ok) {
+                              toast.error("Failed to disconnect. Please try again.");
+                              return;
+                            }
                             setSubscriptionStatus({ connected: false });
                             setAuthMethod("api-key");
                             setAffectedAgents([]);
