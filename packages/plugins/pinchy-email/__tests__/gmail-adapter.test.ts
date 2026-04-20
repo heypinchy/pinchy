@@ -459,6 +459,64 @@ describe("GmailAdapter", () => {
     });
   });
 
+  describe("MIME header injection prevention", () => {
+    beforeEach(() => {
+      mockDraftsCreate.mockResolvedValue({ data: { id: "draft-safe" } });
+    });
+
+    function getRawLines(mockFn: ReturnType<typeof vi.fn>): string[] {
+      const call = mockFn.mock.calls[0][0];
+      const raw = Buffer.from(call.requestBody.message.raw, "base64url").toString("utf-8");
+      return raw.split("\r\n");
+    }
+
+    it("strips CRLF from the to field to prevent header injection", async () => {
+      await adapter.draft({
+        to: "victim@example.com\r\nBcc: attacker@evil.com",
+        subject: "Hello",
+        body: "Body",
+      });
+
+      const lines = getRawLines(mockDraftsCreate);
+      // No standalone Bcc header line should exist
+      expect(lines.every((line) => !line.startsWith("Bcc:"))).toBe(true);
+    });
+
+    it("strips CRLF from the subject field to prevent header injection", async () => {
+      await adapter.draft({
+        to: "bob@example.com",
+        subject: "Innocent\r\nBcc: attacker@evil.com",
+        body: "Body",
+      });
+
+      const lines = getRawLines(mockDraftsCreate);
+      expect(lines.every((line) => !line.startsWith("Bcc:"))).toBe(true);
+    });
+
+    it("strips CRLF from the replyTo field to prevent header injection", async () => {
+      await adapter.draft({
+        to: "bob@example.com",
+        subject: "Re: Test",
+        body: "Body",
+        replyTo: "<msg-id@example.com>\r\nBcc: attacker@evil.com",
+      });
+
+      const lines = getRawLines(mockDraftsCreate);
+      expect(lines.every((line) => !line.startsWith("Bcc:"))).toBe(true);
+    });
+
+    it("strips lone LF from header fields", async () => {
+      await adapter.draft({
+        to: "victim@example.com\nX-Injected: yes",
+        subject: "Hello",
+        body: "Body",
+      });
+
+      const lines = getRawLines(mockDraftsCreate);
+      expect(lines.every((line) => !line.startsWith("X-Injected:"))).toBe(true);
+    });
+  });
+
   describe("base64url encoding/decoding", () => {
     it("correctly decodes base64url body with special characters", async () => {
       const originalText = "Hello! Special chars: +/= and umlauts: äöü";

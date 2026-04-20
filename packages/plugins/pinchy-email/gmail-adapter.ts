@@ -196,15 +196,19 @@ function decodeBase64url(data: string): string {
   return Buffer.from(data, "base64url").toString("utf-8");
 }
 
+function sanitizeHeader(value: string): string {
+  return value.replace(/[\r\n\0]/g, "");
+}
+
 function buildRawMessage(opts: ComposeOptions): string {
   const lines: string[] = [
-    `To: ${opts.to}`,
-    `Subject: ${opts.subject}`,
+    `To: ${sanitizeHeader(opts.to)}`,
+    `Subject: ${sanitizeHeader(opts.subject)}`,
     `Content-Type: text/plain; charset="UTF-8"`,
   ];
 
   if (opts.replyTo) {
-    lines.push(`In-Reply-To: ${opts.replyTo}`);
+    lines.push(`In-Reply-To: ${sanitizeHeader(opts.replyTo)}`);
   }
 
   lines.push("", opts.body);
