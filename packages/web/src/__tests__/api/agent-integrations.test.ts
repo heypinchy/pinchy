@@ -8,16 +8,42 @@ const {
   mockInsertValues,
   mockDeleteWhere,
   mockAppendAuditLog,
-} = vi.hoisted(() => ({
-  mockGetSession: vi.fn().mockResolvedValue({
-    user: { id: "admin-1", email: "admin@test.com", role: "admin" },
-  }),
-  mockSelectFrom: vi.fn(),
-  mockSelectWhere: vi.fn(),
-  mockInsertValues: vi.fn(),
-  mockDeleteWhere: vi.fn(),
-  mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
-}));
+  mockTransaction,
+  mockTxDeleteWhere,
+  mockTxInsertValues,
+  mockTxSelectWhere,
+} = vi.hoisted(() => {
+  const mockTxDeleteWhere = vi.fn().mockResolvedValue(undefined);
+  const mockTxInsertValues = vi.fn().mockResolvedValue(undefined);
+  const mockTxSelectWhere = vi.fn().mockResolvedValue([]);
+  const mockTransaction = vi.fn().mockImplementation(async (cb: (tx: unknown) => unknown) => {
+    const tx = {
+      select: vi.fn().mockReturnValue({
+        from: vi.fn().mockReturnValue({
+          where: mockTxSelectWhere,
+        }),
+      }),
+      delete: vi.fn().mockReturnValue({ where: mockTxDeleteWhere }),
+      insert: vi.fn().mockReturnValue({ values: mockTxInsertValues }),
+    };
+    return cb(tx);
+  });
+
+  return {
+    mockGetSession: vi.fn().mockResolvedValue({
+      user: { id: "admin-1", email: "admin@test.com", role: "admin" },
+    }),
+    mockSelectFrom: vi.fn(),
+    mockSelectWhere: vi.fn(),
+    mockInsertValues: vi.fn(),
+    mockDeleteWhere: vi.fn(),
+    mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
+    mockTransaction,
+    mockTxDeleteWhere,
+    mockTxInsertValues,
+    mockTxSelectWhere,
+  };
+});
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -33,6 +59,7 @@ vi.mock("@/db", () => ({
     select: vi.fn().mockReturnValue({ from: mockSelectFrom }),
     insert: vi.fn().mockReturnValue({ values: mockInsertValues }),
     delete: vi.fn().mockReturnValue({ where: mockDeleteWhere }),
+    transaction: mockTransaction,
   },
 }));
 
@@ -199,10 +226,10 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
   });
 
   it("deletes existing permissions and inserts new ones", async () => {
-    // Connection exists
+    // Connection exists (validation query runs outside transaction)
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]);
-    // Existing permissions for diff
-    mockSelectWhere.mockResolvedValueOnce([{ model: "res.partner", operation: "read" }]);
+    // Existing permissions for diff (inside transaction)
+    mockTxSelectWhere.mockResolvedValueOnce([{ model: "res.partner", operation: "read" }]);
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
       method: "PUT",
@@ -217,13 +244,13 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     const res = await PUT(req, makeParams(AGENT_ID));
 
     expect(res.status).toBe(200);
-    expect(mockDeleteWhere).toHaveBeenCalled();
-    expect(mockInsertValues).toHaveBeenCalled();
+    expect(mockTxDeleteWhere).toHaveBeenCalled();
+    expect(mockTxInsertValues).toHaveBeenCalled();
   });
 
-  it("calls regenerateOpenClawConfig after saving", async () => {
+  it("does not call regenerateOpenClawConfig (delegated to agent PATCH)", async () => {
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]);
-    mockSelectWhere.mockResolvedValueOnce([]);
+    mockTxSelectWhere.mockResolvedValueOnce([]);
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
       method: "PUT",
@@ -235,13 +262,13 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     const res = await PUT(req, makeParams(AGENT_ID));
 
     expect(res.status).toBe(200);
-    expect(regenerateOpenClawConfig).toHaveBeenCalled();
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("writes audit log with added/removed diff", async () => {
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]);
-    // Existing permissions
-    mockSelectWhere.mockResolvedValueOnce([
+    // Existing permissions (inside transaction)
+    mockTxSelectWhere.mockResolvedValueOnce([
       { model: "res.partner", operation: "read" },
       { model: "res.partner", operation: "create" },
     ]);
@@ -273,9 +300,32 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     );
   });
 
+  it("wraps DELETE+INSERT in a database transaction", async () => {
+    // Connection exists (validation query runs outside transaction)
+    mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]);
+    mockTxSelectWhere.mockResolvedValueOnce([]);
+
+    const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
+      method: "PUT",
+      body: JSON.stringify({
+        connectionId: CONNECTION_ID,
+        permissions: [{ model: "email", operation: "read" }],
+      }),
+    });
+    const res = await PUT(req, makeParams(AGENT_ID));
+
+    expect(res.status).toBe(200);
+    expect(mockTransaction).toHaveBeenCalledTimes(1);
+    expect(mockTxDeleteWhere).toHaveBeenCalled();
+    expect(mockTxInsertValues).toHaveBeenCalled();
+    // Must NOT use db.delete/insert directly (outside transaction)
+    expect(mockDeleteWhere).not.toHaveBeenCalled();
+    expect(mockInsertValues).not.toHaveBeenCalled();
+  });
+
   it("handles empty permissions (clear all)", async () => {
     mockSelectWhere.mockResolvedValueOnce([{ id: CONNECTION_ID }]);
-    mockSelectWhere.mockResolvedValueOnce([{ model: "res.partner", operation: "read" }]);
+    mockTxSelectWhere.mockResolvedValueOnce([{ model: "res.partner", operation: "read" }]);
 
     const req = new NextRequest(`http://localhost:7777/api/agents/${AGENT_ID}/integrations`, {
       method: "PUT",
@@ -287,9 +337,9 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     const res = await PUT(req, makeParams(AGENT_ID));
 
     expect(res.status).toBe(200);
-    expect(mockDeleteWhere).toHaveBeenCalled();
+    expect(mockTxDeleteWhere).toHaveBeenCalled();
     // Should not insert when permissions are empty
-    expect(mockInsertValues).not.toHaveBeenCalled();
+    expect(mockTxInsertValues).not.toHaveBeenCalled();
   });
 });
 
@@ -343,7 +393,7 @@ describe("DELETE /api/agents/[agentId]/integrations", () => {
     expect(mockDeleteWhere).toHaveBeenCalled();
   });
 
-  it("calls regenerateOpenClawConfig after deleting", async () => {
+  it("does not call regenerateOpenClawConfig (delegated to agent PATCH)", async () => {
     mockSelectFrom.mockImplementationOnce(() => ({
       where: vi.fn().mockResolvedValue([]),
     }));
@@ -353,7 +403,7 @@ describe("DELETE /api/agents/[agentId]/integrations", () => {
     });
     await DELETE(req, makeParams(AGENT_ID));
 
-    expect(regenerateOpenClawConfig).toHaveBeenCalled();
+    expect(regenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("writes audit log with removed permissions", async () => {
