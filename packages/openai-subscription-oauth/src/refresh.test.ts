@@ -23,6 +23,7 @@ describe("refreshAccessToken", () => {
     expect(result.expires).toBeGreaterThan(Date.now());
     const [url, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit & { body: string }];
     expect(url).toBe("https://auth.openai.com/oauth/token");
+    expect((init.headers as Record<string, string>)["content-type"]).toBe("application/x-www-form-urlencoded");
     expect(init.body).toContain("grant_type=refresh_token");
     expect(init.body).toContain("refresh_token=rt_old");
     expect(init.body).toContain("client_id=c1");
