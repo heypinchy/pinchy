@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -14,6 +14,7 @@ import {
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { OdooPermissionSection } from "@/components/odoo-permission-section";
 import { EmailPermissionSection } from "@/components/email-permission-section";
+import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions";
 
 interface PermissionsValues {
   allowedTools: string[];
@@ -24,6 +25,16 @@ interface PermissionsValues {
   }>;
 }
 
+interface Connection {
+  id: string;
+  name: string;
+  type: string;
+  status?: string;
+  data?: unknown;
+}
+
+const EMAIL_CONNECTION_TYPES = new Set(["google", "microsoft", "imap"]);
+
 interface AgentSettingsPermissionsProps {
   agent: {
     id: string;
@@ -32,12 +43,16 @@ interface AgentSettingsPermissionsProps {
     pluginConfig: { allowed_paths?: string[] } | null;
   };
   directories: Array<{ path: string; name: string }>;
+  connections: Connection[];
+  isAdmin: boolean;
   onChange: (values: PermissionsValues, isDirty: boolean) => void;
 }
 
 export function AgentSettingsPermissions({
   agent,
   directories,
+  connections,
+  isAdmin,
   onChange,
 }: AgentSettingsPermissionsProps) {
   // KB tools = non-integration safe tools only
@@ -67,6 +82,18 @@ export function AgentSettingsPermissions({
   const initialAllowedPaths = useRef(agent.pluginConfig?.allowed_paths ?? []);
 
   const hasKbToolChecked = kbTools.some((tool) => allowedKbTools.includes(tool.id));
+
+  // Partition active (non-pending) connections by integration type
+  const { odooConnections, emailConnections } = useMemo(() => {
+    const active = connections.filter((c) => c.status !== "pending");
+    return {
+      odooConnections: active.filter((c) => c.type === "odoo") as OdooConnection[],
+      emailConnections: active.filter((c) => EMAIL_CONNECTION_TYPES.has(c.type)),
+    };
+  }, [connections]);
+
+  const showOdoo = odooConnections.length > 0;
+  const showEmail = emailConnections.length > 0;
 
   // Compute the combined allowedTools array (KB tools + odoo tools + email tools)
   const computeAllowedTools = useCallback(
@@ -227,17 +254,40 @@ export function AgentSettingsPermissions({
         )}
       </section>
 
-      {/* Odoo section */}
-      <section className="space-y-4">
-        <h3 className="text-lg font-semibold">Odoo</h3>
-        <OdooPermissionSection agentId={agent.id} onChange={handleOdooChange} />
-      </section>
+      {/* Odoo section — only when at least one active Odoo connection exists */}
+      {showOdoo && (
+        <section className="space-y-4">
+          <h3 className="text-lg font-semibold">Odoo</h3>
+          <OdooPermissionSection
+            agentId={agent.id}
+            connections={odooConnections}
+            onChange={handleOdooChange}
+          />
+        </section>
+      )}
 
-      {/* Email section */}
-      <section className="space-y-4">
-        <h3 className="text-lg font-semibold">Email</h3>
-        <EmailPermissionSection agentId={agent.id} onChange={handleEmailChange} />
-      </section>
+      {/* Email section — only when at least one active email-type connection exists */}
+      {showEmail && (
+        <section className="space-y-4">
+          <h3 className="text-lg font-semibold">Email</h3>
+          <EmailPermissionSection
+            agentId={agent.id}
+            connections={emailConnections}
+            onChange={handleEmailChange}
+          />
+        </section>
+      )}
+
+      {/* Admin-only discoverability link */}
+      {isAdmin && (
+        <p className="text-sm text-muted-foreground">
+          Need more capabilities?{" "}
+          <a href="/settings?tab=integrations" className="underline hover:text-foreground">
+            Add an integration
+          </a>{" "}
+          in Settings.
+        </p>
+      )}
     </div>
   );
 }

@@ -89,8 +89,10 @@ export interface UseOdooPermissionsReturn {
   isDirty: boolean;
 }
 
-export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
-  const [connections, setConnections] = useState<Connection[]>([]);
+export function useOdooPermissions(
+  agentId: string,
+  connections: Connection[]
+): UseOdooPermissionsReturn {
   const [connectionId, setConnectionIdState] = useState("");
   const [accessLevel, setAccessLevelState] = useState<OdooAccessLevel>("read-only");
   const [addedModels, setAddedModels] = useState<Map<string, OperationFlags>>(new Map());
@@ -100,28 +102,18 @@ export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
   const initialConnectionId = useRef("");
   const initialPermissions = useRef<Set<string>>(new Set());
 
-  // Load connections and existing permissions
+  // Load existing per-agent permissions
   useEffect(() => {
     async function load() {
       try {
-        const [connectionsRes, permsRes] = await Promise.all([
-          fetch("/api/integrations"),
-          fetch(`/api/agents/${agentId}/integrations`),
-        ]);
-
-        let odooConnections: Connection[] = [];
-        if (connectionsRes.ok) {
-          const allConnections: Connection[] = await connectionsRes.json();
-          odooConnections = allConnections.filter((c) => c.type === "odoo");
-          setConnections(odooConnections);
-        }
+        const permsRes = await fetch(`/api/agents/${agentId}/integrations`);
 
         if (permsRes.ok) {
           const data = await permsRes.json();
-          // Only adopt permissions for odoo-type connections. Without this filter,
-          // the hook would pick up non-odoo entries (e.g. email) and cause the
-          // parent to send duplicate PUTs to the same connectionId on save.
-          const odooConnectionIds = new Set(odooConnections.map((c) => c.id));
+          // Only adopt permissions for the odoo connections we were given.
+          // Without this filter, the hook would pick up non-odoo entries
+          // (e.g. email) and cause the parent to send duplicate PUTs.
+          const odooConnectionIds = new Set(connections.map((c) => c.id));
           const odooEntry = data.find((entry: { connectionId: string }) =>
             odooConnectionIds.has(entry.connectionId)
           );
@@ -160,7 +152,7 @@ export function useOdooPermissions(agentId: string): UseOdooPermissionsReturn {
       }
     }
     load();
-  }, [agentId]);
+  }, [agentId, connections]);
 
   // Get the selected connection object
   const selectedConnection = useMemo(

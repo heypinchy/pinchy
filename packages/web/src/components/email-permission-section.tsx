@@ -32,19 +32,17 @@ const EMAIL_OPERATION_NAMES: Record<string, string> = {
 const EMAIL_OPERATIONS = ["read", "draft", "send"] as const;
 type EmailOperation = (typeof EMAIL_OPERATIONS)[number];
 
-/** Connection types that are email-related. */
-const EMAIL_CONNECTION_TYPES = new Set(["google", "microsoft", "imap"]);
-
 interface Connection {
   id: string;
   name: string;
   type: string;
   status?: string;
-  data: unknown;
+  data?: unknown;
 }
 
 interface EmailPermissionSectionProps {
   agentId: string;
+  connections: Connection[];
   onChange: (
     values: {
       connectionId: string;
@@ -54,8 +52,11 @@ interface EmailPermissionSectionProps {
   ) => void;
 }
 
-export function EmailPermissionSection({ agentId, onChange }: EmailPermissionSectionProps) {
-  const [connections, setConnections] = useState<Connection[]>([]);
+export function EmailPermissionSection({
+  agentId,
+  connections,
+  onChange,
+}: EmailPermissionSectionProps) {
   const [connectionId, setConnectionId] = useState("");
   const [operations, setOperations] = useState<Record<EmailOperation, boolean>>({
     read: false,
@@ -74,31 +75,16 @@ export function EmailPermissionSection({ agentId, onChange }: EmailPermissionSec
     onChangeRef.current = onChange;
   });
 
-  // Load connections and existing permissions
+  // Load existing agent permissions for these connections
   useEffect(() => {
     async function load() {
       try {
-        const [connectionsRes, permsRes] = await Promise.all([
-          fetch("/api/integrations"),
-          fetch(`/api/agents/${agentId}/integrations`),
-        ]);
-
-        let allConnections: Connection[] = [];
-        if (connectionsRes.ok) {
-          allConnections = await connectionsRes.json();
-        }
-
-        // Filter to active email-type connections only (pending = setup incomplete)
-        const emailConnections = allConnections.filter(
-          (c) => EMAIL_CONNECTION_TYPES.has(c.type) && c.status !== "pending"
-        );
-        setConnections(emailConnections);
+        const permsRes = await fetch(`/api/agents/${agentId}/integrations`);
 
         if (permsRes.ok) {
           const data = await permsRes.json();
-          // Find existing email permissions (look for a connection that matches an email type)
           for (const entry of data) {
-            const matchingConn = emailConnections.find((c) => c.id === entry.connectionId);
+            const matchingConn = connections.find((c) => c.id === entry.connectionId);
             if (matchingConn) {
               setConnectionId(entry.connectionId);
               initialConnectionId.current = entry.connectionId;
@@ -131,7 +117,7 @@ export function EmailPermissionSection({ agentId, onChange }: EmailPermissionSec
       }
     }
     load();
-  }, [agentId]);
+  }, [agentId, connections]);
 
   // Compute permissions array from current state
   const getPermissions = useCallback((): Array<{ model: string; operation: string }> => {
@@ -148,7 +134,6 @@ export function EmailPermissionSection({ agentId, onChange }: EmailPermissionSec
   const isDirty = useMemo(() => {
     if (loading) return false;
 
-    // No operations enabled and none initially → not dirty
     const hasAny = EMAIL_OPERATIONS.some((op) => operations[op]);
     if (!hasAny && initialPermissions.current.size === 0) return false;
 
@@ -192,21 +177,6 @@ export function EmailPermissionSection({ agentId, onChange }: EmailPermissionSec
 
   if (loading) {
     return <div className="text-muted-foreground py-4">Loading email configuration...</div>;
-  }
-
-  if (connections.length === 0) {
-    return (
-      <div className="space-y-2 py-4">
-        <p className="text-muted-foreground">No email connections configured.</p>
-        <p className="text-sm text-muted-foreground">
-          Go to{" "}
-          <a href="/settings?tab=integrations" className="underline hover:text-foreground">
-            Settings &gt; Integrations
-          </a>{" "}
-          to add a connection first.
-        </p>
-      </div>
-    );
   }
 
   return (
