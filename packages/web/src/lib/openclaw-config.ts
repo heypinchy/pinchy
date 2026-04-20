@@ -20,6 +20,24 @@ import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 
+const ODOO_DOC_SOURCES: Record<string, { id: string; label: string; path: string }> = {
+  accounting: {
+    id: "odoo-accounting",
+    label: "Odoo Accounting Best Practices",
+    path: "/integration-docs/odoo/accounting",
+  },
+  sales: {
+    id: "odoo-sales",
+    label: "Odoo Sales Best Practices",
+    path: "/integration-docs/odoo/sales",
+  },
+  inventory: {
+    id: "odoo-inventory",
+    label: "Odoo Inventory Best Practices",
+    path: "/integration-docs/odoo/inventory",
+  },
+};
+
 /**
  * Remove stale Pinchy plugins from the allow list that have no matching entry.
  * OpenClaw validates config schemas for allowed plugins — if a plugin is in

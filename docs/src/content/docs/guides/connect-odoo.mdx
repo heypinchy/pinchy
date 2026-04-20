@@ -124,6 +124,20 @@ Read-only templates are safe to deploy immediately — they can't modify your da
 Templates depend on specific Odoo modules being installed. For example, **Fleet Manager** requires the Fleet module, **Manufacturing Planner** requires MRP, and **Subscription Manager** works best with the Subscriptions module. If a template can't be activated, check the missing models list shown during agent creation and install the corresponding module in Odoo.
 :::
 
+## How agents use domain knowledge
+
+Odoo agents don't rely on hardcoded field lists or query recipes. Instead, they consult integration guides on demand:
+
+1. When unsure how something works (e.g. how to handle VAT, which invoice type to use), the agent calls `docs_list` to see available guides.
+2. It reads the relevant guide with `docs_read` — one document at a time.
+3. It then uses `odoo_schema` to discover the exact field names before querying.
+
+This means agents stay accurate even as your Odoo version or configuration changes. The guides cover accounting best practices (VAT booking, invoice types, fiscal positions), with sales and inventory guides coming soon.
+
+:::note
+Agents only see guides that match their granted model access. A Finance Controller agent sees accounting guides; it cannot access sales or inventory guides.
+:::
+
 ## Re-syncing when Odoo permissions change
 
 If the Odoo admin changes the API user's permissions after you've set up the connection, agents may lose access to certain models. When this happens, the agent gets a clear error message explaining that access was denied.

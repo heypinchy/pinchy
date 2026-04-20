@@ -1087,9 +1087,9 @@ describe("regenerateOpenClawConfig", () => {
     expect(docsConfig.docsPath).toBeUndefined(); // old format must be gone
 
     // Pinchy source must exist
-    const pincySource = docsConfig.sources.find((s: any) => s.id === "pinchy");
-    expect(pincySource).toBeDefined();
-    expect(pincySource.path).toBe("/pinchy-docs");
+    const pinchySource = docsConfig.sources.find((s: any) => s.id === "pinchy");
+    expect(pinchySource).toBeDefined();
+    expect(pinchySource.path).toBe("/pinchy-docs");
 
     // Agent gets pinchy source
     expect(docsConfig.agents["smithers-1"]).toBeDefined();
@@ -1148,7 +1148,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+          innerJoin: mockInnerJoin(permissionsData),
         })
       ),
     } as never);
@@ -1214,7 +1214,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+          innerJoin: mockInnerJoin(permissionsData),
         })
       ),
     } as never);
