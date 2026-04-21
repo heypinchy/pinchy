@@ -13,7 +13,8 @@ const PRIVATE_IP_PATTERNS = [
   /^169\.254\./, /^0\./, /^::1$/, /^fc00:/i, /^fe80:/i,
 ];
 
-const MAX_REDIRECTS = 5;
+// Allow up to 5 redirect hops beyond the initial request (6 HTTP calls total).
+const MAX_REDIRECT_HOPS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
 function isPrivateIp(ip: string): boolean {
@@ -30,24 +31,34 @@ async function isPrivateHostname(hostname: string): Promise<boolean> {
   return [...ipv4s, ...ipv6s].some(isPrivateIp);
 }
 
+// Normalize a hostname so our allow/deny comparison is case-insensitive and
+// tolerates the trailing dot that DNS uses for fully-qualified names. Node's
+// URL parser already lowercases, but we don't want to rely on that invariant
+// silently — different callers (redirect targets, user input at other layers)
+// could reintroduce mixed case.
+function normalizeHostname(hostname: string): string {
+  return hostname.toLowerCase().replace(/\.$/, "");
+}
+
 function checkDomainAllowed(
   hostname: string,
   config: Pick<WebFetchConfig, "allowedDomains" | "excludedDomains">,
 ): string | null {
+  const host = normalizeHostname(hostname);
   if (config.allowedDomains?.length) {
     const allowed = config.allowedDomains.some(
-      (d) => hostname === d || hostname.endsWith(`.${d}`),
+      (d) => host === d || host.endsWith(`.${d}`),
     );
     if (!allowed) {
-      return `This agent is not allowed to fetch content from ${hostname}. Allowed domains: ${config.allowedDomains.join(", ")}`;
+      return `This agent is not allowed to fetch content from ${host}. Allowed domains: ${config.allowedDomains.join(", ")}`;
     }
   }
   if (config.excludedDomains?.length) {
     const excluded = config.excludedDomains.some(
-      (d) => hostname === d || hostname.endsWith(`.${d}`),
+      (d) => host === d || host.endsWith(`.${d}`),
     );
     if (excluded) {
-      return `Domain ${hostname} is blocked for this agent.`;
+      return `Domain ${host} is blocked for this agent.`;
     }
   }
   return null;
@@ -94,7 +105,7 @@ export async function webFetch(
     let currentUrl = url;
     let res: Response | undefined;
 
-    for (let i = 0; i <= MAX_REDIRECTS; i++) {
+    for (let i = 0; i <= MAX_REDIRECT_HOPS; i++) {
       res = await fetch(currentUrl, {
         headers: { "User-Agent": "PinchyBot/1.0" },
         signal: AbortSignal.timeout(30000),
@@ -126,7 +137,7 @@ export async function webFetch(
         return { content: redirectDomainError, isError: true };
       }
 
-      if (i === MAX_REDIRECTS) {
+      if (i === MAX_REDIRECT_HOPS) {
         return { content: `Too many redirects.`, isError: true };
       }
 

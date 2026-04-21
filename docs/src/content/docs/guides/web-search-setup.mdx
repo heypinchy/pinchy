@@ -113,13 +113,17 @@ This is a real risk in any system where an AI agent can both read private data a
 
 ### SSRF protection
 
-Pinchy's web fetch module includes built-in SSRF (Server-Side Request Forgery) protection. Agents cannot fetch:
+Pinchy's web fetch module blocks agents from directly requesting — or being redirected into — internal network addresses:
 
-- Internal network addresses (private IP ranges like `10.x.x.x`, `192.168.x.x`, `172.16-31.x.x`)
+- Private IP ranges (`10.x.x.x`, `192.168.x.x`, `172.16-31.x.x`)
 - Localhost (`127.0.0.1`, `::1`)
 - Link-local addresses
 
-This prevents agents from using web fetch to probe your internal infrastructure.
+Every redirect hop is re-resolved and re-checked, so an attacker-controlled public site cannot smuggle the agent onto a private address via a 302.
+
+:::caution[Known limitation — DNS rebinding]
+The SSRF guard resolves the hostname before the request and relies on Node's built-in `fetch` to honour that resolution. A fully attacker-controlled DNS server could still return a public IP to the pre-check and a private IP to the actual request (classic TOCTOU). For Pinchy's typical threat model — admins configuring agents that browse the public web — this is a low-risk edge case, but don't point an agent with web-fetch at a host you don't trust to resolve honestly. Tracked for hardening in a future release.
+:::
 
 ### Credential handling
 

@@ -193,7 +193,7 @@ fi
 if [ -n "$TIBOR_ID" ]; then
   api -X PATCH "$BASE_URL/api/agents/$TIBOR_ID" -d '{
     "allowedTools": ["pinchy_ls", "pinchy_read", "shell", "web_fetch"],
-    "pluginConfig": { "allowed_paths": ["/data/Reactor Operations"] }
+    "pluginConfig": { "pinchy-files": { "allowed_paths": ["/data/Reactor Operations"] } }
   }' > /dev/null 2>&1 && echo "  ✅ Tibor: safe + powerful tools" || echo "  ⚠️  Tibor config failed"
 fi
 

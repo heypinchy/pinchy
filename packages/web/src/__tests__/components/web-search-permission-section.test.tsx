@@ -9,7 +9,6 @@ describe("WebSearchPermissionSection", () => {
     config: {},
     onChange: vi.fn(),
     showSecurityWarning: false,
-    hasApiKey: true,
   };
 
   describe("empty state", () => {
@@ -272,20 +271,6 @@ describe("WebSearchPermissionSection", () => {
   });
 
   describe("banners", () => {
-    it("shows info banner when hasApiKey is false", () => {
-      render(<WebSearchPermissionSection {...defaultProps} hasApiKey={false} />);
-
-      expect(screen.getByText(/web search requires a Brave Search API key/i)).toBeInTheDocument();
-    });
-
-    it("does not show info banner when hasApiKey is true", () => {
-      render(<WebSearchPermissionSection {...defaultProps} hasApiKey={true} />);
-
-      expect(
-        screen.queryByText(/web search requires a Brave Search API key/i)
-      ).not.toBeInTheDocument();
-    });
-
     it("shows security warning when showSecurityWarning is true", () => {
       render(<WebSearchPermissionSection {...defaultProps} showSecurityWarning={true} />);
 

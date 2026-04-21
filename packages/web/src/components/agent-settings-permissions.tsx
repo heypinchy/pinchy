@@ -310,7 +310,6 @@ export function AgentSettingsPermissions({
               config={webSearchConfig ?? {}}
               onChange={handleWebSearchConfigChange}
               showSecurityWarning={showSecurityWarning}
-              hasApiKey={hasWebSearchApiKey}
             />
           )}
         </section>

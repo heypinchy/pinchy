@@ -24,14 +24,24 @@ export async function braveSearch(
     );
   }
 
-  // Build query with domain filters
+  // Build query with domain filters. Domains are already validated at the
+  // API layer (validatePinchyWebConfig), but defend in depth: refuse anything
+  // that could break out of the `site:` operator syntax (whitespace, quotes,
+  // parens, boolean keywords) before concatenating into the query string.
+  const assertSiteSafe = (d: string) => {
+    if (/[\s"'()]/.test(d)) {
+      throw new Error(`Invalid domain for site filter: ${JSON.stringify(d)}`);
+    }
+  };
   let q = query;
   if (config.allowedDomains?.length) {
+    config.allowedDomains.forEach(assertSiteSafe);
     const sites = config.allowedDomains.map((d) => `site:${d}`).join(" OR ");
     q =
       config.allowedDomains.length === 1 ? `${q} ${sites}` : `${q} (${sites})`;
   }
   if (config.excludedDomains?.length) {
+    config.excludedDomains.forEach(assertSiteSafe);
     q += " " + config.excludedDomains.map((d) => `-site:${d}`).join(" ");
   }
 

@@ -20,17 +20,14 @@ vi.mock("@/components/odoo-permission-section", () => ({
 vi.mock("@/components/web-search-permission-section", () => ({
   WebSearchPermissionSection: ({
     showSecurityWarning,
-    hasApiKey,
   }: {
     config: unknown;
     onChange: (v: unknown) => void;
     showSecurityWarning: boolean;
-    hasApiKey: boolean;
   }) => (
     <div data-testid="web-search-section">
       Web Search Config
       {showSecurityWarning && <span data-testid="security-warning">Security Warning</span>}
-      {!hasApiKey && <span data-testid="no-api-key">No API Key</span>}
     </div>
   ),
 }));

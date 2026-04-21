@@ -310,6 +310,44 @@ describe("POST /api/agents", () => {
     expect(response.status).toBe(400);
   });
 
+  it("rejects invalid domains in pluginConfig['pinchy-web'].allowedDomains", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Bad Agent",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+          "pinchy-web": { allowedDomains: ["not a domain!!!"] },
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/domain/i);
+  });
+
+  it("rejects invalid domains in pluginConfig['pinchy-web'].excludedDomains", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Bad Agent",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+          "pinchy-web": { excludedDomains: ["@@@"] },
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/domain/i);
+  });
+
   it("should reject knowledge-base agent without allowed_paths", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",

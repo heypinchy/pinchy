@@ -10,6 +10,7 @@ import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-
 import { generateAvatarSeed } from "@/lib/avatar";
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
 import { validateAllowedPaths } from "@/lib/path-validation";
+import { validatePinchyWebConfig } from "@/lib/domain-validation";
 import {
   ensureWorkspace,
   writeWorkspaceFile,
@@ -68,6 +69,14 @@ export async function POST(request: NextRequest) {
   const template = getTemplate(templateId);
   if (!template) {
     return NextResponse.json({ error: `Unknown template: ${templateId}` }, { status: 400 });
+  }
+
+  // Validate pinchy-web domain lists (parity with PATCH — agents created with
+  // a knowledge-base template may carry a pinchy-web block in pluginConfig
+  // alongside pinchy-files.allowed_paths).
+  const pluginConfigError = validatePinchyWebConfig(pluginConfig);
+  if (pluginConfigError) {
+    return NextResponse.json({ error: pluginConfigError }, { status: 400 });
   }
 
   // Only file-access plugin requires directory selection

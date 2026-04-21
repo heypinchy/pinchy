@@ -13,7 +13,7 @@ import { db } from "@/db";
 import { agentGroups, groups, type AgentPluginConfig } from "@/db/schema";
 import { getAgentGroupIds } from "@/lib/groups";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
-import { isValidDomain } from "@/lib/domain-validation";
+import { validatePinchyWebConfig } from "@/lib/domain-validation";
 
 export async function GET(
   request: NextRequest,
@@ -63,28 +63,9 @@ export async function PATCH(
   const body = await request.json();
 
   // Validate pluginConfig structure if provided
-  if (body.pluginConfig !== undefined && body.pluginConfig !== null) {
-    if (typeof body.pluginConfig !== "object" || Array.isArray(body.pluginConfig)) {
-      return NextResponse.json({ error: "pluginConfig must be an object" }, { status: 400 });
-    }
-    const webCfg = body.pluginConfig["pinchy-web"];
-    if (webCfg !== undefined) {
-      const { allowedDomains, excludedDomains } = webCfg as Record<string, unknown>;
-      if (
-        allowedDomains !== undefined &&
-        (!Array.isArray(allowedDomains) ||
-          !(allowedDomains as unknown[]).every((d) => typeof d === "string" && isValidDomain(d)))
-      ) {
-        return NextResponse.json({ error: "Invalid domain in allowedDomains" }, { status: 400 });
-      }
-      if (
-        excludedDomains !== undefined &&
-        (!Array.isArray(excludedDomains) ||
-          !(excludedDomains as unknown[]).every((d) => typeof d === "string" && isValidDomain(d)))
-      ) {
-        return NextResponse.json({ error: "Invalid domain in excludedDomains" }, { status: 400 });
-      }
-    }
+  const pluginConfigError = validatePinchyWebConfig(body.pluginConfig);
+  if (pluginConfigError) {
+    return NextResponse.json({ error: pluginConfigError }, { status: 400 });
   }
 
   if (

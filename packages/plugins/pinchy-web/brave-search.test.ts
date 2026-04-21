@@ -110,6 +110,18 @@ describe("braveSearch", () => {
     );
   });
 
+  it("rejects unsafe domain characters in allowedDomains (defence in depth)", async () => {
+    await expect(
+      braveSearch("q", { apiKey: "key", allowedDomains: ['evil.com") OR site:victim.com ("'] }),
+    ).rejects.toThrow(/invalid domain/i);
+  });
+
+  it("rejects unsafe domain characters in excludedDomains (defence in depth)", async () => {
+    await expect(
+      braveSearch("q", { apiKey: "key", excludedDomains: ["foo bar.com"] }),
+    ).rejects.toThrow(/invalid domain/i);
+  });
+
   it("parses response into structured results", async () => {
     mockSuccessResponse([
       {

@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState, type KeyboardEvent } from "react";
-import { X, Plus, Minus, Info, AlertTriangle, ChevronDown } from "lucide-react";
+import { X, Plus, Minus, AlertTriangle, ChevronDown } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -27,7 +27,6 @@ interface WebSearchPermissionSectionProps {
   config: WebSearchConfig;
   onChange: (config: WebSearchConfig) => void;
   showSecurityWarning: boolean;
-  hasApiKey: boolean;
 }
 
 const FRESHNESS_OPTIONS = [
@@ -135,12 +134,15 @@ export function WebSearchPermissionSection({
   config,
   onChange,
   showSecurityWarning,
-  hasApiKey,
 }: WebSearchPermissionSectionProps) {
   const allowedDomains = config.allowedDomains ?? [];
   const excludedDomains = config.excludedDomains ?? [];
   const hasRestrictions = allowedDomains.length + excludedDomains.length > 0;
 
+  // Sticky: once the user clicks "Add restriction" or loads the component
+  // with existing chips, keep the input visible even if all chips are later
+  // removed. Reverting to the empty state on the last removal would feel like
+  // a flicker and force the user to re-click the button to continue editing.
   const [inputExpanded, setInputExpanded] = useState(hasRestrictions);
   const [mode, setMode] = useState<Mode>("include");
   const [inputValue, setInputValue] = useState("");
@@ -204,17 +206,6 @@ export function WebSearchPermissionSection({
 
   return (
     <div className="space-y-4">
-      {!hasApiKey && (
-        <Alert className="border-blue-500/50 text-blue-700 dark:text-blue-400">
-          <Info className="size-4" />
-          <AlertTitle>API key required</AlertTitle>
-          <AlertDescription>
-            Web search requires a Brave Search API key. Configure one in Settings &rarr;
-            Integrations.
-          </AlertDescription>
-        </Alert>
-      )}
-
       {showSecurityWarning && (
         <Alert className="border-amber-500/50 text-amber-700 dark:text-amber-400">
           <AlertTriangle className="size-4" />

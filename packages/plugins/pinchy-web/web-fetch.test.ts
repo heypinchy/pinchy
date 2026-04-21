@@ -124,6 +124,22 @@ describe("webFetch", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
+    it("matches allowedDomains case-insensitively", async () => {
+      mockHtmlResponse("<html><body><p>hi</p></body></html>");
+      const result = await webFetch("https://GitHub.com/user/repo", {
+        allowedDomains: ["github.com"],
+      });
+      expect(result.isError).toBeUndefined();
+    });
+
+    it("treats a trailing-dot hostname as matching allowedDomains", async () => {
+      mockHtmlResponse("<html><body><p>hi</p></body></html>");
+      const result = await webFetch("https://github.com./user/repo", {
+        allowedDomains: ["github.com"],
+      });
+      expect(result.isError).toBeUndefined();
+    });
+
     it("allows any public URL when no domain config is set", async () => {
       mockHtmlResponse("<html><body><p>Any content</p></body></html>");
 

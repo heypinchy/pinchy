@@ -1,4 +1,7 @@
-// audit-exempt: read-only connection test, no state changes
+// audit-exempt: read-only for web-search. The Odoo branch may auto-repair a
+// stored uid when the first successful authenticate returns a different value
+// (one-time bootstrap), which is intentional and not user-initiated state
+// change — no separate audit entry is written for that self-heal path.
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { eq } from "drizzle-orm";
