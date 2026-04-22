@@ -13,6 +13,7 @@ import {
 import { getSetting } from "@/lib/settings";
 import { decrypt } from "@/lib/encryption";
 import { computeDeniedGroups } from "@/lib/tool-registry";
+import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
@@ -156,10 +157,13 @@ export async function regenerateOpenClawConfig() {
     // Collect plugin config for agents that have file tools (pinchy_ls, pinchy_read)
     const hasFileTools = allowedTools.some((t: string) => t === "pinchy_ls" || t === "pinchy_read");
     if (hasFileTools && agent.pluginConfig) {
-      if (!pluginConfigs["pinchy-files"]) {
-        pluginConfigs["pinchy-files"] = {};
+      const filesConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-files"];
+      if (filesConfig) {
+        if (!pluginConfigs["pinchy-files"]) {
+          pluginConfigs["pinchy-files"] = {};
+        }
+        pluginConfigs["pinchy-files"][agent.id] = filesConfig as Record<string, unknown>;
       }
-      pluginConfigs["pinchy-files"][agent.id] = agent.pluginConfig as Record<string, unknown>;
     }
 
     // Collect plugin config for agents that have context tools (pinchy_save_*)
@@ -383,6 +387,61 @@ export async function regenerateOpenClawConfig() {
         agents: odooAgentConfigs,
       },
     };
+  }
+
+  // Collect web search configs
+  const webSearchConnections = await db
+    .select()
+    .from(integrationConnections)
+    .where(eq(integrationConnections.type, "web-search"));
+
+  if (webSearchConnections.length > 0) {
+    const webConn = webSearchConnections[0];
+
+    // Robust against key rotation: skip the web-search plugin entirely if the
+    // stored credentials can't be decrypted. Without a valid API key the
+    // plugin would crash on every tool call — better to disable it and let
+    // the admin delete/re-add the connection via Settings → Integrations.
+    let decryptedWebCreds: { apiKey: string } | null = null;
+    try {
+      decryptedWebCreds = JSON.parse(decrypt(webConn.credentials));
+    } catch (err) {
+      console.warn(
+        `[openclaw-config] Skipping Web Search integration ${webConn.id} (${webConn.name}) — ` +
+          `credentials can't be decrypted. ENCRYPTION_KEY may have changed. Admin must ` +
+          `delete and re-add the integration.`,
+        err
+      );
+    }
+
+    if (decryptedWebCreds) {
+      const webAgentConfigs: Record<string, Record<string, unknown>> = {};
+
+      for (const agent of allAgents) {
+        const allowedTools = (agent.allowedTools as string[]) || [];
+        const hasWebSearch = allowedTools.includes("pinchy_web_search");
+        const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
+
+        if (hasWebSearch || hasWebFetch) {
+          const webConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-web"] ?? {};
+          const tools: string[] = [];
+          if (hasWebSearch) tools.push("pinchy_web_search");
+          if (hasWebFetch) tools.push("pinchy_web_fetch");
+
+          webAgentConfigs[agent.id] = { tools, ...webConfig };
+        }
+      }
+
+      if (Object.keys(webAgentConfigs).length > 0) {
+        entries["pinchy-web"] = {
+          enabled: true,
+          config: {
+            braveApiKey: decryptedWebCreds.apiKey,
+            agents: webAgentConfigs,
+          },
+        };
+      }
+    }
   }
 
   // Collect email integration configs for agents with email provider permissions.

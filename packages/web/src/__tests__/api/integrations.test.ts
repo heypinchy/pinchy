@@ -375,6 +375,34 @@ describe("POST /api/integrations", () => {
     });
   });
 
+  it("should return 409 when creating a duplicate web-search connection", async () => {
+    // Mock: existing web-search connection found
+    mockSelectFrom.mockImplementationOnce(() => {
+      const webConn = { ...mockConnection, id: "ws-existing", type: "web-search" };
+      const result = Promise.resolve([webConn]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([webConn]);
+      return result;
+    });
+
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "web-search",
+        name: "Brave Search",
+        credentials: { apiKey: "BSA-test-key" },
+      }),
+    });
+    const response = await POST(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.error).toContain("already exists");
+  });
+
   it("should call appendAuditLog on create", async () => {
     const { POST } = await import("@/app/api/integrations/route");
 
@@ -569,6 +597,65 @@ describe("PATCH /api/integrations/[connectionId]", () => {
         body: JSON.stringify({ credentials: { url: "bad" } }),
       }),
       { params: Promise.resolve({ connectionId: "conn-1" }) }
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it("should accept web-search credentials for web-search connections", async () => {
+    const webSearchConnection = {
+      ...mockConnection,
+      id: "ws-1",
+      type: "web-search",
+      name: "Brave Search",
+    };
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([webSearchConnection]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([webSearchConnection]);
+      return result;
+    });
+
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await PATCH(
+      makeRequest("/api/integrations/ws-1", {
+        method: "PATCH",
+        body: JSON.stringify({ credentials: { apiKey: "new-brave-key" } }),
+      }),
+      { params: Promise.resolve({ connectionId: "ws-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockEncrypt).toHaveBeenCalledWith(JSON.stringify({ apiKey: "new-brave-key" }));
+  });
+
+  it("should reject odoo credentials for web-search connections", async () => {
+    const webSearchConnection = {
+      ...mockConnection,
+      id: "ws-1",
+      type: "web-search",
+      name: "Brave Search",
+    };
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([webSearchConnection]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([webSearchConnection]);
+      return result;
+    });
+
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await PATCH(
+      makeRequest("/api/integrations/ws-1", {
+        method: "PATCH",
+        body: JSON.stringify({
+          credentials: { url: "https://odoo.example.com", db: "prod", login: "admin", apiKey: "x" },
+        }),
+      }),
+      { params: Promise.resolve({ connectionId: "ws-1" }) }
     );
 
     expect(response.status).toBe(400);
@@ -811,6 +898,94 @@ describe("POST /api/integrations/[connectionId]/test", () => {
   });
 });
 
+describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
+  let mockFetch: ReturnType<typeof vi.fn>;
+  const originalFetch = global.fetch;
+
+  const webSearchConnection = {
+    ...mockConnection,
+    id: "conn-ws-1",
+    type: "web-search",
+    name: "Brave Search",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockFetch = vi.fn();
+    global.fetch = mockFetch;
+    mockDecrypt.mockReturnValue(JSON.stringify({ apiKey: "BSA-valid-key" }));
+    mockSelectFrom.mockImplementation(() => {
+      const result = Promise.resolve([webSearchConnection]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([webSearchConnection]);
+      return result;
+    });
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+    mockDecrypt.mockReturnValue(
+      JSON.stringify({
+        url: "https://odoo.example.com",
+        db: "prod",
+        login: "admin",
+        apiKey: "secret-key",
+        uid: 2,
+      })
+    );
+  });
+
+  it("should return success when Brave API key is valid", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true });
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/conn-ws-1/test", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-ws-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.search.brave.com/res/v1/web/search?q=test&count=1",
+      { headers: { "X-Subscription-Token": "BSA-valid-key" } }
+    );
+  });
+
+  it("should return error when Brave API key is invalid", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 401 });
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/conn-ws-1/test", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-ws-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Invalid API key");
+  });
+
+  it("should return error when credentials have no apiKey", async () => {
+    mockDecrypt.mockReturnValueOnce(JSON.stringify({}));
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/conn-ws-1/test", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-ws-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Invalid credentials format");
+  });
+});
+
 describe("POST /api/integrations/test-credentials", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -951,6 +1126,222 @@ describe("POST /api/integrations/test-credentials", () => {
     expect(response.status).toBe(200);
     expect(body.success).toBe(false);
     expect(body.error).toBe("Invalid API key");
+  });
+});
+
+describe("POST /api/integrations/test-credentials (web-search)", () => {
+  let mockFetch: ReturnType<typeof vi.fn>;
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockFetch = vi.fn();
+    global.fetch = mockFetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("should return success for valid Brave API key", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true });
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "web-search",
+          credentials: { apiKey: "BSAxxxxxxxxxxxxxxxxxxxxxxxx" },
+        }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://api.search.brave.com/res/v1/web/search?q=test&count=1",
+      { headers: { "X-Subscription-Token": "BSAxxxxxxxxxxxxxxxxxxxxxxxx" } }
+    );
+  });
+
+  it("should return error for invalid Brave API key", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 401 });
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "web-search",
+          credentials: { apiKey: "invalid-key" },
+        }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Invalid API key");
+  });
+
+  it("should return error when fetch throws", async () => {
+    mockFetch.mockRejectedValueOnce(new Error("Network error"));
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "web-search",
+          credentials: { apiKey: "BSAxxxxxxxxxxxxxxxxxxxxxxxx" },
+        }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Network error");
+  });
+
+  it("should return 400 when apiKey is missing", async () => {
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "web-search",
+          credentials: {},
+        }),
+      })
+    );
+    expect(response.status).toBe(400);
+  });
+});
+
+describe("POST /api/integrations (web-search)", () => {
+  // Helper: mock the duplicate-check select to return empty (no existing web-search)
+  function mockNoDuplicateWebSearch() {
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([]);
+      return result;
+    });
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+  });
+
+  it("should create a web-search integration", async () => {
+    mockNoDuplicateWebSearch();
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "web-search",
+        name: "Brave Search",
+        credentials: { apiKey: "BSAxxxxxxxxxxxxxxxxxxxxxxxx" },
+      }),
+    });
+    const response = await POST(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(mockEncrypt).toHaveBeenCalledWith(
+      JSON.stringify({ apiKey: "BSAxxxxxxxxxxxxxxxxxxxxxxxx" })
+    );
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "web-search",
+        name: "Brave Search",
+        credentials: "encrypted-creds",
+        data: null,
+      })
+    );
+    // Response should have masked credentials (not the API key)
+    expect(body.credentials).toEqual({ configured: true });
+    expect(body.credentials).not.toHaveProperty("apiKey");
+  });
+
+  it("should call appendAuditLog on create", async () => {
+    mockNoDuplicateWebSearch();
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "web-search",
+        name: "Brave Search",
+        credentials: { apiKey: "BSAxxxxxxxxxxxxxxxxxxxxxxxx" },
+      }),
+    });
+    await POST(request);
+
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "config.changed",
+        detail: expect.objectContaining({
+          action: "integration_created",
+          type: "web-search",
+          name: "Brave Search",
+        }),
+        outcome: "success",
+      })
+    );
+  });
+
+  it("should return 400 when apiKey is missing for web-search", async () => {
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "web-search",
+        name: "Brave Search",
+        credentials: {},
+      }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+  });
+});
+
+describe("GET /api/integrations (web-search masking)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+  });
+
+  it("should return { configured: true } for web-search connections", async () => {
+    const webSearchConnection = {
+      ...mockConnection,
+      id: "conn-ws-1",
+      type: "web-search",
+      name: "Brave Search",
+    };
+    mockSelectFrom.mockImplementationOnce(() => Promise.resolve([webSearchConnection]));
+    // No mockDecrypt override needed — maskConnectionCredentials for web-search
+    // returns { configured: true } without calling decrypt
+
+    const { GET } = await import("@/app/api/integrations/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body[0].credentials).toEqual({ configured: true });
+    expect(body[0].credentials).not.toHaveProperty("apiKey");
   });
 });
 

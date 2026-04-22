@@ -121,6 +121,34 @@ test.describe("Feature screenshots", () => {
     await screenshot(page, "agent-settings-permissions.png");
   });
 
+  test("agent settings - web search", async ({ page }) => {
+    // Taller viewport so chips + advanced options fit in one screenshot
+    await page.setViewportSize({ width: 1280, height: 960 });
+    const agentId = await getAgentId(page, "Frink");
+    if (agentId) {
+      await page.goto(`${BASE_URL}/chat/${agentId}/settings`);
+      await page.waitForTimeout(1500);
+      const tab = page.getByRole("tab", { name: /permissions/i });
+      if (await tab.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await tab.click();
+        await page.waitForTimeout(1500);
+      }
+      // Expand the Advanced options inside the Web Search section
+      const advancedTrigger = page.getByRole("button", { name: /advanced options/i });
+      if (await advancedTrigger.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await advancedTrigger.click();
+        await page.waitForTimeout(800);
+      }
+      // Bring the Web Search section into view
+      const webHeading = page.getByRole("heading", { name: /web search/i }).first();
+      if (await webHeading.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await webHeading.scrollIntoViewIfNeeded();
+        await page.waitForTimeout(500);
+      }
+    }
+    await screenshot(page, "agent-settings-web-search.png");
+  });
+
   test("agent settings - access", async ({ page }) => {
     const agentId = await getAgentId(page, "Frink");
     if (agentId) {

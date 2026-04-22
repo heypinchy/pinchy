@@ -22,12 +22,21 @@ import { isNull, sql, relations } from "drizzle-orm";
 // @/lib/audit imports the auditLog table from this file.
 
 /**
- * Per-agent plugin configuration. Currently the only plugin that stores
- * config is `pinchy-files` (knowledge-base agents), which uses
- * `allowed_paths` to scope reads. Add new fields here as plugins evolve.
+ * Per-agent plugin configuration, namespaced by plugin ID. Each plugin
+ * stores its own config under its key. This allows multiple plugins
+ * (pinchy-files, pinchy-web, etc.) to coexist in the same column.
  */
 export type AgentPluginConfig = {
-  allowed_paths?: string[];
+  "pinchy-files"?: {
+    allowed_paths: string[];
+  };
+  "pinchy-web"?: {
+    allowedDomains?: string[];
+    excludedDomains?: string[];
+    language?: string;
+    country?: string;
+    freshness?: string;
+  };
 };
 
 /**

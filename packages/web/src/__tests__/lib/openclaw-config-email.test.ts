@@ -35,6 +35,7 @@ vi.mock("@/db", () => ({
               where: vi.fn().mockResolvedValue([]),
             })
           ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     })),
@@ -134,6 +135,7 @@ describe("pinchy-email config generation", () => {
               where: vi.fn().mockResolvedValue(permissionsData),
             })
           ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -218,6 +220,7 @@ describe("pinchy-email config generation", () => {
               where: vi.fn().mockResolvedValue(permissionsData),
             })
           ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -287,6 +290,7 @@ describe("pinchy-email config generation", () => {
               where: vi.fn().mockResolvedValue(permissionsData),
             })
           ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -364,6 +368,7 @@ describe("pinchy-email config generation", () => {
               where: vi.fn().mockResolvedValue(permissionsData),
             })
           ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -444,6 +449,7 @@ describe("pinchy-email config generation", () => {
               where: vi.fn().mockResolvedValue(permissionsData),
             })
           ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);

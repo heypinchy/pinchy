@@ -18,6 +18,13 @@ RUN cd /tmp/pinchy-odoo && npm install --omit=dev && \
     cp -r /tmp/pinchy-odoo/node_modules /opt/pinchy-odoo-deps/ && \
     rm -rf /tmp/pinchy-odoo
 
+# Install pinchy-web plugin dependencies
+COPY packages/plugins/pinchy-web/package.json /tmp/pinchy-web/package.json
+RUN cd /tmp/pinchy-web && npm install --omit=dev && \
+    mkdir -p /opt/pinchy-web-deps && \
+    cp -r /tmp/pinchy-web/node_modules /opt/pinchy-web-deps/ && \
+    rm -rf /tmp/pinchy-web
+
 # Install pinchy-email plugin dependencies
 COPY packages/plugins/pinchy-email/package.json /tmp/pinchy-email/package.json
 RUN cd /tmp/pinchy-email && npm install --omit=dev && \

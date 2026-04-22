@@ -13,6 +13,7 @@ import { db } from "@/db";
 import { agentGroups, groups, type AgentPluginConfig } from "@/db/schema";
 import { getAgentGroupIds } from "@/lib/groups";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
+import { validatePinchyWebConfig } from "@/lib/domain-validation";
 
 export async function GET(
   request: NextRequest,
@@ -60,6 +61,12 @@ export async function PATCH(
   }
 
   const body = await request.json();
+
+  // Validate pluginConfig structure if provided
+  const pluginConfigError = validatePinchyWebConfig(body.pluginConfig);
+  if (pluginConfigError) {
+    return NextResponse.json({ error: pluginConfigError }, { status: 400 });
+  }
 
   if (
     body.name !== undefined &&
@@ -148,6 +155,13 @@ export async function PATCH(
     const oldTools = existingAgent.allowedTools ?? [];
     if (JSON.stringify(oldTools) !== JSON.stringify(data.allowedTools)) {
       changes.allowedTools = { from: oldTools, to: data.allowedTools };
+    }
+  }
+  if (data.pluginConfig !== undefined) {
+    const oldConfig = existingAgent.pluginConfig ?? null;
+    const newConfig = data.pluginConfig ?? null;
+    if (JSON.stringify(oldConfig) !== JSON.stringify(newConfig)) {
+      changes.pluginConfig = { from: oldConfig, to: newConfig };
     }
   }
 
