@@ -17,8 +17,94 @@ import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
+import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
+
+const EMAIL_DOC_SOURCE = {
+  id: "email",
+  label: "Email Integration Best Practices",
+  path: "/integration-docs/email",
+};
+
+const FILES_DOC_SOURCE = {
+  id: "files",
+  label: "File Access Best Practices",
+  path: "/integration-docs/files",
+};
+
+const ODOO_DOC_SOURCES: Record<string, { id: string; label: string; path: string }> = {
+  accounting: {
+    id: "odoo-accounting",
+    label: "Odoo Accounting Best Practices",
+    path: "/integration-docs/odoo/accounting",
+  },
+  sales: {
+    id: "odoo-sales",
+    label: "Odoo Sales Best Practices",
+    path: "/integration-docs/odoo/sales",
+  },
+  inventory: {
+    id: "odoo-inventory",
+    label: "Odoo Inventory Best Practices",
+    path: "/integration-docs/odoo/inventory",
+  },
+  crm: {
+    id: "odoo-crm",
+    label: "Odoo CRM Best Practices",
+    path: "/integration-docs/odoo/crm",
+  },
+  purchase: {
+    id: "odoo-purchase",
+    label: "Odoo Purchase Best Practices",
+    path: "/integration-docs/odoo/purchase",
+  },
+  hr: {
+    id: "odoo-hr",
+    label: "Odoo HR Best Practices",
+    path: "/integration-docs/odoo/hr",
+  },
+  manufacturing: {
+    id: "odoo-manufacturing",
+    label: "Odoo Manufacturing Best Practices",
+    path: "/integration-docs/odoo/manufacturing",
+  },
+  project: {
+    id: "odoo-project",
+    label: "Odoo Project & Timesheets",
+    path: "/integration-docs/odoo/project",
+  },
+  expenses: {
+    id: "odoo-expenses",
+    label: "Odoo Expenses Best Practices",
+    path: "/integration-docs/odoo/expenses",
+  },
+  recruitment: {
+    id: "odoo-recruitment",
+    label: "Odoo Recruitment Best Practices",
+    path: "/integration-docs/odoo/recruitment",
+  },
+  pos: {
+    id: "odoo-pos",
+    label: "Odoo Point of Sale Best Practices",
+    path: "/integration-docs/odoo/pos",
+  },
+  marketing: {
+    id: "odoo-marketing",
+    label: "Odoo Marketing Best Practices",
+    path: "/integration-docs/odoo/marketing",
+  },
+  fleet: {
+    id: "odoo-fleet",
+    label: "Odoo Fleet Best Practices",
+    path: "/integration-docs/odoo/fleet",
+  },
+  website: {
+    id: "odoo-website",
+    label: "Odoo Website & E-Commerce",
+    path: "/integration-docs/odoo/website",
+  },
+};
 
 /**
  * Remove stale Pinchy plugins from the allow list that have no matching entry.
@@ -134,6 +220,8 @@ export async function regenerateOpenClawConfig() {
   // Build agents list with OpenClaw-side workspace paths, tools.deny, and plugin configs
   const pluginConfigs: Record<string, Record<string, Record<string, unknown>>> = {};
   let contextPluginAgents: Record<string, { tools: string[]; userId: string }> | undefined;
+  const docSources: Array<{ id: string; label: string; path: string }> = [];
+  const agentDocConfig: Record<string, { sources: string[] }> = {};
 
   const agentsList = allAgents.map((agent) => {
     const agentEntry: Record<string, unknown> = {
@@ -163,6 +251,18 @@ export async function regenerateOpenClawConfig() {
           pluginConfigs["pinchy-files"] = {};
         }
         pluginConfigs["pinchy-files"][agent.id] = filesConfig as Record<string, unknown>;
+      }
+    }
+    if (hasFileTools) {
+      if (!docSources.find((s) => s.id === FILES_DOC_SOURCE.id)) {
+        docSources.push(FILES_DOC_SOURCE);
+      }
+      if (agentDocConfig[agent.id]) {
+        if (!agentDocConfig[agent.id].sources.includes(FILES_DOC_SOURCE.id)) {
+          agentDocConfig[agent.id].sources.push(FILES_DOC_SOURCE.id);
+        }
+      } else {
+        agentDocConfig[agent.id] = { sources: [FILES_DOC_SOURCE.id] };
       }
     }
 
@@ -237,19 +337,6 @@ export async function regenerateOpenClawConfig() {
       enabled: true,
       config: {
         agents: agentConfigs,
-      },
-    };
-  }
-
-  // Enable pinchy-docs for all personal agents (Smithers) so they can read
-  // platform documentation on demand. The plugin scopes itself to listed agents.
-  const personalAgentIds = allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => a.id);
-  if (personalAgentIds.length > 0) {
-    entries["pinchy-docs"] = {
-      enabled: true,
-      config: {
-        docsPath: "/pinchy-docs",
-        agents: Object.fromEntries(personalAgentIds.map((id) => [id, {}])),
       },
     };
   }
@@ -494,6 +581,79 @@ export async function regenerateOpenClawConfig() {
           process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
         gatewayToken,
         agents: emailAgentConfigs,
+      },
+    };
+  }
+
+  // Wire email doc source for agents that have email provider permissions
+  for (const agentId of emailPermsByAgent.keys()) {
+    if (!docSources.find((s) => s.id === EMAIL_DOC_SOURCE.id)) {
+      docSources.push(EMAIL_DOC_SOURCE);
+    }
+    if (agentDocConfig[agentId]) {
+      if (!agentDocConfig[agentId].sources.includes(EMAIL_DOC_SOURCE.id)) {
+        agentDocConfig[agentId].sources.push(EMAIL_DOC_SOURCE.id);
+      }
+    } else {
+      agentDocConfig[agentId] = { sources: [EMAIL_DOC_SOURCE.id] };
+    }
+  }
+
+  // Build pinchy-docs multi-source config (after Odoo agent configs are populated).
+  // ODOO_DOC_SOURCES maps model categories to doc source directories.
+  // Accounting docs exist at /integration-docs/odoo/accounting/.
+  // Add .md files to the sales/inventory directories to activate docs for those agents.
+  // (docSources and agentDocConfig are declared above the agent loop so file-tools
+  // wiring can populate them during the map pass.)
+
+  // Source 1: Pinchy platform docs (for personal agents / Smithers)
+  const personalAgentIds = allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => a.id);
+  if (personalAgentIds.length > 0) {
+    docSources.push({
+      id: "pinchy",
+      label: "Pinchy Platform Documentation",
+      path: "/pinchy-docs",
+    });
+    for (const id of personalAgentIds) {
+      agentDocConfig[id] = { sources: ["pinchy"] };
+    }
+  }
+
+  // For each Odoo agent, add doc sources based on model category access
+  for (const [agentId, odooConfig] of Object.entries(odooAgentConfigs)) {
+    const permissions = odooConfig.permissions as Record<string, string[]>;
+    const modelNames = Object.keys(permissions);
+
+    // Find which doc categories have at least one accessible model
+    const odooSourceIds: string[] = [];
+    for (const cat of MODEL_CATEGORIES) {
+      const docSource = ODOO_DOC_SOURCES[cat.id];
+      if (!docSource) continue;
+      if (cat.models.some((m) => modelNames.includes(m.model))) {
+        // Add source if not already in the list
+        if (!docSources.find((s) => s.id === docSource.id)) {
+          docSources.push(docSource);
+        }
+        odooSourceIds.push(docSource.id);
+      }
+    }
+
+    if (odooSourceIds.length > 0) {
+      if (agentDocConfig[agentId]) {
+        // Agent already has sources (e.g., personal Odoo agent with pinchy docs)
+        agentDocConfig[agentId].sources.push(...odooSourceIds);
+      } else {
+        agentDocConfig[agentId] = { sources: odooSourceIds };
+      }
+    }
+  }
+
+  if (Object.keys(agentDocConfig).length > 0) {
+    entries["pinchy-docs"] = {
+      enabled: true,
+      config: {
+        sources: docSources,
+        agents: agentDocConfig,
       },
     };
   }
