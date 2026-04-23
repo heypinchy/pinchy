@@ -2078,6 +2078,50 @@ describe("ClientRouter", () => {
     });
   });
 
+  describe("userMessagePersisted ack", () => {
+    it("sends { type: 'ack', clientMessageId } to browser when stream yields userMessagePersisted", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "k1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "k1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const ackMsg = messages.find((m: any) => m.type === "ack");
+      expect(ackMsg).toBeDefined();
+      expect(ackMsg).toEqual({ type: "ack", clientMessageId: "k1" });
+    });
+
+    it("does NOT forward the raw userMessagePersisted chunk to the browser", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "k1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "k1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m: any) => m.type === "userMessagePersisted")).toBe(false);
+    });
+  });
+
   describe("clientMessageId forwarding", () => {
     it("forwards clientMessageId from browser WS frame to openclaw.chat()", async () => {
       async function* fakeStream() {

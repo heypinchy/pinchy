@@ -229,6 +229,14 @@ export class ClientRouter {
             }, THINKING_HEARTBEAT_MS);
           }
 
+          if (chunk.type === "userMessagePersisted") {
+            this.sendToClient(clientWs, {
+              type: "ack",
+              clientMessageId: chunk.clientMessageId,
+            });
+            continue;
+          }
+
           if (chunk.type === "text") {
             const cleaned = chunk.text.replace(/<\/?final>/g, "");
             if (cleaned) {
