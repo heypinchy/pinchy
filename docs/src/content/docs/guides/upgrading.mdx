@@ -116,16 +116,30 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.4.3 to %%PINCHY_VERSION%%
+## Upgrading from v0.4.4 to v0.4.5
 
 Standard upgrade — no breaking changes, no new required environment variables.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.5/docker-compose.yml -o docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
-### What's fixed in %%PINCHY_VERSION%%
+### What's new in v0.4.5
+
+- **Message delivery status** — the chat interface now tracks whether each message reached the agent. A message dims briefly while the network round-trip completes; once the agent acknowledges it, the bubble returns to normal. If delivery fails, a "Couldn't deliver" notice appears.
+- **Retry button** — when a message fails to deliver, the agent doesn't respond, or a response stream drops mid-way, a Retry button appears directly below the failed message. Pinchy handles the right recovery action automatically — resend, re-trigger, or continue the partial response — depending on what went wrong. See [Message Delivery Status & Retry](/guides/retry-messages/).
+
+## Upgrading from v0.4.3 to v0.4.4
+
+Standard upgrade — no breaking changes, no new required environment variables.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.4/docker-compose.yml -o docker-compose.yml
+docker compose pull && docker compose up -d
+```
+
+### What's fixed in v0.4.4
 
 - **Integrations list no longer blanks out when one row can't be decrypted** — if the `ENCRYPTION_KEY` ever changed (e.g. accidentally overridden via `.env`), one un-decryptable row in `integration_connections` silently caused `GET /api/integrations` to return 500, and the UI fell back to "No integrations configured yet" for every integration — including freshly-added ones that would decrypt fine. Each row is now decrypted in isolation; unreadable rows surface in Settings → Integrations as a warning card with a Delete action so admins can recover without DB access. `regenerateOpenClawConfig()` got the same per-row isolation, so one broken connection no longer takes down every agent's config.
 
