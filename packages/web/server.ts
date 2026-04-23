@@ -2,7 +2,6 @@ import { createServer } from "http";
 import { parse } from "url";
 import next from "next";
 import { WebSocketServer, type WebSocket } from "ws";
-import { readFileSync } from "fs";
 import { OpenClawClient } from "openclaw-node";
 import { ClientRouter } from "./src/server/client-router";
 import { SessionCache } from "./src/server/session-cache";
@@ -31,21 +30,13 @@ const app = next({ dev });
 const handle = app.getRequestHandler();
 
 const OPENCLAW_WS_URL = process.env.OPENCLAW_WS_URL;
-const OPENCLAW_CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
-const GATEWAY_TOKEN_PATH = process.env.GATEWAY_TOKEN_PATH || "/openclaw-config/gateway-token";
 
 function readGatewayToken(): string {
-  // Try dedicated token file first (world-readable, written by OpenClaw startup)
+  // Read token from secrets.json (written by ensure-gateway-token.js on OpenClaw startup)
   try {
-    const token = readFileSync(GATEWAY_TOKEN_PATH, "utf-8").trim();
-    if (token) return token;
-  } catch {
-    // Fall through to config file
-  }
-  // Fall back to reading from main config (works when running as same user)
-  try {
-    const config = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8"));
-    return config.gateway?.auth?.token ?? "";
+    const { readSecretsFile } =
+      require("./src/lib/openclaw-secrets") as typeof import("./src/lib/openclaw-secrets");
+    return readSecretsFile().gateway?.token ?? "";
   } catch {
     return "";
   }
