@@ -125,6 +125,12 @@ curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%
 docker compose pull && docker compose up -d
 ```
 
+### What's new in %%PINCHY_VERSION%%
+
+- **Web Search integration** — connect Pinchy to the Brave Search API and grant agents per-tool access to search and page fetch. Per-agent filters for domain allow/deny, freshness, language, and region let you scope what each agent can reach. See [Set Up Web Search](/guides/web-search-setup/).
+- **Gmail integration** — connect Google accounts via OAuth and give agents scoped email access: read, create drafts, or send. A guided wizard walks admins through the Google Cloud Console setup. See [Connect Email](/guides/connect-email/).
+- **Per-template model recommendations** — agent templates now declare preferred model tiers (fast, balanced, reasoning) and required capabilities (vision, long-context, tools). When creating an agent from a template, Pinchy picks the best match from your installed models automatically.
+
 ### What's fixed in %%PINCHY_VERSION%%
 
 - **Integrations list no longer blanks out when one row can't be decrypted** — if the `ENCRYPTION_KEY` ever changed (e.g. accidentally overridden via `.env`), one un-decryptable row in `integration_connections` silently caused `GET /api/integrations` to return 500, and the UI fell back to "No integrations configured yet" for every integration — including freshly-added ones that would decrypt fine. Each row is now decrypted in isolation; unreadable rows surface in Settings → Integrations as a warning card with a Delete action so admins can recover without DB access. `regenerateOpenClawConfig()` got the same per-row isolation, so one broken connection no longer takes down every agent's config.
