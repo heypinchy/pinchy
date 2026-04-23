@@ -282,8 +282,9 @@ test.describe("chat delivery status and retry E2E", () => {
         readyState = 1;
         binaryType: string = "blob";
 
-        // Track which connection this is so reconnects get a different response
-        private readonly connectionIndex: number = 0;
+        // Track which connection this is — reconnects are refused so partial
+        // state is preserved for assertion.
+        private connectionIndex: number = 0;
         static connectionCount = 0;
 
         constructor(url: string) {
@@ -292,7 +293,18 @@ test.describe("chat delivery status and retry E2E", () => {
           }
           MockWebSocket.connectionCount += 1;
           this.connectionIndex = MockWebSocket.connectionCount;
-          queueMicrotask(() => this.onopen?.());
+          if (this.connectionIndex === 1) {
+            // First connection opens normally
+            queueMicrotask(() => this.onopen?.());
+          } else {
+            // Subsequent reconnect attempts close immediately — keeps partial
+            // state intact so we can assert it without the history reconcile
+            // running and wiping the local messages.
+            queueMicrotask(() => {
+              this.readyState = 3;
+              this.onclose?.();
+            });
+          }
         }
 
         addEventListener() {}
@@ -302,7 +314,6 @@ test.describe("chat delivery status and retry E2E", () => {
           const message = JSON.parse(raw) as ClientMessage;
 
           if (message.type === "history") {
-            // All reconnects see empty history — partial text is preserved locally
             setTimeout(() => {
               this.onmessage?.({
                 data: JSON.stringify({ type: "history", messages: [] }),
@@ -311,8 +322,14 @@ test.describe("chat delivery status and retry E2E", () => {
             return;
           }
 
-          if (message.type === "message" && this.connectionIndex === 1) {
-            // First connection: ack, deliver a partial chunk, then disconnect
+          if (message.type === "message") {
+            const clientMessageId = (message as { clientMessageId?: string }).clientMessageId;
+            // Ack first (matching real protocol), then a partial chunk, then disconnect
+            setTimeout(() => {
+              this.onmessage?.({
+                data: JSON.stringify({ type: "ack", clientMessageId }),
+              });
+            }, 0);
             setTimeout(() => {
               this.onmessage?.({
                 data: JSON.stringify({
@@ -321,13 +338,12 @@ test.describe("chat delivery status and retry E2E", () => {
                   messageId: "m1",
                 }),
               });
-            }, 0);
-
+            }, 10);
             // Simulate mid-stream disconnect shortly after the chunk
             setTimeout(() => {
               this.readyState = 3;
               this.onclose?.();
-            }, 20);
+            }, 30);
           }
         }
 
