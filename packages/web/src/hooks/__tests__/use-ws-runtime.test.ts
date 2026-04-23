@@ -362,6 +362,157 @@ describe("useWsRuntime — ack timeout", () => {
   });
 });
 
+// ── isRunning terminal-path guarantee tests ───────────────────────────────────
+
+describe("isRunning resets to false after every terminal path", () => {
+  beforeEach(() => {
+    wsInstances.length = 0;
+    capturedOnNew = null;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("resets after assistant stream completes (complete frame)", async () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    expect(result.current.isRunning).toBe(true);
+
+    await act(async () => {
+      latestWs().simulateMessage({ type: "chunk", messageId: "m1", content: "Hi!" });
+      latestWs().simulateMessage({ type: "complete" });
+    });
+
+    expect(result.current.isRunning).toBe(false);
+    expect(result.current.isDelayed).toBe(false);
+  });
+
+  it("resets after assistant stream errors (error WS frame)", async () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    expect(result.current.isRunning).toBe(true);
+
+    // Simulate an error frame from the server
+    await act(async () => {
+      latestWs().simulateMessage({ type: "error", message: "Something went wrong" });
+    });
+
+    expect(result.current.isRunning).toBe(false);
+    expect(result.current.isDelayed).toBe(false);
+  });
+
+  it("resets after WebSocket disconnects mid-stream", async () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    // Simulate chunk arriving (stream started), then WS closes
+    await act(async () => {
+      latestWs().simulateMessage({ type: "chunk", messageId: "m1", content: "Partial..." });
+    });
+
+    expect(result.current.isRunning).toBe(true);
+
+    // Now disconnect mid-stream — onclose fires
+    await act(async () => {
+      latestWs().simulateClose();
+    });
+
+    expect(result.current.isRunning).toBe(false);
+    expect(result.current.isDelayed).toBe(false);
+  });
+
+  it("resets after 60s stuck timeout with no activity", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    expect(result.current.isRunning).toBe(true);
+
+    // Advance 60 seconds — stuck timer fires, isRunning must reset
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    expect(result.current.isRunning).toBe(false);
+    expect(result.current.isDelayed).toBe(false);
+  });
+
+  it("does NOT reset isRunning on 10s ack timeout — stuck timer (60s) is the safety valve", async () => {
+    // The 10s ack timeout governs message DELIVERY status only — it marks the
+    // user message as "failed" if OpenClaw never sent an ack. But isRunning is
+    // intentionally kept true until a real terminal event (complete / error /
+    // disconnect / 60s stuck timeout). This keeps the spinner showing so the
+    // user knows the agent might still be working (e.g. OpenClaw received the
+    // message but the ack frame was dropped). The 60s stuck timer is the
+    // unconditional safety valve that resets isRunning if truly nothing happens.
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    expect(result.current.isRunning).toBe(true);
+
+    // Advance 10 seconds — ack timeout fires, message → failed
+    // The WebSocket stays connected (no simulateClose)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    // isRunning is still true — ack timeout only affects delivery status, not running state
+    expect(result.current.isRunning).toBe(true);
+
+    // Advance to 60 seconds — stuck timer fires, now isRunning resets
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50_000);
+    });
+
+    expect(result.current.isRunning).toBe(false);
+    expect(result.current.isDelayed).toBe(false);
+  });
+});
+
 // ── History reconcile on reconnect tests ──────────────────────────────────────
 
 describe("history reconcile on reconnect", () => {

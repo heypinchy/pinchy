@@ -70,6 +70,7 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 
 export function useWsRuntime(agentId: string): {
   runtime: AssistantRuntime;
+  isRunning: boolean;
   isConnected: boolean;
   isDelayed: boolean;
   isHistoryLoaded: boolean;
@@ -291,6 +292,12 @@ export function useWsRuntime(agentId: string): {
             // Server keep-alive: defeats browser/proxy WebSocket idle
             // timeouts during long pauses (e.g. local Ollama tool-use loops).
             // Reset stuck timer so a slow-but-alive agent doesn't get killed.
+            // Also cancel any pending ack timers — OpenClaw is clearly processing
+            // this session so the message was received.
+            for (const timer of pendingAckTimers.current.values()) {
+              clearTimeout(timer);
+            }
+            pendingAckTimers.current.clear();
             isRunningRef.current = true;
             setIsRunning(true);
             resetStuckTimer();
@@ -298,6 +305,12 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "chunk") {
+            // Cancel pending ack timers — receiving a chunk proves OpenClaw got the
+            // message, so the ack timeout would be a false positive if it fired now.
+            for (const timer of pendingAckTimers.current.values()) {
+              clearTimeout(timer);
+            }
+            pendingAckTimers.current.clear();
             isRunningRef.current = true;
             setIsRunning(true);
             resetStuckTimer();
@@ -506,6 +519,8 @@ export function useWsRuntime(agentId: string): {
 
       // Start a 10-second ack timeout. If no ack arrives before the timer
       // fires, dispatch a "timeout" action to transition the message to "failed".
+      // Note: isRunning is NOT reset here — the ack timeout only covers message
+      // delivery status. isRunning resets only on complete/error/disconnect/stuck.
       const ackTimer = setTimeout(() => {
         pendingAckTimers.current.delete(clientMessageId);
         dispatchMessages({ type: "timeout", clientMessageId });
@@ -529,5 +544,13 @@ export function useWsRuntime(agentId: string): {
 
   const isOrphaned = computeIsOrphaned(messages, { isRunning, isHistoryLoaded });
 
-  return { runtime, isConnected, isDelayed, isHistoryLoaded, reconnectExhausted, isOrphaned };
+  return {
+    runtime,
+    isRunning,
+    isConnected,
+    isDelayed,
+    isHistoryLoaded,
+    reconnectExhausted,
+    isOrphaned,
+  };
 }
