@@ -361,3 +361,124 @@ describe("useWsRuntime — ack timeout", () => {
     expect(result.current.isOrphaned).toBe(false);
   });
 });
+
+// ── History reconcile on reconnect tests ──────────────────────────────────────
+
+describe("history reconcile on reconnect", () => {
+  beforeEach(() => {
+    wsInstances.length = 0;
+    capturedOnNew = null;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("upgrades in-flight sending messages to sent when they appear in reloaded history", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    // Connect and load initial empty history
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    // Send a user message — it will have status "sending"
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello from user"));
+    });
+
+    // Simulate a history reload that contains the user message (it was persisted).
+    // Note: because shouldRecoverFromHistory=false here (no disconnect),
+    // the local message list keeps the user message — but its status is reconciled
+    // from "sending" to "sent" because the content appears in history.
+    await act(async () => {
+      latestWs().simulateMessage({
+        type: "history",
+        messages: [
+          { role: "user", content: "hello from user", timestamp: 1000 },
+          { role: "assistant", content: "Hi there!", timestamp: 2000 },
+        ],
+      });
+    });
+
+    // Deliver complete so isRunning resets
+    await act(async () => {
+      latestWs().simulateMessage({ type: "complete" });
+    });
+
+    // After complete: local messages = [user "hello from user" status="sent"].
+    // Last message is user with status "sent" → isOrphaned=true.
+    // This confirms the reconcile upgraded "sending" → "sent".
+    expect(result.current.isOrphaned).toBe(true);
+  });
+
+  it("marks in-flight sending message as sent (isOrphaned=true) when history contains it and assistant hasn't replied yet", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    // Connect and load initial empty history
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    // Send a user message — it will have status "sending"
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("persisted message"));
+    });
+
+    // History reload: contains the user message but no assistant reply yet
+    // (e.g. agent is still thinking after reconnect)
+    await act(async () => {
+      latestWs().simulateMessage({
+        type: "history",
+        messages: [{ role: "user", content: "persisted message", timestamp: 1000 }],
+      });
+    });
+
+    // Deliver complete so isRunning resets
+    await act(async () => {
+      latestWs().simulateMessage({ type: "complete" });
+    });
+
+    // After complete: last message is user with status "sent" (reconciled from history),
+    // isRunning=false, isHistoryLoaded=true → isOrphaned=true
+    expect(result.current.isOrphaned).toBe(true);
+  });
+
+  it("fails in-flight sending messages that don't appear in reloaded history", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    // Connect and load initial empty history
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    // Send a user message — it will have status "sending"
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("lost message"));
+    });
+
+    // Simulate a history reload that does NOT contain the message
+    // (it was never persisted — connection was lost before OpenClaw received it)
+    await act(async () => {
+      latestWs().simulateMessage({
+        type: "history",
+        messages: [],
+      });
+    });
+
+    // Deliver complete so isRunning resets
+    await act(async () => {
+      latestWs().simulateMessage({ type: "complete" });
+    });
+
+    // The sending message should now be "failed" — not in history.
+    // isOrphaned is false because status="failed" (not "sent")
+    expect(result.current.isOrphaned).toBe(false);
+  });
+});

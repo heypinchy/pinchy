@@ -242,26 +242,45 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "history") {
-            const historyMessages = (data.messages ?? []).map(
-              (msg: { role: string; content: string; timestamp?: string }) => ({
-                id: uuid(),
-                role: msg.role === "system" ? "assistant" : msg.role,
-                content: msg.content,
-                timestamp: msg.timestamp,
-              })
+            const serverMessages: Array<{ role: string; content: string; timestamp?: string }> =
+              data.messages ?? [];
+            const historyMessages = serverMessages.map((msg) => ({
+              id: uuid(),
+              role: msg.role === "system" ? "assistant" : msg.role,
+              content: msg.content,
+              timestamp: msg.timestamp,
+            }));
+            // Build a set of user message content strings from the server history.
+            // Used below to reconcile in-flight "sending" messages by content match.
+            const historyUserContents = new Set(
+              serverMessages.filter((msg) => msg.role === "user").map((msg) => msg.content)
             );
             const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
             setMessages((prev) => {
-              if (prev.length === 0) return historyMessages;
-
-              // After reconnects, replace a partial trailing assistant message
-              // with canonical history from the server.
-              const last = prev[prev.length - 1];
-              if (shouldRecoverFromHistory && last?.role === "assistant") {
-                return historyMessages;
+              let next: WsMessage[];
+              if (prev.length === 0) {
+                next = historyMessages;
+              } else {
+                // After reconnects, replace a partial trailing assistant message
+                // with canonical history from the server.
+                const last = prev[prev.length - 1];
+                if (shouldRecoverFromHistory && last?.role === "assistant") {
+                  next = historyMessages;
+                } else {
+                  next = prev;
+                }
               }
 
-              return prev;
+              // Reconcile any in-flight "sending" messages against server history.
+              // If a sending message's content appears in the history, it was
+              // persisted → upgrade to "sent". Otherwise it was lost → mark "failed".
+              return next.map((msg) => {
+                if (msg.status !== "sending") return msg;
+                return {
+                  ...msg,
+                  status: historyUserContents.has(msg.content) ? "sent" : "failed",
+                };
+              });
             });
             shouldRecoverFromHistoryRef.current = false;
             setIsHistoryLoaded(true);
