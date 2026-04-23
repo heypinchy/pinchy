@@ -1234,7 +1234,11 @@ describe("pinchy-web config", () => {
 
     expect(config.plugins.entries["pinchy-web"]).toBeDefined();
     expect(config.plugins.entries["pinchy-web"].enabled).toBe(true);
-    expect(config.plugins.entries["pinchy-web"].config.braveApiKey).toBe("BSA-test-key");
+    expect(config.plugins.entries["pinchy-web"].config.braveApiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/integrations/ws-conn-1/braveApiKey",
+    });
     expect(config.plugins.entries["pinchy-web"].config.agents["web-agent"]).toEqual({
       tools: ["pinchy_web_search", "pinchy_web_fetch"],
       allowedDomains: ["docs.example.com"],
@@ -1464,6 +1468,85 @@ describe("pinchy-web config", () => {
       country: "us",
       freshness: "week",
     });
+  });
+});
+
+describe("pinchy-web braveApiKey as SecretRef", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("writes pinchy-web.braveApiKey as SecretRef", async () => {
+    const agentsData = [
+      {
+        id: "web-agent",
+        name: "Web Agent",
+        model: "anthropic/claude-sonnet-4-20250514",
+        allowedTools: ["pinchy_web_search"],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+    ];
+
+    const webSearchConnections = [
+      {
+        id: "ws-conn-42",
+        type: "web-search",
+        name: "Brave Search",
+        description: "",
+        credentials: JSON.stringify({ apiKey: "BSA-secret-key" }),
+        data: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(Promise.resolve(agentsData), {
+            innerJoin: mockInnerJoin([]),
+          });
+        }
+        if (callCount === 3) {
+          return Object.assign(Promise.resolve(webSearchConnections), {
+            innerJoin: mockInnerJoin([]),
+            where: vi.fn().mockResolvedValue(webSearchConnections),
+          });
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    // openclaw.json must contain a SecretRef for braveApiKey, not the plaintext key
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    expect(config.plugins.entries["pinchy-web"].config.braveApiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/integrations/ws-conn-42/braveApiKey",
+    });
+
+    // secrets.json must contain the actual key
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.integrations?.["ws-conn-42"]?.braveApiKey).toBe("BSA-secret-key");
   });
 });
 

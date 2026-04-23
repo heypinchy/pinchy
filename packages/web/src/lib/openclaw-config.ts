@@ -455,10 +455,14 @@ export async function regenerateOpenClawConfig() {
       }
 
       if (Object.keys(webAgentConfigs).length > 0) {
+        integrationSecrets[webConn.id] = {
+          ...(integrationSecrets[webConn.id] || {}),
+          braveApiKey: decryptedWebCreds.apiKey,
+        };
         entries["pinchy-web"] = {
           enabled: true,
           config: {
-            braveApiKey: decryptedWebCreds.apiKey,
+            braveApiKey: secretRef(`/integrations/${webConn.id}/braveApiKey`),
             agents: webAgentConfigs,
           },
         };
