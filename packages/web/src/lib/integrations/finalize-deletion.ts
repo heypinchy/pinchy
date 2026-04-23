@@ -15,6 +15,8 @@ export async function finalizeIntegrationDeletion(params: {
   const { actorId, connection, detachedAgents } = params;
 
   if (connection.type === "google") {
+    // Called after the connection has already been deleted, so this query
+    // returns zero rows only if no other Google connections remain.
     const remaining = await db
       .select({ id: integrationConnections.id })
       .from(integrationConnections)

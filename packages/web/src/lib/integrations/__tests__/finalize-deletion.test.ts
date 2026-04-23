@@ -105,4 +105,17 @@ describe("finalizeIntegrationDeletion", () => {
     expect(errSpy).toHaveBeenCalled();
     errSpy.mockRestore();
   });
+
+  it("propagates OAuth cleanup failure (is not swallowed)", async () => {
+    mockDeleteOAuth.mockRejectedValueOnce(new Error("settings DB down"));
+    const whereSpy = vi.fn().mockResolvedValue([]);
+    mockDb.select.mockReturnValue({ from: () => ({ where: whereSpy }) });
+    await expect(
+      finalizeIntegrationDeletion({
+        actorId: "u1",
+        connection: { ...baseConn, type: "google" },
+        detachedAgents: [],
+      })
+    ).rejects.toThrow("settings DB down");
+  });
 });
