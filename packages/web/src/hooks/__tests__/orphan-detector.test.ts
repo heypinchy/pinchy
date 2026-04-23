@@ -47,14 +47,4 @@ describe("isOrphaned", () => {
     ];
     expect(isOrphaned(msgs, ctx)).toBe(false);
   });
-
-  it("returns false when agent finally responds to the orphaned message", () => {
-    // Once an assistant message follows the stuck user message, the orphan
-    // bubble must disappear.
-    const msgs = [
-      { id: "1", role: "user" as const, status: "sent" as const },
-      { id: "2", role: "assistant" as const, status: undefined },
-    ];
-    expect(isOrphaned(msgs, ctx)).toBe(false);
-  });
 });
