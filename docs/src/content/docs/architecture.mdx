@@ -249,11 +249,11 @@ For the user-facing setup, see [Set Up Telegram](/guides/telegram-setup/).
 
 Integrations let agents work with external business data — email accounts, ERPs, search engines — without giving them direct system access. Each integration is a connection stored in the database, referenced by agents via per-agent permissions.
 
-| Integration        | Connection method | Stored credentials                |
-| ------------------ | ----------------- | --------------------------------- |
-| **Gmail**          | OAuth 2.0         | Access token + refresh token      |
-| **Odoo**           | API key           | URL, database, login, API key     |
-| **Web Search**     | API key           | Brave Search API key              |
+| Integration    | Connection method | Stored credentials            |
+| -------------- | ----------------- | ----------------------------- |
+| **Gmail**      | OAuth 2.0         | Access token + refresh token  |
+| **Odoo**       | API key           | URL, database, login, API key |
+| **Web Search** | API key           | Brave Search API key          |
 
 All credentials are encrypted at rest with AES-256-GCM and isolated per-row: a single decryption failure no longer hides every integration (see upgrade notes for %%PINCHY_VERSION%%). Credentials never reach the OpenClaw config file — plugins fetch them on-demand via Pinchy's internal API, authenticated with the shared gateway token.
 
@@ -278,17 +278,17 @@ When unlocked, Pinchy shows an insecure-mode warning banner to admins in the UI.
 
 ## Tech stack
 
-| Layer          | Technology                                       |
-| -------------- | ------------------------------------------------ |
-| Frontend       | Next.js 16, React 19, Tailwind CSS v4, shadcn/ui |
-| Chat UI        | assistant-ui (React)                             |
-| Auth           | Better Auth (email/password, DB sessions)        |
-| Database       | PostgreSQL 17, Drizzle ORM                       |
-| Agent runtime  | OpenClaw Gateway (WebSocket)                     |
-| Encryption     | AES-256-GCM (Node.js crypto)                     |
-| Testing        | Vitest, React Testing Library, Playwright (E2E)  |
-| CI/CD          | GitHub Actions, ESLint, Prettier                 |
-| Deployment     | Docker Compose, pre-built images on GHCR         |
-| Reverse proxy  | Caddy (recommended) or nginx                     |
-| SBOM           | Syft via `anchore/sbom-action`                   |
-| License        | AGPL-3.0                                         |
+| Layer         | Technology                                       |
+| ------------- | ------------------------------------------------ |
+| Frontend      | Next.js 16, React 19, Tailwind CSS v4, shadcn/ui |
+| Chat UI       | assistant-ui (React)                             |
+| Auth          | Better Auth (email/password, DB sessions)        |
+| Database      | PostgreSQL 17, Drizzle ORM                       |
+| Agent runtime | OpenClaw Gateway (WebSocket)                     |
+| Encryption    | AES-256-GCM (Node.js crypto)                     |
+| Testing       | Vitest, React Testing Library, Playwright (E2E)  |
+| CI/CD         | GitHub Actions, ESLint, Prettier                 |
+| Deployment    | Docker Compose, pre-built images on GHCR         |
+| Reverse proxy | Caddy (recommended) or nginx                     |
+| SBOM          | Syft via `anchore/sbom-action`                   |
+| License       | AGPL-3.0                                         |

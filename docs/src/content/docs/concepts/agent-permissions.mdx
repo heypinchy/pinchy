@@ -122,11 +122,11 @@ Each agent can also have per-agent filters (Domain restrictions with Include/Exc
 
 When you connect a Gmail account and grant an agent access to it, Pinchy enables email tools based on which operations you check. Each permission maps to a specific set of tools.
 
-| Permission        | Tools enabled                                  | What the agent can do                           |
-| ----------------- | ---------------------------------------------- | ----------------------------------------------- |
-| **Read messages** | `email_list`, `email_read`, `email_search`     | List, read, and search emails                   |
-| **Create drafts** | above + `email_draft`                          | Create draft emails, including reply drafts     |
-| **Send messages** | above + `email_send`                           | Send emails immediately — cannot be undone      |
+| Permission        | Tools enabled                              | What the agent can do                       |
+| ----------------- | ------------------------------------------ | ------------------------------------------- |
+| **Read messages** | `email_list`, `email_read`, `email_search` | List, read, and search emails               |
+| **Create drafts** | above + `email_draft`                      | Create draft emails, including reply drafts |
+| **Send messages** | above + `email_send`                       | Send emails immediately — cannot be undone  |
 
 Permissions are additive — granting Send automatically includes Read and Draft. Each permission is selected per-agent, so you can have one agent that only reads email and another that can send on your behalf.
 

@@ -7,14 +7,14 @@ import { Aside, Badge } from "@astrojs/starlight/components";
 
 Every agent in Pinchy is configured through a settings page. To open it, navigate to an agent's chat and click the **gear icon** in the top bar. Which tabs you see depends on your role and the agent type.
 
-| Tab              | What it controls                          | Who can see it                |
-| ---------------- | ----------------------------------------- | ----------------------------- |
-| **General**      | Name, tagline, model, agent type          | Everyone who can edit         |
-| **Personality**  | Avatar, personality preset, SOUL.md       | Everyone who can edit         |
-| **Instructions** | AGENTS.md operating instructions          | Everyone who can edit         |
-| **Permissions**  | Tool allow-list, directory access         | Admins only, shared agents    |
-| **Access** <Badge text="Enterprise" variant="note" />       | Visibility mode, group assignment         | Admins only, shared agents    |
-| **Telegram**     | Connect a Telegram bot to this agent      | Admins only                   |
+| Tab                                                   | What it controls                     | Who can see it             |
+| ----------------------------------------------------- | ------------------------------------ | -------------------------- |
+| **General**                                           | Name, tagline, model, agent type     | Everyone who can edit      |
+| **Personality**                                       | Avatar, personality preset, SOUL.md  | Everyone who can edit      |
+| **Instructions**                                      | AGENTS.md operating instructions     | Everyone who can edit      |
+| **Permissions**                                       | Tool allow-list, directory access    | Admins only, shared agents |
+| **Access** <Badge text="Enterprise" variant="note" /> | Visibility mode, group assignment    | Admins only, shared agents |
+| **Telegram**                                          | Connect a Telegram bot to this agent | Admins only                |
 
 The Permissions and Access tabs exist only for shared agents. Personal agents (the auto-created Smithers each user gets) don't show them because there's nothing to share. Admins still see the Telegram tab on Smithers, but the main Smithers bot is managed centrally via **Settings → Telegram** rather than per-agent.
 
