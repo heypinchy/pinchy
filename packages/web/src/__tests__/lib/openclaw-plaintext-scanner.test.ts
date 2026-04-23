@@ -15,15 +15,26 @@ describe("findPlaintextSecrets", () => {
   });
 
   it("flags Telegram bot tokens", () => {
-    const cfg = {
+    // 34-char second part (official Telegram format)
+    const cfg34 = {
+      channels: {
+        telegram: {
+          accounts: { a1: { botToken: "110201543:AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw" } },
+        },
+      },
+    };
+    expect(findPlaintextSecrets(cfg34)).toHaveLength(1);
+    expect(findPlaintextSecrets(cfg34)[0].path).toBe("channels.telegram.accounts.a1.botToken");
+
+    // 35-char second part (also valid)
+    const cfg35 = {
       channels: {
         telegram: {
           accounts: { a1: { botToken: "123456789:AAEhBP0av28_abcdefghijklmnopqrstuvw" } },
         },
       },
     };
-    expect(findPlaintextSecrets(cfg)).toHaveLength(1);
-    expect(findPlaintextSecrets(cfg)[0].path).toBe("channels.telegram.accounts.a1.botToken");
+    expect(findPlaintextSecrets(cfg35)).toHaveLength(1);
   });
 
   it("accepts SecretRef objects (no match)", () => {
