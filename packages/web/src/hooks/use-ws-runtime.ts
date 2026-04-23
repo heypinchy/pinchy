@@ -13,6 +13,9 @@ import {
   type AssistantRuntime,
 } from "@assistant-ui/react";
 import type { ChatError } from "@/components/assistant-ui/chat-error-message";
+import { reduceMessages, type Action } from "./message-status-reducer";
+import type { MessageStatus } from "./message-status-reducer";
+import { isOrphaned as computeIsOrphaned } from "./orphan-detector";
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 
@@ -23,6 +26,8 @@ interface WsMessage {
   images?: string[];
   timestamp?: string;
   error?: ChatError;
+  /** Delivery status — only set for user messages managed by the reducer */
+  status?: MessageStatus;
 }
 
 const DELAY_HINT_MS = 15_000;
@@ -69,6 +74,7 @@ export function useWsRuntime(agentId: string): {
   isDelayed: boolean;
   isHistoryLoaded: boolean;
   reconnectExhausted: boolean;
+  isOrphaned: boolean;
 } {
   const { triggerRestart } = useRestart();
   const [messages, setMessages] = useState<WsMessage[]>([]);
@@ -104,6 +110,20 @@ export function useWsRuntime(agentId: string): {
     setIsDelayed(false);
     setIsHistoryLoaded(false);
   }
+
+  /**
+   * Dispatch a reducer action against the messages state.
+   * The hook's WsMessage is a superset of the reducer's WsMessage shape —
+   * we cast here so the pure reducer can operate on the shared `id` and
+   * `status` fields without needing to know about `images`, `error`, etc.
+   */
+  const dispatchMessages = useCallback((action: Action) => {
+    setMessages(
+      (prev) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        reduceMessages(prev as any, action) as unknown as WsMessage[]
+    );
+  }, []);
 
   useEffect(() => {
     // Update before connect() so stale handlers from the previous agent see
@@ -246,6 +266,12 @@ export function useWsRuntime(agentId: string): {
             return;
           }
 
+          if (data.type === "ack") {
+            // Transition user message sending → sent
+            dispatchMessages({ type: "ack", clientMessageId: data.clientMessageId as string });
+            return;
+          }
+
           if (data.type === "thinking") {
             // Server keep-alive: defeats browser/proxy WebSocket idle
             // timeouts during long pauses (e.g. local Ollama tool-use loops).
@@ -351,6 +377,7 @@ export function useWsRuntime(agentId: string): {
       clearStuckTimer();
       wsRef.current?.close();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
 
   const onNew = useCallback(
@@ -396,15 +423,24 @@ export function useWsRuntime(agentId: string): {
 
       if (!text.trim() && images.length === 0) return;
 
-      const userMessage: WsMessage = {
-        id: uuid(),
-        role: "user",
-        content: text,
-        timestamp: new Date().toISOString(),
-        ...(images.length > 0 && { images }),
-      };
+      const clientMessageId = uuid();
 
-      setMessages((prev) => [...prev, userMessage]);
+      // Add the user message directly with status: "sending" and an ISO timestamp
+      // for display. The reducer is used only for status transitions (ack, timeout,
+      // etc.) on already-added messages — not for the initial insertion, so we keep
+      // the hook's string timestamp format intact.
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: clientMessageId,
+          role: "user",
+          content: text,
+          timestamp: new Date().toISOString(),
+          status: "sending",
+          ...(images.length > 0 && { images }),
+        },
+      ]);
+
       isRunningRef.current = true;
       setIsRunning(true);
 
@@ -438,6 +474,7 @@ export function useWsRuntime(agentId: string): {
         type: "message",
         content: wsContent,
         agentId,
+        clientMessageId,
       });
 
       if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -462,5 +499,7 @@ export function useWsRuntime(agentId: string): {
     },
   });
 
-  return { runtime, isConnected, isDelayed, isHistoryLoaded, reconnectExhausted };
+  const isOrphaned = computeIsOrphaned(messages, { isRunning, isHistoryLoaded });
+
+  return { runtime, isConnected, isDelayed, isHistoryLoaded, reconnectExhausted, isOrphaned };
 }
