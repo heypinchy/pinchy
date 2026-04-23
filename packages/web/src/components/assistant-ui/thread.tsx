@@ -9,6 +9,7 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -364,7 +365,13 @@ const AssistantActionBar: FC = () => {
   );
 };
 
+export function sendingOpacityClass(status: string | undefined): string {
+  return status === "sending" ? "opacity-60" : "";
+}
+
 const UserMessage: FC = () => {
+  const status = useMessage((s) => s.metadata?.custom?.status as string | undefined);
+
   return (
     <MessagePrimitive.Root
       className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-max-width) animate-in flex-col items-end gap-1 px-2 py-3 duration-150"
@@ -372,7 +379,12 @@ const UserMessage: FC = () => {
     >
       <UserMessageAttachments />
 
-      <div className="aui-user-message-content-wrapper min-w-0 max-w-[85%]">
+      <div
+        className={cn(
+          "aui-user-message-content-wrapper min-w-0 max-w-[85%]",
+          sendingOpacityClass(status)
+        )}
+      >
         <div className="aui-user-message-content wrap-break-word rounded-2xl bg-muted px-4 py-2.5 text-foreground">
           <MessagePrimitive.Parts
             components={{
