@@ -1,7 +1,12 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "fs";
 import { dirname } from "path";
 import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
-import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
+import {
+  writeSecretsFile,
+  updateSecretsFile,
+  secretRef,
+  type SecretsBundle,
+} from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
@@ -598,18 +603,20 @@ export async function regenerateOpenClawConfig() {
   // NOTE: allowFrom is NOT written here. It's managed via per-account allow-from
   // store files (credentials/telegram-<accountId>-allowFrom.json) to avoid
   // triggering the broken channel restart (openclaw/openclaw#47458).
-  const accounts: Record<string, { botToken: string }> = {};
+  const accounts: Record<string, { botToken: ReturnType<typeof secretRef> }> = {};
   interface TelegramBinding {
     agentId: string;
     match: { channel: string; accountId: string; peer?: { kind: string; id: string } };
   }
   const bindings: TelegramBinding[] = [];
   const personalBotsAccountIds: Array<{ accountId: string; ownerId: string | null }> = [];
+  const telegramSecrets: NonNullable<SecretsBundle["telegram"]> = {};
 
   for (const agent of allAgents) {
     const botToken = await getSetting(`telegram_bot_token:${agent.id}`);
     if (botToken) {
-      accounts[agent.id] = { botToken };
+      accounts[agent.id] = { botToken: secretRef(`/telegram/${agent.id}/botToken`) };
+      telegramSecrets[agent.id] = { botToken };
       if (agent.isPersonal) {
         // Personal agents: per-user peer bindings will be added below
         personalBotsAccountIds.push({ accountId: agent.id, ownerId: agent.ownerId });
@@ -682,6 +689,7 @@ export async function regenerateOpenClawConfig() {
     gateway: gatewaySecret,
     providers: providerSecrets,
     integrations: integrationSecrets,
+    ...(Object.keys(telegramSecrets).length > 0 && { telegram: telegramSecrets }),
   };
   writeSecretsFile(secretsBundle);
 
@@ -755,12 +763,17 @@ export function updateTelegramChannelConfig(
   const existing = readExistingConfig();
 
   if (accountId && account) {
-    // Add/update account
+    // Add/update account: store token in secrets.json, use SecretRef in config
+    updateSecretsFile((s) => ({
+      ...s,
+      telegram: { ...s.telegram, [accountId]: { botToken: account.botToken } },
+    }));
+
     const existingTelegram =
       ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
     const existingAccounts = (existingTelegram.accounts as Record<string, unknown>) || {};
 
-    existingAccounts[accountId] = account;
+    existingAccounts[accountId] = { botToken: secretRef(`/telegram/${accountId}/botToken`) };
 
     existing.channels = {
       ...((existing.channels as Record<string, unknown>) || {}),
@@ -780,7 +793,13 @@ export function updateTelegramChannelConfig(
       { agentId: accountId, match: { channel: "telegram", accountId } },
     ];
   } else if (accountId && !account) {
-    // Remove specific account
+    // Remove specific account: remove token from secrets.json too
+    updateSecretsFile((s) => {
+      const telegram = { ...(s.telegram || {}) };
+      delete telegram[accountId];
+      return { ...s, telegram };
+    });
+
     const existingTelegram =
       ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
     const existingAccounts = (existingTelegram.accounts as Record<string, unknown>) || {};

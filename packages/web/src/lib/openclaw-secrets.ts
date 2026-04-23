@@ -1,4 +1,4 @@
-import { writeFileSync, renameSync, mkdirSync, existsSync, chmodSync } from "fs";
+import { writeFileSync, readFileSync, renameSync, mkdirSync, existsSync, chmodSync } from "fs";
 import { dirname } from "path";
 
 export type SecretRef = {
@@ -28,4 +28,16 @@ export function writeSecretsFile(bundle: SecretsBundle): void {
   writeFileSync(tmp, JSON.stringify(bundle, null, 2), { mode: 0o600 });
   chmodSync(tmp, 0o600); // enforce regardless of umask
   renameSync(tmp, path);
+}
+
+export function readSecretsFile(): SecretsBundle {
+  const path = process.env.OPENCLAW_SECRETS_PATH || DEFAULT_SECRETS_PATH;
+  if (!existsSync(path)) return {};
+  return JSON.parse(readFileSync(path, "utf-8"));
+}
+
+export function updateSecretsFile(updater: (bundle: SecretsBundle) => SecretsBundle): void {
+  const current = readSecretsFile();
+  const next = updater(current);
+  writeSecretsFile(next);
 }

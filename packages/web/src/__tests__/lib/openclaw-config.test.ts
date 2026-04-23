@@ -64,8 +64,9 @@ vi.mock("@/lib/migrate-onboarding", () => ({
   migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
 }));
 
-const { mockWriteSecretsFile } = vi.hoisted(() => ({
+const { mockWriteSecretsFile, mockUpdateSecretsFile } = vi.hoisted(() => ({
   mockWriteSecretsFile: vi.fn(),
+  mockUpdateSecretsFile: vi.fn(),
 }));
 
 vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
@@ -73,6 +74,7 @@ vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
   return {
     ...actual,
     writeSecretsFile: mockWriteSecretsFile,
+    updateSecretsFile: mockUpdateSecretsFile,
   };
 });
 
@@ -94,6 +96,7 @@ import {
   regenerateOpenClawConfig,
   updateIdentityLinks,
   sanitizeOpenClawConfig,
+  updateTelegramChannelConfig,
 } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
@@ -1899,7 +1902,9 @@ describe("restart-state integration", () => {
     expect(config.channels.telegram).toEqual({
       dmPolicy: "pairing",
       accounts: {
-        "agent-1": { botToken: "123456:ABC-token" },
+        "agent-1": {
+          botToken: { source: "file", provider: "pinchy", id: "/telegram/agent-1/botToken" },
+        },
       },
     });
     expect(config.bindings).toEqual([
@@ -1941,8 +1946,12 @@ describe("restart-state integration", () => {
     const config = JSON.parse(written);
 
     expect(config.channels.telegram.accounts).toEqual({
-      "agent-1": { botToken: "token-1" },
-      "agent-2": { botToken: "token-2" },
+      "agent-1": {
+        botToken: { source: "file", provider: "pinchy", id: "/telegram/agent-1/botToken" },
+      },
+      "agent-2": {
+        botToken: { source: "file", provider: "pinchy", id: "/telegram/agent-2/botToken" },
+      },
     });
     expect(config.bindings).toEqual([
       { agentId: "agent-1", match: { channel: "telegram", accountId: "agent-1" } },
@@ -2012,7 +2021,9 @@ describe("restart-state integration", () => {
 
     // One account for the bot
     expect(config.channels.telegram.accounts).toEqual({
-      "admin-smithers": { botToken: "123456:ABC-token" },
+      "admin-smithers": {
+        botToken: { source: "file", provider: "pinchy", id: "/telegram/admin-smithers/botToken" },
+      },
     });
 
     // Per-user peer bindings: user-a → admin-smithers, user-b → user-b-smithers
@@ -2564,5 +2575,88 @@ describe("updateIdentityLinks", () => {
     updateIdentityLinks({ "user-1": ["telegram:123"] });
 
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe("telegram botToken SecretRef", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("writes telegram botToken as SecretRef keyed by agent id", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-42",
+          name: "Bot Agent",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          isPersonal: false,
+          ownerId: null,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-42") return "bot-secret-token";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    // openclaw.json must contain a SecretRef for botToken, not the plaintext token
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    expect(config.channels.telegram.accounts["agent-42"].botToken).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/telegram/agent-42/botToken",
+    });
+
+    // secrets.json must contain the actual token
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.telegram?.["agent-42"]?.botToken).toBe("bot-secret-token");
+  });
+
+  it("updateTelegramChannelConfig emits SecretRef, not plaintext", () => {
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan" },
+      })
+    );
+
+    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null);
+
+    // openclaw.json must use SecretRef
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    expect(config.channels.telegram.accounts["agent-99"].botToken).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/telegram/agent-99/botToken",
+    });
+
+    // updateSecretsFile must have been called with the plaintext token
+    expect(mockUpdateSecretsFile).toHaveBeenCalled();
+    // The updater function should return the token
+    const updaterFn = mockUpdateSecretsFile.mock.calls[0][0] as (
+      s: Record<string, unknown>
+    ) => Record<string, unknown>;
+    const result = updaterFn({}) as { telegram: Record<string, { botToken: string }> };
+    expect(result.telegram?.["agent-99"]?.botToken).toBe("tg-secret-token");
   });
 });
