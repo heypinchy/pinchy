@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 import "@testing-library/jest-dom";
 import { sendingOpacityClass } from "@/components/assistant-ui/thread";
@@ -109,6 +109,33 @@ describe("UserMessage failed state", () => {
 
     expect(screen.queryByText("Couldn't deliver")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+  });
+
+  it("calls onRetryResend with the message id when Retry is clicked", async () => {
+    const { useMessage, useThread } = await import("@assistant-ui/react");
+    vi.mocked(useThread).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector?: (state: any) => unknown) =>
+        selector ? selector({ isRunning: false }) : { isRunning: false }
+    );
+    vi.mocked(useMessage).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector: (state: any) => unknown) =>
+        selector({ metadata: { custom: { status: "failed" } }, isLast: true, id: "msg-1" })
+    );
+
+    const mockRetryResend = vi.fn();
+    const { RetryResendContext } = await import("@/components/chat");
+    const { UserMessage } = await import("@/components/assistant-ui/thread");
+    render(
+      <RetryResendContext.Provider value={mockRetryResend}>
+        <UserMessage />
+      </RetryResendContext.Provider>
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /retry/i }));
+
+    expect(mockRetryResend).toHaveBeenCalledWith("msg-1");
   });
 
   it("disables Retry button when isRunning is true", async () => {
