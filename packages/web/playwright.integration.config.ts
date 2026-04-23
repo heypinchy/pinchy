@@ -31,6 +31,8 @@ export default defineConfig({
       "OPENCLAW_WORKSPACE_PREFIX=/root/.openclaw/workspaces",
       // Device identity for OpenClaw connection (defaults to /app/secrets which is Docker-only)
       "DEVICE_IDENTITY_PATH=/tmp/pinchy-integration-openclaw/device-identity.json",
+      // Secrets file: host writes here, same path is bind-mounted into OpenClaw container
+      "OPENCLAW_SECRETS_PATH=/tmp/pinchy-integration-secrets/secrets.json",
       "PORT=7779",
       "node -r ./server-preload.cjs --import tsx server.ts",
     ].join(" "),

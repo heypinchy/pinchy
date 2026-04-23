@@ -13,6 +13,7 @@ import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
 import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
+import { readSecretsFile } from "./src/lib/openclaw-secrets";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
 
@@ -34,8 +35,6 @@ const OPENCLAW_WS_URL = process.env.OPENCLAW_WS_URL;
 function readGatewayToken(): string {
   // Read token from secrets.json (written by ensure-gateway-token.js on OpenClaw startup)
   try {
-    const { readSecretsFile } =
-      require("./src/lib/openclaw-secrets") as typeof import("./src/lib/openclaw-secrets");
     return readSecretsFile().gateway?.token ?? "";
   } catch {
     return "";
