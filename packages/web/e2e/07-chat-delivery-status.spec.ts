@@ -253,14 +253,26 @@ test.describe("chat delivery status and retry E2E", () => {
 
   // ────────────────────────────────────────────────────────────────────────────
   // Task 5.3 — Partial-stream disconnect: text preserved + Retry button appears
+  //
+  // Design: the mock fires ack + chunk automatically, but Playwright controls
+  // when the disconnect happens — only after "Partial response..." is confirmed
+  // visible. This eliminates the timer-ordering race that made previous
+  // versions flaky in CI (a delayed 50ms chunk timer firing after the 300ms
+  // disconnect timer would invert message order, hiding the partial text as
+  // .first() and placing the error bubble first instead).
+  //
+  // Reconnect prevention: the mock ignores history requests after the first
+  // one, so reconnect connections never trigger the history-reconcile path
+  // that would wipe the partial + error messages from local state.
   // ────────────────────────────────────────────────────────────────────────────
   test("partial stream preserved and Retry appears after disconnect", async ({ page, request }) => {
     await setupAdmin(request);
 
     await page.addInitScript(() => {
-      type ClientMessage = {
-        type?: string;
-      };
+      // Tracks whether the initial history response has been sent. Subsequent
+      // history requests (from reconnect connections) are intentionally ignored
+      // so the history-reconcile path never clears the partial + error state.
+      let historyResponded = false;
 
       const RealWebSocket = window.WebSocket;
 
@@ -282,49 +294,45 @@ test.describe("chat delivery status and retry E2E", () => {
         readyState = 1;
         binaryType: string = "blob";
 
-        // Track which connection this is — reconnects are refused so partial
-        // state is preserved for assertion.
-        private connectionIndex: number = 0;
-        static connectionCount = 0;
-
         constructor(url: string) {
           if (url.includes("/_next/")) {
             return new RealWebSocket(url) as unknown as MockWebSocket;
           }
-          MockWebSocket.connectionCount += 1;
-          this.connectionIndex = MockWebSocket.connectionCount;
-          if (this.connectionIndex === 1) {
-            // First connection opens normally
-            queueMicrotask(() => this.onopen?.());
-          } else {
-            // Subsequent reconnect attempts close immediately — keeps partial
-            // state intact so we can assert it without the history reconcile
-            // running and wiping the local messages.
-            queueMicrotask(() => {
+          // All connections open normally. Each connection updates the global
+          // trigger so Playwright always disconnects the currently active one.
+          queueMicrotask(() => {
+            (window as unknown as Record<string, unknown>).__triggerDisconnect = () => {
               this.readyState = 3;
               this.onclose?.();
-            });
-          }
+            };
+            this.onopen?.();
+          });
         }
 
         addEventListener() {}
         removeEventListener() {}
 
         send(raw: string) {
-          const message = JSON.parse(raw) as ClientMessage;
+          const message = JSON.parse(raw) as { type?: string; clientMessageId?: string };
 
           if (message.type === "history") {
-            setTimeout(() => {
-              this.onmessage?.({
-                data: JSON.stringify({ type: "history", messages: [] }),
-              });
-            }, 0);
+            if (!historyResponded) {
+              historyResponded = true;
+              setTimeout(() => {
+                this.onmessage?.({
+                  data: JSON.stringify({ type: "history", messages: [] }),
+                });
+              }, 0);
+            }
+            // Reconnect history requests are ignored — prevents reconcile from
+            // clearing partial + error messages.
             return;
           }
 
           if (message.type === "message") {
-            const clientMessageId = (message as { clientMessageId?: string }).clientMessageId;
-            // Ack first (matching real protocol), then a partial chunk, then disconnect
+            const clientMessageId = message.clientMessageId;
+            // Ack immediately, then deliver the partial chunk.
+            // No automatic disconnect timer — Playwright drives timing.
             setTimeout(() => {
               this.onmessage?.({
                 data: JSON.stringify({ type: "ack", clientMessageId }),
@@ -339,13 +347,6 @@ test.describe("chat delivery status and retry E2E", () => {
                 }),
               });
             }, 50);
-            // Simulate mid-stream disconnect after chunk — gap must be large enough
-            // for React to commit the chunk render and flush the useEffect that
-            // updates the assistant-ui runtime before the disconnect arrives.
-            setTimeout(() => {
-              this.readyState = 3;
-              this.onclose?.();
-            }, 300);
           }
         }
 
@@ -370,13 +371,20 @@ test.describe("chat delivery status and retry E2E", () => {
     await page.getByLabel("Message input").fill("hello");
     await page.getByRole("button", { name: "Send message" }).click();
 
-    // The partial assistant text must be visible in the thread
+    // Confirm the partial response is visible before triggering the disconnect.
+    // This proves the chunk was received and rendered — eliminating the timer-race
+    // risk of the previous approach where disconnect could fire before the chunk.
     await expect(page.locator('[data-role="assistant"]').first()).toContainText(
       "Partial response...",
       { timeout: 5000 }
     );
 
-    // A disconnect error bubble must appear below the partial response
+    // Now trigger the mid-stream disconnect from Playwright — fully deterministic.
+    await page.evaluate(() =>
+      (window as unknown as Record<string, () => void>).__triggerDisconnect?.()
+    );
+
+    // A disconnect error bubble must appear after the partial response
     await expect(page.locator('[data-role="assistant"]').last()).toContainText("Connection lost", {
       timeout: 5000,
     });
