@@ -6,7 +6,6 @@ on:
   schedule:
     # Biweekly: prune old :sha-* tags from GHCR. Runs at 03:00 UTC on the 1st and 15th.
     - cron: "0 3 1,15 * *"
-  workflow_dispatch: {}
 
 permissions:
   contents: read
@@ -15,7 +14,7 @@ permissions:
 jobs:
   build:
     name: Build & push :next and :sha-<short>
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
