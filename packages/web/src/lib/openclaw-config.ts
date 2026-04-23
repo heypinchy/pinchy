@@ -1,5 +1,6 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "fs";
 import { dirname } from "path";
+import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
@@ -54,6 +55,8 @@ function writeConfigAtomic(content: string) {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
+  // Defense-in-depth: never let a plaintext secret land in openclaw.json.
+  assertNoPlaintextSecrets(JSON.parse(content));
   const tmpPath = CONFIG_PATH + ".tmp";
   writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o644 });
   renameSync(tmpPath, CONFIG_PATH);

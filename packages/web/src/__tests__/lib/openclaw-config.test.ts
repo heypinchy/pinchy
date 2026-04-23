@@ -1909,6 +1909,34 @@ describe("restart-state integration", () => {
   });
 });
 
+describe("writeConfigAtomic plaintext secret guard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("throws before writing when the generated config contains a plaintext Anthropic API key", async () => {
+    // Simulate a provider key that was NOT converted to a SecretRef.
+    // If assertNoPlaintextSecrets is wired into writeConfigAtomic, this must throw
+    // before any writeFileSync call happens.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-leaked-plaintext-key-abc123";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await expect(regenerateOpenClawConfig()).rejects.toThrow(/plaintext secret detected/);
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+});
+
 describe("updateIdentityLinks", () => {
   beforeEach(() => {
     vi.clearAllMocks();
