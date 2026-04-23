@@ -74,10 +74,13 @@ test("admin can detach-and-delete an integration used by agents", async ({ page 
     // 5. Open the integration's action menu and click Delete
     //    Each integration row has a MoreHorizontal dropdown trigger.
     //    The integration row containing INTEGRATION_NAME is the one we want.
-    const integrationRow = page.locator(".rounded-lg.border").filter({
-      hasText: INTEGRATION_NAME,
-    });
-    await integrationRow.getByRole("button").click(); // MoreHorizontal button
+    const integrationRow = page
+      .locator("div")
+      .filter({ hasText: INTEGRATION_NAME })
+      .filter({
+        has: page.getByRole("button", { name: /open menu/i }),
+      });
+    await integrationRow.getByRole("button", { name: /open menu/i }).click();
     await page.getByRole("menuitem", { name: /delete/i }).click();
 
     // 6. Dialog shows "Delete E2E Odoo?" heading and "Detach & Delete" button
@@ -107,10 +110,11 @@ test("admin can detach-and-delete an integration used by agents", async ({ page 
     if (connectionId) {
       // Integration was not deleted by the test (failure path) — clean up via
       // the with-permissions endpoint so FK constraints don't block deletion
-      await page.request.delete(`/api/integrations/${connectionId}/with-permissions`).catch(() => {
-        // Best-effort fallback
-        page.request.delete(`/api/integrations/${connectionId}`).catch(() => undefined);
-      });
+      await page.request
+        .delete(`/api/integrations/${connectionId}/with-permissions`)
+        .catch(async () => {
+          await page.request.delete(`/api/integrations/${connectionId}`).catch(() => undefined);
+        });
     }
   }
 });
