@@ -89,11 +89,14 @@ vi.mock("@/db", () => ({
     }),
     select: vi.fn().mockReturnValue({
       from: mockSelectFrom.mockImplementation(() => {
-        // Return a thenable with .where() — handles both list (await directly) and single-item (await .where()) cases
+        // Return a thenable with .where() and .groupBy() — handles direct await,
+        // .where() single-item lookup, and .groupBy() aggregation (counts query).
         const result = Promise.resolve([mockConnection]) as Promise<(typeof mockConnection)[]> & {
           where: ReturnType<typeof vi.fn>;
+          groupBy: ReturnType<typeof vi.fn>;
         };
         result.where = vi.fn().mockResolvedValue([mockConnection]);
+        result.groupBy = vi.fn().mockResolvedValue([]); // default: empty counts
         return result;
       }),
     }),
@@ -270,11 +273,25 @@ describe("GET /api/integrations", () => {
   });
 
   it("listing includes agentUsageCount per row", async () => {
-    // The real query uses db.select({...subquery...}).from(integrationConnections),
-    // which yields rows enriched with agentUsageCount. The mock simulates that
-    // enriched result. The route must pass agentUsageCount through to the response.
-    const connectionWithCount = { ...mockConnection, agentUsageCount: 3 };
-    mockSelectFrom.mockImplementationOnce(() => Promise.resolve([connectionWithCount]));
+    // Route uses two queries: one for connections, one for per-connection agent
+    // counts via GROUP BY. Both calls go through mockSelectFrom.
+    // First call: connections list
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Object.assign(Promise.resolve([mockConnection]), {
+        where: vi.fn().mockResolvedValue([mockConnection]),
+        groupBy: vi.fn().mockResolvedValue([]),
+      });
+      return result;
+    });
+    // Second call: counts — connection "conn-1" has 3 distinct agents
+    const counts = [{ connectionId: "conn-1", agentCount: 3 }];
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Object.assign(Promise.resolve(counts), {
+        where: vi.fn().mockResolvedValue(counts),
+        groupBy: vi.fn().mockResolvedValue(counts),
+      });
+      return result;
+    });
 
     const { GET } = await import("@/app/api/integrations/route");
     const response = await GET();

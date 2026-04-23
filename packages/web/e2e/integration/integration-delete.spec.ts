@@ -40,11 +40,9 @@ test("admin can detach-and-delete an integration used by agents", async ({ page 
         },
       },
     });
-    console.log("[diag] create integration status:", createIntegration.status());
     expect(createIntegration.status()).toBe(201);
     const integration = await createIntegration.json();
     connectionId = integration.id as string;
-    console.log("[diag] integration id:", connectionId);
 
     // 2. Create a custom agent via API
     const createAgent = await page.request.post("/api/agents", {
@@ -53,11 +51,9 @@ test("admin can detach-and-delete an integration used by agents", async ({ page 
         templateId: "custom",
       },
     });
-    console.log("[diag] create agent status:", createAgent.status());
     expect(createAgent.status()).toBe(201);
     const agent = await createAgent.json();
     agentId = agent.id as string;
-    console.log("[diag] agent id:", agentId);
 
     // 3. Grant the agent a permission on the integration
     const grantPermission = await page.request.put(`/api/agents/${agentId}/integrations`, {
@@ -66,20 +62,7 @@ test("admin can detach-and-delete an integration used by agents", async ({ page 
         permissions: [{ model: "sale.order", operation: "read" }],
       },
     });
-    console.log("[diag] grant permission status:", grantPermission.status());
     expect(grantPermission.status()).toBe(200);
-    const grantBody = await grantPermission.json();
-    console.log("[diag] grant permission response:", JSON.stringify(grantBody));
-
-    // Verify permissions are actually stored before navigating
-    const agentPermsRes = await page.request.get(`/api/agents/${agentId}/integrations`);
-    console.log("[diag] GET agent integrations status:", agentPermsRes.status());
-    const agentPermsData = await agentPermsRes.json();
-    console.log("[diag] GET agent integrations:", JSON.stringify(agentPermsData));
-
-    const connectionsBeforeNav = await page.request.get("/api/integrations");
-    const connectionsData = await connectionsBeforeNav.json();
-    console.log("[diag] GET /api/integrations before navigate:", JSON.stringify(connectionsData));
 
     // 4. Navigate to integrations settings and reload to see the updated count
     await page.goto("/settings?tab=integrations");
