@@ -31,7 +31,12 @@ import {
   SquareIcon,
 } from "lucide-react";
 import { type FC, useState, useEffect, useRef, useContext } from "react";
-import { AgentAvatarContext, AgentIdContext, RetryResendContext } from "@/components/chat";
+import {
+  AgentAvatarContext,
+  AgentIdContext,
+  RetryResendContext,
+  RetryContinueContext,
+} from "@/components/chat";
 import { RetryButton } from "@/components/chat/retry-button";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft } from "@/lib/draft-store";
@@ -311,7 +316,12 @@ const AssistantFooter: FC = () => {
   );
 };
 
-const AssistantMessage: FC = () => {
+export const AssistantMessage: FC = () => {
+  const isRetryable = useMessage((s) => !!s.metadata?.custom?.retryable);
+  const isLast = useMessage((s) => s.isLast);
+  const isRunning = useThread((s) => s.isRunning);
+  const onRetryContinue = useContext(RetryContinueContext);
+
   return (
     <MessagePrimitive.Root
       className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto w-full max-w-(--thread-max-width) animate-in py-3 duration-150"
@@ -320,6 +330,12 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         <AssistantErrorOrContent />
       </div>
+
+      {isRetryable && isLast && (
+        <div className="flex items-center px-2 mt-1">
+          <RetryButton onClick={onRetryContinue} disabled={isRunning} />
+        </div>
+      )}
 
       <AssistantFooter />
     </MessagePrimitive.Root>

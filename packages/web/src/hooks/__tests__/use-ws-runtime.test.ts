@@ -595,6 +595,110 @@ describe("isRunning resets to false after every terminal path", () => {
   });
 });
 
+// ── retryable flag on injected error bubbles ──────────────────────────────────
+
+describe("injected error bubbles have retryable: true", () => {
+  beforeEach(() => {
+    wsInstances.length = 0;
+    capturedOnNew = null;
+    capturedMessages = [];
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("disconnect error bubble has retryable: true in metadata", async () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    // Start a stream (chunk arrives) then WS disconnects
+    await act(async () => {
+      latestWs().simulateMessage({ type: "chunk", messageId: "m1", content: "Partial..." });
+    });
+
+    await act(async () => {
+      latestWs().simulateClose();
+    });
+
+    // isRunning should have been true, so a disconnect error bubble was injected
+    expect(result.current.isRunning).toBe(false);
+
+    const lastMsg = capturedMessages[capturedMessages.length - 1] as {
+      role: string;
+      metadata?: { custom?: { retryable?: boolean } };
+    };
+    expect(lastMsg.role).toBe("assistant");
+    expect(lastMsg.metadata?.custom?.retryable).toBe(true);
+  });
+
+  it("stuck timeout error bubble has retryable: true in metadata", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    expect(result.current.isRunning).toBe(true);
+
+    // Advance 60 seconds — stuck timer fires
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_000);
+    });
+
+    expect(result.current.isRunning).toBe(false);
+
+    const lastMsg = capturedMessages[capturedMessages.length - 1] as {
+      role: string;
+      metadata?: { custom?: { retryable?: boolean } };
+    };
+    expect(lastMsg.role).toBe("assistant");
+    expect(lastMsg.metadata?.custom?.retryable).toBe(true);
+  });
+
+  it("error WS frame bubble has retryable: true in metadata", async () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    expect(result.current.isRunning).toBe(true);
+
+    await act(async () => {
+      latestWs().simulateMessage({ type: "error", message: "Something went wrong" });
+    });
+
+    expect(result.current.isRunning).toBe(false);
+
+    const lastMsg = capturedMessages[capturedMessages.length - 1] as {
+      role: string;
+      metadata?: { custom?: { retryable?: boolean } };
+    };
+    expect(lastMsg.role).toBe("assistant");
+    expect(lastMsg.metadata?.custom?.retryable).toBe(true);
+  });
+});
+
 // ── onRetryContinue tests ─────────────────────────────────────────────────────
 
 describe("onRetryContinue", () => {
@@ -652,6 +756,162 @@ describe("onRetryContinue", () => {
     });
 
     expect(result.current.isRunning).toBe(true);
+  });
+});
+
+// ── onRetryResend tests ───────────────────────────────────────────────────────
+
+describe("onRetryResend", () => {
+  beforeEach(() => {
+    wsInstances.length = 0;
+    capturedOnNew = null;
+    capturedMessages = [];
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("flips failed message status to sending and re-sends the WS frame", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    // Send a user message
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello retry"));
+    });
+
+    const ws = latestWs();
+    const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
+      type: string;
+      clientMessageId: string;
+      content: string;
+    };
+    expect(sentPayload.type).toBe("message");
+    const messageId = sentPayload.clientMessageId;
+
+    // Advance 10s — timeout fires, message transitions to "failed"
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    // Verify message is now "failed" by checking that no ack timer is registered
+    // (the status in the thread message metadata should be "failed")
+    const failedMsg = capturedMessages.find((m) => {
+      const msg = m as { id?: string; metadata?: { custom?: { status?: string } } };
+      return msg.id === messageId && msg.metadata?.custom?.status === "failed";
+    });
+    expect(failedMsg).toBeDefined();
+
+    // Clear send call history so we can assert the retry re-send
+    ws.send.mockClear();
+
+    // Call onRetryResend — should flip status back to "sending" and re-send
+    await act(async () => {
+      result.current.onRetryResend(messageId);
+    });
+
+    // Message status should now be "sending" again
+    const retriedMsg = capturedMessages.find((m) => {
+      const msg = m as { id?: string; metadata?: { custom?: { status?: string } } };
+      return msg.id === messageId && msg.metadata?.custom?.status === "sending";
+    });
+    expect(retriedMsg).toBeDefined();
+
+    // WS send was called again with the SAME clientMessageId and content
+    const retryCalls = ws.send.mock.calls.filter((call) => {
+      const parsed = JSON.parse(call[0] as string) as { type: string };
+      return parsed.type === "message";
+    });
+    expect(retryCalls).toHaveLength(1);
+    const retryFrame = JSON.parse(retryCalls[0][0] as string) as {
+      type: string;
+      clientMessageId: string;
+      content: string;
+      agentId: string;
+    };
+    expect(retryFrame.clientMessageId).toBe(messageId);
+    expect(retryFrame.content).toBe("hello retry");
+    expect(retryFrame.agentId).toBe("agent-1");
+  });
+
+  it("does nothing if message is not in failed state", async () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    const ws = latestWs();
+    const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
+      clientMessageId: string;
+    };
+
+    // Message is still "sending" (no timeout yet) — retry should be a no-op
+    ws.send.mockClear();
+
+    await act(async () => {
+      result.current.onRetryResend(sentPayload.clientMessageId);
+    });
+
+    // No additional WS send for a "message" frame
+    const messageSends = ws.send.mock.calls.filter((call) => {
+      const parsed = JSON.parse(call[0] as string) as { type: string };
+      return parsed.type === "message";
+    });
+    expect(messageSends).toHaveLength(0);
+  });
+
+  it("restarts the 10s ack timer after retry", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("timer test"));
+    });
+
+    const ws = latestWs();
+    const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
+      clientMessageId: string;
+    };
+    const messageId = sentPayload.clientMessageId;
+
+    // Advance 10s — first timeout fires
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    // Retry the message
+    await act(async () => {
+      result.current.onRetryResend(messageId);
+    });
+
+    // Message is now "sending" again — advance another 10s to fire the new timer
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    // After second timeout: message should be "failed" again
+    const failedMsg = capturedMessages.find((m) => {
+      const msg = m as { id?: string; metadata?: { custom?: { status?: string } } };
+      return msg.id === messageId && msg.metadata?.custom?.status === "failed";
+    });
+    expect(failedMsg).toBeDefined();
   });
 });
 

@@ -28,6 +28,8 @@ interface WsMessage {
   error?: ChatError;
   /** Delivery status — only set for user messages managed by the reducer */
   status?: MessageStatus;
+  /** When true, the UI shows a Retry button to re-trigger the agent */
+  retryable?: boolean;
 }
 
 const DELAY_HINT_MS = 15_000;
@@ -48,6 +50,7 @@ function convertMessage(msg: WsMessage): ThreadMessageLike {
   if (msg.timestamp) custom.timestamp = msg.timestamp;
   if (msg.error) custom.error = msg.error;
   if (msg.status) custom.status = msg.status;
+  if (msg.retryable) custom.retryable = msg.retryable;
 
   return {
     role: msg.role,
@@ -78,6 +81,7 @@ export function useWsRuntime(agentId: string): {
   reconnectExhausted: boolean;
   isOrphaned: boolean;
   onRetryContinue: () => void;
+  onRetryResend: (messageId: string) => void;
 } {
   const { triggerRestart } = useRestart();
   const [messages, setMessages] = useState<WsMessage[]>([]);
@@ -158,6 +162,7 @@ export function useWsRuntime(agentId: string): {
             role: "assistant",
             content: "",
             error: { timedOut: true },
+            retryable: true,
           },
         ]);
       }, STUCK_TIMEOUT_MS);
@@ -208,6 +213,7 @@ export function useWsRuntime(agentId: string): {
               role: "assistant",
               content: "",
               error: { disconnected: true },
+              retryable: true,
             },
           ]);
         } else {
@@ -381,6 +387,7 @@ export function useWsRuntime(agentId: string): {
                 role: "assistant",
                 content: "",
                 error,
+                retryable: true,
               },
             ]);
             isRunningRef.current = false;
@@ -546,6 +553,39 @@ export function useWsRuntime(agentId: string): {
     }
   }, [agentId]);
 
+  const onRetryResend = useCallback(
+    (messageId: string) => {
+      // Find the failed message — bail out if not found or not in failed state
+      const failedMsg = messages.find((m) => m.id === messageId && m.status === "failed");
+      if (!failedMsg) return;
+
+      // Flip status back to "sending"
+      dispatchMessages({ type: "retry-resend", clientMessageId: messageId });
+
+      // Re-send the WS frame with the SAME clientMessageId and original content
+      const payload = JSON.stringify({
+        type: "message",
+        agentId,
+        content: failedMsg.content,
+        clientMessageId: messageId,
+      });
+
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(payload);
+      } else {
+        pendingMessageRef.current = payload;
+      }
+
+      // Restart the 10s ack timer
+      const ackTimer = setTimeout(() => {
+        pendingAckTimers.current.delete(messageId);
+        dispatchMessages({ type: "timeout", clientMessageId: messageId });
+      }, 10_000);
+      pendingAckTimers.current.set(messageId, ackTimer);
+    },
+    [agentId, messages, dispatchMessages]
+  );
+
   const isOrphaned = computeIsOrphaned(messages, { isRunning, isHistoryLoaded });
 
   const convertedMessages = useMemo(() => {
@@ -583,5 +623,6 @@ export function useWsRuntime(agentId: string): {
     reconnectExhausted,
     isOrphaned,
     onRetryContinue,
+    onRetryResend,
   };
 }

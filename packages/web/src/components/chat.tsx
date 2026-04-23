@@ -15,6 +15,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 export const AgentAvatarContext = createContext<string | null>(null);
 export const AgentIdContext = createContext<string | null>(null);
 export const RetryResendContext = createContext<(messageId: string) => void>(() => {});
+export const RetryContinueContext = createContext<() => void>(() => {});
 
 interface ChatProps {
   agentId: string;
@@ -41,8 +42,15 @@ export function Chat({
     : avatarUrl;
   const displayIsPersonal = liveAgent?.isPersonal ?? isPersonal;
 
-  const { runtime, isConnected, isDelayed, isHistoryLoaded, reconnectExhausted } =
-    useWsRuntime(agentId);
+  const {
+    runtime,
+    isConnected,
+    isDelayed,
+    isHistoryLoaded,
+    reconnectExhausted,
+    onRetryResend,
+    onRetryContinue,
+  } = useWsRuntime(agentId);
 
   const statusMessage = !isConnected
     ? configuring
@@ -52,82 +60,81 @@ export function Chat({
 
   const statusColor = isConnected ? "text-green-600" : "text-destructive";
 
-  // TODO (Task 3.4): replace no-op with real retry implementation
-  const handleRetryResend = (_messageId: string) => {};
-
   return (
     <AgentIdContext.Provider value={agentId}>
       <AssistantRuntimeProvider runtime={runtime}>
-        <RetryResendContext.Provider value={handleRetryResend}>
-          <AgentAvatarContext.Provider value={displayAvatar ?? null}>
-            <div className="flex flex-col h-full min-h-0">
-              <MobileChatHeader
-                agentId={agentId}
-                agentName={displayName}
-                avatarUrl={displayAvatar}
-                canEdit={canEdit}
-              />
-              <header className="hidden md:flex p-4 border-b items-center justify-between shrink-0">
-                <div className="flex items-center gap-2 animate-in fade-in duration-300">
-                  {displayAvatar && (
-                    // eslint-disable-next-line @next/next/no-img-element
-                    <img src={displayAvatar} alt="" className="size-7 rounded-full" />
-                  )}
-                  <h1 className="font-bold">{displayName}</h1>
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Badge variant="outline" className="text-xs font-normal">
-                          {displayIsPersonal ? "Private" : "Shared"}
-                        </Badge>
-                      </TooltipTrigger>
-                      <TooltipContent>
-                        {displayIsPersonal
-                          ? "Your conversations are private and not shared with anyone."
-                          : "Your conversations help build team knowledge that's available to all team members."}
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
+        <RetryContinueContext.Provider value={onRetryContinue}>
+          <RetryResendContext.Provider value={onRetryResend}>
+            <AgentAvatarContext.Provider value={displayAvatar ?? null}>
+              <div className="flex flex-col h-full min-h-0">
+                <MobileChatHeader
+                  agentId={agentId}
+                  agentName={displayName}
+                  avatarUrl={displayAvatar}
+                  canEdit={canEdit}
+                />
+                <header className="hidden md:flex p-4 border-b items-center justify-between shrink-0">
+                  <div className="flex items-center gap-2 animate-in fade-in duration-300">
+                    {displayAvatar && (
+                      // eslint-disable-next-line @next/next/no-img-element
+                      <img src={displayAvatar} alt="" className="size-7 rounded-full" />
+                    )}
+                    <h1 className="font-bold">{displayName}</h1>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Badge variant="outline" className="text-xs font-normal">
+                            {displayIsPersonal ? "Private" : "Shared"}
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          {displayIsPersonal
+                            ? "Your conversations are private and not shared with anyone."
+                            : "Your conversations help build team knowledge that's available to all team members."}
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    {canEdit && (
+                      <Link
+                        href={`/chat/${agentId}/settings`}
+                        aria-label="Settings"
+                        className="text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <Settings className="size-5" />
+                      </Link>
+                    )}
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span
+                            className={`size-2 rounded-full shrink-0 ${isConnected ? "bg-green-600" : "bg-destructive"}`}
+                            aria-label={statusMessage}
+                          />
+                        </TooltipTrigger>
+                        <TooltipContent>{statusMessage}</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </div>
+                </header>
+                <div className="flex-1 min-h-0 animate-in fade-in duration-300">
+                  <Thread isHistoryLoaded={isHistoryLoaded} />
                 </div>
-                <div className="flex items-center gap-3">
-                  {canEdit && (
-                    <Link
-                      href={`/chat/${agentId}/settings`}
-                      aria-label="Settings"
-                      className="text-muted-foreground hover:text-foreground transition-colors"
-                    >
-                      <Settings className="size-5" />
-                    </Link>
-                  )}
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <span
-                          className={`size-2 rounded-full shrink-0 ${isConnected ? "bg-green-600" : "bg-destructive"}`}
-                          aria-label={statusMessage}
-                        />
-                      </TooltipTrigger>
-                      <TooltipContent>{statusMessage}</TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
-                </div>
-              </header>
-              <div className="flex-1 min-h-0 animate-in fade-in duration-300">
-                <Thread isHistoryLoaded={isHistoryLoaded} />
+                {reconnectExhausted && (
+                  <div className="px-4 py-2 text-center text-xs text-destructive border-t bg-destructive/5">
+                    Unable to reconnect. Please reload the page to resume chatting.
+                  </div>
+                )}
+                {!reconnectExhausted && isDelayed && (
+                  <div className="px-4 py-2 text-center text-xs text-muted-foreground border-t">
+                    The agent is taking longer than usual. This may be due to high demand.
+                  </div>
+                )}
               </div>
-              {reconnectExhausted && (
-                <div className="px-4 py-2 text-center text-xs text-destructive border-t bg-destructive/5">
-                  Unable to reconnect. Please reload the page to resume chatting.
-                </div>
-              )}
-              {!reconnectExhausted && isDelayed && (
-                <div className="px-4 py-2 text-center text-xs text-muted-foreground border-t">
-                  The agent is taking longer than usual. This may be due to high demand.
-                </div>
-              )}
-            </div>
-          </AgentAvatarContext.Provider>
-        </RetryResendContext.Provider>
+            </AgentAvatarContext.Provider>
+          </RetryResendContext.Provider>
+        </RetryContinueContext.Provider>
       </AssistantRuntimeProvider>
     </AgentIdContext.Provider>
   );
