@@ -3,6 +3,8 @@ title: Quick Start
 description: Get Pinchy running in 5 minutes with Docker Compose.
 ---
 
+import { Badge } from "@astrojs/starlight/components";
+
 This guide walks you through getting Pinchy up and running — from downloading Pinchy to chatting with your first AI agent.
 
 ## Prerequisites
@@ -55,11 +57,11 @@ Your API key is encrypted at rest using AES-256-GCM before being stored in the d
 
 ## 5. Chat with Smithers
 
-Once your provider is configured, Pinchy redirects you to the chat interface. Your default agent — **Smithers** — greets you automatically.
+Once your provider is configured, Pinchy redirects you to the chat interface. Your default agent — **Smithers** — greets you automatically and starts a short onboarding interview to learn about you (and your organization, if you're an admin). This builds context that every agent on the platform can use.
 
 ![Smithers chat interface with agent sidebar](/screenshots/chat-interface.png)
 
-Type a message and hit Enter. Smithers responds in real time via WebSocket.
+Type a message and hit Enter. Smithers responds in real time via WebSocket. See [Smithers Onboarding](/guides/smithers-onboarding/) for what Smithers asks and how the context is saved.
 
 ## 6. Invite your team
 
@@ -71,21 +73,37 @@ Each invited user gets their own personal **Smithers** agent, created automatica
 
 You can create agents from templates. Creating an agent is simple: pick a template, give it a name, add an optional tagline, and click Create. Each agent gets a unique auto-generated avatar.
 
-For example, a **Knowledge Base** agent can read text files, Markdown, and **PDF documents** (including scanned PDFs with vision-capable models) from directories you select — but has no access to anything else by default. After creating the agent, you can customize it through the agent settings tabs:
+For example, a **Knowledge Base** agent can read text files, Markdown, and **PDF documents** (including scanned PDFs with vision-capable models) from directories you select — but has no access to anything else by default.
+
+After creating the agent, you can customize it through the agent settings tabs. Which tabs you see depends on your role and the agent type:
+
+**Always visible:**
 
 - **General** — Change the agent's name, tagline, avatar, and model
 - **Personality** — Choose a personality preset or write custom personality instructions (SOUL.md)
 - **Instructions** — Define what the agent should do and how it should handle tasks (AGENTS.md)
+
+**Admin-only, shared agents only:**
+
 - **Permissions** — Configure which tools and directories the agent can access
+- **Access** <Badge text="Enterprise" variant="note" /> — Set visibility to all users or restrict to specific groups
+
+**Admin-only, any agent:**
+
+- **Telegram** — Connect a Telegram bot to this agent
+
+Smithers is a personal agent per user, so Permissions and Access don't apply — they only exist for shared agents. See [Agent Settings](/concepts/agent-settings/) for the full reference.
 
 User and organization context (personal preferences, team structure, company conventions) is managed in **Settings → Context**, not in per-agent settings.
 
 To try it out, mount a directory with documents into the Pinchy container and create an agent from the Knowledge Base template. See the [Create a Knowledge Base Agent](/guides/create-knowledge-base-agent/) guide for the full walkthrough.
 
-## New in %%PINCHY_VERSION%%
+## Recently added
 
+- **[Web Search](/guides/web-search-setup/)** — Give agents live web access via the Brave Search API, with per-agent domain allow/deny lists
+- **[Gmail Integration](/guides/connect-email/)** — Let agents read, search, draft, and send emails through a guided OAuth wizard
 - **[Telegram Channels](/guides/telegram-setup/)** — Chat with your agents from Telegram, with user accounts linked via pairing code
-- **[Odoo Integration](/guides/connect-odoo/)** — Give agents scoped, permission-aware access to your Odoo ERP
+- **[Odoo Integration](/guides/connect-odoo/)** — Give agents scoped, permission-aware access to your Odoo ERP with 16 pre-built templates
 - **[Ollama (Local & Cloud)](/guides/ollama-setup/)** — Run agents fully air-gapped on your own hardware, or use Ollama Cloud models
 - **[Usage & Costs Dashboard](/guides/usage-dashboard/)** — Track token usage, estimated costs, and cache savings per agent and user
 
