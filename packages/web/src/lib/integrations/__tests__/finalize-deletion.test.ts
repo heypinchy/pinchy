@@ -106,6 +106,15 @@ describe("finalizeIntegrationDeletion", () => {
     errSpy.mockRestore();
   });
 
+  it("does not call OAuth cleanup for non-google connection types", async () => {
+    await finalizeIntegrationDeletion({
+      actorId: "u1",
+      connection: { ...baseConn, type: "odoo" },
+      detachedAgents: [],
+    });
+    expect(mockDeleteOAuth).not.toHaveBeenCalled();
+  });
+
   it("propagates OAuth cleanup failure (is not swallowed)", async () => {
     mockDeleteOAuth.mockRejectedValueOnce(new Error("settings DB down"));
     const whereSpy = vi.fn().mockResolvedValue([]);
