@@ -93,6 +93,8 @@ export function useWsRuntime(agentId: string): {
   const shouldRecoverFromHistoryRef = useRef(false);
   const pendingMessageRef = useRef<string | null>(null);
   const isRunningRef = useRef(false);
+  /** Tracks pending ack timers by clientMessageId. Cleared on ack or unmount. */
+  const pendingAckTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   // Tracks the current agentId so stale WebSocket handlers (from before an
   // agent switch) can detect they belong to an old connection and bail out.
   // Updated at the start of the useEffect (before connecting), not during render,
@@ -267,8 +269,15 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "ack") {
+            // Cancel the pending timeout timer before dispatching the ack
+            const clientMessageId = data.clientMessageId as string;
+            const ackTimer = pendingAckTimers.current.get(clientMessageId);
+            if (ackTimer !== undefined) {
+              clearTimeout(ackTimer);
+              pendingAckTimers.current.delete(clientMessageId);
+            }
             // Transition user message sending → sent
-            dispatchMessages({ type: "ack", clientMessageId: data.clientMessageId as string });
+            dispatchMessages({ type: "ack", clientMessageId });
             return;
           }
 
@@ -375,6 +384,11 @@ export function useWsRuntime(agentId: string): {
         clearTimeout(delayTimerRef.current);
       }
       clearStuckTimer();
+      // Clear all pending ack timers to avoid memory leaks and stale dispatches
+      for (const timer of pendingAckTimers.current.values()) {
+        clearTimeout(timer);
+      }
+      pendingAckTimers.current.clear();
       wsRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -483,8 +497,16 @@ export function useWsRuntime(agentId: string): {
         // Queue for delivery when connection opens
         pendingMessageRef.current = payload;
       }
+
+      // Start a 10-second ack timeout. If no ack arrives before the timer
+      // fires, dispatch a "timeout" action to transition the message to "failed".
+      const ackTimer = setTimeout(() => {
+        pendingAckTimers.current.delete(clientMessageId);
+        dispatchMessages({ type: "timeout", clientMessageId });
+      }, 10_000);
+      pendingAckTimers.current.set(clientMessageId, ackTimer);
     },
-    [agentId]
+    [agentId, dispatchMessages]
   );
 
   const convertedMessages = useMemo(() => messages.map(convertMessage), [messages]);

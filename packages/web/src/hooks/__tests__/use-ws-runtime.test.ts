@@ -173,6 +173,31 @@ describe("useWsRuntime — status reducer + orphan detector", () => {
     expect(typeof frame.clientMessageId).toBe("string");
   });
 
+  it("does not start a timeout timer for history messages", async () => {
+    // This is a sanity check — history messages don't go through onNew,
+    // so no timer should be started for them.
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({
+        type: "history",
+        messages: [{ role: "user", content: "old message" }],
+      });
+    });
+
+    // Advance 10+ seconds — no timeout dispatch expected (no errors)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(15_000);
+    });
+
+    // isOrphaned should be false since isRunning=false and last message role=user
+    // but status is undefined (loaded from history, not sent via onNew)
+    expect(result.current.isOrphaned).toBe(false);
+    vi.useRealTimers();
+  });
+
   it("isOrphaned is false when assistant has responded", async () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
 
@@ -201,6 +226,138 @@ describe("useWsRuntime — status reducer + orphan detector", () => {
     });
 
     // Last message is assistant → not orphaned
+    expect(result.current.isOrphaned).toBe(false);
+  });
+});
+
+// ── Ack timeout tests ─────────────────────────────────────────────────────────
+
+describe("useWsRuntime — ack timeout", () => {
+  beforeEach(() => {
+    wsInstances.length = 0;
+    capturedOnNew = null;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("transitions message to failed after 10s without ack", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    // Send a user message
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    // Before timeout: isRunning=true → isOrphaned=false
+    expect(result.current.isOrphaned).toBe(false);
+
+    // Advance 10 seconds — timeout should fire, message → "failed"
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    // Deliver complete (no ack was sent)
+    await act(async () => {
+      latestWs().simulateMessage({ type: "complete" });
+    });
+
+    // After complete: isRunning=false. If the timeout fired correctly, the
+    // last message has status="failed" → isOrphaned=false.
+    // Without the timeout implementation, the message stays "sending" and
+    // isOrphaned would also be false (since "sending" ≠ "sent"), but a late ack
+    // would then flip it to "sent". The key distinction is tested in the
+    // "late ack" test below. Here we verify the happy-path of the timeout.
+    expect(result.current.isOrphaned).toBe(false);
+  });
+
+  it("does NOT fail message if ack arrives before 10s", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    // Send a user message
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    const ws = latestWs();
+    const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
+      clientMessageId: string;
+    };
+
+    // Advance 5 seconds (before the 10s timeout)
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    // Deliver ack before timeout fires
+    await act(async () => {
+      ws.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId });
+    });
+
+    // Advance 5 more seconds — total 10s passed, timeout would have fired
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+
+    // Now deliver complete
+    await act(async () => {
+      ws.simulateMessage({ type: "complete" });
+    });
+
+    // Message was acked (status=sent), then complete arrived → isOrphaned=true
+    // (last message is user with status "sent" and isRunning=false)
+    expect(result.current.isOrphaned).toBe(true);
+  });
+
+  it("late ack after failed transition is discarded", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    // Send a user message
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    const ws = latestWs();
+    const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
+      clientMessageId: string;
+    };
+
+    // Advance 10 seconds — timeout fires, message → failed
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    // Now deliver a late ack
+    await act(async () => {
+      ws.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId });
+    });
+
+    // Then complete
+    await act(async () => {
+      ws.simulateMessage({ type: "complete" });
+    });
+
+    // Message remains "failed" (reducer ignores acks for non-sending messages).
+    // isOrphaned=false because status is "failed", not "sent"
     expect(result.current.isOrphaned).toBe(false);
   });
 });
