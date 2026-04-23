@@ -6,62 +6,84 @@ import { execSync } from "child_process";
 
 const SCRIPT_PATH = join(__dirname, "../../../../../config/ensure-gateway-token.js");
 
-function runScript(configPath: string) {
-  execSync(`node ${SCRIPT_PATH} ${configPath}`, { encoding: "utf-8" });
+function runScript(configPath: string, secretsPath: string) {
+  execSync(`node ${SCRIPT_PATH}`, {
+    encoding: "utf-8",
+    env: {
+      ...process.env,
+      OPENCLAW_CONFIG_PATH: configPath,
+      OPENCLAW_SECRETS_PATH: secretsPath,
+    },
+  });
 }
 
-function readConfig(configPath: string) {
-  return JSON.parse(readFileSync(configPath, "utf-8"));
+function readJSON(filePath: string) {
+  return JSON.parse(readFileSync(filePath, "utf-8"));
 }
 
 describe("ensure-gateway-token", () => {
   let tmpDir: string;
   let configPath: string;
+  let secretsPath: string;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "openclaw-test-"));
     configPath = join(tmpDir, "openclaw.json");
+    secretsPath = join(tmpDir, "secrets.json");
   });
 
   afterEach(() => {
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("generates a gateway auth token when config has none", () => {
-    writeFileSync(configPath, JSON.stringify({ gateway: { mode: "local", bind: "lan" } }));
+  it("generates a gateway token in secrets.json when absent", () => {
+    runScript(configPath, secretsPath);
 
-    runScript(configPath);
-
-    const config = readConfig(configPath);
-    expect(config.gateway.auth.token).toBeDefined();
-    expect(config.gateway.auth.token).toHaveLength(48); // 24 bytes hex
-    expect(config.gateway.auth.mode).toBe("token");
+    const secrets = readJSON(secretsPath);
+    expect(secrets.gateway.token).toBeDefined();
+    expect(secrets.gateway.token).toHaveLength(48); // 24 bytes hex
   });
 
-  it("preserves existing token", () => {
-    const existing = {
-      gateway: {
-        mode: "local",
-        bind: "lan",
-        auth: { mode: "token", token: "my-existing-token-abc123" },
+  it("preserves an existing gateway token in secrets.json", () => {
+    writeFileSync(secretsPath, JSON.stringify({ gateway: { token: "existing" } }));
+
+    runScript(configPath, secretsPath);
+
+    const secrets = readJSON(secretsPath);
+    expect(secrets.gateway.token).toBe("existing");
+  });
+
+  it("writes a minimal openclaw.json with SecretRef skeleton when openclaw.json absent", () => {
+    runScript(configPath, secretsPath);
+
+    const config = readJSON(configPath);
+    expect(config.gateway.auth).toEqual({
+      mode: "token",
+      token: { source: "file", provider: "pinchy", id: "/gateway/token" },
+    });
+    expect(config.secrets.providers.pinchy).toEqual({
+      source: "file",
+      path: secretsPath,
+      mode: "json",
+    });
+  });
+
+  it("does not overwrite existing secrets provider block", () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan" },
+      secrets: {
+        providers: {
+          pinchy: { source: "file", path: "/custom/path/secrets.json", mode: "json" },
+        },
       },
     };
-    writeFileSync(configPath, JSON.stringify(existing));
+    writeFileSync(configPath, JSON.stringify(existingConfig));
 
-    runScript(configPath);
+    runScript(configPath, secretsPath);
 
-    const config = readConfig(configPath);
-    expect(config.gateway.auth.token).toBe("my-existing-token-abc123");
-  });
-
-  it("creates config file when it does not exist", () => {
-    runScript(configPath);
-
-    const config = readConfig(configPath);
-    expect(config.gateway.auth.token).toBeDefined();
-    expect(config.gateway.auth.token).toHaveLength(48);
-    expect(config.gateway.mode).toBe("local");
-    expect(config.gateway.bind).toBe("lan");
+    const config = readJSON(configPath);
+    // secrets block already existed, should not be overwritten
+    expect(config.secrets.providers.pinchy.path).toBe("/custom/path/secrets.json");
   });
 
   it("preserves other fields in the config", () => {
@@ -72,28 +94,41 @@ describe("ensure-gateway-token", () => {
     };
     writeFileSync(configPath, JSON.stringify(existing));
 
-    runScript(configPath);
+    runScript(configPath, secretsPath);
 
-    const config = readConfig(configPath);
+    const config = readJSON(configPath);
     expect(config.env.ANTHROPIC_API_KEY).toBe("sk-ant-key");
     expect(config.agents.defaults.model.primary).toBe("anthropic/claude-haiku-4-5-20251001");
-    expect(config.gateway.auth.token).toBeDefined();
+    expect(config.gateway.auth.token).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/gateway/token",
+    });
   });
 
-  it("creates parent directory if it does not exist", () => {
-    const nestedPath = join(tmpDir, "nested", "dir", "openclaw.json");
+  it("creates parent directories if they do not exist", () => {
+    const nestedConfigPath = join(tmpDir, "nested", "dir", "openclaw.json");
+    const nestedSecretsPath = join(tmpDir, "nested", "secrets", "secrets.json");
 
-    runScript(nestedPath);
+    runScript(nestedConfigPath, nestedSecretsPath);
 
-    const config = readConfig(nestedPath);
-    expect(config.gateway.auth.token).toBeDefined();
+    expect(readJSON(nestedConfigPath).gateway.auth).toBeDefined();
+    expect(readJSON(nestedSecretsPath).gateway.token).toBeDefined();
   });
 
-  it("sets restrictive file permissions", () => {
-    runScript(configPath);
+  it("sets restrictive permissions on openclaw.json (644)", () => {
+    runScript(configPath, secretsPath);
 
     const stats = statSync(configPath);
     const mode = (stats.mode & 0o777).toString(8);
     expect(mode).toBe("644");
+  });
+
+  it("sets restrictive permissions on secrets.json (600)", () => {
+    runScript(configPath, secretsPath);
+
+    const stats = statSync(secretsPath);
+    const mode = (stats.mode & 0o777).toString(8);
+    expect(mode).toBe("600");
   });
 });
