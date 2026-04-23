@@ -213,4 +213,77 @@ test.describe("Feature screenshots", () => {
     }
     await screenshot(page, "provider-settings.png");
   });
+
+  test("agent settings - telegram", async ({ page }) => {
+    const agentId = await getAgentId(page, "Frink");
+    if (agentId) {
+      await page.goto(`${BASE_URL}/chat/${agentId}/settings`);
+      await page.waitForTimeout(1500);
+      const tab = page.getByRole("tab", { name: /telegram/i });
+      if (await tab.isVisible({ timeout: 3000 }).catch(() => false)) {
+        await tab.click();
+        await page.waitForTimeout(1500);
+      }
+    }
+    await screenshot(page, "agent-settings-telegram.png");
+  });
+
+  test("settings telegram", async ({ page }) => {
+    await page.goto(`${BASE_URL}/settings`);
+    await page.waitForTimeout(1500);
+    const telegramTab = page.getByRole("tab", { name: /telegram/i });
+    if (await telegramTab.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await telegramTab.click();
+    } else {
+      await page.locator("text=Telegram").first().click().catch(() => {});
+    }
+    await page.waitForTimeout(1500);
+    await screenshot(page, "settings-telegram.png");
+  });
+
+  test("integrations odoo wizard", async ({ page }) => {
+    await page.goto(`${BASE_URL}/settings`);
+    await page.waitForTimeout(1500);
+    const integrationsTab = page.getByRole("tab", { name: /integrations/i });
+    if (await integrationsTab.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await integrationsTab.click();
+    } else {
+      await page.locator("text=Integrations").first().click().catch(() => {});
+    }
+    await page.waitForTimeout(1500);
+    const addButton = page.getByRole("button", { name: /add integration/i });
+    if (await addButton.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await addButton.click();
+      await page.waitForTimeout(800);
+      const odooOption = page.getByRole("button", { name: /odoo/i }).first();
+      if (await odooOption.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await odooOption.click();
+        await page.waitForTimeout(1000);
+      }
+    }
+    await screenshot(page, "integrations-odoo-wizard.png");
+  });
+
+  test("integrations google wizard", async ({ page }) => {
+    await page.goto(`${BASE_URL}/settings`);
+    await page.waitForTimeout(1500);
+    const integrationsTab = page.getByRole("tab", { name: /integrations/i });
+    if (await integrationsTab.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await integrationsTab.click();
+    } else {
+      await page.locator("text=Integrations").first().click().catch(() => {});
+    }
+    await page.waitForTimeout(1500);
+    const addButton = page.getByRole("button", { name: /add integration/i });
+    if (await addButton.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await addButton.click();
+      await page.waitForTimeout(800);
+      const googleOption = page.getByRole("button", { name: /google/i }).first();
+      if (await googleOption.isVisible({ timeout: 2000 }).catch(() => false)) {
+        await googleOption.click();
+        await page.waitForTimeout(1000);
+      }
+    }
+    await screenshot(page, "integrations-google-wizard.png");
+  });
 });
