@@ -539,6 +539,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # gh release list returns newest-first (gh CLI v2 default).
+          # .[0] is the latest release; .[1] is the previous one to upgrade from.
           TAG=$(gh release list --repo heypinchy/pinchy --limit 2 --json tagName -q '.[1].tagName // empty')
           if [ -z "$TAG" ]; then
             echo "::notice::No previous release found — skipping upgrade test."
@@ -611,7 +613,7 @@ jobs:
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
       - name: Tear down
-        if: always()
+        if: always() && steps.prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: docker compose down -v
 
