@@ -1,4 +1,4 @@
-import { writeFileSync, renameSync, mkdirSync, existsSync } from "fs";
+import { writeFileSync, renameSync, mkdirSync, existsSync, chmodSync } from "fs";
 import { dirname } from "path";
 
 export type SecretRef = {
@@ -26,5 +26,6 @@ export function writeSecretsFile(bundle: SecretsBundle): void {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const tmp = `${path}.tmp`;
   writeFileSync(tmp, JSON.stringify(bundle, null, 2), { mode: 0o600 });
+  chmodSync(tmp, 0o600); // enforce regardless of umask
   renameSync(tmp, path);
 }

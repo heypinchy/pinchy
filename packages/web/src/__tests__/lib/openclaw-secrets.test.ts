@@ -41,12 +41,17 @@ describe("writeSecretsFile", () => {
     expect(mode).toBe(0o600);
   });
 
-  it("writes atomically (no partial file on failure)", () => {
+  it("overwrites an existing file completely", () => {
     writeSecretsFile(bundle);
     // Overwrite — there must never be a window where the file is empty/truncated.
     writeSecretsFile({ providers: { openai: { apiKey: "sk-new" } } });
     expect(existsSync(process.env.OPENCLAW_SECRETS_PATH!)).toBe(true);
     const content = JSON.parse(readFileSync(process.env.OPENCLAW_SECRETS_PATH!, "utf-8"));
     expect(content.providers.openai.apiKey).toBe("sk-new");
+  });
+
+  it("uses atomic rename pattern (no .tmp file left behind)", () => {
+    writeSecretsFile(bundle);
+    expect(existsSync(`${process.env.OPENCLAW_SECRETS_PATH!}.tmp`)).toBe(false);
   });
 });
