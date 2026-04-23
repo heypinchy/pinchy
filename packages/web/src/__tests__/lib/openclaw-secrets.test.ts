@@ -1,5 +1,9 @@
-import { describe, it, expect } from "vitest";
-import { secretRef } from "@/lib/openclaw-secrets";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { secretRef, writeSecretsFile } from "@/lib/openclaw-secrets";
+import { readFileSync, existsSync, statSync } from "fs";
+import { mkdtempSync, rmSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 
 describe("secretRef", () => {
   it("builds a SecretRef pointing at the pinchy file provider", () => {
@@ -8,5 +12,41 @@ describe("secretRef", () => {
       provider: "pinchy",
       id: "/providers/anthropic/apiKey",
     });
+  });
+});
+
+describe("writeSecretsFile", () => {
+  let dir: string;
+  const bundle = { providers: { anthropic: { apiKey: "sk-ant-test" } } };
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "pinchy-secrets-"));
+    process.env.OPENCLAW_SECRETS_PATH = join(dir, "secrets.json");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.OPENCLAW_SECRETS_PATH;
+  });
+
+  it("writes JSON to OPENCLAW_SECRETS_PATH", () => {
+    writeSecretsFile(bundle);
+    const content = readFileSync(process.env.OPENCLAW_SECRETS_PATH!, "utf-8");
+    expect(JSON.parse(content)).toEqual(bundle);
+  });
+
+  it("creates the file with mode 0600", () => {
+    writeSecretsFile(bundle);
+    const mode = statSync(process.env.OPENCLAW_SECRETS_PATH!).mode & 0o777;
+    expect(mode).toBe(0o600);
+  });
+
+  it("writes atomically (no partial file on failure)", () => {
+    writeSecretsFile(bundle);
+    // Overwrite — there must never be a window where the file is empty/truncated.
+    writeSecretsFile({ providers: { openai: { apiKey: "sk-new" } } });
+    expect(existsSync(process.env.OPENCLAW_SECRETS_PATH!)).toBe(true);
+    const content = JSON.parse(readFileSync(process.env.OPENCLAW_SECRETS_PATH!, "utf-8"));
+    expect(content.providers.openai.apiKey).toBe("sk-new");
   });
 });
