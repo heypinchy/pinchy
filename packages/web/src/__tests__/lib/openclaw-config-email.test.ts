@@ -63,6 +63,16 @@ vi.mock("@/lib/migrate-onboarding", () => ({
   migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/openclaw-secrets")>();
+  return {
+    ...actual,
+    writeSecretsFile: vi.fn(),
+    updateSecretsFile: vi.fn(),
+    readSecretsFile: vi.fn().mockReturnValue({}),
+  };
+});
+
 vi.mock("@/lib/provider-models", () => {
   const defaults: Record<string, string> = {
     anthropic: "anthropic/claude-haiku-4-5-20251001",
@@ -241,7 +251,12 @@ describe("pinchy-email config generation", () => {
 
     const emailConfig = config.plugins.entries["pinchy-email"].config;
     expect(emailConfig.apiBaseUrl).toBe("http://pinchy:7777");
-    expect(emailConfig.gatewayToken).toBe("gw-token-123");
+    // gatewayToken is a SecretRef — plaintext never lands in openclaw.json
+    expect(emailConfig.gatewayToken).toMatchObject({
+      source: "file",
+      provider: "pinchy",
+      id: "/gateway/token",
+    });
 
     const agentConfig = emailConfig.agents["email-agent"];
     expect(agentConfig.connectionId).toBe("conn-google-1");
