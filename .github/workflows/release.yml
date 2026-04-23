@@ -143,10 +143,29 @@ jobs:
           RUNNING=$(docker compose ps --format json | jq -rs '[.[] | select(.State == "running")] | length')
           echo "Running services: $RUNNING"
           if [ "$RUNNING" -ne 3 ]; then
-            echo "::error::Expected 3 running services, got $RUNNING"
+            echo "::error::Expected 3 running services (pinchy, openclaw, db), got $RUNNING"
             docker compose ps
             exit 1
           fi
+
+      - name: Assert pinchy binds to 127.0.0.1 by default (not 0.0.0.0)
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          # Docker bypasses UFW — only 127.0.0.1 binding prevents external access.
+          # This assertion catches any regression that re-exposes port 7777 globally.
+          BINDING=$(docker inspect \
+            --format '{{range $p, $c := .NetworkSettings.Ports}}{{range $c}}{{.HostIp}}{{end}}{{end}}' \
+            "$(docker compose ps -q pinchy)")
+          echo "Pinchy port binding host IP: $BINDING"
+          if [ "$BINDING" != "127.0.0.1" ]; then
+            echo "::error::Pinchy must bind to 127.0.0.1 by default (got '$BINDING'). Docker bypasses UFW, so 0.0.0.0 exposes the port to the internet regardless of firewall rules."
+            exit 1
+          fi
+
+      - name: Tear down
+        if: always()
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: docker compose down -v
 
   release:
     name: Create GitHub Release
