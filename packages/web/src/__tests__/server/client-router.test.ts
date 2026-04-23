@@ -2328,7 +2328,14 @@ describe("ClientRouter", () => {
 
       expect(mockAppendAuditLog).toHaveBeenCalledWith(
         expect.objectContaining({
+          actorType: "user",
+          actorId: "user-1",
+          eventType: "chat.retry_triggered",
+          resource: "agent:agent-1",
+          outcome: "success",
           detail: expect.objectContaining({
+            agent: { id: "agent-1", name: "Smithers" },
+            sessionKey: "agent:agent-1:direct:user-1",
             reason: "partial_stream_failure",
           }),
         })
