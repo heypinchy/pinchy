@@ -9,10 +9,8 @@ export type WsMessage = {
 };
 
 type HistoryEntry = {
-  id: string;
   role: string;
   content: string;
-  timestamp: number;
 };
 
 export type Action =
@@ -42,10 +40,12 @@ export function reduceMessages(messages: WsMessage[], action: Action): WsMessage
       );
 
     case "history-reconcile": {
-      const historyIds = new Set(action.history.map((h) => h.id));
+      const historyContents = new Set(
+        action.history.filter((h) => h.role === "user").map((h) => h.content)
+      );
       return messages.map((msg) => {
         if (msg.status !== "sending") return msg;
-        return { ...msg, status: historyIds.has(msg.id) ? "sent" : "failed" };
+        return { ...msg, status: historyContents.has(msg.content) ? "sent" : "failed" };
       });
     }
 

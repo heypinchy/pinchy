@@ -39,7 +39,7 @@ describe("reduceMessages", () => {
     const initial = [
       { id: "1", role: "user", content: "hi", status: "sending" as const, timestamp: 0 },
     ];
-    const history = [{ id: "1", role: "user", content: "hi", timestamp: 0 }];
+    const history = [{ role: "user" as const, content: "hi" }];
     const next = reduceMessages(initial, { type: "history-reconcile", history });
     expect(next[0].status).toBe("sent");
   });
