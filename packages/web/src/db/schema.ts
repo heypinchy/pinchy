@@ -318,7 +318,7 @@ export const agentConnectionPermissions = pgTable(
       .references(() => agents.id, { onDelete: "cascade" }),
     connectionId: text("connection_id")
       .notNull()
-      .references(() => integrationConnections.id, { onDelete: "cascade" }),
+      .references(() => integrationConnections.id, { onDelete: "restrict" }),
     model: text("model").notNull(),
     operation: text("operation").notNull(),
   },
