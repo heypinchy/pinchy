@@ -139,7 +139,7 @@ try {
     );
   } else {
     fail(
-      "pnpm audit reported high or critical vulnerabilities.\n" +
+      "pnpm audit reported high or critical vulnerabilities (or failed to connect to the registry — check output above).\n" +
         "Fix them, or re-run with --skip-audit and document the acceptance in the release notes.",
     );
   }
