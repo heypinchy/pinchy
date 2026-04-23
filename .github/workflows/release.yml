@@ -78,10 +78,99 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+  end-user-install-published:
+    name: End-user install (published images)
+    runs-on: ubuntu-latest
+    needs: docker
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Ensure no GHCR credentials
+        run: docker logout ghcr.io || true
+
+      - name: Prepare clean install directory
+        id: install-dir
+        run: |
+          INSTALL_DIR=$(mktemp -d)
+          cp docker-compose.yml "$INSTALL_DIR/"
+          echo "path=$INSTALL_DIR" >> "$GITHUB_OUTPUT"
+          echo "Clean install dir: $INSTALL_DIR"
+          ls -la "$INSTALL_DIR"
+
+      - name: Pin image tags to this release
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          # Scope 2 will migrate this to .env-based versioning.
+          # For now: sed :latest → :<tag> in docker-compose.yml.
+          sed -i "s|:latest|:${GITHUB_REF_NAME}|g" docker-compose.yml
+          cat docker-compose.yml
+
+      - name: Pull images anonymously (fails loudly if GHCR is private)
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: docker compose pull
+
+      - name: Start stack from clean install dir
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: docker compose up -d
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Wait for health
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7777/api/health; then
+              echo "Stack healthy"
+              exit 0
+            fi
+            echo "Attempt $i: not ready yet"
+            if [ "$i" -eq 1 ] || [ $((i % 5)) -eq 0 ]; then
+              docker compose ps
+              docker compose logs --tail=20 pinchy
+            fi
+            sleep 2
+          done
+          echo "::error::Published-image install health check failed"
+          docker compose ps
+          docker compose logs
+          exit 1
+
+      - name: Assert all services running
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          RUNNING=$(docker compose ps --format json | jq -rs '[.[] | select(.State == "running")] | length')
+          echo "Running services: $RUNNING"
+          if [ "$RUNNING" -ne 3 ]; then
+            echo "::error::Expected 3 running services (pinchy, openclaw, db), got $RUNNING"
+            docker compose ps
+            exit 1
+          fi
+
+      - name: Assert pinchy binds to 127.0.0.1 by default (not 0.0.0.0)
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          # Docker bypasses UFW — only 127.0.0.1 binding prevents external access.
+          # This assertion catches any regression that re-exposes port 7777 globally.
+          BINDING=$(docker inspect \
+            --format '{{range $p, $c := .NetworkSettings.Ports}}{{range $c}}{{.HostIp}}{{end}}{{end}}' \
+            "$(docker compose ps -q pinchy)")
+          echo "Pinchy port binding host IP: $BINDING"
+          if [ "$BINDING" != "127.0.0.1" ]; then
+            echo "::error::Pinchy must bind to 127.0.0.1 by default (got '$BINDING'). Docker bypasses UFW, so 0.0.0.0 exposes the port to the internet regardless of firewall rules."
+            exit 1
+          fi
+
+      - name: Tear down
+        if: always()
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: docker compose down -v
+
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: docker
+    needs: [docker, end-user-install-published]
 
     steps:
       - uses: actions/checkout@v4
@@ -89,10 +178,37 @@ jobs:
       - name: Generate versioned cloud-init.yml
         run: sed "s/%%PINCHY_VERSION%%/${GITHUB_REF_NAME}/g" docs/src/snippets/cloud-init.yml > /tmp/cloud-init.yml
 
+      - name: Extract upgrade notes for release body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The new tag (this release) has been pushed but the GitHub Release
+          # for it hasn't been created yet, so `gh release list --limit 1`
+          # returns the *previous* release — the version users are upgrading from.
+          TARGET="${GITHUB_REF_NAME#v}"
+          PREV=$(gh release list --repo "${{ github.repository }}" --limit 1 --json tagName -q '.[0].tagName // empty' | sed 's/^v//')
+          if [ -z "$PREV" ]; then
+            echo "No previous release found — skipping upgrade-notes extraction (first release)."
+            : > /tmp/upgrade-notes.md
+          else
+            echo "Extracting upgrade notes for v${PREV} → v${TARGET}..."
+            {
+              echo "## Upgrade notes"
+              echo ""
+              node scripts/extract-upgrade-notes.mjs "$PREV" "$TARGET"
+              echo ""
+            } > /tmp/upgrade-notes.md
+            echo "=== /tmp/upgrade-notes.md ==="
+            cat /tmp/upgrade-notes.md
+            echo "============================="
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          # body_path content is pre-pended to the auto-generated notes.
+          body_path: /tmp/upgrade-notes.md
           files: |
             docs/public/installing.html
             /tmp/cloud-init.yml

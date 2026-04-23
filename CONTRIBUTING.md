@@ -130,47 +130,106 @@ By participating in this project, you agree to our [Code of Conduct](CODE_OF_CON
 
 Pinchy uses [Semantic Versioning](https://semver.org/) and tags on `main`.
 
+### Testing a release candidate
+
+Before cutting a tag, the maintainer runs the pre-release build on a dedicated staging instance. Pushes to `main` automatically publish two tags:
+
+- `ghcr.io/heypinchy/pinchy:next` — mutable, always HEAD of `main`
+- `ghcr.io/heypinchy/pinchy:sha-<12-chars>` — immutable per commit
+
+Same for `pinchy-openclaw`.
+
+**One-time staging setup** on your staging host:
+
+1. Deploy Pinchy normally, but pin `:next` in your `.env`:
+   ```env
+   PINCHY_VERSION=next
+   OPENCLAW_VERSION=next
+   ```
+   (After Scope 2 lands. For now, edit `docker-compose.yml` directly.)
+
+2. Install `/usr/local/bin/update-pinchy`:
+   ```bash
+   #!/usr/bin/env bash
+   set -euo pipefail
+   cd /srv/pinchy
+   LOG=/var/log/pinchy-update.log
+   echo "[$(date -Iseconds)] pulling" | tee -a "$LOG"
+   docker compose pull 2>&1 | tee -a "$LOG"
+   echo "[$(date -Iseconds)] restarting" | tee -a "$LOG"
+   docker compose up -d 2>&1 | tee -a "$LOG"
+   echo "[$(date -Iseconds)] waiting for health" | tee -a "$LOG"
+   for i in $(seq 1 30); do
+     curl -sf http://localhost:7777/api/health \
+       && { echo "healthy" | tee -a "$LOG"; exit 0; }
+     sleep 2
+   done
+   echo "health check failed" | tee -a "$LOG"
+   docker compose ps | tee -a "$LOG"
+   exit 1
+   ```
+   Make it executable: `chmod +x /usr/local/bin/update-pinchy`.
+
+3. Schedule nightly updates via cron or systemd timer:
+   ```cron
+   0 4 * * *  root  /usr/local/bin/update-pinchy
+   ```
+
+**Before each release**, run `sudo update-pinchy` manually during business hours to pull the latest `:next` build, then click through the key flows on staging: Smithers chat, one live integration, one custom agent with chat history.
+
+**Use synthetic data in staging.** Do not restore prod dumps — unnecessary privacy surface.
+
 ### Pre-release checklist
 
-Before running the release script, complete these manual steps:
+The release script and CI enforce image builds, GHCR visibility, end-user install, upgrade path, `pnpm audit`, and the presence of an upgrade-notes section. The items below are the remaining human judgment calls.
 
-**Code & dependencies**
+**Scope**
 - [ ] All feature/fix PRs for this release are merged to `main`
-- [ ] CI is green on `main` (the release script verifies this automatically)
-- [ ] Dependencies up to date (`pnpm outdated` — no critical/security updates pending)
-- [ ] If upgrading OpenClaw: version updated in `Dockerfile.openclaw`
+- [ ] Dependencies reviewed (`pnpm outdated`) — no critical/security updates pending
+- [ ] If upgrading OpenClaw: version bumped in `Dockerfile.openclaw`
 
-**Model resolver**
-- [ ] Every non-`custom` template in `AGENT_TEMPLATES` has a `modelHint` with a valid `tier` — run `pnpm test src/lib/__tests__/agent-templates.test.ts` and confirm green
-- [ ] Model IDs in `src/lib/model-resolver/providers/` still match live provider offerings — spot-check Anthropic/OpenAI/Google changelogs for deprecated model IDs
-- [ ] If new Ollama families gained popularity since last release, update `src/lib/model-resolver/families.ts` and `ollama-cloud.ts`
-- [ ] If a new LLM provider was added, a resolver file exists under `src/lib/model-resolver/providers/<provider>.ts` with tests
+**Model resolver** (only if models or templates changed)
+- [ ] Spot-check Anthropic/OpenAI/Google changelogs for deprecated model IDs referenced in `src/lib/model-resolver/providers/`
+- [ ] New Ollama family or new LLM provider added → resolver file + tests exist
 
 **Documentation**
-- [ ] `docs/src/content/docs/guides/upgrading.mdx` — add a section for the new version (breaking changes, new env vars, migration notes)
-- [ ] `packages/web/src/lib/smithers-soul.ts` — update if user-facing features changed
+- [ ] `docs/src/content/docs/guides/upgrading.mdx` — new section drafted for this version (heading format: `## Upgrading from v<prev> to %%PINCHY_VERSION%%`). The release workflow extracts this section automatically and prepends it to the GitHub Release body under an "Upgrade notes" heading.
+- [ ] `packages/web/src/lib/smithers-soul.ts` — updated if user-facing features changed
 
-Everything else (version bumps in `package.json`, commit, tag, push) is handled automatically by the release script.
+**Staging**
+- [ ] Staging instance on `:next` was clicked through today: Smithers chat, one live integration, one custom agent
 
 ### Release steps
 
-1. Complete the manual checklist above on `main`.
-2. Run the release script:
-   ```bash
-   pnpm release 0.3.0
-   ```
-   The script checks: clean working tree, on `main`, CI green, tag not already taken — then bumps versions, commits, tags, and pushes.
-3. GitHub Actions creates the GitHub Release with auto-generated notes and deploys the docs automatically.
-4. Review the auto-generated release notes on GitHub — edit if needed to highlight breaking changes or upgrade steps.
+1. Complete the checklist above on `main`.
+2. Run `pnpm release <new-version>` (e.g. `pnpm release 0.5.0`). The script verifies: clean working tree, on `main`, CI green, tag not taken, `upgrading.mdx` has the target-version section, `pnpm audit --audit-level=high --prod` passes, then bumps versions, commits, tags, and pushes.
+3. GitHub Actions runs the release workflow: build + push images, verify GHCR visibility (anonymous pull test), run the end-user install smoke against published images, extract the upgrade notes from `upgrading.mdx`, create the GitHub Release (auto-generated notes with the upgrade-notes section prepended), deploy docs. Any failure means **the release is not installable for end-users — do not announce until fixed.**
+4. Review the auto-generated GitHub Release notes. The "Upgrade notes" section at the top comes from `upgrading.mdx` — if it looks wrong, edit the release on GitHub directly.
 
-### First-time-only: publish container images
+### If the release workflow fails
 
-GHCR creates packages as **private** on first push. If you ever add a new image name to `release.yml` (today we publish `pinchy` and `pinchy-openclaw`), do this **once** right after the first release that pushes it, otherwise `docker compose pull` on users' servers will fail with `unauthorized`:
+**GHCR visibility gate (`end-user-install-published` job)**
+A newly-added `ghcr.io/heypinchy/*` package defaulted to private. Fix:
+1. Visit `https://github.com/heypinchy/pinchy/pkgs/container/<image-name>` → **Package settings** → **Change visibility** → **Public**.
+2. Re-run the failed workflow job. Subsequent releases inherit the visibility automatically.
 
-1. If the org's package-visibility policy disallows public packages, open [Org Settings → Packages](https://github.com/organizations/heypinchy/settings/packages) and allow "Public" under "Container image visibility."
-2. Visit the new package page at `https://github.com/heypinchy/pinchy/pkgs/container/<image-name>`, click **Package settings**, and under "Danger Zone" → **Change visibility** set it to **Public**.
+**End-user install published-image fail**
+The published images + `docker-compose.yml` didn't start cleanly. Reproduce locally:
+```bash
+mkdir /tmp/pinchy-verify && cd /tmp/pinchy-verify
+curl -o docker-compose.yml \
+  https://raw.githubusercontent.com/heypinchy/pinchy/<tag>/docker-compose.yml
+docker logout ghcr.io
+docker compose pull
+docker compose up -d
+```
+Fix the root cause and cut a patch release. Tags are immutable — never force-update.
 
-Once public, subsequent tag pushes (every release) inherit the visibility — no recurring step.
+**End-user upgrade fail (CI, before release)**
+A Drizzle migration or config change breaks the upgrade from the previous tag. Reproduce with the CI job's steps locally. Fix before merging; this gate is meant to prevent broken upgrade paths from ever landing on `main`.
+
+**`pnpm audit` fail (release script)**
+A high or critical CVE was flagged in a production dependency. Fix the vulnerability (update the dep or switch to a patched version), or — if the finding is a false positive or acceptable risk — re-run with `--skip-audit` and document the acceptance in the release notes under a "Known issues" subsection.
 
 ## Questions?
 

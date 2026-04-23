@@ -519,6 +519,119 @@ jobs:
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: docker compose down -v
 
+  end-user-upgrade:
+    name: End-user upgrade simulation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/docker-mirror
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Determine previous release tag
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # gh release list returns newest-first (gh CLI v2 default).
+          # .[0] is the most recent release — the version real users are upgrading from.
+          TAG=$(gh release list --repo heypinchy/pinchy --limit 1 --json tagName -q '.[0].tagName // empty')
+          if [ -z "$TAG" ]; then
+            echo "::notice::No previous release found — skipping upgrade test."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Previous tag: $TAG"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build this PR's images locally
+        if: steps.prev.outputs.skip == 'false'
+        run: |
+          docker build -t ghcr.io/heypinchy/pinchy:latest -f Dockerfile.pinchy .
+          docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
+
+      - name: Prepare clean install directory
+        if: steps.prev.outputs.skip == 'false'
+        id: install-dir
+        run: |
+          INSTALL_DIR=$(mktemp -d)
+          cp docker-compose.yml "$INSTALL_DIR/"
+          echo "path=$INSTALL_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Start previous version and wait healthy
+        if: steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          sed -i "s|:latest|:${{ steps.prev.outputs.tag }}|g" docker-compose.yml
+          docker compose pull
+          docker compose up -d
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7777/api/health; then
+              echo "Previous version healthy"
+              break
+            fi
+            echo "Attempt $i: not ready yet"
+            sleep 2
+            if [ "$i" -eq 30 ]; then
+              echo "::error::Previous version (${{ steps.prev.outputs.tag }}) did not come up"
+              docker compose logs
+              exit 1
+            fi
+          done
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Swap to this PR's images and wait healthy (upgrade path)
+        if: steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          docker compose stop
+          sed -i "s|:${{ steps.prev.outputs.tag }}|:latest|g" docker-compose.yml
+          docker compose up -d
+          for i in $(seq 1 60); do
+            # 60s because migrations may run on startup
+            if curl -sf http://localhost:7777/api/health; then
+              echo "Upgraded version healthy — migrations succeeded"
+              exit 0
+            fi
+            echo "Attempt $i: not ready yet"
+            sleep 2
+          done
+          echo "::error::Upgrade from ${{ steps.prev.outputs.tag }} did not come up healthy"
+          docker compose logs
+          exit 1
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Assert pinchy still binds to 127.0.0.1 after upgrade (not 0.0.0.0)
+        if: steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          # Docker bypasses UFW — only 127.0.0.1 binding prevents external access.
+          # Assert the upgrade path doesn't re-expose port 7777 globally (regression guard).
+          BINDING=$(docker inspect \
+            --format '{{range $p, $c := .NetworkSettings.Ports}}{{range $c}}{{.HostIp}}{{end}}{{end}}' \
+            "$(docker compose ps -q pinchy)")
+          echo "Pinchy port binding host IP after upgrade: $BINDING"
+          if [ "$BINDING" != "127.0.0.1" ]; then
+            echo "::error::Pinchy must bind to 127.0.0.1 after upgrade (got '$BINDING'). Docker bypasses UFW, so 0.0.0.0 exposes the port to the internet regardless of firewall rules."
+            exit 1
+          fi
+
+      - name: Tear down
+        if: always() && steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: docker compose down -v
+
   odoo-e2e:
     name: Odoo E2E Tests
     runs-on: ubuntu-latest
