@@ -69,7 +69,7 @@ test("admin can detach-and-delete an integration used by agents", async ({ page 
     await expect(page.getByText(new RegExp(INTEGRATION_NAME, "i"))).toBeVisible({
       timeout: 10000,
     });
-    await expect(page.getByText(/used by 1 agent/i)).toBeVisible();
+    await expect(page.getByText(/used by 1 agent/i)).toBeVisible({ timeout: 10000 });
 
     // 5. Open the integration's action menu and click Delete
     //    Each integration row has a MoreHorizontal dropdown trigger.
@@ -83,12 +83,17 @@ test("admin can detach-and-delete an integration used by agents", async ({ page 
     await integrationRow.getByRole("button", { name: /open menu/i }).click();
     await page.getByRole("menuitem", { name: /delete/i }).click();
 
-    // 6. Dialog shows "Delete E2E Odoo?" heading and "Detach & Delete" button
-    //    (phase === "detach" because the integration has 1 agent permission)
+    // 6. Dialog shows "Delete E2E Odoo?" heading and "Detach & Delete" button.
+    //    The dialog first loads (fetches /usage), then transitions to "detach"
+    //    phase because the integration has 1 agent permission.
+    //    Use a generous timeout — the /usage API round-trip can be slow on CI.
+    await expect(page.getByRole("alertdialog")).toBeVisible({ timeout: 5000 });
     await expect(
       page.getByRole("heading", { name: new RegExp(`delete ${INTEGRATION_NAME}`, "i") })
-    ).toBeVisible({ timeout: 5000 });
-    await expect(page.getByRole("button", { name: /detach & delete/i })).toBeVisible();
+    ).toBeVisible({ timeout: 10000 });
+    await expect(page.getByRole("button", { name: /detach & delete/i })).toBeVisible({
+      timeout: 10000,
+    });
 
     // 7. Click "Detach & Delete"
     await page.getByRole("button", { name: /detach & delete/i }).click();
