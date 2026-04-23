@@ -59,4 +59,24 @@ describe("reduceMessages", () => {
     const next = reduceMessages(initial, { type: "retry-resend", clientMessageId: "1" });
     expect(next[0].status).toBe("sending");
   });
+
+  it("history-reconcile leaves already-sent and failed messages unchanged", () => {
+    const initial = [
+      { id: "1", role: "user" as const, content: "hi", status: "sent" as const, timestamp: 0 },
+      { id: "2", role: "user" as const, content: "bye", status: "failed" as const, timestamp: 1 },
+      {
+        id: "3",
+        role: "user" as const,
+        content: "retry",
+        status: "sending" as const,
+        timestamp: 2,
+      },
+    ];
+    // id "3" is not in history → should become failed
+    // id "1" (sent) and id "2" (failed) should be untouched
+    const next = reduceMessages(initial, { type: "history-reconcile", history: [] });
+    expect(next[0].status).toBe("sent");
+    expect(next[1].status).toBe("failed");
+    expect(next[2].status).toBe("failed"); // was sending, not in history
+  });
 });
