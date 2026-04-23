@@ -369,7 +369,7 @@ export function sendingOpacityClass(status: string | undefined): string {
   return status === "sending" ? "opacity-60" : "";
 }
 
-const UserMessage: FC = () => {
+export const UserMessage: FC = () => {
   const status = useMessage((s) => s.metadata?.custom?.status as string | undefined);
 
   return (
