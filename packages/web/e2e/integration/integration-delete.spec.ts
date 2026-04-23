@@ -93,10 +93,10 @@ test("admin can detach-and-delete an integration used by agents", async ({ page 
     // 7. Click "Detach & Delete"
     await page.getByRole("button", { name: /detach & delete/i }).click();
 
-    // 8. Integration is gone from the listing
-    await expect(page.getByText(new RegExp(INTEGRATION_NAME, "i"))).not.toBeVisible({
-      timeout: 5000,
-    });
+    // 8. Integration row is gone from the listing.
+    //    Use the same row locator (with "open menu" button filter) to avoid
+    //    matching the deletion toast which also contains the integration name.
+    await expect(integrationRow).not.toBeVisible({ timeout: 10000 });
 
     // Mark as cleaned up — no need to delete in afterAll
     connectionId = null;
