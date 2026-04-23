@@ -164,6 +164,98 @@ describe("UserMessage failed state", () => {
   });
 });
 
+describe("Retry visibility: only latest failure gets Retry (mixed thread)", () => {
+  it("does NOT show Retry on an older failed UserMessage when a newer message exists", async () => {
+    // Simulates thread: [failed(msg-1), sent(msg-2), failed(msg-3=last)]
+    // Render msg-1 — isLast: false → no Retry
+    const { useMessage, useThread } = await import("@assistant-ui/react");
+    vi.mocked(useThread).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector?: (state: any) => unknown) =>
+        selector ? selector({ isRunning: false }) : { isRunning: false }
+    );
+    vi.mocked(useMessage).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector: (state: any) => unknown) =>
+        selector({ metadata: { custom: { status: "failed" } }, isLast: false, id: "msg-1" })
+    );
+
+    const { UserMessage } = await import("@/components/assistant-ui/thread");
+    render(<UserMessage />);
+
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+  });
+
+  it("shows Retry only on the last failed UserMessage in a mixed thread", async () => {
+    // Simulates thread: [failed(msg-1), sent(msg-2), failed(msg-3=last)]
+    // Render msg-3 — isLast: true → shows Retry
+    const { useMessage, useThread } = await import("@assistant-ui/react");
+    vi.mocked(useThread).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector?: (state: any) => unknown) =>
+        selector ? selector({ isRunning: false }) : { isRunning: false }
+    );
+    vi.mocked(useMessage).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector: (state: any) => unknown) =>
+        selector({ metadata: { custom: { status: "failed" } }, isLast: true, id: "msg-3" })
+    );
+
+    const { UserMessage } = await import("@/components/assistant-ui/thread");
+    render(<UserMessage />);
+
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+
+  it("does NOT show Retry on an older retryable AssistantMessage when a newer message exists", async () => {
+    // Simulates thread where an earlier assistant error bubble is no longer last
+    const { useMessage, useThread } = await import("@assistant-ui/react");
+    vi.mocked(useThread).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector?: (state: any) => unknown) =>
+        selector ? selector({ isRunning: false }) : { isRunning: false }
+    );
+    vi.mocked(useMessage).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector: (state: any) => unknown) =>
+        selector({
+          metadata: { custom: { error: { disconnected: true }, retryable: true } },
+          isLast: false,
+          id: "msg-err-old",
+        })
+    );
+
+    const { AssistantMessage } = await import("@/components/assistant-ui/thread");
+    render(<AssistantMessage />);
+
+    expect(screen.queryByRole("button", { name: /retry/i })).not.toBeInTheDocument();
+  });
+
+  it("shows Retry only on the last retryable AssistantMessage in a mixed thread", async () => {
+    // Simulates thread where this assistant error bubble is the last message
+    const { useMessage, useThread } = await import("@assistant-ui/react");
+    vi.mocked(useThread).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector?: (state: any) => unknown) =>
+        selector ? selector({ isRunning: false }) : { isRunning: false }
+    );
+    vi.mocked(useMessage).mockImplementation(
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (selector: (state: any) => unknown) =>
+        selector({
+          metadata: { custom: { error: { disconnected: true }, retryable: true } },
+          isLast: true,
+          id: "msg-err-last",
+        })
+    );
+
+    const { AssistantMessage } = await import("@/components/assistant-ui/thread");
+    render(<AssistantMessage />);
+
+    expect(screen.getByRole("button", { name: /retry/i })).toBeInTheDocument();
+  });
+});
+
 describe("AssistantMessage retryable error bubble", () => {
   it("shows Retry button on last assistant error bubble with retryable: true", async () => {
     const { useMessage, useThread } = await import("@assistant-ui/react");
