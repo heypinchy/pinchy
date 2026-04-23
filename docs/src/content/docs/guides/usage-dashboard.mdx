@@ -3,9 +3,13 @@ title: Usage & Costs Dashboard
 description: Track token consumption and estimated costs for every agent on your Pinchy instance.
 ---
 
-import { Aside } from "@astrojs/starlight/components";
+import { Aside, Badge } from "@astrojs/starlight/components";
 
 Pinchy keeps a running tally of how many tokens each agent burns through and what they roughly cost. The Usage Dashboard at `/usage` is where admins go to answer "where is the money going" without leaving the platform or stitching together provider invoices.
+
+:::note[Enterprise features on this page]
+The **Per-User Breakdown** and **CSV Export** are Pinchy Enterprise features. Everything else works without a license. See [Enterprise Setup](/guides/enterprise-setup/).
+:::
 
 ## Who can see it
 
@@ -21,7 +25,7 @@ Open **Usage** from the sidebar (or visit `/usage`).
 - **Source Breakdown** — how those tokens split across Chat, System, and Plugin use (see below)
 - **Daily Token Usage** chart — input vs output tokens over time. Days with no usage show as zero instead of being skipped, so you see actual gaps rather than misleading interpolation. The chart groups days by your browser's timezone, not UTC
 - **Per-Agent Breakdown** — which agents consume what, sorted by cost. Deleted agents are marked with "(deleted)" so you can still see their historical usage
-- **Per-User Breakdown** — Enterprise only — same numbers split by who chatted with the agent
+- **Per-User Breakdown** <Badge text="Enterprise" variant="note" /> — same numbers split by who chatted with the agent
 
 ### Token sources
 
@@ -53,9 +57,7 @@ A few honest caveats:
 - **Local Ollama shows "—" for cost.** Local models record token counts but have no pricing config. The dashboard shows a dash instead of $0.00 to make this clear.
 - **Tool execution time isn't tracked here.** Only the LLM tokens count. The Audit Trail at `/audit` is where you go for tool-use details.
 
-## Export
-
-<Aside type="note">CSV export is an Enterprise feature.</Aside>
+## Export <Badge text="Enterprise" variant="note" />
 
 With an active Enterprise license, the **Export CSV** button (top-right) downloads the current view — period and agent filter applied — as a CSV file. The export includes cache read and write tokens alongside the regular token columns. Useful for finance hand-offs or feeding the data into your own dashboards.
 
