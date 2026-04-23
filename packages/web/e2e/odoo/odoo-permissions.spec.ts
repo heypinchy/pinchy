@@ -28,7 +28,7 @@ async function deleteAllConnections(cookie: string) {
   if (!res.ok) return;
   const connections = await res.json();
   for (const conn of connections) {
-    await pinchyDelete(`/api/integrations/${conn.id}`, cookie);
+    await pinchyDelete(`/api/integrations/${conn.id}/with-permissions`, cookie);
   }
 }
 

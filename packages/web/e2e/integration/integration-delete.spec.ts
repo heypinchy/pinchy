@@ -65,7 +65,7 @@ test("admin can detach-and-delete an integration used by agents", async ({ page 
     expect(grantPermission.status()).toBe(200);
 
     // 4. Navigate to integrations settings and reload to see the updated count
-    await page.goto("/settings/integrations");
+    await page.goto("/settings?tab=integrations");
     await expect(page.getByText(new RegExp(INTEGRATION_NAME, "i"))).toBeVisible({
       timeout: 10000,
     });
