@@ -25,6 +25,7 @@ import {
   bumpPackageJson,
   buildTagName,
   buildCommitMessage,
+  assertUpgradingSectionExists,
 } from "./lib/release-logic.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -59,6 +60,23 @@ try {
 
 const tag = buildTagName(version);
 log(`\nReleasing Pinchy ${tag}\n`);
+
+// ─── Upgrade notes gate ───────────────────────────────────────────────────────
+
+log("Checking upgrading.mdx has section for target version...");
+const prevTagRaw = exec("git describe --tags --abbrev=0");
+const prevVersion = prevTagRaw.replace(/^v/, "");
+const upgradingMdxPath = resolve(
+  ROOT,
+  "docs/src/content/docs/guides/upgrading.mdx",
+);
+const upgradingMdx = readFileSync(upgradingMdxPath, "utf8");
+try {
+  assertUpgradingSectionExists(upgradingMdx, prevVersion, version);
+} catch (e) {
+  fail(e.message);
+}
+log(`  ✔ Section for v${version} present (from v${prevVersion})`);
 
 // ─── Pre-flight checks ────────────────────────────────────────────────────────
 
