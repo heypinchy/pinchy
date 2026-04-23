@@ -116,12 +116,12 @@ export async function regenerateOpenClawConfig() {
 
   // Read provider API keys from settings, route through SecretRef.
   const env: Record<string, unknown> = {};
-  const providerSecrets: SecretsBundle["providers"] = {};
+  const providerSecrets: Record<string, { apiKey: string }> = {};
   for (const [providerKey, providerConfig] of Object.entries(PROVIDERS)) {
     const apiKey = await getSetting(providerConfig.settingsKey);
     if (apiKey && providerConfig.envVar) {
       env[providerConfig.envVar] = secretRef(`/providers/${providerKey}/apiKey`);
-      providerSecrets![providerKey] = { apiKey };
+      providerSecrets[providerKey] = { apiKey };
     }
   }
 
@@ -655,6 +655,11 @@ export async function regenerateOpenClawConfig() {
     };
   }
 
+  // Always write secrets.json — tmpfs is wiped on container restart,
+  // secrets.json must always be present when openclaw.json contains SecretRef pointers.
+  const secretsBundle: SecretsBundle = { providers: providerSecrets };
+  writeSecretsFile(secretsBundle);
+
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts
   const newContent = JSON.stringify(config, null, 2);
   try {
@@ -663,11 +668,6 @@ export async function regenerateOpenClawConfig() {
   } catch {
     // File doesn't exist yet — write it
   }
-
-  // Assemble and write secrets bundle BEFORE openclaw.json so OpenClaw's
-  // file watcher never sees pointers that can't resolve.
-  const secretsBundle: SecretsBundle = { providers: providerSecrets };
-  writeSecretsFile(secretsBundle);
 
   writeConfigAtomic(newContent);
 }

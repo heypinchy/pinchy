@@ -1991,6 +1991,10 @@ describe("regenerateOpenClawConfig — env secrets", () => {
     process.env.OPENCLAW_SECRETS_PATH = "/tmp/test-secrets.json";
   });
 
+  afterEach(() => {
+    delete process.env.OPENCLAW_SECRETS_PATH;
+  });
+
   it("writes env.ANTHROPIC_API_KEY as a SecretRef, not plaintext", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-the-real-key";
