@@ -295,6 +295,12 @@ export function SettingsIntegrations() {
                         )}
                       </div>
                     </TooltipProvider>
+                    {conn.agentUsageCount > 0 && (
+                      <p className="text-xs text-muted-foreground">
+                        Used by {conn.agentUsageCount}{" "}
+                        {conn.agentUsageCount === 1 ? "agent" : "agents"}
+                      </p>
+                    )}
                   </div>
                 );
               })}

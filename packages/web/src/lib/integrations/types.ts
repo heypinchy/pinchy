@@ -23,4 +23,5 @@ export interface IntegrationConnection {
   createdAt: string;
   updatedAt: string;
   cannotDecrypt: boolean;
+  agentUsageCount: number;
 }
