@@ -255,7 +255,7 @@ Integrations let agents work with external business data — email accounts, ERP
 | **Odoo**       | API key           | URL, database, login, API key |
 | **Web Search** | API key           | Brave Search API key          |
 
-All credentials are encrypted at rest with AES-256-GCM and isolated per-row: a single decryption failure no longer hides every integration (see upgrade notes for %%PINCHY_VERSION%%). Credentials never reach the OpenClaw config file — plugins fetch them on-demand via Pinchy's internal API, authenticated with the shared gateway token.
+All credentials are encrypted at rest with AES-256-GCM and isolated per-row: a single decryption failure no longer hides every integration. Credentials never reach the OpenClaw config file — plugins fetch them on-demand via Pinchy's internal API, authenticated with the shared gateway token.
 
 Each integration enforces its own permission model on the agent side:
 

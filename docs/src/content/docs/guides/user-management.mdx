@@ -199,12 +199,12 @@ docker compose exec pinchy pnpm reset-admin --email admin@example.com
 
 All user management actions performed by admins are logged in the audit trail:
 
-| Action                     | Audit event           |
-| -------------------------- | --------------------- |
-| User invited               | `user.invited`        |
-| Role changed               | `user.role_updated`   |
-| Group memberships changed  | `user.groups_updated` |
-| Profile or password change | `user.updated`        |
-| User deactivated           | `user.deleted`        |
+| Action                    | Audit event           |
+| ------------------------- | --------------------- |
+| User invited              | `user.invited`        |
+| Role changed              | `user.role_updated`   |
+| Group memberships changed | `user.groups_updated` |
+| User reactivated          | `user.updated`        |
+| User deactivated          | `user.deleted`        |
 
 Each entry records which admin took the action, the affected user's name and email, and before/after values for role or group changes. See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.
