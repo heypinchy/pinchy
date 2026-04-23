@@ -83,6 +83,19 @@ app.prepare().then(async () => {
     );
   }
 
+  // One-time migration: delete legacy openclaw.json.bak (may contain plaintext secrets).
+  // Runs before any config read/write so the .bak file never gets a chance to be used.
+  try {
+    const { migrateToSecretRef } = await import("./src/lib/openclaw-migration");
+    const configPath = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
+    migrateToSecretRef(configPath);
+  } catch (err) {
+    console.error(
+      "[pinchy] Failed to run secret-ref migration:",
+      err instanceof Error ? err.message : err
+    );
+  }
+
   // Sanitize OpenClaw config before anything else — remove stale plugin entries
   // from the allow list that would prevent OpenClaw from starting. This runs
   // even before setup is complete (no DB access needed).
