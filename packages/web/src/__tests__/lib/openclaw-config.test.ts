@@ -2124,6 +2124,53 @@ describe("restart-state integration", () => {
       "user-1": ["telegram:999888"],
     });
   });
+
+  it("drops unknown fields from existingTelegram on regenerate", async () => {
+    // Seed openclaw.json with channels.telegram containing a known field (groupPolicy)
+    // and an unknown legacy field (weirdLegacyField)
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "secret" } },
+      channels: {
+        telegram: {
+          dmPolicy: "pairing",
+          groupPolicy: "allow",
+          weirdLegacyField: "foo",
+          accounts: {},
+        },
+      },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    // Known field is preserved
+    expect(config.channels.telegram.groupPolicy).toBe("allow");
+    // Unknown legacy field is dropped
+    expect(config.channels.telegram.weirdLegacyField).toBeUndefined();
+  });
 });
 
 describe("writeConfigAtomic plaintext secret guard", () => {

@@ -666,15 +666,18 @@ export async function regenerateOpenClawConfig() {
       }
     }
 
-    // Preserve OpenClaw-enriched channel fields (groupPolicy, streaming)
+    // Preserve OpenClaw-enriched channel fields (groupPolicy, streaming).
+    // Use an explicit allow-list instead of spread to prevent unknown/legacy
+    // fields (including potential legacy secrets) from leaking into the config.
     const existingTelegram =
       ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
+    const ENRICHED_TELEGRAM_FIELDS = ["groupPolicy", "streaming"] as const;
+    const preservedTelegram: Record<string, unknown> = {};
+    for (const f of ENRICHED_TELEGRAM_FIELDS) {
+      if (f in existingTelegram) preservedTelegram[f] = existingTelegram[f];
+    }
     config.channels = {
-      telegram: {
-        ...existingTelegram,
-        dmPolicy: "pairing",
-        accounts,
-      },
+      telegram: { ...preservedTelegram, dmPolicy: "pairing", accounts },
     };
     config.bindings = bindings;
     config.session = {
