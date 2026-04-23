@@ -87,6 +87,7 @@ describe("DELETE /api/integrations/:id/with-permissions", () => {
     const res = await DELETE(makeReq() as any, makeCtx());
     expect(res.status).toBe(200);
     expect(mockDb.transaction).toHaveBeenCalledOnce();
+    expect(txMock.delete).toHaveBeenCalledTimes(2);
     expect(mockFinalize).toHaveBeenCalledWith(
       expect.objectContaining({
         actorId: "u1",
