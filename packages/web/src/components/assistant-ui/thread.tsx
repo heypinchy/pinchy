@@ -19,6 +19,7 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
   useMessage,
+  useThread,
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
@@ -30,7 +31,8 @@ import {
   SquareIcon,
 } from "lucide-react";
 import { type FC, useState, useEffect, useRef, useContext } from "react";
-import { AgentAvatarContext, AgentIdContext } from "@/components/chat";
+import { AgentAvatarContext, AgentIdContext, RetryResendContext } from "@/components/chat";
+import { RetryButton } from "@/components/chat/retry-button";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft } from "@/lib/draft-store";
 
@@ -371,6 +373,12 @@ export function sendingOpacityClass(status: string | undefined): string {
 
 export const UserMessage: FC = () => {
   const status = useMessage((s) => s.metadata?.custom?.status as string | undefined);
+  const isLast = useMessage((s) => s.isLast);
+  const messageId = useMessage((s) => s.id);
+  const isRunning = useThread((s) => s.isRunning);
+  const onRetryResend = useContext(RetryResendContext);
+
+  const isFailed = status === "failed";
 
   return (
     <MessagePrimitive.Root
@@ -393,6 +401,13 @@ export const UserMessage: FC = () => {
           />
         </div>
       </div>
+
+      {isFailed && isLast && (
+        <div className="flex items-center gap-2 text-sm text-destructive mr-1 mt-0.5">
+          <span>Couldn&apos;t deliver</span>
+          <RetryButton onClick={() => onRetryResend(messageId)} disabled={isRunning} />
+        </div>
+      )}
 
       <div className="flex mr-1">
         <MessageTimestamp />
