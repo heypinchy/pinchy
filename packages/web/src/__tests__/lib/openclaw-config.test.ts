@@ -1661,6 +1661,90 @@ describe("pinchy-odoo config size", () => {
   });
 });
 
+describe("pinchy-odoo connection.apiKey as SecretRef", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("writes odoo connection.apiKey as SecretRef keyed by connection id", async () => {
+    const agentsData = [
+      {
+        id: "odoo-agent",
+        name: "Odoo Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "odoo-agent",
+          connectionId: "conn-odoo-1",
+          model: "sale.order",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-odoo-1",
+          type: "odoo",
+          name: "My Odoo",
+          description: "Production Odoo",
+          credentials: JSON.stringify({
+            url: "https://odoo.example.com",
+            db: "mydb",
+            uid: 2,
+            apiKey: "secret-odoo-key",
+          }),
+          data: { models: [], lastSyncAt: "2026-04-01T00:00:00Z" },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: mockInnerJoin(permissionsData),
+          where: vi.fn().mockResolvedValue([]),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    // openclaw.json must contain a SecretRef for apiKey, not the plaintext key
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    const odooConfig = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents?.["odoo-agent"];
+    expect(odooConfig).toBeDefined();
+    expect(odooConfig.connection.apiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/integrations/conn-odoo-1/odooApiKey",
+    });
+    // Other connection fields must still be present in plaintext
+    expect(odooConfig.connection.url).toBe("https://odoo.example.com");
+    expect(odooConfig.connection.db).toBe("mydb");
+    expect(odooConfig.connection.uid).toBe(2);
+
+    // secrets.json must contain the actual key
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.integrations?.["conn-odoo-1"]?.odooApiKey).toBe("secret-odoo-key");
+  });
+});
+
 describe("restart-state integration", () => {
   beforeEach(() => {
     vi.clearAllMocks();

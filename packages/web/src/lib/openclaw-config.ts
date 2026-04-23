@@ -308,6 +308,7 @@ export async function regenerateOpenClawConfig() {
     .where(ne(integrationConnections.status, "pending"));
 
   const odooAgentConfigs: Record<string, Record<string, unknown>> = {};
+  const integrationSecrets: SecretsBundle["integrations"] = {};
   const permsByAgent = new Map<
     string,
     Map<
@@ -382,6 +383,11 @@ export async function regenerateOpenClawConfig() {
       }
     }
 
+    integrationSecrets[conn.id] = {
+      ...(integrationSecrets[conn.id] || {}),
+      odooApiKey: decryptedCreds.apiKey,
+    };
+
     odooAgentConfigs[agentId] = {
       connection: {
         name: conn.name,
@@ -389,7 +395,7 @@ export async function regenerateOpenClawConfig() {
         url: decryptedCreds.url,
         db: decryptedCreds.db,
         uid: decryptedCreds.uid,
-        apiKey: decryptedCreds.apiKey,
+        apiKey: secretRef(`/integrations/${conn.id}/odooApiKey`),
       },
       permissions,
       modelNames,
@@ -671,6 +677,7 @@ export async function regenerateOpenClawConfig() {
   const secretsBundle: SecretsBundle = {
     gateway: gatewaySecret,
     providers: providerSecrets,
+    integrations: integrationSecrets,
   };
   writeSecretsFile(secretsBundle);
 
