@@ -130,6 +130,7 @@ vi.mock("@/db/schema", () => ({
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col: unknown, val: unknown) => ({ col, val })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
+  sql: vi.fn().mockReturnValue({ as: vi.fn().mockReturnValue({ sql: "mocked-sql" }) }),
 }));
 
 const mockDeleteOAuthSettings = vi.fn().mockResolvedValue(undefined);
@@ -266,6 +267,23 @@ describe("GET /api/integrations", () => {
       cannotDecrypt: false,
       credentials: { url: "https://odoo.example.com", db: "prod", login: "admin" },
     });
+  });
+
+  it("listing includes agentUsageCount per row", async () => {
+    // The real query uses db.select({...subquery...}).from(integrationConnections),
+    // which yields rows enriched with agentUsageCount. The mock simulates that
+    // enriched result. The route must pass agentUsageCount through to the response.
+    const connectionWithCount = { ...mockConnection, agentUsageCount: 3 };
+    mockSelectFrom.mockImplementationOnce(() => Promise.resolve([connectionWithCount]));
+
+    const { GET } = await import("@/app/api/integrations/route");
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body[0]).toHaveProperty("agentUsageCount");
+    expect(typeof body[0].agentUsageCount).toBe("number");
+    expect(body[0].agentUsageCount).toBe(3);
   });
 
   it("never exposes credentials for an unreadable row", async () => {

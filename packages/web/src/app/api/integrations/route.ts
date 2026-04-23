@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
-import { integrationConnections } from "@/db/schema";
+import { integrationConnections, agentConnectionPermissions } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog } from "@/lib/audit";
 import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrations/odoo-schema";
@@ -36,7 +36,24 @@ export async function GET() {
     return NextResponse.json({ error: "Admin access required" }, { status: 403 });
   }
 
-  const connections = await db.select().from(integrationConnections);
+  const connections = await db
+    .select({
+      id: integrationConnections.id,
+      type: integrationConnections.type,
+      name: integrationConnections.name,
+      description: integrationConnections.description,
+      status: integrationConnections.status,
+      createdAt: integrationConnections.createdAt,
+      updatedAt: integrationConnections.updatedAt,
+      data: integrationConnections.data,
+      credentials: integrationConnections.credentials,
+      agentUsageCount: sql<number>`(
+        SELECT COUNT(DISTINCT ${agentConnectionPermissions.agentId})
+        FROM ${agentConnectionPermissions}
+        WHERE ${agentConnectionPermissions.connectionId} = ${integrationConnections.id}
+      )::int`.as("agent_usage_count"),
+    })
+    .from(integrationConnections);
 
   // Decrypt per row and isolate failures: if ENCRYPTION_KEY changed (e.g. an
   // admin accidentally overrode the persisted key via .env), some rows can no
@@ -65,6 +82,7 @@ export async function GET() {
         createdAt: conn.createdAt,
         updatedAt: conn.updatedAt,
         credentials: null,
+        agentUsageCount: conn.agentUsageCount,
         cannotDecrypt: true,
       };
     }
