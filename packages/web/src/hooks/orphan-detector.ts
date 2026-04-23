@@ -1,10 +1,10 @@
 type MessageRole = "user" | "assistant";
-type MessageStatus = "sent" | "sending" | undefined;
+type MessageStatus = "sent" | "sending" | "failed" | undefined;
 
 interface Message {
   id: string;
   role: MessageRole;
-  status: MessageStatus;
+  status?: MessageStatus;
 }
 
 interface OrphanContext {

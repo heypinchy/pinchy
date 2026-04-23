@@ -253,10 +253,10 @@ export function useWsRuntime(agentId: string): {
           if (data.type === "history") {
             const serverMessages: Array<{ role: string; content: string; timestamp?: string }> =
               data.messages ?? [];
-            const historyMessages = serverMessages.map((msg) => ({
+            const historyMessages: WsMessage[] = serverMessages.map((msg) => ({
               id: uuid(),
-              role: msg.role === "system" ? "assistant" : msg.role,
-              content: msg.content,
+              role: (msg.role === "system" ? "assistant" : msg.role) as "user" | "assistant",
+              content: msg.content ?? "",
               timestamp: msg.timestamp,
             }));
             const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
