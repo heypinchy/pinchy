@@ -653,7 +653,11 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models).toBeDefined();
     expect(config.models.providers["ollama-cloud"]).toBeDefined();
     expect(config.models.providers["ollama-cloud"].baseUrl).toBe("https://ollama.com/v1");
-    expect(config.models.providers["ollama-cloud"].apiKey).toBe("sk-ollama-test");
+    expect(config.models.providers["ollama-cloud"].apiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/ollama-cloud/apiKey",
+    });
     expect(config.models.providers["ollama-cloud"].api).toBe("openai-completions");
     expect(Array.isArray(config.models.providers["ollama-cloud"].models)).toBe(true);
     expect(config.models.providers["ollama-cloud"].models.length).toBeGreaterThan(0);
@@ -2089,6 +2093,32 @@ describe("regenerateOpenClawConfig — env secrets", () => {
       (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
     );
     expect(configWrite).toBeUndefined();
+  });
+
+  it("writes models.providers.ollama-cloud.apiKey as SecretRef and stores value in secrets.json", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-cloud-secret";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    // openclaw.json must contain a SecretRef, not the plaintext key
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+    expect(config.models.providers["ollama-cloud"].apiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/ollama-cloud/apiKey",
+    });
+
+    // secrets.json must contain the actual key
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.providers?.["ollama-cloud"]?.apiKey).toBe("sk-ollama-cloud-secret");
   });
 });
 

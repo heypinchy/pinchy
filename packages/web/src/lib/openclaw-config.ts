@@ -536,9 +536,10 @@ export async function regenerateOpenClawConfig() {
   const modelProviders: Record<string, unknown> = {};
 
   if (ollamaCloudKey) {
+    providerSecrets["ollama-cloud"] = { apiKey: ollamaCloudKey };
     modelProviders["ollama-cloud"] = {
       baseUrl: "https://ollama.com/v1",
-      apiKey: ollamaCloudKey,
+      apiKey: secretRef("/providers/ollama-cloud/apiKey"),
       api: "openai-completions",
       // Derived from TOOL_CAPABLE_OLLAMA_CLOUD_MODELS — see that file for
       // the source of each capability (ollama.com/library/<name>).
