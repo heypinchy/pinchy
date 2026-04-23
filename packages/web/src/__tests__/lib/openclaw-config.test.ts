@@ -428,7 +428,11 @@ describe("regenerateOpenClawConfig", () => {
     // apiBaseUrl and gatewayToken live at the plugin-level config (alongside `agents`),
     // matching how pinchy-context and pinchy-audit expose them.
     expect(config.plugins.entries["pinchy-files"].config.apiBaseUrl).toBe("http://pinchy:7777");
-    expect(config.plugins.entries["pinchy-files"].config.gatewayToken).toBe("gw-token-files");
+    expect(config.plugins.entries["pinchy-files"].config.gatewayToken).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/gateway/token",
+    });
     // Per-agent allowed_paths is still nested under .agents
     expect(config.plugins.entries["pinchy-files"].config.agents["kb-agent-id"]).toEqual({
       allowed_paths: ["/data/hr-docs/"],
@@ -499,7 +503,11 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.entries["pinchy-context"]).toBeDefined();
     expect(config.plugins.entries["pinchy-context"].enabled).toBe(true);
     expect(config.plugins.entries["pinchy-context"].config.apiBaseUrl).toBe("http://pinchy:7777");
-    expect(config.plugins.entries["pinchy-context"].config.gatewayToken).toBe("gw-token-123");
+    expect(config.plugins.entries["pinchy-context"].config.gatewayToken).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/gateway/token",
+    });
     expect(config.plugins.entries["pinchy-context"].config.agents["smithers-1"]).toEqual({
       tools: ["save_user_context"],
       userId: "user-1",
@@ -521,7 +529,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.entries["pinchy-audit"].enabled).toBe(true);
     expect(config.plugins.entries["pinchy-audit"].config).toEqual({
       apiBaseUrl: "http://pinchy:7777",
-      gatewayToken: "gw-token-123",
+      gatewayToken: { source: "file", provider: "pinchy", id: "/gateway/token" },
     });
   });
 
@@ -2119,6 +2127,174 @@ describe("regenerateOpenClawConfig — env secrets", () => {
     expect(mockWriteSecretsFile).toHaveBeenCalled();
     const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
     expect(secretsArg.providers?.["ollama-cloud"]?.apiKey).toBe("sk-ollama-cloud-secret");
+  });
+});
+
+describe("pinchy-* plugin gatewayToken as SecretRef", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  const GW_TOKEN_REF = { source: "file", provider: "pinchy", id: "/gateway/token" };
+
+  it("writes pinchy-files.config.gatewayToken as SecretRef", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "kb-agent-id",
+          name: "HR KB",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/"] } },
+          allowedTools: ["pinchy_ls", "pinchy_read"],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    const config = JSON.parse(written![1] as string);
+    expect(config.plugins.entries["pinchy-files"].config.gatewayToken).toEqual(GW_TOKEN_REF);
+  });
+
+  it("writes pinchy-context.config.gatewayToken as SecretRef", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "smithers-1",
+          name: "Smithers",
+          model: "anthropic/claude-sonnet-4-20250514",
+          pluginConfig: null,
+          allowedTools: ["pinchy_save_user_context"],
+          ownerId: "user-1",
+          isPersonal: true,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    const config = JSON.parse(written![1] as string);
+    expect(config.plugins.entries["pinchy-context"].config.gatewayToken).toEqual(GW_TOKEN_REF);
+  });
+
+  it("writes pinchy-audit.config.gatewayToken as SecretRef", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    const config = JSON.parse(written![1] as string);
+    expect(config.plugins.entries["pinchy-audit"].config.gatewayToken).toEqual(GW_TOKEN_REF);
+  });
+
+  it("writes pinchy-email.config.gatewayToken as SecretRef", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    const emailPermissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "email-agent",
+          connectionId: "email-conn-1",
+          model: "email",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "email-conn-1",
+          type: "google",
+          name: "Gmail",
+          description: "",
+          credentials: "{}",
+          data: null,
+          status: "active",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(
+          Promise.resolve([
+            {
+              id: "email-agent",
+              name: "Email Agent",
+              model: "anthropic/claude-haiku-4-5-20251001",
+              allowedTools: ["pinchy_email_read"],
+              createdAt: new Date(),
+            },
+          ]),
+          {
+            innerJoin: mockInnerJoin(emailPermissionsData),
+            where: vi.fn().mockResolvedValue([]),
+          }
+        )
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    const config = JSON.parse(written![1] as string);
+    expect(config.plugins.entries["pinchy-email"].config.gatewayToken).toEqual(GW_TOKEN_REF);
+  });
+
+  it("stores gateway token under secrets.gateway.token", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    await regenerateOpenClawConfig();
+
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.gateway?.token).toBe("gw-secret-token");
+  });
+
+  it("does not include gateway in secrets when no gateway token exists", async () => {
+    // No existing config → no gateway token
+    await regenerateOpenClawConfig();
+
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.gateway).toBeUndefined();
   });
 });
 

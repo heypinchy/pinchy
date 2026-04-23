@@ -226,6 +226,7 @@ export async function regenerateOpenClawConfig() {
     | Record<string, unknown>
     | undefined;
   const gatewayToken = (gatewayAuth?.token as string) || "";
+  const gatewaySecret = gatewayToken ? { token: gatewayToken } : undefined;
 
   // pinchy-files needs apiBaseUrl/gatewayToken so it can report vision API
   // token usage (from scanned-PDF processing) back to Pinchy via
@@ -237,7 +238,7 @@ export async function regenerateOpenClawConfig() {
       config: {
         apiBaseUrl:
           process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-        gatewayToken,
+        gatewayToken: secretRef("/gateway/token"),
         agents: pluginConfigs["pinchy-files"],
       },
     };
@@ -277,7 +278,7 @@ export async function regenerateOpenClawConfig() {
       config: {
         apiBaseUrl:
           process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-        gatewayToken,
+        gatewayToken: secretRef("/gateway/token"),
         agents: contextPluginAgents,
       },
     };
@@ -289,7 +290,7 @@ export async function regenerateOpenClawConfig() {
     enabled: true,
     config: {
       apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-      gatewayToken,
+      gatewayToken: secretRef("/gateway/token"),
     },
   };
 
@@ -507,7 +508,7 @@ export async function regenerateOpenClawConfig() {
       config: {
         apiBaseUrl:
           process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-        gatewayToken,
+        gatewayToken: secretRef("/gateway/token"),
         agents: emailAgentConfigs,
       },
     };
@@ -667,7 +668,10 @@ export async function regenerateOpenClawConfig() {
 
   // Always write secrets.json — tmpfs is wiped on container restart,
   // secrets.json must always be present when openclaw.json contains SecretRef pointers.
-  const secretsBundle: SecretsBundle = { providers: providerSecrets };
+  const secretsBundle: SecretsBundle = {
+    gateway: gatewaySecret,
+    providers: providerSecrets,
+  };
   writeSecretsFile(secretsBundle);
 
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts
