@@ -47,6 +47,7 @@ function convertMessage(msg: WsMessage): ThreadMessageLike {
   const custom: Record<string, unknown> = {};
   if (msg.timestamp) custom.timestamp = msg.timestamp;
   if (msg.error) custom.error = msg.error;
+  if (msg.status) custom.status = msg.status;
 
   return {
     role: msg.role,
@@ -530,7 +531,23 @@ export function useWsRuntime(agentId: string): {
     [agentId, dispatchMessages]
   );
 
-  const convertedMessages = useMemo(() => messages.map(convertMessage), [messages]);
+  const isOrphaned = computeIsOrphaned(messages, { isRunning, isHistoryLoaded });
+
+  const convertedMessages = useMemo(() => {
+    const base = messages.map(convertMessage);
+    if (isOrphaned) {
+      return [
+        ...base,
+        {
+          role: "assistant" as const,
+          id: "synthetic-orphan",
+          content: [{ type: "text" as const, text: "The agent didn't respond." }],
+          metadata: { custom: { syntheticOrphanError: true, retryable: true } },
+        },
+      ];
+    }
+    return base;
+  }, [messages, isOrphaned]);
 
   const runtime = useExternalStoreRuntime({
     messages: convertedMessages,
@@ -541,8 +558,6 @@ export function useWsRuntime(agentId: string): {
       attachments: attachmentAdapter,
     },
   });
-
-  const isOrphaned = computeIsOrphaned(messages, { isRunning, isHistoryLoaded });
 
   return {
     runtime,

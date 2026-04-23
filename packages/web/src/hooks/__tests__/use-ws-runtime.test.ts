@@ -53,13 +53,15 @@ vi.mock("@/components/restart-provider", () => ({
   useRestart: () => ({ triggerRestart: vi.fn() }),
 }));
 
-// Capture the `onNew` callback passed into useExternalStoreRuntime so tests
-// can call it directly without needing to interact with the assistant-ui UI.
+// Capture the `onNew` callback and `messages` passed into useExternalStoreRuntime
+// so tests can call it directly without needing to interact with the assistant-ui UI.
 let capturedOnNew: ((msg: unknown) => void) | null = null;
+let capturedMessages: unknown[] = [];
 
 vi.mock("@assistant-ui/react", () => ({
-  useExternalStoreRuntime: (opts: { onNew?: (msg: unknown) => void }) => {
+  useExternalStoreRuntime: (opts: { onNew?: (msg: unknown) => void; messages?: unknown[] }) => {
     capturedOnNew = opts.onNew ?? null;
+    capturedMessages = opts.messages ?? [];
     return {
       /* opaque runtime object */
     };
@@ -93,6 +95,7 @@ describe("useWsRuntime — status reducer + orphan detector", () => {
   beforeEach(() => {
     wsInstances.length = 0;
     capturedOnNew = null;
+    capturedMessages = [];
   });
 
   it("transitions user message from sending to sent on ack, then isOrphaned=true after complete", async () => {
@@ -228,6 +231,83 @@ describe("useWsRuntime — status reducer + orphan detector", () => {
     // Last message is assistant → not orphaned
     expect(result.current.isOrphaned).toBe(false);
   });
+
+  it("exposes synthetic orphan error bubble when isOrphaned is true", async () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    const ws = latestWs();
+    const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
+      clientMessageId: string;
+    };
+
+    await act(async () => {
+      ws.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId });
+      ws.simulateMessage({ type: "complete" });
+    });
+
+    // isOrphaned=true: last message is sent user, agent is idle, history loaded
+    expect(result.current.isOrphaned).toBe(true);
+
+    // The synthetic orphan bubble must be appended to the thread messages
+    const lastMsg = capturedMessages[capturedMessages.length - 1] as {
+      role: string;
+      id: string;
+      content: Array<{ type: string; text: string }>;
+      metadata?: { custom?: { syntheticOrphanError?: boolean; retryable?: boolean } };
+    };
+    expect(lastMsg.role).toBe("assistant");
+    expect(lastMsg.content).toEqual([{ type: "text", text: "The agent didn't respond." }]);
+    expect(lastMsg.metadata?.custom?.syntheticOrphanError).toBe(true);
+    expect(lastMsg.metadata?.custom?.retryable).toBe(true);
+  });
+
+  it("synthetic orphan bubble disappears when isRunning becomes true", async () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    const ws = latestWs();
+    const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
+      clientMessageId: string;
+    };
+
+    await act(async () => {
+      ws.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId });
+      ws.simulateMessage({ type: "complete" });
+    });
+
+    // Now orphaned
+    expect(result.current.isOrphaned).toBe(true);
+
+    // Send a new message — isRunning becomes true → orphan disappears
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("retry"));
+    });
+
+    expect(result.current.isOrphaned).toBe(false);
+    // No synthetic bubble in thread messages
+    const hasSyntheticBubble = capturedMessages.some((m) => {
+      const msg = m as { metadata?: { custom?: { syntheticOrphanError?: boolean } } };
+      return msg.metadata?.custom?.syntheticOrphanError === true;
+    });
+    expect(hasSyntheticBubble).toBe(false);
+  });
 });
 
 // ── Ack timeout tests ─────────────────────────────────────────────────────────
@@ -236,6 +316,7 @@ describe("useWsRuntime — ack timeout", () => {
   beforeEach(() => {
     wsInstances.length = 0;
     capturedOnNew = null;
+    capturedMessages = [];
   });
 
   afterEach(() => {
@@ -368,6 +449,7 @@ describe("isRunning resets to false after every terminal path", () => {
   beforeEach(() => {
     wsInstances.length = 0;
     capturedOnNew = null;
+    capturedMessages = [];
   });
 
   afterEach(() => {
@@ -519,6 +601,7 @@ describe("history reconcile on reconnect", () => {
   beforeEach(() => {
     wsInstances.length = 0;
     capturedOnNew = null;
+    capturedMessages = [];
   });
 
   afterEach(() => {

@@ -747,7 +747,7 @@ describe("useWsRuntime", () => {
 
     const messages = result.current.runtime.messages;
     expect(messages[0].metadata).toEqual({
-      custom: { timestamp: "2026-03-15T10:30:00.000Z" },
+      custom: { timestamp: "2026-03-15T10:30:00.000Z", status: "sending" },
     });
   });
 
