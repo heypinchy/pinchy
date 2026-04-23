@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, afterEach } from "vitest";
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { eq } from "drizzle-orm";
@@ -14,6 +14,10 @@ describeIf("integration_connections FK (integration)", () => {
   beforeAll(async () => {
     sql = postgres(url!);
     db = drizzle(sql);
+  });
+
+  afterAll(async () => {
+    await sql.end();
   });
 
   afterEach(async () => {
