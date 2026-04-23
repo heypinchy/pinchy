@@ -595,6 +595,66 @@ describe("isRunning resets to false after every terminal path", () => {
   });
 });
 
+// ── onRetryContinue tests ─────────────────────────────────────────────────────
+
+describe("onRetryContinue", () => {
+  beforeEach(() => {
+    wsInstances.length = 0;
+    capturedOnNew = null;
+    capturedMessages = [];
+  });
+
+  it("sends retry-continue WS frame without adding a user message", async () => {
+    const { result } = renderHook(() => useWsRuntime("agent-42"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    const initialMessageCount = capturedMessages.length;
+
+    await act(async () => {
+      result.current.onRetryContinue();
+    });
+
+    const ws = latestWs();
+    // Find the retry-continue frame
+    const retryCalls = ws.send.mock.calls.filter((call) => {
+      const parsed = JSON.parse(call[0] as string) as { type: string };
+      return parsed.type === "retry-continue";
+    });
+
+    expect(retryCalls).toHaveLength(1);
+    const frame = JSON.parse(retryCalls[0][0] as string) as {
+      type: string;
+      agentId: string;
+    };
+    expect(frame.type).toBe("retry-continue");
+    expect(frame.agentId).toBe("agent-42");
+
+    // Messages array must not have grown (no new user message added)
+    expect(capturedMessages.length).toBe(initialMessageCount);
+  });
+
+  it("sets isRunning to true when called", async () => {
+    const { result } = renderHook(() => useWsRuntime("agent-42"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    expect(result.current.isRunning).toBe(false);
+
+    await act(async () => {
+      result.current.onRetryContinue();
+    });
+
+    expect(result.current.isRunning).toBe(true);
+  });
+});
+
 // ── History reconcile on reconnect tests ──────────────────────────────────────
 
 describe("history reconcile on reconnect", () => {

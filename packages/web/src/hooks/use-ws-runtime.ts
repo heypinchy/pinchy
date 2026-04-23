@@ -77,6 +77,7 @@ export function useWsRuntime(agentId: string): {
   isHistoryLoaded: boolean;
   reconnectExhausted: boolean;
   isOrphaned: boolean;
+  onRetryContinue: () => void;
 } {
   const { triggerRestart } = useRestart();
   const [messages, setMessages] = useState<WsMessage[]>([]);
@@ -531,6 +532,20 @@ export function useWsRuntime(agentId: string): {
     [agentId, dispatchMessages]
   );
 
+  const onRetryContinue = useCallback(() => {
+    isRunningRef.current = true;
+    setIsRunning(true);
+
+    const payload = JSON.stringify({ type: "retry-continue", agentId });
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(payload);
+    } else {
+      // Queue for delivery when connection opens
+      pendingMessageRef.current = payload;
+    }
+  }, [agentId]);
+
   const isOrphaned = computeIsOrphaned(messages, { isRunning, isHistoryLoaded });
 
   const convertedMessages = useMemo(() => {
@@ -567,5 +582,6 @@ export function useWsRuntime(agentId: string): {
     isHistoryLoaded,
     reconnectExhausted,
     isOrphaned,
+    onRetryContinue,
   };
 }
