@@ -51,3 +51,43 @@ export function buildTagName(version) {
 export function buildCommitMessage(version) {
   return `chore: release v${version}`;
 }
+
+/**
+ * Escapes a string for safe inclusion in a RegExp pattern.
+ * @param {string} s
+ * @returns {string}
+ */
+function escapeRegex(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Asserts that upgrading.mdx contains a section for the target release.
+ *
+ * The heading must explicitly reference both the previous version (as
+ * "from v<prev>") and the target version (either as "to v<target>" or
+ * as "to %%PINCHY_VERSION%%", which is Pinchy's docs convention — the
+ * placeholder is replaced at docs-build time by inject-version.sh).
+ *
+ * Requiring "from v<prev>" prevents a stale heading from a prior release
+ * (e.g. "from v0.4.3 to %%PINCHY_VERSION%%") from silently satisfying
+ * the gate for the next release.
+ *
+ * @param {string} mdx - contents of docs/src/content/docs/guides/upgrading.mdx
+ * @param {string} prevVersion - previous release, no leading 'v' (e.g. "0.4.4")
+ * @param {string} targetVersion - new release, no leading 'v' (e.g. "0.5.0")
+ * @throws {Error} if no matching heading is found
+ */
+export function assertUpgradingSectionExists(mdx, prevVersion, targetVersion) {
+  const pattern = new RegExp(
+    `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+(v${escapeRegex(targetVersion)}|%%PINCHY_VERSION%%)\\s*$`,
+    "m",
+  );
+  if (!pattern.test(mdx)) {
+    throw new Error(
+      `No upgrade-notes section for v${targetVersion} in upgrading.mdx.\n` +
+        `Add a heading:\n\n  ## Upgrading from v${prevVersion} to %%PINCHY_VERSION%%\n\n` +
+        `then draft the upgrade notes under it before releasing.`,
+    );
+  }
+}

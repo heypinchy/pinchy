@@ -5,6 +5,7 @@ import {
   bumpPackageJson,
   buildTagName,
   buildCommitMessage,
+  assertUpgradingSectionExists,
 } from "./release-logic.mjs";
 
 // parseAndValidateVersion
@@ -65,4 +66,59 @@ test("buildTagName prefixes version with v", () => {
 
 test("buildCommitMessage follows conventional commit format", () => {
   assert.equal(buildCommitMessage("0.3.0"), "chore: release v0.3.0");
+});
+
+// assertUpgradingSectionExists
+
+test("assertUpgradingSectionExists accepts %%PINCHY_VERSION%% placeholder", () => {
+  const mdx = [
+    "## Upgrading from v0.4.4 to %%PINCHY_VERSION%%",
+    "",
+    "Notes go here.",
+  ].join("\n");
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
+});
+
+test("assertUpgradingSectionExists accepts concrete target version", () => {
+  const mdx = [
+    "## Upgrading from v0.4.4 to v0.5.0",
+    "",
+    "Notes.",
+  ].join("\n");
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
+});
+
+test("assertUpgradingSectionExists rejects missing section", () => {
+  const mdx = "## Upgrading from v0.4.3 to v0.4.4\n\nOld notes.\n";
+  assert.throws(
+    () => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+    /no upgrade-notes section for v0\.5\.0/i,
+  );
+});
+
+test("assertUpgradingSectionExists rejects stale section (wrong 'from' version)", () => {
+  const mdx = "## Upgrading from v0.4.3 to %%PINCHY_VERSION%%\n\nStale.\n";
+  assert.throws(
+    () => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+    /no upgrade-notes section for v0\.5\.0/i,
+  );
+});
+
+test("assertUpgradingSectionExists is whitespace-tolerant in the heading", () => {
+  const mdx = "##   Upgrading  from  v0.4.4  to  %%PINCHY_VERSION%%  \n";
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
+});
+
+test("assertUpgradingSectionExists error message suggests the heading to add", () => {
+  const mdx = "(empty)";
+  assert.throws(
+    () => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+    /## Upgrading from v0\.4\.4 to %%PINCHY_VERSION%%/,
+  );
 });
