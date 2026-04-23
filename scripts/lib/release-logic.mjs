@@ -91,3 +91,32 @@ export function assertUpgradingSectionExists(mdx, prevVersion, targetVersion) {
     );
   }
 }
+
+/**
+ * Extracts the body of the upgrade-notes section for a release.
+ *
+ * Finds the `## Upgrading from v<prev> to (v<target>|%%PINCHY_VERSION%%)`
+ * heading, returns all content up to the next `## ` heading (nested `###`
+ * subheadings are preserved), with `%%PINCHY_VERSION%%` replaced by the
+ * resolved `v<target>` string so the output is ready to be used as
+ * GitHub Release body content.
+ *
+ * @param {string} mdx - contents of docs/src/content/docs/guides/upgrading.mdx
+ * @param {string} prevVersion - previous release, no leading 'v' (e.g. "0.4.4")
+ * @param {string} targetVersion - new release, no leading 'v' (e.g. "0.5.0")
+ * @returns {string} section body (trimmed), or empty string if the section is missing
+ */
+export function extractUpgradeNotes(mdx, prevVersion, targetVersion) {
+  const heading = new RegExp(
+    `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+(v${escapeRegex(targetVersion)}|%%PINCHY_VERSION%%)\\s*$`,
+    "m",
+  );
+  const match = heading.exec(mdx);
+  if (!match) return "";
+
+  const remainder = mdx.slice(match.index + match[0].length);
+  const nextHeading = /^## /m.exec(remainder);
+  const body = remainder.slice(0, nextHeading ? nextHeading.index : remainder.length);
+
+  return body.trim().replace(/%%PINCHY_VERSION%%/g, `v${targetVersion}`);
+}

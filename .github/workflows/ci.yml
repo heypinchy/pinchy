@@ -612,6 +612,21 @@ jobs:
           BETTER_AUTH_SECRET: ci-test-secret-not-for-production
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
+      - name: Assert pinchy still binds to 127.0.0.1 after upgrade (not 0.0.0.0)
+        if: steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          # Docker bypasses UFW — only 127.0.0.1 binding prevents external access.
+          # Assert the upgrade path doesn't re-expose port 7777 globally (regression guard).
+          BINDING=$(docker inspect \
+            --format '{{range $p, $c := .NetworkSettings.Ports}}{{range $c}}{{.HostIp}}{{end}}{{end}}' \
+            "$(docker compose ps -q pinchy)")
+          echo "Pinchy port binding host IP after upgrade: $BINDING"
+          if [ "$BINDING" != "127.0.0.1" ]; then
+            echo "::error::Pinchy must bind to 127.0.0.1 after upgrade (got '$BINDING'). Docker bypasses UFW, so 0.0.0.0 exposes the port to the internet regardless of firewall rules."
+            exit 1
+          fi
+
       - name: Tear down
         if: always() && steps.prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}

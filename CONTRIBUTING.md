@@ -135,7 +135,7 @@ Pinchy uses [Semantic Versioning](https://semver.org/) and tags on `main`.
 Before cutting a tag, the maintainer runs the pre-release build on a dedicated staging instance. Pushes to `main` automatically publish two tags:
 
 - `ghcr.io/heypinchy/pinchy:next` — mutable, always HEAD of `main`
-- `ghcr.io/heypinchy/pinchy:sha-<7-chars>` — immutable per commit
+- `ghcr.io/heypinchy/pinchy:sha-<12-chars>` — immutable per commit
 
 Same for `pinchy-openclaw`.
 
@@ -193,7 +193,7 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 - [ ] New Ollama family or new LLM provider added → resolver file + tests exist
 
 **Documentation**
-- [ ] `docs/src/content/docs/guides/upgrading.mdx` — new section drafted for this version (heading format: `## Upgrading from v<prev> to %%PINCHY_VERSION%%`). This content will be inserted into the auto-generated release notes after tag-push.
+- [ ] `docs/src/content/docs/guides/upgrading.mdx` — new section drafted for this version (heading format: `## Upgrading from v<prev> to %%PINCHY_VERSION%%`). The release workflow extracts this section automatically and prepends it to the GitHub Release body under an "Upgrade notes" heading.
 - [ ] `packages/web/src/lib/smithers-soul.ts` — updated if user-facing features changed
 
 **Staging**
@@ -203,8 +203,8 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 
 1. Complete the checklist above on `main`.
 2. Run `pnpm release <new-version>` (e.g. `pnpm release 0.5.0`). The script verifies: clean working tree, on `main`, CI green, tag not taken, `upgrading.mdx` has the target-version section, `pnpm audit --audit-level=high --prod` passes, then bumps versions, commits, tags, and pushes.
-3. GitHub Actions runs the release workflow: build + push images, verify GHCR visibility (anonymous pull test), run the end-user install smoke against published images, create the GitHub Release, deploy docs. Any failure means **the release is not installable for end-users — do not announce until fixed.**
-4. Edit the auto-generated GitHub Release notes and insert your drafted `upgrading.mdx` content under an "Upgrade notes" heading.
+3. GitHub Actions runs the release workflow: build + push images, verify GHCR visibility (anonymous pull test), run the end-user install smoke against published images, extract the upgrade notes from `upgrading.mdx`, create the GitHub Release (auto-generated notes with the upgrade-notes section prepended), deploy docs. Any failure means **the release is not installable for end-users — do not announce until fixed.**
+4. Review the auto-generated GitHub Release notes. The "Upgrade notes" section at the top comes from `upgrading.mdx` — if it looks wrong, edit the release on GitHub directly.
 
 ### If the release workflow fails
 

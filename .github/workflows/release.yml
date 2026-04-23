@@ -178,10 +178,37 @@ jobs:
       - name: Generate versioned cloud-init.yml
         run: sed "s/%%PINCHY_VERSION%%/${GITHUB_REF_NAME}/g" docs/src/snippets/cloud-init.yml > /tmp/cloud-init.yml
 
+      - name: Extract upgrade notes for release body
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # The new tag (this release) has been pushed but the GitHub Release
+          # for it hasn't been created yet, so `gh release list --limit 1`
+          # returns the *previous* release — the version users are upgrading from.
+          TARGET="${GITHUB_REF_NAME#v}"
+          PREV=$(gh release list --repo "${{ github.repository }}" --limit 1 --json tagName -q '.[0].tagName // empty' | sed 's/^v//')
+          if [ -z "$PREV" ]; then
+            echo "No previous release found — skipping upgrade-notes extraction (first release)."
+            : > /tmp/upgrade-notes.md
+          else
+            echo "Extracting upgrade notes for v${PREV} → v${TARGET}..."
+            {
+              echo "## Upgrade notes"
+              echo ""
+              node scripts/extract-upgrade-notes.mjs "$PREV" "$TARGET"
+              echo ""
+            } > /tmp/upgrade-notes.md
+            echo "=== /tmp/upgrade-notes.md ==="
+            cat /tmp/upgrade-notes.md
+            echo "============================="
+          fi
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          # body_path content is pre-pended to the auto-generated notes.
+          body_path: /tmp/upgrade-notes.md
           files: |
             docs/public/installing.html
             /tmp/cloud-init.yml

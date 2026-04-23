@@ -69,8 +69,15 @@ log(`\nReleasing Pinchy ${tag}\n`);
 // ─── Upgrade notes gate ───────────────────────────────────────────────────────
 
 log("Checking upgrading.mdx has section for target version...");
-const prevTagRaw = exec("git describe --tags --abbrev=0");
-const prevVersion = prevTagRaw.replace(/^v/, "");
+let prevVersion;
+try {
+  prevVersion = exec("git describe --tags --abbrev=0").replace(/^v/, "");
+} catch {
+  fail(
+    "No previous git tag found — cannot determine the 'from' version for upgrade notes.\n" +
+      "If this is the first release, create the initial tag manually before running this script.",
+  );
+}
 const upgradingMdxPath = resolve(
   ROOT,
   "docs/src/content/docs/guides/upgrading.mdx",
