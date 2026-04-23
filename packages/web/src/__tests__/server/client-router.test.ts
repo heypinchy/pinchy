@@ -2242,6 +2242,116 @@ describe("ClientRouter", () => {
     });
   });
 
+  describe("chat.retry_triggered audit log", () => {
+    it("appends audit log on retry-resend with reason 'send_failure'", async () => {
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "msg-id-1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(
+        createMockClientWs() as any,
+        {
+          type: "message",
+          content: "Hi",
+          agentId: "agent-1",
+          clientMessageId: "msg-id-1",
+          isRetry: true,
+        } as any
+      );
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorType: "user",
+          actorId: "user-1",
+          eventType: "chat.retry_triggered",
+          resource: "agent:agent-1",
+          outcome: "success",
+          detail: expect.objectContaining({
+            agent: { id: "agent-1", name: "Smithers" },
+            sessionKey: "agent:agent-1:direct:user-1",
+            reason: "send_failure",
+          }),
+        })
+      );
+    });
+
+    it("appends audit log on retry-continue with reason from message", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Continued." };
+        yield { type: "done" as const, text: "" };
+      }
+      mockContinueLastTurn.mockReturnValue(fakeStream());
+
+      await router.handleMessage(
+        createMockClientWs() as any,
+        {
+          type: "retry-continue",
+          agentId: "agent-1",
+          reason: "orphan",
+        } as any
+      );
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorType: "user",
+          actorId: "user-1",
+          eventType: "chat.retry_triggered",
+          resource: "agent:agent-1",
+          outcome: "success",
+          detail: expect.objectContaining({
+            agent: { id: "agent-1", name: "Smithers" },
+            sessionKey: "agent:agent-1:direct:user-1",
+            reason: "orphan",
+          }),
+        })
+      );
+    });
+
+    it("appends audit log on retry-continue with reason partial_stream_failure", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Continued." };
+        yield { type: "done" as const, text: "" };
+      }
+      mockContinueLastTurn.mockReturnValue(fakeStream());
+
+      await router.handleMessage(
+        createMockClientWs() as any,
+        {
+          type: "retry-continue",
+          agentId: "agent-1",
+          reason: "partial_stream_failure",
+        } as any
+      );
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          detail: expect.objectContaining({
+            reason: "partial_stream_failure",
+          }),
+        })
+      );
+    });
+
+    it("does NOT append audit log for normal (non-retry) message sends", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
+    });
+  });
+
   describe("error chunk handling", () => {
     it("should send error to client on error chunk (no retry)", async () => {
       const clientWs = createMockClientWs();

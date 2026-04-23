@@ -15,7 +15,9 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 export const AgentAvatarContext = createContext<string | null>(null);
 export const AgentIdContext = createContext<string | null>(null);
 export const RetryResendContext = createContext<(messageId: string) => void>(() => {});
-export const RetryContinueContext = createContext<() => void>(() => {});
+export const RetryContinueContext = createContext<
+  (reason: "orphan" | "partial_stream_failure") => void
+>(() => {});
 
 interface ChatProps {
   agentId: string;

@@ -719,7 +719,7 @@ describe("onRetryContinue", () => {
     const initialMessageCount = capturedMessages.length;
 
     await act(async () => {
-      result.current.onRetryContinue();
+      result.current.onRetryContinue("orphan");
     });
 
     const ws = latestWs();
@@ -733,9 +733,11 @@ describe("onRetryContinue", () => {
     const frame = JSON.parse(retryCalls[0][0] as string) as {
       type: string;
       agentId: string;
+      reason: string;
     };
     expect(frame.type).toBe("retry-continue");
     expect(frame.agentId).toBe("agent-42");
+    expect(frame.reason).toBe("orphan");
 
     // Messages array must not have grown (no new user message added)
     expect(capturedMessages.length).toBe(initialMessageCount);
@@ -752,7 +754,7 @@ describe("onRetryContinue", () => {
     expect(result.current.isRunning).toBe(false);
 
     await act(async () => {
-      result.current.onRetryContinue();
+      result.current.onRetryContinue("partial_stream_failure");
     });
 
     expect(result.current.isRunning).toBe(true);
@@ -870,6 +872,113 @@ describe("onRetryResend", () => {
       return parsed.type === "message";
     });
     expect(messageSends).toHaveLength(0);
+  });
+
+  it("sets isRunning to true immediately after retry", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello retry running"));
+    });
+
+    const ws = latestWs();
+    const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
+      clientMessageId: string;
+    };
+    const messageId = sentPayload.clientMessageId;
+
+    // Advance 10s — timeout fires, message transitions to "failed"
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    // At this point isRunning is still true (ack timeout doesn't reset it)
+    // Advance to 60s so stuck timer resets isRunning to false
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(50_000);
+    });
+
+    expect(result.current.isRunning).toBe(false);
+
+    // Call onRetryResend — should set isRunning back to true
+    await act(async () => {
+      result.current.onRetryResend(messageId);
+    });
+
+    expect(result.current.isRunning).toBe(true);
+  });
+
+  it("preserves image attachments when retrying a failed message", async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    // Send a message with an image attachment
+    const imageDataUrl = "data:image/png;base64,abc123";
+    await act(async () => {
+      capturedOnNew!({
+        content: [{ type: "text", text: "look at this image" }],
+        attachments: [
+          {
+            type: "image",
+            content: [{ type: "image", image: imageDataUrl }],
+          },
+        ],
+      });
+    });
+
+    const ws = latestWs();
+    const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
+      clientMessageId: string;
+    };
+    const messageId = sentPayload.clientMessageId;
+
+    // Advance 10s — timeout fires, message transitions to "failed"
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+
+    // Clear send call history so we can assert the retry re-send
+    ws.send.mockClear();
+
+    // Call onRetryResend
+    await act(async () => {
+      result.current.onRetryResend(messageId);
+    });
+
+    // The retry WS frame must include the image in content
+    const retryCalls = ws.send.mock.calls.filter((call) => {
+      const parsed = JSON.parse(call[0] as string) as { type: string };
+      return parsed.type === "message";
+    });
+    expect(retryCalls).toHaveLength(1);
+    const retryFrame = JSON.parse(retryCalls[0][0] as string) as {
+      type: string;
+      clientMessageId: string;
+      content: unknown;
+    };
+    expect(retryFrame.clientMessageId).toBe(messageId);
+    // Content must be a structured array including the image_url part
+    expect(Array.isArray(retryFrame.content)).toBe(true);
+    const contentArr = retryFrame.content as Array<{
+      type: string;
+      text?: string;
+      image_url?: { url: string };
+    }>;
+    const textPart = contentArr.find((p) => p.type === "text");
+    const imagePart = contentArr.find((p) => p.type === "image_url");
+    expect(textPart?.text).toBe("look at this image");
+    expect(imagePart?.image_url?.url).toBe(imageDataUrl);
   });
 
   it("restarts the 10s ack timer after retry", async () => {

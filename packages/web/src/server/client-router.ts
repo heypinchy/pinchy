@@ -30,6 +30,7 @@ interface ChatMessage {
   content: string | ContentPart[];
   agentId: string;
   clientMessageId?: string;
+  isRetry?: boolean;
 }
 
 interface HistoryRequestMessage {
@@ -40,6 +41,7 @@ interface HistoryRequestMessage {
 interface RetryContinueMessage {
   type: "retry-continue";
   agentId: string;
+  reason: "orphan" | "partial_stream_failure";
 }
 
 type BrowserMessage = ChatMessage | HistoryRequestMessage | RetryContinueMessage;
@@ -104,7 +106,7 @@ export class ClientRouter {
     }
 
     if (message.type === "retry-continue") {
-      return this.handleRetryContinue(clientWs, agent, message.agentId);
+      return this.handleRetryContinue(clientWs, agent, message);
     }
 
     const sessionKey = this.computeSessionKey(message.agentId);
@@ -166,6 +168,21 @@ export class ClientRouter {
       }
       if (extraPromptParts.length > 0) {
         chatOptions.extraSystemPrompt = extraPromptParts.join("\n\n");
+      }
+
+      if (message.isRetry) {
+        appendAuditLog({
+          actorType: "user",
+          actorId: this.userId,
+          eventType: "chat.retry_triggered",
+          resource: `agent:${message.agentId}`,
+          detail: {
+            agent: { id: agent.id, name: agent.name },
+            sessionKey,
+            reason: "send_failure",
+          },
+          outcome: "success",
+        }).catch((err) => console.error("Failed to write audit log:", err));
       }
 
       const stream = this.openclawClient.chat(text, chatOptions);
@@ -346,13 +363,26 @@ export class ClientRouter {
   private async handleRetryContinue(
     clientWs: WebSocket,
     agent: { id: string; name: string },
-    agentId: string
+    message: RetryContinueMessage
   ): Promise<void> {
-    const sessionKey = this.computeSessionKey(agentId);
+    const sessionKey = this.computeSessionKey(message.agentId);
     const messageId = crypto.randomUUID();
 
     try {
       await this.waitForConnection();
+
+      appendAuditLog({
+        actorType: "user",
+        actorId: this.userId,
+        eventType: "chat.retry_triggered",
+        resource: `agent:${message.agentId}`,
+        detail: {
+          agent: { id: agent.id, name: agent.name },
+          sessionKey,
+          reason: message.reason,
+        },
+        outcome: "success",
+      }).catch((err) => console.error("Failed to write audit log:", err));
 
       const stream = this.openclawClient.continueLastTurn({ sessionKey });
 

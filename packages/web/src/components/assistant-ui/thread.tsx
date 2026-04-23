@@ -318,9 +318,12 @@ const AssistantFooter: FC = () => {
 
 export const AssistantMessage: FC = () => {
   const isRetryable = useMessage((s) => !!s.metadata?.custom?.retryable);
+  const isSyntheticOrphan = useMessage((s) => !!s.metadata?.custom?.syntheticOrphanError);
   const isLast = useMessage((s) => s.isLast);
   const isRunning = useThread((s) => s.isRunning);
   const onRetryContinue = useContext(RetryContinueContext);
+
+  const retryReason = isSyntheticOrphan ? "orphan" : "partial_stream_failure";
 
   return (
     <MessagePrimitive.Root
@@ -333,7 +336,7 @@ export const AssistantMessage: FC = () => {
 
       {isRetryable && isLast && (
         <div className="flex items-center px-2 mt-1">
-          <RetryButton onClick={onRetryContinue} disabled={isRunning} />
+          <RetryButton onClick={() => onRetryContinue(retryReason)} disabled={isRunning} />
         </div>
       )}
 

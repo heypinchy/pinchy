@@ -80,7 +80,7 @@ export function useWsRuntime(agentId: string): {
   isHistoryLoaded: boolean;
   reconnectExhausted: boolean;
   isOrphaned: boolean;
-  onRetryContinue: () => void;
+  onRetryContinue: (reason: "orphan" | "partial_stream_failure") => void;
   onRetryResend: (messageId: string) => void;
 } {
   const { triggerRestart } = useRestart();
@@ -539,19 +539,22 @@ export function useWsRuntime(agentId: string): {
     [agentId, dispatchMessages]
   );
 
-  const onRetryContinue = useCallback(() => {
-    isRunningRef.current = true;
-    setIsRunning(true);
+  const onRetryContinue = useCallback(
+    (reason: "orphan" | "partial_stream_failure") => {
+      isRunningRef.current = true;
+      setIsRunning(true);
 
-    const payload = JSON.stringify({ type: "retry-continue", agentId });
+      const payload = JSON.stringify({ type: "retry-continue", agentId, reason });
 
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(payload);
-    } else {
-      // Queue for delivery when connection opens
-      pendingMessageRef.current = payload;
-    }
-  }, [agentId]);
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(payload);
+      } else {
+        // Queue for delivery when connection opens
+        pendingMessageRef.current = payload;
+      }
+    },
+    [agentId]
+  );
 
   const onRetryResend = useCallback(
     (messageId: string) => {
@@ -562,12 +565,42 @@ export function useWsRuntime(agentId: string): {
       // Flip status back to "sending"
       dispatchMessages({ type: "retry-resend", clientMessageId: messageId });
 
+      isRunningRef.current = true;
+      setIsRunning(true);
+
+      // Start delay hint timer
+      if (delayTimerRef.current) {
+        clearTimeout(delayTimerRef.current);
+      }
+      delayTimerRef.current = setTimeout(() => {
+        setIsDelayed(true);
+      }, DELAY_HINT_MS);
+
+      // Start stuck timer — fires if no activity (chunk or thinking) for 60s
+      resetStuckTimerRef.current?.();
+
+      // Build content: structured array if images present, plain string otherwise
+      let wsContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+      if (failedMsg.images && failedMsg.images.length > 0) {
+        const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+        if (failedMsg.content) {
+          parts.push({ type: "text", text: failedMsg.content });
+        }
+        for (const img of failedMsg.images) {
+          parts.push({ type: "image_url", image_url: { url: img } });
+        }
+        wsContent = parts;
+      } else {
+        wsContent = failedMsg.content;
+      }
+
       // Re-send the WS frame with the SAME clientMessageId and original content
       const payload = JSON.stringify({
         type: "message",
         agentId,
-        content: failedMsg.content,
+        content: wsContent,
         clientMessageId: messageId,
+        isRetry: true,
       });
 
       if (wsRef.current?.readyState === WebSocket.OPEN) {
