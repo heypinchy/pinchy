@@ -1,6 +1,7 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "fs";
 import { dirname } from "path";
 import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
+import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
@@ -113,12 +114,14 @@ export async function regenerateOpenClawConfig() {
   // Read all agents from DB
   const allAgents = await db.select().from(agents);
 
-  // Read provider API keys from settings
-  const env: Record<string, string> = {};
-  for (const [, providerConfig] of Object.entries(PROVIDERS)) {
+  // Read provider API keys from settings, route through SecretRef.
+  const env: Record<string, unknown> = {};
+  const providerSecrets: SecretsBundle["providers"] = {};
+  for (const [providerKey, providerConfig] of Object.entries(PROVIDERS)) {
     const apiKey = await getSetting(providerConfig.settingsKey);
     if (apiKey && providerConfig.envVar) {
-      env[providerConfig.envVar] = apiKey;
+      env[providerConfig.envVar] = secretRef(`/providers/${providerKey}/apiKey`);
+      providerSecrets![providerKey] = { apiKey };
     }
   }
 
@@ -660,6 +663,11 @@ export async function regenerateOpenClawConfig() {
   } catch {
     // File doesn't exist yet — write it
   }
+
+  // Assemble and write secrets bundle BEFORE openclaw.json so OpenClaw's
+  // file watcher never sees pointers that can't resolve.
+  const secretsBundle: SecretsBundle = { providers: providerSecrets };
+  writeSecretsFile(secretsBundle);
 
   writeConfigAtomic(newContent);
 }

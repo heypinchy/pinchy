@@ -64,6 +64,18 @@ vi.mock("@/lib/migrate-onboarding", () => ({
   migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
 }));
 
+const { mockWriteSecretsFile } = vi.hoisted(() => ({
+  mockWriteSecretsFile: vi.fn(),
+}));
+
+vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/openclaw-secrets")>();
+  return {
+    ...actual,
+    writeSecretsFile: mockWriteSecretsFile,
+  };
+});
+
 vi.mock("@/lib/provider-models", () => {
   const defaults: Record<string, string> = {
     anthropic: "anthropic/claude-haiku-4-5-20251001",
@@ -236,7 +248,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.gateway.bind).toBe("lan");
   });
 
-  it("should include provider env vars from settings", async () => {
+  it("should include provider env vars from settings as SecretRefs", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-decrypted";
       if (key === "openai_api_key") return "sk-openai-decrypted";
@@ -249,8 +261,16 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.env.ANTHROPIC_API_KEY).toBe("sk-ant-decrypted");
-    expect(config.env.OPENAI_API_KEY).toBe("sk-openai-decrypted");
+    expect(config.env.ANTHROPIC_API_KEY).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/anthropic/apiKey",
+    });
+    expect(config.env.OPENAI_API_KEY).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/openai/apiKey",
+    });
     expect(config.env.GEMINI_API_KEY).toBeUndefined();
   });
 
@@ -441,7 +461,11 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.env.ANTHROPIC_API_KEY).toBe("sk-ant-new");
+    expect(config.env.ANTHROPIC_API_KEY).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/anthropic/apiKey",
+    });
     expect(config.env.OPENAI_API_KEY).toBeUndefined();
     expect(config.gateway.auth.token).toBe("existing-token");
   });
@@ -1922,18 +1946,108 @@ describe("writeConfigAtomic plaintext secret guard", () => {
     mockedGetSetting.mockResolvedValue(null);
   });
 
-  it("throws before writing when the generated config contains a plaintext Anthropic API key", async () => {
-    // Simulate a provider key that was NOT converted to a SecretRef.
-    // If assertNoPlaintextSecrets is wired into writeConfigAtomic, this must throw
-    // before any writeFileSync call happens.
+  it("does NOT throw when provider keys are configured — they are written as SecretRefs, never plaintext", async () => {
+    // After SecretRef migration, provider keys are routed through secretRef() and
+    // written to secrets.json. The openclaw.json only contains SecretRef pointers,
+    // so assertNoPlaintextSecrets passes without error and the config is written.
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-leaked-plaintext-key-abc123";
       if (key === "default_provider") return "anthropic";
       return null;
     });
 
-    await expect(regenerateOpenClawConfig()).rejects.toThrow(/plaintext secret detected/);
-    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+    await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
+
+    // SecretRef written to openclaw.json (via writeFileSync)
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+    expect(config.env.ANTHROPIC_API_KEY).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/anthropic/apiKey",
+    });
+    // Actual key is in secrets.json via writeSecretsFile, never in openclaw.json
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    expect(mockWriteSecretsFile.mock.calls[0][0].providers?.anthropic?.apiKey).toBe(
+      "sk-ant-leaked-plaintext-key-abc123"
+    );
+  });
+});
+
+describe("regenerateOpenClawConfig — env secrets", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+    process.env.OPENCLAW_SECRETS_PATH = "/tmp/test-secrets.json";
+  });
+
+  it("writes env.ANTHROPIC_API_KEY as a SecretRef, not plaintext", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    expect(config.env.ANTHROPIC_API_KEY).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/anthropic/apiKey",
+    });
+  });
+
+  it("writes the actual plaintext key to secrets.json under /providers/anthropic/apiKey", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.providers?.anthropic?.apiKey).toBe("sk-ant-the-real-key");
+  });
+
+  it("writes secrets.json BEFORE openclaw.json", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    const order: string[] = [];
+    mockWriteSecretsFile.mockImplementation(() => {
+      order.push("secrets.json");
+    });
+    mockedWriteFileSync.mockImplementation((path: unknown) => {
+      if (typeof path === "string" && path.includes("openclaw.json")) {
+        order.push("openclaw.json");
+      }
+    });
+
+    await regenerateOpenClawConfig();
+
+    const secretsIdx = order.indexOf("secrets.json");
+    const configIdx = order.indexOf("openclaw.json");
+    expect(secretsIdx).toBeGreaterThanOrEqual(0);
+    expect(configIdx).toBeGreaterThanOrEqual(0);
+    expect(secretsIdx).toBeLessThan(configIdx);
   });
 });
 
