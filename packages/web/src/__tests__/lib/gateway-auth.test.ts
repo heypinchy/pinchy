@@ -3,32 +3,29 @@ import { writeFileSync, unlinkSync, mkdirSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
-const TEST_CONFIG_DIR = join(tmpdir(), "pinchy-gateway-auth-test");
-const TEST_CONFIG_PATH = join(TEST_CONFIG_DIR, "openclaw.json");
+const TEST_SECRETS_DIR = join(tmpdir(), "pinchy-gateway-auth-test");
+const TEST_SECRETS_PATH = join(TEST_SECRETS_DIR, "secrets.json");
 
 describe("validateGatewayToken", () => {
   beforeEach(() => {
     vi.resetModules();
-    process.env.OPENCLAW_CONFIG_PATH = TEST_CONFIG_PATH;
-    if (!existsSync(TEST_CONFIG_DIR)) {
-      mkdirSync(TEST_CONFIG_DIR, { recursive: true });
+    process.env.OPENCLAW_SECRETS_PATH = TEST_SECRETS_PATH;
+    if (!existsSync(TEST_SECRETS_DIR)) {
+      mkdirSync(TEST_SECRETS_DIR, { recursive: true });
     }
   });
 
   afterEach(() => {
-    delete process.env.OPENCLAW_CONFIG_PATH;
+    delete process.env.OPENCLAW_SECRETS_PATH;
     try {
-      unlinkSync(TEST_CONFIG_PATH);
+      unlinkSync(TEST_SECRETS_PATH);
     } catch {
       // ignore
     }
   });
 
   it("returns true when Authorization header matches gateway token", async () => {
-    writeFileSync(
-      TEST_CONFIG_PATH,
-      JSON.stringify({ gateway: { auth: { token: "secret-token-123" } } })
-    );
+    writeFileSync(TEST_SECRETS_PATH, JSON.stringify({ gateway: { token: "secret-token-123" } }));
 
     const { validateGatewayToken } = await import("@/lib/gateway-auth");
 
@@ -37,10 +34,7 @@ describe("validateGatewayToken", () => {
   });
 
   it("returns false when token does not match", async () => {
-    writeFileSync(
-      TEST_CONFIG_PATH,
-      JSON.stringify({ gateway: { auth: { token: "secret-token-123" } } })
-    );
+    writeFileSync(TEST_SECRETS_PATH, JSON.stringify({ gateway: { token: "secret-token-123" } }));
 
     const { validateGatewayToken } = await import("@/lib/gateway-auth");
 
@@ -49,10 +43,7 @@ describe("validateGatewayToken", () => {
   });
 
   it("returns false when Authorization header is missing", async () => {
-    writeFileSync(
-      TEST_CONFIG_PATH,
-      JSON.stringify({ gateway: { auth: { token: "secret-token-123" } } })
-    );
+    writeFileSync(TEST_SECRETS_PATH, JSON.stringify({ gateway: { token: "secret-token-123" } }));
 
     const { validateGatewayToken } = await import("@/lib/gateway-auth");
 
@@ -75,10 +66,10 @@ describe("validateGatewayToken", () => {
     expect(constantTimeEqual("secret-123", "secret-456")).toBe(false);
   });
 
-  it("returns false when config file does not exist", async () => {
-    // Don't write the config file
+  it("returns false when secrets file does not exist", async () => {
+    // Don't write the secrets file
     try {
-      unlinkSync(TEST_CONFIG_PATH);
+      unlinkSync(TEST_SECRETS_PATH);
     } catch {
       // ignore
     }

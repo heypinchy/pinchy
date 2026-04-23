@@ -67,9 +67,10 @@ vi.mock("@/lib/migrate-onboarding", () => ({
   migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
 }));
 
-const { mockWriteSecretsFile, mockUpdateSecretsFile } = vi.hoisted(() => ({
+const { mockWriteSecretsFile, mockUpdateSecretsFile, mockReadSecretsFile } = vi.hoisted(() => ({
   mockWriteSecretsFile: vi.fn(),
   mockUpdateSecretsFile: vi.fn(),
+  mockReadSecretsFile: vi.fn().mockReturnValue({}),
 }));
 
 vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
@@ -78,6 +79,7 @@ vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
     ...actual,
     writeSecretsFile: mockWriteSecretsFile,
     updateSecretsFile: mockUpdateSecretsFile,
+    readSecretsFile: mockReadSecretsFile,
   };
 });
 
@@ -141,6 +143,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedReadFileSync.mockImplementation(() => {
       throw new Error("ENOENT: no such file or directory");
     });
+    mockReadSecretsFile.mockReturnValue({});
     mockedDb.select.mockReturnValue({
       from: mockFrom(),
     } as never);
@@ -225,7 +228,7 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
-  it("should preserve existing gateway.auth fields", async () => {
+  it("should preserve existing gateway mode/bind and write gateway.auth.token as SecretRef", async () => {
     const existingConfig = {
       gateway: {
         mode: "local",
@@ -246,7 +249,11 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.gateway.auth.token).toBe("existing-secret-token");
+    // gateway.auth.token must be a SecretRef — never plaintext in openclaw.json
+    expect(config.gateway.auth).toEqual({
+      mode: "token",
+      token: { source: "file", provider: "pinchy", id: "/gateway/token" },
+    });
     // OpenClaw-enriched fields (meta, commands, agents.defaults.*) are preserved
     // to avoid unnecessary diffs that trigger hot-reloads breaking Telegram polling
     expect(config.meta).toEqual({ version: "1.2.3", generatedAt: "2025-01-01T00:00:00Z" });
@@ -477,7 +484,12 @@ describe("regenerateOpenClawConfig", () => {
       id: "/providers/anthropic/apiKey",
     });
     expect(config.env.OPENAI_API_KEY).toBeUndefined();
-    expect(config.gateway.auth.token).toBe("existing-token");
+    // gateway.auth.token is always a SecretRef — never plaintext
+    expect(config.gateway.auth.token).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/gateway/token",
+    });
   });
 
   it("should include pinchy-context plugin config for agents with context tools", async () => {
@@ -2365,6 +2377,7 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
     mockedReadFileSync.mockImplementation(() => {
       throw new Error("ENOENT: no such file or directory");
     });
+    mockReadSecretsFile.mockReturnValue({});
     mockedDb.select.mockReturnValue({
       from: mockFrom(),
     } as never);
@@ -2372,6 +2385,45 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
   });
 
   const GW_TOKEN_REF = { source: "file", provider: "pinchy", id: "/gateway/token" };
+
+  it("writes gateway.auth.token as SecretRef, keeps mode and bind", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-plaintext-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    const config = JSON.parse(written![1] as string);
+
+    // gateway.auth.token must be a SecretRef, not the plaintext string
+    expect(config.gateway.auth).toEqual({ mode: "token", token: GW_TOKEN_REF });
+    // mode and bind are always set
+    expect(config.gateway.mode).toBe("local");
+    expect(config.gateway.bind).toBe("lan");
+  });
+
+  it("reads gateway token from secrets.json when config already has SecretRef (restart scenario)", async () => {
+    // Simulate restart scenario: openclaw.json already has SecretRef, secrets.json has the token
+    const existingConfig = {
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        auth: { mode: "token", token: GW_TOKEN_REF },
+      },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+    mockReadSecretsFile.mockReturnValue({ gateway: { token: "gw-token-from-secrets" } });
+
+    await regenerateOpenClawConfig();
+
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.gateway?.token).toBe("gw-token-from-secrets");
+  });
 
   it("writes pinchy-files.config.gatewayToken as SecretRef", async () => {
     const existingConfig = {

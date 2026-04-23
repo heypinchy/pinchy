@@ -3,6 +3,7 @@ import { dirname } from "path";
 import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
 import {
   writeSecretsFile,
+  readSecretsFile,
   updateSecretsFile,
   secretRef,
   type SecretsBundle,
@@ -108,13 +109,25 @@ export async function regenerateOpenClawConfig() {
 
   const existing = readExistingConfig();
 
-  // Preserve only the gateway block from existing config (contains auth token,
-  // mode, bind, and any OpenClaw-generated fields). Everything else is rebuilt
-  // from DB state so deleted providers/agents get cleaned up.
-  const gateway = (existing.gateway as Record<string, unknown>) || { mode: "local", bind: "lan" };
-  // Ensure mode and bind are always set
-  gateway.mode = "local";
-  gateway.bind = "lan";
+  // Build the gateway block. mode and bind are always set. auth.token is always
+  // written as a SecretRef — the plaintext value is stored in secrets.json only.
+  const existingGateway = (existing.gateway as Record<string, unknown>) || {};
+  const existingAuth = (existingGateway.auth as Record<string, unknown>) || {};
+  // Extract plaintext token for the secrets bundle:
+  //   - First run / upgrade: token is a plaintext string in openclaw.json
+  //   - Restart (already migrated): token is a SecretRef → read from secrets.json
+  const gatewayTokenValue =
+    typeof existingAuth.token === "string" ? existingAuth.token : readSecretsFile().gateway?.token;
+
+  const gateway: Record<string, unknown> = {
+    ...existingGateway,
+    mode: "local",
+    bind: "lan",
+    auth: {
+      mode: "token",
+      token: secretRef("/gateway/token"),
+    },
+  };
 
   // Read all agents from DB
   const allAgents = await db.select().from(agents);
@@ -227,11 +240,8 @@ export async function regenerateOpenClawConfig() {
 
   const entries: Record<string, unknown> = {};
 
-  const gatewayAuth = (gateway as Record<string, unknown>).auth as
-    | Record<string, unknown>
-    | undefined;
-  const gatewayToken = (gatewayAuth?.token as string) || "";
-  const gatewaySecret = gatewayToken ? { token: gatewayToken } : undefined;
+  // Use the plaintext token extracted above (before gateway.auth was replaced with SecretRef)
+  const gatewaySecret = gatewayTokenValue ? { token: gatewayTokenValue } : undefined;
 
   // pinchy-files needs apiBaseUrl/gatewayToken so it can report vision API
   // token usage (from scanned-PDF processing) back to Pinchy via
