@@ -35,17 +35,19 @@ const OPENCLAW_CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-conf
 const GATEWAY_TOKEN_PATH = process.env.GATEWAY_TOKEN_PATH || "/openclaw-config/gateway-token";
 
 function readGatewayToken(): string {
-  // Try dedicated token file first (world-readable, written by OpenClaw startup)
-  try {
-    const token = readFileSync(GATEWAY_TOKEN_PATH, "utf-8").trim();
-    if (token) return token;
-  } catch {
-    // Fall through to config file
-  }
-  // Fall back to reading from main config (works when running as same user)
+  // Read from the main config first — it is always the authoritative source.
+  // The gateway-token file can become stale if OpenClaw regenerates the token
+  // after a Pinchy-written config (openclaw#drift). We fall back to the token
+  // file only when the config is unreadable (e.g. before first write).
   try {
     const config = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8"));
-    return config.gateway?.auth?.token ?? "";
+    const token = config.gateway?.auth?.token ?? "";
+    if (token) return token;
+  } catch {
+    // Fall through to token file
+  }
+  try {
+    return readFileSync(GATEWAY_TOKEN_PATH, "utf-8").trim();
   } catch {
     return "";
   }

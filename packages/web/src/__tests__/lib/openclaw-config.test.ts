@@ -236,6 +236,61 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.gateway.bind).toBe("lan");
   });
 
+  describe("gateway-token file sync", () => {
+    it("writes the gateway-token file with the preserved token after updating the config", async () => {
+      // A token in the existing config should be preserved AND synced to the gateway-token file.
+      // This prevents Pinchy's startup reader and OpenClaw from ever seeing different tokens.
+      mockedReadFileSync.mockReturnValueOnce(
+        JSON.stringify({
+          gateway: { mode: "local", bind: "lan", auth: { mode: "token", token: "sync-me-abc123" } },
+        })
+      );
+      // Second call (comparison): default ENOENT → forces config write
+
+      await regenerateOpenClawConfig();
+
+      const gatewayTokenWrite = mockedWriteFileSync.mock.calls.find(([path]) =>
+        String(path).endsWith("gateway-token")
+      );
+      expect(gatewayTokenWrite).toBeDefined();
+      expect(gatewayTokenWrite![1]).toBe("sync-me-abc123");
+    });
+
+    it("does not write the gateway-token file when the config is unchanged", async () => {
+      // If nothing changed, we skip both the config write and the gateway-token sync.
+      // This test mirrors the "skip write when unchanged" behaviour.
+      const { restartState } = await import("@/server/restart-state");
+
+      // First call: write the config (no token in default mock → gatewayToken = "")
+      await regenerateOpenClawConfig();
+      const firstWrite = mockedWriteFileSync.mock.calls[0]?.[1] as string | undefined;
+
+      vi.clearAllMocks();
+      mockedExistsSync.mockReturnValue(true);
+      mockedReadFileSync.mockReturnValue(firstWrite ?? "{}");
+      mockedDb.select.mockReturnValue({ from: mockFrom() } as never);
+      mockedGetSetting.mockResolvedValue(null);
+
+      // Second call: content unchanged → skip write AND skip gateway-token sync
+      await regenerateOpenClawConfig();
+
+      expect(mockedWriteFileSync).not.toHaveBeenCalled();
+      expect(restartState.notifyRestart).not.toHaveBeenCalled();
+    });
+
+    it("does not write the gateway-token file when no token is available", async () => {
+      // Default mock: readFileSync throws ENOENT for all calls, so readExistingConfig
+      // returns {} and there is no gateway-token file. The function should complete
+      // without writing a gateway-token file (token is empty).
+      await regenerateOpenClawConfig();
+
+      const gatewayTokenWrite = mockedWriteFileSync.mock.calls.find(([path]) =>
+        String(path).endsWith("gateway-token")
+      );
+      expect(gatewayTokenWrite).toBeUndefined();
+    });
+  });
+
   it("should include provider env vars from settings", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-decrypted";
