@@ -2053,6 +2053,43 @@ describe("regenerateOpenClawConfig — env secrets", () => {
     expect(configIdx).toBeGreaterThanOrEqual(0);
     expect(secretsIdx).toBeLessThan(configIdx);
   });
+
+  it("writes secrets.json even when openclaw.json content is unchanged (early-return path)", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    // First call writes the config — capture what was written
+    await regenerateOpenClawConfig();
+    const firstWrite = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    )![1] as string;
+
+    vi.clearAllMocks();
+    // Simulate openclaw.json already containing the same content — triggers early return
+    mockedReadFileSync.mockReturnValue(firstWrite);
+    mockedExistsSync.mockReturnValue(true);
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    // Act: second call with same settings → early return fires
+    await regenerateOpenClawConfig();
+
+    // secrets.json MUST still be written (tmpfs is wiped on container restart)
+    expect(mockWriteSecretsFile).toHaveBeenCalledOnce();
+
+    // openclaw.json must NOT be written (early return)
+    const configWrite = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(configWrite).toBeUndefined();
+  });
 });
 
 describe("updateIdentityLinks", () => {
