@@ -140,6 +140,7 @@ export function SettingsIntegrations() {
       await fetchConnections();
     } catch {
       toast.error("Could not delete integration");
+      await fetchConnections();
     }
   }
 
