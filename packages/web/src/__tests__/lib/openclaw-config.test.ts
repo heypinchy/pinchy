@@ -2092,6 +2092,36 @@ describe("regenerateOpenClawConfig — env secrets", () => {
   });
 });
 
+describe("secrets provider config block", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("writes secrets.providers.pinchy pointing at /openclaw-secrets/secrets.json", async () => {
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    expect(config.secrets.providers.pinchy).toEqual({
+      source: "file",
+      path: "/openclaw-secrets/secrets.json",
+      mode: "json",
+    });
+  });
+});
+
 describe("updateIdentityLinks", () => {
   beforeEach(() => {
     vi.clearAllMocks();

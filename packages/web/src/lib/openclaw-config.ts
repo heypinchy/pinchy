@@ -198,6 +198,15 @@ export async function regenerateOpenClawConfig() {
   const config: Record<string, unknown> = {
     gateway,
     env,
+    secrets: {
+      providers: {
+        pinchy: {
+          source: "file",
+          path: process.env.OPENCLAW_SECRETS_PATH_IN_OPENCLAW || "/openclaw-secrets/secrets.json",
+          mode: "json",
+        },
+      },
+    },
     agents: deepMerge(existingAgents, {
       defaults: pinchyDefaults,
       list: agentsList,
