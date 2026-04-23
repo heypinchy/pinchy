@@ -28,6 +28,37 @@ These are two separate concepts:
 
 Creating a connection doesn't give any agent access. You must explicitly grant access in each agent's Permissions tab.
 
+## Gmail (Google)
+
+Gmail is the first email integration. An admin connects a Google account via OAuth 2.0, then grants specific permissions per agent.
+
+### Setup flow
+
+Gmail requires a Google Cloud OAuth app (one-time, per Pinchy installation). Once created, admins connect one or more Google accounts through the Add Integration wizard. Google requires HTTPS — the wizard shows a warning and blocks the OAuth flow when Pinchy is running without HTTPS.
+
+### Permissions model
+
+Each agent gets email permissions independently. Permissions are additive: granting **Send** automatically includes **Read** and **Draft**.
+
+| Permission        | Tools enabled                                  |
+| ----------------- | ---------------------------------------------- |
+| **Read messages** | `email_list`, `email_read`, `email_search`     |
+| **Create drafts** | above + `email_draft`                          |
+| **Send messages** | above + `email_send`                           |
+
+### Token handling
+
+OAuth access tokens expire after about one hour. Pinchy refreshes them in the background using the stored refresh token. If a refresh fails (the user revoked access, or the refresh token expired in Google's Testing mode), the integration surfaces the error and prompts the admin to reconnect.
+
+### Security
+
+- Client ID and Client Secret are encrypted with AES-256-GCM before storage
+- Access and refresh tokens are encrypted per-connection
+- Tokens are decrypted on-demand when the agent makes an API call — they never end up in the OpenClaw config file
+- The `pinchy-email` plugin fetches tokens via Pinchy's internal API, authenticated by the shared gateway token
+
+For the full setup walkthrough, see [Connect Email](/guides/connect-email/).
+
 ## Web Search (Brave)
 
 Web Search is the simplest integration — a single API key connects Pinchy to the Brave Search API, giving agents the ability to search the web and fetch pages.
