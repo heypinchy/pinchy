@@ -29,6 +29,7 @@ interface ChatMessage {
   type: "message";
   content: string | ContentPart[];
   agentId: string;
+  clientMessageId?: string;
 }
 
 interface HistoryRequestMessage {
@@ -132,6 +133,9 @@ export class ClientRouter {
       };
       if (attachments.length > 0) {
         chatOptions.attachments = attachments;
+      }
+      if (message.clientMessageId) {
+        chatOptions.clientMessageId = message.clientMessageId;
       }
 
       // Build extraSystemPrompt from user name + context + greeting

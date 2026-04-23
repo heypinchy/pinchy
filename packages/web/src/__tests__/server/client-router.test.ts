@@ -2078,6 +2078,45 @@ describe("ClientRouter", () => {
     });
   });
 
+  describe("clientMessageId forwarding", () => {
+    it("forwards clientMessageId from browser WS frame to openclaw.chat()", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "uuid-123",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith(
+        "Hi",
+        expect.objectContaining({ clientMessageId: "uuid-123" })
+      );
+    });
+
+    it("omits clientMessageId from openclaw.chat() when not provided by browser", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const callArgs = mockChat.mock.calls[0][1] as Record<string, unknown>;
+      expect(callArgs).not.toHaveProperty("clientMessageId");
+    });
+  });
+
   describe("error chunk handling", () => {
     it("should send error to client on error chunk (no retry)", async () => {
       const clientWs = createMockClientWs();
