@@ -98,13 +98,16 @@ jobs:
             /tmp/cloud-init.yml
 
   docs:
-    name: Deploy Docs
+    name: Capture Screenshots & Deploy Docs
     needs: release
     # Releases created by GITHUB_TOKEN don't fire `release: published`
-    # events, so we call the docs workflow directly from here instead
-    # of relying on a trigger in docs.yml.
-    uses: ./.github/workflows/docs.yml
+    # events, so we call the screenshots workflow directly from here. It
+    # generates fresh screenshots against the newly released build and
+    # then deploys the docs site with those screenshots embedded — keeping
+    # screenshots in lockstep with the released UI.
+    uses: ./.github/workflows/screenshots.yml
+    secrets: inherit
     permissions:
-      contents: read
+      contents: write
       pages: write
       id-token: write
