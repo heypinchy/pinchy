@@ -2,17 +2,21 @@
 /**
  * Pinchy release script
  *
- * Usage: pnpm release <version>
- *   e.g. pnpm release 0.3.0
+ * Usage: pnpm release <version> [--skip-audit]
+ *   e.g. pnpm release 0.5.0
+ *        pnpm release 0.5.0 --skip-audit   # only after documenting the CVE acceptance
  *
  * What it does:
  *   1. Validates the version (semver)
- *   2. Checks: clean working tree, on main branch, CI green
+ *   2. Gates:
+ *      - upgrading.mdx has a section for the target version
+ *      - clean working tree, on main branch, CI green, tag not taken
+ *      - pnpm audit --audit-level=high --prod passes (or --skip-audit)
  *   3. Bumps version in root package.json and packages/web/package.json
  *   4. Commits, tags, and pushes
  *
  * What to do manually first (see CONTRIBUTING.md):
- *   - Update docs/src/content/docs/guides/upgrading.mdx
+ *   - Update docs/src/content/docs/guides/upgrading.mdx (enforced)
  *   - Update packages/web/src/lib/smithers-soul.ts if user-facing features changed
  */
 
@@ -47,6 +51,7 @@ function fail(msg) {
 // ─── Argument ────────────────────────────────────────────────────────────────
 
 const input = process.argv[2];
+const skipAudit = process.argv.includes("--skip-audit");
 if (!input) {
   fail("Usage: pnpm release <version>  (e.g. pnpm release 0.3.0)");
 }
@@ -114,6 +119,31 @@ if (existingTags.split("\n").includes(tag)) {
   fail(`Tag ${tag} already exists.`);
 }
 log(`  ✔ Tag ${tag} is free`);
+
+// ─── Dependency audit gate ────────────────────────────────────────────────────
+
+log("Running pnpm audit (production dependencies, high/critical only)...");
+try {
+  execSync("pnpm audit --audit-level=high --prod", {
+    cwd: ROOT,
+    stdio: "inherit",
+  });
+  log("  ✔ No high or critical vulnerabilities in production deps");
+} catch {
+  if (skipAudit) {
+    log(
+      "  ⚠ pnpm audit reported findings — continuing because --skip-audit was passed.",
+    );
+    log(
+      "    Document the acceptance in the release notes (CONTRIBUTING.md).",
+    );
+  } else {
+    fail(
+      "pnpm audit reported high or critical vulnerabilities.\n" +
+        "Fix them, or re-run with --skip-audit and document the acceptance in the release notes.",
+    );
+  }
+}
 
 // ─── Version bumps ────────────────────────────────────────────────────────────
 
