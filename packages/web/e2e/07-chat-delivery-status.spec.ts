@@ -338,12 +338,14 @@ test.describe("chat delivery status and retry E2E", () => {
                   messageId: "m1",
                 }),
               });
-            }, 10);
-            // Simulate mid-stream disconnect shortly after the chunk
+            }, 50);
+            // Simulate mid-stream disconnect after chunk — gap must be large enough
+            // for React to commit the chunk render and flush the useEffect that
+            // updates the assistant-ui runtime before the disconnect arrives.
             setTimeout(() => {
               this.readyState = 3;
               this.onclose?.();
-            }, 30);
+            }, 300);
           }
         }
 
