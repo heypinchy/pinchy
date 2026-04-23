@@ -202,7 +202,7 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 ### Release steps
 
 1. Complete the checklist above on `main`.
-2. Run `pnpm release 0.5.0`. The script verifies: clean working tree, on `main`, CI green, tag not taken, `upgrading.mdx` has the target-version section, `pnpm audit --audit-level=high --prod` passes, then bumps versions, commits, tags, and pushes.
+2. Run `pnpm release <new-version>` (e.g. `pnpm release 0.5.0`). The script verifies: clean working tree, on `main`, CI green, tag not taken, `upgrading.mdx` has the target-version section, `pnpm audit --audit-level=high --prod` passes, then bumps versions, commits, tags, and pushes.
 3. GitHub Actions runs the release workflow: build + push images, verify GHCR visibility (anonymous pull test), run the end-user install smoke against published images, create the GitHub Release, deploy docs. Any failure means **the release is not installable for end-users — do not announce until fixed.**
 4. Edit the auto-generated GitHub Release notes and insert your drafted `upgrading.mdx` content under an "Upgrade notes" heading.
 
