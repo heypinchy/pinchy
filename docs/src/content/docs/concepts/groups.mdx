@@ -60,12 +60,12 @@ Personal agents (the auto-created Smithers agent each user gets) are not affecte
 
 Every group management action is logged in the [audit trail](/concepts/audit-trail/) as a specific event type:
 
-| Action                    | Audit event              |
-| ------------------------- | ------------------------ |
-| Group created             | `group.created`          |
-| Group name or description | `group.updated`          |
-| Group deleted             | `group.deleted`          |
-| Member added or removed   | `group.members_updated`  |
-| User's group memberships  | `user.groups_updated`    |
+| Action                    | Audit event             |
+| ------------------------- | ----------------------- |
+| Group created             | `group.created`         |
+| Group name or description | `group.updated`         |
+| Group deleted             | `group.deleted`         |
+| Member added or removed   | `group.members_updated` |
+| User's group memberships  | `user.groups_updated`   |
 
 Each entry snapshots the group name and affected user names alongside their IDs, so the log stays meaningful even after groups or users are deleted.
