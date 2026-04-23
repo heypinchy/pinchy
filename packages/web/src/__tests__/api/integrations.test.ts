@@ -1436,9 +1436,20 @@ describe("GET /api/integrations (web-search masking)", () => {
       type: "web-search",
       name: "Brave Search",
     };
-    mockSelectFrom.mockImplementationOnce(() => Promise.resolve([webSearchConnection]));
-    // No mockDecrypt override needed — maskConnectionCredentials for web-search
-    // returns { configured: true } without calling decrypt
+    // First call: connections list
+    mockSelectFrom.mockImplementationOnce(() =>
+      Object.assign(Promise.resolve([webSearchConnection]), {
+        where: vi.fn().mockResolvedValue([webSearchConnection]),
+        groupBy: vi.fn().mockResolvedValue([]),
+      })
+    );
+    // Second call: counts — no permissions for this connection
+    mockSelectFrom.mockImplementationOnce(() =>
+      Object.assign(Promise.resolve([]), {
+        where: vi.fn().mockResolvedValue([]),
+        groupBy: vi.fn().mockResolvedValue([]),
+      })
+    );
 
     const { GET } = await import("@/app/api/integrations/route");
 
