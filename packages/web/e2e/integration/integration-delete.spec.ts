@@ -72,6 +72,11 @@ test("admin can detach-and-delete an integration used by agents", async ({ page 
     console.log("[diag] grant permission response:", JSON.stringify(grantBody));
 
     // Verify permissions are actually stored before navigating
+    const agentPermsRes = await page.request.get(`/api/agents/${agentId}/integrations`);
+    console.log("[diag] GET agent integrations status:", agentPermsRes.status());
+    const agentPermsData = await agentPermsRes.json();
+    console.log("[diag] GET agent integrations:", JSON.stringify(agentPermsData));
+
     const connectionsBeforeNav = await page.request.get("/api/integrations");
     const connectionsData = await connectionsBeforeNav.json();
     console.log("[diag] GET /api/integrations before navigate:", JSON.stringify(connectionsData));
