@@ -9,7 +9,7 @@ import { finalizeIntegrationDeletion } from "@/lib/integrations/finalize-deletio
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
-export async function DELETE(request: NextRequest, { params }: RouteContext) {
+export async function DELETE(_request: NextRequest, { params }: RouteContext) {
   const session = await getSession({ headers: await headers() });
   if (!session?.user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   if (session.user.role !== "admin")
