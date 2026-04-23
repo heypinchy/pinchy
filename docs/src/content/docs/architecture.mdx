@@ -61,7 +61,7 @@ When a message arrives, the `ClientRouter` passes the `agentId` from the browser
 
 ### Chat sessions
 
-Pinchy derives a deterministic session key for each `(agentId, userId)` pair using the format `agent:<agentId>:user-<userId>`. This gives each user their own conversation per agent — even for shared agents. Session keys are resolved in-memory via a `SessionCache` that periodically syncs with OpenClaw's session list — no database table is needed. The session key is opaque and never leaves the server — the browser only sends an `agentId`, and Pinchy resolves the session internally.
+Pinchy derives a deterministic session key for each `(agentId, userId)` pair using the format `agent:<agentId>:direct:<userId>`. This gives each user their own conversation per agent — even for shared agents. Session keys are resolved in-memory via a `SessionCache` that periodically syncs with OpenClaw's session list — no database table is needed. The session key is opaque and never leaves the server — the browser only sends an `agentId`, and Pinchy resolves the session internally.
 
 The browser can request conversation history by sending a `{ type: "history", agentId }` message. Pinchy fetches the history from OpenClaw via `openclaw-node` and strips internal metadata (timestamps, thinking blocks) before returning it.
 
@@ -71,9 +71,9 @@ Session keys follow the format `agent:<agentId>:<scope>`. OpenClaw validates tha
 
 **Current format:**
 
-| Scope             | Key format                      | Example                                |
-| ----------------- | ------------------------------- | -------------------------------------- |
-| Per-user sessions | `agent:<agentId>:user-<userId>` | `agent:83aa6035-...:user-8c0953d2-...` |
+| Scope             | Key format                        | Example                                  |
+| ----------------- | --------------------------------- | ---------------------------------------- |
+| Per-user sessions | `agent:<agentId>:direct:<userId>` | `agent:83aa6035-...:direct:8c0953d2-...` |
 
 This format is used for both personal and shared agents. Each user always gets their own session, which means converting a personal agent to a shared agent is seamless — the original user keeps their session, and other users get new ones.
 
@@ -195,7 +195,7 @@ Pinchy includes a cryptographic audit trail for compliance and security. Every s
 
 ### What gets logged
 
-Pinchy logs 12 event types covering authentication, agent management, user management, configuration changes, and tool execution. Chat message content is **not** logged — only tool calls and permission-relevant actions.
+Pinchy logs events across seven categories: authentication, agent management, user management, group management, channel management, configuration changes, and tool execution. Chat message content is **not** logged — only tool calls and permission-relevant actions. See [Audit Trail](/concepts/audit-trail/) for the complete list of event types.
 
 ### Integrity verification
 
@@ -213,30 +213,82 @@ OpenClaw runs as a separate Docker container. Pinchy communicates with it via `o
 
 ### Config generation
 
-Pinchy owns the OpenClaw configuration file (`openclaw.json`). Config generation happens in two scenarios:
+Pinchy owns the OpenClaw configuration file (`openclaw.json`). A single function, `regenerateOpenClawConfig()`, handles every write — from the first config during setup to every subsequent change when agents, permissions, or providers are modified. It rebuilds the config from current database state, preserving only the `gateway` block (auth token and OpenClaw-generated fields).
 
-1. **Initial setup** — during the onboarding wizard, `writeOpenClawConfig()` writes the first config with provider credentials and a randomly generated auth token
-2. **Regeneration** — whenever agents, permissions, or providers change, `regenerateOpenClawConfig()` rebuilds the config from DB state
+Because the database is the source of truth, regeneration is **idempotent** and self-healing: deleted providers and agents are cleaned up automatically, and calling it twice produces the same file. To avoid unnecessary restarts, Pinchy short-circuits the write when the new content is identical to what's already on disk.
 
-Regeneration is **idempotent**: it preserves only the `gateway` block (which contains the auth token and OpenClaw-generated fields) and rebuilds everything else — `env`, `agents`, and `plugins` — from the database. This ensures deleted providers and agents are cleaned up automatically.
-
-An inotify-based wrapper script inside the OpenClaw container detects the config change and restarts the gateway automatically.
+An inotify-based wrapper script inside the OpenClaw container detects config file changes and restarts the gateway automatically, with a 30-second grace period between restarts to prevent restart loops.
 
 ### Authentication
 
 Pinchy authenticates to OpenClaw Gateway using a bearer token. The token is auto-generated on first setup via `crypto.randomBytes(24)` and stored in the `gateway.auth` block of `openclaw.json`. It never appears in source control.
 
+## Channels
+
+Users don't have to reach their agents through the web UI. Pinchy supports external **channels** that connect agents to messaging platforms. Telegram is the first implemented channel; additional channels (email, Slack) are planned.
+
+### Per-agent bots
+
+Each agent can be connected to its own Telegram bot via **Agent Settings → Telegram**. The main Pinchy bot (the Smithers bot) is set up once globally via **Settings → Telegram** and acts as the entry point for user account linking. Additional agent bots require the main bot to be configured first — users link their Telegram account via the main bot and then gain access to any bot they have permission to use.
+
+### Identity linking
+
+Users link their Telegram account to their Pinchy account via a one-time pairing code: the user messages the bot, receives a code, and enters it in Pinchy. The link is stored in the `identityLinks` table. All inbound Telegram messages are resolved to the linked Pinchy user before being routed to the agent — so the agent always knows who it's talking to.
+
+### Session unification
+
+Messages from Telegram and the web UI flow through the same session cache using the same `agent:<agentId>:direct:<userId>` key format. This means switching channels doesn't fork conversation history — a user who chats with an agent on the web and then messages it on Telegram sees the combined conversation.
+
+### Config propagation
+
+Telegram bot tokens and channel settings live in the database as the source of truth. Changes trigger a `regenerateOpenClawConfig()` write, and OpenClaw picks up the new config via the file watcher. There's no WebSocket RPC for channel configuration — the config file is the contract.
+
+For the user-facing setup, see [Set Up Telegram](/guides/telegram-setup/).
+
+## Integrations
+
+Integrations let agents work with external business data — email accounts, ERPs, search engines — without giving them direct system access. Each integration is a connection stored in the database, referenced by agents via per-agent permissions.
+
+| Integration        | Connection method | Stored credentials                |
+| ------------------ | ----------------- | --------------------------------- |
+| **Gmail**          | OAuth 2.0         | Access token + refresh token      |
+| **Odoo**           | API key           | URL, database, login, API key     |
+| **Web Search**     | API key           | Brave Search API key              |
+
+All credentials are encrypted at rest with AES-256-GCM and isolated per-row: a single decryption failure no longer hides every integration (see upgrade notes for %%PINCHY_VERSION%%). Credentials never reach the OpenClaw config file — plugins fetch them on-demand via Pinchy's internal API, authenticated with the shared gateway token.
+
+Each integration enforces its own permission model on the agent side:
+
+- **Gmail** — checkbox-based permissions (Read / Create drafts / Send) map to specific tool IDs
+- **Odoo** — access levels (Read-only / Read & Write / Full / Custom) with optional per-model restrictions
+- **Web Search** — tool checkboxes plus per-agent filters (Domain allow/deny, Freshness, Language, Region)
+
+For the conceptual overview, see [Integrations](/concepts/integrations/). For per-integration setup, see the guides: [Connect Email](/guides/connect-email/), [Connect Odoo](/guides/connect-odoo/), [Set Up Web Search](/guides/web-search-setup/).
+
+## Domain lock and insecure mode
+
+Pinchy's security profile is controlled by a single runtime setting: the locked domain. When a domain is locked via **Settings → Security**, Pinchy:
+
+- Rejects requests whose `Host` header doesn't match the locked domain (`403 Access Denied`)
+- Issues cookies with `Secure` and `SameSite=Lax`
+- Advertises HSTS
+- Enforces origin checks on state-changing requests
+
+When unlocked, Pinchy shows an insecure-mode warning banner to admins in the UI. This flips security-relevant middleware off as a package — convenient for local development, unsafe for production. A `docker exec pinchy pnpm domain:reset` CLI recovers access if HTTPS goes down after a lock. See [HTTPS & Domain Lock](/guides/domain-lock/) for the full flow.
+
 ## Tech stack
 
-| Layer         | Technology                                       |
-| ------------- | ------------------------------------------------ |
-| Frontend      | Next.js 16, React 19, Tailwind CSS v4, shadcn/ui |
-| Chat UI       | assistant-ui (React)                             |
-| Auth          | Better Auth (email/password, DB sessions)        |
-| Database      | PostgreSQL 17, Drizzle ORM                       |
-| Agent runtime | OpenClaw Gateway (WebSocket)                     |
-| Encryption    | AES-256-GCM (Node.js crypto)                     |
-| Testing       | Vitest, React Testing Library                    |
-| CI/CD         | GitHub Actions, ESLint, Prettier                 |
-| Deployment    | Docker Compose                                   |
-| License       | AGPL-3.0                                         |
+| Layer          | Technology                                       |
+| -------------- | ------------------------------------------------ |
+| Frontend       | Next.js 16, React 19, Tailwind CSS v4, shadcn/ui |
+| Chat UI        | assistant-ui (React)                             |
+| Auth           | Better Auth (email/password, DB sessions)        |
+| Database       | PostgreSQL 17, Drizzle ORM                       |
+| Agent runtime  | OpenClaw Gateway (WebSocket)                     |
+| Encryption     | AES-256-GCM (Node.js crypto)                     |
+| Testing        | Vitest, React Testing Library, Playwright (E2E)  |
+| CI/CD          | GitHub Actions, ESLint, Prettier                 |
+| Deployment     | Docker Compose, pre-built images on GHCR         |
+| Reverse proxy  | Caddy (recommended) or nginx                     |
+| SBOM           | Syft via `anchore/sbom-action`                   |
+| License        | AGPL-3.0                                         |
