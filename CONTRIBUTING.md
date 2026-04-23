@@ -24,9 +24,10 @@ First off — thank you! Every contribution matters, whether it's code, docs, bu
    - `feat: add plugin permission layer`
    - `fix: resolve cross-channel routing issue`
    - `docs: update getting started guide`
-4. **Add tests** for new features when applicable.
-5. **Update docs** if your change affects user-facing behavior.
-6. Submit your PR and fill out the template.
+4. **Keep commits atomic.** Each commit should represent one logical change and pass CI on its own. PRs are merged via rebase — the commit history lands verbatim on `main`, so individual commits must make sense in isolation.
+5. **Add tests** for new features when applicable.
+6. **Update docs** if your change affects user-facing behavior.
+7. Submit your PR and fill out the template.
 
 ### Voice & Personality
 
