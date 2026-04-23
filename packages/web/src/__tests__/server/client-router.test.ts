@@ -3,6 +3,7 @@ import { EventEmitter } from "events";
 
 const {
   mockChat,
+  mockContinueLastTurn,
   mockSessionsHistory,
   mockSessionsList,
   mockFindFirst,
@@ -12,6 +13,7 @@ const {
   mockGetAgentGroupIds,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
+  mockContinueLastTurn: vi.fn(),
   mockSessionsHistory: vi.fn(),
   mockSessionsList: vi.fn(),
   mockFindFirst: vi.fn(),
@@ -109,6 +111,7 @@ function createMockOpenClawClient(connected = true) {
   const emitter = new EventEmitter();
   const client = Object.assign(emitter, {
     chat: mockChat,
+    continueLastTurn: mockContinueLastTurn,
     sessions: { history: mockSessionsHistory, list: mockSessionsList },
     isConnected: connected,
   });
@@ -2158,6 +2161,84 @@ describe("ClientRouter", () => {
 
       const callArgs = mockChat.mock.calls[0][1] as Record<string, unknown>;
       expect(callArgs).not.toHaveProperty("clientMessageId");
+    });
+  });
+
+  describe("retry-continue frame", () => {
+    it("handles retry-continue WS frame by calling openclaw.continueLastTurn", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Here is my answer." };
+        yield { type: "done" as const, text: "" };
+      }
+      mockContinueLastTurn.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "retry-continue",
+        agentId: "a1",
+      });
+
+      expect(mockContinueLastTurn).toHaveBeenCalledWith({
+        sessionKey: "agent:a1:direct:user-1",
+      });
+      expect(mockChat).not.toHaveBeenCalled();
+    });
+
+    it("streams retry-continue response chunks to the browser", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Continued response." };
+        yield { type: "done" as const, text: "" };
+      }
+      mockContinueLastTurn.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "retry-continue",
+        agentId: "a1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const chunks = messages.filter((m: any) => m.type === "chunk");
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0].content).toBe("Continued response.");
+      const doneMsg = messages.find((m: any) => m.type === "done");
+      expect(doneMsg).toBeDefined();
+      const completeMsg = messages.find((m: any) => m.type === "complete");
+      expect(completeMsg).toBeDefined();
+    });
+
+    it("sends error to browser when continueLastTurn throws", async () => {
+      const clientWs = createMockClientWs();
+      mockContinueLastTurn.mockImplementation(async function* () {
+        throw new Error("Session not found");
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "retry-continue",
+        agentId: "a1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const errorMsg = messages.find((m: any) => m.type === "error");
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg.message).toBe("Something went wrong. Please try again.");
+    });
+
+    it("uses correct session key format agent:<agentId>:direct:<userId> for retry-continue", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Done." };
+        yield { type: "done" as const, text: "" };
+      }
+      mockContinueLastTurn.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "retry-continue",
+        agentId: "agent-xyz",
+      });
+
+      const { sessionKey } = mockContinueLastTurn.mock.calls[0][0];
+      expect(sessionKey).toBe("agent:agent-xyz:direct:user-1");
     });
   });
 

@@ -37,7 +37,12 @@ interface HistoryRequestMessage {
   agentId: string;
 }
 
-type BrowserMessage = ChatMessage | HistoryRequestMessage;
+interface RetryContinueMessage {
+  type: "retry-continue";
+  agentId: string;
+}
+
+type BrowserMessage = ChatMessage | HistoryRequestMessage | RetryContinueMessage;
 
 interface HistoryMessage {
   role: string;
@@ -96,6 +101,10 @@ export class ClientRouter {
 
     if (message.type === "history") {
       return this.handleHistory(clientWs, agent);
+    }
+
+    if (message.type === "retry-continue") {
+      return this.handleRetryContinue(clientWs, agent, message.agentId);
     }
 
     const sessionKey = this.computeSessionKey(message.agentId);
@@ -417,6 +426,77 @@ export class ClientRouter {
         return;
       }
       await sendGreeting();
+    }
+  }
+
+  private async handleRetryContinue(
+    clientWs: WebSocket,
+    agent: { id: string; name: string },
+    agentId: string
+  ): Promise<void> {
+    const sessionKey = this.computeSessionKey(agentId);
+    let messageId = crypto.randomUUID();
+
+    try {
+      await this.waitForConnection();
+
+      const stream = this.openclawClient.continueLastTurn({ sessionKey });
+
+      this.sendToClient(clientWs, { type: "thinking", messageId });
+
+      let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+
+      try {
+        for await (const chunk of stream) {
+          if (clientWs.readyState !== WS_OPEN) {
+            break;
+          }
+
+          if (heartbeatInterval === null) {
+            heartbeatInterval = setInterval(() => {
+              if (clientWs.readyState === WS_OPEN) {
+                this.sendToClient(clientWs, { type: "thinking", messageId });
+              }
+            }, THINKING_HEARTBEAT_MS);
+          }
+
+          if (chunk.type === "text") {
+            const cleaned = chunk.text.replace(/<\/?final>/g, "");
+            if (cleaned) {
+              this.sendToClient(clientWs, { type: "chunk", content: cleaned, messageId });
+            }
+          }
+
+          if (chunk.type === "error") {
+            console.error("OpenClaw error chunk:", chunk.text);
+            this.sendToClient(clientWs, {
+              type: "error",
+              agentName: agent.name,
+              providerError: chunk.text,
+              hint: getErrorHint(chunk.text, this.userRole),
+              messageId,
+            });
+          }
+
+          if (chunk.type === "done") {
+            this.sessionCache.add(sessionKey);
+            this.sendToClient(clientWs, { type: "done", messageId });
+            messageId = crypto.randomUUID();
+          }
+        }
+
+        this.sendToClient(clientWs, { type: "complete" });
+      } finally {
+        if (heartbeatInterval !== null) {
+          clearInterval(heartbeatInterval);
+        }
+      }
+    } catch (err) {
+      this.sendToClient(clientWs, {
+        type: "error",
+        message: this.sanitizeError(err),
+        messageId,
+      });
     }
   }
 
