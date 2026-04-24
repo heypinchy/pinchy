@@ -89,6 +89,7 @@ runcmd:
   # Generate pinned secrets — Pinchy keeps its secure 127.0.0.1:7777 default,
   # reachable only via Caddy on the same host.
   - mkdir -p /opt/pinchy
+  - echo "PINCHY_VERSION=%%PINCHY_VERSION%%" >> /opt/pinchy/.env
   - echo "DB_PASSWORD=$(openssl rand -hex 32)" >> /opt/pinchy/.env
   - echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> /opt/pinchy/.env
   - echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> /opt/pinchy/.env
