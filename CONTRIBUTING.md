@@ -145,9 +145,7 @@ Same for `pinchy-openclaw`.
 1. Deploy Pinchy normally, but pin `:next` in your `.env`:
    ```env
    PINCHY_VERSION=next
-   OPENCLAW_VERSION=next
    ```
-   (After Scope 2 lands. For now, edit `docker-compose.yml` directly.)
 
 2. Install `/usr/local/bin/update-pinchy`:
    ```bash
