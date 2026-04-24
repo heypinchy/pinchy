@@ -127,6 +127,7 @@ export default defineConfig({
             { label: 'Deploy on Hetzner Cloud', slug: 'guides/deploy-hetzner' },
             { label: 'Deploy on DigitalOcean', slug: 'guides/deploy-digitalocean' },
             { label: 'Upgrading', slug: 'guides/upgrading' },
+            { label: 'Customizing Your Deployment', slug: 'guides/customizing-deployment' },
             { label: 'Hardening', slug: 'guides/hardening' },
             { label: 'HTTPS & Domain Lock', slug: 'guides/domain-lock' },
             { label: 'Connect Email (Gmail)', slug: 'guides/connect-email' },
