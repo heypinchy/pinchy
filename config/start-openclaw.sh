@@ -65,7 +65,8 @@ scan_data_directories() {
 # invocation loads the full plugin system.
 auto_approve_devices() {
     local token
-    token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8')).gateway.auth.token)}catch{}")
+    # Read from secrets.json — gateway.auth.token in openclaw.json is now a SecretRef object
+    token=$(node -e "try{const p=process.env.OPENCLAW_SECRETS_PATH||'/openclaw-secrets/secrets.json';console.log(JSON.parse(require('fs').readFileSync(p,'utf8')).gateway?.token||'')}catch{}")
     # Remove stale signal file from previous run
     rm -f /root/.openclaw/pinchy-device-approved
     sleep 5
