@@ -30,6 +30,8 @@ interface WsMessage {
   status?: MessageStatus;
   /** When true, the UI shows a Retry button to re-trigger the agent */
   retryable?: boolean;
+  /** Which retry action to invoke — only set when retryable is true */
+  retryReason?: "orphan" | "partial_stream_failure";
 }
 
 const DELAY_HINT_MS = 15_000;
@@ -51,6 +53,7 @@ function convertMessage(msg: WsMessage): ThreadMessageLike {
   if (msg.error) custom.error = msg.error;
   if (msg.status) custom.status = msg.status;
   if (msg.retryable) custom.retryable = msg.retryable;
+  if (msg.retryReason) custom.retryReason = msg.retryReason;
 
   return {
     role: msg.role,
@@ -163,6 +166,7 @@ export function useWsRuntime(agentId: string): {
             content: "",
             error: { timedOut: true },
             retryable: true,
+            retryReason: "partial_stream_failure" as const,
           },
         ]);
       }, STUCK_TIMEOUT_MS);
@@ -214,6 +218,7 @@ export function useWsRuntime(agentId: string): {
               content: "",
               error: { disconnected: true },
               retryable: true,
+              retryReason: "partial_stream_failure" as const,
             },
           ]);
         } else {
@@ -388,6 +393,7 @@ export function useWsRuntime(agentId: string): {
                 content: "",
                 error,
                 retryable: true,
+                retryReason: "partial_stream_failure" as const,
               },
             ]);
             isRunningRef.current = false;
@@ -630,7 +636,9 @@ export function useWsRuntime(agentId: string): {
           role: "assistant" as const,
           id: "synthetic-orphan",
           content: [{ type: "text" as const, text: "The agent didn't respond." }],
-          metadata: { custom: { syntheticOrphanError: true, retryable: true } },
+          metadata: {
+            custom: { syntheticOrphanError: true, retryable: true, retryReason: "orphan" },
+          },
         },
       ];
     }

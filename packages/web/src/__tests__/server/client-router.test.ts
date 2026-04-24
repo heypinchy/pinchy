@@ -2251,16 +2251,13 @@ describe("ClientRouter", () => {
       }
       mockChat.mockReturnValue(fakeStream());
 
-      await router.handleMessage(
-        createMockClientWs() as any,
-        {
-          type: "message",
-          content: "Hi",
-          agentId: "agent-1",
-          clientMessageId: "msg-id-1",
-          isRetry: true,
-        } as any
-      );
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "msg-id-1",
+        isRetry: true,
+      });
 
       expect(mockAppendAuditLog).toHaveBeenCalledWith(
         expect.objectContaining({

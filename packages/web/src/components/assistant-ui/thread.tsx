@@ -318,12 +318,14 @@ const AssistantFooter: FC = () => {
 
 export const AssistantMessage: FC = () => {
   const isRetryable = useMessage((s) => !!s.metadata?.custom?.retryable);
-  const isSyntheticOrphan = useMessage((s) => !!s.metadata?.custom?.syntheticOrphanError);
+  const retryReason = useMessage(
+    (s) =>
+      (s.metadata?.custom?.retryReason as "orphan" | "partial_stream_failure" | undefined) ??
+      "partial_stream_failure"
+  );
   const isLast = useMessage((s) => s.isLast);
   const isRunning = useThread((s) => s.isRunning);
   const onRetryContinue = useContext(RetryContinueContext);
-
-  const retryReason = isSyntheticOrphan ? "orphan" : "partial_stream_failure";
 
   return (
     <MessagePrimitive.Root

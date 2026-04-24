@@ -262,12 +262,15 @@ describe("useWsRuntime — status reducer + orphan detector", () => {
       role: string;
       id: string;
       content: Array<{ type: string; text: string }>;
-      metadata?: { custom?: { syntheticOrphanError?: boolean; retryable?: boolean } };
+      metadata?: {
+        custom?: { syntheticOrphanError?: boolean; retryable?: boolean; retryReason?: string };
+      };
     };
     expect(lastMsg.role).toBe("assistant");
     expect(lastMsg.content).toEqual([{ type: "text", text: "The agent didn't respond." }]);
     expect(lastMsg.metadata?.custom?.syntheticOrphanError).toBe(true);
     expect(lastMsg.metadata?.custom?.retryable).toBe(true);
+    expect(lastMsg.metadata?.custom?.retryReason).toBe("orphan");
   });
 
   it("synthetic orphan bubble disappears when isRunning becomes true", async () => {
@@ -634,10 +637,11 @@ describe("injected error bubbles have retryable: true", () => {
 
     const lastMsg = capturedMessages[capturedMessages.length - 1] as {
       role: string;
-      metadata?: { custom?: { retryable?: boolean } };
+      metadata?: { custom?: { retryable?: boolean; retryReason?: string } };
     };
     expect(lastMsg.role).toBe("assistant");
     expect(lastMsg.metadata?.custom?.retryable).toBe(true);
+    expect(lastMsg.metadata?.custom?.retryReason).toBe("partial_stream_failure");
   });
 
   it("stuck timeout error bubble has retryable: true in metadata", async () => {
@@ -664,10 +668,11 @@ describe("injected error bubbles have retryable: true", () => {
 
     const lastMsg = capturedMessages[capturedMessages.length - 1] as {
       role: string;
-      metadata?: { custom?: { retryable?: boolean } };
+      metadata?: { custom?: { retryable?: boolean; retryReason?: string } };
     };
     expect(lastMsg.role).toBe("assistant");
     expect(lastMsg.metadata?.custom?.retryable).toBe(true);
+    expect(lastMsg.metadata?.custom?.retryReason).toBe("partial_stream_failure");
   });
 
   it("error WS frame bubble has retryable: true in metadata", async () => {
@@ -692,10 +697,11 @@ describe("injected error bubbles have retryable: true", () => {
 
     const lastMsg = capturedMessages[capturedMessages.length - 1] as {
       role: string;
-      metadata?: { custom?: { retryable?: boolean } };
+      metadata?: { custom?: { retryable?: boolean; retryReason?: string } };
     };
     expect(lastMsg.role).toBe("assistant");
     expect(lastMsg.metadata?.custom?.retryable).toBe(true);
+    expect(lastMsg.metadata?.custom?.retryReason).toBe("partial_stream_failure");
   });
 });
 

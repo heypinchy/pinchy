@@ -24,6 +24,12 @@ async function loginAsAdmin(page: Parameters<Parameters<typeof test>[2]>[0]["pag
   await expect(page).toHaveURL(/\/chat\//, { timeout: 10000 });
 }
 
+// MockWebSocket is intentionally duplicated across tests rather than shared.
+// page.addInitScript() serializes the function to a string for injection into
+// the browser context — imports and outer-scope references aren't available.
+// Each test gets a slightly different mock behaviour, so the duplication is
+// the only practical option without a build step for the init script.
+
 test.describe("chat delivery status and retry E2E", () => {
   // ────────────────────────────────────────────────────────────────────────────
   // Task 5.1 — Happy-path delivery: opacity-60 clears after ack
