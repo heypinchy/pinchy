@@ -9,6 +9,7 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -18,6 +19,7 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
   useMessage,
+  useThread,
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
@@ -29,7 +31,13 @@ import {
   SquareIcon,
 } from "lucide-react";
 import { type FC, useState, useEffect, useRef, useContext } from "react";
-import { AgentAvatarContext, AgentIdContext } from "@/components/chat";
+import {
+  AgentAvatarContext,
+  AgentIdContext,
+  RetryResendContext,
+  RetryContinueContext,
+} from "@/components/chat";
+import { RetryButton } from "@/components/chat/retry-button";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft } from "@/lib/draft-store";
 
@@ -308,7 +316,17 @@ const AssistantFooter: FC = () => {
   );
 };
 
-const AssistantMessage: FC = () => {
+export const AssistantMessage: FC = () => {
+  const isRetryable = useMessage((s) => !!s.metadata?.custom?.retryable);
+  const retryReason = useMessage(
+    (s) =>
+      (s.metadata?.custom?.retryReason as "orphan" | "partial_stream_failure" | undefined) ??
+      "partial_stream_failure"
+  );
+  const isLast = useMessage((s) => s.isLast);
+  const isRunning = useThread((s) => s.isRunning);
+  const onRetryContinue = useContext(RetryContinueContext);
+
   return (
     <MessagePrimitive.Root
       className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto w-full max-w-(--thread-max-width) animate-in py-3 duration-150"
@@ -317,6 +335,12 @@ const AssistantMessage: FC = () => {
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
         <AssistantErrorOrContent />
       </div>
+
+      {isRetryable && isLast && (
+        <div className="flex items-center px-2 mt-1">
+          <RetryButton onClick={() => onRetryContinue(retryReason)} disabled={isRunning} />
+        </div>
+      )}
 
       <AssistantFooter />
     </MessagePrimitive.Root>
@@ -364,7 +388,19 @@ const AssistantActionBar: FC = () => {
   );
 };
 
-const UserMessage: FC = () => {
+export function sendingOpacityClass(status: string | undefined): string {
+  return status === "sending" ? "opacity-60" : "";
+}
+
+export const UserMessage: FC = () => {
+  const status = useMessage((s) => s.metadata?.custom?.status as string | undefined);
+  const isLast = useMessage((s) => s.isLast);
+  const messageId = useMessage((s) => s.id);
+  const isRunning = useThread((s) => s.isRunning);
+  const onRetryResend = useContext(RetryResendContext);
+
+  const isFailed = status === "failed";
+
   return (
     <MessagePrimitive.Root
       className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-max-width) animate-in flex-col items-end gap-1 px-2 py-3 duration-150"
@@ -372,7 +408,12 @@ const UserMessage: FC = () => {
     >
       <UserMessageAttachments />
 
-      <div className="aui-user-message-content-wrapper min-w-0 max-w-[85%]">
+      <div
+        className={cn(
+          "aui-user-message-content-wrapper min-w-0 max-w-[85%]",
+          sendingOpacityClass(status)
+        )}
+      >
         <div className="aui-user-message-content wrap-break-word rounded-2xl bg-muted px-4 py-2.5 text-foreground">
           <MessagePrimitive.Parts
             components={{
@@ -381,6 +422,13 @@ const UserMessage: FC = () => {
           />
         </div>
       </div>
+
+      {isFailed && isLast && (
+        <div className="flex items-center gap-2 text-sm text-destructive mr-1 mt-0.5">
+          <span>Couldn&apos;t deliver</span>
+          <RetryButton onClick={() => onRetryResend(messageId)} disabled={isRunning} />
+        </div>
+      )}
 
       <div className="flex mr-1">
         <MessageTimestamp />

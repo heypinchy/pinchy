@@ -1,4 +1,4 @@
-import type { OpenClawClient, ChatAttachment } from "openclaw-node";
+import type { OpenClawClient, ChatAttachment, ChatChunk } from "openclaw-node";
 import type { WebSocket } from "ws";
 import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
@@ -29,6 +29,8 @@ interface ChatMessage {
   type: "message";
   content: string | ContentPart[];
   agentId: string;
+  clientMessageId?: string;
+  isRetry?: boolean;
 }
 
 interface HistoryRequestMessage {
@@ -36,12 +38,27 @@ interface HistoryRequestMessage {
   agentId: string;
 }
 
-type BrowserMessage = ChatMessage | HistoryRequestMessage;
+interface RetryContinueMessage {
+  type: "retry-continue";
+  agentId: string;
+  reason: "orphan" | "partial_stream_failure";
+}
+
+type BrowserMessage = ChatMessage | HistoryRequestMessage | RetryContinueMessage;
 
 interface HistoryMessage {
   role: string;
   content?: unknown;
   timestamp?: number;
+  /**
+   * Per-message id echoed back from OpenClaw's persisted transcript. Present
+   * for messages that were originated with a clientMessageId (browser chat
+   * in 0.5+). Absent for messages originated by other channels (Telegram,
+   * cron jobs) or persisted before 0.5. Forwarded to the browser so the
+   * status reducer can reconcile by id rather than by content — which matters
+   * when the user sends duplicate-content messages.
+   */
+  clientMessageId?: string;
 }
 
 export class ClientRouter {
@@ -97,9 +114,13 @@ export class ClientRouter {
       return this.handleHistory(clientWs, agent);
     }
 
+    if (message.type === "retry-continue") {
+      return this.handleRetryContinue(clientWs, agent, message);
+    }
+
     const sessionKey = this.computeSessionKey(message.agentId);
 
-    let messageId = crypto.randomUUID();
+    const messageId = crypto.randomUUID();
 
     try {
       await this.waitForConnection();
@@ -133,6 +154,9 @@ export class ClientRouter {
       if (attachments.length > 0) {
         chatOptions.attachments = attachments;
       }
+      if (message.clientMessageId) {
+        chatOptions.clientMessageId = message.clientMessageId;
+      }
 
       // Build extraSystemPrompt from user name + context + greeting
       const extraPromptParts: string[] = [];
@@ -155,6 +179,21 @@ export class ClientRouter {
         chatOptions.extraSystemPrompt = extraPromptParts.join("\n\n");
       }
 
+      if (message.isRetry) {
+        appendAuditLog({
+          actorType: "user",
+          actorId: this.userId,
+          eventType: "chat.retry_triggered",
+          resource: `agent:${message.agentId}`,
+          detail: {
+            agent: { id: agent.id, name: agent.name },
+            sessionKey,
+            reason: "send_failure",
+          },
+          outcome: "success",
+        }).catch((err) => console.error("Failed to write audit log:", err));
+      }
+
       const stream = this.openclawClient.chat(text, chatOptions);
 
       // Tell the client immediately that the request is in flight so the UI
@@ -166,85 +205,7 @@ export class ClientRouter {
         messageId,
       });
 
-      // Heartbeat is intentionally deferred until the first chunk arrives.
-      // Starting it immediately would reset the client-side stuck timer even
-      // when OpenClaw's stream hangs before producing any output (e.g. after a
-      // restart), trapping the user in an infinite spinner. Once the first
-      // chunk arrives we know OpenClaw is actively responding, so heartbeats
-      // are safe to send between turns.
-      let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
-
-      try {
-        for await (const chunk of stream) {
-          // Stop consuming the stream if the browser disconnected — frees
-          // server resources while letting OpenClaw finish on its side.
-          if (clientWs.readyState !== WS_OPEN) {
-            break;
-          }
-
-          // Start keep-alive heartbeats on the first chunk. Deferring until
-          // here ensures heartbeats only flow while OpenClaw is actively
-          // producing output — not while it may be hung before the first byte.
-          if (heartbeatInterval === null) {
-            heartbeatInterval = setInterval(() => {
-              if (clientWs.readyState === WS_OPEN) {
-                this.sendToClient(clientWs, {
-                  type: "thinking",
-                  messageId,
-                });
-              }
-            }, THINKING_HEARTBEAT_MS);
-          }
-
-          if (chunk.type === "text") {
-            const cleaned = chunk.text.replace(/<\/?final>/g, "");
-            if (cleaned) {
-              this.sendToClient(clientWs, {
-                type: "chunk",
-                content: cleaned,
-                messageId,
-              });
-            }
-          }
-
-          if (chunk.type === "error") {
-            console.error("OpenClaw error chunk:", chunk.text);
-            this.sendToClient(clientWs, {
-              type: "error",
-              agentName: agent.name,
-              providerError: chunk.text,
-              hint: getErrorHint(chunk.text, this.userRole),
-              messageId,
-            });
-          }
-
-          if (chunk.type === "done") {
-            this.sessionCache.add(sessionKey);
-            this.sendToClient(clientWs, {
-              type: "done",
-              messageId,
-            });
-
-            // Next agent turn gets a fresh messageId so the browser
-            // creates a separate assistant message — consistent with
-            // how OpenClaw stores them in history.
-            messageId = crypto.randomUUID();
-          }
-        }
-
-        // Tell the client the entire request is finished. Unlike "done" events
-        // (which fire between agent turns) this is sent exactly once after the
-        // iterator is exhausted, so the UI can confidently turn off the
-        // thinking indicator only when no more chunks will arrive.
-        // No messageId — this terminator is not tied to any specific turn.
-        this.sendToClient(clientWs, {
-          type: "complete",
-        });
-      } finally {
-        if (heartbeatInterval !== null) {
-          clearInterval(heartbeatInterval);
-        }
-      }
+      await this.pipeStream(clientWs, stream, agent, sessionKey, messageId);
     } catch (err) {
       this.sendToClient(clientWs, {
         type: "error",
@@ -291,6 +252,7 @@ export class ClientRouter {
             role: msg.role as "user" | "assistant",
             content,
             timestamp: msg.timestamp,
+            clientMessageId: msg.clientMessageId,
           };
         })
         .filter((msg) => msg.content);
@@ -354,7 +316,7 @@ export class ClientRouter {
         // No session known — show greeting for new conversations
         await sendGreeting();
       }
-    } catch (err) {
+    } catch {
       // If session was previously known, the error is likely a restart race —
       // retry once, then send empty history (not greeting) so the client keeps
       // its existing messages.
@@ -376,6 +338,147 @@ export class ClientRouter {
         return;
       }
       await sendGreeting();
+    }
+  }
+
+  private async handleRetryContinue(
+    clientWs: WebSocket,
+    agent: { id: string; name: string },
+    message: RetryContinueMessage
+  ): Promise<void> {
+    // Runtime-validate `reason` at the trust boundary. The TypeScript union
+    // (`"orphan" | "partial_stream_failure"`) is erased at runtime, so a
+    // malicious or buggy client could send an arbitrary string — which would
+    // otherwise land unchecked in an HMAC-signed audit row and pollute logs.
+    const ALLOWED_REASONS: ReadonlySet<string> = new Set(["orphan", "partial_stream_failure"]);
+    if (!ALLOWED_REASONS.has(message.reason)) {
+      this.sendToClient(clientWs, {
+        type: "error",
+        message: "Invalid retry reason",
+      });
+      return;
+    }
+
+    const sessionKey = this.computeSessionKey(message.agentId);
+    const messageId = crypto.randomUUID();
+
+    try {
+      await this.waitForConnection();
+
+      appendAuditLog({
+        actorType: "user",
+        actorId: this.userId,
+        eventType: "chat.retry_triggered",
+        resource: `agent:${message.agentId}`,
+        detail: {
+          agent: { id: agent.id, name: agent.name },
+          sessionKey,
+          reason: message.reason,
+        },
+        outcome: "success",
+      }).catch((err) => console.error("Failed to write audit log:", err));
+
+      const stream = this.openclawClient.continueLastTurn({ sessionKey });
+
+      this.sendToClient(clientWs, { type: "thinking", messageId });
+
+      await this.pipeStream(clientWs, stream, agent, sessionKey, messageId);
+    } catch (err) {
+      this.sendToClient(clientWs, {
+        type: "error",
+        message: this.sanitizeError(err),
+        messageId,
+      });
+    }
+  }
+
+  // Shared streaming loop used by handleMessage (chat) and handleRetryContinue.
+  // Handles heartbeat, chunk routing (text/error/done/userMessagePersisted), and
+  // the terminal "complete" frame. The userMessagePersisted/ack branch is a no-op
+  // for continueLastTurn streams (that chunk type never appears there).
+  private async pipeStream(
+    clientWs: WebSocket,
+    stream: AsyncIterable<ChatChunk>,
+    agent: { id: string; name: string },
+    sessionKey: string,
+    initialMessageId: string
+  ): Promise<void> {
+    let messageId = initialMessageId;
+
+    // Heartbeat is intentionally deferred until the first chunk arrives.
+    // Starting it immediately would reset the client-side stuck timer even
+    // when OpenClaw's stream hangs before producing any output (e.g. after a
+    // restart), trapping the user in an infinite spinner. Once the first
+    // chunk arrives we know OpenClaw is actively responding, so heartbeats
+    // are safe to send between turns.
+    let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+
+    try {
+      for await (const chunk of stream) {
+        // Stop consuming the stream if the browser disconnected — frees
+        // server resources while letting OpenClaw finish on its side.
+        if (clientWs.readyState !== WS_OPEN) {
+          break;
+        }
+
+        // Start keep-alive heartbeats on the first chunk. Deferring until
+        // here ensures heartbeats only flow while OpenClaw is actively
+        // producing output — not while it may be hung before the first byte.
+        if (heartbeatInterval === null) {
+          heartbeatInterval = setInterval(() => {
+            if (clientWs.readyState === WS_OPEN) {
+              this.sendToClient(clientWs, { type: "thinking", messageId });
+            }
+          }, THINKING_HEARTBEAT_MS);
+        }
+
+        if (chunk.type === "userMessagePersisted") {
+          this.sendToClient(clientWs, {
+            type: "ack",
+            clientMessageId: chunk.clientMessageId,
+          });
+          continue;
+        }
+
+        if (chunk.type === "text") {
+          const cleaned = chunk.text.replace(/<\/?final>/g, "");
+          if (cleaned) {
+            this.sendToClient(clientWs, { type: "chunk", content: cleaned, messageId });
+          }
+        }
+
+        if (chunk.type === "error") {
+          console.error("OpenClaw error chunk:", chunk.text);
+          this.sendToClient(clientWs, {
+            type: "error",
+            agentName: agent.name,
+            providerError: chunk.text,
+            hint: getErrorHint(chunk.text, this.userRole),
+            messageId,
+          });
+        }
+
+        if (chunk.type === "done") {
+          this.sessionCache.add(sessionKey);
+          this.sendToClient(clientWs, { type: "done", messageId });
+
+          // Next agent turn gets a fresh messageId so the browser
+          // creates a separate assistant message — consistent with
+          // how OpenClaw stores them in history.
+          messageId = crypto.randomUUID();
+        }
+      }
+
+      // Tell the client the entire request is finished. Unlike "done" events
+      // (which fire between agent turns) this is sent exactly once after the
+      // iterator is exhausted, so the UI can confidently turn off the
+      // thinking indicator only when no more chunks will arrive.
+      // No messageId — this terminator is not tied to any specific turn.
+      this.sendToClient(clientWs, { type: "complete" });
+    } finally {
+      if (heartbeatInterval !== null) {
+        clearInterval(heartbeatInterval);
+      }
     }
   }
 

@@ -1,0 +1,18 @@
+---
+title: Message Delivery Status & Retry
+description: How Pinchy tracks whether your message reached the agent, and what to do when it didn't.
+---
+
+When you send a message, Pinchy tracks whether it reached the agent. A message briefly dims while the network round-trip completes (**Sending**). Once it's persisted and the agent is working, the bubble returns to normal — no checkmarks, no noise. That's the happy path. If something goes wrong, you'll see a **"Couldn't deliver"** notice and a **Retry** button directly below the message.
+
+## When Retry appears
+
+There are three situations where Retry shows up, and in each case the button label is simply "Retry" — Pinchy handles the difference automatically:
+
+- **Failed delivery** — The message never reached the agent. Clicking Retry re-sends the exact same message; no editing required.
+- **No response** — Your message was delivered but the agent didn't respond, usually after a brief disconnect. A "The agent didn't respond." bubble appears with a Retry button. Clicking it re-triggers the agent without resending your message.
+- **Partial response** — The agent started responding but the connection dropped mid-stream. The partial text is preserved, and a Retry button on the error bubble triggers a continuation. The new response appends below.
+
+## What you don't need to do
+
+You don't need to copy your message, refresh the page, or figure out what went wrong. Click Retry — Pinchy picks up from the right place.
