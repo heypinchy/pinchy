@@ -7,6 +7,7 @@ import {
   buildCommitMessage,
   assertUpgradingSectionExists,
   extractUpgradeNotes,
+  bumpEnvExample,
 } from "./release-logic.mjs";
 
 // parseAndValidateVersion
@@ -203,4 +204,52 @@ test("extractUpgradeNotes trims leading and trailing whitespace", () => {
   ].join("\n");
   const result = extractUpgradeNotes(mdx, "0.4.4", "0.5.0");
   assert.equal(result, "Content.");
+});
+
+// bumpEnvExample
+
+test("bumpEnvExample updates PINCHY_VERSION line, preserves everything else", () => {
+  const input = `# Required
+PINCHY_VERSION=v0.4.4
+
+# Optional
+# DB_PASSWORD=
+# BETTER_AUTH_SECRET=
+`;
+  const expected = `# Required
+PINCHY_VERSION=v0.5.0
+
+# Optional
+# DB_PASSWORD=
+# BETTER_AUTH_SECRET=
+`;
+  assert.equal(bumpEnvExample(input, "0.5.0"), expected);
+});
+
+test("bumpEnvExample throws when PINCHY_VERSION line is missing", () => {
+  const input = `# Only optional vars, no PINCHY_VERSION
+# DB_PASSWORD=
+`;
+  assert.throws(
+    () => bumpEnvExample(input, "0.5.0"),
+    /No PINCHY_VERSION= line in \.env\.example/,
+  );
+});
+
+test("bumpEnvExample preserves order and other variables when many exist", () => {
+  const input = `# Comment
+FOO=bar
+PINCHY_VERSION=v0.4.4
+# Another comment
+BAZ=qux
+# PINCHY_VERSION looks like this in a comment — must not match
+`;
+  const output = bumpEnvExample(input, "0.5.0");
+  assert.ok(output.includes("PINCHY_VERSION=v0.5.0"));
+  assert.ok(output.includes("FOO=bar"));
+  assert.ok(output.includes("BAZ=qux"));
+  assert.ok(output.includes("# PINCHY_VERSION looks like this in a comment"));
+  // Exactly one PINCHY_VERSION= line (not counting the commented one)
+  const matches = output.match(/^PINCHY_VERSION=/gm) || [];
+  assert.equal(matches.length, 1);
 });
