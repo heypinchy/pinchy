@@ -619,9 +619,10 @@ jobs:
         if: steps.prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: |
-          # Previous release's compose file hardcodes :latest, so PINCHY_VERSION
-          # is redundant — but including it keeps both phases' .env files
-          # structurally identical for easier debugging.
+          # The previous step pinned image tags inline, so PINCHY_VERSION
+          # here is redundant for phase 1 — but we include it so phase 1 and
+          # phase 2 .env files are structurally identical, which mirrors what
+          # real users do and simplifies debugging.
           {
             echo "PINCHY_VERSION=${{ steps.prev.outputs.tag }}"
             echo "DB_PASSWORD=${{ steps.shared.outputs.db_password }}"
