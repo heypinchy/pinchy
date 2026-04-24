@@ -35,6 +35,27 @@ export function bumpPackageJson(content, version) {
 }
 
 /**
+ * Returns the contents of a .env.example file with PINCHY_VERSION set to the
+ * target release tag. Preserves all other lines, comments, and ordering.
+ * Throws if PINCHY_VERSION= line is missing — release script should never run
+ * against a .env.example that hasn't been prepared for Scope 2.
+ *
+ * @param {string} content - raw .env.example contents
+ * @param {string} version - release version, no 'v' prefix (e.g. "0.5.0")
+ * @returns {string}
+ */
+export function bumpEnvExample(content, version) {
+  const pattern = /^PINCHY_VERSION=.*$/m;
+  if (!pattern.test(content)) {
+    throw new Error(
+      "No PINCHY_VERSION= line in .env.example. " +
+        "Scope 2 migration incomplete — add it before releasing.",
+    );
+  }
+  return content.replace(pattern, `PINCHY_VERSION=v${version}`);
+}
+
+/**
  * Returns the git tag name for a version (e.g. "v0.3.0").
  * @param {string} version
  * @returns {string}
