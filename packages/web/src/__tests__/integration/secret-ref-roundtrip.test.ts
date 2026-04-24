@@ -172,11 +172,11 @@ describe("SecretRef roundtrip — regenerateOpenClawConfig()", () => {
     expect(secrets.providers?.anthropic?.apiKey).toBe("sk-ant-api03-TESTKEY1234567890abcdef");
   });
 
-  it("gateway.auth.token is a SecretRef, never plaintext, in openclaw.json", async () => {
+  it("gateway.auth.token is preserved as plain string in openclaw.json and mirrored to secrets.json", async () => {
     const { getSetting } = await import("@/lib/settings");
     vi.mocked(getSetting).mockResolvedValue(null);
 
-    // Simulate an existing config with a plaintext token (first-run upgrade scenario)
+    // Simulate an existing config with a plaintext token (e.g. written by ensure-gateway-token.js)
     const existingConfig = {
       gateway: {
         mode: "local",
@@ -185,7 +185,7 @@ describe("SecretRef roundtrip — regenerateOpenClawConfig()", () => {
       },
     };
     const configPath = process.env.OPENCLAW_CONFIG_PATH!;
-    // Write the existing config before calling regenerate
+    const secretsPath = process.env.OPENCLAW_SECRETS_PATH!;
     const { writeFileSync, mkdirSync, existsSync: fsExistsSync } = await import("fs");
     const { dirname } = await import("path");
     const dir = dirname(configPath);
@@ -197,15 +197,12 @@ describe("SecretRef roundtrip — regenerateOpenClawConfig()", () => {
 
     const config = JSON.parse(readFileSync(configPath, "utf-8"));
 
-    // Must be a SecretRef
-    expect(config.gateway.auth.token).toEqual({
-      source: "file",
-      provider: "pinchy",
-      id: "/gateway/token",
-    });
+    // OpenClaw requires a plain string for gateway.auth.token — must be preserved as-is
+    expect(config.gateway.auth.token).toBe("my-super-secret-gateway-token");
 
-    // Must NOT be the plaintext string
-    expect(JSON.stringify(config)).not.toContain("my-super-secret-gateway-token");
+    // The same token must also be written to secrets.json for Pinchy to read at startup
+    const secrets = JSON.parse(readFileSync(secretsPath, "utf-8"));
+    expect(secrets.gateway?.token).toBe("my-super-secret-gateway-token");
   });
 
   it("assertNoPlaintextSecrets guard prevents writing a plaintext secret to disk", async () => {

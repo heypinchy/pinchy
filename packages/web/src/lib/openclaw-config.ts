@@ -109,13 +109,13 @@ export async function regenerateOpenClawConfig() {
 
   const existing = readExistingConfig();
 
-  // Build the gateway block. mode and bind are always set. auth.token is always
-  // written as a SecretRef — the plaintext value is stored in secrets.json only.
+  // Build the gateway block. mode and bind are always set. auth.token is written
+  // as a plain string — OpenClaw requires a literal string for gateway auth and
+  // does not resolve SecretRef objects in the gateway.auth block.
+  // The same token is also written to secrets.json so Pinchy can read it.
   const existingGateway = (existing.gateway as Record<string, unknown>) || {};
   const existingAuth = (existingGateway.auth as Record<string, unknown>) || {};
-  // Extract plaintext token for the secrets bundle:
-  //   - First run / upgrade: token is a plaintext string in openclaw.json
-  //   - Restart (already migrated): token is a SecretRef → read from secrets.json
+  // Extract gateway token: prefer plain string from existing config, fall back to secrets.json
   const gatewayTokenValue =
     typeof existingAuth.token === "string" ? existingAuth.token : readSecretsFile().gateway?.token;
 
@@ -125,7 +125,7 @@ export async function regenerateOpenClawConfig() {
     bind: "lan",
     auth: {
       mode: "token",
-      token: secretRef("/gateway/token"),
+      token: gatewayTokenValue || "",
     },
   };
 
@@ -240,7 +240,7 @@ export async function regenerateOpenClawConfig() {
 
   const entries: Record<string, unknown> = {};
 
-  // Use the plaintext token extracted above (before gateway.auth was replaced with SecretRef)
+  // Write gateway token to secrets.json so Pinchy can read it at startup from secrets.json
   const gatewaySecret = gatewayTokenValue ? { token: gatewayTokenValue } : undefined;
 
   // pinchy-files needs apiBaseUrl/gatewayToken so it can report vision API
@@ -696,8 +696,8 @@ export async function regenerateOpenClawConfig() {
     };
   }
 
-  // Always write secrets.json — tmpfs is wiped on container restart,
-  // secrets.json must always be present when openclaw.json contains SecretRef pointers.
+  // Always write secrets.json — tmpfs is wiped on container restart, secrets.json
+  // must be present for OpenClaw to resolve SecretRef pointers (provider API keys etc.).
   const secretsBundle: SecretsBundle = {
     gateway: gatewaySecret,
     providers: providerSecrets,

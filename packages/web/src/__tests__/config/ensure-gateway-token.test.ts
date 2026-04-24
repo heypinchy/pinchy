@@ -53,14 +53,15 @@ describe("ensure-gateway-token", () => {
     expect(secrets.gateway.token).toBe("existing");
   });
 
-  it("writes a minimal openclaw.json with SecretRef skeleton when openclaw.json absent", () => {
+  it("writes a minimal openclaw.json with gateway auth when openclaw.json absent", () => {
     runScript(configPath, secretsPath);
 
     const config = readJSON(configPath);
-    expect(config.gateway.auth).toEqual({
-      mode: "token",
-      token: { source: "file", provider: "pinchy", id: "/gateway/token" },
-    });
+    const secrets = readJSON(secretsPath);
+    // gateway.auth.token must be the same plain string as secrets.gateway.token
+    expect(config.gateway.auth.mode).toBe("token");
+    expect(typeof config.gateway.auth.token).toBe("string");
+    expect(config.gateway.auth.token).toBe(secrets.gateway.token);
     expect(config.secrets.providers.pinchy).toEqual({
       source: "file",
       path: secretsPath,
@@ -97,13 +98,10 @@ describe("ensure-gateway-token", () => {
     runScript(configPath, secretsPath);
 
     const config = readJSON(configPath);
+    const secrets = readJSON(secretsPath);
     expect(config.env.ANTHROPIC_API_KEY).toBe("sk-ant-key");
     expect(config.agents.defaults.model.primary).toBe("anthropic/claude-haiku-4-5-20251001");
-    expect(config.gateway.auth.token).toEqual({
-      source: "file",
-      provider: "pinchy",
-      id: "/gateway/token",
-    });
+    expect(config.gateway.auth.token).toBe(secrets.gateway.token);
   });
 
   it("creates parent directories if they do not exist", () => {

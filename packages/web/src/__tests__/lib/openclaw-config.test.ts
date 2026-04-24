@@ -228,7 +228,7 @@ describe("regenerateOpenClawConfig", () => {
     });
   });
 
-  it("should preserve existing gateway mode/bind and write gateway.auth.token as SecretRef", async () => {
+  it("should preserve existing gateway mode/bind/token in openclaw.json", async () => {
     const existingConfig = {
       gateway: {
         mode: "local",
@@ -249,10 +249,11 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    // gateway.auth.token must be a SecretRef — never plaintext in openclaw.json
+    // gateway.auth.token must be preserved as a plain string — OpenClaw requires
+    // a literal string for gateway authentication, not a SecretRef object
     expect(config.gateway.auth).toEqual({
       mode: "token",
-      token: { source: "file", provider: "pinchy", id: "/gateway/token" },
+      token: "existing-secret-token",
     });
     // OpenClaw-enriched fields (meta, commands, agents.defaults.*) are preserved
     // to avoid unnecessary diffs that trigger hot-reloads breaking Telegram polling
@@ -484,12 +485,8 @@ describe("regenerateOpenClawConfig", () => {
       id: "/providers/anthropic/apiKey",
     });
     expect(config.env.OPENAI_API_KEY).toBeUndefined();
-    // gateway.auth.token is always a SecretRef — never plaintext
-    expect(config.gateway.auth.token).toEqual({
-      source: "file",
-      provider: "pinchy",
-      id: "/gateway/token",
-    });
+    // gateway.auth.token is preserved as plain string (OpenClaw requires literal string)
+    expect(config.gateway.auth.token).toBe("existing-token");
   });
 
   it("should include pinchy-context plugin config for agents with context tools", async () => {
@@ -2386,7 +2383,7 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
 
   const GW_TOKEN_REF = { source: "file", provider: "pinchy", id: "/gateway/token" };
 
-  it("writes gateway.auth.token as SecretRef, keeps mode and bind", async () => {
+  it("preserves gateway.auth.token as plain string, keeps mode and bind", async () => {
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "gw-plaintext-token" } },
     };
@@ -2399,15 +2396,16 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
     );
     const config = JSON.parse(written![1] as string);
 
-    // gateway.auth.token must be a SecretRef, not the plaintext string
-    expect(config.gateway.auth).toEqual({ mode: "token", token: GW_TOKEN_REF });
+    // gateway.auth.token must be a plain string — OpenClaw requires a literal string
+    expect(config.gateway.auth).toEqual({ mode: "token", token: "gw-plaintext-token" });
     // mode and bind are always set
     expect(config.gateway.mode).toBe("local");
     expect(config.gateway.bind).toBe("lan");
   });
 
-  it("reads gateway token from secrets.json when config already has SecretRef (restart scenario)", async () => {
-    // Simulate restart scenario: openclaw.json already has SecretRef, secrets.json has the token
+  it("reads gateway token from secrets.json when existing config has a non-string token", async () => {
+    // Fallback scenario: openclaw.json has a non-string token (e.g. leftover SecretRef from
+    // a previous Pinchy version), secrets.json has the actual token string
     const existingConfig = {
       gateway: {
         mode: "local",

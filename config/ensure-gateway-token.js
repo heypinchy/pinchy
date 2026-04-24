@@ -35,9 +35,12 @@ const config = readJSON(configPath);
 if (!config.gateway) config.gateway = {};
 config.gateway.mode = config.gateway.mode || "local";
 config.gateway.bind = config.gateway.bind || "lan";
+// Keep gateway.auth.token as a plain string — OpenClaw requires a literal
+// string for gateway authentication and does not resolve SecretRef objects
+// in the gateway.auth block at startup.
 config.gateway.auth = {
   mode: "token",
-  token: { source: "file", provider: "pinchy", id: "/gateway/token" },
+  token: secrets.gateway.token,
 };
 if (!config.secrets) {
   config.secrets = {
