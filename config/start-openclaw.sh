@@ -36,6 +36,17 @@ fi
 # when no token is configured yet, e.g. on first startup before setup wizard)
 node /ensure-gateway-token.js
 
+# Write gateway token to a separate world-readable file for Pinchy (non-root).
+# Pinchy reads this as a fallback when openclaw.json is briefly unavailable.
+node -e "
+  const fs = require('fs');
+  try {
+    const config = JSON.parse(fs.readFileSync('/root/.openclaw/openclaw.json', 'utf8'));
+    const token = config.gateway.auth.token;
+    fs.writeFileSync('/root/.openclaw/gateway-token', token, { mode: 0o644 });
+  } catch {}
+"
+
 # Make OpenClaw config writable by Pinchy (non-root).
 # OpenClaw creates openclaw.json with 600 (root-only). Pinchy needs write access
 # to update provider keys and agent configuration via regenerateOpenClawConfig().
@@ -65,8 +76,7 @@ scan_data_directories() {
 # invocation loads the full plugin system.
 auto_approve_devices() {
     local token
-    # Read from secrets.json — gateway.auth.token in openclaw.json is now a SecretRef object
-    token=$(node -e "try{const p=process.env.OPENCLAW_SECRETS_PATH||'/openclaw-secrets/secrets.json';console.log(JSON.parse(require('fs').readFileSync(p,'utf8')).gateway?.token||'')}catch{}")
+    token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8')).gateway.auth.token)}catch{}")
     # Remove stale signal file from previous run
     rm -f /root/.openclaw/pinchy-device-approved
     sleep 5

@@ -1,9 +1,10 @@
 const PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: "anthropic", regex: /^sk-ant-[a-zA-Z0-9_-]{16,}/ },
   { name: "openai-generic", regex: /^sk-(proj-)?[a-zA-Z0-9]{16,}/ },
-  { name: "telegram-bot", regex: /^\d{8,10}:[a-zA-Z0-9_-]{34,}/ },
   { name: "gemini", regex: /^AIza[a-zA-Z0-9_-]{30,}/ },
   { name: "brave", regex: /^BSA[a-zA-Z0-9]{16,}/ },
+  // telegram-bot tokens omitted: OpenClaw 2026.4.12 does not resolve SecretRef
+  // in channels.telegram.accounts.*.botToken — tokens stay as plain strings.
 ];
 
 export type Finding = { path: string; pattern: string };
