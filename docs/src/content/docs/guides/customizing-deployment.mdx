@@ -10,7 +10,8 @@ Pinchy's `docker-compose.yml` is owned by the Pinchy project and gets replaced w
 The supported customization surface is `docker-compose.override.yml` — a file you create in the same directory as `docker-compose.yml`. Docker Compose automatically merges it on top of the base file, every time you run `docker compose up`. Upgrades never touch it.
 
 <Aside type="note">
-  If you edit `docker-compose.yml` directly, your changes will be lost on the next upgrade. Always customize via `docker-compose.override.yml` instead.
+  If you edit `docker-compose.yml` directly, your changes will be lost on the
+  next upgrade. Always customize via `docker-compose.override.yml` instead.
 </Aside>
 
 ## Recipe 1: Extra environment variables
@@ -41,7 +42,9 @@ services:
 ```
 
 <Aside type="caution">
-  Bind to `127.0.0.1:5432`, **not** `0.0.0.0:5432` or just `5432`. Docker bypasses host firewalls (UFW), so binding to all interfaces exposes Postgres to the internet regardless of your firewall rules.
+  Bind to `127.0.0.1:5432`, **not** `0.0.0.0:5432` or just `5432`. Docker
+  bypasses host firewalls (UFW), so binding to all interfaces exposes Postgres
+  to the internet regardless of your firewall rules.
 </Aside>
 
 Remove the override when you're done debugging.
