@@ -1,6 +1,6 @@
 services:
   pinchy:
-    image: ghcr.io/heypinchy/pinchy:latest
+    image: ghcr.io/heypinchy/pinchy:${PINCHY_VERSION:?set PINCHY_VERSION in .env (e.g. PINCHY_VERSION=v0.5.0)}
     ports:
       - "${PINCHY_PORT:-127.0.0.1:7777}:7777"
     environment:
@@ -22,7 +22,7 @@ services:
         condition: service_started
 
   openclaw:
-    image: ghcr.io/heypinchy/pinchy-openclaw:latest
+    image: ghcr.io/heypinchy/pinchy-openclaw:${PINCHY_VERSION:?set PINCHY_VERSION in .env (e.g. PINCHY_VERSION=v0.5.0)}
     expose:
       - "18789"
     volumes:
