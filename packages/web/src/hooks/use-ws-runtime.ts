@@ -256,8 +256,12 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "history") {
-            const serverMessages: Array<{ role: string; content: string; timestamp?: string }> =
-              data.messages ?? [];
+            const serverMessages: Array<{
+              role: string;
+              content: string;
+              timestamp?: string;
+              clientMessageId?: string;
+            }> = data.messages ?? [];
             const historyMessages: WsMessage[] = serverMessages.map((msg) => ({
               id: uuid(),
               role: (msg.role === "system" ? "assistant" : msg.role) as "user" | "assistant",
@@ -279,10 +283,15 @@ export function useWsRuntime(agentId: string): {
             });
             shouldRecoverFromHistoryRef.current = false;
             // Reconcile any in-flight "sending" messages against server history.
-            // Route through the reducer so matching logic is centralised.
+            // Forward clientMessageId through so the reducer can match by id —
+            // required to distinguish duplicate-content messages correctly.
             dispatchMessages({
               type: "history-reconcile",
-              history: serverMessages.map((m) => ({ role: m.role, content: m.content })),
+              history: serverMessages.map((m) => ({
+                role: m.role,
+                content: m.content,
+                clientMessageId: m.clientMessageId,
+              })),
             });
             setIsHistoryLoaded(true);
             return;
@@ -305,10 +314,13 @@ export function useWsRuntime(agentId: string): {
             // Server keep-alive: defeats browser/proxy WebSocket idle
             // timeouts during long pauses (e.g. local Ollama tool-use loops).
             // Reset stuck timer so a slow-but-alive agent doesn't get killed.
-            // Also cancel any pending ack timers — OpenClaw is clearly processing
-            // this session so the message was received.
-            for (const timer of pendingAckTimers.current.values()) {
+            // Also cancel any pending ack timers and flip the underlying user
+            // messages sending → sent: a heartbeat proves OpenClaw has the
+            // session and is working, so delivery is confirmed even if the
+            // dedicated userMessagePersisted event never arrived.
+            for (const [clientMessageId, timer] of pendingAckTimers.current.entries()) {
               clearTimeout(timer);
+              dispatchMessages({ type: "ack", clientMessageId });
             }
             pendingAckTimers.current.clear();
             isRunningRef.current = true;
@@ -318,10 +330,15 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "chunk") {
-            // Cancel pending ack timers — receiving a chunk proves OpenClaw got the
-            // message, so the ack timeout would be a false positive if it fired now.
-            for (const timer of pendingAckTimers.current.values()) {
+            // Cancel pending ack timers and confirm delivery — receiving a
+            // chunk proves OpenClaw got the message, so any still-"sending"
+            // user message must transition to "sent" (even if the explicit
+            // userMessagePersisted event raced with or preceded the first
+            // chunk). Without this fallback the user bubble would stay
+            // dimmed (opacity-60) for the full agent turn.
+            for (const [clientMessageId, timer] of pendingAckTimers.current.entries()) {
               clearTimeout(timer);
+              dispatchMessages({ type: "ack", clientMessageId });
             }
             pendingAckTimers.current.clear();
             isRunningRef.current = true;

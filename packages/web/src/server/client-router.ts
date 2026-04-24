@@ -50,6 +50,15 @@ interface HistoryMessage {
   role: string;
   content?: unknown;
   timestamp?: number;
+  /**
+   * Per-message id echoed back from OpenClaw's persisted transcript. Present
+   * for messages that were originated with a clientMessageId (browser chat
+   * in 0.5+). Absent for messages originated by other channels (Telegram,
+   * cron jobs) or persisted before 0.5. Forwarded to the browser so the
+   * status reducer can reconcile by id rather than by content — which matters
+   * when the user sends duplicate-content messages.
+   */
+  clientMessageId?: string;
 }
 
 export class ClientRouter {
@@ -272,6 +281,7 @@ export class ClientRouter {
             role: msg.role as "user" | "assistant",
             content,
             timestamp: msg.timestamp,
+            clientMessageId: msg.clientMessageId,
           };
         })
         .filter((msg) => msg.content);
@@ -365,6 +375,19 @@ export class ClientRouter {
     agent: { id: string; name: string },
     message: RetryContinueMessage
   ): Promise<void> {
+    // Runtime-validate `reason` at the trust boundary. The TypeScript union
+    // (`"orphan" | "partial_stream_failure"`) is erased at runtime, so a
+    // malicious or buggy client could send an arbitrary string — which would
+    // otherwise land unchecked in an HMAC-signed audit row and pollute logs.
+    const ALLOWED_REASONS: ReadonlySet<string> = new Set(["orphan", "partial_stream_failure"]);
+    if (!ALLOWED_REASONS.has(message.reason)) {
+      this.sendToClient(clientWs, {
+        type: "error",
+        message: "Invalid retry reason",
+      });
+      return;
+    }
+
     const sessionKey = this.computeSessionKey(message.agentId);
     const messageId = crypto.randomUUID();
 

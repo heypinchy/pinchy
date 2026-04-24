@@ -1151,3 +1151,82 @@ describe("history reconcile on reconnect", () => {
     expect(result.current.isOrphaned).toBe(false);
   });
 });
+
+// ── Chunk-as-implicit-ack fallback tests ─────────────────────────────────────
+
+describe("chunk/thinking as implicit ack", () => {
+  beforeEach(() => {
+    wsInstances.length = 0;
+    capturedOnNew = null;
+    capturedMessages = [];
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("flips the sending user message to sent when the first frame is a chunk (no prior userMessagePersisted)", async () => {
+    // Without this fallback, if the first chunk beats the userMessagePersisted
+    // event (or that event is never emitted — e.g. tool-use loops that skip
+    // the persistence ack), the user bubble stays dimmed for the whole turn.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("hello"));
+    });
+
+    // Deliver a chunk WITHOUT sending an ack first
+    const ws = latestWs();
+    await act(async () => {
+      ws.simulateMessage({
+        type: "chunk",
+        messageId: "m1",
+        content: "Response...",
+      });
+    });
+
+    // The user message must have transitioned to "sent" via the chunk fallback
+    const userMsg = capturedMessages.find((m) => {
+      const msg = m as { role?: string; metadata?: { custom?: { status?: string } } };
+      return msg.role === "user";
+    }) as { metadata?: { custom?: { status?: string } } } | undefined;
+    expect(userMsg?.metadata?.custom?.status).toBe("sent");
+
+    // And once the stream completes, isOrphaned stays false (assistant has replied)
+    await act(async () => {
+      ws.simulateMessage({ type: "complete" });
+    });
+    expect(result.current.isOrphaned).toBe(false);
+  });
+
+  it("flips the sending user message to sent when a thinking heartbeat arrives before the ack", async () => {
+    // Mirror scenario: OpenClaw is processing a long turn, no chunks yet,
+    // but keep-alive heartbeats prove delivery. The user bubble should
+    // clear as soon as we see one.
+    renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "history", messages: [] });
+    });
+
+    await act(async () => {
+      capturedOnNew!(makeUserMessage("slow one"));
+    });
+
+    await act(async () => {
+      latestWs().simulateMessage({ type: "thinking", messageId: "m1" });
+    });
+
+    const userMsg = capturedMessages.find((m) => {
+      const msg = m as { role?: string };
+      return msg.role === "user";
+    }) as { metadata?: { custom?: { status?: string } } } | undefined;
+    expect(userMsg?.metadata?.custom?.status).toBe("sent");
+  });
+});

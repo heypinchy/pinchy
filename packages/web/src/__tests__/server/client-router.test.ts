@@ -2176,6 +2176,7 @@ describe("ClientRouter", () => {
       await router.handleMessage(clientWs as any, {
         type: "retry-continue",
         agentId: "a1",
+        reason: "orphan",
       });
 
       expect(mockContinueLastTurn).toHaveBeenCalledWith({
@@ -2195,6 +2196,7 @@ describe("ClientRouter", () => {
       await router.handleMessage(clientWs as any, {
         type: "retry-continue",
         agentId: "a1",
+        reason: "partial_stream_failure",
       });
 
       const messages = clientWs.sent.map((s) => JSON.parse(s));
@@ -2216,6 +2218,7 @@ describe("ClientRouter", () => {
       await router.handleMessage(clientWs as any, {
         type: "retry-continue",
         agentId: "a1",
+        reason: "orphan",
       });
 
       const messages = clientWs.sent.map((s) => JSON.parse(s));
@@ -2235,10 +2238,39 @@ describe("ClientRouter", () => {
       await router.handleMessage(clientWs as any, {
         type: "retry-continue",
         agentId: "agent-xyz",
+        reason: "partial_stream_failure",
       });
 
       const { sessionKey } = mockContinueLastTurn.mock.calls[0][0];
       expect(sessionKey).toBe("agent:agent-xyz:direct:user-1");
+    });
+
+    it("rejects retry-continue frames with an unknown reason and does not audit or call openclaw", async () => {
+      // Runtime guard at the trust boundary — TypeScript's reason union is
+      // erased at runtime, so a malicious/buggy client could send arbitrary
+      // strings that would otherwise land in audit logs.
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(
+        clientWs as any,
+        {
+          type: "retry-continue",
+          agentId: "a1",
+          reason: "injected-garbage",
+        } as any
+      );
+
+      // Client sees an error frame
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const errorMsg = messages.find((m: any) => m.type === "error");
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg.message).toBe("Invalid retry reason");
+
+      // No audit log entry — the audit row must reflect only validated reasons
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
+
+      // OpenClaw was not called — the retry did not proceed
+      expect(mockContinueLastTurn).not.toHaveBeenCalled();
     });
   });
 

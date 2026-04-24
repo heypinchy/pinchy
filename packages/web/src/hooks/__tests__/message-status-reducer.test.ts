@@ -79,4 +79,89 @@ describe("reduceMessages", () => {
     expect(next[1].status).toBe("failed");
     expect(next[2].status).toBe("failed"); // was sending, not in history
   });
+
+  it("history-reconcile prefers clientMessageId matching over content", () => {
+    // A sending message whose id matches an entry in history is "sent" —
+    // even if the content happens to differ (e.g. trailing whitespace
+    // normalisation by OpenClaw).
+    const initial = [
+      {
+        id: "id-A",
+        role: "user" as const,
+        content: "hi",
+        status: "sending" as const,
+        timestamp: 0,
+      },
+    ];
+    const next = reduceMessages(initial, {
+      type: "history-reconcile",
+      history: [{ role: "user", content: "hi ", clientMessageId: "id-A" }],
+    });
+    expect(next[0].status).toBe("sent");
+  });
+
+  it("history-reconcile distinguishes duplicate-content messages via clientMessageId", () => {
+    // The user typed "yes" twice. Only the first one got persisted. With
+    // id-based matching the second "yes" is correctly marked failed.
+    // Content-set matching (the old behaviour) would have marked both sent.
+    const initial = [
+      {
+        id: "id-first",
+        role: "user" as const,
+        content: "yes",
+        status: "sending" as const,
+        timestamp: 0,
+      },
+      {
+        id: "id-second",
+        role: "user" as const,
+        content: "yes",
+        status: "sending" as const,
+        timestamp: 1,
+      },
+    ];
+    const next = reduceMessages(initial, {
+      type: "history-reconcile",
+      history: [{ role: "user", content: "yes", clientMessageId: "id-first" }],
+    });
+    expect(next[0].status).toBe("sent");
+    expect(next[1].status).toBe("failed");
+  });
+
+  it("history-reconcile falls back to content matching when no history entry carries a clientMessageId", () => {
+    // Older OpenClaw sessions (pre-0.5) don't persist clientMessageId. The
+    // reducer must still reconcile correctly — at the cost of the known
+    // duplicate-content limitation documented on the fallback path.
+    const initial = [
+      {
+        id: "local-id",
+        role: "user" as const,
+        content: "hello",
+        status: "sending" as const,
+        timestamp: 0,
+      },
+    ];
+    const next = reduceMessages(initial, {
+      type: "history-reconcile",
+      history: [{ role: "user", content: "hello" /* no clientMessageId */ }],
+    });
+    expect(next[0].status).toBe("sent");
+  });
+
+  it("history-reconcile fails the message when id is absent AND content doesn't match (fallback path)", () => {
+    const initial = [
+      {
+        id: "local-id",
+        role: "user" as const,
+        content: "lost message",
+        status: "sending" as const,
+        timestamp: 0,
+      },
+    ];
+    const next = reduceMessages(initial, {
+      type: "history-reconcile",
+      history: [{ role: "user", content: "something else" }],
+    });
+    expect(next[0].status).toBe("failed");
+  });
 });
