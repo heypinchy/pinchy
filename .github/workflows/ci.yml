@@ -114,6 +114,12 @@ jobs:
     name: Docker smoke test
     runs-on: ubuntu-latest
 
+    # Dev-mode CI test: images are built locally and tagged :latest. Satisfy
+    # the compose fail-loud check on ${PINCHY_VERSION:?} without depending on
+    # a .env file.
+    env:
+      PINCHY_VERSION: latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -695,6 +701,12 @@ jobs:
     name: Odoo E2E Tests
     runs-on: ubuntu-latest
 
+    # Dev-mode CI test: images are built by compose via docker-compose.dev.yml.
+    # Satisfy the compose fail-loud check on ${PINCHY_VERSION:?} — value is
+    # just the build tag, never pulled from a registry.
+    env:
+      PINCHY_VERSION: latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -788,6 +800,12 @@ jobs:
   telegram-e2e:
     name: Telegram E2E Tests
     runs-on: ubuntu-latest
+
+    # Dev-mode CI test: images are built by compose via docker-compose.dev.yml.
+    # Satisfy the compose fail-loud check on ${PINCHY_VERSION:?} — value is
+    # just the build tag, never pulled from a registry.
+    env:
+      PINCHY_VERSION: latest
 
     steps:
       - uses: actions/checkout@v4
