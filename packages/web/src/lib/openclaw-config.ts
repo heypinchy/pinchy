@@ -27,7 +27,6 @@ import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
-const GATEWAY_TOKEN_PATH = process.env.GATEWAY_TOKEN_PATH || "/openclaw-config/gateway-token";
 
 /**
  * Remove stale Pinchy plugins from the allow list that have no matching entry.
@@ -717,17 +716,6 @@ export async function regenerateOpenClawConfig() {
   }
 
   writeConfigAtomic(newContent);
-
-  // Sync gateway-token file so Pinchy's startup reader and OpenClaw always
-  // agree on the token. Without this, a stale gateway-token file causes
-  // token_mismatch errors on every WebSocket reconnect (openclaw#drift).
-  if (gatewayToken) {
-    try {
-      writeFileSync(GATEWAY_TOKEN_PATH, gatewayToken, { encoding: "utf-8", mode: 0o644 });
-    } catch {
-      // Non-critical — openclaw.json is the authoritative source
-    }
-  }
 }
 
 // ── Targeted config updates ───────────────────────────────────────────────
