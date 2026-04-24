@@ -29,7 +29,7 @@ if (!secrets.gateway) secrets.gateway = {};
 if (!secrets.gateway.token) {
   secrets.gateway.token = randomBytes(24).toString("hex");
 }
-writeAtomic(secretsPath, JSON.stringify(secrets, null, 2), 0o600);
+writeAtomic(secretsPath, JSON.stringify(secrets, null, 2), 0o644);
 
 const config = readJSON(configPath);
 if (!config.gateway) config.gateway = {};

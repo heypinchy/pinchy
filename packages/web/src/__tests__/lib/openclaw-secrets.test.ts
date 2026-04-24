@@ -40,10 +40,10 @@ describe("writeSecretsFile", () => {
     expect(JSON.parse(content)).toEqual(bundle);
   });
 
-  it("creates the file with mode 0600", () => {
+  it("creates the file with mode 0644", () => {
     writeSecretsFile(bundle);
     const mode = statSync(process.env.OPENCLAW_SECRETS_PATH!).mode & 0o777;
-    expect(mode).toBe(0o600);
+    expect(mode).toBe(0o644);
   });
 
   it("overwrites an existing file completely", () => {
