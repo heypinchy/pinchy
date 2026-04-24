@@ -603,6 +603,18 @@ jobs:
             "https://raw.githubusercontent.com/heypinchy/pinchy/${{ steps.prev.outputs.tag }}/docker-compose.yml" \
             -o docker-compose.yml
 
+      - name: Phase 1 — pin previous compose's :latest to the previous tag
+        if: steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          # The previous release's compose file hardcodes :latest for image
+          # tags (it predates Scope 2's ${PINCHY_VERSION:?} shape). Without
+          # pinning, docker compose pull would fetch whatever :latest points
+          # to right now — defeating the whole point of "upgrade from the
+          # previous release."
+          sed -i "s|:latest|:${{ steps.prev.outputs.tag }}|g" docker-compose.yml
+          grep -E '^\s*image:' docker-compose.yml
+
       - name: Phase 1 — write .env for previous release
         if: steps.prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
