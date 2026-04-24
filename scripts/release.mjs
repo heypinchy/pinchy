@@ -27,6 +27,7 @@ import { fileURLToPath } from "node:url";
 import {
   parseAndValidateVersion,
   bumpPackageJson,
+  bumpEnvExample,
   buildTagName,
   buildCommitMessage,
   assertUpgradingSectionExists,
@@ -158,6 +159,7 @@ log("\nBumping versions...");
 
 const rootPkgPath = resolve(ROOT, "package.json");
 const webPkgPath = resolve(ROOT, "packages/web/package.json");
+const envExamplePath = resolve(ROOT, ".env.example");
 
 writeFileSync(rootPkgPath, bumpPackageJson(readFileSync(rootPkgPath, "utf8"), version));
 log(`  ✔ package.json → ${version}`);
@@ -165,10 +167,16 @@ log(`  ✔ package.json → ${version}`);
 writeFileSync(webPkgPath, bumpPackageJson(readFileSync(webPkgPath, "utf8"), version));
 log(`  ✔ packages/web/package.json → ${version}`);
 
+writeFileSync(
+  envExamplePath,
+  bumpEnvExample(readFileSync(envExamplePath, "utf8"), version),
+);
+log(`  ✔ .env.example → v${version}`);
+
 // ─── Commit, tag, push ────────────────────────────────────────────────────────
 
 log("\nCommitting...");
-exec("git add package.json packages/web/package.json");
+exec("git add package.json packages/web/package.json .env.example");
 exec(`git commit -m "${buildCommitMessage(version)}"`);
 log(`  ✔ Committed`);
 
