@@ -3,7 +3,7 @@ title: User Roles and Permissions
 description: How Pinchy's two-role system controls what users can see and do across the platform.
 ---
 
-import { Aside } from "@astrojs/starlight/components";
+import { Aside, Badge } from "@astrojs/starlight/components";
 
 Pinchy uses two roles — **Admin** and **Member** — to control access to platform features. Every user has exactly one role.
 
@@ -55,7 +55,7 @@ Roles interact with agent visibility to determine which agents a user can see in
 - **Members** see:
   - Their own personal Smithers agent
   - Shared agents with visibility set to **All users**
-  - Shared agents with **Restricted** visibility, if they belong to an assigned group (enterprise feature)
+  - Shared agents with **Restricted** visibility, if they belong to an assigned group <Badge text="Enterprise" variant="note" />
 
 Members cannot see other users' personal agents or restricted agents they are not grouped into.
 
@@ -76,9 +76,10 @@ The Settings page shows different tabs depending on the user's role:
 
 Members see only the Context and Profile tabs. Admin-only tabs are completely hidden — not just disabled.
 
-<Aside type="tip" title="Groups for granular access">
-  Roles provide platform-wide access control. For more granular, per-agent
-  access control, use [Groups](/concepts/groups/) to scope agent visibility to
-  specific teams. Groups are an enterprise feature — activate them with a
-  license key.
-</Aside>
+## Emergency admin recovery
+
+If no admin is available to reset a locked-out user's password, an admin with shell access to the server can run `docker compose exec pinchy pnpm reset-admin` to generate a new admin password from the CLI. See [User Management — Emergency admin password reset](/guides/user-management/#emergency-admin-password-reset-cli) for the full flow.
+
+:::note[Enterprise feature]
+Roles provide platform-wide access control. For granular, per-agent access scoped to specific teams, use [Groups](/concepts/groups/) with a Pinchy Enterprise license. See [Enterprise Setup](/guides/enterprise-setup/).
+:::

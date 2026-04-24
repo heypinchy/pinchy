@@ -127,6 +127,9 @@ docker compose pull && docker compose up -d
 
 ### What's new in v0.4.5
 
+- **Web Search integration** — connect Pinchy to the Brave Search API and grant agents per-tool access to search and page fetch. Per-agent filters for domain allow/deny, freshness, language, and region let you scope what each agent can reach. See [Set Up Web Search](/guides/web-search-setup/).
+- **Gmail integration** — connect Google accounts via OAuth and give agents scoped email access: read, create drafts, or send. A guided wizard walks admins through the Google Cloud Console setup. See [Connect Email](/guides/connect-email/).
+- **Per-template model recommendations** — agent templates now declare preferred model tiers (fast, balanced, reasoning) and required capabilities (vision, long-context, tools). When creating an agent from a template, Pinchy picks the best match from your installed models automatically.
 - **Message delivery status** — the chat interface now tracks whether each message reached the agent. A message dims briefly while the network round-trip completes; once the agent acknowledges it, the bubble returns to normal. If delivery fails, a "Couldn't deliver" notice appears.
 - **Retry button** — when a message fails to deliver, the agent doesn't respond, or a response stream drops mid-way, a Retry button appears directly below the failed message. Pinchy handles the right recovery action automatically — resend, re-trigger, or continue the partial response — depending on what went wrong. See [Message Delivery Status & Retry](/guides/retry-messages/).
 

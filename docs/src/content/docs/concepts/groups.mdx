@@ -3,8 +3,8 @@ title: Groups
 description: How to use groups to control which users can access which agents.
 ---
 
-:::note[Enterprise Feature]
-Groups and agent access control are enterprise features. Activate them by entering a license key in **Settings → License** or via the `PINCHY_ENTERPRISE_KEY` environment variable. See [Enterprise Setup](/guides/enterprise-setup/) for details.
+:::note[Enterprise feature]
+Groups and agent access control require a Pinchy Enterprise license. Activate it by entering a license key in **Settings → License** or via the `PINCHY_ENTERPRISE_KEY` environment variable. See [Enterprise Setup](/guides/enterprise-setup/).
 :::
 
 ![Groups management with member counts](/screenshots/groups.png)
@@ -58,4 +58,14 @@ Personal agents (the auto-created Smithers agent each user gets) are not affecte
 
 ## Audit trail
 
-All group management actions are logged in the [audit trail](/concepts/audit-trail/): group creation, updates, deletion, and member changes.
+Every group management action is logged in the [audit trail](/concepts/audit-trail/) as a specific event type:
+
+| Action                    | Audit event             |
+| ------------------------- | ----------------------- |
+| Group created             | `group.created`         |
+| Group name or description | `group.updated`         |
+| Group deleted             | `group.deleted`         |
+| Member added or removed   | `group.members_updated` |
+| User's group memberships  | `user.groups_updated`   |
+
+Each entry snapshots the group name and affected user names alongside their IDs, so the log stays meaningful even after groups or users are deleted.

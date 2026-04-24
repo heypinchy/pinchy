@@ -5,6 +5,8 @@ import {
   bumpPackageJson,
   buildTagName,
   buildCommitMessage,
+  assertUpgradingSectionExists,
+  extractUpgradeNotes,
 } from "./release-logic.mjs";
 
 // parseAndValidateVersion
@@ -65,4 +67,140 @@ test("buildTagName prefixes version with v", () => {
 
 test("buildCommitMessage follows conventional commit format", () => {
   assert.equal(buildCommitMessage("0.3.0"), "chore: release v0.3.0");
+});
+
+// assertUpgradingSectionExists
+
+test("assertUpgradingSectionExists accepts %%PINCHY_VERSION%% placeholder", () => {
+  const mdx = [
+    "## Upgrading from v0.4.4 to %%PINCHY_VERSION%%",
+    "",
+    "Notes go here.",
+  ].join("\n");
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
+});
+
+test("assertUpgradingSectionExists accepts concrete target version", () => {
+  const mdx = [
+    "## Upgrading from v0.4.4 to v0.5.0",
+    "",
+    "Notes.",
+  ].join("\n");
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
+});
+
+test("assertUpgradingSectionExists rejects missing section", () => {
+  const mdx = "## Upgrading from v0.4.3 to v0.4.4\n\nOld notes.\n";
+  assert.throws(
+    () => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+    /no upgrade-notes section for v0\.5\.0/i,
+  );
+});
+
+test("assertUpgradingSectionExists rejects stale section (wrong 'from' version)", () => {
+  const mdx = "## Upgrading from v0.4.3 to %%PINCHY_VERSION%%\n\nStale.\n";
+  assert.throws(
+    () => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+    /no upgrade-notes section for v0\.5\.0/i,
+  );
+});
+
+test("assertUpgradingSectionExists is whitespace-tolerant in the heading", () => {
+  const mdx = "##   Upgrading  from  v0.4.4  to  %%PINCHY_VERSION%%  \n";
+  assert.doesNotThrow(() =>
+    assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+  );
+});
+
+test("assertUpgradingSectionExists error message suggests the heading to add", () => {
+  const mdx = "(empty)";
+  assert.throws(
+    () => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+    /## Upgrading from v0\.4\.4 to %%PINCHY_VERSION%%/,
+  );
+});
+
+// extractUpgradeNotes
+
+test("extractUpgradeNotes returns the body under the matching section", () => {
+  const mdx = [
+    "# Upgrading Pinchy",
+    "",
+    "## Upgrading from v0.4.4 to %%PINCHY_VERSION%%",
+    "",
+    "First note.",
+    "Second note.",
+    "",
+    "## Upgrading from v0.4.3 to v0.4.4",
+    "",
+    "Older note.",
+  ].join("\n");
+  const result = extractUpgradeNotes(mdx, "0.4.4", "0.5.0");
+  assert.match(result, /First note\./);
+  assert.match(result, /Second note\./);
+  assert.doesNotMatch(result, /Older note\./);
+});
+
+test("extractUpgradeNotes replaces %%PINCHY_VERSION%% with v<target>", () => {
+  const mdx = [
+    "## Upgrading from v0.4.4 to %%PINCHY_VERSION%%",
+    "",
+    "See the %%PINCHY_VERSION%% changelog for details.",
+  ].join("\n");
+  const result = extractUpgradeNotes(mdx, "0.4.4", "0.5.0");
+  assert.match(result, /v0\.5\.0 changelog/);
+  assert.doesNotMatch(result, /%%PINCHY_VERSION%%/);
+});
+
+test("extractUpgradeNotes returns empty string when section is missing", () => {
+  const mdx = "# Upgrading Pinchy\n\n## Upgrading from v0.4.2 to v0.4.3\n\nOld.\n";
+  assert.equal(extractUpgradeNotes(mdx, "0.4.4", "0.5.0"), "");
+});
+
+test("extractUpgradeNotes handles section at end of file (no trailing heading)", () => {
+  const mdx = [
+    "## Upgrading from v0.4.4 to v0.5.0",
+    "",
+    "Only section — no trailing heading.",
+  ].join("\n");
+  const result = extractUpgradeNotes(mdx, "0.4.4", "0.5.0");
+  assert.match(result, /Only section/);
+});
+
+test("extractUpgradeNotes preserves nested ### subheadings but stops at next ## heading", () => {
+  const mdx = [
+    "## Upgrading from v0.4.4 to %%PINCHY_VERSION%%",
+    "",
+    "### Breaking changes",
+    "Changed.",
+    "",
+    "### Migrations",
+    "Migrated.",
+    "",
+    "## Upgrading from v0.4.3 to v0.4.4",
+    "",
+    "Older.",
+  ].join("\n");
+  const result = extractUpgradeNotes(mdx, "0.4.4", "0.5.0");
+  assert.match(result, /### Breaking changes/);
+  assert.match(result, /### Migrations/);
+  assert.doesNotMatch(result, /Older\./);
+});
+
+test("extractUpgradeNotes trims leading and trailing whitespace", () => {
+  const mdx = [
+    "## Upgrading from v0.4.4 to v0.5.0",
+    "",
+    "",
+    "Content.",
+    "",
+    "",
+    "## Upgrading from v0.4.3 to v0.4.4",
+  ].join("\n");
+  const result = extractUpgradeNotes(mdx, "0.4.4", "0.5.0");
+  assert.equal(result, "Content.");
 });

@@ -59,17 +59,19 @@ An agent with powerful tools enabled has significantly broader capabilities. Use
 
 ## The Permissions tab
 
-Admins configure tool permissions in the **Permissions tab** of an agent's settings page. The settings page has four tabs — General, Personality, Instructions, and Permissions. To access the Permissions tab:
+Admins configure tool permissions in the **Permissions tab** of a shared agent's settings page. To access it:
 
-1. Open an agent's chat
+1. Open a shared agent's chat
 2. Click the settings icon (gear) to open Agent Settings
 3. Select the **Permissions** tab
 
 The Permissions tab shows all available tools grouped by category. Check or uncheck tools to control what the agent can do, then click **Save**.
 
 :::note
-The Permissions tab is only visible to admins and is not available for personal agents (the auto-created Smithers agent each user gets).
+The Permissions tab is only visible to admins and only for shared agents. Personal agents (the auto-created Smithers each user gets) don't have this tab — they run with default tools only.
 :::
+
+For the full list of tabs in Agent Settings and who sees which, see [Agent Settings](/concepts/agent-settings/).
 
 ### Configuring directory access
 
@@ -116,7 +118,23 @@ Web search tools are enabled individually per agent via checkboxes in the Permis
 
 Each agent can also have per-agent filters (Domain restrictions with Include/Exclude modes, Freshness, Language, Region) that control what the agent can access. See [Set Up Web Search](/guides/web-search-setup/) for configuration details.
 
-For details on setting up connections, see [Integrations](/concepts/integrations/).
+### Email tools
+
+When you connect a Gmail account and grant an agent access to it, Pinchy enables email tools based on which operations you check. Each permission maps to a specific set of tools.
+
+| Permission        | Tools enabled                              | What the agent can do                       |
+| ----------------- | ------------------------------------------ | ------------------------------------------- |
+| **Read messages** | `email_list`, `email_read`, `email_search` | List, read, and search emails               |
+| **Create drafts** | above + `email_draft`                      | Create draft emails, including reply drafts |
+| **Send messages** | above + `email_send`                       | Send emails immediately — cannot be undone  |
+
+Permissions are additive — granting Send automatically includes Read and Draft. Each permission is selected per-agent, so you can have one agent that only reads email and another that can send on your behalf.
+
+:::caution[Send is powerful]
+**Send messages** lets the agent send email from the connected account without human review. Prefer **Create drafts** when a human can review before sending — it's safer by default.
+:::
+
+For the full setup walkthrough, see [Connect Email](/guides/connect-email/). For details on setting up connections in general, see [Integrations](/concepts/integrations/).
 
 ## Agent templates and default permissions
 
