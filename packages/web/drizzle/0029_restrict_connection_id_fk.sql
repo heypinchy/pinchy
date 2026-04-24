@@ -1,0 +1,3 @@
+ALTER TABLE "agent_connection_permissions" DROP CONSTRAINT "agent_connection_permissions_connection_id_integration_connections_id_fk";
+--> statement-breakpoint
+ALTER TABLE "agent_connection_permissions" ADD CONSTRAINT "agent_connection_permissions_connection_id_integration_connections_id_fk" FOREIGN KEY ("connection_id") REFERENCES "public"."integration_connections"("id") ON DELETE restrict ON UPDATE no action;

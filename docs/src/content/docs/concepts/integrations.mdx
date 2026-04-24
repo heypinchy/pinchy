@@ -126,6 +126,12 @@ To re-sync: go to **Settings → Integrations**, select the connection, and clic
 Re-syncing may remove models that are no longer accessible. Agents that were configured to use those models will lose access to them.
 :::
 
+## Deleting an integration
+
+When you delete an integration in **Settings → Integrations**, Pinchy first checks whether any agents have been granted access to it. If agents are using the integration, the delete dialog shows their names and warns that deleting will remove their access — the button reads **Detach & Delete** to make this explicit. Confirming removes all agent permissions for that integration and deletes the connection in a single atomic transaction, so no agent is left with a dangling reference. If no agents use the integration, a standard delete confirmation is shown and the connection is removed directly.
+
+If you prefer to clean up manually first, cancel the dialog, remove the integration from each agent's Permissions tab, and then return to delete the connection. Either way, the audit trail records the full event: a `integration_deleted` entry for a clean delete, or `integration_deleted_with_permissions` — including the list of affected agents — when permissions were removed as part of the operation.
+
 ## Security
 
 All integration credentials are handled with the same rigor as provider API keys:

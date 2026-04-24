@@ -211,6 +211,13 @@
       "when": 1776278400000,
       "tag": "0028_plugin_config_namespace",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1745406000000,
+      "tag": "0029_restrict_connection_id_fk",
+      "breakpoints": true
     }
   ]
 }
