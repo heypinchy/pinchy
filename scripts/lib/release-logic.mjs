@@ -98,7 +98,7 @@ function escapeRegex(s) {
  * @param {string} prevVersion - previous release, no leading 'v' (e.g. "0.4.4")
  * @param {string} targetVersion - new release, no leading 'v' (e.g. "0.5.0")
  * @throws {Error} if no matching heading is found, or if the section is
- *               missing a '### Breaking changes' or '### Upgrade notes' subsection
+ *   missing a '### Breaking changes' or '### Upgrade notes' subsection
  */
 export function assertUpgradingSectionExists(mdx, prevVersion, targetVersion) {
   const headingPattern = new RegExp(

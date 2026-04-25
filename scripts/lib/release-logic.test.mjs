@@ -178,6 +178,31 @@ None.
   );
 });
 
+test("assertUpgradingSectionExists doesn't satisfy current section with later section's subsections", () => {
+  // The current v0.5.0 section has no subsections; a LATER (older) version
+  // section happens to contain both required subsections. The slice logic
+  // must stop at the next `## ` heading so the older section's subsections
+  // never satisfy the current check.
+  const mdx = `## Upgrading from v0.4.4 to %%PINCHY_VERSION%%
+
+No subsections here.
+
+## Upgrading from v0.4.3 to v0.4.4
+
+### Breaking changes
+
+None.
+
+### Upgrade notes
+
+Older notes.
+`;
+  assert.throws(
+    () => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+    /Missing.*Breaking changes.*subsection/i,
+  );
+});
+
 // extractUpgradeNotes
 
 test("extractUpgradeNotes returns the body under the matching section", () => {
