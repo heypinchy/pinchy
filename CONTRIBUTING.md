@@ -92,6 +92,64 @@ All new features require tests. We practice TDD — write the failing test first
 - Run `pnpm lint` and `pnpm format` before submitting
 - Pre-commit hook runs linting automatically via Husky
 
+## Schema migration policy
+
+Pinchy's schema migrations are **forward-only**. Drizzle has no native rollback support and we don't fake it. Once a migration lands on `main`, the only way to undo it on a deployed instance is `pg_dump` restore + image rollback.
+
+This shapes how we author destructive changes.
+
+### Additive-only by default
+
+In a normal release, schema changes are **additive**:
+
+- New tables ✓
+- New columns (NULL or with DEFAULT) ✓
+- New indexes ✓ (note: Drizzle wraps migrations in transactions; `CREATE INDEX CONCURRENTLY` raises an error inside a transaction block — for large live tables, use a separate migration step outside a transaction block)
+- New constraints `NOT VALID` (validate later) ✓
+
+These don't break running app instances during a rolling deployment, and they don't hold ACCESS EXCLUSIVE locks for noticeable durations.
+
+### Destructive DDL: Expand/Contract over two releases
+
+Removing or transforming columns/tables requires the **Expand/Contract** pattern across **two minor releases**:
+
+**Release N (Expand):**
+
+- Add the new column/table
+- Backfill data
+- Update code to write to BOTH old and new
+- Update code to read from new (with old as fallback)
+
+**Release N+1 (Contract):**
+
+- Remove old code paths
+- Drop the old column/table
+
+This means the app version running on a given DB always works with the schema at that point in time.
+
+Column and table **renames are equally destructive** — any app version reading the old name breaks immediately. They are not currently blocked by Squawk. Treat renames the same way: add the new name, migrate all reads/writes, then drop the old name in a later release.
+
+### CI enforcement
+
+`.github/workflows/ci.yml` runs [Squawk](https://squawkhq.com/) on changed migration files in every PR. The following rules block merge:
+
+- `ban-drop-column`
+- `ban-drop-table`
+- `changing-column-type` (`ALTER COLUMN ... TYPE`)
+
+To override (only in a planned Contract release), add a Squawk-ignore comment directly above the offending statement:
+
+```sql
+-- squawk-ignore ban-drop-column
+ALTER TABLE "agents" DROP COLUMN "old_field";
+```
+
+Adding the `squawk-ignore` comment is a deliberate act — Reviewers are expected to challenge it. Every override **must** be paired with a corresponding entry in `docs/src/content/docs/guides/upgrading.mdx` under `### Breaking changes` for that release. The `pnpm release` script enforces presence of that subsection — the release aborts if it's missing.
+
+### Why no rollback automation?
+
+[Drizzle does not support down-migrations](https://github.com/drizzle-team/drizzle-orm/discussions/1339), and writing reliable down-SQL by hand for every migration costs more than it saves. Our explicit stance: **rollback = restore from `pg_dump` + re-pin previous image tag.** This is also documented in the upgrading guide so admins aren't surprised.
+
 ## UI Conventions
 
 ### Error Messages & Notifications
@@ -99,6 +157,7 @@ All new features require tests. We practice TDD — write the failing test first
 We use two patterns for user feedback — **inline errors** and **toast notifications**. Using the right one matters for consistency.
 
 **Inline errors** (rendered below the input field):
+
 - Form validation failures — wrong password, invalid token, expired code
 - The user needs to correct something and retry
 - The form stays open
@@ -108,10 +167,13 @@ const [error, setError] = useState("");
 // In the handler:
 setError("Invalid or expired pairing code");
 // In JSX:
-{error && <p className="text-sm text-destructive">{error}</p>}
+{
+  error && <p className="text-sm text-destructive">{error}</p>;
+}
 ```
 
 **Toast notifications** (via [sonner](https://sonner.emilkowal.dev/)):
+
 - Success confirmations — "Settings saved", "Bot connected"
 - System errors not tied to a form field
 - Actions where the UI navigates away afterward
@@ -143,11 +205,13 @@ Same for `pinchy-openclaw`.
 **One-time staging setup** on your staging host:
 
 1. Deploy Pinchy normally, but pin `:next` in your `.env`:
+
    ```env
    PINCHY_VERSION=next
    ```
 
 2. Install `/usr/local/bin/update-pinchy`:
+
    ```bash
    #!/usr/bin/env bash
    set -euo pipefail
@@ -167,6 +231,7 @@ Same for `pinchy-openclaw`.
    docker compose ps | tee -a "$LOG"
    exit 1
    ```
+
    Make it executable: `chmod +x /usr/local/bin/update-pinchy`.
 
 3. Schedule nightly updates via cron or systemd timer:
@@ -180,22 +245,26 @@ Same for `pinchy-openclaw`.
 
 ### Pre-release checklist
 
-The release script and CI enforce image builds, GHCR visibility, end-user install, upgrade path, `pnpm audit`, and the presence of an upgrade-notes section. The items below are the remaining human judgment calls.
+The release script and CI enforce image builds, GHCR visibility, end-user install, upgrade path, `pnpm audit`, and the presence of a correctly-structured upgrade-notes section. The items below are the remaining human judgment calls.
 
 **Scope**
+
 - [ ] All feature/fix PRs for this release are merged to `main`
 - [ ] Dependencies reviewed (`pnpm outdated`) — no critical/security updates pending
 - [ ] If upgrading OpenClaw: version bumped in `Dockerfile.openclaw`
 
 **Model resolver** (only if models or templates changed)
+
 - [ ] Spot-check Anthropic/OpenAI/Google changelogs for deprecated model IDs referenced in `src/lib/model-resolver/providers/`
 - [ ] New Ollama family or new LLM provider added → resolver file + tests exist
 
 **Documentation**
-- [ ] `docs/src/content/docs/guides/upgrading.mdx` — new section drafted for this version (heading format: `## Upgrading from v<prev> to %%PINCHY_VERSION%%`). The release workflow extracts this section automatically and prepends it to the GitHub Release body under an "Upgrade notes" heading.
+
+- [ ] `docs/src/content/docs/guides/upgrading.mdx` — new section drafted for this version (heading format: `## Upgrading from v<prev> to %%PINCHY_VERSION%%`) containing `### Breaking changes` (write "None." if there are none) and `### Upgrade notes` subsections. The release script enforces both subsections. The release workflow extracts this section automatically and prepends it to the GitHub Release body.
 - [ ] `packages/web/src/lib/smithers-soul.ts` — updated if user-facing features changed
 
 **Staging**
+
 - [ ] Staging instance on `:next` was clicked through today: Smithers chat, one live integration, one custom agent
 
 ### Release steps
@@ -209,11 +278,13 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 
 **GHCR visibility gate (`end-user-install-published` job)**
 A newly-added `ghcr.io/heypinchy/*` package defaulted to private. Fix:
+
 1. Visit `https://github.com/heypinchy/pinchy/pkgs/container/<image-name>` → **Package settings** → **Change visibility** → **Public**.
 2. Re-run the failed workflow job. Subsequent releases inherit the visibility automatically.
 
 **End-user install published-image fail**
 The published images + `docker-compose.yml` didn't start cleanly. Reproduce locally:
+
 ```bash
 mkdir /tmp/pinchy-verify && cd /tmp/pinchy-verify
 curl -o docker-compose.yml \
@@ -222,6 +293,7 @@ docker logout ghcr.io
 docker compose pull
 docker compose up -d
 ```
+
 Fix the root cause and cut a patch release. Tags are immutable — never force-update.
 
 **End-user upgrade fail (CI, before release)**
