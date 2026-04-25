@@ -102,9 +102,13 @@ If you need to roll back after an upgrade:
 
 ## Upgrading from v0.4.4 to %%PINCHY_VERSION%%
 
-%%PINCHY_VERSION%% moves image version pinning from `docker-compose.yml` into `.env`. This is a one-time migration — after this, upgrading only means editing `PINCHY_VERSION` in `.env` and running `docker compose pull && docker compose up -d`.
+### Breaking changes
 
-### Upgrade steps
+None. This release moves image version pinning into `.env` (a one-time `.env` edit), but no schema, API, or behaviour changes break running deployments.
+
+### Upgrade notes
+
+%%PINCHY_VERSION%% moves image version pinning from `docker-compose.yml` into `.env`. This is a one-time migration — after this, upgrading only means editing `PINCHY_VERSION` in `.env` and running `docker compose pull && docker compose up -d`.
 
 <Steps>
 
@@ -137,7 +141,7 @@ If you need to roll back after an upgrade:
 
 If you skip step 3, `docker compose up` fails loudly with a clear message telling you exactly what to add — this is by design, so a forgotten pin can't silently pull the wrong version.
 
-### Future upgrades
+#### Future upgrades
 
 From %%PINCHY_VERSION%% onwards, upgrading is just:
 

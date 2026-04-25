@@ -76,6 +76,12 @@ test("assertUpgradingSectionExists accepts %%PINCHY_VERSION%% placeholder", () =
   const mdx = [
     "## Upgrading from v0.4.4 to %%PINCHY_VERSION%%",
     "",
+    "### Breaking changes",
+    "",
+    "None.",
+    "",
+    "### Upgrade notes",
+    "",
     "Notes go here.",
   ].join("\n");
   assert.doesNotThrow(() =>
@@ -86,6 +92,12 @@ test("assertUpgradingSectionExists accepts %%PINCHY_VERSION%% placeholder", () =
 test("assertUpgradingSectionExists accepts concrete target version", () => {
   const mdx = [
     "## Upgrading from v0.4.4 to v0.5.0",
+    "",
+    "### Breaking changes",
+    "",
+    "None.",
+    "",
+    "### Upgrade notes",
     "",
     "Notes.",
   ].join("\n");
@@ -111,7 +123,8 @@ test("assertUpgradingSectionExists rejects stale section (wrong 'from' version)"
 });
 
 test("assertUpgradingSectionExists is whitespace-tolerant in the heading", () => {
-  const mdx = "##   Upgrading  from  v0.4.4  to  %%PINCHY_VERSION%%  \n";
+  const mdx =
+    "##   Upgrading  from  v0.4.4  to  %%PINCHY_VERSION%%  \n\n### Breaking changes\n\nNone.\n\n### Upgrade notes\n\nNotes.\n";
   assert.doesNotThrow(() =>
     assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
   );
@@ -122,6 +135,71 @@ test("assertUpgradingSectionExists error message suggests the heading to add", (
   assert.throws(
     () => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
     /## Upgrading from v0\.4\.4 to %%PINCHY_VERSION%%/,
+  );
+});
+
+test("assertUpgradingSectionExists accepts a section with both required subsections", () => {
+  const mdx = `## Upgrading from v0.4.4 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+None.
+
+### Upgrade notes
+
+Standard upgrade.
+`;
+  assert.doesNotThrow(() => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"));
+});
+
+test("assertUpgradingSectionExists rejects a section missing the Breaking changes subsection", () => {
+  const mdx = `## Upgrading from v0.4.4 to %%PINCHY_VERSION%%
+
+### Upgrade notes
+
+Standard upgrade — no required action.
+`;
+  assert.throws(
+    () => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+    /Missing.*Breaking changes.*subsection/i,
+  );
+});
+
+test("assertUpgradingSectionExists rejects a section missing the Upgrade notes subsection", () => {
+  const mdx = `## Upgrading from v0.4.4 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+None.
+`;
+  assert.throws(
+    () => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+    /Missing.*Upgrade notes.*subsection/i,
+  );
+});
+
+test("assertUpgradingSectionExists doesn't satisfy current section with later section's subsections", () => {
+  // The current v0.5.0 section has no subsections; a LATER (older) version
+  // section happens to contain both required subsections. The slice logic
+  // must stop at the next `## ` heading so the older section's subsections
+  // never satisfy the current check.
+  const mdx = `## Upgrading from v0.4.4 to %%PINCHY_VERSION%%
+
+No subsections here.
+
+## Upgrading from v0.4.3 to v0.4.4
+
+### Breaking changes
+
+None.
+
+### Upgrade notes
+
+Older notes.
+`;
+  assert.throws(
+    () => assertUpgradingSectionExists(mdx, "0.4.4", "0.5.0"),
+    /Missing.*Breaking changes.*subsection/i,
   );
 });
 
