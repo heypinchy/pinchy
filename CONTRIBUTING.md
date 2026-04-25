@@ -111,7 +111,7 @@ These don't break running app instances during a rolling deployment, and they do
 
 ### Destructive DDL: Expand/Contract over two releases
 
-Removing or transforming columns/tables requires the **Expand/Contract** pattern across **two minor releases**:
+Removing or transforming columns/tables requires the **Expand/Contract** pattern across **two consecutive releases** (minor or patch):
 
 **Release N (Expand):**
 
