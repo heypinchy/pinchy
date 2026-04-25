@@ -245,6 +245,12 @@ export async function regenerateOpenClawConfig() {
   // Write gateway token to secrets.json so Pinchy can read it at startup from secrets.json
   const gatewaySecret = gatewayTokenValue ? { token: gatewayTokenValue } : undefined;
 
+  // OpenClaw 2026.4.12 does not resolve SecretRef in plugins.entries.*.config —
+  // the validator rejects the config with "gatewayToken: invalid config: must be
+  // string". We therefore inline the plain token in plugin configs. Can move to
+  // SecretRef once we upgrade OpenClaw to a version that resolves them here.
+  const gatewayTokenString = gatewayTokenValue || "";
+
   // pinchy-files needs apiBaseUrl/gatewayToken so it can report vision API
   // token usage (from scanned-PDF processing) back to Pinchy via
   // /api/internal/usage/record. Unlike pinchy-context which only exposes
@@ -255,7 +261,7 @@ export async function regenerateOpenClawConfig() {
       config: {
         apiBaseUrl:
           process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-        gatewayToken: secretRef("/gateway/token"),
+        gatewayToken: gatewayTokenString,
         agents: pluginConfigs["pinchy-files"],
       },
     };
@@ -295,7 +301,7 @@ export async function regenerateOpenClawConfig() {
       config: {
         apiBaseUrl:
           process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-        gatewayToken: secretRef("/gateway/token"),
+        gatewayToken: gatewayTokenString,
         agents: contextPluginAgents,
       },
     };
@@ -307,7 +313,7 @@ export async function regenerateOpenClawConfig() {
     enabled: true,
     config: {
       apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-      gatewayToken: secretRef("/gateway/token"),
+      gatewayToken: gatewayTokenString,
     },
   };
 
@@ -535,7 +541,7 @@ export async function regenerateOpenClawConfig() {
       config: {
         apiBaseUrl:
           process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-        gatewayToken: secretRef("/gateway/token"),
+        gatewayToken: gatewayTokenString,
         agents: emailAgentConfigs,
       },
     };

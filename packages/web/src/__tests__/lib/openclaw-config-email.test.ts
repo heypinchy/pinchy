@@ -251,12 +251,10 @@ describe("pinchy-email config generation", () => {
 
     const emailConfig = config.plugins.entries["pinchy-email"].config;
     expect(emailConfig.apiBaseUrl).toBe("http://pinchy:7777");
-    // gatewayToken is a SecretRef — plaintext never lands in openclaw.json
-    expect(emailConfig.gatewayToken).toMatchObject({
-      source: "file",
-      provider: "pinchy",
-      id: "/gateway/token",
-    });
+    // gatewayToken is a plain string — OpenClaw 2026.4.12 does not resolve
+    // SecretRef in plugins.entries.*.config (the config validator requires
+    // a literal string).
+    expect(typeof emailConfig.gatewayToken).toBe("string");
 
     const agentConfig = emailConfig.agents["email-agent"];
     expect(agentConfig.connectionId).toBe("conn-google-1");

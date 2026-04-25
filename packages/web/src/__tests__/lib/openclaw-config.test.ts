@@ -442,11 +442,8 @@ describe("regenerateOpenClawConfig", () => {
     // apiBaseUrl and gatewayToken live at the plugin-level config (alongside `agents`),
     // matching how pinchy-context and pinchy-audit expose them.
     expect(config.plugins.entries["pinchy-files"].config.apiBaseUrl).toBe("http://pinchy:7777");
-    expect(config.plugins.entries["pinchy-files"].config.gatewayToken).toEqual({
-      source: "file",
-      provider: "pinchy",
-      id: "/gateway/token",
-    });
+    // OpenClaw 2026.4.12 does not resolve SecretRef in plugin configs — use plain string
+    expect(typeof config.plugins.entries["pinchy-files"].config.gatewayToken).toBe("string");
     // Per-agent allowed_paths is still nested under .agents
     expect(config.plugins.entries["pinchy-files"].config.agents["kb-agent-id"]).toEqual({
       allowed_paths: ["/data/hr-docs/"],
@@ -518,11 +515,8 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.entries["pinchy-context"]).toBeDefined();
     expect(config.plugins.entries["pinchy-context"].enabled).toBe(true);
     expect(config.plugins.entries["pinchy-context"].config.apiBaseUrl).toBe("http://pinchy:7777");
-    expect(config.plugins.entries["pinchy-context"].config.gatewayToken).toEqual({
-      source: "file",
-      provider: "pinchy",
-      id: "/gateway/token",
-    });
+    // OpenClaw 2026.4.12 does not resolve SecretRef in plugin configs — use plain string
+    expect(typeof config.plugins.entries["pinchy-context"].config.gatewayToken).toBe("string");
     expect(config.plugins.entries["pinchy-context"].config.agents["smithers-1"]).toEqual({
       tools: ["save_user_context"],
       userId: "user-1",
@@ -542,10 +536,9 @@ describe("regenerateOpenClawConfig", () => {
 
     expect(config.plugins.entries["pinchy-audit"]).toBeDefined();
     expect(config.plugins.entries["pinchy-audit"].enabled).toBe(true);
-    expect(config.plugins.entries["pinchy-audit"].config).toEqual({
-      apiBaseUrl: "http://pinchy:7777",
-      gatewayToken: { source: "file", provider: "pinchy", id: "/gateway/token" },
-    });
+    // OpenClaw 2026.4.12 does not resolve SecretRef in plugin configs — use plain string
+    expect(config.plugins.entries["pinchy-audit"].config.apiBaseUrl).toBe("http://pinchy:7777");
+    expect(typeof config.plugins.entries["pinchy-audit"].config.gatewayToken).toBe("string");
   });
 
   it("should use PORT env var in plugin apiBaseUrl when set", async () => {
@@ -2417,7 +2410,7 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
     expect(secretsArg.gateway?.token).toBe("gw-token-from-secrets");
   });
 
-  it("writes pinchy-files.config.gatewayToken as SecretRef", async () => {
+  it("writes pinchy-files.config.gatewayToken as plain string (OpenClaw 2026.4.12 plugin config)", async () => {
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
     };
@@ -2442,10 +2435,10 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
       (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
     );
     const config = JSON.parse(written![1] as string);
-    expect(config.plugins.entries["pinchy-files"].config.gatewayToken).toEqual(GW_TOKEN_REF);
+    expect(config.plugins.entries["pinchy-files"].config.gatewayToken).toBe("gw-secret-token");
   });
 
-  it("writes pinchy-context.config.gatewayToken as SecretRef", async () => {
+  it("writes pinchy-context.config.gatewayToken as plain string (OpenClaw 2026.4.12 plugin config)", async () => {
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
     };
@@ -2472,10 +2465,10 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
       (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
     );
     const config = JSON.parse(written![1] as string);
-    expect(config.plugins.entries["pinchy-context"].config.gatewayToken).toEqual(GW_TOKEN_REF);
+    expect(config.plugins.entries["pinchy-context"].config.gatewayToken).toBe("gw-secret-token");
   });
 
-  it("writes pinchy-audit.config.gatewayToken as SecretRef", async () => {
+  it("writes pinchy-audit.config.gatewayToken as plain string (OpenClaw 2026.4.12 plugin config)", async () => {
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
     };
@@ -2487,10 +2480,10 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
       (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
     );
     const config = JSON.parse(written![1] as string);
-    expect(config.plugins.entries["pinchy-audit"].config.gatewayToken).toEqual(GW_TOKEN_REF);
+    expect(config.plugins.entries["pinchy-audit"].config.gatewayToken).toBe("gw-secret-token");
   });
 
-  it("writes pinchy-email.config.gatewayToken as SecretRef", async () => {
+  it("writes pinchy-email.config.gatewayToken as plain string (OpenClaw 2026.4.12 plugin config)", async () => {
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
     };
@@ -2544,7 +2537,7 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
       (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
     );
     const config = JSON.parse(written![1] as string);
-    expect(config.plugins.entries["pinchy-email"].config.gatewayToken).toEqual(GW_TOKEN_REF);
+    expect(config.plugins.entries["pinchy-email"].config.gatewayToken).toBe("gw-secret-token");
   });
 
   it("stores gateway token under secrets.gateway.token", async () => {
