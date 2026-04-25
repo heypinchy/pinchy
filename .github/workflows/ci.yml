@@ -35,6 +35,23 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Squawk migration lint (changed files only)
+        if: github.event_name == 'pull_request'
+        run: |
+          # Default checkout is shallow (depth 1); fetch base ref so git diff
+          # has a comparison target. Filtering to changed migration files only
+          # keeps historical destructive DDL (pre-Scope-3) untouched.
+          git fetch --no-tags --depth=50 origin "${{ github.base_ref }}"
+          BASE="origin/${{ github.base_ref }}"
+          CHANGED=$(git diff --name-only "$BASE"...HEAD -- 'packages/web/drizzle/*.sql' | tr '\n' ' ')
+          if [ -z "$CHANGED" ]; then
+            echo "No migration changes — skipping Squawk lint"
+            exit 0
+          fi
+          echo "Linting changed migrations: $CHANGED"
+          # shellcheck disable=SC2086 -- word-split intentional: passes each migration path as a separate squawk arg
+          npx --yes squawk-cli@^2 $CHANGED
+
       - name: Build
         run: pnpm build
 
