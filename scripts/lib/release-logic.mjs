@@ -97,19 +97,39 @@ function escapeRegex(s) {
  * @param {string} mdx - contents of docs/src/content/docs/guides/upgrading.mdx
  * @param {string} prevVersion - previous release, no leading 'v' (e.g. "0.4.4")
  * @param {string} targetVersion - new release, no leading 'v' (e.g. "0.5.0")
- * @throws {Error} if no matching heading is found
+ * @throws {Error} if no matching heading is found, or if the section is
+ *               missing a '### Breaking changes' or '### Upgrade notes' subsection
  */
 export function assertUpgradingSectionExists(mdx, prevVersion, targetVersion) {
-  const pattern = new RegExp(
+  const headingPattern = new RegExp(
     `^##\\s+Upgrading\\s+from\\s+v${escapeRegex(prevVersion)}\\s+to\\s+(v${escapeRegex(targetVersion)}|%%PINCHY_VERSION%%)\\s*$`,
     "m",
   );
-  if (!pattern.test(mdx)) {
+  const headingMatch = headingPattern.exec(mdx);
+  if (!headingMatch) {
     throw new Error(
       `No upgrade-notes section for v${targetVersion} in upgrading.mdx.\n` +
         `Add a heading:\n\n  ## Upgrading from v${prevVersion} to %%PINCHY_VERSION%%\n\n` +
         `then draft the upgrade notes under it before releasing.`,
     );
+  }
+
+  // Slice from the matched heading to the next `## ` heading (or EOF) so
+  // subsection checks scan only THIS version entry, not later ones.
+  const sectionStart = headingMatch.index + headingMatch[0].length;
+  const remainder = mdx.slice(sectionStart);
+  const nextHeading = /^## /m.exec(remainder);
+  const sectionBody = remainder.slice(0, nextHeading ? nextHeading.index : remainder.length);
+
+  for (const required of ["Breaking changes", "Upgrade notes"]) {
+    const subPattern = new RegExp(`^###\\s+${escapeRegex(required)}\\s*$`, "m");
+    if (!subPattern.test(sectionBody)) {
+      throw new Error(
+        `Missing '${required}' subsection in v${targetVersion} entry of upgrading.mdx.\n` +
+          `Each upgrade-notes section must contain '### Breaking changes' and '### Upgrade notes'.\n` +
+          `Content "None." is fine; absent is not.`,
+      );
+    }
   }
 }
 
