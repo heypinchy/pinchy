@@ -122,11 +122,11 @@ describe("ensure-gateway-token", () => {
     expect(mode).toBe("644");
   });
 
-  it("sets world-readable permissions on secrets.json (644)", () => {
+  it("sets owner-only permissions on secrets.json (600)", () => {
     runScript(configPath, secretsPath);
 
     const stats = statSync(secretsPath);
     const mode = (stats.mode & 0o777).toString(8);
-    expect(mode).toBe("644");
+    expect(mode).toBe("600");
   });
 });

@@ -1,3 +1,8 @@
+// Defense-in-depth check. Add a pattern for every new provider whose secret
+// shape can be recognized by prefix — otherwise the scanner can silently miss
+// a leak when a future migration forgets to route through SecretRef. See
+// `packages/web/src/lib/providers.ts` for the canonical provider list; any new
+// entry there with a recognizable key prefix should also land here.
 const PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: "anthropic", regex: /^sk-ant-[a-zA-Z0-9_-]{16,}/ },
   { name: "openai-generic", regex: /^sk-(proj-)?[a-zA-Z0-9]{16,}/ },

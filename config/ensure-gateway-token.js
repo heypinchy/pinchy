@@ -29,7 +29,8 @@ if (!secrets.gateway) secrets.gateway = {};
 if (!secrets.gateway.token) {
   secrets.gateway.token = randomBytes(24).toString("hex");
 }
-writeAtomic(secretsPath, JSON.stringify(secrets, null, 2), 0o644);
+// Mode 0600: only the owner (uid 1000) can read the gateway token.
+writeAtomic(secretsPath, JSON.stringify(secrets, null, 2), 0o600);
 
 const config = readJSON(configPath);
 if (!config.gateway) config.gateway = {};

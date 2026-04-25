@@ -117,6 +117,16 @@ export async function regenerateOpenClawConfig() {
   // Extract gateway token: prefer plain string from existing config, fall back to secrets.json
   const gatewayTokenValue =
     typeof existingAuth.token === "string" ? existingAuth.token : readSecretsFile().gateway?.token;
+  if (!gatewayTokenValue) {
+    // Either ensure-gateway-token.js hasn't run yet (first start), or the
+    // OpenClaw container is broken. Logging instead of throwing so a fresh
+    // setup can recover once the token appears in secrets.json on the next
+    // regenerateOpenClawConfig() pass.
+    console.warn(
+      "[openclaw-config] No gateway token found in existing config or secrets.json. " +
+        "Writing empty token — OpenClaw auth will reject requests until the token is provisioned."
+    );
+  }
 
   const gateway: Record<string, unknown> = {
     ...existingGateway,
@@ -219,6 +229,11 @@ export async function regenerateOpenClawConfig() {
       providers: {
         pinchy: {
           source: "file",
+          // OPENCLAW_SECRETS_PATH_IN_OPENCLAW lets integration tests bind-mount
+          // the secrets file at a different path inside the OpenClaw container
+          // than the one Pinchy writes from the host. In production both
+          // containers share the same tmpfs volume, so OPENCLAW_SECRETS_PATH is
+          // sufficient and OPENCLAW_SECRETS_PATH_IN_OPENCLAW stays unset.
           path:
             process.env.OPENCLAW_SECRETS_PATH_IN_OPENCLAW ||
             process.env.OPENCLAW_SECRETS_PATH ||

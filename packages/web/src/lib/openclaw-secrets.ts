@@ -25,8 +25,11 @@ export function writeSecretsFile(bundle: SecretsBundle): void {
   const dir = dirname(path);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(bundle, null, 2), { mode: 0o644 });
-  chmodSync(tmp, 0o644); // enforce regardless of umask
+  // Mode 0600: owner-only read/write. The tmpfs directory mode (0770) already
+  // restricts access to uid 1000, but file-level 0600 is cheap defense-in-depth
+  // against same-uid local processes (e.g. shells inside docker exec).
+  writeFileSync(tmp, JSON.stringify(bundle, null, 2), { mode: 0o600 });
+  chmodSync(tmp, 0o600); // enforce regardless of umask
   renameSync(tmp, path);
 }
 

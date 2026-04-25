@@ -47,12 +47,15 @@ That path is a Docker `tmpfs` mount. tmpfs is RAM-based storage — it's never w
 
 ```yaml
 # docker-compose.yml (excerpt)
-openclaw:
-  tmpfs:
-    - /openclaw-secrets:mode=0700,uid=1000,gid=1000
+openclaw-secrets:
+  driver: local
+  driver_opts:
+    type: tmpfs
+    device: tmpfs
+    o: "mode=0770,uid=1000,gid=1000"
 ```
 
-The directory is mode `0700` — readable only by the OpenClaw process.
+The directory is mode `0770` and owned by uid/gid 1000 — only the OpenClaw and Pinchy processes (both run as uid 1000) can enter it. Inside, `secrets.json` is written with mode `0600` (owner read/write only) as defense-in-depth: even a same-uid process that obtained directory access cannot read another tenant's file.
 
 ## What this protects against
 

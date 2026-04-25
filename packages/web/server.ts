@@ -13,9 +13,9 @@ import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
 import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
-import { readFileSync } from "fs";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
+import { readSecretsFile } from "./src/lib/openclaw-secrets";
 
 logCapture.install();
 
@@ -31,17 +31,10 @@ const app = next({ dev });
 const handle = app.getRequestHandler();
 
 const OPENCLAW_WS_URL = process.env.OPENCLAW_WS_URL;
-const OPENCLAW_CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
-const GATEWAY_TOKEN_PATH = process.env.GATEWAY_TOKEN_PATH || "/openclaw-config/gateway-token";
 
 function readGatewayToken(): string {
   try {
-    const config = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8"));
-    const token = config.gateway?.auth?.token ?? "";
-    if (token) return token;
-  } catch {}
-  try {
-    return readFileSync(GATEWAY_TOKEN_PATH, "utf-8").trim();
+    return readSecretsFile().gateway?.token ?? "";
   } catch {
     return "";
   }
