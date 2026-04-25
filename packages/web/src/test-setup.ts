@@ -36,6 +36,25 @@ vi.mock("next/server", async () => {
   };
 });
 
+// Radix UI react-focus-scope@1.1.7 schedules a setTimeout(0) on unmount to
+// restore focus. In jsdom 29.x the realm check inside dispatchEvent rejects the
+// CustomEvent with "parameter 1 is not of type 'Event'" because the event was
+// constructed after test cleanup. All real tests still pass — this swallows the
+// stale cleanup noise so the test run exits cleanly.
+if (typeof EventTarget !== "undefined") {
+  const _origDispatchEvent = EventTarget.prototype.dispatchEvent;
+  EventTarget.prototype.dispatchEvent = function (event: Event) {
+    try {
+      return _origDispatchEvent.call(this, event);
+    } catch (e) {
+      if (e instanceof TypeError && String(e).includes("parameter 1 is not of type 'Event'")) {
+        return false;
+      }
+      throw e;
+    }
+  };
+}
+
 // Radix UI Checkbox uses ResizeObserver which is not available in jsdom
 if (typeof window !== "undefined") {
   global.ResizeObserver = class {

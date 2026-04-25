@@ -37,7 +37,7 @@ fi
 node /ensure-gateway-token.js
 
 # Write gateway token to a separate world-readable file for Pinchy (non-root).
-# The main openclaw.json may have restrictive permissions managed by OpenClaw.
+# Pinchy reads this as a fallback when openclaw.json is briefly unavailable.
 node -e "
   const fs = require('fs');
   try {

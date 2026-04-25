@@ -2,7 +2,6 @@ import { createServer } from "http";
 import { parse } from "url";
 import next from "next";
 import { WebSocketServer, type WebSocket } from "ws";
-import { readFileSync } from "fs";
 import { OpenClawClient } from "openclaw-node";
 import { ClientRouter } from "./src/server/client-router";
 import { SessionCache } from "./src/server/session-cache";
@@ -16,6 +15,7 @@ import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
+import { readSecretsFile } from "./src/lib/openclaw-secrets";
 
 logCapture.install();
 
@@ -31,23 +31,10 @@ const app = next({ dev });
 const handle = app.getRequestHandler();
 
 const OPENCLAW_WS_URL = process.env.OPENCLAW_WS_URL;
-const OPENCLAW_CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
-const GATEWAY_TOKEN_PATH = process.env.GATEWAY_TOKEN_PATH || "/openclaw-config/gateway-token";
 
 function readGatewayToken(): string {
-  // Read from the main config first — it is always the authoritative source.
-  // The gateway-token file can become stale if OpenClaw regenerates the token
-  // after a Pinchy-written config (openclaw#drift). We fall back to the token
-  // file only when the config is unreadable (e.g. before first write).
   try {
-    const config = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8"));
-    const token = config.gateway?.auth?.token ?? "";
-    if (token) return token;
-  } catch {
-    // Fall through to token file
-  }
-  try {
-    return readFileSync(GATEWAY_TOKEN_PATH, "utf-8").trim();
+    return readSecretsFile().gateway?.token ?? "";
   } catch {
     return "";
   }
@@ -90,6 +77,19 @@ app.prepare().then(async () => {
   } catch (err) {
     console.error(
       "[pinchy] Failed to load domain cache:",
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  // One-time migration: delete legacy openclaw.json.bak (may contain plaintext secrets).
+  // Runs before any config read/write so the .bak file never gets a chance to be used.
+  try {
+    const { migrateToSecretRef } = await import("./src/lib/openclaw-migration");
+    const configPath = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
+    migrateToSecretRef(configPath);
+  } catch (err) {
+    console.error(
+      "[pinchy] Failed to run secret-ref migration:",
       err instanceof Error ? err.message : err
     );
   }

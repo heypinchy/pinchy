@@ -18,6 +18,7 @@ const ADMIN_DB_URL = "postgresql://pinchy:pinchy_dev@localhost:5435/pinchy";
 const INTEGRATION_DB = "pinchy_integration_test";
 const INTEGRATION_DB_URL = `postgresql://pinchy:pinchy_dev@localhost:5435/${INTEGRATION_DB}`;
 const CONFIG_DIR = "/tmp/pinchy-integration-openclaw";
+const SECRETS_DIR = "/tmp/pinchy-integration-secrets";
 const PROJECT_ROOT = path.resolve(__dirname, "../../../..");
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
 
@@ -52,9 +53,12 @@ export default async function globalSetup() {
   await startFakeOllama();
   console.log(`[integration-setup] fake Ollama started on port ${FAKE_OLLAMA_PORT}`);
 
-  // 2. Ensure config dir exists (OpenClaw will be mounted here)
+  // 2. Ensure bind-mount targets exist BEFORE docker compose runs.
+  //    If Docker creates them, they are owned by root and Pinchy (host, non-root)
+  //    can't write secrets.json there.
   mkdirSync(CONFIG_DIR, { recursive: true });
   mkdirSync(`${CONFIG_DIR}/workspaces`, { recursive: true });
+  mkdirSync(SECRETS_DIR, { recursive: true });
 
   // 3. Start Docker integration stack (skip if already running, e.g. pre-started in CI)
   if (isDockerStackRunning()) {
