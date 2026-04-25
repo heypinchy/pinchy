@@ -28,7 +28,7 @@ async function deleteAllConnections(cookie: string) {
   if (!res.ok) return;
   const connections = await res.json();
   for (const conn of connections) {
-    await pinchyDelete(`/api/integrations/${conn.id}`, cookie);
+    await pinchyDelete(`/api/integrations/${conn.id}/with-permissions`, cookie);
   }
 }
 
@@ -163,11 +163,11 @@ test.describe.serial("Odoo Wizard Flow", () => {
     // Click Delete in the dropdown
     await page.getByRole("menuitem", { name: /delete/i }).click();
 
-    // Confirm in the alert dialog
+    // Confirm in the alert dialog (waits past the loading phase)
     const alertDialog = page.getByRole("alertdialog");
     await expect(alertDialog).toBeVisible();
-    await expect(alertDialog.getByText(/permanently delete/i)).toBeVisible();
-    await alertDialog.getByRole("button", { name: /delete/i }).click();
+    await expect(alertDialog.getByText(/cannot be undone/i)).toBeVisible({ timeout: 10000 });
+    await alertDialog.getByRole("button", { name: /^delete$/i }).click();
 
     // Connection disappears — either the list is empty or the name is gone
     if (connectionName) {

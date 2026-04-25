@@ -158,6 +158,46 @@ describe("SettingsIntegrations — type-aware rendering", () => {
   });
 });
 
+describe("SettingsIntegrations — agent usage count", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("shows 'Used by N agents' for connections with agentUsageCount > 0", async () => {
+    const fetchSpy = mockFetchConnections([
+      { ...odooConnection, id: "c1", name: "Prod", agentUsageCount: 3 },
+      { ...odooConnection, id: "c2", name: "Dev", agentUsageCount: 0 },
+    ]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Prod")).toBeInTheDocument();
+    });
+
+    expect(screen.getByText(/used by 3 agents/i)).toBeInTheDocument();
+
+    fetchSpy.mockRestore();
+  });
+
+  it("does not show 'Used by' for connections with agentUsageCount === 0", async () => {
+    const fetchSpy = mockFetchConnections([
+      { ...odooConnection, id: "c1", name: "Prod", agentUsageCount: 3 },
+      { ...odooConnection, id: "c2", name: "Dev", agentUsageCount: 0 },
+    ]);
+
+    render(<SettingsIntegrations />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Dev")).toBeInTheDocument();
+    });
+
+    expect(screen.getAllByText(/used by/i)).toHaveLength(1);
+
+    fetchSpy.mockRestore();
+  });
+});
+
 describe("SettingsIntegrations — pending Google connection", () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
-import { integrationConnections } from "@/db/schema";
+import { integrationConnections, agentConnectionPermissions } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog } from "@/lib/audit";
 import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrations/odoo-schema";
@@ -36,7 +36,33 @@ export async function GET() {
     return NextResponse.json({ error: "Admin access required" }, { status: 403 });
   }
 
-  const connections = await db.select().from(integrationConnections);
+  const connections = await db
+    .select({
+      id: integrationConnections.id,
+      type: integrationConnections.type,
+      name: integrationConnections.name,
+      description: integrationConnections.description,
+      status: integrationConnections.status,
+      createdAt: integrationConnections.createdAt,
+      updatedAt: integrationConnections.updatedAt,
+      data: integrationConnections.data,
+      credentials: integrationConnections.credentials,
+    })
+    .from(integrationConnections);
+
+  // Count distinct agents per connection using a standard aggregation (avoids
+  // correlated-subquery rendering issues with Drizzle sql`` templates).
+  const usageCounts = await db
+    .select({
+      connectionId: agentConnectionPermissions.connectionId,
+      agentCount: sql<number>`COUNT(DISTINCT ${agentConnectionPermissions.agentId})::int`.as(
+        "agent_count"
+      ),
+    })
+    .from(agentConnectionPermissions)
+    .groupBy(agentConnectionPermissions.connectionId);
+
+  const agentCountMap = new Map(usageCounts.map((u) => [u.connectionId, u.agentCount]));
 
   // Decrypt per row and isolate failures: if ENCRYPTION_KEY changed (e.g. an
   // admin accidentally overrode the persisted key via .env), some rows can no
@@ -44,10 +70,12 @@ export async function GET() {
   // that used to silently hide all integrations, including freshly-added ones
   // that would decrypt fine. Flag unreadable rows so the UI can offer Delete.
   const masked = connections.map((conn) => {
+    const agentUsageCount = agentCountMap.get(conn.id) ?? 0;
     try {
       return {
         ...conn,
         credentials: maskConnectionCredentials(conn.type, conn.credentials, decrypt),
+        agentUsageCount,
         cannotDecrypt: false,
       };
     } catch (err) {
@@ -65,6 +93,7 @@ export async function GET() {
         createdAt: conn.createdAt,
         updatedAt: conn.updatedAt,
         credentials: null,
+        agentUsageCount,
         cannotDecrypt: true,
       };
     }

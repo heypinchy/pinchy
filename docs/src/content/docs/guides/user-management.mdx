@@ -3,7 +3,7 @@ title: User Management
 description: How to invite users, manage roles, reset passwords, and configure profile settings in Pinchy.
 ---
 
-import { Aside } from "@astrojs/starlight/components";
+import { Aside, Badge } from "@astrojs/starlight/components";
 
 Pinchy uses an invite-only system for user onboarding. Admins create invite links, new users claim them by setting up their account, and then they are guided through an onboarding conversation with Smithers. This guide covers the full lifecycle: inviting, onboarding, managing, and deactivating users.
 
@@ -23,7 +23,7 @@ Only admins can invite new users. Here is how:
 3. Fill out the invite form:
    - **Email** (optional) — Pre-fills the email for the new user's account. If left empty, the invite link can be used by anyone.
    - **Role** — Choose **Member** or **Admin**.
-   - **Groups** (enterprise only) — If you have an active enterprise license and have created groups, you can assign the new user to one or more groups during invitation. See [Groups](/concepts/groups/) for details.
+   - **Groups** <Badge text="Enterprise" variant="note" /> — If you have an active enterprise license and have created groups, you can assign the new user to one or more groups during invitation. See [Groups](/concepts/groups/) for details.
 4. Click **Create Invite**.
 5. Copy the generated invite link and share it with the user.
 
@@ -65,7 +65,7 @@ The **Settings → Users** page shows all users and pending invites in a single 
 - **Name** — The user's display name (or a dash for pending invites).
 - **Email** — The user's email address.
 - **Role** — Admin or Member.
-- **Groups** — Group memberships (visible only with an active enterprise license).
+- **Groups** <Badge text="Enterprise" variant="note" /> — Group memberships. Only visible with an active enterprise license.
 - **Status** — Active, Pending (invite not yet claimed), Expired (invite token expired), or Deactivated.
 
 ### Viewing user details
@@ -73,11 +73,17 @@ The **Settings → Users** page shows all users and pending invites in a single 
 Click on any active user row to open the user detail panel. From here you can:
 
 - **Change their role** — Switch between Admin and Member using the Role dropdown. You cannot change your own role, and you cannot demote the last remaining admin.
-- **Manage group memberships** (enterprise only) — Check or uncheck groups to add or remove the user from groups.
+- **Manage group memberships** <Badge text="Enterprise" variant="note" /> — Check or uncheck groups to add or remove the user from groups.
 - **Reset their password** — Generate a password reset link (see below).
 - **Deactivate the user** — Prevent the user from logging in (see below).
 
 Click **Save** to apply any role or group changes.
+
+### How groups affect agent access
+
+Group membership determines which restricted agents a user can see. Agents configured with **Restricted** visibility in **Agent Settings → Access** list one or more groups; only members of those groups (and admins) can see the agent in the sidebar or message it via Telegram. Agents set to **All users** ignore group membership entirely.
+
+Changes propagate immediately: removing a user from a group revokes their access to restricted agents on the next sidebar refresh, and adding them grants access without a restart. For the full group model, see [Groups](/concepts/groups/).
 
 ### Changing a user's role
 
@@ -191,12 +197,14 @@ docker compose exec pinchy pnpm reset-admin --email admin@example.com
 
 ## Audit trail
 
-All user management actions performed by admins are logged in the audit trail, including:
+All user management actions performed by admins are logged in the audit trail:
 
-- User invited
-- Role changed
-- User deactivated
-- User reactivated
-- Password reset initiated
+| Action                    | Audit event           |
+| ------------------------- | --------------------- |
+| User invited              | `user.invited`        |
+| Role changed              | `user.role_updated`   |
+| Group memberships changed | `user.groups_updated` |
+| User reactivated          | `user.updated`        |
+| User deactivated          | `user.deleted`        |
 
-See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.
+Each entry records which admin took the action, the affected user's name and email, and before/after values for role or group changes. See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.

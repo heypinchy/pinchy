@@ -3,13 +3,13 @@ import { headers } from "next/headers";
 import { eq } from "drizzle-orm";
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
-import { integrationConnections } from "@/db/schema";
+import { integrationConnections, agents, agentConnectionPermissions } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog } from "@/lib/audit";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
-import { deleteOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { finalizeIntegrationDeletion } from "@/lib/integrations/finalize-deletion";
 import { z } from "zod";
 
 const baseUpdateSchema = z.object({
@@ -151,6 +151,7 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
   });
 }
 
+// audit-exempt: audit log is written by finalizeIntegrationDeletion after successful deletion
 export async function DELETE(request: NextRequest, { params }: RouteContext) {
   const session = await getSession({ headers: await headers() });
   if (!session?.user) {
@@ -172,27 +173,45 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
     return NextResponse.json({ error: "Connection not found" }, { status: 404 });
   }
 
-  await db.delete(integrationConnections).where(eq(integrationConnections.id, connectionId));
+  // Preflight: refuse if any agent permission still references this connection
+  const affectedAgents = await db
+    .selectDistinct({ id: agents.id, name: agents.name })
+    .from(agentConnectionPermissions)
+    .innerJoin(agents, eq(agentConnectionPermissions.agentId, agents.id))
+    .where(eq(agentConnectionPermissions.connectionId, connectionId));
 
-  // Clear OAuth settings when the last Google connection is removed
-  if (existing.type === "google") {
-    const remainingGoogle = await db
-      .select()
-      .from(integrationConnections)
-      .where(eq(integrationConnections.type, "google"));
-    if (remainingGoogle.length === 0) {
-      await deleteOAuthSettings("google");
-    }
+  if (affectedAgents.length > 0) {
+    return NextResponse.json(
+      { error: "Integration has active permissions", agents: affectedAgents },
+      { status: 409 }
+    );
   }
 
-  appendAuditLog({
-    actorType: "user",
+  try {
+    await db.delete(integrationConnections).where(eq(integrationConnections.id, connectionId));
+  } catch (err: unknown) {
+    const pgErr = err as { code?: string };
+    if (pgErr?.code === "23503") {
+      // TOCTOU: a permission was inserted between the preflight check and the delete.
+      // Re-fetch to return a meaningful 409 instead of a 500.
+      const agentsNow = await db
+        .selectDistinct({ id: agents.id, name: agents.name })
+        .from(agentConnectionPermissions)
+        .innerJoin(agents, eq(agentConnectionPermissions.agentId, agents.id))
+        .where(eq(agentConnectionPermissions.connectionId, connectionId));
+      return NextResponse.json(
+        { error: "Integration has active permissions", agents: agentsNow },
+        { status: 409 }
+      );
+    }
+    throw err;
+  }
+
+  await finalizeIntegrationDeletion({
     actorId: session.user.id!,
-    eventType: "config.changed",
-    resource: `integration:${connectionId}`,
-    detail: { action: "integration_deleted", type: existing.type, name: existing.name },
-    outcome: "success",
-  }).catch(console.error);
+    connection: existing,
+    detachedAgents: [],
+  });
 
   return NextResponse.json({ success: true });
 }

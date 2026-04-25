@@ -1,0 +1,89 @@
+---
+title: Customizing Your Deployment
+description: Add env vars, expose ports, or mount extra volumes — without touching docker-compose.yml.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Pinchy's `docker-compose.yml` is owned by the Pinchy project and gets replaced whenever you upgrade. If you customize it directly, your changes disappear on the next `curl -o docker-compose.yml ...`.
+
+The supported customization surface is `docker-compose.override.yml` — a file you create in the same directory as `docker-compose.yml`. Docker Compose automatically merges it on top of the base file, every time you run `docker compose up`. Upgrades never touch it.
+
+<Aside type="note">
+  If you edit `docker-compose.yml` directly, your changes will be lost on the
+  next upgrade. Always customize via `docker-compose.override.yml` instead.
+</Aside>
+
+## Recipe 1: Extra environment variables
+
+Add debug flags or optional Pinchy variables that aren't in `.env.example`:
+
+```yaml
+# docker-compose.override.yml
+services:
+  pinchy:
+    environment:
+      - DEBUG=pinchy:*
+      - SOME_OPTIONAL_FLAG=true
+```
+
+Compose merges this with the base `environment:` block — existing variables are kept, new ones are added. For duplicate keys, the override wins. See the [Docker Compose merge docs](https://docs.docker.com/compose/multiple-compose-files/merge/) for edge cases.
+
+## Recipe 2: Expose the database for an external tool
+
+If you want to connect `psql` or DBeaver from the same host for debugging:
+
+```yaml
+# docker-compose.override.yml
+services:
+  db:
+    ports:
+      - "127.0.0.1:5432:5432"
+```
+
+<Aside type="caution">
+  Bind to `127.0.0.1:5432`, **not** `0.0.0.0:5432` or just `5432`. Docker
+  bypasses host firewalls (UFW), so binding to all interfaces exposes Postgres
+  to the internet regardless of your firewall rules.
+</Aside>
+
+Remove the override when you're done debugging.
+
+## Recipe 3: Mount additional OpenClaw extensions
+
+If you've written a custom OpenClaw plugin and want it loaded alongside the bundled Pinchy plugins:
+
+```yaml
+# docker-compose.override.yml
+services:
+  openclaw:
+    volumes:
+      - /opt/my-extensions:/root/.openclaw/extensions/custom:ro
+```
+
+Mount read-only (`:ro`) when possible — OpenClaw reads extensions at startup; it doesn't need write access.
+
+## What's not supported
+
+The override file is for _additions_, not _replacements_. The following are outside the supported surface and may break on any release:
+
+- Replacing the `image:` on either `pinchy` or `pinchy-openclaw` with a different image
+- Renaming volumes, services, or networks
+- Rewiring inter-service dependencies or health checks
+- Changing the Postgres image to a non-17 version
+
+If you find yourself needing any of these, [open an issue](https://github.com/heypinchy/pinchy/issues/new) — your use case might belong in core Pinchy rather than in an override.
+
+## Testing overrides
+
+Before running `docker compose up -d`, check the merged config:
+
+```bash
+docker compose config
+```
+
+This prints the effective configuration (base + override merged) without starting anything. Use it to verify your override does what you expect.
+
+## Overrides and upgrades
+
+Your `docker-compose.override.yml` survives upgrades unchanged. However, if a new Pinchy release changes a base-file field you're overriding (for example, renames a volume), the merge may produce an unexpected result. Re-check `docker compose config` after every major release.

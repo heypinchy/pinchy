@@ -175,35 +175,6 @@ export class ClientRouter {
       let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
 
       try {
-        // Debug shortcut: "__debug_error:<type>" messages bypass OpenClaw and
-        // inject a fake error chunk directly. Remove before going to production.
-        const DEBUG_ERRORS: Record<string, string> = {
-          billing:
-            "Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.",
-          invalid_key: "Invalid API key provided. You must provide a valid API key.",
-          unauthorized: "Unauthorized: invalid x-api-key",
-          quota: "You exceeded your current quota, please check your plan and billing details.",
-          rate_limit: "Rate limit exceeded: Too many requests. Please retry after 60 seconds.",
-          timeout: "Request timeout: The server did not respond in time.",
-          overloaded: "The server is overloaded. Please try again later. (529)",
-          unknown: "Unexpected internal error: SIGPIPE broken pipe during inference.",
-        };
-        if (text.startsWith("__debug_error:")) {
-          const key = text.replace("__debug_error:", "").trim();
-          const fakeError =
-            DEBUG_ERRORS[key] ??
-            `Unknown debug error type: "${key}". Available: ${Object.keys(DEBUG_ERRORS).join(", ")}`;
-          await new Promise((r) => setTimeout(r, 600)); // brief fake thinking delay
-          this.sendToClient(clientWs, {
-            type: "error",
-            agentName: agent.name,
-            providerError: fakeError,
-            hint: getErrorHint(fakeError, this.userRole),
-            messageId,
-          });
-          return;
-        }
-
         for await (const chunk of stream) {
           // Stop consuming the stream if the browser disconnected — frees
           // server resources while letting OpenClaw finish on its side.

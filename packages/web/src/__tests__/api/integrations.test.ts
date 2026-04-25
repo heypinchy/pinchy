@@ -54,12 +54,19 @@ vi.mock("odoo-node", () => {
   return { OdooClient };
 });
 
-const { mockInsertValues, mockSelectFrom, mockUpdateSet, mockDeleteWhere } = vi.hoisted(() => ({
-  mockInsertValues: vi.fn(),
-  mockSelectFrom: vi.fn(),
-  mockUpdateSet: vi.fn(),
-  mockDeleteWhere: vi.fn(),
+const mockFinalize = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/integrations/finalize-deletion", () => ({
+  finalizeIntegrationDeletion: (...a: unknown[]) => mockFinalize(...a),
 }));
+
+const { mockInsertValues, mockSelectFrom, mockSelectDistinctFrom, mockUpdateSet, mockDeleteWhere } =
+  vi.hoisted(() => ({
+    mockInsertValues: vi.fn(),
+    mockSelectFrom: vi.fn(),
+    mockSelectDistinctFrom: vi.fn(),
+    mockUpdateSet: vi.fn(),
+    mockDeleteWhere: vi.fn(),
+  }));
 
 const mockConnection = {
   id: "conn-1",
@@ -82,12 +89,26 @@ vi.mock("@/db", () => ({
     }),
     select: vi.fn().mockReturnValue({
       from: mockSelectFrom.mockImplementation(() => {
-        // Return a thenable with .where() — handles both list (await directly) and single-item (await .where()) cases
+        // Return a thenable with .where() and .groupBy() — handles direct await,
+        // .where() single-item lookup, and .groupBy() aggregation (counts query).
         const result = Promise.resolve([mockConnection]) as Promise<(typeof mockConnection)[]> & {
           where: ReturnType<typeof vi.fn>;
+          groupBy: ReturnType<typeof vi.fn>;
         };
         result.where = vi.fn().mockResolvedValue([mockConnection]);
+        result.groupBy = vi.fn().mockResolvedValue([]); // default: empty counts
         return result;
+      }),
+    }),
+    selectDistinct: vi.fn().mockReturnValue({
+      from: mockSelectDistinctFrom.mockImplementation(() => {
+        // Default: no agents reference this connection (0-permissions happy path)
+        const withJoin = {
+          innerJoin: vi.fn().mockReturnValue({
+            where: vi.fn().mockResolvedValue([]),
+          }),
+        };
+        return withJoin;
       }),
     }),
     update: vi.fn().mockReturnValue({
@@ -104,12 +125,15 @@ vi.mock("@/db", () => ({
 }));
 
 vi.mock("@/db/schema", () => ({
-  integrationConnections: { id: "id" },
+  integrationConnections: { id: "id", type: "type" },
+  agentConnectionPermissions: { connectionId: "connectionId", agentId: "agentId" },
+  agents: { id: "agentId", name: "agentName" },
 }));
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col: unknown, val: unknown) => ({ col, val })),
   and: vi.fn((...args: unknown[]) => ({ and: args })),
+  sql: vi.fn().mockReturnValue({ as: vi.fn().mockReturnValue({ sql: "mocked-sql" }) }),
 }));
 
 const mockDeleteOAuthSettings = vi.fn().mockResolvedValue(undefined);
@@ -246,6 +270,37 @@ describe("GET /api/integrations", () => {
       cannotDecrypt: false,
       credentials: { url: "https://odoo.example.com", db: "prod", login: "admin" },
     });
+  });
+
+  it("listing includes agentUsageCount per row", async () => {
+    // Route uses two queries: one for connections, one for per-connection agent
+    // counts via GROUP BY. Both calls go through mockSelectFrom.
+    // First call: connections list
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Object.assign(Promise.resolve([mockConnection]), {
+        where: vi.fn().mockResolvedValue([mockConnection]),
+        groupBy: vi.fn().mockResolvedValue([]),
+      });
+      return result;
+    });
+    // Second call: counts — connection "conn-1" has 3 distinct agents
+    const counts = [{ connectionId: "conn-1", agentCount: 3 }];
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Object.assign(Promise.resolve(counts), {
+        where: vi.fn().mockResolvedValue(counts),
+        groupBy: vi.fn().mockResolvedValue(counts),
+      });
+      return result;
+    });
+
+    const { GET } = await import("@/app/api/integrations/route");
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body[0]).toHaveProperty("agentUsageCount");
+    expect(typeof body[0].agentUsageCount).toBe("number");
+    expect(body[0].agentUsageCount).toBe(3);
   });
 
   it("never exposes credentials for an unreadable row", async () => {
@@ -705,7 +760,7 @@ describe("DELETE /api/integrations/[connectionId]", () => {
     expect(response.status).toBe(404);
   });
 
-  it("should delete connection and audit log", async () => {
+  it("should delete connection and call finalize helper", async () => {
     const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
 
     const response = await DELETE(makeRequest("/api/integrations/conn-1", { method: "DELETE" }), {
@@ -716,37 +771,24 @@ describe("DELETE /api/integrations/[connectionId]", () => {
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
     expect(mockDeleteWhere).toHaveBeenCalled();
-    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+    expect(mockFinalize).toHaveBeenCalledWith(
       expect.objectContaining({
-        eventType: "config.changed",
-        detail: expect.objectContaining({
-          action: "integration_deleted",
-          type: "odoo",
-          name: "Test Odoo",
-        }),
+        actorId: "user-1",
+        connection: expect.objectContaining({ id: "conn-1", type: "odoo", name: "Test Odoo" }),
+        detachedAgents: [],
       })
     );
   });
 
-  it("should clear OAuth settings when last Google connection is deleted", async () => {
+  it("should pass connection to finalize helper when deleting a Google connection", async () => {
     const googleConnection = { ...mockConnection, id: "conn-google-1", type: "google" };
-    mockSelectFrom
-      .mockImplementationOnce(() => {
-        // First select: load connection by ID
-        const r = Promise.resolve([googleConnection]) as Promise<unknown[]> & {
-          where: ReturnType<typeof vi.fn>;
-        };
-        r.where = vi.fn().mockResolvedValue([googleConnection]);
-        return r;
-      })
-      .mockImplementationOnce(() => {
-        // Second select: count remaining Google connections → none left
-        const r = Promise.resolve([]) as Promise<unknown[]> & {
-          where: ReturnType<typeof vi.fn>;
-        };
-        r.where = vi.fn().mockResolvedValue([]);
-        return r;
-      });
+    mockSelectFrom.mockImplementationOnce(() => {
+      const r = Promise.resolve([googleConnection]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      r.where = vi.fn().mockResolvedValue([googleConnection]);
+      return r;
+    });
 
     const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
     const response = await DELETE(
@@ -755,44 +797,108 @@ describe("DELETE /api/integrations/[connectionId]", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(mockDeleteOAuthSettings).toHaveBeenCalledWith("google");
-  });
-
-  it("should NOT clear OAuth settings when other Google connections still exist", async () => {
-    const googleConnection = { ...mockConnection, id: "conn-google-1", type: "google" };
-    const remainingGoogle = { ...mockConnection, id: "conn-google-2", type: "google" };
-    mockSelectFrom
-      .mockImplementationOnce(() => {
-        const r = Promise.resolve([googleConnection]) as Promise<unknown[]> & {
-          where: ReturnType<typeof vi.fn>;
-        };
-        r.where = vi.fn().mockResolvedValue([googleConnection]);
-        return r;
+    expect(mockFinalize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connection: expect.objectContaining({ id: "conn-google-1", type: "google" }),
       })
-      .mockImplementationOnce(() => {
-        // Still one Google connection remaining
-        const r = Promise.resolve([remainingGoogle]) as Promise<unknown[]> & {
-          where: ReturnType<typeof vi.fn>;
-        };
-        r.where = vi.fn().mockResolvedValue([remainingGoogle]);
-        return r;
-      });
+    );
+  });
+});
 
-    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
-    await DELETE(makeRequest("/api/integrations/conn-google-1", { method: "DELETE" }), {
-      params: Promise.resolve({ connectionId: "conn-google-1" }),
+describe("DELETE /api/integrations/:id — strict permission check", () => {
+  const deleteReq = makeRequest("/api/integrations/conn-1", { method: "DELETE" });
+  const deleteCtx = { params: Promise.resolve({ connectionId: "conn-1" }) };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue({
+      user: { id: "u1", email: "admin@test.com", role: "admin" },
     });
-
-    expect(mockDeleteOAuthSettings).not.toHaveBeenCalled();
+    mockFinalize.mockClear();
+    // Default: select finds the connection
+    mockSelectFrom.mockImplementation(() => {
+      const r = Promise.resolve([mockConnection]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      r.where = vi.fn().mockResolvedValue([mockConnection]);
+      return r;
+    });
+    // Default: selectDistinct returns [] (no permissions — happy path)
+    mockSelectDistinctFrom.mockImplementation(() => ({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    }));
+    // Default: delete succeeds
+    mockDeleteWhere.mockResolvedValue(undefined);
   });
 
-  it("should NOT clear OAuth settings when deleting a non-Google connection", async () => {
+  // Task 3: 0-permissions happy path uses finalize helper
+  it("deletes integration and calls finalize helper when no permissions exist", async () => {
     const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
-    await DELETE(makeRequest("/api/integrations/conn-1", { method: "DELETE" }), {
-      params: Promise.resolve({ connectionId: "conn-1" }),
-    });
+    const res = await DELETE(deleteReq, deleteCtx);
 
-    expect(mockDeleteOAuthSettings).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.success).toBe(true);
+    expect(mockFinalize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        actorId: "u1",
+        connection: expect.objectContaining({ id: "conn-1" }),
+        detachedAgents: [],
+      })
+    );
+  });
+
+  // Task 4: 409 with agent list when permissions reference the integration
+  it("returns 409 with agents list when permissions reference the integration", async () => {
+    // selectDistinct returns one agent referencing this connection
+    mockSelectDistinctFrom.mockImplementationOnce(() => ({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([{ id: "a1", name: "Bot" }]),
+      }),
+    }));
+
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+    const res = await DELETE(deleteReq, deleteCtx);
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body).toEqual({
+      error: "Integration has active permissions",
+      agents: [{ id: "a1", name: "Bot" }],
+    });
+    expect(mockFinalize).not.toHaveBeenCalled();
+  });
+
+  // Task 5: TOCTOU — FK violation during delete falls back to 409
+  it("returns 409 (not 500) when FK violation occurs during delete (TOCTOU)", async () => {
+    // Preflight selectDistinct returns [] — looks safe
+    // But db.delete throws a FK violation (TOCTOU: permission inserted between check and delete)
+    const fkError = Object.assign(new Error("FK violation"), { code: "23503" });
+    mockDeleteWhere.mockRejectedValueOnce(fkError);
+
+    // Second selectDistinct call (re-fetch after FK error) returns an agent
+    mockSelectDistinctFrom
+      .mockImplementationOnce(() => ({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([]), // preflight — no permissions yet
+        }),
+      }))
+      .mockImplementationOnce(() => ({
+        innerJoin: vi.fn().mockReturnValue({
+          where: vi.fn().mockResolvedValue([{ id: "a2", name: "B" }]), // re-fetch after FK error
+        }),
+      }));
+
+    const { DELETE } = await import("@/app/api/integrations/[connectionId]/route");
+    const res = await DELETE(deleteReq, deleteCtx);
+
+    expect(res.status).toBe(409);
+    const body = await res.json();
+    expect(body.error).toBe("Integration has active permissions");
+    expect(body.agents).toEqual([{ id: "a2", name: "B" }]);
+    expect(mockFinalize).not.toHaveBeenCalled();
   });
 });
 
@@ -1330,9 +1436,20 @@ describe("GET /api/integrations (web-search masking)", () => {
       type: "web-search",
       name: "Brave Search",
     };
-    mockSelectFrom.mockImplementationOnce(() => Promise.resolve([webSearchConnection]));
-    // No mockDecrypt override needed — maskConnectionCredentials for web-search
-    // returns { configured: true } without calling decrypt
+    // First call: connections list
+    mockSelectFrom.mockImplementationOnce(() =>
+      Object.assign(Promise.resolve([webSearchConnection]), {
+        where: vi.fn().mockResolvedValue([webSearchConnection]),
+        groupBy: vi.fn().mockResolvedValue([]),
+      })
+    );
+    // Second call: counts — no permissions for this connection
+    mockSelectFrom.mockImplementationOnce(() =>
+      Object.assign(Promise.resolve([]), {
+        where: vi.fn().mockResolvedValue([]),
+        groupBy: vi.fn().mockResolvedValue([]),
+      })
+    );
 
     const { GET } = await import("@/app/api/integrations/route");
 
