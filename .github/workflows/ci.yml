@@ -855,7 +855,11 @@ jobs:
       # to the DB before it exists unless we pre-provision it here.
       - name: Pre-start integration Docker stack
         run: |
+          # Pre-create bind-mount targets so Docker doesn't create them as root,
+          # which would prevent Pinchy (running on the host as the CI user) from
+          # writing secrets.json — see openclaw-tmpfs branch.
           mkdir -p /tmp/pinchy-integration-openclaw/workspaces
+          mkdir -p /tmp/pinchy-integration-secrets
           docker compose -f docker-compose.integration.yml up -d --wait
 
       - name: Create and migrate integration DB
