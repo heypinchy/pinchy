@@ -7,7 +7,7 @@ export function makeLicense(overrides: Partial<LicenseStatus> = {}): LicenseStat
     type: "paid",
     org: "Test Org",
     features: ["enterprise"],
-    expiresAt: new Date(Date.now() + 365 * 86400000),
+    expiresAt: new Date("2027-04-27T00:00:00.000Z"),
     daysRemaining: 365,
     ver: 1,
     maxUsers: 0,
