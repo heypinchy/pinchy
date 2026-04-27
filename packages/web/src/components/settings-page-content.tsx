@@ -37,6 +37,8 @@ interface LicenseInfo {
   expiresAt: string | null;
   daysRemaining: number | null;
   managedByEnv: boolean;
+  maxUsers: number;
+  seatsUsed: number;
 }
 
 export function SettingsPageContent({
