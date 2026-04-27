@@ -34,6 +34,7 @@ export type AuditEventType =
   | "agent.updated"
   | "agent.deleted"
   | "user.invited"
+  | "user.invite_blocked"
   | "user.updated"
   | "user.deleted"
   | "config.changed"
