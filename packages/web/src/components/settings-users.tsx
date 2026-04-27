@@ -79,6 +79,10 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const [selectedUser, setSelectedUser] = useState<(UserListItem & { kind: "user" }) | null>(null);
   const [allGroups, setAllGroups] = useState<{ id: string; name: string }[]>([]);
   const [isEnterprise, setIsEnterprise] = useState(false);
+  const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
+
+  const atCap = seatInfo !== null && seatInfo.maxUsers > 0 && seatInfo.seatsUsed >= seatInfo.maxUsers;
+  const showBanner = seatInfo !== null && seatInfo.maxUsers > 0;
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -99,6 +103,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
       }
       setAllGroups(Array.isArray(groupsData) ? groupsData : []);
       setIsEnterprise(enterpriseData?.enterprise ?? false);
+      if (
+        typeof enterpriseData?.maxUsers === "number" &&
+        typeof enterpriseData?.seatsUsed === "number"
+      ) {
+        setSeatInfo({ maxUsers: enterpriseData.maxUsers, seatsUsed: enterpriseData.seatsUsed });
+      }
     } finally {
       setLoading(false);
     }
@@ -151,7 +161,17 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Users</CardTitle>
-          <Button onClick={() => setInviteOpen(true)}>Invite User</Button>
+          <Button
+            onClick={() => setInviteOpen(true)}
+            disabled={atCap}
+            title={
+              atCap
+                ? "Seat limit reached — remove an existing user or pending invitation first."
+                : undefined
+            }
+          >
+            Invite User
+          </Button>
         </CardHeader>
         <CardContent>
           {resetLink && (
@@ -166,6 +186,20 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
               >
                 {isResetLinkCopied ? "Copied!" : "Copy"}
               </Button>
+            </div>
+          )}
+
+          {showBanner && (
+            <div
+              className={`mb-4 rounded-md border p-3 text-sm ${
+                atCap
+                  ? "border-destructive/50 bg-destructive/5 text-destructive-foreground"
+                  : "bg-muted text-muted-foreground"
+              }`}
+            >
+              {atCap
+                ? `${seatInfo!.seatsUsed} of ${seatInfo!.maxUsers} seats used. Remove a user or pending invitation to invite someone new, or upgrade your subscription.`
+                : `${seatInfo!.seatsUsed} of ${seatInfo!.maxUsers} seats used.`}
             </div>
           )}
 
