@@ -36,4 +36,3 @@ export async function getSeatUsage(license: LicenseStatus): Promise<SeatUsage> {
     pendingInvites,
   };
 }
-

@@ -130,4 +130,3 @@ describeIf("getSeatUsage", () => {
     expect(usage.available).toBe(0);
   });
 });
-
