@@ -59,7 +59,7 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
       });
       if (res.ok) {
         const data = await res.json();
-        setLicense(data);
+        await fetchStatus();
         setKeyInput("");
         setShowInput(false);
         if (data.enterprise) {
