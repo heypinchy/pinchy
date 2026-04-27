@@ -4,6 +4,9 @@ import { db } from "@/db";
 import { users, invites } from "@/db/schema";
 import { makeLicense } from "../helpers/license-fixtures";
 
+const url = process.env.DATABASE_URL;
+const describeIf = url ? describe : describe.skip;
+
 async function clearTables() {
   await db.delete(invites);
   await db.delete(users);
@@ -39,7 +42,7 @@ async function seedInvite(opts: {
   });
 }
 
-describe("getSeatUsage", () => {
+describeIf("getSeatUsage", () => {
   beforeEach(clearTables);
 
   it("returns unlimited when license has maxUsers=0", async () => {
@@ -128,7 +131,7 @@ describe("getSeatUsage", () => {
   });
 });
 
-describe("isSeatAvailable", () => {
+describeIf("isSeatAvailable", () => {
   beforeEach(clearTables);
 
   it("is always true when license is unlimited", async () => {
