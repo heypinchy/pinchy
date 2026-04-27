@@ -37,8 +37,3 @@ export async function getSeatUsage(license: LicenseStatus): Promise<SeatUsage> {
   };
 }
 
-export async function isSeatAvailable(license: LicenseStatus): Promise<boolean> {
-  if (license.maxUsers === 0) return true;
-  const usage = await getSeatUsage(license);
-  return usage.used < license.maxUsers;
-}
