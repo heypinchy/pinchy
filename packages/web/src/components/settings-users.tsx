@@ -19,6 +19,7 @@ import { StatusBadge } from "@/components/status-badge";
 import { toast } from "sonner";
 import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { cn } from "@/lib/utils";
 
 interface SettingsUsersProps {
   currentUserId: string;
@@ -192,11 +193,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
 
           {showBanner && (
             <div
-              className={`mb-4 rounded-md border p-3 text-sm ${
+              className={cn(
+                "mb-4 rounded-md border p-3 text-sm",
                 atCap
                   ? "border-destructive/50 bg-destructive/5 text-destructive-foreground"
                   : "bg-muted text-muted-foreground"
-              }`}
+              )}
             >
               {atCap
                 ? `${seatInfo!.seatsUsed} of ${seatInfo!.maxUsers} seats used. Remove a user or pending invitation to invite someone new, or upgrade your subscription.`

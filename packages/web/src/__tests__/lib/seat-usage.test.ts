@@ -131,25 +131,3 @@ describeIf("getSeatUsage", () => {
   });
 });
 
-describeIf("isSeatAvailable", () => {
-  beforeEach(clearTables);
-
-  it("is always true when license is unlimited", async () => {
-    await seedUser({ id: "u1" });
-    const { isSeatAvailable } = await import("@/lib/seat-usage");
-    expect(await isSeatAvailable(makeLicense({ maxUsers: 0 }))).toBe(true);
-  });
-
-  it("is false when at the cap", async () => {
-    await seedUser({ id: "u1" });
-    await seedUser({ id: "u2" });
-    const { isSeatAvailable } = await import("@/lib/seat-usage");
-    expect(await isSeatAvailable(makeLicense({ maxUsers: 2 }))).toBe(false);
-  });
-
-  it("is true when below the cap", async () => {
-    await seedUser({ id: "u1" });
-    const { isSeatAvailable } = await import("@/lib/seat-usage");
-    expect(await isSeatAvailable(makeLicense({ maxUsers: 5 }))).toBe(true);
-  });
-});

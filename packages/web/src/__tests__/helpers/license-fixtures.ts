@@ -1,4 +1,3 @@
-// packages/web/src/__tests__/helpers/license-fixtures.ts
 import type { LicenseStatus } from "@/lib/license";
 
 export function makeLicense(overrides: Partial<LicenseStatus> = {}): LicenseStatus {

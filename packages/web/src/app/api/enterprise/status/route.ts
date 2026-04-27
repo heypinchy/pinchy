@@ -11,7 +11,7 @@ export async function GET() {
   }
 
   const status = await getLicenseStatus();
-  const usage = await getSeatUsage(status);
+  const usage = status.active ? await getSeatUsage(status) : null;
   return NextResponse.json({
     enterprise: status.active,
     type: status.type ?? null,
@@ -19,7 +19,7 @@ export async function GET() {
     expiresAt: status.expiresAt?.toISOString() ?? null,
     daysRemaining: status.daysRemaining ?? null,
     managedByEnv: isKeyFromEnv(),
-    seatsUsed: usage.used,
+    seatsUsed: usage?.used ?? 0,
     maxUsers: status.maxUsers,
   });
 }
