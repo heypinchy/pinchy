@@ -14,6 +14,8 @@ interface LicenseInfo {
   expiresAt: string | null;
   daysRemaining: number | null;
   managedByEnv: boolean;
+  maxUsers: number;
+  seatsUsed: number;
 }
 
 interface SettingsLicenseProps {
@@ -42,8 +44,9 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
   }, []);
 
   useEffect(() => {
+    if (initialLicense) return;
     fetchStatus();
-  }, [fetchStatus]);
+  }, [fetchStatus, initialLicense]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -110,6 +113,11 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
                   day: "numeric",
                 })}{" "}
                 ({license.daysRemaining} days remaining)
+              </p>
+            )}
+            {license.maxUsers > 0 && (
+              <p className="text-sm">
+                Seats: {license.seatsUsed} / {license.maxUsers} used
               </p>
             )}
             {license.managedByEnv && (

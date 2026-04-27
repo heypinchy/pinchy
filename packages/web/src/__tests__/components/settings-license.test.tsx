@@ -11,6 +11,8 @@ const noLicenseStatus = {
   expiresAt: null,
   daysRemaining: null,
   managedByEnv: false,
+  maxUsers: 0,
+  seatsUsed: 0,
 };
 
 const statusOkResponse = (data: object) =>
@@ -24,8 +26,7 @@ describe("SettingsLicense", () => {
 
   beforeEach(() => {
     fetchSpy = vi.spyOn(global, "fetch").mockImplementation(vi.fn());
-    // Default: status fetch returns no-license (used by tests with initialLicense
-    // that still trigger fetchStatus() on mount)
+    // Default: status fetch returns no-license (used by tests without initialLicense)
     fetchSpy.mockResolvedValue(statusOkResponse(noLicenseStatus));
   });
 
@@ -59,6 +60,8 @@ describe("SettingsLicense", () => {
           expiresAt: null,
           daysRemaining: null,
           managedByEnv: false,
+          maxUsers: 0,
+          seatsUsed: 0,
         }}
       />
     );
@@ -76,6 +79,8 @@ describe("SettingsLicense", () => {
           expiresAt: "2027-01-01T00:00:00Z",
           daysRemaining: 365,
           managedByEnv: false,
+          maxUsers: 0,
+          seatsUsed: 0,
         }}
       />
     );
@@ -94,6 +99,8 @@ describe("SettingsLicense", () => {
           expiresAt: null,
           daysRemaining: null,
           managedByEnv: false,
+          maxUsers: 0,
+          seatsUsed: 0,
         }}
       />
     );
@@ -110,6 +117,8 @@ describe("SettingsLicense", () => {
           expiresAt: null,
           daysRemaining: null,
           managedByEnv: true,
+          maxUsers: 0,
+          seatsUsed: 0,
         }}
       />
     );
@@ -127,6 +136,8 @@ describe("SettingsLicense", () => {
           expiresAt: null,
           daysRemaining: null,
           managedByEnv: false,
+          maxUsers: 0,
+          seatsUsed: 0,
         }}
       />
     );
@@ -134,8 +145,7 @@ describe("SettingsLicense", () => {
   });
 
   it("calls PUT /api/enterprise/key when save is clicked", async () => {
-    // First call: status fetch on mount; second call: PUT /api/enterprise/key
-    fetchSpy.mockResolvedValueOnce(statusOkResponse(noLicenseStatus)).mockResolvedValueOnce(
+    fetchSpy.mockResolvedValueOnce(
       statusOkResponse({
         enterprise: true,
         type: "paid",
@@ -143,6 +153,8 @@ describe("SettingsLicense", () => {
         expiresAt: null,
         daysRemaining: null,
         managedByEnv: false,
+        maxUsers: 0,
+        seatsUsed: 0,
       })
     );
 
@@ -160,8 +172,7 @@ describe("SettingsLicense", () => {
   });
 
   it("shows error message when save fails", async () => {
-    // First call: status fetch on mount; second call: PUT /api/enterprise/key (fails)
-    fetchSpy.mockResolvedValueOnce(statusOkResponse(noLicenseStatus)).mockResolvedValueOnce({
+    fetchSpy.mockResolvedValueOnce({
       ok: false,
       json: async () => ({ error: "Invalid license key" }),
     } as Response);
@@ -176,8 +187,7 @@ describe("SettingsLicense", () => {
 
   it("calls onEnterpriseActivated callback after successful activation", async () => {
     const onActivated = vi.fn();
-    // First call: status fetch on mount; second call: PUT /api/enterprise/key
-    fetchSpy.mockResolvedValueOnce(statusOkResponse(noLicenseStatus)).mockResolvedValueOnce(
+    fetchSpy.mockResolvedValueOnce(
       statusOkResponse({
         enterprise: true,
         type: "paid",
@@ -185,6 +195,8 @@ describe("SettingsLicense", () => {
         expiresAt: null,
         daysRemaining: null,
         managedByEnv: false,
+        maxUsers: 0,
+        seatsUsed: 0,
       })
     );
 
@@ -196,5 +208,51 @@ describe("SettingsLicense", () => {
     await userEvent.click(screen.getByRole("button", { name: /save/i }));
 
     await waitFor(() => expect(onActivated).toHaveBeenCalled());
+  });
+
+  it("shows seats line when maxUsers > 0", () => {
+    const license = {
+      enterprise: true,
+      type: "paid",
+      org: "TestCo",
+      expiresAt: "2027-01-01T00:00:00Z",
+      daysRemaining: 250,
+      managedByEnv: false,
+      maxUsers: 10,
+      seatsUsed: 7,
+    };
+    render(<SettingsLicense initialLicense={license} />);
+    expect(screen.getByText(/Seats: 7 \/ 10 used/)).toBeInTheDocument();
+  });
+
+  it("hides seats line when license is unlimited (maxUsers=0)", () => {
+    const license = {
+      enterprise: true,
+      type: "trial",
+      org: "TestCo",
+      expiresAt: "2027-01-01T00:00:00Z",
+      daysRemaining: 14,
+      managedByEnv: false,
+      maxUsers: 0,
+      seatsUsed: 5,
+    };
+    render(<SettingsLicense initialLicense={license} />);
+    expect(screen.queryByText(/Seats:/)).not.toBeInTheDocument();
+  });
+
+  it("does not refetch status when initialLicense is provided", () => {
+    const fetchSpy = vi.spyOn(global, "fetch");
+    const license = {
+      enterprise: true,
+      type: "paid",
+      org: "TestCo",
+      expiresAt: null,
+      daysRemaining: null,
+      managedByEnv: false,
+      maxUsers: 0,
+      seatsUsed: 0,
+    };
+    render(<SettingsLicense initialLicense={license} />);
+    expect(fetchSpy).not.toHaveBeenCalledWith("/api/enterprise/status");
   });
 });
