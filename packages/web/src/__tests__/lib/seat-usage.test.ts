@@ -76,6 +76,22 @@ describe("getSeatUsage", () => {
     expect(usage.activeUsers).toBe(1);
   });
 
+  it("counts users with null banned as active", async () => {
+    await db.insert(users).values({
+      id: "u-null-banned",
+      email: "null-banned@test.local",
+      name: "null-banned",
+      role: "member",
+      banned: null,
+      emailVerified: true,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const { getSeatUsage } = await import("@/lib/seat-usage");
+    const usage = await getSeatUsage(makeLicense({ maxUsers: 5 }));
+    expect(usage.activeUsers).toBe(1);
+  });
+
   it("excludes expired invites", async () => {
     await seedUser({ id: "u1" });
     await seedInvite({
