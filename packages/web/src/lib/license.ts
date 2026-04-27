@@ -36,7 +36,7 @@ export async function validateLicense(token: string, publicKeyPem: string): Prom
 
     if (ver > 1) {
       console.warn(
-        `License token has ver=${ver}, this app understands up to ver=1. Unknown fields ignored.`,
+        `License token has ver=${ver}, this app understands up to ver=1. Unknown fields ignored.`
       );
     }
 

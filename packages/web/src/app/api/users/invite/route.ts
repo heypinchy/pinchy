@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
           },
           outcome: "failure",
           error: { message: "Seat cap reached" },
-        }),
+        })
       );
       return NextResponse.json(
         {
@@ -46,7 +46,7 @@ export async function POST(request: NextRequest) {
           seatsUsed: usage.used,
           maxUsers: license.maxUsers,
         },
-        { status: 403 },
+        { status: 403 }
       );
     }
   }
@@ -74,7 +74,7 @@ export async function POST(request: NextRequest) {
         ...(auditGroups.length > 0 ? { groups: auditGroups } : {}),
       },
       outcome: "success",
-    }),
+    })
   );
 
   return NextResponse.json(invite, { status: 201 });

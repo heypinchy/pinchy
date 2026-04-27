@@ -150,7 +150,11 @@ export type AuditLogEntry =
       detail: DeleteDetail;
     })
   | (AuditLogBase & {
-      eventType: `${AuditResource}.created` | "user.invited" | "user.invite_blocked" | "config.changed";
+      eventType:
+        | `${AuditResource}.created`
+        | "user.invited"
+        | "user.invite_blocked"
+        | "config.changed";
       detail: Record<string, unknown>;
     })
   | (AuditLogBase & {

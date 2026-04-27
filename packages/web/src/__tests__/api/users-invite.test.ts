@@ -130,7 +130,7 @@ describe("POST /api/users/invite — seat cap", () => {
           seatsUsed: 5,
           maxUsers: 5,
         }),
-      }),
+      })
     );
   });
 

@@ -141,9 +141,7 @@ describe("validateLicense", () => {
     const { validateLicense } = await import("@/lib/license");
     const token = await createTestToken({ ver: 2 });
     await validateLicense(token, testPublicKeyPem);
-    expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining("ver=2"),
-    );
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining("ver=2"));
     warnSpy.mockRestore();
   });
 

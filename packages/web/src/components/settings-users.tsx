@@ -81,7 +81,8 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const [isEnterprise, setIsEnterprise] = useState(false);
   const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
 
-  const atCap = seatInfo !== null && seatInfo.maxUsers > 0 && seatInfo.seatsUsed >= seatInfo.maxUsers;
+  const atCap =
+    seatInfo !== null && seatInfo.maxUsers > 0 && seatInfo.seatsUsed >= seatInfo.maxUsers;
   const showBanner = seatInfo !== null && seatInfo.maxUsers > 0;
 
   const fetchUsers = useCallback(async () => {
