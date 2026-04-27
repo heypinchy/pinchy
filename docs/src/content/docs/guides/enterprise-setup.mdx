@@ -61,6 +61,38 @@ After entering a key, go to **Settings → License**. You should see:
 
 The enterprise features (Groups tab, agent access control) should now be available.
 
+## Seat cap enforcement
+
+Enterprise license tokens include a `maxUsers` field that limits how many seats your organisation can use. A seat counts as either an **active user** or a **valid pending invitation** — both consume a seat.
+
+### What "at cap" means
+
+When `seatsUsed >= maxUsers`:
+
+- The **Invite User** button in **Settings → Users** is disabled and a banner explains why.
+- The **Settings → License** page shows the current seat count next to the cap (`7 / 10 seats used`).
+- Attempting to create an invite via the API returns `403 Forbidden` with `{ "error": "Seat limit reached" }`.
+- **No existing users are locked out.** Pinchy never deactivates an account to enforce a cap. Only new invitations are blocked.
+
+### Freeing up a seat
+
+To invite someone new when you are at cap, you can:
+
+1. **Revoke a pending invitation** — if an invite was sent but not yet claimed, revoking it frees the seat immediately.
+2. **Deactivate an existing user** — deactivated users no longer count toward the seat total.
+
+Both actions take effect immediately — the invite button re-enables without a page reload.
+
+### Trials and unlimited licenses
+
+A `maxUsers` value of **0** means unlimited seats. Trial keys issued by Pinchy carry `maxUsers: 0`, so seat enforcement does not apply during a trial. Paid keys include the seat count negotiated with your order.
+
+<Aside type="note">
+  The seat count shown in **Settings → License** includes both active users and
+  pending invitations. If the count looks higher than expected, check for
+  unclaimed invites in **Settings → Users**.
+</Aside>
+
 ## What happens when a key expires
 
 Pinchy degrades gracefully. Nothing breaks:

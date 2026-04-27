@@ -35,6 +35,14 @@ On devices that support it, a **Share** button appears instead of Copy, letting 
   address.
 </Aside>
 
+<Aside type="note">
+  If your enterprise license has a seat cap and all seats are in use, the **Invite
+  User** button is disabled and a banner explains how many seats are in use. To
+  free up a seat, revoke a pending invitation or deactivate an existing user. See
+  [Enterprise Setup — Seat cap enforcement](/guides/enterprise-setup/#seat-cap-enforcement)
+  for details.
+</Aside>
+
 ### Invite token details
 
 - Each invite token is **valid for 7 days** from creation.
@@ -199,12 +207,13 @@ docker compose exec pinchy pnpm reset-admin --email admin@example.com
 
 All user management actions performed by admins are logged in the audit trail:
 
-| Action                    | Audit event           |
-| ------------------------- | --------------------- |
-| User invited              | `user.invited`        |
-| Role changed              | `user.role_updated`   |
-| Group memberships changed | `user.groups_updated` |
-| User reactivated          | `user.updated`        |
-| User deactivated          | `user.deleted`        |
+| Action                    | Audit event             |
+| ------------------------- | ----------------------- |
+| User invited              | `user.invited`          |
+| Invite blocked (seat cap) | `user.invite_blocked`   |
+| Role changed              | `user.role_updated`     |
+| Group memberships changed | `user.groups_updated`   |
+| User reactivated          | `user.updated`          |
+| User deactivated          | `user.deleted`          |
 
 Each entry records which admin took the action, the affected user's name and email, and before/after values for role or group changes. See [Audit Trail](/concepts/audit-trail/) for more information on viewing and exporting audit logs.
