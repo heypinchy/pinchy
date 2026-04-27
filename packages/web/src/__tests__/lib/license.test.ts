@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, vi } from "vitest";
 import * as jose from "jose";
 
 let testPublicKeyPem: string;
@@ -103,5 +103,55 @@ describe("validateLicense", () => {
     const token = await createTestToken({ features: ["something-else"] });
     const status = await validateLicense(token, testPublicKeyPem);
     expect(status.active).toBe(false);
+  });
+
+  it("extracts ver and maxUsers from token claims", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const token = await createTestToken({ ver: 1, maxUsers: 10 });
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.ver).toBe(1);
+    expect(status.maxUsers).toBe(10);
+  });
+
+  it("defaults ver to 1 when missing from token", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const token = await createTestToken({});
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.ver).toBe(1);
+  });
+
+  it("defaults maxUsers to 0 (unlimited) when missing from token", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const token = await createTestToken({});
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.maxUsers).toBe(0);
+  });
+
+  it("validates tokens with higher ver (forward compat)", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const token = await createTestToken({ ver: 2, maxUsers: 5 });
+    const status = await validateLicense(token, testPublicKeyPem);
+    expect(status.active).toBe(true);
+    expect(status.ver).toBe(2);
+    expect(status.maxUsers).toBe(5);
+  });
+
+  it("logs a warning for tokens with unknown higher ver", async () => {
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const { validateLicense } = await import("@/lib/license");
+    const token = await createTestToken({ ver: 2 });
+    await validateLicense(token, testPublicKeyPem);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("ver=2"),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("INACTIVE result has ver=1 and maxUsers=0 defaults", async () => {
+    const { validateLicense } = await import("@/lib/license");
+    const status = await validateLicense("", testPublicKeyPem);
+    expect(status.active).toBe(false);
+    expect(status.ver).toBe(1);
+    expect(status.maxUsers).toBe(0);
   });
 });
