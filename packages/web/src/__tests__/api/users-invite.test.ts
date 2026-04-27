@@ -118,6 +118,8 @@ describe("POST /api/users/invite — seat cap", () => {
     // after() runs synchronously in tests (see test-setup.ts)
     expect(appendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
+        actorType: "user",
+        actorId: "admin-1",
         eventType: "user.invite_blocked",
         outcome: "failure",
         error: { message: "Seat cap reached" },
