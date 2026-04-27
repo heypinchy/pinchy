@@ -44,6 +44,8 @@ describe("SettingsLicense", () => {
         expiresAt: null,
         daysRemaining: null,
         managedByEnv: false,
+        maxUsers: 0,
+        seatsUsed: 0,
       }),
     } as Response);
     render(<SettingsLicense />);
@@ -241,7 +243,6 @@ describe("SettingsLicense", () => {
   });
 
   it("does not refetch status when initialLicense is provided", () => {
-    const fetchSpy = vi.spyOn(global, "fetch");
     const license = {
       enterprise: true,
       type: "paid",
