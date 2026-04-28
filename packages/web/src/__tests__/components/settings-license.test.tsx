@@ -256,4 +256,45 @@ describe("SettingsLicense", () => {
     render(<SettingsLicense initialLicense={license} />);
     expect(fetchSpy).not.toHaveBeenCalledWith("/api/enterprise/status");
   });
+
+  it("dispatches a 'license-updated' event after a successful save", async () => {
+    fetchSpy.mockResolvedValueOnce(
+      statusOkResponse({
+        enterprise: true,
+        type: "paid",
+        org: "Acme",
+        expiresAt: null,
+        daysRemaining: null,
+        managedByEnv: false,
+        maxUsers: 0,
+        seatsUsed: 0,
+      })
+    );
+    const onLicenseUpdated = vi.fn();
+    window.addEventListener("license-updated", onLicenseUpdated);
+
+    render(<SettingsLicense initialLicense={noLicenseStatus} />);
+    await userEvent.type(screen.getByLabelText(/license key/i), "eyJvalid");
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => expect(onLicenseUpdated).toHaveBeenCalled());
+    window.removeEventListener("license-updated", onLicenseUpdated);
+  });
+
+  it("does not dispatch 'license-updated' when save fails", async () => {
+    fetchSpy.mockResolvedValueOnce({
+      ok: false,
+      json: async () => ({ error: "Invalid license key" }),
+    } as Response);
+    const onLicenseUpdated = vi.fn();
+    window.addEventListener("license-updated", onLicenseUpdated);
+
+    render(<SettingsLicense initialLicense={noLicenseStatus} />);
+    await userEvent.type(screen.getByLabelText(/license key/i), "eyJbad");
+    await userEvent.click(screen.getByRole("button", { name: /save/i }));
+
+    await waitFor(() => expect(screen.getByText(/invalid license key/i)).toBeInTheDocument());
+    expect(onLicenseUpdated).not.toHaveBeenCalled();
+    window.removeEventListener("license-updated", onLicenseUpdated);
+  });
 });

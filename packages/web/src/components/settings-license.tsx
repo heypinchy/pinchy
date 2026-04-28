@@ -52,6 +52,7 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
         await fetchStatus();
         setKeyInput("");
         setShowInput(false);
+        window.dispatchEvent(new Event("license-updated"));
         if (data.enterprise) {
           onEnterpriseActivated?.();
         }
