@@ -130,7 +130,7 @@ describe("validateProviderKey", () => {
 describe("PROVIDERS", () => {
   it("should have default models for all providers", () => {
     expect(PROVIDERS.anthropic.defaultModel).toBe("anthropic/claude-haiku-4-5-20251001");
-    expect(PROVIDERS.openai.defaultModel).toBe("openai/gpt-4o-mini");
+    expect(PROVIDERS.openai.defaultModel).toBe("openai/gpt-5.4-mini");
     expect(PROVIDERS.google.defaultModel).toBe("google/gemini-2.5-flash");
     expect(PROVIDERS["ollama-cloud"].defaultModel).toBe("ollama-cloud/gemini-3-flash-preview");
   });

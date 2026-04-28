@@ -13,7 +13,7 @@ vi.mock("@/lib/providers", () => ({
       name: "OpenAI",
       settingsKey: "openai_api_key",
       envVar: "OPENAI_API_KEY",
-      defaultModel: "openai/gpt-4o-mini",
+      defaultModel: "openai/gpt-5.4-mini",
       placeholder: "sk-...",
     },
     google: {
@@ -115,7 +115,7 @@ describe("fetchProviderModels", () => {
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("anthropic");
     expect(result[0].models).toEqual([
-      { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" },
+      { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
       { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
       { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
     ]);
@@ -366,9 +366,9 @@ describe("fetchProviderModels", () => {
     const openai = result.find((p) => p.id === "openai");
     expect(openai).toBeDefined();
     expect(openai!.models).toEqual([
-      { id: "openai/gpt-4o", name: "GPT-4o" },
-      { id: "openai/gpt-4o-mini", name: "GPT-4o Mini" },
-      { id: "openai/o1", name: "o1" },
+      { id: "openai/gpt-5.5", name: "GPT-5.5" },
+      { id: "openai/gpt-5.4", name: "GPT-5.4" },
+      { id: "openai/gpt-5.4-mini", name: "GPT-5.4 Mini" },
     ]);
   });
 
@@ -777,7 +777,7 @@ describe("selectDefaultModel", () => {
 
   it("falls back to hardcoded default when model list is empty", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
-    expect(selectDefaultModel("openai", [])).toBe("openai/gpt-4o-mini");
+    expect(selectDefaultModel("openai", [])).toBe("openai/gpt-5.4-mini");
   });
 });
 
@@ -817,7 +817,7 @@ describe("getDefaultModel", () => {
 
     const { getDefaultModel } = await import("@/lib/provider-models");
     const model = await getDefaultModel("openai");
-    expect(model).toBe("openai/gpt-4o-mini");
+    expect(model).toBe("openai/gpt-5.4-mini");
   });
 });
 

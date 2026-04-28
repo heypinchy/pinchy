@@ -23,7 +23,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     authType: "api-key",
     settingsKey: "openai_api_key",
     envVar: "OPENAI_API_KEY",
-    defaultModel: "openai/gpt-4o-mini",
+    defaultModel: "openai/gpt-5.4-mini",
     placeholder: "sk-...",
   },
   google: {
