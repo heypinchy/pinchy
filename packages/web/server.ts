@@ -12,6 +12,7 @@ import { openClawConnectionState } from "./src/server/openclaw-connection-state"
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
+import { setupOpenClawStatusBroadcaster } from "./src/server/openclaw-status-broadcaster";
 import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
@@ -158,6 +159,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   });
 
   let openclawClient: OpenClawClient | null = null;
+  let statusBroadcaster: ReturnType<typeof setupOpenClawStatusBroadcaster> | null = null;
 
   const sessionCache = new SessionCache();
 
@@ -226,6 +228,10 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   wss.on("connection", (clientWs) => {
     const sessionInfo = sessionMap.get(clientWs);
     if (!sessionInfo) return;
+
+    // Push the current upstream OpenClaw status so the indicator reflects
+    // reality even when this connection was opened during an OpenClaw outage.
+    statusBroadcaster?.sendInitialStatus(clientWs);
 
     const router = openclawClient
       ? new ClientRouter(openclawClient, sessionInfo.userId, sessionInfo.userRole, sessionCache)
@@ -344,6 +350,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     });
 
     setupOpenClawDisconnectHandler(openclawClient, sessionMap);
+    statusBroadcaster = setupOpenClawStatusBroadcaster(openclawClient, sessionMap);
 
     openclawClient.on("disconnected", () => {
       openClawConnectionState.connected = false;

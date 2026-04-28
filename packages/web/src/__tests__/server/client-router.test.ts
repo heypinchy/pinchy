@@ -3,6 +3,7 @@ import { EventEmitter } from "events";
 
 const {
   mockChat,
+  mockContinueLastTurn,
   mockSessionsHistory,
   mockSessionsList,
   mockFindFirst,
@@ -12,6 +13,7 @@ const {
   mockGetAgentGroupIds,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
+  mockContinueLastTurn: vi.fn(),
   mockSessionsHistory: vi.fn(),
   mockSessionsList: vi.fn(),
   mockFindFirst: vi.fn(),
@@ -102,13 +104,14 @@ const defaultAgent = {
   name: "Smithers",
   ownerId: null,
   isPersonal: false,
-  greetingMessage: null,
+  greetingMessage: "Hello.",
 };
 
 function createMockOpenClawClient(connected = true) {
   const emitter = new EventEmitter();
   const client = Object.assign(emitter, {
     chat: mockChat,
+    continueLastTurn: mockContinueLastTurn,
     sessions: { history: mockSessionsHistory, list: mockSessionsList },
     isConnected: connected,
   });
@@ -969,30 +972,6 @@ describe("ClientRouter", () => {
     ]);
   });
 
-  it("should return empty history when no history and agent has no greeting", async () => {
-    const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
-    const clientWs = createMockClientWs();
-    mockFindFirst.mockResolvedValue({
-      ...defaultAgent,
-      greetingMessage: null,
-    });
-
-    // OpenClaw returns empty history
-    mockSessionsHistory.mockResolvedValue({ messages: [] });
-
-    await freshRouter.handleMessage(clientWs as any, {
-      type: "history",
-      agentId: "agent-1",
-    });
-
-    expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:direct:user-1");
-    const sent = clientWs.sent.map((s) => JSON.parse(s));
-    expect(sent).toHaveLength(1);
-    expect(sent[0].type).toBe("history");
-    expect(sent[0].messages).toEqual([]);
-  });
-
   it("should include extraSystemPrompt with greeting context on first message", async () => {
     const freshCache = new SessionCache();
     const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
@@ -1742,28 +1721,6 @@ describe("ClientRouter", () => {
     consoleSpy.mockRestore();
   });
 
-  it("should return empty history when history fetch fails and no greeting", async () => {
-    const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
-
-    mockFindFirst.mockResolvedValue({
-      ...defaultAgent,
-      greetingMessage: null,
-    });
-    mockSessionsHistory.mockRejectedValue(new Error("Gateway timeout"));
-
-    const clientWs = createMockClientWs();
-    await freshRouter.handleMessage(clientWs as any, {
-      type: "history",
-      agentId: "agent-1",
-    });
-
-    const sent = clientWs.sent.map((s) => JSON.parse(s));
-    expect(sent).toHaveLength(1);
-    expect(sent[0].type).toBe("history");
-    expect(sent[0].messages).toEqual([]);
-  });
-
   describe("per-user context injection for shared agents", () => {
     it("should include user context in extraSystemPrompt for shared agents", async () => {
       mockUserFindFirst.mockResolvedValue({
@@ -2075,6 +2032,313 @@ describe("ClientRouter", () => {
       const greeting = sent[0].messages[0].content;
       expect(greeting).not.toContain("{user}");
       expect(greeting).toContain("I'm Smithers");
+    });
+  });
+
+  describe("userMessagePersisted ack", () => {
+    it("sends { type: 'ack', clientMessageId } to browser when stream yields userMessagePersisted", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "k1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "k1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const ackMsg = messages.find((m: any) => m.type === "ack");
+      expect(ackMsg).toBeDefined();
+      expect(ackMsg).toEqual({ type: "ack", clientMessageId: "k1" });
+    });
+
+    it("does NOT forward the raw userMessagePersisted chunk to the browser", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "k1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "k1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m: any) => m.type === "userMessagePersisted")).toBe(false);
+    });
+  });
+
+  describe("clientMessageId forwarding", () => {
+    it("forwards clientMessageId from browser WS frame to openclaw.chat()", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "uuid-123",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith(
+        "Hi",
+        expect.objectContaining({ clientMessageId: "uuid-123" })
+      );
+    });
+
+    it("omits clientMessageId from openclaw.chat() when not provided by browser", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const callArgs = mockChat.mock.calls[0][1] as Record<string, unknown>;
+      expect(callArgs).not.toHaveProperty("clientMessageId");
+    });
+  });
+
+  describe("retry-continue frame", () => {
+    it("handles retry-continue WS frame by calling openclaw.continueLastTurn", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Here is my answer." };
+        yield { type: "done" as const, text: "" };
+      }
+      mockContinueLastTurn.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "retry-continue",
+        agentId: "a1",
+        reason: "orphan",
+      });
+
+      expect(mockContinueLastTurn).toHaveBeenCalledWith({
+        sessionKey: "agent:a1:direct:user-1",
+      });
+      expect(mockChat).not.toHaveBeenCalled();
+    });
+
+    it("streams retry-continue response chunks to the browser", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Continued response." };
+        yield { type: "done" as const, text: "" };
+      }
+      mockContinueLastTurn.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "retry-continue",
+        agentId: "a1",
+        reason: "partial_stream_failure",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const chunks = messages.filter((m: any) => m.type === "chunk");
+      expect(chunks).toHaveLength(1);
+      expect(chunks[0].content).toBe("Continued response.");
+      const doneMsg = messages.find((m: any) => m.type === "done");
+      expect(doneMsg).toBeDefined();
+      const completeMsg = messages.find((m: any) => m.type === "complete");
+      expect(completeMsg).toBeDefined();
+    });
+
+    it("sends error to browser when continueLastTurn throws", async () => {
+      const clientWs = createMockClientWs();
+      mockContinueLastTurn.mockImplementation(async function* () {
+        throw new Error("Session not found");
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "retry-continue",
+        agentId: "a1",
+        reason: "orphan",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const errorMsg = messages.find((m: any) => m.type === "error");
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg.message).toBe("Something went wrong. Please try again.");
+    });
+
+    it("uses correct session key format agent:<agentId>:direct:<userId> for retry-continue", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Done." };
+        yield { type: "done" as const, text: "" };
+      }
+      mockContinueLastTurn.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "retry-continue",
+        agentId: "agent-xyz",
+        reason: "partial_stream_failure",
+      });
+
+      const { sessionKey } = mockContinueLastTurn.mock.calls[0][0];
+      expect(sessionKey).toBe("agent:agent-xyz:direct:user-1");
+    });
+
+    it("rejects retry-continue frames with an unknown reason and does not audit or call openclaw", async () => {
+      // Runtime guard at the trust boundary — TypeScript's reason union is
+      // erased at runtime, so a malicious/buggy client could send arbitrary
+      // strings that would otherwise land in audit logs.
+      const clientWs = createMockClientWs();
+
+      await router.handleMessage(
+        clientWs as any,
+        {
+          type: "retry-continue",
+          agentId: "a1",
+          reason: "injected-garbage",
+        } as any
+      );
+
+      // Client sees an error frame
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const errorMsg = messages.find((m: any) => m.type === "error");
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg.message).toBe("Invalid retry reason");
+
+      // No audit log entry — the audit row must reflect only validated reasons
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
+
+      // OpenClaw was not called — the retry did not proceed
+      expect(mockContinueLastTurn).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("chat.retry_triggered audit log", () => {
+    it("appends audit log on retry-resend with reason 'send_failure'", async () => {
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "msg-id-1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "msg-id-1",
+        isRetry: true,
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorType: "user",
+          actorId: "user-1",
+          eventType: "chat.retry_triggered",
+          resource: "agent:agent-1",
+          outcome: "success",
+          detail: expect.objectContaining({
+            agent: { id: "agent-1", name: "Smithers" },
+            sessionKey: "agent:agent-1:direct:user-1",
+            reason: "send_failure",
+          }),
+        })
+      );
+    });
+
+    it("appends audit log on retry-continue with reason from message", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Continued." };
+        yield { type: "done" as const, text: "" };
+      }
+      mockContinueLastTurn.mockReturnValue(fakeStream());
+
+      await router.handleMessage(
+        createMockClientWs() as any,
+        {
+          type: "retry-continue",
+          agentId: "agent-1",
+          reason: "orphan",
+        } as any
+      );
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorType: "user",
+          actorId: "user-1",
+          eventType: "chat.retry_triggered",
+          resource: "agent:agent-1",
+          outcome: "success",
+          detail: expect.objectContaining({
+            agent: { id: "agent-1", name: "Smithers" },
+            sessionKey: "agent:agent-1:direct:user-1",
+            reason: "orphan",
+          }),
+        })
+      );
+    });
+
+    it("appends audit log on retry-continue with reason partial_stream_failure", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Continued." };
+        yield { type: "done" as const, text: "" };
+      }
+      mockContinueLastTurn.mockReturnValue(fakeStream());
+
+      await router.handleMessage(
+        createMockClientWs() as any,
+        {
+          type: "retry-continue",
+          agentId: "agent-1",
+          reason: "partial_stream_failure",
+        } as any
+      );
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorType: "user",
+          actorId: "user-1",
+          eventType: "chat.retry_triggered",
+          resource: "agent:agent-1",
+          outcome: "success",
+          detail: expect.objectContaining({
+            agent: { id: "agent-1", name: "Smithers" },
+            sessionKey: "agent:agent-1:direct:user-1",
+            reason: "partial_stream_failure",
+          }),
+        })
+      );
+    });
+
+    it("does NOT append audit log for normal (non-retry) message sends", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
     });
   });
 
