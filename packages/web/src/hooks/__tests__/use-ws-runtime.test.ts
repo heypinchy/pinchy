@@ -980,8 +980,8 @@ describe("injected error bubbles have retryable: true", () => {
       ws.simulateMessage({ type: "chunk", messageId: "asst-1", content: "Partial " });
     });
 
-    // Error arrives AFTER a chunk — there IS a partial turn that can be
-    // continued, so retry must call continueLastTurn.
+    // Error arrives AFTER a chunk — partial turn was already streamed, so the
+    // error gets classified as partial_stream_failure (retryable via resend).
     await act(async () => {
       ws.simulateMessage({ type: "error", message: "Stream broken" });
     });
@@ -1045,13 +1045,11 @@ describe("onRetryContinue", () => {
     capturedMessages = [];
   });
 
-  // All retry reasons go through the resend path because the
-  // `continueLastTurn` method in openclaw-node produces a request that
-  // OpenClaw v2026.4.12 rejects ("must have required property 'message'").
-  // The reason is still threaded through the message frame so the audit log
-  // reflects the actual recovery scenario. Once openclaw-node + OpenClaw
-  // properly support continue, partial_stream_failure and orphan should
-  // switch back to the retry-continue path.
+  // All retry reasons go through the resend path. The Gateway requires a
+  // non-empty `message` on every agent request, so there's no protocol-level
+  // "continue from session history" mode — resending the user's last message
+  // is the canonical retry. The reason is threaded through the frame so the
+  // audit log distinguishes orphan / partial_stream_failure / send_failure.
 
   it("retrying a 'send_failure' resends the original user message with retryReason", async () => {
     const { result } = renderHook(() => useWsRuntime("agent-42"));
@@ -1087,11 +1085,6 @@ describe("onRetryContinue", () => {
     expect(messageFrames[1].clientMessageId).toBe(originalSend.clientMessageId);
     expect(messageFrames[1].isRetry).toBe(true);
     expect(messageFrames[1].retryReason).toBe("send_failure");
-
-    const retryContinueFrames = ws.send.mock.calls
-      .map((call) => JSON.parse(call[0] as string) as { type: string })
-      .filter((m) => m.type === "retry-continue");
-    expect(retryContinueFrames).toHaveLength(0);
   });
 
   it("retrying a 'partial_stream_failure' resends the original user message with retryReason", async () => {
@@ -1129,11 +1122,6 @@ describe("onRetryContinue", () => {
     expect(messageFrames[1].content).toBe("write a story");
     expect(messageFrames[1].isRetry).toBe(true);
     expect(messageFrames[1].retryReason).toBe("partial_stream_failure");
-
-    const retryContinueFrames = ws.send.mock.calls
-      .map((call) => JSON.parse(call[0] as string) as { type: string })
-      .filter((m) => m.type === "retry-continue");
-    expect(retryContinueFrames).toHaveLength(0);
   });
 
   it("retrying an 'orphan' resends the original user message with retryReason", async () => {
@@ -1169,11 +1157,6 @@ describe("onRetryContinue", () => {
     expect(messageFrames[1].content).toBe("are you there?");
     expect(messageFrames[1].isRetry).toBe(true);
     expect(messageFrames[1].retryReason).toBe("orphan");
-
-    const retryContinueFrames = ws.send.mock.calls
-      .map((call) => JSON.parse(call[0] as string) as { type: string })
-      .filter((m) => m.type === "retry-continue");
-    expect(retryContinueFrames).toHaveLength(0);
   });
 
   it("sets isRunning to true when called (with a user message present)", async () => {

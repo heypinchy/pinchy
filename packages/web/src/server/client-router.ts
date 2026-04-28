@@ -40,13 +40,7 @@ interface HistoryRequestMessage {
   agentId: string;
 }
 
-interface RetryContinueMessage {
-  type: "retry-continue";
-  agentId: string;
-  reason: "orphan" | "partial_stream_failure";
-}
-
-type BrowserMessage = ChatMessage | HistoryRequestMessage | RetryContinueMessage;
+type BrowserMessage = ChatMessage | HistoryRequestMessage;
 
 interface HistoryMessage {
   role: string;
@@ -105,10 +99,6 @@ export class ClientRouter {
 
     if (message.type === "history") {
       return this.handleHistory(clientWs, agent);
-    }
-
-    if (message.type === "retry-continue") {
-      return this.handleRetryContinue(clientWs, agent, message);
     }
 
     const sessionKey = this.computeSessionKey(message.agentId);
@@ -359,61 +349,9 @@ export class ClientRouter {
     }
   }
 
-  private async handleRetryContinue(
-    clientWs: WebSocket,
-    agent: { id: string; name: string },
-    message: RetryContinueMessage
-  ): Promise<void> {
-    // Runtime-validate `reason` at the trust boundary. The TypeScript union
-    // (`"orphan" | "partial_stream_failure"`) is erased at runtime, so a
-    // malicious or buggy client could send an arbitrary string — which would
-    // otherwise land unchecked in an HMAC-signed audit row and pollute logs.
-    const ALLOWED_REASONS: ReadonlySet<string> = new Set(["orphan", "partial_stream_failure"]);
-    if (!ALLOWED_REASONS.has(message.reason)) {
-      this.sendToClient(clientWs, {
-        type: "error",
-        message: "Invalid retry reason",
-      });
-      return;
-    }
-
-    const sessionKey = this.computeSessionKey(message.agentId);
-    const messageId = crypto.randomUUID();
-
-    try {
-      await this.waitForConnection();
-
-      appendAuditLog({
-        actorType: "user",
-        actorId: this.userId,
-        eventType: "chat.retry_triggered",
-        resource: `agent:${message.agentId}`,
-        detail: {
-          agent: { id: agent.id, name: agent.name },
-          sessionKey,
-          reason: message.reason,
-        },
-        outcome: "success",
-      }).catch((err) => console.error("Failed to write audit log:", err));
-
-      const stream = this.openclawClient.continueLastTurn({ sessionKey });
-
-      this.sendToClient(clientWs, { type: "thinking", messageId });
-
-      await this.pipeStream(clientWs, stream, agent, sessionKey, messageId);
-    } catch (err) {
-      this.sendToClient(clientWs, {
-        type: "error",
-        message: this.sanitizeError(err),
-        messageId,
-      });
-    }
-  }
-
-  // Shared streaming loop used by handleMessage (chat) and handleRetryContinue.
-  // Handles heartbeat, chunk routing (text/error/done/userMessagePersisted), and
-  // the terminal "complete" frame. The userMessagePersisted/ack branch is a no-op
-  // for continueLastTurn streams (that chunk type never appears there).
+  // Shared streaming loop used by handleMessage. Handles heartbeat, chunk
+  // routing (text/error/done/userMessagePersisted), and the terminal "complete"
+  // frame.
   private async pipeStream(
     clientWs: WebSocket,
     stream: AsyncIterable<ChatChunk>,

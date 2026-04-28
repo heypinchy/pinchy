@@ -3,7 +3,6 @@ import { EventEmitter } from "events";
 
 const {
   mockChat,
-  mockContinueLastTurn,
   mockSessionsHistory,
   mockSessionsList,
   mockFindFirst,
@@ -13,7 +12,6 @@ const {
   mockGetAgentGroupIds,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
-  mockContinueLastTurn: vi.fn(),
   mockSessionsHistory: vi.fn(),
   mockSessionsList: vi.fn(),
   mockFindFirst: vi.fn(),
@@ -111,7 +109,6 @@ function createMockOpenClawClient(connected = true) {
   const emitter = new EventEmitter();
   const client = Object.assign(emitter, {
     chat: mockChat,
-    continueLastTurn: mockContinueLastTurn,
     sessions: { history: mockSessionsHistory, list: mockSessionsList },
     isConnected: connected,
   });
@@ -2118,116 +2115,6 @@ describe("ClientRouter", () => {
     });
   });
 
-  describe("retry-continue frame", () => {
-    it("handles retry-continue WS frame by calling openclaw.continueLastTurn", async () => {
-      const clientWs = createMockClientWs();
-      async function* fakeStream() {
-        yield { type: "text" as const, text: "Here is my answer." };
-        yield { type: "done" as const, text: "" };
-      }
-      mockContinueLastTurn.mockReturnValue(fakeStream());
-
-      await router.handleMessage(clientWs as any, {
-        type: "retry-continue",
-        agentId: "a1",
-        reason: "orphan",
-      });
-
-      expect(mockContinueLastTurn).toHaveBeenCalledWith({
-        sessionKey: "agent:a1:direct:user-1",
-      });
-      expect(mockChat).not.toHaveBeenCalled();
-    });
-
-    it("streams retry-continue response chunks to the browser", async () => {
-      const clientWs = createMockClientWs();
-      async function* fakeStream() {
-        yield { type: "text" as const, text: "Continued response." };
-        yield { type: "done" as const, text: "" };
-      }
-      mockContinueLastTurn.mockReturnValue(fakeStream());
-
-      await router.handleMessage(clientWs as any, {
-        type: "retry-continue",
-        agentId: "a1",
-        reason: "partial_stream_failure",
-      });
-
-      const messages = clientWs.sent.map((s) => JSON.parse(s));
-      const chunks = messages.filter((m: any) => m.type === "chunk");
-      expect(chunks).toHaveLength(1);
-      expect(chunks[0].content).toBe("Continued response.");
-      const doneMsg = messages.find((m: any) => m.type === "done");
-      expect(doneMsg).toBeDefined();
-      const completeMsg = messages.find((m: any) => m.type === "complete");
-      expect(completeMsg).toBeDefined();
-    });
-
-    it("sends error to browser when continueLastTurn throws", async () => {
-      const clientWs = createMockClientWs();
-      mockContinueLastTurn.mockImplementation(async function* () {
-        throw new Error("Session not found");
-      });
-
-      await router.handleMessage(clientWs as any, {
-        type: "retry-continue",
-        agentId: "a1",
-        reason: "orphan",
-      });
-
-      const messages = clientWs.sent.map((s) => JSON.parse(s));
-      const errorMsg = messages.find((m: any) => m.type === "error");
-      expect(errorMsg).toBeDefined();
-      expect(errorMsg.message).toBe("Something went wrong. Please try again.");
-    });
-
-    it("uses correct session key format agent:<agentId>:direct:<userId> for retry-continue", async () => {
-      const clientWs = createMockClientWs();
-      async function* fakeStream() {
-        yield { type: "text" as const, text: "Done." };
-        yield { type: "done" as const, text: "" };
-      }
-      mockContinueLastTurn.mockReturnValue(fakeStream());
-
-      await router.handleMessage(clientWs as any, {
-        type: "retry-continue",
-        agentId: "agent-xyz",
-        reason: "partial_stream_failure",
-      });
-
-      const { sessionKey } = mockContinueLastTurn.mock.calls[0][0];
-      expect(sessionKey).toBe("agent:agent-xyz:direct:user-1");
-    });
-
-    it("rejects retry-continue frames with an unknown reason and does not audit or call openclaw", async () => {
-      // Runtime guard at the trust boundary — TypeScript's reason union is
-      // erased at runtime, so a malicious/buggy client could send arbitrary
-      // strings that would otherwise land in audit logs.
-      const clientWs = createMockClientWs();
-
-      await router.handleMessage(
-        clientWs as any,
-        {
-          type: "retry-continue",
-          agentId: "a1",
-          reason: "injected-garbage",
-        } as any
-      );
-
-      // Client sees an error frame
-      const messages = clientWs.sent.map((s) => JSON.parse(s));
-      const errorMsg = messages.find((m: any) => m.type === "error");
-      expect(errorMsg).toBeDefined();
-      expect(errorMsg.message).toBe("Invalid retry reason");
-
-      // No audit log entry — the audit row must reflect only validated reasons
-      expect(mockAppendAuditLog).not.toHaveBeenCalled();
-
-      // OpenClaw was not called — the retry did not proceed
-      expect(mockContinueLastTurn).not.toHaveBeenCalled();
-    });
-  });
-
   describe("chat.retry_triggered audit log", () => {
     it("appends audit log on retry-resend with reason 'send_failure'", async () => {
       async function* fakeStream() {
@@ -2256,70 +2143,6 @@ describe("ClientRouter", () => {
             agent: { id: "agent-1", name: "Smithers" },
             sessionKey: "agent:agent-1:direct:user-1",
             reason: "send_failure",
-          }),
-        })
-      );
-    });
-
-    it("appends audit log on retry-continue with reason from message", async () => {
-      async function* fakeStream() {
-        yield { type: "text" as const, text: "Continued." };
-        yield { type: "done" as const, text: "" };
-      }
-      mockContinueLastTurn.mockReturnValue(fakeStream());
-
-      await router.handleMessage(
-        createMockClientWs() as any,
-        {
-          type: "retry-continue",
-          agentId: "agent-1",
-          reason: "orphan",
-        } as any
-      );
-
-      expect(mockAppendAuditLog).toHaveBeenCalledWith(
-        expect.objectContaining({
-          actorType: "user",
-          actorId: "user-1",
-          eventType: "chat.retry_triggered",
-          resource: "agent:agent-1",
-          outcome: "success",
-          detail: expect.objectContaining({
-            agent: { id: "agent-1", name: "Smithers" },
-            sessionKey: "agent:agent-1:direct:user-1",
-            reason: "orphan",
-          }),
-        })
-      );
-    });
-
-    it("appends audit log on retry-continue with reason partial_stream_failure", async () => {
-      async function* fakeStream() {
-        yield { type: "text" as const, text: "Continued." };
-        yield { type: "done" as const, text: "" };
-      }
-      mockContinueLastTurn.mockReturnValue(fakeStream());
-
-      await router.handleMessage(
-        createMockClientWs() as any,
-        {
-          type: "retry-continue",
-          agentId: "agent-1",
-          reason: "partial_stream_failure",
-        } as any
-      );
-
-      expect(mockAppendAuditLog).toHaveBeenCalledWith(
-        expect.objectContaining({
-          actorType: "user",
-          actorId: "user-1",
-          eventType: "chat.retry_triggered",
-          resource: "agent:agent-1",
-          outcome: "success",
-          detail: expect.objectContaining({
-            agent: { id: "agent-1", name: "Smithers" },
-            sessionKey: "agent:agent-1:direct:user-1",
-            reason: "partial_stream_failure",
           }),
         })
       );
