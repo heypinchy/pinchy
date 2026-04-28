@@ -166,7 +166,7 @@ export async function POST(request: NextRequest) {
       avatarSeed: generateAvatarSeed(),
       personalityPresetId: template.defaultPersonality,
       greetingMessage: resolveGreetingMessage(
-        template.defaultGreetingMessage ?? preset?.greetingMessage ?? null,
+        template.defaultGreetingMessage ?? preset?.greetingMessage ?? "Hi {user}. How can I help?",
         name.trim()
       ),
     })

@@ -111,13 +111,22 @@ export async function PATCH(
     }
   }
 
+  // greetingMessage is required at the schema level — reject attempts to clear it
+  if (
+    body.greetingMessage !== undefined &&
+    (body.greetingMessage === null ||
+      (typeof body.greetingMessage === "string" && body.greetingMessage.trim() === ""))
+  ) {
+    return NextResponse.json({ error: "Greeting message cannot be empty" }, { status: 400 });
+  }
+
   // Build update data
   const data: {
     name?: string;
     model?: string;
     allowedTools?: string[];
     pluginConfig?: AgentPluginConfig | null;
-    greetingMessage?: string | null;
+    greetingMessage?: string;
     tagline?: string | null;
     avatarSeed?: string | null;
     personalityPresetId?: string | null;

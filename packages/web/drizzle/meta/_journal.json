@@ -215,8 +215,8 @@
     {
       "idx": 30,
       "version": "7",
-      "when": 1745406000000,
-      "tag": "0029_restrict_connection_id_fk",
+      "when": 1777161600000,
+      "tag": "0030_greeting_message_not_null",
       "breakpoints": true
     }
   ]

@@ -76,7 +76,7 @@ export interface AgentTemplate {
   defaultPersonality: PersonalityPresetId;
   defaultTagline: string | null;
   defaultAgentsMd: string | null;
-  defaultGreetingMessage?: string | null;
+  defaultGreetingMessage?: string;
   suggestedNames?: string[];
   requiresOdooConnection?: boolean;
   requiresEmailConnection?: boolean;
