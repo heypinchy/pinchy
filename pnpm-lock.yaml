@@ -89,8 +89,8 @@ importers:
         specifier: 0.2.0
         version: 0.2.0
       openclaw-node:
-        specifier: 0.6.0
-        version: 0.6.0
+        specifier: 0.7.0
+        version: 0.7.0
       postgres:
         specifier: ^3.4.9
         version: 3.4.9
@@ -4093,8 +4093,8 @@ packages:
     resolution: {integrity: sha512-VXJjc87FScF88uafS3JllDgvAm+c/Slfz06lorj2uAY34rlUu0Nt+v8wreiImcrgAjjIHp1rXpTDlLOGw29WwQ==}
     engines: {node: '>=18'}
 
-  openclaw-node@0.6.0:
-    resolution: {integrity: sha512-CcFoKA3KOuxcdh3uvMw9NlJVgrHkmcC/BEgFKsWyWxMtPZtctOFMkbMvJ0j3JJckaWwgPCCLtTLclnhnR5yxoQ==}
+  openclaw-node@0.7.0:
+    resolution: {integrity: sha512-vKGK8g8EP220WEF1PwOPs+EYS2TID1BBk/VxbJvvcMMUXfKsQeHpZIu/RozJFPN1LFjQe5VfKpHp0VCphu6Wug==}
     engines: {node: '>=20.0.0'}
 
   optionator@0.9.4:
@@ -8892,7 +8892,7 @@ snapshots:
     dependencies:
       mimic-function: 5.0.1
 
-  openclaw-node@0.6.0:
+  openclaw-node@0.7.0:
     optionalDependencies:
       ws: 8.20.0
     transitivePeerDependencies:

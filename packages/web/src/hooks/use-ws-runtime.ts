@@ -113,8 +113,8 @@ export function useWsRuntime(agentId: string): {
   /**
    * True iff at least one assistant chunk was received during the current turn.
    * Reset when a new turn starts (user sends or retry). Used to classify
-   * incoming error frames: with chunks → partial_stream_failure (continueLastTurn
-   * works), without chunks → send_failure (must resend the original message).
+   * incoming error frames: with chunks → partial_stream_failure, without
+   * chunks → send_failure. Both reasons resend the original user message.
    */
   const hasReceivedChunkRef = useRef(false);
   /**
@@ -627,14 +627,11 @@ export function useWsRuntime(agentId: string): {
 
   const onRetryContinue = useCallback(
     (reason: "orphan" | "partial_stream_failure" | "send_failure") => {
-      // All retry reasons currently go through the resend path. The dedicated
-      // retry-continue path is broken upstream: openclaw-node's
-      // continueLastTurn omits the `message` param that OpenClaw v2026.4.12's
-      // schema requires, so the call is rejected. Resending the user's last
-      // message produces the same observable outcome (a fresh agent turn) and
-      // works reliably. The retry-continue WS handler stays in place server-
-      // side so we can flip back here once openclaw-node is fixed; the reason
-      // is still threaded through the message frame for audit purposes.
+      // All retry reasons go through the resend path — the OpenClaw Gateway
+      // requires `message: NonEmptyString` on every agent request, so there's
+      // no "continue from session history without a new message" mode. The
+      // reason is threaded through the message frame so the audit log
+      // distinguishes orphan / partial_stream_failure / send_failure retries.
       const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
       if (!lastUserMsg) return;
 
