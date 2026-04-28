@@ -25,6 +25,13 @@ interface ContentPart {
   image_url?: { url: string };
 }
 
+type RetryReason = "orphan" | "partial_stream_failure" | "send_failure";
+const ALLOWED_RETRY_REASONS: ReadonlySet<string> = new Set([
+  "orphan",
+  "partial_stream_failure",
+  "send_failure",
+]);
+
 interface ChatMessage {
   type: "message";
   content: string | ContentPart[];
@@ -32,7 +39,7 @@ interface ChatMessage {
   clientMessageId?: string;
   isRetry?: boolean;
   /** Recovery scenario behind a retry — surfaced in the audit log. */
-  retryReason?: "orphan" | "partial_stream_failure" | "send_failure";
+  retryReason?: RetryReason;
 }
 
 interface HistoryRequestMessage {
@@ -163,6 +170,12 @@ export class ClientRouter {
       }
 
       if (message.isRetry) {
+        // Validate retryReason at the trust boundary. The TypeScript union is
+        // erased at runtime, so a malicious or buggy client could otherwise
+        // write arbitrary strings into HMAC-signed audit rows.
+        const reason: RetryReason = ALLOWED_RETRY_REASONS.has(message.retryReason ?? "")
+          ? (message.retryReason as RetryReason)
+          : "send_failure";
         appendAuditLog({
           actorType: "user",
           actorId: this.userId,
@@ -171,7 +184,7 @@ export class ClientRouter {
           detail: {
             agent: { id: agent.id, name: agent.name },
             sessionKey,
-            reason: message.retryReason ?? "send_failure",
+            reason,
           },
           outcome: "success",
         }).catch((err) => console.error("Failed to write audit log:", err));

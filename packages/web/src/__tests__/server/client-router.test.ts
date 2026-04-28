@@ -2116,7 +2116,7 @@ describe("ClientRouter", () => {
   });
 
   describe("chat.retry_triggered audit log", () => {
-    it("appends audit log on retry-resend with reason 'send_failure'", async () => {
+    it("appends audit log on retry-resend with implicit fallback reason 'send_failure'", async () => {
       async function* fakeStream() {
         yield { type: "userMessagePersisted" as const, clientMessageId: "msg-id-1" };
         yield { type: "text" as const, text: "Hello!" };
@@ -2144,6 +2144,85 @@ describe("ClientRouter", () => {
             sessionKey: "agent:agent-1:direct:user-1",
             reason: "send_failure",
           }),
+        })
+      );
+    });
+
+    it("appends audit log with explicit reason 'orphan'", async () => {
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "msg-id-1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "msg-id-1",
+        isRetry: true,
+        retryReason: "orphan",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.retry_triggered",
+          detail: expect.objectContaining({ reason: "orphan" }),
+        })
+      );
+    });
+
+    it("appends audit log with explicit reason 'partial_stream_failure'", async () => {
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "msg-id-1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "msg-id-1",
+        isRetry: true,
+        retryReason: "partial_stream_failure",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.retry_triggered",
+          detail: expect.objectContaining({ reason: "partial_stream_failure" }),
+        })
+      );
+    });
+
+    // Trust-boundary guard: TypeScript's union (`"orphan" | "partial_stream_failure"
+    // | "send_failure"`) is erased at runtime, so a malicious or buggy client could
+    // POST arbitrary strings as retryReason. Without server-side validation, those
+    // would land in HMAC-signed audit rows.
+    it("rejects unknown retryReason and falls back to 'send_failure' in audit log", async () => {
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "msg-id-1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "msg-id-1",
+        isRetry: true,
+        retryReason: "<script>alert(1)</script>" as any,
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.retry_triggered",
+          detail: expect.objectContaining({ reason: "send_failure" }),
         })
       );
     });

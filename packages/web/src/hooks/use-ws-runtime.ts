@@ -63,6 +63,26 @@ function convertMessage(msg: WsMessage): ThreadMessageLike {
   };
 }
 
+type WsContent = string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+
+/**
+ * Build the WebSocket content payload — plain string when there are no images,
+ * structured parts array when images need to be carried alongside text.
+ */
+function buildWsContent(text: string, images: string[] | undefined): WsContent {
+  if (!images || images.length === 0) {
+    return text;
+  }
+  const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+  if (text) {
+    parts.push({ type: "text", text });
+  }
+  for (const img of images) {
+    parts.push({ type: "image_url", image_url: { url: img } });
+  }
+  return parts;
+}
+
 class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
   public override accept =
     "text/plain,text/html,text/markdown,text/csv,text/xml,text/json,text/css,application/javascript,application/typescript,.js,.ts,.tsx,.jsx,.py,.rs,.go,.sh,.sql,.yaml,.yml,.toml,.json";
@@ -165,6 +185,12 @@ export function useWsRuntime(agentId: string): {
     mountedRef.current = true;
     reconnectAttemptRef.current = 0;
     shouldRecoverFromHistoryRef.current = false;
+
+    // Snapshot the ack-timers Map at effect start so the cleanup can iterate
+    // it without ESLint flagging "ref value will likely have changed". The
+    // ref's `.current` is never reassigned (only mutated via set/delete), so
+    // `ackTimers` and `pendingAckTimers.current` always point to the same Map.
+    const ackTimers = pendingAckTimers.current;
 
     function clearStuckTimer() {
       if (stuckTimerRef.current) {
@@ -478,11 +504,13 @@ export function useWsRuntime(agentId: string): {
         clearTimeout(delayTimerRef.current);
       }
       clearStuckTimer();
-      // Clear all pending ack timers to avoid memory leaks and stale dispatches
-      for (const timer of pendingAckTimers.current.values()) {
+      // Clear all pending ack timers to avoid memory leaks and stale dispatches.
+      // Use the snapshot captured at effect start (see comment above) — the ref
+      // is never reassigned, so the snapshot points to the same Map.
+      for (const timer of ackTimers.values()) {
         clearTimeout(timer);
       }
-      pendingAckTimers.current.clear();
+      ackTimers.clear();
       wsRef.current?.close();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -506,6 +534,20 @@ export function useWsRuntime(agentId: string): {
       wsRef.current?.send(JSON.stringify({ type: "history", agentId }));
     }
   }, [fullyConnected, isHistoryLoaded, agentId]);
+
+  /**
+   * Send a JSON-serialised payload over the WebSocket if it's open, otherwise
+   * queue it for delivery the moment the next connection completes the
+   * handshake (see `connect()` in the main effect — it flushes
+   * pendingMessageRef on open).
+   */
+  const sendOrQueue = useCallback((payload: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(payload);
+    } else {
+      pendingMessageRef.current = payload;
+    }
+  }, []);
 
   const onNew = useCallback(
     async (message: AppendMessage) => {
@@ -583,34 +625,14 @@ export function useWsRuntime(agentId: string): {
       // Start stuck timer — fires if no activity (chunk or thinking) for 60s
       resetStuckTimerRef.current?.();
 
-      // Build content: structured array if images present, plain string otherwise
-      let wsContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
-      if (images.length > 0) {
-        const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
-        if (text) {
-          parts.push({ type: "text", text });
-        }
-        for (const img of images) {
-          parts.push({ type: "image_url", image_url: { url: img } });
-        }
-        wsContent = parts;
-      } else {
-        wsContent = text;
-      }
-
       const payload = JSON.stringify({
         type: "message",
-        content: wsContent,
+        content: buildWsContent(text, images),
         agentId,
         clientMessageId,
       });
 
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(payload);
-      } else {
-        // Queue for delivery when connection opens
-        pendingMessageRef.current = payload;
-      }
+      sendOrQueue(payload);
 
       // Start a 10-second ack timeout. If no ack arrives before the timer
       // fires, dispatch a "timeout" action to transition the message to "failed".
@@ -622,7 +644,7 @@ export function useWsRuntime(agentId: string): {
       }, 10_000);
       pendingAckTimers.current.set(clientMessageId, ackTimer);
     },
-    [agentId, dispatchMessages]
+    [agentId, dispatchMessages, sendOrQueue]
   );
 
   const onRetryContinue = useCallback(
@@ -644,36 +666,18 @@ export function useWsRuntime(agentId: string): {
       trimTrailingOnNextChunkRef.current = true;
       setIsRunning(true);
 
-      let wsContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
-      if (lastUserMsg.images && lastUserMsg.images.length > 0) {
-        const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
-        if (lastUserMsg.content) {
-          parts.push({ type: "text", text: lastUserMsg.content });
-        }
-        for (const img of lastUserMsg.images) {
-          parts.push({ type: "image_url", image_url: { url: img } });
-        }
-        wsContent = parts;
-      } else {
-        wsContent = lastUserMsg.content;
-      }
-
       const payload = JSON.stringify({
         type: "message",
         agentId,
-        content: wsContent,
+        content: buildWsContent(lastUserMsg.content, lastUserMsg.images),
         clientMessageId: lastUserMsg.id,
         isRetry: true,
         retryReason: reason,
       });
 
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(payload);
-      } else {
-        pendingMessageRef.current = payload;
-      }
+      sendOrQueue(payload);
     },
-    [agentId, messages, dispatchMessages]
+    [agentId, messages, dispatchMessages, sendOrQueue]
   );
 
   const onRetryResend = useCallback(
@@ -699,35 +703,16 @@ export function useWsRuntime(agentId: string): {
       // Start stuck timer — fires if no activity (chunk or thinking) for 60s
       resetStuckTimerRef.current?.();
 
-      // Build content: structured array if images present, plain string otherwise
-      let wsContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
-      if (failedMsg.images && failedMsg.images.length > 0) {
-        const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
-        if (failedMsg.content) {
-          parts.push({ type: "text", text: failedMsg.content });
-        }
-        for (const img of failedMsg.images) {
-          parts.push({ type: "image_url", image_url: { url: img } });
-        }
-        wsContent = parts;
-      } else {
-        wsContent = failedMsg.content;
-      }
-
       // Re-send the WS frame with the SAME clientMessageId and original content
       const payload = JSON.stringify({
         type: "message",
         agentId,
-        content: wsContent,
+        content: buildWsContent(failedMsg.content, failedMsg.images),
         clientMessageId: messageId,
         isRetry: true,
       });
 
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(payload);
-      } else {
-        pendingMessageRef.current = payload;
-      }
+      sendOrQueue(payload);
 
       // Restart the 10s ack timer
       const ackTimer = setTimeout(() => {
@@ -736,7 +721,7 @@ export function useWsRuntime(agentId: string): {
       }, 10_000);
       pendingAckTimers.current.set(messageId, ackTimer);
     },
-    [agentId, messages, dispatchMessages]
+    [agentId, messages, dispatchMessages, sendOrQueue]
   );
 
   const isOrphaned = computeIsOrphaned(messages, { isRunning, isHistoryLoaded });
