@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { toast } from "sonner";
 import { useIntegrationActions } from "@/hooks/use-integration-actions";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -33,17 +32,12 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+// toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { EditOAuthDialog } from "./edit-oauth-dialog";
 import { BraveIcon, GoogleIcon, OdooIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
-
-type DialogState =
-  | { phase: "loading"; target: IntegrationConnection }
-  | { phase: "confirm"; target: IntegrationConnection }
-  | { phase: "detach"; target: IntegrationConnection; agents: { id: string; name: string }[] }
-  | null;
 
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
@@ -67,7 +61,7 @@ export function SettingsIntegrations() {
   const [connections, setConnections] = useState<IntegrationConnection[]>([]);
   const [loading, setLoading] = useState(true);
   const [showAddDialog, setShowAddDialog] = useState(false);
-  const [dialogState, setDialogState] = useState<DialogState>(null);
+  const [deleteTarget, setDeleteTarget] = useState<IntegrationConnection | null>(null);
   const [renameTarget, setRenameTarget] = useState<IntegrationConnection | null>(null);
   const [renameName, setRenameName] = useState("");
   const [showOAuthEdit, setShowOAuthEdit] = useState(false);
@@ -84,7 +78,7 @@ export function SettingsIntegrations() {
     }
   }, []);
 
-  const { testing, syncing, testConnection, syncSchema, renameConnection } =
+  const { testing, syncing, testConnection, syncSchema, renameConnection, deleteConnection } =
     useIntegrationActions(fetchConnections);
 
   useEffect(() => {
@@ -97,51 +91,10 @@ export function SettingsIntegrations() {
     setRenameTarget(null);
   }
 
-  async function openDeleteDialog(target: IntegrationConnection) {
-    setDialogState({ phase: "loading", target });
-    try {
-      const res = await fetch(`/api/integrations/${target.id}/usage`);
-      if (!res.ok) throw new Error("preflight failed");
-      const { agents } = (await res.json()) as { agents: { id: string; name: string }[] };
-      setDialogState(
-        agents.length === 0 ? { phase: "confirm", target } : { phase: "detach", target, agents }
-      );
-    } catch {
-      toast.error("Could not load integration usage");
-      setDialogState(null);
-    }
-  }
-
-  async function handleDelete(target: IntegrationConnection) {
-    setDialogState(null);
-    try {
-      const res = await fetch(`/api/integrations/${target.id}`, { method: "DELETE" });
-      if (res.status === 409) {
-        toast.error("Permissions changed — please retry.");
-        await fetchConnections();
-        return;
-      }
-      if (!res.ok) throw new Error("delete failed");
-      toast.success(`"${target.name}" deleted`);
-      await fetchConnections();
-    } catch {
-      toast.error("Could not delete integration");
-    }
-  }
-
-  async function handleDetachAndDelete(target: IntegrationConnection) {
-    setDialogState(null);
-    try {
-      const res = await fetch(`/api/integrations/${target.id}/with-permissions`, {
-        method: "DELETE",
-      });
-      if (!res.ok) throw new Error("detach failed");
-      toast.success(`"${target.name}" deleted`);
-      await fetchConnections();
-    } catch {
-      toast.error("Could not delete integration");
-      await fetchConnections();
-    }
+  async function handleDelete() {
+    if (!deleteTarget) return;
+    await deleteConnection(deleteTarget.id);
+    setDeleteTarget(null);
   }
 
   if (loading) {
@@ -185,7 +138,7 @@ export function SettingsIntegrations() {
                           variant="outline"
                           size="sm"
                           className="text-destructive border-destructive/50 hover:bg-destructive/10"
-                          onClick={() => openDeleteDialog(conn)}
+                          onClick={() => setDeleteTarget(conn)}
                         >
                           Delete
                         </Button>
@@ -222,12 +175,7 @@ export function SettingsIntegrations() {
                       </div>
                       <DropdownMenu>
                         <DropdownMenuTrigger asChild>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-8 w-8"
-                            aria-label="Open menu"
-                          >
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
                             <MoreHorizontal className="h-4 w-4" />
                           </Button>
                         </DropdownMenuTrigger>
@@ -239,7 +187,7 @@ export function SettingsIntegrations() {
                               </DropdownMenuItem>
                               <DropdownMenuItem
                                 className="text-destructive"
-                                onClick={() => openDeleteDialog(conn)}
+                                onClick={() => setDeleteTarget(conn)}
                               >
                                 Remove
                               </DropdownMenuItem>
@@ -278,7 +226,7 @@ export function SettingsIntegrations() {
                               )}
                               <DropdownMenuItem
                                 className="text-destructive"
-                                onClick={() => openDeleteDialog(conn)}
+                                onClick={() => setDeleteTarget(conn)}
                               >
                                 Delete
                               </DropdownMenuItem>
@@ -347,12 +295,6 @@ export function SettingsIntegrations() {
                         )}
                       </div>
                     </TooltipProvider>
-                    {conn.agentUsageCount > 0 && (
-                      <p className="text-xs text-muted-foreground">
-                        Used by {conn.agentUsageCount}{" "}
-                        {conn.agentUsageCount === 1 ? "agent" : "agents"}
-                      </p>
-                    )}
                   </div>
                 );
               })}
@@ -407,59 +349,21 @@ export function SettingsIntegrations() {
         </DialogContent>
       </Dialog>
 
-      <AlertDialog
-        open={dialogState !== null}
-        onOpenChange={(open) => !open && setDialogState(null)}
-      >
+      <AlertDialog open={!!deleteTarget} onOpenChange={(open) => !open && setDeleteTarget(null)}>
         <AlertDialogContent>
-          {dialogState?.phase === "loading" && (
-            <AlertDialogHeader>
-              <AlertDialogTitle>Delete Integration</AlertDialogTitle>
-              <AlertDialogDescription className="flex items-center gap-2">
-                <Loader2 className="h-4 w-4 animate-spin" />
-                Loading…
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-          )}
-          {dialogState?.phase === "confirm" && (
-            <>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete {dialogState.target.name}?</AlertDialogTitle>
-                <AlertDialogDescription>This action cannot be undone.</AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel onClick={() => setDialogState(null)}>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  onClick={() => handleDelete(dialogState.target)}
-                >
-                  Delete
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </>
-          )}
-          {dialogState?.phase === "detach" && (
-            <>
-              <AlertDialogHeader>
-                <AlertDialogTitle>Delete {dialogState.target.name}?</AlertDialogTitle>
-                <AlertDialogDescription>
-                  Used by {dialogState.agents.length}{" "}
-                  {dialogState.agents.length === 1 ? "agent" : "agents"}:{" "}
-                  {dialogState.agents.map((a) => a.name).join(", ")}. Deleting removes their access
-                  to this integration.
-                </AlertDialogDescription>
-              </AlertDialogHeader>
-              <AlertDialogFooter>
-                <AlertDialogCancel onClick={() => setDialogState(null)}>Cancel</AlertDialogCancel>
-                <AlertDialogAction
-                  className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  onClick={() => handleDetachAndDelete(dialogState.target)}
-                >
-                  Detach & Delete
-                </AlertDialogAction>
-              </AlertDialogFooter>
-            </>
-          )}
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete Integration</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently delete the &ldquo;{deleteTarget?.name}&rdquo; integration and
+              remove all associated agent permissions. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={handleDelete}>
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
 
