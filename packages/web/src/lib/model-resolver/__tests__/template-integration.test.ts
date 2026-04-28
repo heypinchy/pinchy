@@ -13,13 +13,13 @@ const CASES: Array<{ templateId: string; provider: ProviderName; expected: strin
   {
     templateId: "odoo-sales-analyst",
     provider: "anthropic",
-    expected: "anthropic/claude-opus-4-6",
+    expected: "anthropic/claude-opus-4-7",
   },
-  { templateId: "odoo-sales-analyst", provider: "openai", expected: "openai/o3" },
+  { templateId: "odoo-sales-analyst", provider: "openai", expected: "openai/gpt-5.5" },
   {
     templateId: "odoo-sales-analyst",
     provider: "google",
-    expected: "google/gemini-2.5-pro-preview",
+    expected: "google/gemini-2.5-pro",
   },
 
   // Fast tier
@@ -28,8 +28,12 @@ const CASES: Array<{ templateId: string; provider: ProviderName; expected: strin
     provider: "anthropic",
     expected: "anthropic/claude-haiku-4-5-20251001",
   },
-  { templateId: "odoo-inventory-scout", provider: "openai", expected: "openai/gpt-4o-mini" },
-  { templateId: "odoo-inventory-scout", provider: "google", expected: "google/gemini-2.5-flash" },
+  { templateId: "odoo-inventory-scout", provider: "openai", expected: "openai/gpt-5.4-mini" },
+  {
+    templateId: "odoo-inventory-scout",
+    provider: "google",
+    expected: "google/gemini-2.5-flash-lite",
+  },
 
   // Balanced tier
   {
@@ -45,8 +49,8 @@ const CASES: Array<{ templateId: string; provider: ProviderName; expected: strin
     provider: "anthropic",
     expected: "anthropic/claude-sonnet-4-6",
   },
-  { templateId: "contract-analyzer", provider: "openai", expected: "openai/gpt-4o" },
-  { templateId: "contract-analyzer", provider: "google", expected: "google/gemini-2.5-pro" },
+  { templateId: "contract-analyzer", provider: "openai", expected: "openai/gpt-5.4" },
+  { templateId: "contract-analyzer", provider: "google", expected: "google/gemini-2.5-flash" },
 ];
 
 describe("template + provider resolves to expected model", () => {

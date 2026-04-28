@@ -923,8 +923,8 @@ describe("POST /api/agents", () => {
 
   it("uses resolver when template has modelHint", async () => {
     mockResolveModelForTemplate.mockResolvedValueOnce({
-      model: "anthropic/claude-opus-4-6",
-      reason: "anthropic: tier=reasoning → claude-opus-4-6",
+      model: "anthropic/claude-opus-4-7",
+      reason: "anthropic: tier=reasoning → claude-opus-4-7",
       fallbackUsed: false,
     });
 
@@ -953,7 +953,7 @@ describe("POST /api/agents", () => {
       expect.objectContaining({ hint: expect.objectContaining({ tier: "reasoning" }) })
     );
     expect(insertValuesMock).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "anthropic/claude-opus-4-6" })
+      expect.objectContaining({ model: "anthropic/claude-opus-4-7" })
     );
   });
 
