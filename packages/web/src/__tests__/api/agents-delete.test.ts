@@ -447,7 +447,7 @@ describe("PATCH /api/agents/[agentId]", () => {
     });
   });
 
-  it("should allow clearing greeting message with null", async () => {
+  it("should reject clearing greeting message with null (NOT NULL at schema level)", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
       expires: "",
@@ -460,13 +460,6 @@ describe("PATCH /api/agents/[agentId]", () => {
       ownerId: null,
     });
 
-    vi.mocked(updateAgent).mockResolvedValueOnce({
-      id: "agent-1",
-      name: "Test Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
-      greetingMessage: null,
-    } as never);
-
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
       body: JSON.stringify({ greetingMessage: null }),
@@ -475,11 +468,33 @@ describe("PATCH /api/agents/[agentId]", () => {
     const response = await PATCH(request, {
       params: Promise.resolve({ agentId: "agent-1" }),
     });
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(400);
+    expect(updateAgent).not.toHaveBeenCalled();
+  });
 
-    expect(updateAgent).toHaveBeenCalledWith("agent-1", {
-      greetingMessage: null,
+  it("should reject clearing greeting message with empty string", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      isPersonal: false,
+      ownerId: null,
     });
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ greetingMessage: "   " }),
+      headers: { "Content-Type": "application/json" },
+    });
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(400);
+    expect(updateAgent).not.toHaveBeenCalled();
   });
 });
 

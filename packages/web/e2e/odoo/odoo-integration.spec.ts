@@ -49,7 +49,7 @@ test.describe("Odoo Integration", () => {
   });
 
   test("delete connection", async () => {
-    const res = await pinchyDelete(`/api/integrations/${connectionId}/with-permissions`, cookie);
+    const res = await pinchyDelete(`/api/integrations/${connectionId}`, cookie);
     expect(res.status).toBe(200);
   });
 });
