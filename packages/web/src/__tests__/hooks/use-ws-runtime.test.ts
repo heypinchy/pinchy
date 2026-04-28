@@ -747,7 +747,7 @@ describe("useWsRuntime", () => {
 
     const messages = result.current.runtime.messages;
     expect(messages[0].metadata).toEqual({
-      custom: { timestamp: "2026-03-15T10:30:00.000Z" },
+      custom: { timestamp: "2026-03-15T10:30:00.000Z", status: "sending" },
     });
   });
 
@@ -1873,6 +1873,104 @@ describe("useWsRuntime", () => {
 
       // triggerRestart should NOT be called for ready messages
       expect(mockTriggerRestart).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("auto-recovery on OpenClaw reconnect", () => {
+    it("re-requests history when fullyConnected transitions false → true", async () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      // Step 1: fully connect and load history
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [{ role: "assistant", content: "Hello!" }],
+          }),
+        });
+      });
+
+      expect(result.current.isHistoryLoaded).toBe(true);
+      expect(result.current.isOpenClawConnected).toBe(true);
+
+      // Step 2: OpenClaw goes unavailable (fullyConnected: true → false)
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "openclaw_status", connected: false }),
+        });
+      });
+      expect(result.current.isOpenClawConnected).toBe(false);
+
+      // Count sends so far
+      const sendsBefore = ws.send.mock.calls.length;
+
+      // Step 3: OpenClaw comes back (fullyConnected: false → true — rising edge)
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "openclaw_status", connected: true }),
+        });
+      });
+      expect(result.current.isOpenClawConnected).toBe(true);
+
+      // A { type: "history" } frame with the correct agentId must have been sent after the rising edge
+      const historySentAfter = ws.send.mock.calls
+        .slice(sendsBefore)
+        .map((call: string[]) => JSON.parse(call[0]))
+        .filter((msg: { type: string }) => msg.type === "history");
+      expect(historySentAfter).toHaveLength(1);
+      expect(historySentAfter[0].agentId).toBe("agent-1");
+    });
+
+    it("does NOT re-request history on initial mount (no false → true rising edge)", () => {
+      renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      // Connect for the first time — ws.onopen already sends history
+      act(() => {
+        ws.onopen?.();
+      });
+
+      // Only one history request should have been sent (from onopen), not two
+      const historyRequests = ws.send.mock.calls
+        .map((call: string[]) => JSON.parse(call[0]))
+        .filter((msg: { type: string }) => msg.type === "history");
+      expect(historyRequests).toHaveLength(1);
+    });
+
+    it("does NOT re-request history when OpenClaw was never loaded (isHistoryLoaded = false)", () => {
+      renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      // Connect but do NOT send history response yet (isHistoryLoaded stays false)
+      act(() => {
+        ws.onopen?.();
+      });
+
+      // isOpenClawConnected starts true; simulate a false → true transition without history loaded
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "openclaw_status", connected: false }),
+        });
+      });
+
+      const sendsBefore = ws.send.mock.calls.length;
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "openclaw_status", connected: true }),
+        });
+      });
+
+      // isHistoryLoaded is still false — must NOT send another history request
+      const historySentAfter = ws.send.mock.calls
+        .slice(sendsBefore)
+        .map((call: string[]) => JSON.parse(call[0]))
+        .filter((msg: { type: string }) => msg.type === "history");
+      expect(historySentAfter).toHaveLength(0);
     });
   });
 });
