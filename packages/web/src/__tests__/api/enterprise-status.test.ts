@@ -72,4 +72,20 @@ describe("GET /api/enterprise/status", () => {
     expect(body.seatsUsed).toBe(12);
     expect(body.maxUsers).toBe(0);
   });
+
+  it("skips getSeatUsage and returns seatsUsed=0 when license is inactive", async () => {
+    (getLicenseStatus as ReturnType<typeof vi.fn>).mockResolvedValue({
+      active: false,
+      ver: 1,
+      maxUsers: 0,
+      features: [],
+    });
+    const { GET } = await import("@/app/api/enterprise/status/route");
+    const res = await GET();
+    const body = await res.json();
+    expect(body.enterprise).toBe(false);
+    expect(body.seatsUsed).toBe(0);
+    expect(body.maxUsers).toBe(0);
+    expect(getSeatUsage).not.toHaveBeenCalled();
+  });
 });
