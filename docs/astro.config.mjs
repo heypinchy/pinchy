@@ -133,6 +133,7 @@ export default defineConfig({
             { label: 'Connect Email (Gmail)', slug: 'guides/connect-email' },
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
             { label: 'Set Up Web Search', slug: 'guides/web-search-setup' },
+            { label: 'Message Delivery & Retry', slug: 'guides/retry-messages' },
           ],
         },
         {
@@ -141,6 +142,7 @@ export default defineConfig({
             { label: 'Architecture', slug: 'architecture' },
             { label: 'Philosophy', slug: 'concepts/philosophy' },
             { label: 'Agent Memory', slug: 'explanation/agent-memory' },
+            { label: 'Chat Connection States', slug: 'explanation/chat-states' },
             { label: 'Agent Settings', slug: 'concepts/agent-settings' },
             { label: 'Agent Permissions', slug: 'concepts/agent-permissions' },
             { label: 'Context Management', slug: 'concepts/context' },
