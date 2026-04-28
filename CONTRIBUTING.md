@@ -261,7 +261,6 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 **Documentation**
 
 - [ ] `docs/src/content/docs/guides/upgrading.mdx` — new section drafted for this version (heading format: `## Upgrading from v<prev> to %%PINCHY_VERSION%%`) containing `### Breaking changes` (write "None." if there are none) and `### Upgrade notes` subsections. The release script enforces both subsections. The release workflow extracts this section automatically and prepends it to the GitHub Release body.
-- [ ] `packages/web/src/lib/smithers-soul.ts` — updated if user-facing features changed
 
 **Staging**
 
