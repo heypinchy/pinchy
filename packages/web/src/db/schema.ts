@@ -129,7 +129,7 @@ export const agents = pgTable(
     ownerId: text("owner_id").references(() => users.id, { onDelete: "cascade" }),
     isPersonal: boolean("is_personal").notNull().default(false),
     visibility: text("visibility").notNull().default("restricted"),
-    greetingMessage: text("greeting_message"),
+    greetingMessage: text("greeting_message").notNull(),
     tagline: text("tagline"),
     avatarSeed: text("avatar_seed"),
     personalityPresetId: text("personality_preset_id"),
@@ -318,7 +318,7 @@ export const agentConnectionPermissions = pgTable(
       .references(() => agents.id, { onDelete: "cascade" }),
     connectionId: text("connection_id")
       .notNull()
-      .references(() => integrationConnections.id, { onDelete: "restrict" }),
+      .references(() => integrationConnections.id, { onDelete: "cascade" }),
     model: text("model").notNull(),
     operation: text("operation").notNull(),
   },
