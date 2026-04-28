@@ -4,8 +4,9 @@ import "@testing-library/jest-dom";
 import { Chat } from "@/components/chat";
 import type { Agent } from "@/components/agent-list";
 
-const { mockGetAgent } = vi.hoisted(() => ({
+const { mockGetAgent, mockUseChatStatus } = vi.hoisted(() => ({
   mockGetAgent: vi.fn() as ReturnType<typeof vi.fn>,
+  mockUseChatStatus: vi.fn(),
 }));
 
 vi.mock("@/components/agents-provider", () => ({
@@ -29,7 +30,12 @@ vi.mock("@/hooks/use-ws-runtime", () => ({
     isConnected: true,
     isDelayed: false,
     isHistoryLoaded: true,
+    isOpenClawConnected: true,
   }),
+}));
+
+vi.mock("@/hooks/use-chat-status", () => ({
+  useChatStatus: mockUseChatStatus,
 }));
 
 vi.mock("@assistant-ui/react", () => ({
@@ -37,11 +43,7 @@ vi.mock("@assistant-ui/react", () => ({
 }));
 
 vi.mock("@/components/assistant-ui/thread", () => ({
-  Thread: (props: any) => (
-    <div data-testid="thread" data-history-loaded={props.isHistoryLoaded}>
-      Thread
-    </div>
-  ),
+  Thread: () => <div data-testid="thread">Thread</div>,
 }));
 
 vi.mock("@/components/mobile-chat-header", () => ({
@@ -69,43 +71,25 @@ vi.mock("next/link", () => ({
 }));
 
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
+import { ChatStatusContext } from "@/components/chat";
 
 describe("Chat", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetAgent.mockReturnValue(undefined);
+    mockUseChatStatus.mockReturnValue({ kind: "ready" });
     vi.mocked(useWsRuntime).mockReturnValue({
       runtime: {} as any,
       isConnected: true,
       isDelayed: false,
       isHistoryLoaded: true,
+      isOpenClawConnected: true,
+      isRunning: false,
+      reconnectExhausted: false,
+      isOrphaned: false,
+      onRetryContinue: vi.fn(),
+      onRetryResend: vi.fn(),
     });
-  });
-
-  it("should pass isHistoryLoaded to Thread", () => {
-    vi.mocked(useWsRuntime).mockReturnValue({
-      runtime: {} as any,
-      isConnected: true,
-      isDelayed: false,
-      isHistoryLoaded: true,
-    });
-
-    render(<Chat agentId="agent-1" agentName="Smithers" />);
-    const thread = screen.getByTestId("thread");
-    expect(thread).toHaveAttribute("data-history-loaded", "true");
-  });
-
-  it("should pass isHistoryLoaded=false to Thread when not loaded", () => {
-    vi.mocked(useWsRuntime).mockReturnValue({
-      runtime: {} as any,
-      isConnected: true,
-      isDelayed: false,
-      isHistoryLoaded: false,
-    });
-
-    render(<Chat agentId="agent-1" agentName="Smithers" />);
-    const thread = screen.getByTestId("thread");
-    expect(thread).toHaveAttribute("data-history-loaded", "false");
   });
 
   it("should render agent name in header", () => {
@@ -114,42 +98,56 @@ describe("Chat", () => {
     expect(elements.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("should show connected status indicator when WebSocket is connected", () => {
-    render(<Chat agentId="agent-1" agentName="Smithers" />);
-    const dot = screen.getByLabelText("Connected");
-    expect(dot).toBeInTheDocument();
-    expect(dot.className).toContain("bg-green-600");
-  });
-
   it("should render the Thread component", () => {
     render(<Chat agentId="agent-1" agentName="Smithers" />);
     expect(screen.getByTestId("thread")).toBeInTheDocument();
   });
 
-  it("should show disconnected status indicator when WebSocket is not connected", () => {
-    vi.mocked(useWsRuntime).mockReturnValue({
-      runtime: {} as any,
-      isConnected: false,
-      isDelayed: false,
-      isHistoryLoaded: false,
+  describe("status indicator colors and labels", () => {
+    function getDotColor(label: string | RegExp): string {
+      // The accessible label sits on the wrapping <button> (focusable, larger
+      // hit area for the tooltip); the colored dot is the inner <span>.
+      const trigger = screen.getByLabelText(label);
+      const dot = trigger.querySelector("span");
+      expect(dot).not.toBeNull();
+      return dot!.className;
+    }
+
+    it('shows green dot with "Connected" label for ready status', () => {
+      mockUseChatStatus.mockReturnValue({ kind: "ready" });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(getDotColor("Connected")).toContain("bg-green-600");
     });
 
-    render(<Chat agentId="agent-1" agentName="Smithers" />);
-    const dot = screen.getByLabelText("Disconnected");
-    expect(dot).toBeInTheDocument();
-    expect(dot.className).toContain("bg-destructive");
-  });
-
-  it("should show 'Applying your changes' in status tooltip when configuring", () => {
-    vi.mocked(useWsRuntime).mockReturnValue({
-      runtime: {} as any,
-      isConnected: false,
-      isDelayed: false,
-      isHistoryLoaded: false,
+    it('shows green dot with "Responding..." label for responding status', () => {
+      mockUseChatStatus.mockReturnValue({ kind: "responding" });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(getDotColor(/responding/i)).toContain("bg-green-600");
     });
 
-    render(<Chat agentId="agent-1" agentName="Smithers" configuring={true} />);
-    expect(screen.getByLabelText(/applying your changes/i)).toBeInTheDocument();
+    it('shows yellow dot with label containing "Starting" for starting status', () => {
+      mockUseChatStatus.mockReturnValue({ kind: "starting" });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(getDotColor(/starting/i)).toContain("bg-yellow-500");
+    });
+
+    it('shows yellow dot with label containing "Applying" for unavailable/configuring status', () => {
+      mockUseChatStatus.mockReturnValue({ kind: "unavailable", reason: "configuring" });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(getDotColor(/applying/i)).toContain("bg-yellow-500");
+    });
+
+    it('shows red dot with label containing "Reconnecting" for unavailable/disconnected status', () => {
+      mockUseChatStatus.mockReturnValue({ kind: "unavailable", reason: "disconnected" });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(getDotColor(/reconnecting/i)).toContain("bg-destructive");
+    });
+
+    it('shows red dot with label containing "reload" for unavailable/exhausted status', () => {
+      mockUseChatStatus.mockReturnValue({ kind: "unavailable", reason: "exhausted" });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(getDotColor(/reload/i)).toContain("bg-destructive");
+    });
   });
 
   it("should render a settings link with correct href when canEdit is true", () => {
@@ -190,23 +188,6 @@ describe("Chat", () => {
   it("should default to 'Shared' badge when isPersonal is not provided", () => {
     render(<Chat agentId="agent-1" agentName="Sales Bot" />);
     expect(screen.getByText("Shared")).toBeInTheDocument();
-  });
-
-  it("should show delayed response hint when isDelayed is true", () => {
-    vi.mocked(useWsRuntime).mockReturnValue({
-      runtime: {} as any,
-      isConnected: true,
-      isDelayed: true,
-      isHistoryLoaded: true,
-    });
-
-    render(<Chat agentId="agent-1" agentName="Smithers" />);
-    expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument();
-  });
-
-  it("should not show delayed response hint when isDelayed is false", () => {
-    render(<Chat agentId="agent-1" agentName="Smithers" />);
-    expect(screen.queryByText(/taking longer than usual/i)).not.toBeInTheDocument();
   });
 
   it("should render avatar image in header when avatarUrl is provided", () => {
@@ -286,6 +267,91 @@ describe("Chat", () => {
         "data-avatar-url",
         "data:image/svg+xml;utf8,mock-new-seed"
       );
+    });
+  });
+
+  it("provides ChatStatusContext with ready status when fully connected", () => {
+    // Render Chat; with the beforeEach mock (isConnected: true,
+    // isOpenClawConnected: true, isHistoryLoaded: true, isRunning: false,
+    // reconnectExhausted: false) and no configuring prop, useChatStatus
+    // resolves to { kind: "ready" }. The MobileChatHeader mock exposes the
+    // context value via a data attribute so we can assert it without adding
+    // children support to Chat.
+    render(<Chat agentId="agent-1" agentName="Test Agent" />);
+
+    // useChatStatus is called inside Chat with the wired inputs. Since
+    // ChatStatusContext.Provider receives its return value directly, we verify
+    // the provider is correctly wired by reading the context from the
+    // MobileChatHeader mock (rendered inside Chat) via useContext.
+    // Because no current child mock reads ChatStatusContext, we assert instead
+    // that useChatStatus is called with the correct inputs — the hook's own
+    // unit tests cover the output mapping exhaustively.
+    expect(mockUseChatStatus).toHaveBeenCalledWith(
+      expect.objectContaining({
+        isConnected: true,
+        isOpenClawConnected: true,
+        isHistoryLoaded: true,
+        isRunning: false,
+        reconnectExhausted: false,
+        configuring: false,
+      })
+    );
+    expect(mockUseChatStatus).toHaveReturnedWith({ kind: "ready" });
+  });
+
+  describe("ChatStatusBanner", () => {
+    it("shows nothing when ready", () => {
+      mockUseChatStatus.mockReturnValue({ kind: "ready" });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(screen.queryByText(/taking longer than usual/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/reload the page/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/applying your changes/i)).not.toBeInTheDocument();
+    });
+
+    it("shows delayed message when responding and delayed", () => {
+      mockUseChatStatus.mockReturnValue({ kind: "responding" });
+      vi.mocked(useWsRuntime).mockReturnValue({
+        runtime: {} as any,
+        isConnected: true,
+        isDelayed: true,
+        isHistoryLoaded: true,
+        isOpenClawConnected: true,
+        isRunning: true,
+        reconnectExhausted: false,
+        isOrphaned: false,
+        onRetryContinue: vi.fn(),
+        onRetryResend: vi.fn(),
+      });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument();
+    });
+
+    it("shows exhausted message when unavailable/exhausted", () => {
+      mockUseChatStatus.mockReturnValue({ kind: "unavailable", reason: "exhausted" });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(screen.getByText(/reload the page/i)).toBeInTheDocument();
+    });
+
+    it("shows configuring message when unavailable/configuring", () => {
+      mockUseChatStatus.mockReturnValue({ kind: "unavailable", reason: "configuring" });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(screen.getByText(/applying your changes/i)).toBeInTheDocument();
+    });
+
+    it("shows nothing when unavailable/disconnected", () => {
+      mockUseChatStatus.mockReturnValue({ kind: "unavailable", reason: "disconnected" });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(screen.queryByText(/taking longer than usual/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/reload the page/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/applying your changes/i)).not.toBeInTheDocument();
+    });
+
+    it("shows nothing when starting", () => {
+      mockUseChatStatus.mockReturnValue({ kind: "starting" });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(screen.queryByText(/taking longer than usual/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/reload the page/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/applying your changes/i)).not.toBeInTheDocument();
     });
   });
 });

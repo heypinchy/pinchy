@@ -9,6 +9,7 @@ import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import {
   ActionBarMorePrimitive,
   ActionBarPrimitive,
@@ -29,7 +30,13 @@ import {
   SquareIcon,
 } from "lucide-react";
 import { type FC, useState, useEffect, useRef, useContext } from "react";
-import { AgentAvatarContext, AgentIdContext } from "@/components/chat";
+import {
+  AgentIdContext,
+  RetryResendContext,
+  RetryContinueContext,
+  ChatStatusContext,
+} from "@/components/chat";
+import { RetryButton } from "@/components/chat/retry-button";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft } from "@/lib/draft-store";
 
@@ -58,7 +65,7 @@ const MessageTimestamp: FC = () => {
   return <span className="text-xs text-muted-foreground/60">{formatTimestamp(timestamp)}</span>;
 };
 
-export const Thread: FC<{ isHistoryLoaded?: boolean }> = ({ isHistoryLoaded = false }) => {
+export const Thread: FC = () => {
   return (
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root @container flex h-full flex-col bg-background"
@@ -68,7 +75,7 @@ export const Thread: FC<{ isHistoryLoaded?: boolean }> = ({ isHistoryLoaded = fa
     >
       <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4">
         <AuiIf condition={(s) => s.thread.isEmpty}>
-          <ThreadWelcome isHistoryLoaded={isHistoryLoaded} />
+          <ThreadWelcome />
         </AuiIf>
 
         <ThreadPrimitive.Messages
@@ -116,13 +123,15 @@ export const STARTUP_MESSAGES = [
 
 const ROTATION_INTERVAL_MS = 3000;
 
-const ThreadWelcome: FC<{ isHistoryLoaded?: boolean }> = ({ isHistoryLoaded = false }) => {
-  const avatarUrl = useContext(AgentAvatarContext);
+export const ThreadWelcome: FC = () => {
+  const chatStatus = useContext(ChatStatusContext);
   const [messageIndex, setMessageIndex] = useState(0);
   const indexRef = useRef(0);
 
+  const isStarting = chatStatus.kind === "starting";
+
   useEffect(() => {
-    if (isHistoryLoaded) return;
+    if (!isStarting) return;
     // Pick a random starting message on mount (avoids hydration mismatch)
     const initial = Math.floor(Math.random() * STARTUP_MESSAGES.length);
     indexRef.current = initial;
@@ -137,28 +146,49 @@ const ThreadWelcome: FC<{ isHistoryLoaded?: boolean }> = ({ isHistoryLoaded = fa
       setMessageIndex(next);
     }, ROTATION_INTERVAL_MS);
     return () => clearInterval(timer);
-  }, [isHistoryLoaded]);
+  }, [isStarting]);
 
-  if (isHistoryLoaded) {
-    // Ready state: agent is loaded, waiting for user input
+  if (chatStatus.kind === "ready" || chatStatus.kind === "responding") {
+    // Render nothing in the ready/responding empty-thread state. Every agent
+    // has a greetingMessage at the schema level, so the server always sends
+    // an opening assistant bubble — that's the welcome. A second hardcoded
+    // "How can I help you today?" would be redundant and, worse, would flash
+    // briefly during the React-state ↔ assistant-ui store sync window.
+    return null;
+  }
+
+  if (chatStatus.kind === "unavailable") {
+    const { reason } = chatStatus;
+    const message =
+      reason === "disconnected"
+        ? "Reconnecting to the agent..."
+        : reason === "configuring"
+          ? "Just a moment — getting things ready..."
+          : "We couldn't reconnect. Please reload to continue.";
+
     return (
       <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
         <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
-          <div className="flex flex-col items-center gap-2">
-            {avatarUrl && (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={avatarUrl} alt="" className="size-12 rounded-full" />
+          <div className="flex flex-col items-center gap-3">
+            {reason === "disconnected" && (
+              <div
+                data-testid="loading-spinner"
+                className="size-8 animate-spin rounded-full border-2 border-muted-foreground/20 border-t-muted-foreground"
+              />
             )}
-            <p className="text-sm font-medium text-muted-foreground">How can I help you?</p>
+            <p className="text-sm font-medium text-muted-foreground">{message}</p>
           </div>
         </div>
       </div>
     );
   }
 
-  // Loading state: connecting or loading history
+  // starting state: connecting or loading history
   return (
-    <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
+    <div
+      data-testid="welcome-skeleton"
+      className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col"
+    >
       <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
         <div className="flex flex-col items-center gap-3">
           <div
@@ -210,7 +240,10 @@ const DraftPersistence: FC = () => {
   return null;
 };
 
-const Composer: FC = () => {
+export const Composer: FC = () => {
+  const chatStatus = useContext(ChatStatusContext);
+  const inputAllowed = chatStatus.kind !== "unavailable" && chatStatus.kind !== "starting";
+
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <DraftPersistence />
@@ -222,6 +255,7 @@ const Composer: FC = () => {
           rows={1}
           autoFocus
           aria-label="Message input"
+          disabled={!inputAllowed}
         />
         <ComposerAction />
       </ComposerPrimitive.AttachmentDropzone>
@@ -230,24 +264,25 @@ const Composer: FC = () => {
 };
 
 const ComposerAction: FC = () => {
+  const chatStatus = useContext(ChatStatusContext);
+  const sendAllowed = chatStatus.kind === "ready";
+
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-1 md:mb-2 flex items-center justify-between">
       <ComposerAddAttachment />
-      <AuiIf condition={(s) => !s.thread.isRunning}>
-        <ComposerPrimitive.Send asChild>
-          <TooltipIconButton
-            tooltip="Send message"
-            side="bottom"
-            type="submit"
-            variant="default"
-            size="icon"
-            className="aui-composer-send size-8 rounded-full"
-            aria-label="Send message"
-          >
-            <ArrowUpIcon className="aui-composer-send-icon size-4" />
-          </TooltipIconButton>
-        </ComposerPrimitive.Send>
-      </AuiIf>
+      <ComposerPrimitive.Send asChild disabled={!sendAllowed}>
+        <TooltipIconButton
+          tooltip="Send message"
+          side="bottom"
+          type="submit"
+          variant="default"
+          size="icon"
+          className="aui-composer-send size-8 rounded-full"
+          aria-label="Send message"
+        >
+          <ArrowUpIcon className="aui-composer-send-icon size-4" />
+        </TooltipIconButton>
+      </ComposerPrimitive.Send>
       <AuiIf condition={(s) => s.thread.isRunning}>
         <ComposerPrimitive.Cancel asChild>
           <Button
@@ -275,11 +310,11 @@ const MessageError: FC = () => {
   );
 };
 
-const AssistantErrorOrContent: FC = () => {
+const AssistantErrorOrContent: FC<{ actionSlot?: React.ReactNode }> = ({ actionSlot }) => {
   const error = useMessage((s) => s.metadata?.custom?.error as ChatError | undefined);
 
   if (error) {
-    return <ChatErrorMessage error={error} />;
+    return <ChatErrorMessage error={error} actionSlot={actionSlot} />;
   }
 
   return (
@@ -308,15 +343,35 @@ const AssistantFooter: FC = () => {
   );
 };
 
-const AssistantMessage: FC = () => {
+export const AssistantMessage: FC = () => {
+  const isRetryable = useMessage((s) => !!s.metadata?.custom?.retryable);
+  const hasError = useMessage((s) => !!s.metadata?.custom?.error);
+  const retryReason = useMessage(
+    (s) =>
+      (s.metadata?.custom?.retryReason as
+        | "orphan"
+        | "partial_stream_failure"
+        | "send_failure"
+        | undefined) ?? "partial_stream_failure"
+  );
+  const isLast = useMessage((s) => s.isLast);
+  const onRetryContinue = useContext(RetryContinueContext);
+
+  const showRetry = isRetryable && isLast;
+  const retryButton = showRetry ? (
+    <RetryButton onClick={() => onRetryContinue(retryReason)} />
+  ) : null;
+
   return (
     <MessagePrimitive.Root
       className="aui-assistant-message-root fade-in slide-in-from-bottom-1 relative mx-auto w-full max-w-(--thread-max-width) animate-in py-3 duration-150"
       data-role="assistant"
     >
       <div className="aui-assistant-message-content wrap-break-word px-2 text-foreground leading-relaxed">
-        <AssistantErrorOrContent />
+        <AssistantErrorOrContent actionSlot={hasError ? retryButton : null} />
       </div>
+
+      {showRetry && !hasError && <div className="mt-2 flex justify-end px-2">{retryButton}</div>}
 
       <AssistantFooter />
     </MessagePrimitive.Root>
@@ -364,7 +419,18 @@ const AssistantActionBar: FC = () => {
   );
 };
 
-const UserMessage: FC = () => {
+export function sendingOpacityClass(status: string | undefined): string {
+  return status === "sending" ? "opacity-60" : "";
+}
+
+export const UserMessage: FC = () => {
+  const status = useMessage((s) => s.metadata?.custom?.status as string | undefined);
+  const isLast = useMessage((s) => s.isLast);
+  const messageId = useMessage((s) => s.id);
+  const onRetryResend = useContext(RetryResendContext);
+
+  const isFailed = status === "failed";
+
   return (
     <MessagePrimitive.Root
       className="aui-user-message-root fade-in slide-in-from-bottom-1 mx-auto flex w-full max-w-(--thread-max-width) animate-in flex-col items-end gap-1 px-2 py-3 duration-150"
@@ -372,7 +438,12 @@ const UserMessage: FC = () => {
     >
       <UserMessageAttachments />
 
-      <div className="aui-user-message-content-wrapper min-w-0 max-w-[85%]">
+      <div
+        className={cn(
+          "aui-user-message-content-wrapper min-w-0 max-w-[85%]",
+          sendingOpacityClass(status)
+        )}
+      >
         <div className="aui-user-message-content wrap-break-word rounded-2xl bg-muted px-4 py-2.5 text-foreground">
           <MessagePrimitive.Parts
             components={{
@@ -381,6 +452,13 @@ const UserMessage: FC = () => {
           />
         </div>
       </div>
+
+      {isFailed && isLast && (
+        <div className="flex items-center gap-2 text-sm text-destructive mr-1 mt-0.5">
+          <span>Couldn&apos;t deliver</span>
+          <RetryButton onClick={() => onRetryResend(messageId)} />
+        </div>
+      )}
 
       <div className="flex mr-1">
         <MessageTimestamp />
