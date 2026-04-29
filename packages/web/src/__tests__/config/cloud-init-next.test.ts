@@ -39,26 +39,36 @@ describe("cloud-init-next.yml (staging)", () => {
     expect(cloudInit).not.toMatch(/loading-server\.pid/);
   });
 
-  it("writes a Caddyfile that reverse_proxies to Pinchy without a separate loading-page upstream", () => {
-    // Staging skips the bundled installer page (no version-tag coupling).
-    // Caddy's `handle_errors` block returns a short "starting" message
-    // during the ~30s initial pull instead.
-    expect(cloudInit).toMatch(/reverse_proxy[^\n]*127\.0\.0\.1:7777/);
-    expect(cloudInit).toMatch(/handle_errors/);
-    expect(cloudInit).not.toMatch(/127\.0\.0\.1:9999/);
-    expect(cloudInit).not.toMatch(/\/var\/www\/pinchy-loading/);
+  it("writes a Caddyfile that reverse_proxies to Pinchy with a loading-page fallback (matches prod)", () => {
+    // Staging mirrors prod's Caddy design so the same plumbing is exercised
+    // end-to-end before each release. The loading page covers the cold-start
+    // window where Pinchy is unreachable (initial pull, JIT compile, restart);
+    // lb_policy first → primary preferred, fall back only when unreachable.
+    expect(cloudInit).toMatch(/reverse_proxy\s+127\.0\.0\.1:7777\s+127\.0\.0\.1:9999/);
+    expect(cloudInit).toMatch(/lb_policy\s+first/);
+    expect(cloudInit).toMatch(/lb_try_duration\s+1s/);
+    expect(cloudInit).toMatch(/fail_duration\s+\d+s/);
   });
 
-  it("does not set lb_try_duration on the staging reverse_proxy", () => {
-    // Regression guard: a 1s lb_try_duration was set initially (carried over
-    // from the prod Caddyfile, where it makes sense alongside the loading-page
-    // fallback upstream). On staging there's no fallback — Caddy aborting
-    // after 1s during Next.js's JIT route compile (3-5s on first request)
-    // sent every cold-start request straight to handle_errors → 503 →
-    // browser sees "Pinchy is starting" even after Pinchy was actually up.
-    // For a single-upstream proxy with no fallback, just let Caddy wait.
-    expect(cloudInit).not.toMatch(/lb_try_duration/);
-    expect(cloudInit).not.toMatch(/fail_duration/);
+  it("binds the fallback loading-page server to localhost only", () => {
+    // The :9999 upstream is a Caddy-internal fallback — exposing it publicly
+    // would leak the raw loading page on its own port.
+    expect(cloudInit).toMatch(/bind\s+127\.0\.0\.1/);
+  });
+
+  it("serves the loading page from a Caddy-accessible web root", () => {
+    expect(cloudInit).toMatch(/\/var\/www\/pinchy-loading\/index\.html/);
+    expect(cloudInit).toMatch(/file_server/);
+  });
+
+  it("fetches installing.html from the latest release (no version-tag pinning needed)", () => {
+    // GitHub redirects /releases/latest/download/<asset> to whatever the
+    // most recent release ships. Using `latest` instead of a hard-coded
+    // version means we don't have to bump this file every time we release.
+    expect(cloudInit).toMatch(
+      /github\.com\/heypinchy\/pinchy\/releases\/latest\/download\/installing\.html/
+    );
+    expect(cloudInit).not.toMatch(/releases\/download\/v\d/);
   });
 
   it("does not override PINCHY_PORT so Pinchy keeps the secure 127.0.0.1:7777 default", () => {
