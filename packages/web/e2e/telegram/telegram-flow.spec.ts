@@ -77,9 +77,15 @@ test.describe.serial("Telegram Integration", () => {
     });
 
     // OpenClaw should respond with a pairing message (not silence!)
-    // Timeout 90s: OpenClaw 2026.3.24 model prewarm can be slow on first start
+    // Timeout 150s: model prewarm + (after the per-suite seedSetup +
+    // connectBot) Pinchy can still be mid-reconnect to OpenClaw because
+    // openclaw-node's exponential backoff (1s → 2s → 4s → … → 30s cap, with
+    // double-fired error+close pairs) means a reconnect after a SIGUSR1 can
+    // legitimately take 60-90s before a timer happens to fire while the
+    // gateway is healthy. The bot reply round-trips through pinchy plugins,
+    // so we wait long enough to outlast that worst-case window.
     const response = await waitForBotResponse(TELEGRAM_USER_ID, {
-      timeout: 90000,
+      timeout: 150000,
       since: beforeSend,
     });
 
@@ -257,7 +263,7 @@ test.describe.serial("Multi-Bot Telegram", () => {
     });
 
     const response = await waitForBotResponse(TELEGRAM_USER_ID, {
-      timeout: 90000,
+      timeout: 150000,
       since: beforeSend,
     });
 
@@ -292,7 +298,7 @@ test.describe.serial("Multi-Bot Telegram", () => {
 
       // User is unlinked, so Smithers should respond with pairing code
       const response = await waitForBotResponse(TELEGRAM_USER_ID, {
-        timeout: 90000,
+        timeout: 150000,
         since: beforeSend,
       });
 

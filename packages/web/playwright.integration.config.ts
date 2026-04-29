@@ -15,7 +15,12 @@ export default defineConfig({
   },
   globalSetup: "./e2e/integration/global-setup.ts",
   globalTeardown: "./e2e/integration/global-teardown.ts",
-  timeout: 60000, // longer per test — OpenClaw hot-reload needs ~5s
+  timeout: 120000, // 120s per test: integration tests run after a fresh
+  // OpenClaw container restart, which may cause Pinchy to be mid-reconnect
+  // (openclaw-node exponential backoff means the first successful retry
+  // can land 30-60s after disconnect). The agent-chat test then has to
+  // login, navigate, send a message, and wait for the round-trip — comfortably
+  // inside 120s but tight inside 60s.
   webServer: {
     command: [
       `DATABASE_URL=${INTEGRATION_DB_URL}`,
@@ -31,6 +36,8 @@ export default defineConfig({
       "OPENCLAW_WORKSPACE_PREFIX=/root/.openclaw/workspaces",
       // Device identity for OpenClaw connection (defaults to /app/secrets which is Docker-only)
       "DEVICE_IDENTITY_PATH=/tmp/pinchy-integration-openclaw/device-identity.json",
+      // Secrets file: host writes here, same path is bind-mounted into OpenClaw container
+      "OPENCLAW_SECRETS_PATH=/tmp/pinchy-integration-secrets/secrets.json",
       "PORT=7779",
       "node -r ./server-preload.cjs --import tsx server.ts",
     ].join(" "),
