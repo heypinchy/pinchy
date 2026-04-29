@@ -9,7 +9,7 @@ vi.mock("@/db", () => {
           {
             id: "1",
             name: "Updated Smithers",
-            model: "anthropic/claude-opus-4-6",
+            model: "anthropic/claude-opus-4-7",
           },
         ]),
       }),
@@ -26,11 +26,11 @@ describe("updateAgent", () => {
   it("should update agent fields and return updated agent", async () => {
     const result = await updateAgent("1", {
       name: "Updated Smithers",
-      model: "anthropic/claude-opus-4-6",
+      model: "anthropic/claude-opus-4-7",
     });
 
     expect(result.name).toBe("Updated Smithers");
-    expect(result.model).toBe("anthropic/claude-opus-4-6");
+    expect(result.model).toBe("anthropic/claude-opus-4-7");
   });
 
   it("should call regenerateOpenClawConfig after update", async () => {
@@ -129,7 +129,7 @@ describe("updateAgent", () => {
           {
             id: "1",
             name: "Smithers",
-            model: "anthropic/claude-opus-4-6",
+            model: "anthropic/claude-opus-4-7",
             allowedTools: ["odoo_read", "pinchy_ls"],
             pluginConfig: { "pinchy-files": { allowed_paths: ["/data/"] } },
           },
@@ -164,7 +164,7 @@ describe("updateAgent", () => {
           {
             id: "1",
             name: "Smithers",
-            model: "anthropic/claude-opus-4-6",
+            model: "anthropic/claude-opus-4-7",
             pluginConfig: webConfig,
           },
         ]),
@@ -198,7 +198,7 @@ describe("updateAgent", () => {
           {
             id: "1",
             name: "Research Agent",
-            model: "anthropic/claude-opus-4-6",
+            model: "anthropic/claude-opus-4-7",
             pluginConfig: combinedConfig,
           },
         ]),

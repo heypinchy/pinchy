@@ -87,7 +87,7 @@ describe("recordUsage", () => {
         outputTokens: 200,
         cacheReadTokens: 10,
         cacheWriteTokens: 5,
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
       },
     ]);
 
@@ -99,7 +99,7 @@ describe("recordUsage", () => {
       agentId: "agent-1",
       agentName: "Smithers",
       sessionKey: "agent:agent-1:user-user-1",
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       inputTokens: 100,
       outputTokens: 200,
       cacheReadTokens: 10,
@@ -116,7 +116,7 @@ describe("recordUsage", () => {
         outputTokens: 800,
         cacheReadTokens: 50,
         cacheWriteTokens: 20,
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
       },
     ]);
 
@@ -132,7 +132,7 @@ describe("recordUsage", () => {
       agentId: "agent-1",
       agentName: "Smithers",
       sessionKey: "agent:agent-1:user-user-1",
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       inputTokens: 200,
       outputTokens: 300,
       cacheReadTokens: 20,
@@ -167,7 +167,7 @@ describe("recordUsage", () => {
         key: "agent:agent-1:user-user-1", // lowercase from OpenClaw
         inputTokens: 500,
         outputTokens: 250,
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
       },
     ]);
 
@@ -221,7 +221,7 @@ describe("recordUsage", () => {
             anthropic: {
               models: [
                 {
-                  id: "claude-sonnet-4-20250514",
+                  id: "claude-sonnet-4-6",
                   cost: { input: 3.0, output: 15.0 },
                 },
               ],
@@ -239,7 +239,7 @@ describe("recordUsage", () => {
           outputTokens: 500,
           cacheReadTokens: 0,
           cacheWriteTokens: 0,
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-6",
         },
       ],
       configWithPricing
@@ -264,7 +264,7 @@ describe("recordUsage", () => {
             anthropic: {
               models: [
                 {
-                  id: "claude-sonnet-4-20250514",
+                  id: "claude-sonnet-4-6",
                   cost: { input: 3.0, output: 15.0 },
                 },
               ],
@@ -282,7 +282,7 @@ describe("recordUsage", () => {
           outputTokens: 500,
           cacheReadTokens: 2000,
           cacheWriteTokens: 0,
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-6",
         },
       ],
       configWithPricing
@@ -307,7 +307,7 @@ describe("recordUsage", () => {
             anthropic: {
               models: [
                 {
-                  id: "claude-sonnet-4-20250514",
+                  id: "claude-sonnet-4-6",
                   cost: { input: 3.0, output: 15.0 },
                 },
               ],
@@ -325,7 +325,7 @@ describe("recordUsage", () => {
           outputTokens: 0,
           cacheReadTokens: 0,
           cacheWriteTokens: 1000,
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-6",
         },
       ],
       configWithPricing
@@ -349,7 +349,7 @@ describe("recordUsage", () => {
             openai: {
               models: [
                 {
-                  id: "gpt-4o",
+                  id: "gpt-5.4",
                   cost: { input: 5.0, output: 15.0 },
                 },
               ],
@@ -367,7 +367,7 @@ describe("recordUsage", () => {
           outputTokens: 200,
           cacheReadTokens: 0,
           cacheWriteTokens: 0,
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-6",
         },
       ],
       configWithOtherModel
@@ -390,7 +390,7 @@ describe("recordUsage", () => {
             anthropic: {
               models: [
                 {
-                  id: "claude-sonnet-4-20250514",
+                  id: "claude-sonnet-4-6",
                   cost: { input: 3.0, output: 15.0 },
                 },
               ],
@@ -431,7 +431,7 @@ describe("recordUsage", () => {
         outputTokens: 200,
         cacheReadTokens: 10,
         cacheWriteTokens: 5,
-        model: "claude-sonnet-4-20250514",
+        model: "claude-sonnet-4-6",
       },
     ]);
 
@@ -448,7 +448,7 @@ describe("recordUsage", () => {
       agentId: "agent-1",
       agentName: "Smithers",
       sessionKey: "agent:agent-1:user-user-1",
-      model: "claude-sonnet-4-20250514",
+      model: "claude-sonnet-4-6",
       inputTokens: 100,
       outputTokens: 200,
       cacheReadTokens: 10,
@@ -531,7 +531,7 @@ describe("recordUsage", () => {
             anthropic: {
               models: [
                 {
-                  id: "claude-sonnet-4-20250514",
+                  id: "claude-sonnet-4-6",
                   cost: { input: 3.0, output: 15.0 },
                 },
               ],
@@ -549,7 +549,7 @@ describe("recordUsage", () => {
           outputTokens: 200,
           cacheReadTokens: 0,
           cacheWriteTokens: 0,
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-6",
         },
       ],
       configWithPricing
@@ -573,7 +573,7 @@ describe("recordUsage", () => {
           outputTokens: 400,
           cacheReadTokens: 0,
           cacheWriteTokens: 0,
-          model: "claude-sonnet-4-20250514",
+          model: "claude-sonnet-4-6",
         },
       ],
     });

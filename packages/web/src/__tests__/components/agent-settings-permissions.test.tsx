@@ -49,7 +49,7 @@ describe("AgentSettingsPermissions", () => {
   const defaultAgent = {
     id: "agent-1",
     name: "Smithers",
-    model: "anthropic/claude-sonnet-4-20250514",
+    model: "anthropic/claude-sonnet-4-6",
     isPersonal: false,
     allowedTools: [] as string[],
     pluginConfig: null as import("@/db/schema").AgentPluginConfig | null,

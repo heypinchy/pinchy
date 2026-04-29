@@ -72,7 +72,7 @@ describe("fetchProviderModels", () => {
       new Response(
         JSON.stringify({
           data: [
-            { id: "claude-opus-4-6", display_name: "Claude Opus 4.6" },
+            { id: "claude-opus-4-7", display_name: "Claude Opus 4.7" },
             { id: "claude-sonnet-4-6", display_name: "Claude Sonnet 4.6" },
           ],
         }),
@@ -87,7 +87,7 @@ describe("fetchProviderModels", () => {
       id: "anthropic",
       name: "Anthropic",
       models: [
-        { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" },
+        { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
         { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
       ],
     });
@@ -133,7 +133,7 @@ describe("fetchProviderModels", () => {
       if (urlStr.includes("anthropic")) {
         return new Response(
           JSON.stringify({
-            data: [{ id: "claude-opus-4-6", display_name: "Claude Opus 4.6" }],
+            data: [{ id: "claude-opus-4-7", display_name: "Claude Opus 4.7" }],
           }),
           { status: 200 }
         );
@@ -141,7 +141,7 @@ describe("fetchProviderModels", () => {
       if (urlStr.includes("openai")) {
         return new Response(
           JSON.stringify({
-            data: [{ id: "gpt-4o" }, { id: "gpt-4o-mini" }, { id: "dall-e-3" }],
+            data: [{ id: "gpt-5.4" }, { id: "gpt-5.4-mini" }, { id: "dall-e-3" }],
           }),
           { status: 200 }
         );
@@ -156,14 +156,14 @@ describe("fetchProviderModels", () => {
     const anthropic = result.find((p) => p.id === "anthropic");
     expect(anthropic).toBeDefined();
     expect(anthropic!.models).toEqual([
-      { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" },
+      { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
     ]);
 
     const openai = result.find((p) => p.id === "openai");
     expect(openai).toBeDefined();
     expect(openai!.models).toEqual([
-      { id: "openai/gpt-4o", name: "gpt-4o" },
-      { id: "openai/gpt-4o-mini", name: "gpt-4o-mini" },
+      { id: "openai/gpt-5.4", name: "gpt-5.4" },
+      { id: "openai/gpt-5.4-mini", name: "gpt-5.4-mini" },
     ]);
     // dall-e-3 should be filtered out (doesn't start with gpt- or o)
   });
@@ -178,7 +178,7 @@ describe("fetchProviderModels", () => {
       new Response(
         JSON.stringify({
           data: [
-            { id: "gpt-4o" },
+            { id: "gpt-5.4" },
             { id: "o1" },
             { id: "o3-mini" },
             { id: "dall-e-3" },
@@ -197,7 +197,7 @@ describe("fetchProviderModels", () => {
     expect(openai).toBeDefined();
 
     const modelIds = openai!.models.map((m) => m.id);
-    expect(modelIds).toContain("openai/gpt-4o");
+    expect(modelIds).toContain("openai/gpt-5.4");
     expect(modelIds).toContain("openai/o1");
     expect(modelIds).toContain("openai/o3-mini");
     expect(modelIds).not.toContain("openai/dall-e-3");
@@ -440,7 +440,7 @@ describe("fetchProviderModels", () => {
     });
     vi.mocked(fetch).mockResolvedValue(
       new Response(
-        JSON.stringify({ data: [{ id: "claude-opus-4-6", display_name: "Claude Opus 4.6" }] }),
+        JSON.stringify({ data: [{ id: "claude-opus-4-7", display_name: "Claude Opus 4.7" }] }),
         { status: 200 }
       )
     );
@@ -634,7 +634,7 @@ describe("fetchProviderModels", () => {
     vi.mocked(fetch).mockResolvedValue(
       new Response(
         JSON.stringify({
-          data: [{ id: "claude-opus-4-6", display_name: "Claude Opus 4.6" }],
+          data: [{ id: "claude-opus-4-7", display_name: "Claude Opus 4.7" }],
         }),
         { status: 200 }
       )
@@ -697,7 +697,7 @@ describe("fetchProviderModels", () => {
     });
     vi.mocked(fetch).mockResolvedValue(
       new Response(
-        JSON.stringify({ data: [{ id: "claude-opus-4-6", display_name: "Claude Opus 4.6" }] }),
+        JSON.stringify({ data: [{ id: "claude-opus-4-7", display_name: "Claude Opus 4.7" }] }),
         { status: 200 }
       )
     );
@@ -714,7 +714,7 @@ describe("selectDefaultModel", () => {
   it("selects the smallest Anthropic model (haiku pattern)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
-      { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" },
+      { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
       { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
       { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
     ];
@@ -724,11 +724,11 @@ describe("selectDefaultModel", () => {
   it("selects the mini OpenAI model (gpt-*-mini pattern)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
-      { id: "openai/gpt-4o", name: "gpt-4o" },
-      { id: "openai/gpt-4o-mini", name: "gpt-4o-mini" },
+      { id: "openai/gpt-5.4", name: "gpt-5.4" },
+      { id: "openai/gpt-5.4-mini", name: "gpt-5.4-mini" },
       { id: "openai/o1", name: "o1" },
     ];
-    expect(selectDefaultModel("openai", models)).toBe("openai/gpt-4o-mini");
+    expect(selectDefaultModel("openai", models)).toBe("openai/gpt-5.4-mini");
   });
 
   it("selects the flash Google model (gemini-*-flash pattern)", async () => {
@@ -779,7 +779,7 @@ describe("selectDefaultModel", () => {
 
   it("falls back to hardcoded default when no pattern matches", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
-    const models = [{ id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" }];
+    const models = [{ id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" }];
     // No haiku in the list — falls back to PROVIDERS[provider].defaultModel
     expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
   });
@@ -807,7 +807,7 @@ describe("getDefaultModel", () => {
       new Response(
         JSON.stringify({
           data: [
-            { id: "claude-opus-4-6", display_name: "Claude Opus 4.6" },
+            { id: "claude-opus-4-7", display_name: "Claude Opus 4.7" },
             { id: "claude-sonnet-4-6", display_name: "Claude Sonnet 4.6" },
             { id: "claude-haiku-4-5-20251001", display_name: "Claude Haiku 4.5" },
           ],
@@ -952,7 +952,7 @@ describe("vision capability detection", () => {
 
     // Cloud providers are vision-capable
     expect(isModelVisionCapable("anthropic/claude-sonnet-4-6")).toBe(true);
-    expect(isModelVisionCapable("openai/gpt-4o")).toBe(true);
+    expect(isModelVisionCapable("openai/gpt-5.4")).toBe(true);
     expect(isModelVisionCapable("google/gemini-2.5-flash")).toBe(true);
 
     // ollama-cloud provider → all models vision-capable

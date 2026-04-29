@@ -51,6 +51,10 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "openai/gpt-5.4", name: "GPT-5.4" },
     { id: "openai/gpt-5.4-mini", name: "GPT-5.4 Mini" },
   ],
+  // Order matters for selectDefaultModel tie-breaking when no model carries a
+  // YYYYMMDD date suffix (current state for the Gemini 2.5 family). The default
+  // pattern is /gemini-.*-flash/, so flash and flash-lite both match — first
+  // match wins.
   google: [
     { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
     { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
