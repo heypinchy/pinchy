@@ -68,7 +68,6 @@ vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
   return {
     ...actual,
     writeSecretsFile: vi.fn(),
-    updateSecretsFile: vi.fn(),
     readSecretsFile: vi.fn().mockReturnValue({}),
   };
 });

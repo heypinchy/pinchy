@@ -67,9 +67,8 @@ vi.mock("@/lib/migrate-onboarding", () => ({
   migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
 }));
 
-const { mockWriteSecretsFile, mockUpdateSecretsFile, mockReadSecretsFile } = vi.hoisted(() => ({
+const { mockWriteSecretsFile, mockReadSecretsFile } = vi.hoisted(() => ({
   mockWriteSecretsFile: vi.fn(),
-  mockUpdateSecretsFile: vi.fn(),
   mockReadSecretsFile: vi.fn().mockReturnValue({}),
 }));
 
@@ -78,7 +77,6 @@ vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
   return {
     ...actual,
     writeSecretsFile: mockWriteSecretsFile,
-    updateSecretsFile: mockUpdateSecretsFile,
     readSecretsFile: mockReadSecretsFile,
   };
 });

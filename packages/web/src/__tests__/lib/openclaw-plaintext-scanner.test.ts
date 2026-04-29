@@ -14,6 +14,20 @@ describe("findPlaintextSecrets", () => {
     ).toEqual([{ path: "env.OPENAI_API_KEY", pattern: "openai-generic" }]);
   });
 
+  it("flags Ollama Cloud keys", () => {
+    // Real format: 32 hex chars + "." + ≥16 base62 chars (observed in
+    // production secrets.json). The leak path that worried us: a future
+    // refactor that bypasses SecretRef and lands the raw key in env.*
+    // or a provider apiKey field — the scanner has to catch it.
+    expect(
+      findPlaintextSecrets({
+        providers: {
+          "ollama-cloud": { apiKey: "d09762adf39c4d1cbdca5f5fc7ca13d5.JyGHlyB0m9yYcpIVkavQIBH7" },
+        },
+      })
+    ).toEqual([{ path: "providers.ollama-cloud.apiKey", pattern: "ollama-cloud" }]);
+  });
+
   it("accepts Telegram bot tokens as plain strings (OpenClaw 2026.4.26 does not support SecretRef in channel configs)", () => {
     const cfg = {
       channels: {

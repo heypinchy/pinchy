@@ -8,6 +8,8 @@ const PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: "openai-generic", regex: /^sk-(proj-)?[a-zA-Z0-9]{16,}/ },
   { name: "gemini", regex: /^AIza[a-zA-Z0-9_-]{30,}/ },
   { name: "brave", regex: /^BSA[a-zA-Z0-9]{16,}/ },
+  // Ollama Cloud: 32-hex prefix + "." + ≥16 base62 chars (observed format).
+  { name: "ollama-cloud", regex: /^[a-f0-9]{32}\.[a-zA-Z0-9]{16,}/ },
   // telegram-bot tokens omitted: OpenClaw 2026.4.26 does not resolve SecretRef
   // in channels.telegram.accounts.*.botToken — tokens stay as plain strings.
 ];

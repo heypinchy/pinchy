@@ -1,10 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import {
-  secretRef,
-  writeSecretsFile,
-  readSecretsFile,
-  updateSecretsFile,
-} from "@/lib/openclaw-secrets";
+import { secretRef, writeSecretsFile, readSecretsFile } from "@/lib/openclaw-secrets";
 import { readFileSync, existsSync, statSync } from "fs";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
@@ -106,39 +101,5 @@ describe("readSecretsFile", () => {
     writeSecretsFile(bundle);
     const result = readSecretsFile();
     expect(result).toEqual(bundle);
-  });
-});
-
-describe("updateSecretsFile", () => {
-  let dir: string;
-
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "pinchy-secrets-"));
-    process.env.OPENCLAW_SECRETS_PATH = join(dir, "secrets.json");
-  });
-
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-    delete process.env.OPENCLAW_SECRETS_PATH;
-  });
-
-  it("merges update with existing secrets", () => {
-    writeSecretsFile({ providers: { anthropic: { apiKey: "sk-ant" } } });
-    updateSecretsFile((s) => ({
-      ...s,
-      telegram: { "agent-1": { botToken: "bot-token-123" } },
-    }));
-    const result = readSecretsFile();
-    expect(result.providers?.anthropic?.apiKey).toBe("sk-ant");
-    expect(result.telegram?.["agent-1"]?.botToken).toBe("bot-token-123");
-  });
-
-  it("creates file when it does not exist", () => {
-    updateSecretsFile((s) => ({
-      ...s,
-      telegram: { "agent-2": { botToken: "new-token" } },
-    }));
-    const result = readSecretsFile();
-    expect(result.telegram?.["agent-2"]?.botToken).toBe("new-token");
   });
 });
