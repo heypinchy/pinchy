@@ -23,3 +23,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.openclaw
+  db:
+    # Expose Postgres to the host for direct seeding from Playwright helpers
+    # (seedSetup, createAgent). Production compose deliberately keeps the DB
+    # network-internal; tests need a back door.
+    ports:
+      - "5434:5432"
