@@ -86,7 +86,8 @@ describe("fetchOdooSchema", () => {
     if (!result.success) return;
     // Models should be accessible after retry
     expect(result.models).toBeGreaterThan(0);
-  });
+  }, // ~76 curated models × 500ms retry delay / 5 concurrency ≈ 7.6s — give plenty of headroom.
+  20000);
 
   it("limits concurrency to avoid overwhelming the Odoo server", async () => {
     let concurrentCalls = 0;
@@ -127,7 +128,8 @@ describe("fetchOdooSchema", () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.models).toBeGreaterThan(0);
-  });
+  }, // Each model retries once with a 500ms delay; with 76 models / 5 concurrency, allow headroom.
+  20000);
 
   it("does not retry 'access denied' errors", async () => {
     mockFields.mockRejectedValue(new Error("access denied"));
