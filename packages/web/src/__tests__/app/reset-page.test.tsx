@@ -4,12 +4,7 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import ResetPasswordPage from "@/app/reset/[token]/page";
 
-const pushMock = vi.fn();
-
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({
-    push: pushMock,
-  }),
   useParams: () => ({
     token: "reset-token-abc",
   }),
@@ -150,7 +145,7 @@ describe("Reset Password Page", () => {
     });
   });
 
-  it("should redirect to /login via 'Continue to sign in' button after success", async () => {
+  it("should link to /login via 'Continue to sign in' after success", async () => {
     const user = userEvent.setup();
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
@@ -164,10 +159,25 @@ describe("Reset Password Page", () => {
     await user.click(screen.getByRole("button", { name: /reset password/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /continue to sign in/i })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /continue to sign in/i })).toHaveAttribute(
+        "href",
+        "/login"
+      );
     });
+  });
 
-    await user.click(screen.getByRole("button", { name: /continue to sign in/i }));
-    expect(pushMock).toHaveBeenCalledWith("/login");
+  it("should show generic error when fetch throws", async () => {
+    const user = userEvent.setup();
+    (global.fetch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("network down"));
+
+    render(<ResetPasswordPage />);
+
+    await user.type(screen.getByLabelText(/^password$/i), "password123");
+    await user.type(screen.getByLabelText(/confirm password/i), "password123");
+    await user.click(screen.getByRole("button", { name: /reset password/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Something went wrong. Please try again.")).toBeInTheDocument();
+    });
   });
 });

@@ -4,12 +4,7 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import InviteClaimPage from "@/app/invite/[token]/page";
 
-const pushMock = vi.fn();
-
 vi.mock("next/navigation", () => ({
-  useRouter: () => ({
-    push: pushMock,
-  }),
   useParams: () => ({
     token: "test-token-123",
   }),
@@ -161,7 +156,7 @@ describe("Invite Claim Page", () => {
     });
   });
 
-  it("should redirect to /login on success via 'Continue to sign in' button", async () => {
+  it("should link to /login on success via 'Continue to sign in'", async () => {
     const user = userEvent.setup();
     (global.fetch as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
       ok: true,
@@ -176,10 +171,26 @@ describe("Invite Claim Page", () => {
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: /continue to sign in/i })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: /continue to sign in/i })).toHaveAttribute(
+        "href",
+        "/login"
+      );
     });
+  });
 
-    await user.click(screen.getByRole("button", { name: /continue to sign in/i }));
-    expect(pushMock).toHaveBeenCalledWith("/login");
+  it("should show generic error when fetch throws", async () => {
+    const user = userEvent.setup();
+    (global.fetch as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error("network down"));
+
+    render(<InviteClaimPage />);
+
+    await user.type(screen.getByLabelText(/name/i), "Test User");
+    await user.type(screen.getByLabelText(/^password$/i), "password123");
+    await user.type(screen.getByLabelText(/confirm password/i), "password123");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("Something went wrong. Please try again.")).toBeInTheDocument();
+    });
   });
 });

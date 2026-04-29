@@ -1,4 +1,7 @@
-// audit-exempt: invite claim is a self-service action by the invited user, not an admin action
+// Handles BOTH new-user invite claims AND admin-issued password resets:
+// the token's `type` field discriminates between them. The reset frontend
+// lives at /reset/[token] and posts here too — see invite.type === "reset".
+// audit-exempt: self-service action by the invited/reset user, not an admin action
 import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import Link from "next/link";
 import Image from "next/image";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/form";
 import { CheckCircle2 } from "lucide-react";
 import { PasswordInput } from "@/components/password-input";
+import { useTokenParam } from "@/hooks/use-token-param";
 
 const inviteClaimSchema = z
   .object({
@@ -34,9 +35,7 @@ const inviteClaimSchema = z
 type InviteClaimValues = z.infer<typeof inviteClaimSchema>;
 
 export default function InviteClaimPage() {
-  const params = useParams();
-  const token = Array.isArray(params.token) ? params.token[0] : params.token;
-  const router = useRouter();
+  const token = useTokenParam();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
@@ -87,8 +86,8 @@ export default function InviteClaimPage() {
                 <CardDescription>You can now sign in with your credentials.</CardDescription>
               </CardHeader>
               <CardContent>
-                <Button onClick={() => router.push("/login")} className="w-full">
-                  Continue to sign in
+                <Button asChild className="w-full">
+                  <Link href="/login">Continue to sign in</Link>
                 </Button>
               </CardContent>
             </>

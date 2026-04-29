@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
@@ -40,8 +40,14 @@ const allGroups = [
 ];
 
 describe("UserDetailSheet", () => {
+  const originalLocation = window.location;
+
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "location", { value: originalLocation, writable: true });
   });
 
   it("should render user name and email", () => {
@@ -329,12 +335,11 @@ describe("UserDetailSheet", () => {
 
   it("should show reset link with /reset/ path after clicking Reset Password", async () => {
     const user = userEvent.setup();
-    global.fetch = vi.fn().mockResolvedValueOnce({
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({
       ok: true,
       json: async () => ({ token: "abc123" }),
-    });
+    } as Response);
 
-    const originalLocation = window.location;
     Object.defineProperty(window, "location", {
       value: { origin: "https://demo.heypinchy.com" },
       writable: true,
@@ -357,7 +362,5 @@ describe("UserDetailSheet", () => {
     await waitFor(() => {
       expect(screen.getByText("https://demo.heypinchy.com/reset/abc123")).toBeInTheDocument();
     });
-
-    Object.defineProperty(window, "location", { value: originalLocation, writable: true });
   });
 });
