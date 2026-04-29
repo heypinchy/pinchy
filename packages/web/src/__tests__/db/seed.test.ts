@@ -40,7 +40,7 @@ describe("seedDefaultAgent", () => {
     const fakeAgent = {
       id: "agent-new",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: null,
       isPersonal: false,
       createdAt: new Date(),
@@ -52,7 +52,7 @@ describe("seedDefaultAgent", () => {
 
     expect(agent.name).toBe("Smithers");
     expect(createSmithersAgentMock).toHaveBeenCalledWith({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: null,
       isPersonal: false,
       isAdmin: false,
@@ -64,7 +64,7 @@ describe("seedDefaultAgent", () => {
     const fakeAgent = {
       id: "agent-owned",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -76,7 +76,7 @@ describe("seedDefaultAgent", () => {
 
     expect(agent.ownerId).toBe("user-1");
     expect(createSmithersAgentMock).toHaveBeenCalledWith({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       isAdmin: true,

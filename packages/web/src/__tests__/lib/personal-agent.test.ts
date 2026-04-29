@@ -64,7 +64,7 @@ vi.mock("@/lib/onboarding-prompt", () => ({
 vi.mock("@/lib/provider-models", () => {
   const defaults: Record<string, string> = {
     anthropic: "anthropic/claude-haiku-4-5-20251001",
-    openai: "openai/gpt-4o-mini",
+    openai: "openai/gpt-5.4-mini",
     google: "google/gemini-2.5-flash",
     "ollama-cloud": "ollama-cloud/gemini-3-flash-preview",
     "ollama-local": "",
@@ -88,7 +88,7 @@ vi.mock("@/lib/providers", () => ({
       name: "OpenAI",
       settingsKey: "openai_api_key",
       envVar: "OPENAI_API_KEY",
-      defaultModel: "openai/gpt-4o-mini",
+      defaultModel: "openai/gpt-5.4-mini",
       placeholder: "sk-...",
     },
     google: {
@@ -132,7 +132,7 @@ describe("createSmithersAgent", () => {
     const fakeAgent = {
       id: "agent-shared-1",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -141,14 +141,14 @@ describe("createSmithersAgent", () => {
 
     const { createSmithersAgent } = await import("@/lib/personal-agent");
     const agent = await createSmithersAgent({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
     });
 
     expect(valuesMock).toHaveBeenCalledWith({
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       tagline: "Your reliable personal assistant",
@@ -164,7 +164,7 @@ describe("createSmithersAgent", () => {
     const fakeAgent = {
       id: "agent-greeting-1",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       greetingMessage: "Test onboarding greeting",
@@ -174,7 +174,7 @@ describe("createSmithersAgent", () => {
 
     const { createSmithersAgent } = await import("@/lib/personal-agent");
     await createSmithersAgent({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
     });
@@ -190,7 +190,7 @@ describe("createSmithersAgent", () => {
     const fakeAgent = {
       id: "agent-shared-2",
       name: "Smithers",
-      model: "openai/gpt-4o-mini",
+      model: "openai/gpt-5.4-mini",
       ownerId: null,
       isPersonal: false,
       createdAt: new Date(),
@@ -199,7 +199,7 @@ describe("createSmithersAgent", () => {
 
     const { createSmithersAgent } = await import("@/lib/personal-agent");
     await createSmithersAgent({
-      model: "openai/gpt-4o-mini",
+      model: "openai/gpt-5.4-mini",
       ownerId: null,
       isPersonal: false,
     });
@@ -216,7 +216,7 @@ describe("createSmithersAgent", () => {
     const fakeAgent = {
       id: "agent-identity-1",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       tagline: "Your reliable personal assistant",
@@ -226,7 +226,7 @@ describe("createSmithersAgent", () => {
 
     const { createSmithersAgent } = await import("@/lib/personal-agent");
     await createSmithersAgent({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
     });
@@ -242,7 +242,7 @@ describe("createSmithersAgent", () => {
     const fakeAgent = {
       id: "agent-context-1",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       tagline: "Your reliable personal assistant",
@@ -252,7 +252,7 @@ describe("createSmithersAgent", () => {
 
     const { createSmithersAgent } = await import("@/lib/personal-agent");
     await createSmithersAgent({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
     });
@@ -273,7 +273,7 @@ describe("createSmithersAgent", () => {
     const fakeAgent = {
       id: "agent-context-2",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-2",
       isPersonal: true,
       tagline: "Your reliable personal assistant",
@@ -283,7 +283,7 @@ describe("createSmithersAgent", () => {
 
     const { createSmithersAgent } = await import("@/lib/personal-agent");
     await createSmithersAgent({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-2",
       isPersonal: true,
     });
@@ -299,7 +299,7 @@ describe("createSmithersAgent", () => {
     const fakeAgent = {
       id: "agent-shared-3",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-99",
       isPersonal: true,
       createdAt: new Date(),
@@ -308,7 +308,7 @@ describe("createSmithersAgent", () => {
 
     const { createSmithersAgent } = await import("@/lib/personal-agent");
     const agent = await createSmithersAgent({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-99",
       isPersonal: true,
     });
@@ -321,7 +321,7 @@ describe("createSmithersAgent", () => {
     const fakeAgent = {
       id: "agent-tools-1",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -330,7 +330,7 @@ describe("createSmithersAgent", () => {
 
     const { createSmithersAgent } = await import("@/lib/personal-agent");
     await createSmithersAgent({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       isAdmin: false,
@@ -348,7 +348,7 @@ describe("createSmithersAgent", () => {
     const fakeAgent = {
       id: "agent-tools-2",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "admin-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -357,7 +357,7 @@ describe("createSmithersAgent", () => {
 
     const { createSmithersAgent } = await import("@/lib/personal-agent");
     await createSmithersAgent({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "admin-1",
       isPersonal: true,
       isAdmin: true,
@@ -375,7 +375,7 @@ describe("createSmithersAgent", () => {
     const fakeAgent = {
       id: "agent-onboard-1",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -384,7 +384,7 @@ describe("createSmithersAgent", () => {
 
     const { createSmithersAgent } = await import("@/lib/personal-agent");
     await createSmithersAgent({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       isAdmin: false,
@@ -402,7 +402,7 @@ describe("createSmithersAgent", () => {
     const fakeAgent = {
       id: "agent-onboard-2",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -411,7 +411,7 @@ describe("createSmithersAgent", () => {
 
     const { createSmithersAgent } = await import("@/lib/personal-agent");
     await createSmithersAgent({
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       isAdmin: false,
@@ -435,7 +435,7 @@ describe("seedPersonalAgent", () => {
     const fakeAgent = {
       id: "agent-1",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -460,7 +460,7 @@ describe("seedPersonalAgent", () => {
     const fakeAgent = {
       id: "agent-2",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -483,7 +483,7 @@ describe("seedPersonalAgent", () => {
     const fakeAgent = {
       id: "agent-workspace-test",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -501,7 +501,7 @@ describe("seedPersonalAgent", () => {
     const fakeAgent = {
       id: "agent-soul-test",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -523,7 +523,7 @@ describe("seedPersonalAgent", () => {
     const fakeAgent = {
       id: "agent-3",
       name: "Smithers",
-      model: "openai/gpt-4o-mini",
+      model: "openai/gpt-5.4-mini",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -535,7 +535,7 @@ describe("seedPersonalAgent", () => {
 
     expect(valuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: "openai/gpt-4o-mini",
+        model: "openai/gpt-5.4-mini",
       })
     );
   });
@@ -545,7 +545,7 @@ describe("seedPersonalAgent", () => {
     const fakeAgent = {
       id: "agent-4",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -557,7 +557,7 @@ describe("seedPersonalAgent", () => {
 
     expect(valuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        model: "anthropic/claude-sonnet-4-20250514",
+        model: "anthropic/claude-sonnet-4-6",
       })
     );
   });
@@ -567,7 +567,7 @@ describe("seedPersonalAgent", () => {
     const fakeAgent = {
       id: "agent-5",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),
@@ -584,7 +584,7 @@ describe("seedPersonalAgent", () => {
     const existingAgent = {
       id: "agent-existing",
       name: "Smithers",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       ownerId: "user-1",
       isPersonal: true,
       createdAt: new Date(),

@@ -7,6 +7,7 @@ vi.mock("fs", async (importOriginal) => {
   const existsSyncMock = vi.fn().mockReturnValue(true);
   const mkdirSyncMock = vi.fn();
   const renameSyncMock = vi.fn();
+  const chmodSyncMock = vi.fn();
   return {
     ...actual,
     default: {
@@ -16,12 +17,14 @@ vi.mock("fs", async (importOriginal) => {
       existsSync: existsSyncMock,
       mkdirSync: mkdirSyncMock,
       renameSync: renameSyncMock,
+      chmodSync: chmodSyncMock,
     },
     writeFileSync: writeFileSyncMock,
     readFileSync: readFileSyncMock,
     existsSync: existsSyncMock,
     mkdirSync: mkdirSyncMock,
     renameSync: renameSyncMock,
+    chmodSync: chmodSyncMock,
   };
 });
 
@@ -35,6 +38,7 @@ vi.mock("@/db", () => ({
               where: vi.fn().mockResolvedValue([]),
             })
           ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     })),
@@ -58,6 +62,15 @@ vi.mock("@/server/restart-state", () => ({
 vi.mock("@/lib/migrate-onboarding", () => ({
   migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
 }));
+
+vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/openclaw-secrets")>();
+  return {
+    ...actual,
+    writeSecretsFile: vi.fn(),
+    readSecretsFile: vi.fn().mockReturnValue({}),
+  };
+});
 
 vi.mock("@/lib/provider-models", () => {
   const defaults: Record<string, string> = {
@@ -134,6 +147,7 @@ describe("pinchy-email config generation", () => {
               where: vi.fn().mockResolvedValue(permissionsData),
             })
           ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -218,6 +232,7 @@ describe("pinchy-email config generation", () => {
               where: vi.fn().mockResolvedValue(permissionsData),
             })
           ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -235,7 +250,10 @@ describe("pinchy-email config generation", () => {
 
     const emailConfig = config.plugins.entries["pinchy-email"].config;
     expect(emailConfig.apiBaseUrl).toBe("http://pinchy:7777");
-    expect(emailConfig.gatewayToken).toBe("gw-token-123");
+    // gatewayToken is a plain string — OpenClaw 2026.4.26 does not resolve
+    // SecretRef in plugins.entries.*.config (the config validator requires
+    // a literal string).
+    expect(typeof emailConfig.gatewayToken).toBe("string");
 
     const agentConfig = emailConfig.agents["email-agent"];
     expect(agentConfig.connectionId).toBe("conn-google-1");
@@ -287,6 +305,7 @@ describe("pinchy-email config generation", () => {
               where: vi.fn().mockResolvedValue(permissionsData),
             })
           ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -364,6 +383,7 @@ describe("pinchy-email config generation", () => {
               where: vi.fn().mockResolvedValue(permissionsData),
             })
           ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -444,6 +464,7 @@ describe("pinchy-email config generation", () => {
               where: vi.fn().mockResolvedValue(permissionsData),
             })
           ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);

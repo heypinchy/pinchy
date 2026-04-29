@@ -30,33 +30,48 @@ Safe tools provide **sandboxed access** to directories the admin has approved. T
 
 When you enable a safe tool, a directory picker appears so you can select which directories under `/data/` the agent can access. Every file access request is validated against these directories at runtime.
 
+### Web Search Tools
+
+Web search tools give the agent access to live web information via the Brave Search API. These require a Brave Search API key configured in Settings → Integrations.
+
+| Tool                | What it does                                                          |
+| ------------------- | --------------------------------------------------------------------- |
+| **Search the web**  | Query Brave Search and return ranked results (`pinchy_web_search`)    |
+| **Fetch web pages** | Download and extract readable content from a URL (`pinchy_web_fetch`) |
+
+When web search tools are enabled, additional per-agent filters appear: Domain restrictions (with Include/Exclude modes per domain), Freshness, Language, and Region. See [Set Up Web Search](/guides/web-search-setup/) for details.
+
+:::caution[Data exfiltration risk]
+If an agent has **Fetch web pages** enabled alongside access to sensitive data (files or Odoo records), Pinchy shows a security warning. A malicious web page could contain instructions that trick the agent into encoding private data into a URL. Mitigate this by adding **Include** domain restrictions that limit the agent to known, trusted sites.
+:::
+
 ### Powerful Tools
 
 Powerful tools give the agent **direct access to the server**. Only enable them if you understand the risks.
 
-| Tool               | What it does                                      |
-| ------------------ | ------------------------------------------------- |
-| **Run commands**   | Execute shell commands on the server              |
-| **Read any file**  | Read any file on the system, without restrictions |
-| **Write files**    | Create and modify files on the system             |
-| **Browse the web** | Fetch web pages                                   |
-| **Search the web** | Perform web searches                              |
+| Tool              | What it does                                      |
+| ----------------- | ------------------------------------------------- |
+| **Run commands**  | Execute shell commands on the server              |
+| **Read any file** | Read any file on the system, without restrictions |
+| **Write files**   | Create and modify files on the system             |
 
 An agent with powerful tools enabled has significantly broader capabilities. Use these only for trusted, internal use cases.
 
 ## The Permissions tab
 
-Admins configure tool permissions in the **Permissions tab** of an agent's settings page. The settings page has four tabs — General, Personality, Instructions, and Permissions. To access the Permissions tab:
+Admins configure tool permissions in the **Permissions tab** of a shared agent's settings page. To access it:
 
-1. Open an agent's chat
+1. Open a shared agent's chat
 2. Click the settings icon (gear) to open Agent Settings
 3. Select the **Permissions** tab
 
 The Permissions tab shows all available tools grouped by category. Check or uncheck tools to control what the agent can do, then click **Save**.
 
 :::note
-The Permissions tab is only visible to admins and is not available for personal agents (the auto-created Smithers agent each user gets).
+The Permissions tab is only visible to admins and only for shared agents. Personal agents (the auto-created Smithers each user gets) don't have this tab — they run with default tools only.
 :::
+
+For the full list of tabs in Agent Settings and who sees which, see [Agent Settings](/concepts/agent-settings/).
 
 ### Configuring directory access
 
@@ -76,7 +91,9 @@ This conversion runs automatically whenever the OpenClaw config is regenerated �
 
 ## Integration tools
 
-When you connect an external system (like Odoo) and grant an agent access to it, Pinchy automatically enables the appropriate tools based on the access level you choose. You don't need to enable these tools manually — they're managed through the Permissions tab.
+### Odoo tools
+
+When you connect Odoo and grant an agent access to it, Pinchy automatically enables the appropriate tools based on the access level you choose. You don't need to enable these tools manually — they're managed through the Permissions tab.
 
 | Tool          | What it does                               | Access level required |
 | ------------- | ------------------------------------------ | --------------------- |
@@ -90,7 +107,34 @@ When you connect an external system (like Odoo) and grant an agent access to it,
 
 For example, setting an agent to "Read-only" for an Odoo connection enables schema, read, count, and aggregate. Upgrading to "Read & Write" adds create and write. "Full" adds delete.
 
-For details on setting up connections and access levels, see [Integrations](/concepts/integrations/).
+### Web Search tools
+
+Web search tools are enabled individually per agent via checkboxes in the Permissions tab. Unlike Odoo tools, there are no access levels — you simply check the tools you want.
+
+| Tool                | Tool ID             | What it does                            |
+| ------------------- | ------------------- | --------------------------------------- |
+| **Search the web**  | `pinchy_web_search` | Query Brave Search for relevant results |
+| **Fetch web pages** | `pinchy_web_fetch`  | Download and read content from a URL    |
+
+Each agent can also have per-agent filters (Domain restrictions with Include/Exclude modes, Freshness, Language, Region) that control what the agent can access. See [Set Up Web Search](/guides/web-search-setup/) for configuration details.
+
+### Email tools
+
+When you connect a Gmail account and grant an agent access to it, Pinchy enables email tools based on which operations you check. Each permission maps to a specific set of tools.
+
+| Permission        | Tools enabled                              | What the agent can do                       |
+| ----------------- | ------------------------------------------ | ------------------------------------------- |
+| **Read messages** | `email_list`, `email_read`, `email_search` | List, read, and search emails               |
+| **Create drafts** | above + `email_draft`                      | Create draft emails, including reply drafts |
+| **Send messages** | above + `email_send`                       | Send emails immediately — cannot be undone  |
+
+Permissions are additive — granting Send automatically includes Read and Draft. Each permission is selected per-agent, so you can have one agent that only reads email and another that can send on your behalf.
+
+:::caution[Send is powerful]
+**Send messages** lets the agent send email from the connected account without human review. Prefer **Create drafts** when a human can review before sending — it's safer by default.
+:::
+
+For the full setup walkthrough, see [Connect Email](/guides/connect-email/). For details on setting up connections in general, see [Integrations](/concepts/integrations/).
 
 ## Agent templates and default permissions
 

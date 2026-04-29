@@ -42,18 +42,23 @@ export interface ProviderModels {
 
 const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
   anthropic: [
-    { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" },
+    { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
     { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
     { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
   ],
   openai: [
-    { id: "openai/gpt-4o", name: "GPT-4o" },
-    { id: "openai/gpt-4o-mini", name: "GPT-4o Mini" },
-    { id: "openai/o1", name: "o1" },
+    { id: "openai/gpt-5.5", name: "GPT-5.5" },
+    { id: "openai/gpt-5.4", name: "GPT-5.4" },
+    { id: "openai/gpt-5.4-mini", name: "GPT-5.4 Mini" },
   ],
+  // Order matters for selectDefaultModel tie-breaking when no model carries a
+  // YYYYMMDD date suffix (current state for the Gemini 2.5 family). The default
+  // pattern is /gemini-.*-flash/, so flash and flash-lite both match — first
+  // match wins.
   google: [
-    { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
     { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
+    { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
+    { id: "google/gemini-2.5-flash-lite", name: "Gemini 2.5 Flash Lite" },
   ],
   "ollama-cloud": TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS.map((id) => ({
     id: `ollama-cloud/${id}`,

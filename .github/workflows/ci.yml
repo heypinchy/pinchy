@@ -32,6 +32,24 @@ jobs:
       - name: Format check (docs & workflows)
         run: pnpm -C packages/web exec prettier --check "../../docs/src/**/*.{mdx,md}" "../../.github/**/*.yml"
 
+      - name: Squawk migration lint (changed files only)
+        if: github.event_name == 'pull_request'
+        run: |
+          # Default checkout is shallow (depth 1); fetch base ref so git diff
+          # has a comparison target. Filtering to changed migration files only
+          # keeps historical destructive DDL (pre-Scope-3) untouched.
+          # Pinned version: when bumping, re-verify rule names in .squawk.toml.
+          git fetch --no-tags --depth=50 origin "${{ github.base_ref }}"
+          BASE="origin/${{ github.base_ref }}"
+          CHANGED=$(git diff --name-only "$BASE"...HEAD -- 'packages/web/drizzle/*.sql' | tr '\n' ' ')
+          if [ -z "$CHANGED" ]; then
+            echo "No migration changes — skipping Squawk lint"
+            exit 0
+          fi
+          echo "Linting changed migrations: $CHANGED"
+          # shellcheck disable=SC2086 -- word-split intentional: passes each migration path as a separate squawk arg
+          npx --yes squawk-cli@2.48.0 $CHANGED
+
       - name: Test
         run: pnpm test
 
@@ -113,6 +131,12 @@ jobs:
   docker-smoke:
     name: Docker smoke test
     runs-on: ubuntu-latest
+
+    # Dev-mode CI test: images are built locally and tagged :latest. Satisfy
+    # the compose fail-loud check on ${PINCHY_VERSION:?} without depending on
+    # a .env file.
+    env:
+      PINCHY_VERSION: latest
 
     steps:
       - uses: actions/checkout@v4
@@ -206,13 +230,20 @@ jobs:
 
       - name: Verify OpenClaw connection (production)
         run: |
+          # Setup wizard rewrites openclaw.json (adds Smithers, plus the
+          # anthropic plugin OpenClaw auto-enables for Smithers' default model),
+          # which OpenClaw treats as a plugins-changed reload → SIGUSR1 → full
+          # process restart. Pinchy's openclaw-node uses exponential backoff on
+          # reconnect (1s → 2s → 4s → … → 30s cap), so it can take ~60s for
+          # Pinchy to land back on a healthy gateway after that restart cascade.
+          # 120s (60 × 2s) gives headroom without masking real failures.
           echo "Waiting for OpenClaw connection after setup..."
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             if docker compose logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
               echo "OpenClaw connection verified (attempt $i)"
               break
             fi
-            if [ "$i" -eq 30 ]; then
+            if [ "$i" -eq 60 ]; then
               echo "::error::Pinchy never connected to OpenClaw Gateway"
               docker compose logs pinchy openclaw
               exit 1
@@ -395,13 +426,15 @@ jobs:
 
       - name: Verify OpenClaw connection (dev)
         run: |
+          # Same exponential-backoff window as the production verify above:
+          # setup wizard's SIGUSR1 means Pinchy can take ~60-90s to reconnect.
           echo "Waiting for OpenClaw connection after setup..."
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             if docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
               echo "OpenClaw connection verified (attempt $i)"
               break
             fi
-            if [ "$i" -eq 30 ]; then
+            if [ "$i" -eq 60 ]; then
               echo "::error::Pinchy never connected to OpenClaw Gateway"
               docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy openclaw
               exit 1
@@ -436,6 +469,12 @@ jobs:
           docker build -t ghcr.io/heypinchy/pinchy:latest -f Dockerfile.pinchy .
           docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
 
+      - name: Tag locally-built images for the test version
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
+          docker tag ghcr.io/heypinchy/pinchy:latest "ghcr.io/heypinchy/pinchy:test-${SHORT_SHA}"
+          docker tag ghcr.io/heypinchy/pinchy-openclaw:latest "ghcr.io/heypinchy/pinchy-openclaw:test-${SHORT_SHA}"
+
       # Simulate what a real end-user deploy looks like: a fresh directory
       # containing ONLY docker-compose.yml — no source tree, no .env file,
       # no co-located repo. This catches bugs where compose.yml relies on
@@ -451,12 +490,22 @@ jobs:
           echo "Clean install dir: $INSTALL_DIR"
           ls -la "$INSTALL_DIR"
 
+      - name: Write .env for install test
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
+          {
+            echo "PINCHY_VERSION=test-${SHORT_SHA}"
+            echo "DB_PASSWORD=$(openssl rand -hex 32)"
+          } > .env
+          # BETTER_AUTH_SECRET + ENCRYPTION_KEY remain unset on purpose —
+          # tests Pinchy's auto-generation path (used by end-users who
+          # don't customize .env).
+          cat .env | sed 's/=.*/=<redacted>/'
+
       - name: Start stack from clean install dir
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: docker compose up -d
-        env:
-          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
-          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
       - name: Wait for health
         working-directory: ${{ steps.install-dir.outputs.path }}
@@ -519,9 +568,171 @@ jobs:
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: docker compose down -v
 
+  end-user-upgrade:
+    name: End-user upgrade simulation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/docker-mirror
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Determine previous release tag
+        id: prev
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # gh release list returns newest-first (gh CLI v2 default).
+          # .[0] is the most recent release — the version real users are upgrading from.
+          TAG=$(gh release list --repo heypinchy/pinchy --limit 1 --json tagName -q '.[0].tagName // empty')
+          if [ -z "$TAG" ]; then
+            echo "::notice::No previous release found — skipping upgrade test."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Previous tag: $TAG"
+            echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build this PR's images locally
+        if: steps.prev.outputs.skip == 'false'
+        run: |
+          docker build -t ghcr.io/heypinchy/pinchy:latest -f Dockerfile.pinchy .
+          docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
+
+      - name: Tag locally-built images for the test version
+        if: steps.prev.outputs.skip == 'false'
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
+          docker tag ghcr.io/heypinchy/pinchy:latest "ghcr.io/heypinchy/pinchy:test-${SHORT_SHA}"
+          docker tag ghcr.io/heypinchy/pinchy-openclaw:latest "ghcr.io/heypinchy/pinchy-openclaw:test-${SHORT_SHA}"
+
+      - name: Generate shared DB_PASSWORD for both phases
+        if: steps.prev.outputs.skip == 'false'
+        id: shared
+        # Postgres fixes DB_PASSWORD on the volume's first init. Phase 1 and
+        # phase 2 must use the same password or phase 2 fails auth against the
+        # persisted volume. Generate once, reuse across phases.
+        run: echo "db_password=$(openssl rand -hex 32)" >> "$GITHUB_OUTPUT"
+
+      - name: Prepare clean install directory
+        if: steps.prev.outputs.skip == 'false'
+        id: install-dir
+        run: |
+          INSTALL_DIR=$(mktemp -d)
+          echo "path=$INSTALL_DIR" >> "$GITHUB_OUTPUT"
+
+      - name: Phase 1 — fetch previous release's docker-compose.yml
+        if: steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          curl -fsSL \
+            "https://raw.githubusercontent.com/heypinchy/pinchy/${{ steps.prev.outputs.tag }}/docker-compose.yml" \
+            -o docker-compose.yml
+
+      - name: Phase 1 — pin previous compose's :latest to the previous tag
+        if: steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          # The previous release's compose file hardcodes :latest for image
+          # tags (it predates Scope 2's ${PINCHY_VERSION:?} shape). Without
+          # pinning, docker compose pull would fetch whatever :latest points
+          # to right now — defeating the whole point of "upgrade from the
+          # previous release."
+          sed -i "s|:latest|:${{ steps.prev.outputs.tag }}|g" docker-compose.yml
+          grep -E '^\s*image:' docker-compose.yml
+
+      - name: Phase 1 — write .env for previous release
+        if: steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          # The previous step pinned image tags inline, so PINCHY_VERSION
+          # here is redundant for phase 1 — but we include it so phase 1 and
+          # phase 2 .env files are structurally identical, which mirrors what
+          # real users do and simplifies debugging.
+          {
+            echo "PINCHY_VERSION=${{ steps.prev.outputs.tag }}"
+            echo "DB_PASSWORD=${{ steps.shared.outputs.db_password }}"
+          } > .env
+
+      - name: Phase 1 — start previous version and wait healthy
+        if: steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          docker compose pull
+          docker compose up -d
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:7777/api/health; then
+              echo "Previous version healthy"
+              exit 0
+            fi
+            echo "Attempt $i: not ready yet"
+            sleep 2
+          done
+          echo "::error::Previous version (${{ steps.prev.outputs.tag }}) did not come up"
+          docker compose logs
+          exit 1
+
+      - name: Phase 2 — swap to this PR's compose file + images
+        if: steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
+          docker compose stop
+          # Swap in this PR's docker-compose.yml (new PINCHY_VERSION-based shape).
+          cp "${GITHUB_WORKSPACE}/docker-compose.yml" docker-compose.yml
+          # Update PINCHY_VERSION in .env, keep DB_PASSWORD (Postgres fixed it on
+          # volume init during phase 1).
+          sed -i "s|^PINCHY_VERSION=.*|PINCHY_VERSION=test-${SHORT_SHA}|" .env
+          docker compose up -d
+          for i in $(seq 1 60); do
+            # 60s because migrations may run on startup
+            if curl -sf http://localhost:7777/api/health; then
+              echo "Upgraded version healthy — migrations succeeded"
+              exit 0
+            fi
+            echo "Attempt $i: not ready yet"
+            sleep 2
+          done
+          echo "::error::Upgrade from ${{ steps.prev.outputs.tag }} did not come up healthy"
+          docker compose logs
+          exit 1
+
+      - name: Assert pinchy still binds to 127.0.0.1 after upgrade (not 0.0.0.0)
+        if: steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          # Docker bypasses UFW — only 127.0.0.1 binding prevents external access.
+          # Assert the upgrade path doesn't re-expose port 7777 globally (regression guard).
+          BINDING=$(docker inspect \
+            --format '{{range $p, $c := .NetworkSettings.Ports}}{{range $c}}{{.HostIp}}{{end}}{{end}}' \
+            "$(docker compose ps -q pinchy)")
+          echo "Pinchy port binding host IP after upgrade: $BINDING"
+          if [ "$BINDING" != "127.0.0.1" ]; then
+            echo "::error::Pinchy must bind to 127.0.0.1 after upgrade (got '$BINDING'). Docker bypasses UFW, so 0.0.0.0 exposes the port to the internet regardless of firewall rules."
+            exit 1
+          fi
+
+      - name: Tear down
+        if: always() && steps.prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: docker compose down -v
+
   odoo-e2e:
     name: Odoo E2E Tests
     runs-on: ubuntu-latest
+
+    # Dev-mode CI test: images are built by compose via docker-compose.dev.yml.
+    # Satisfy the compose fail-loud check on ${PINCHY_VERSION:?} — value is
+    # just the build tag, never pulled from a registry.
+    env:
+      PINCHY_VERSION: latest
 
     steps:
       - uses: actions/checkout@v4
@@ -616,6 +827,12 @@ jobs:
   telegram-e2e:
     name: Telegram E2E Tests
     runs-on: ubuntu-latest
+
+    # Dev-mode CI test: images are built by compose via docker-compose.dev.yml.
+    # Satisfy the compose fail-loud check on ${PINCHY_VERSION:?} — value is
+    # just the build tag, never pulled from a registry.
+    env:
+      PINCHY_VERSION: latest
 
     steps:
       - uses: actions/checkout@v4
@@ -834,7 +1051,11 @@ jobs:
       # to the DB before it exists unless we pre-provision it here.
       - name: Pre-start integration Docker stack
         run: |
+          # Pre-create bind-mount targets so Docker doesn't create them as root,
+          # which would prevent Pinchy (running on the host as the CI user) from
+          # writing secrets.json — see openclaw-tmpfs branch.
           mkdir -p /tmp/pinchy-integration-openclaw/workspaces
+          mkdir -p /tmp/pinchy-integration-secrets
           docker compose -f docker-compose.integration.yml up -d --wait
 
       - name: Create and migrate integration DB
@@ -856,7 +1077,10 @@ jobs:
       - name: Show Docker logs on failure
         if: failure()
         run: |
-          echo "=== OpenClaw logs ==="
+          echo "=== OpenClaw logs (captured by globalTeardown before stack-down) ==="
+          cat /tmp/openclaw-integration.log 2>/dev/null || echo "no captured log file"
+          echo ""
+          echo "=== OpenClaw logs (live, may be empty if container already stopped) ==="
           docker compose -f docker-compose.integration.yml logs openclaw 2>/dev/null || true
           echo "=== DB logs ==="
           docker compose -f docker-compose.integration.yml logs db 2>/dev/null || true
@@ -918,7 +1142,7 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: "--no-progress --max-retries 3 --retry-wait-time 5 '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev'"
+          args: "--no-progress --max-retries 3 --retry-wait-time 5 '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev' --exclude 'squawkhq\\.com'"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

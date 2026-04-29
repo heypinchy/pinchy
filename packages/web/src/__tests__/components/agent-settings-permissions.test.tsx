@@ -21,6 +21,21 @@ vi.mock("@/components/integration-permission-section", () => ({
   },
 }));
 
+vi.mock("@/components/web-search-permission-section", () => ({
+  WebSearchPermissionSection: ({
+    showSecurityWarning,
+  }: {
+    config: unknown;
+    onChange: (v: unknown) => void;
+    showSecurityWarning: boolean;
+  }) => (
+    <div data-testid="web-search-section">
+      Web Search Config
+      {showSecurityWarning && <span data-testid="security-warning">Security Warning</span>}
+    </div>
+  ),
+}));
+
 vi.mock("@/components/email-permission-section", () => ({
   EmailPermissionSection: ({
     onChange,
@@ -42,10 +57,10 @@ describe("AgentSettingsPermissions", () => {
   const defaultAgent = {
     id: "agent-1",
     name: "Smithers",
-    model: "anthropic/claude-sonnet-4-20250514",
+    model: "anthropic/claude-sonnet-4-6",
     isPersonal: false,
     allowedTools: [] as string[],
-    pluginConfig: null as { allowed_paths?: string[] } | null,
+    pluginConfig: null as import("@/db/schema").AgentPluginConfig | null,
   };
 
   const defaultDirectories = [
@@ -176,7 +191,7 @@ describe("AgentSettingsPermissions", () => {
     const agentWithTools = {
       ...defaultAgent,
       allowedTools: ["pinchy_ls"],
-      pluginConfig: { allowed_paths: ["/data/docs"] },
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs"] } },
     };
 
     render(
@@ -338,7 +353,7 @@ describe("AgentSettingsPermissions", () => {
           agent={{
             ...defaultAgent,
             allowedTools: ["pinchy_read"],
-            pluginConfig: { allowed_paths: ["/data/docs"] },
+            pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs"] } },
             model: "ollama/llama3.1:8b",
           }}
           directories={defaultDirectories}
@@ -356,7 +371,7 @@ describe("AgentSettingsPermissions", () => {
           agent={{
             ...defaultAgent,
             allowedTools: ["pinchy_read"],
-            pluginConfig: { allowed_paths: ["/data/docs"] },
+            pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs"] } },
             model: "anthropic/claude-sonnet-4-6",
           }}
           directories={defaultDirectories}
@@ -384,6 +399,126 @@ describe("AgentSettingsPermissions", () => {
         />
       );
       expect(screen.queryByText(/limited pdf support/i)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("Web Search section", () => {
+    const webSearchConnection = { id: "ws-1", name: "Brave Search", type: "web-search" };
+
+    it("should render Web Search heading with checkboxes for web tools", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[webSearchConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.getByText("Web Search")).toBeInTheDocument();
+      expect(screen.getByLabelText("Search the web")).toBeInTheDocument();
+      expect(screen.getByLabelText("Fetch web pages")).toBeInTheDocument();
+    });
+
+    it("should not show WebSearchPermissionSection when no web tool is checked", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[webSearchConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByTestId("web-search-section")).not.toBeInTheDocument();
+    });
+
+    it("should show WebSearchPermissionSection when a web tool is checked", async () => {
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[webSearchConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Search the web"));
+
+      expect(screen.getByTestId("web-search-section")).toBeInTheDocument();
+    });
+
+    it("should show WebSearchPermissionSection when agent already has web tools allowed", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_web_search"] }}
+          directories={defaultDirectories}
+          connections={[webSearchConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.getByTestId("web-search-section")).toBeInTheDocument();
+    });
+
+    it("should show security warning when agent has web tools and file tools", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{
+            ...defaultAgent,
+            allowedTools: ["pinchy_web_fetch", "pinchy_ls"],
+            pluginConfig: { "pinchy-files": { allowed_paths: ["/data"] } },
+          }}
+          directories={defaultDirectories}
+          connections={[webSearchConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.getByTestId("security-warning")).toBeInTheDocument();
+    });
+
+    it("should not show security warning when agent has only web tools", () => {
+      render(
+        <AgentSettingsPermissions
+          agent={{ ...defaultAgent, allowedTools: ["pinchy_web_search"] }}
+          directories={defaultDirectories}
+          connections={[webSearchConnection]}
+          isAdmin={true}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(screen.queryByTestId("security-warning")).not.toBeInTheDocument();
+    });
+
+    it("should include web tools in allowedTools onChange", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsPermissions
+          agent={defaultAgent}
+          directories={defaultDirectories}
+          connections={[webSearchConnection]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      await userEvent.click(screen.getByLabelText("Search the web"));
+
+      await waitFor(() => {
+        expect(onChange).toHaveBeenCalledWith(
+          expect.objectContaining({
+            allowedTools: expect.arrayContaining(["pinchy_web_search"]),
+          }),
+          true
+        );
+      });
     });
   });
 
@@ -440,7 +575,7 @@ describe("AgentSettingsPermissions", () => {
       );
 
       expect(onChange).toHaveBeenCalledWith(
-        { allowedTools: [], allowedPaths: [], integrations: [] },
+        { allowedTools: [], allowedPaths: [], integrations: [], webSearchConfig: {} },
         false
       );
     });

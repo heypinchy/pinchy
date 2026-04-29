@@ -22,7 +22,7 @@ export type MembershipDetail = {
   [key: string]: unknown;
 };
 
-export type AuditResource = "agent" | "group" | "user" | "settings" | "config" | "channel";
+export type AuditResource = "agent" | "group" | "user" | "settings" | "config" | "channel" | "chat";
 
 export type AuditEventType =
   | `tool.${string}`
@@ -34,6 +34,7 @@ export type AuditEventType =
   | "agent.updated"
   | "agent.deleted"
   | "user.invited"
+  | "user.invite_blocked"
   | "user.updated"
   | "user.deleted"
   | "config.changed"
@@ -44,7 +45,8 @@ export type AuditEventType =
   | "user.groups_updated"
   | "user.role_updated"
   | "channel.created"
-  | "channel.deleted";
+  | "channel.deleted"
+  | "chat.retry_triggered";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -149,7 +151,11 @@ export type AuditLogEntry =
       detail: DeleteDetail;
     })
   | (AuditLogBase & {
-      eventType: `${AuditResource}.created` | "user.invited" | "config.changed";
+      eventType:
+        | `${AuditResource}.created`
+        | "user.invited"
+        | "user.invite_blocked"
+        | "config.changed";
       detail: Record<string, unknown>;
     })
   | (AuditLogBase & {
@@ -162,6 +168,10 @@ export type AuditLogEntry =
     })
   | (AuditLogBase & {
       eventType: `tool.${string}`;
+      detail?: Record<string, unknown>;
+    })
+  | (AuditLogBase & {
+      eventType: `chat.${string}`;
       detail?: Record<string, unknown>;
     });
 

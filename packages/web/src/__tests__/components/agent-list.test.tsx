@@ -15,7 +15,7 @@ const agents = [
   {
     id: "agent-1",
     name: "Smithers",
-    model: "anthropic/claude-sonnet-4-20250514",
+    model: "anthropic/claude-sonnet-4-6",
     isPersonal: true,
     tagline: "Your personal assistant",
     avatarSeed: "__smithers__",
@@ -23,7 +23,7 @@ const agents = [
   {
     id: "agent-2",
     name: "Zara",
-    model: "anthropic/claude-sonnet-4-20250514",
+    model: "anthropic/claude-sonnet-4-6",
     isPersonal: false,
     tagline: null,
     avatarSeed: "zara-seed",
@@ -31,7 +31,7 @@ const agents = [
   {
     id: "agent-3",
     name: "Ada",
-    model: "anthropic/claude-sonnet-4-20250514",
+    model: "anthropic/claude-sonnet-4-6",
     isPersonal: false,
     tagline: "Code review expert",
     avatarSeed: null,

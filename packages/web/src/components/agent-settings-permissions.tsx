@@ -18,10 +18,12 @@ import {
   type IntegrationPermValues,
 } from "@/components/integration-permission-section";
 import { EmailPermissionSection } from "@/components/email-permission-section";
+import { WebSearchPermissionSection } from "@/components/web-search-permission-section";
 import type {
   IntegrationPermissionsConfig,
   IntegrationEntity,
 } from "@/hooks/use-integration-permissions";
+import type { AgentPluginConfig } from "@/db/schema";
 import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
 import { ENTITY_CATEGORIES } from "@/lib/integrations/pipedrive-sync";
 
@@ -196,6 +198,8 @@ const INTEGRATION_CONFIGS: IntegrationTypeConfig[] = [
 ];
 
 // Integration tool prefixes that are managed by generic + email sections — filtered out of KB tools.
+// Web tools (pinchy_web_*) are NOT filtered: they share the allowedKbTools state with KB tools but
+// are rendered in their own Web Search section.
 const INTEGRATION_TOOL_PREFIXES = [...INTEGRATION_CONFIGS.map((c) => `${c.type}_`), "email_"];
 
 export interface PermissionsValues {
@@ -205,6 +209,7 @@ export interface PermissionsValues {
     connectionId: string;
     permissions: Array<{ model: string; operation: string }>;
   }>;
+  webSearchConfig?: AgentPluginConfig["pinchy-web"];
 }
 
 interface Connection {
@@ -222,7 +227,7 @@ interface AgentSettingsPermissionsProps {
     id: string;
     model: string;
     allowedTools: string[];
-    pluginConfig: { allowed_paths?: string[] } | null;
+    pluginConfig: AgentPluginConfig | null;
   };
   directories: Array<{ path: string; name: string }>;
   connections: Connection[];
@@ -240,6 +245,9 @@ export function AgentSettingsPermissions({
   // KB tools = non-integration safe tools only
   const kbTools = getToolsByCategory("safe").filter((t) => !t.integration);
 
+  // Web tools = powerful tools with web-search integration
+  const webTools = getToolsByCategory("powerful").filter((t) => t.integration === "web-search");
+
   // Filter initial allowedTools to only KB tools (exclude all integration prefixes)
   const initialKbTools = agent.allowedTools.filter(
     (id) => !INTEGRATION_TOOL_PREFIXES.some((prefix) => id.startsWith(prefix))
@@ -247,7 +255,7 @@ export function AgentSettingsPermissions({
 
   const [allowedKbTools, setAllowedKbTools] = useState<string[]>(initialKbTools);
   const [allowedPaths, setAllowedPaths] = useState<string[]>(
-    agent.pluginConfig?.allowed_paths ?? []
+    agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []
   );
 
   // Per-integration state for generic-backed types (odoo, pipedrive)
@@ -262,14 +270,31 @@ export function AgentSettingsPermissions({
     permissions: Array<{ model: string; operation: string }>;
   } | null>(null);
   const [emailIsDirty, setEmailIsDirty] = useState(false);
+  const [webSearchConfig, setWebSearchConfig] = useState<AgentPluginConfig["pinchy-web"]>(
+    agent.pluginConfig?.["pinchy-web"] ?? {}
+  );
 
   const initialKbToolsRef = useRef(initialKbTools);
-  const initialAllowedPaths = useRef(agent.pluginConfig?.allowed_paths ?? []);
+  const initialAllowedPaths = useRef(agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []);
+  const initialWebSearchConfig = useRef(agent.pluginConfig?.["pinchy-web"] ?? {});
 
   const hasKbToolChecked = kbTools.some((tool) => allowedKbTools.includes(tool.id));
+  const hasWebToolChecked = webTools.some((tool) => allowedKbTools.includes(tool.id));
+
+  // Check if the agent has sensitive data access (file tools or any integration with permissions)
+  const hasIntegrationWithPermissions = Object.values(integrationStates).some(
+    (s) => s !== null && s.permissions.length > 0
+  );
+  const hasSensitiveDataAccess =
+    allowedKbTools.includes("pinchy_ls") ||
+    allowedKbTools.includes("pinchy_read") ||
+    hasIntegrationWithPermissions ||
+    emailIntegration !== null;
+
+  const showSecurityWarning = hasWebToolChecked && hasSensitiveDataAccess;
 
   // Partition active (non-pending) connections by integration family
-  const { connectionsByType, emailConnections } = useMemo(() => {
+  const { connectionsByType, emailConnections, webSearchConnections } = useMemo(() => {
     const active = connections.filter((c) => c.status !== "pending");
     const byType: Record<string, Connection[]> = {};
     for (const conn of active) {
@@ -277,8 +302,11 @@ export function AgentSettingsPermissions({
       byType[conn.type].push(conn);
     }
     const emails = active.filter((c) => EMAIL_CONNECTION_TYPES.has(c.type));
-    return { connectionsByType: byType, emailConnections: emails };
+    const webs = active.filter((c) => c.type === "web-search");
+    return { connectionsByType: byType, emailConnections: emails, webSearchConnections: webs };
   }, [connections]);
+
+  const hasWebSearchApiKey = webSearchConnections.length > 0;
 
   // Compute the combined allowedTools array (KB tools + generic integration tools + email tools)
   const computeAllowedTools = useCallback(
@@ -320,7 +348,9 @@ export function AgentSettingsPermissions({
       JSON.stringify([...allowedPaths].sort()) !==
         JSON.stringify([...initialAllowedPaths.current].sort());
     const anyIntegrationDirty = Object.values(integrationDirtyStates).some((d) => d);
-    const isDirty = kbDirty || anyIntegrationDirty || emailIsDirty;
+    const webConfigDirty =
+      JSON.stringify(webSearchConfig) !== JSON.stringify(initialWebSearchConfig.current);
+    const isDirty = kbDirty || anyIntegrationDirty || emailIsDirty || webConfigDirty;
 
     const integrations: Array<{
       connectionId: string;
@@ -336,6 +366,7 @@ export function AgentSettingsPermissions({
         allowedTools: allAllowedTools,
         allowedPaths,
         integrations,
+        webSearchConfig,
       },
       isDirty
     );
@@ -346,6 +377,7 @@ export function AgentSettingsPermissions({
     integrationDirtyStates,
     emailIntegration,
     emailIsDirty,
+    webSearchConfig,
     onChange,
     computeAllowedTools,
   ]);
@@ -376,6 +408,10 @@ export function AgentSettingsPermissions({
   ) {
     setEmailIntegration(values);
     setEmailIsDirty(isDirty);
+  }
+
+  function handleWebSearchConfigChange(config: AgentPluginConfig["pinchy-web"]) {
+    setWebSearchConfig(config);
   }
 
   // Render only integration types that have at least one active connection
@@ -429,6 +465,37 @@ export function AgentSettingsPermissions({
           </Alert>
         )}
       </section>
+
+      {/* Web Search section — only when at least one active Web Search connection exists */}
+      {hasWebSearchApiKey && (
+        <section className="space-y-4">
+          <h3 className="text-lg font-semibold">Web Search</h3>
+          <div className="space-y-3">
+            {webTools.map((tool) => (
+              <div key={tool.id} className="flex items-center space-x-3">
+                <Checkbox
+                  id={`tool-${tool.id}`}
+                  checked={allowedKbTools.includes(tool.id)}
+                  onCheckedChange={() => handleToolToggle(tool.id)}
+                  aria-label={tool.label}
+                />
+                <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
+                  <span className="font-medium">{tool.label}</span>
+                  <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
+                </Label>
+              </div>
+            ))}
+          </div>
+
+          {hasWebToolChecked && (
+            <WebSearchPermissionSection
+              config={webSearchConfig ?? {}}
+              onChange={handleWebSearchConfigChange}
+              showSecurityWarning={showSecurityWarning}
+            />
+          )}
+        </section>
+      )}
 
       {/* Generic integration sections (Odoo, Pipedrive) */}
       {visibleIntegrations.map((config) => (

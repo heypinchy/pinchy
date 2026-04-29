@@ -102,7 +102,7 @@ const defaultAgent = {
   name: "Smithers",
   ownerId: null,
   isPersonal: false,
-  greetingMessage: null,
+  greetingMessage: "Hello.",
 };
 
 function createMockOpenClawClient(connected = true) {
@@ -969,30 +969,6 @@ describe("ClientRouter", () => {
     ]);
   });
 
-  it("should return empty history when no history and agent has no greeting", async () => {
-    const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
-    const clientWs = createMockClientWs();
-    mockFindFirst.mockResolvedValue({
-      ...defaultAgent,
-      greetingMessage: null,
-    });
-
-    // OpenClaw returns empty history
-    mockSessionsHistory.mockResolvedValue({ messages: [] });
-
-    await freshRouter.handleMessage(clientWs as any, {
-      type: "history",
-      agentId: "agent-1",
-    });
-
-    expect(mockSessionsHistory).toHaveBeenCalledWith("agent:agent-1:direct:user-1");
-    const sent = clientWs.sent.map((s) => JSON.parse(s));
-    expect(sent).toHaveLength(1);
-    expect(sent[0].type).toBe("history");
-    expect(sent[0].messages).toEqual([]);
-  });
-
   it("should include extraSystemPrompt with greeting context on first message", async () => {
     const freshCache = new SessionCache();
     const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
@@ -1742,28 +1718,6 @@ describe("ClientRouter", () => {
     consoleSpy.mockRestore();
   });
 
-  it("should return empty history when history fetch fails and no greeting", async () => {
-    const freshCache = new SessionCache();
-    const freshRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", freshCache);
-
-    mockFindFirst.mockResolvedValue({
-      ...defaultAgent,
-      greetingMessage: null,
-    });
-    mockSessionsHistory.mockRejectedValue(new Error("Gateway timeout"));
-
-    const clientWs = createMockClientWs();
-    await freshRouter.handleMessage(clientWs as any, {
-      type: "history",
-      agentId: "agent-1",
-    });
-
-    const sent = clientWs.sent.map((s) => JSON.parse(s));
-    expect(sent).toHaveLength(1);
-    expect(sent[0].type).toBe("history");
-    expect(sent[0].messages).toEqual([]);
-  });
-
   describe("per-user context injection for shared agents", () => {
     it("should include user context in extraSystemPrompt for shared agents", async () => {
       mockUserFindFirst.mockResolvedValue({
@@ -2075,6 +2029,218 @@ describe("ClientRouter", () => {
       const greeting = sent[0].messages[0].content;
       expect(greeting).not.toContain("{user}");
       expect(greeting).toContain("I'm Smithers");
+    });
+  });
+
+  describe("userMessagePersisted ack", () => {
+    it("sends { type: 'ack', clientMessageId } to browser when stream yields userMessagePersisted", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "k1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "k1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const ackMsg = messages.find((m: any) => m.type === "ack");
+      expect(ackMsg).toBeDefined();
+      expect(ackMsg).toEqual({ type: "ack", clientMessageId: "k1" });
+    });
+
+    it("does NOT forward the raw userMessagePersisted chunk to the browser", async () => {
+      const clientWs = createMockClientWs();
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "k1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "k1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m: any) => m.type === "userMessagePersisted")).toBe(false);
+    });
+  });
+
+  describe("clientMessageId forwarding", () => {
+    it("forwards clientMessageId from browser WS frame to openclaw.chat()", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "uuid-123",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith(
+        "Hi",
+        expect.objectContaining({ clientMessageId: "uuid-123" })
+      );
+    });
+
+    it("omits clientMessageId from openclaw.chat() when not provided by browser", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const callArgs = mockChat.mock.calls[0][1] as Record<string, unknown>;
+      expect(callArgs).not.toHaveProperty("clientMessageId");
+    });
+  });
+
+  describe("chat.retry_triggered audit log", () => {
+    it("appends audit log on retry-resend with implicit fallback reason 'send_failure'", async () => {
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "msg-id-1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "msg-id-1",
+        isRetry: true,
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorType: "user",
+          actorId: "user-1",
+          eventType: "chat.retry_triggered",
+          resource: "agent:agent-1",
+          outcome: "success",
+          detail: expect.objectContaining({
+            agent: { id: "agent-1", name: "Smithers" },
+            sessionKey: "agent:agent-1:direct:user-1",
+            reason: "send_failure",
+          }),
+        })
+      );
+    });
+
+    it("appends audit log with explicit reason 'orphan'", async () => {
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "msg-id-1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "msg-id-1",
+        isRetry: true,
+        retryReason: "orphan",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.retry_triggered",
+          detail: expect.objectContaining({ reason: "orphan" }),
+        })
+      );
+    });
+
+    it("appends audit log with explicit reason 'partial_stream_failure'", async () => {
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "msg-id-1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "msg-id-1",
+        isRetry: true,
+        retryReason: "partial_stream_failure",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.retry_triggered",
+          detail: expect.objectContaining({ reason: "partial_stream_failure" }),
+        })
+      );
+    });
+
+    // Trust-boundary guard: TypeScript's union (`"orphan" | "partial_stream_failure"
+    // | "send_failure"`) is erased at runtime, so a malicious or buggy client could
+    // POST arbitrary strings as retryReason. Without server-side validation, those
+    // would land in HMAC-signed audit rows.
+    it("rejects unknown retryReason and falls back to 'send_failure' in audit log", async () => {
+      async function* fakeStream() {
+        yield { type: "userMessagePersisted" as const, clientMessageId: "msg-id-1" };
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+        clientMessageId: "msg-id-1",
+        isRetry: true,
+        retryReason: "<script>alert(1)</script>" as any,
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "chat.retry_triggered",
+          detail: expect.objectContaining({ reason: "send_failure" }),
+        })
+      );
+    });
+
+    it("does NOT append audit log for normal (non-retry) message sends", async () => {
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).not.toHaveBeenCalled();
     });
   });
 

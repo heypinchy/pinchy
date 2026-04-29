@@ -94,8 +94,8 @@ export async function createAgent(name: string): Promise<{ id: string; name: str
   const sql = postgres(dbUrl);
   const id = crypto.randomUUID();
   await sql`
-    INSERT INTO agents (id, name, model, allowed_tools, visibility)
-    VALUES (${id}, ${name}, 'anthropic/claude-haiku-4-5-20251001', '[]'::jsonb, 'all')
+    INSERT INTO agents (id, name, model, allowed_tools, visibility, greeting_message)
+    VALUES (${id}, ${name}, 'anthropic/claude-haiku-4-5-20251001', '[]'::jsonb, 'all', 'Hello! How can I help you?')
   `;
   await sql.end();
   return { id, name };

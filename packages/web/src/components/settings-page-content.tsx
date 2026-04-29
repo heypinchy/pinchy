@@ -15,6 +15,7 @@ import { SettingsIntegrations } from "@/components/settings-integrations";
 import { SettingsLicense } from "@/components/settings-license";
 import { TelegramLinkSettings } from "@/components/telegram-link-settings";
 import { SettingsSecurity } from "@/components/settings-security";
+import type { LicenseInfo } from "@/lib/enterprise";
 
 interface ProviderStatus {
   defaultProvider: string | null;
@@ -28,15 +29,6 @@ function DirtyDot() {
       aria-label="unsaved changes"
     />
   );
-}
-
-interface LicenseInfo {
-  enterprise: boolean;
-  type: string | null;
-  org: string | null;
-  expiresAt: string | null;
-  daysRemaining: number | null;
-  managedByEnv: boolean;
 }
 
 export function SettingsPageContent({

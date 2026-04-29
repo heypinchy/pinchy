@@ -123,9 +123,10 @@ describe("JSON column types — compile-time contracts", () => {
     expectTypeOf<Row["pluginConfig"]>().toEqualTypeOf<AgentPluginConfig | null>();
   });
 
-  it("AgentPluginConfig describes the knowledge-base allowed_paths shape", () => {
+  it("AgentPluginConfig is namespaced by plugin ID", () => {
     expectTypeOf<AgentPluginConfig>().toMatchObjectType<{
-      allowed_paths?: string[];
+      "pinchy-files"?: { allowed_paths: string[] };
+      "pinchy-web"?: { allowedDomains?: string[] };
     }>();
   });
 

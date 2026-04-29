@@ -1,4 +1,7 @@
-// audit-exempt: read-only connection test, no state changes
+// audit-exempt: read-only for web-search. The Odoo branch may auto-repair a
+// stored uid when the first successful authenticate returns a different value
+// (one-time bootstrap), which is intentional and not user-initiated state
+// change — no separate audit entry is written for that self-heal path.
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { eq } from "drizzle-orm";
@@ -64,7 +67,25 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
       });
     }
 
-    // Odoo (default)
+    // Web-search: validate API key against Brave Search API
+    if (connection.type === "web-search") {
+      const apiKey = decrypted.apiKey as string | undefined;
+      if (!apiKey) {
+        return NextResponse.json(
+          { success: false, error: "Invalid credentials format" },
+          { status: 200 }
+        );
+      }
+      const res = await fetch("https://api.search.brave.com/res/v1/web/search?q=test&count=1", {
+        headers: { "X-Subscription-Token": apiKey },
+      });
+      if (!res.ok) {
+        return NextResponse.json({ success: false, error: "Invalid API key" }, { status: 200 });
+      }
+      return NextResponse.json({ success: true });
+    }
+
+    // Odoo: authenticate and verify version
     const parsed = odooCredentialsSchema.safeParse(decrypted);
     if (!parsed.success) {
       return NextResponse.json(

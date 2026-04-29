@@ -1,16 +1,5 @@
-import { readFileSync } from "fs";
 import { timingSafeEqual } from "crypto";
-
-const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
-
-function readGatewayToken(): string | null {
-  try {
-    const config = JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
-    return config?.gateway?.auth?.token ?? null;
-  } catch {
-    return null;
-  }
-}
+import { readGatewayToken } from "@/lib/gateway-token-reader";
 
 export function constantTimeEqual(a: string, b: string): boolean {
   const aBuf = Buffer.from(a);

@@ -1,9 +1,9 @@
 import type { ModelHint, ModelTier, ResolverResult } from "../types";
 
 const TIER_MAP: Record<ModelTier, string> = {
-  fast: "openai/gpt-4o-mini",
-  balanced: "openai/gpt-4o",
-  reasoning: "openai/o3",
+  fast: "openai/gpt-5.4-mini",
+  balanced: "openai/gpt-5.4",
+  reasoning: "openai/gpt-5.5",
 };
 
 export function resolveOpenAI(hint: ModelHint): ResolverResult {

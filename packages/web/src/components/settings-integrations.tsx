@@ -35,7 +35,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 // toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { EditOAuthDialog } from "./edit-oauth-dialog";
-import { GoogleIcon, OdooIcon, PipedriveIcon } from "./integration-icons";
+import { BraveIcon, GoogleIcon, OdooIcon, PipedriveIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
 import { getAccessibleCategoryLabels as getOdooCategoryLabels } from "@/lib/integrations/odoo-sync";
 import { getAccessibleCategoryLabels as getPipedriveCategoryLabels } from "@/lib/integrations/pipedrive-sync";
@@ -48,6 +48,8 @@ function IntegrationIcon({ type }: { type: string }) {
       return <PipedriveIcon className="h-6 w-6 shrink-0" />;
     case "google":
       return <GoogleIcon className="h-6 w-6 shrink-0" />;
+    case "web-search":
+      return <BraveIcon className="h-6 w-6 shrink-0" />;
     default:
       return <Plug className="h-6 w-6 shrink-0" />;
   }
@@ -168,10 +170,18 @@ export function SettingsIntegrations() {
                     </div>
                   );
                 }
-                const categories =
-                  conn.type === "pipedrive"
-                    ? getPipedriveCategoryLabels(conn.data)
-                    : getOdooCategoryLabels(conn.data);
+                const isOdoo = conn.type === "odoo";
+                const isPipedrive = conn.type === "pipedrive";
+                const isSyncable = isOdoo || isPipedrive;
+                const categories = isPipedrive
+                  ? getPipedriveCategoryLabels(conn.data)
+                  : isOdoo
+                    ? getOdooCategoryLabels(conn.data)
+                    : [];
+                const lastSyncAt =
+                  isSyncable && conn.data && typeof conn.data.lastSyncAt === "string"
+                    ? conn.data.lastSyncAt
+                    : null;
                 return (
                   <div key={conn.id} className="rounded-lg border p-4 space-y-2">
                     <div className="flex items-center justify-between">
@@ -220,12 +230,14 @@ export function SettingsIntegrations() {
                                   >
                                     {testing === conn.id ? "Testing..." : "Test Connection"}
                                   </DropdownMenuItem>
-                                  <DropdownMenuItem
-                                    onClick={() => syncSchema(conn.id)}
-                                    disabled={syncing === conn.id}
-                                  >
-                                    {syncing === conn.id ? "Syncing..." : "Sync Schema"}
-                                  </DropdownMenuItem>
+                                  {isSyncable && (
+                                    <DropdownMenuItem
+                                      onClick={() => syncSchema(conn.id)}
+                                      disabled={syncing === conn.id}
+                                    >
+                                      {syncing === conn.id ? "Syncing..." : "Sync Schema"}
+                                    </DropdownMenuItem>
+                                  )}
                                 </>
                               )}
                               <DropdownMenuItem
@@ -261,7 +273,12 @@ export function SettingsIntegrations() {
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                             <span>Syncing schema...</span>
                           </>
-                        ) : conn.data?.lastSyncAt ? (
+                        ) : !isSyncable ? (
+                          <>
+                            <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
+                            <span>Connected</span>
+                          </>
+                        ) : lastSyncAt ? (
                           <>
                             <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
                             <span>Connected</span>
@@ -281,11 +298,11 @@ export function SettingsIntegrations() {
                             <Tooltip>
                               <TooltipTrigger asChild>
                                 <span className="cursor-default underline decoration-dotted underline-offset-4">
-                                  Synced {formatRelativeTime(conn.data.lastSyncAt as string)}
+                                  Synced {formatRelativeTime(lastSyncAt)}
                                 </span>
                               </TooltipTrigger>
                               <TooltipContent>
-                                <p>{new Date(conn.data.lastSyncAt as string).toLocaleString()}</p>
+                                <p>{new Date(lastSyncAt).toLocaleString()}</p>
                               </TooltipContent>
                             </Tooltip>
                           </>
@@ -309,6 +326,7 @@ export function SettingsIntegrations() {
           fetchConnections();
           setShowAddDialog(false);
         }}
+        existingTypes={connections.map((c) => c.type)}
       />
 
       <AddIntegrationDialog

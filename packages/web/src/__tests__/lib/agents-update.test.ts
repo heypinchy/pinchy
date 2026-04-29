@@ -46,7 +46,7 @@ describe("updateAgent", () => {
   });
 
   it("calls regenerateOpenClawConfig when model changes", async () => {
-    await updateAgent("agent-1", { model: "openai/gpt-4o" });
+    await updateAgent("agent-1", { model: "openai/gpt-5.4" });
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 
@@ -56,7 +56,9 @@ describe("updateAgent", () => {
   });
 
   it("calls regenerateOpenClawConfig when pluginConfig changes", async () => {
-    await updateAgent("agent-1", { pluginConfig: { foo: "bar" } });
+    await updateAgent("agent-1", {
+      pluginConfig: { "pinchy-files": { allowed_paths: ["/data/"] } },
+    });
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 

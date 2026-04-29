@@ -240,7 +240,8 @@ test.describe.serial("Odoo Permission Setup", () => {
     await expect(page.getByText("sale.order")).not.toBeVisible();
   });
 
-  test("save and reload preserves state", { timeout: 120000 }, async ({ page }) => {
+  test("save and reload preserves state", async ({ page }) => {
+    test.setTimeout(120000);
     await loginViaUI(page);
 
     await page.goto(`/chat/${agentId}/settings?tab=permissions`);

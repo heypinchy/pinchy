@@ -23,6 +23,12 @@ const testCredentialsSchema = z.discriminatedUnion("type", [
       apiToken: z.string().min(1),
     }),
   }),
+  z.object({
+    type: z.literal("web-search"),
+    credentials: z.object({
+      apiKey: z.string().min(1),
+    }),
+  }),
 ]);
 
 export async function POST(request: NextRequest) {
@@ -66,6 +72,21 @@ export async function POST(request: NextRequest) {
         userId: data.data.id,
         userName: data.data.name,
       });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Connection failed";
+      return NextResponse.json({ success: false, error: message });
+    }
+  }
+
+  if (parsed.data.type === "web-search") {
+    try {
+      const res = await fetch("https://api.search.brave.com/res/v1/web/search?q=test&count=1", {
+        headers: { "X-Subscription-Token": parsed.data.credentials.apiKey },
+      });
+      if (!res.ok) {
+        return NextResponse.json({ success: false, error: "Invalid API key" });
+      }
+      return NextResponse.json({ success: true });
     } catch (error) {
       const message = error instanceof Error ? error.message : "Connection failed";
       return NextResponse.json({ success: false, error: message });

@@ -21,6 +21,7 @@ services:
       - ./packages/plugins/pinchy-audit:/root/.openclaw/extensions/pinchy-audit
       - ./packages/plugins/pinchy-odoo:/root/.openclaw/extensions/pinchy-odoo
       - ./packages/plugins/pinchy-pipedrive:/root/.openclaw/extensions/pinchy-pipedrive
+      - ./packages/plugins/pinchy-web:/root/.openclaw/extensions/pinchy-web
       - ./packages/plugins/pinchy-email:/root/.openclaw/extensions/pinchy-email
       - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
       - ./sample-data:/data/sample-docs

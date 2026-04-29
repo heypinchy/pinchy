@@ -1,22 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { z } from "zod";
+import { eq } from "drizzle-orm";
 import { getSession } from "@/lib/auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog } from "@/lib/audit";
-import {
-  odooCredentialsSchema,
-  odooConnectionDataSchema,
-  maskCredentials,
-} from "@/lib/integrations/odoo-schema";
+import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrations/odoo-schema";
 import {
   pipedriveCredentialsSchema,
   pipedriveConnectionDataSchema,
-  maskPipedriveCredentials,
 } from "@/lib/integrations/pipedrive-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 
 const createIntegrationSchema = z.discriminatedUnion("type", [
   z.object({
@@ -32,6 +29,12 @@ const createIntegrationSchema = z.discriminatedUnion("type", [
     description: z.string().max(500).default(""),
     credentials: pipedriveCredentialsSchema,
     data: pipedriveConnectionDataSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("web-search"),
+    name: z.string().min(1).max(100),
+    description: z.string().max(500).default(""),
+    credentials: z.object({ apiKey: z.string().min(1) }),
   }),
 ]);
 
@@ -53,13 +56,9 @@ export async function GET() {
   // that would decrypt fine. Flag unreadable rows so the UI can offer Delete.
   const masked = connections.map((conn) => {
     try {
-      const credentials =
-        conn.type === "pipedrive"
-          ? maskPipedriveCredentials(conn.credentials, decrypt)
-          : maskCredentials(conn.credentials, decrypt);
       return {
         ...conn,
-        credentials,
+        credentials: maskConnectionCredentials(conn.type, conn.credentials, decrypt),
         cannotDecrypt: false,
       };
     } catch (err) {
@@ -104,16 +103,34 @@ export async function POST(request: NextRequest) {
     );
   }
 
-  const { type, name, description, credentials, data } = parsed.data;
+  const { type, name, description, credentials } = parsed.data;
 
-  if (type === "odoo") {
-    const urlCheck = validateExternalUrl(credentials.url);
+  // Singleton types: only one connection of this type allowed
+  if (type === "web-search") {
+    const existing = await db
+      .select()
+      .from(integrationConnections)
+      .where(eq(integrationConnections.type, "web-search"));
+    if (existing.length > 0) {
+      return NextResponse.json(
+        { error: "A Web Search connection already exists. Delete it first to add a new one." },
+        { status: 409 }
+      );
+    }
+  }
+
+  if (parsed.data.type === "odoo") {
+    const urlCheck = validateExternalUrl(parsed.data.credentials.url);
     if (!urlCheck.valid) {
       return NextResponse.json({ error: urlCheck.error }, { status: 400 });
     }
   }
 
   const encryptedCredentials = encrypt(JSON.stringify(credentials));
+  const data =
+    parsed.data.type === "odoo" || parsed.data.type === "pipedrive"
+      ? (parsed.data.data ?? null)
+      : null;
 
   const [connection] = await db
     .insert(integrationConnections)
@@ -122,7 +139,7 @@ export async function POST(request: NextRequest) {
       name,
       description,
       credentials: encryptedCredentials,
-      data: data ?? null,
+      data,
     })
     .returning();
 
@@ -135,19 +152,10 @@ export async function POST(request: NextRequest) {
     outcome: "success",
   }).catch(console.error);
 
-  const maskedCredentials =
-    type === "pipedrive"
-      ? {
-          companyDomain: credentials.companyDomain,
-          companyName: credentials.companyName,
-          userName: credentials.userName,
-        }
-      : { url: credentials.url, db: credentials.db, login: credentials.login };
-
   return NextResponse.json(
     {
       ...connection,
-      credentials: maskedCredentials,
+      credentials: maskConnectionCredentials(type, connection.credentials, decrypt),
     },
     { status: 201 }
   );

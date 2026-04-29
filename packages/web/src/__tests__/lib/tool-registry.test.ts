@@ -36,22 +36,36 @@ describe("TOOL_REGISTRY", () => {
 
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
-    const ids = powerful.map((t) => t.id);
-    // Odoo write tools
-    expect(ids).toContain("odoo_create");
-    expect(ids).toContain("odoo_write");
-    expect(ids).toContain("odoo_delete");
-    // Pipedrive write tools
-    expect(ids).toContain("pipedrive_create");
-    expect(ids).toContain("pipedrive_update");
-    expect(ids).toContain("pipedrive_delete");
-    expect(ids).toContain("pipedrive_merge");
-    expect(ids).toContain("pipedrive_relate");
-    expect(ids).toContain("pipedrive_convert");
-    // Email write tools
-    expect(ids).toContain("email_draft");
-    expect(ids).toContain("email_send");
-    expect(powerful.length).toBe(11);
+    expect(powerful.length).toBe(13);
+    expect(powerful.map((t) => t.id)).toEqual([
+      "pinchy_web_search",
+      "pinchy_web_fetch",
+      "odoo_create",
+      "odoo_write",
+      "odoo_delete",
+      "pipedrive_create",
+      "pipedrive_update",
+      "pipedrive_delete",
+      "pipedrive_merge",
+      "pipedrive_relate",
+      "pipedrive_convert",
+      "email_draft",
+      "email_send",
+    ]);
+  });
+
+  it("contains pinchy_web_search as a powerful tool with no group", () => {
+    const tool = getToolById("pinchy_web_search");
+    expect(tool).toBeDefined();
+    expect(tool?.category).toBe("powerful");
+    expect(tool).not.toHaveProperty("group");
+  });
+
+  it("contains pinchy_web_fetch as a powerful tool with no group", () => {
+    const tool = getToolById("pinchy_web_fetch");
+    expect(tool).toBeDefined();
+    expect(tool?.category).toBe("powerful");
+    expect(tool).not.toHaveProperty("group");
   });
 
   it("does not contain any OpenClaw native tools", () => {
@@ -150,10 +164,21 @@ describe("Odoo access level helpers", () => {
     }
   });
 
+  it("web search tools have integration: 'web-search'", () => {
+    const webTools = TOOL_REGISTRY.filter((t) => t.id.startsWith("pinchy_web_"));
+    expect(webTools.length).toBe(2);
+    for (const tool of webTools) {
+      expect(tool.integration).toBe("web-search");
+    }
+  });
+
   it("non-integration tools don't have integration set", () => {
     const nonIntegrationTools = TOOL_REGISTRY.filter(
       (t) =>
-        !t.id.startsWith("odoo_") && !t.id.startsWith("pipedrive_") && !t.id.startsWith("email_")
+        !t.id.startsWith("odoo_") &&
+        !t.id.startsWith("pipedrive_") &&
+        !t.id.startsWith("email_") &&
+        !t.id.startsWith("pinchy_web_")
     );
     for (const tool of nonIntegrationTools) {
       expect(tool.integration).toBeUndefined();

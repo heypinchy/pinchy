@@ -66,7 +66,7 @@ vi.mock("sonner", () => ({
 const agentData = {
   id: "agent-1",
   name: "Test Agent",
-  model: "anthropic/claude-sonnet-4-20250514",
+  model: "anthropic/claude-sonnet-4-6",
   isPersonal: false,
   allowedTools: [],
   pluginConfig: null,
@@ -158,7 +158,7 @@ describe("AgentSettingsPage", () => {
     // Simulate general tab reporting dirty
     act(() => {
       capturedOnChangeGeneral?.(
-        { name: "New Name", tagline: "tagline", model: "anthropic/claude-sonnet-4-20250514" },
+        { name: "New Name", tagline: "tagline", model: "anthropic/claude-sonnet-4-6" },
         true
       );
     });
@@ -222,7 +222,7 @@ describe("AgentSettingsPage", () => {
 
     act(() => {
       capturedOnChangeGeneral?.(
-        { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-20250514" },
+        { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-6" },
         true
       );
     });
@@ -241,7 +241,7 @@ describe("AgentSettingsPage", () => {
 
     act(() => {
       capturedOnChangeGeneral?.(
-        { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-20250514" },
+        { name: "New Name", tagline: "", model: "anthropic/claude-sonnet-4-6" },
         true
       );
     });
@@ -270,7 +270,7 @@ describe("AgentSettingsPage", () => {
 
     act(() => {
       capturedOnChangeGeneral?.(
-        { name: "Changed", tagline: "", model: "anthropic/claude-sonnet-4-20250514" },
+        { name: "Changed", tagline: "", model: "anthropic/claude-sonnet-4-6" },
         true
       );
     });

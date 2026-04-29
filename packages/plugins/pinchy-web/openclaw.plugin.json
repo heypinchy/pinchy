@@ -1,0 +1,36 @@
+{
+  "id": "pinchy-web",
+  "name": "Pinchy Web",
+  "description": "Web search and page fetching with domain filtering.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "braveApiKey": { "type": "string" },
+      "agents": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "tools": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "allowedDomains": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "excludedDomains": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "language": { "type": "string" },
+            "country": { "type": "string" },
+            "freshness": { "type": "string" }
+          },
+          "required": ["tools"]
+        }
+      }
+    },
+    "required": ["braveApiKey", "agents"]
+  }
+}
