@@ -50,6 +50,20 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
   },
   { id: "deepseek-v3.2", contextWindow: 163840, maxTokens: 8192, reasoning: true, vision: false },
   {
+    id: "deepseek-v4-flash",
+    contextWindow: 1048576,
+    maxTokens: 8192,
+    reasoning: true,
+    vision: false,
+  },
+  {
+    id: "deepseek-v4-pro",
+    contextWindow: 1048576,
+    maxTokens: 8192,
+    reasoning: true,
+    vision: false,
+  },
+  {
     id: "devstral-2:123b",
     contextWindow: 262144,
     maxTokens: 8192,
@@ -85,6 +99,7 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
     vision: false,
   },
   { id: "kimi-k2.5", contextWindow: 262144, maxTokens: 8192, reasoning: true, vision: true },
+  { id: "kimi-k2.6", contextWindow: 262144, maxTokens: 8192, reasoning: true, vision: true },
   { id: "minimax-m2", contextWindow: 204800, maxTokens: 8192, reasoning: true, vision: false },
   { id: "minimax-m2.1", contextWindow: 204800, maxTokens: 8192, reasoning: false, vision: false },
   { id: "minimax-m2.5", contextWindow: 202752, maxTokens: 8192, reasoning: true, vision: false },
