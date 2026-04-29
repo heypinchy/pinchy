@@ -2674,6 +2674,34 @@ describe("updateIdentityLinks", () => {
 
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
   });
+
+  it("regression: refuses to write if existing config has no gateway.mode (avoids clobber from EACCES)", async () => {
+    // This reproduces the production-image telegram-e2e cascade: while
+    // OpenClaw is mid-SIGUSR1-restart, openclaw.json is briefly root:0600.
+    // readExistingConfig hits EACCES, returns {} after retries. Without
+    // the safety check below, updateIdentityLinks would write a config
+    // with ONLY a session block — no gateway, no agents, nothing — and
+    // OpenClaw's next start refuses with "missing gateway.mode" then
+    // crash-loops.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      const err = new Error("EACCES: permission denied") as Error & { code: string };
+      err.code = "EACCES";
+      throw err;
+    });
+
+    const { updateIdentityLinks } = await import("@/lib/openclaw-config");
+    updateIdentityLinks({ "user-1": ["telegram:123"] });
+
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+    // Two warns expected: one from readExistingConfig's persistent-EACCES
+    // path, one from updateIdentityLinks' missing-gateway.mode guard. We
+    // only assert the latter — its presence proves the safety check fired.
+    const allWarnCalls = warnSpy.mock.calls.map((call) => call.join(" "));
+    expect(allWarnCalls.some((msg) => msg.includes("refusing to write"))).toBe(true);
+    warnSpy.mockRestore();
+  });
 });
 
 describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support SecretRef in channel configs)", () => {
