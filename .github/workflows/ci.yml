@@ -828,9 +828,16 @@ jobs:
     name: Telegram E2E Tests
     runs-on: ubuntu-latest
 
-    # Dev-mode CI test: images are built by compose via docker-compose.dev.yml.
-    # Satisfy the compose fail-loud check on ${PINCHY_VERSION:?} — value is
-    # just the build tag, never pulled from a registry.
+    # Production-image CI test: images are built locally via
+    # docker-compose.e2e.yml using the production Dockerfile.pinchy
+    # (uid 999 demotion via entrypoint.sh), matching what end users
+    # actually run. Catches uid/permission mismatches between Pinchy
+    # (uid 999) and OpenClaw (root) — see e.g. PR #195's regression for
+    # the telegram-pairing.json mode 0600 case.
+    #
+    # ${PINCHY_VERSION:?} on docker-compose.yml's `image:` line is
+    # satisfied by any non-empty string; the build directive in
+    # docker-compose.e2e.yml takes precedence and tags with that name.
     env:
       PINCHY_VERSION: latest
 
@@ -855,7 +862,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Start test stack with mock Telegram
-        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml up --build -d
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml up --build -d
         env:
           BETTER_AUTH_SECRET: ci-test-secret-not-for-production
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
@@ -870,7 +877,7 @@ jobs:
             fi
             if [ "$i" -eq 60 ]; then
               echo "::error::Pinchy not healthy after 120s"
-              docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs pinchy
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy
               exit 1
             fi
             sleep 2
@@ -883,20 +890,20 @@ jobs:
             fi
             if [ "$i" -eq 15 ]; then
               echo "::error::Mock Telegram not healthy after 30s"
-              docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs telegram-mock
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs telegram-mock
               exit 1
             fi
             sleep 2
           done
           echo "Waiting for OpenClaw connection..."
           for i in $(seq 1 60); do
-            if docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
+            if docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
               echo "OpenClaw connected (attempt $i)"
               break
             fi
             if [ "$i" -eq 60 ]; then
               echo "::error::Pinchy never connected to OpenClaw"
-              docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs pinchy openclaw
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy openclaw
               exit 1
             fi
             sleep 2
@@ -911,15 +918,15 @@ jobs:
         if: failure()
         run: |
           echo "=== Pinchy logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs pinchy 2>&1 | tail -50
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy 2>&1 | tail -50
           echo "=== OpenClaw logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs openclaw 2>&1 | tail -50
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs openclaw 2>&1 | tail -50
           echo "=== Mock Telegram logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs telegram-mock 2>&1 | tail -30
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs telegram-mock 2>&1 | tail -30
 
       - name: Tear down
         if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml down -v
 
   integration:
     name: Integration Tests (OpenClaw + Fake Ollama)
