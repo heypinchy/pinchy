@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Link from "next/link";
+
+const REFETCH_INTERVAL_MS = 15 * 60 * 1000;
 
 interface LicenseInfo {
   enterprise: boolean;
@@ -87,9 +89,7 @@ function shouldShowBanner(license: LicenseInfo): {
 export function EnterpriseBanner({ isAdmin }: { isAdmin: boolean }) {
   const [banner, setBanner] = useState<ReturnType<typeof shouldShowBanner> | null>(null);
 
-  useEffect(() => {
-    if (!isAdmin) return;
-
+  const fetchStatus = useCallback(() => {
     fetch("/api/enterprise/status")
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
@@ -98,7 +98,27 @@ export function EnterpriseBanner({ isAdmin }: { isAdmin: boolean }) {
         }
       })
       .catch(() => {});
-  }, [isAdmin]);
+  }, []);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    fetchStatus();
+
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") fetchStatus();
+    };
+    const onLicenseUpdated = () => fetchStatus();
+    const interval = setInterval(fetchStatus, REFETCH_INTERVAL_MS);
+
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("license-updated", onLicenseUpdated);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("license-updated", onLicenseUpdated);
+    };
+  }, [isAdmin, fetchStatus]);
 
   if (!isAdmin || !banner?.show) return null;
 

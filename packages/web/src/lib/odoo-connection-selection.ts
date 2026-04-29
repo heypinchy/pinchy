@@ -2,6 +2,7 @@ export interface OdooConnection {
   id: string;
   name: string;
   type: string;
+  cannotDecrypt?: boolean;
   data: {
     models: Array<{
       model: string;

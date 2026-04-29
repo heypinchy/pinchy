@@ -1,27 +1,73 @@
 #cloud-config
-# Pinchy %%PINCHY_VERSION%% — Automated VPS Setup
+# Pinchy v0.4.4 — Automated VPS Setup
 # https://docs.heypinchy.com/guides/vps-deployment/
 #
-# This cloud-init script installs Docker, deploys Pinchy, configures
-# a firewall, and adds swap. Paste it into the "User Data" field when
-# creating your server.
+# This cloud-init script installs Caddy (reverse proxy), Docker, and Pinchy,
+# configures a firewall, and adds swap. Paste it into the "User Data" field
+# when creating your server.
 #
-# After boot, visit http://<your-server-ip>
+# After boot, visit http://<your-server-ip>. Caddy shows a loading page while
+# images are pulling, then seamlessly hands off to Pinchy — no refresh needed.
+# To enable HTTPS later, replace `:80` in /etc/caddy/Caddyfile with your domain
+# and run `systemctl reload caddy` — Let's Encrypt is automatic.
 
 runcmd:
-  # Show loading page FIRST (python3 + curl are pre-installed on Ubuntu)
-  - mkdir -p /opt/pinchy-loading
-  - curl -fsSL https://github.com/heypinchy/pinchy/releases/download/%%PINCHY_VERSION%%/installing.html -o /opt/pinchy-loading/index.html
-  - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /opt/pinchy-loading/index.html
-  - cd /opt/pinchy-loading && python3 -m http.server 80 &
-  - echo $! > /tmp/loading-server.pid
-
-  # Now install packages (loading page is already visible)
+  # Add Caddy's official Cloudsmith apt repository (GPG-verified)
   - apt-get update -qq
-  - apt-get install -y -qq docker.io docker-compose-v2 ufw
-  - echo iptables-persistent iptables-persistent/autosave_v4 boolean true | debconf-set-selections
-  - echo iptables-persistent iptables-persistent/autosave_v6 boolean true | debconf-set-selections
-  - apt-get install -y -qq iptables-persistent
+  - apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl gpg
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+  - apt-get update -qq
+
+  # Stage loading page for Caddy's fallback upstream
+  - mkdir -p /var/www/pinchy-loading
+  - curl -fsSL https://github.com/heypinchy/pinchy/releases/download/v0.4.4/installing.html -o /var/www/pinchy-loading/index.html
+  - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /var/www/pinchy-loading/index.html
+
+  # Write Caddyfile BEFORE installing caddy, so Caddy's first start uses our config
+  - mkdir -p /etc/caddy
+  - |
+    cat > /etc/caddy/Caddyfile <<'EOF'
+    # Pinchy reverse proxy
+    # Primary upstream: Pinchy on 127.0.0.1:7777
+    # Fallback upstream: local loading page on 127.0.0.1:9999
+    #
+    # lb_policy first → prefer primary; fall back only when primary is unreachable.
+    # lb_try_duration 1s → fail fast so users never wait for a dead backend.
+    # fail_duration 5s → mark unreachable backend as dead for 5s before retry.
+    #
+    # To enable HTTPS: replace `:80` with your domain (e.g. pinchy.example.com)
+    # and run `systemctl reload caddy`. Caddy provisions Let's Encrypt automatically.
+
+    :80 {
+        reverse_proxy 127.0.0.1:7777 127.0.0.1:9999 {
+            lb_policy first
+            lb_try_duration 1s
+            fail_duration 5s
+        }
+    }
+
+    :9999 {
+        bind 127.0.0.1
+        handle /api/* {
+            respond 503
+        }
+        handle {
+            root * /var/www/pinchy-loading
+            try_files /index.html
+            file_server
+        }
+    }
+    EOF
+
+  # Install Caddy, Docker, and UFW in one apt call (Caddy starts with our Caddyfile).
+  # --force-confold keeps our pre-staged /etc/caddy/Caddyfile without dpkg's
+  # interactive conffile prompt, which would otherwise fail cloud-init (no stdin)
+  # and leave the caddy package in iU state (postinst skipped, `caddy` user never
+  # created, systemd start fails with exit 217/USER).
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Options::=--force-confold caddy docker.io docker-compose-v2 ufw
+  - systemctl enable --now caddy
+  - systemctl reload caddy
 
   # Firewall
   - ufw allow OpenSSH
@@ -40,18 +86,21 @@ runcmd:
   - swapon /swapfile
   - echo '/swapfile none swap sw 0 0' >> /etc/fstab
 
-  # Download compose file and start Pinchy
+  # Generate pinned secrets — Pinchy keeps its secure 127.0.0.1:7777 default,
+  # reachable only via Caddy on the same host.
   - mkdir -p /opt/pinchy
-  - curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o /opt/pinchy/docker-compose.yml
+  - echo "PINCHY_VERSION=%%PINCHY_VERSION%%" >> /opt/pinchy/.env
+  - echo "DB_PASSWORD=$(openssl rand -hex 32)" >> /opt/pinchy/.env
+  - echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> /opt/pinchy/.env
+  - echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> /opt/pinchy/.env
+  - chmod 600 /opt/pinchy/.env
+
+  # Download compose file and pull images (Caddy serves loading page throughout)
+  - curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.4/docker-compose.yml -o /opt/pinchy/docker-compose.yml
   - cd /opt/pinchy && docker compose pull
+
+  # Start Pinchy — Caddy automatically swaps to the primary upstream within 5s
   - cd /opt/pinchy && docker compose up -d
 
-  # Wait for Pinchy to be healthy
-  - for i in $(seq 1 90); do curl -sf http://localhost:7777/api/health > /dev/null 2>&1 && break; sleep 2; done
-
-  # Seamless switch — kill loading page, redirect port 80 to Pinchy
-  - kill $(cat /tmp/loading-server.pid) 2>/dev/null || true
-  - rm -rf /opt/pinchy-loading /tmp/loading-server.pid
-  - iptables -t nat -A PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
-  - iptables -t nat -A OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
-  - netfilter-persistent save
+  # Wait for Pinchy to be healthy (polled directly, not through Caddy)
+  - for i in $(seq 1 120); do curl -sf http://127.0.0.1:7777/api/health > /dev/null 2>&1 && break; sleep 2; done

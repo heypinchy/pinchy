@@ -6,7 +6,7 @@ description: Environment variables, Docker services, and development setup.
 import { Aside } from "@astrojs/starlight/components";
 
 <Aside type="note">
-  This guide covers Pinchy %%PINCHY_VERSION%%. Check the [Releases
+  This guide covers Pinchy v0.4.4. Check the [Releases
   page](https://github.com/heypinchy/pinchy/releases) for newer versions.
   Upgrading from v0.1.0? See the [Upgrade Guide](/guides/upgrading/).
 </Aside>
@@ -29,7 +29,7 @@ The simplest way to run Pinchy. One command starts the full stack.
 
 ```bash
 mkdir -p pinchy && cd pinchy
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.4/docker-compose.yml -o docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -71,7 +71,7 @@ ENCRYPTION_KEY=
 # HMAC secret for audit trail signing (auto-generated if omitted)
 AUDIT_HMAC_SECRET=
 
-# Enterprise license key (optional — enables Groups, RBAC, agent access control)
+# Enterprise license key (optional — enables Groups, agent access control, basic RBAC)
 PINCHY_ENTERPRISE_KEY=
 ```
 
@@ -83,7 +83,7 @@ PINCHY_ENTERPRISE_KEY=
 
 **`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. Set explicitly if you need consistent signatures across deployments.
 
-**`PINCHY_ENTERPRISE_KEY`** — License key for enterprise features (Groups, RBAC, agent access control). Optional — can also be entered via **Settings → License** in the UI. See [Enterprise Setup](/guides/enterprise-setup/) for details.
+**`PINCHY_ENTERPRISE_KEY`** — License key for enterprise features (Groups, agent access control, basic RBAC — granular RBAC with custom roles is planned). Optional — can also be entered via **Settings → License** in the UI. See [Enterprise Setup](/guides/enterprise-setup/) for details.
 
 ### Data persistence
 
@@ -100,17 +100,23 @@ Docker volumes ensure data survives container restarts:
 
 ### Port configuration
 
-To change the exposed port, update both `docker-compose.yml` and the `PORT` environment variable:
+Pinchy always listens on port **7777** inside the container. By default, it binds to `127.0.0.1:7777` on the host — only reachable from localhost. Set `PINCHY_PORT` to override the binding (host interface and/or port):
 
-```yaml
-# docker-compose.yml
-services:
-  pinchy:
-    ports:
-      - "3000:3000"
-    environment:
-      - PORT=3000
+```bash
+# Localhost-only on a different host port (default behaviour, custom port)
+PINCHY_PORT=127.0.0.1:3000 docker compose up -d
+
+# Expose on all interfaces (use only behind a reverse proxy or for testing)
+PINCHY_PORT=0.0.0.0:80 docker compose up -d
 ```
+
+Or add it to your `.env` file:
+
+```bash
+PINCHY_PORT=127.0.0.1:3000
+```
+
+The default is `127.0.0.1:7777`. The `docker-compose.yml` maps `${PINCHY_PORT:-127.0.0.1:7777}:7777`. Accepted forms are `HOST_PORT` (e.g. `3000`) or `HOST_IP:HOST_PORT` (e.g. `0.0.0.0:80`). Do **not** include the container port in `PINCHY_PORT` — it's appended automatically.
 
 ## Development mode
 

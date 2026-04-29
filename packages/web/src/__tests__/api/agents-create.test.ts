@@ -38,7 +38,7 @@ vi.mock("@/db", () => {
           name: "HR Knowledge Base",
           model: "anthropic/claude-haiku-4-5-20251001",
           templateId: "knowledge-base",
-          pluginConfig: { allowed_paths: ["/data/hr-docs/"] },
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
           ownerId: "1",
           tagline: "Answer questions from your docs",
         },
@@ -103,7 +103,24 @@ vi.mock("@/lib/settings", () => ({
 
 vi.mock("@/lib/provider-models", () => ({
   getDefaultModel: vi.fn().mockResolvedValue("anthropic/claude-haiku-4-5-20251001"),
+  getOllamaLocalModels: vi.fn().mockReturnValue([]),
 }));
+
+const { mockResolveModelForTemplate } = vi.hoisted(() => ({
+  mockResolveModelForTemplate: vi.fn().mockResolvedValue({
+    model: "anthropic/claude-sonnet-4-6",
+    reason: "anthropic: tier=balanced → claude-sonnet-4-6",
+    fallbackUsed: false,
+  }),
+}));
+
+vi.mock("@/lib/model-resolver", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/model-resolver")>();
+  return {
+    ...actual,
+    resolveModelForTemplate: mockResolveModelForTemplate,
+  };
+});
 
 vi.mock("@/lib/personality-presets", () => ({
   getPersonalityPreset: vi.fn((id: string) => {
@@ -150,6 +167,7 @@ import { NextRequest } from "next/server";
 import { auth } from "@/lib/auth";
 import { validateAllowedPaths } from "@/lib/path-validation";
 import { getDefaultModel } from "@/lib/provider-models";
+import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 import {
   ensureWorkspace,
   writeWorkspaceFile,
@@ -191,7 +209,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -215,7 +233,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -236,7 +254,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -292,6 +310,44 @@ describe("POST /api/agents", () => {
     expect(response.status).toBe(400);
   });
 
+  it("rejects invalid domains in pluginConfig['pinchy-web'].allowedDomains", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Bad Agent",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+          "pinchy-web": { allowedDomains: ["not a domain!!!"] },
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/domain/i);
+  });
+
+  it("rejects invalid domains in pluginConfig['pinchy-web'].excludedDomains", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Bad Agent",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
+          "pinchy-web": { excludedDomains: ["@@@"] },
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/domain/i);
+  });
+
   it("should reject knowledge-base agent without allowed_paths", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
@@ -328,7 +384,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -379,7 +435,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -400,7 +456,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -440,7 +496,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -460,7 +516,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -481,7 +537,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -502,7 +558,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -543,7 +599,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -623,7 +679,7 @@ describe("POST /api/agents", () => {
         name: "HR Knowledge Base",
         templateId: "knowledge-base",
         pluginConfig: {
-          allowed_paths: ["/data/hr-docs/"],
+          "pinchy-files": { allowed_paths: ["/data/hr-docs/"] },
         },
       }),
     });
@@ -725,6 +781,67 @@ describe("POST /api/agents", () => {
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 
+  it("should create an email-assistant agent without pluginConfig (no directory required)", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Hermes",
+        templateId: "email-assistant",
+        connectionId: "email-conn-1",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+    expect(validateAllowedPaths).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when email template used without connectionId", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Hermes",
+        templateId: "email-assistant",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toMatch(/connection/i);
+  });
+
+  it("auto-configures email permissions when creating email agent with connectionId", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Hermes",
+        templateId: "email-assistant",
+        connectionId: "email-conn-1",
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    // Email templates use semantic operations (read, draft, send) — not per-tool
+    // operations (list, search, etc.). The plugin checks these semantic ops.
+    expect(permissionsInsertValuesMock).toHaveBeenCalledWith([
+      expect.objectContaining({
+        agentId: "new-agent-id",
+        connectionId: "email-conn-1",
+        model: "email",
+        operation: "read",
+      }),
+      expect.objectContaining({
+        agentId: "new-agent-id",
+        connectionId: "email-conn-1",
+        model: "email",
+        operation: "draft",
+      }),
+    ]);
+  });
+
   it("returns 400 when Odoo template used without connectionId", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
@@ -752,5 +869,165 @@ describe("POST /api/agents", () => {
     await POST(request);
 
     expect(permissionsInsertValuesMock).not.toHaveBeenCalled();
+  });
+
+  it("should save pinchy-web config alongside pinchy-files for knowledge-base template", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Research Agent",
+        templateId: "knowledge-base",
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/research/"] },
+          "pinchy-web": { allowedDomains: ["arxiv.org"], language: "en" },
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pluginConfig: {
+          "pinchy-files": { allowed_paths: ["/data/research/"] },
+          "pinchy-web": { allowedDomains: ["arxiv.org"], language: "en" },
+        },
+      })
+    );
+    expect(regenerateOpenClawConfig).toHaveBeenCalled();
+  });
+
+  it("should not save pluginConfig for custom template even with pinchy-web config", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Dev Assistant",
+        templateId: "custom",
+        pluginConfig: {
+          "pinchy-web": { allowedDomains: ["github.com"] },
+        },
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+
+    // Custom template has pluginId: null, so pluginConfig is set to null
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pluginConfig: null,
+      })
+    );
+  });
+
+  it("uses resolver when template has modelHint", async () => {
+    mockResolveModelForTemplate.mockResolvedValueOnce({
+      model: "anthropic/claude-opus-4-7",
+      reason: "anthropic: tier=reasoning → claude-opus-4-7",
+      fallbackUsed: false,
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Finance Controller",
+        templateId: "odoo-finance-controller",
+        connectionId: "conn-1",
+      }),
+    });
+
+    mockValidateOdooTemplate.mockReturnValue({
+      valid: true,
+      warnings: [],
+      availableModels: [],
+      missingModels: [],
+    });
+    dbSelectFromMock.mockReturnValueOnce({
+      where: vi.fn().mockResolvedValue([{ id: "conn-1", name: "Odoo", type: "odoo", data: {} }]),
+    });
+
+    await POST(request);
+
+    expect(mockResolveModelForTemplate).toHaveBeenCalledWith(
+      expect.objectContaining({ hint: expect.objectContaining({ tier: "reasoning" }) })
+    );
+    expect(insertValuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "anthropic/claude-opus-4-7" })
+    );
+  });
+
+  it("falls back to getDefaultModel for custom template (no modelHint)", async () => {
+    vi.mocked(getDefaultModel).mockResolvedValueOnce("anthropic/claude-haiku-4-5-20251001");
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "My Agent", templateId: "custom" }),
+    });
+
+    await POST(request);
+
+    expect(mockResolveModelForTemplate).not.toHaveBeenCalled();
+    expect(getDefaultModel).toHaveBeenCalledWith("anthropic");
+  });
+
+  it("returns 400 with template_capability_unavailable when resolver throws", async () => {
+    mockResolveModelForTemplate.mockRejectedValueOnce(
+      new TemplateCapabilityUnavailableError(
+        ["vision"],
+        "ollama-local",
+        "https://docs.heypinchy.com/guides/ollama-setup#models-for-agent-templates"
+      )
+    );
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Contract Bot",
+        templateId: "contract-analyzer",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/contracts/"] } },
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("template_capability_unavailable");
+    expect(body.missingCapabilities).toContain("vision");
+    expect(body.docsUrl).toContain("ollama-setup");
+  });
+
+  it("audit log includes modelSelection source and reason", async () => {
+    const { appendAuditLog } = await import("@/lib/audit");
+    const spy = vi.mocked(appendAuditLog);
+
+    mockResolveModelForTemplate.mockResolvedValueOnce({
+      model: "anthropic/claude-sonnet-4-6",
+      reason: "anthropic: tier=balanced → claude-sonnet-4-6",
+      fallbackUsed: false,
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "KB Agent",
+        templateId: "knowledge-base",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
+      }),
+    });
+
+    await POST(request);
+
+    // after() defers the audit log — find the call
+    const call = spy.mock.calls.find(
+      ([arg]) => (arg as { eventType: string }).eventType === "agent.created"
+    );
+    expect(call).toBeDefined();
+    const detail = (call![0] as { detail: Record<string, unknown> }).detail;
+    expect(detail.modelSelection).toMatchObject({
+      source: "template-hint",
+      hint: expect.objectContaining({ tier: "balanced" }),
+      reason: expect.stringContaining("balanced"),
+    });
   });
 });

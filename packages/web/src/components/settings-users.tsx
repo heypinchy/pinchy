@@ -18,6 +18,8 @@ import { UserDetailSheet } from "@/components/user-detail-sheet";
 import { StatusBadge } from "@/components/status-badge";
 import { toast } from "sonner";
 import { mergeUserList, type UserListItem, type UserGroup } from "@/lib/user-list";
+import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import { cn } from "@/lib/utils";
 
 interface SettingsUsersProps {
   currentUserId: string;
@@ -74,9 +76,15 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
   const [loading, setLoading] = useState(true);
   const [inviteOpen, setInviteOpen] = useState(false);
   const [resetLink, setResetLink] = useState<string | null>(null);
+  const { isCopied: isResetLinkCopied, copy: copyResetLink } = useCopyToClipboard();
   const [selectedUser, setSelectedUser] = useState<(UserListItem & { kind: "user" }) | null>(null);
   const [allGroups, setAllGroups] = useState<{ id: string; name: string }[]>([]);
   const [isEnterprise, setIsEnterprise] = useState(false);
+  const [seatInfo, setSeatInfo] = useState<{ maxUsers: number; seatsUsed: number } | null>(null);
+
+  const atCap =
+    seatInfo !== null && seatInfo.maxUsers > 0 && seatInfo.seatsUsed >= seatInfo.maxUsers;
+  const showBanner = seatInfo !== null && seatInfo.maxUsers > 0;
 
   const fetchUsers = useCallback(async () => {
     try {
@@ -97,6 +105,12 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
       }
       setAllGroups(Array.isArray(groupsData) ? groupsData : []);
       setIsEnterprise(enterpriseData?.enterprise ?? false);
+      if (
+        typeof enterpriseData?.maxUsers === "number" &&
+        typeof enterpriseData?.seatsUsed === "number"
+      ) {
+        setSeatInfo({ maxUsers: enterpriseData.maxUsers, seatsUsed: enterpriseData.seatsUsed });
+      }
     } finally {
       setLoading(false);
     }
@@ -149,7 +163,17 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <CardTitle>Users</CardTitle>
-          <Button onClick={() => setInviteOpen(true)}>Invite User</Button>
+          <Button
+            onClick={() => setInviteOpen(true)}
+            disabled={atCap}
+            title={
+              atCap
+                ? "Seat limit reached — remove an existing user or pending invitation first."
+                : undefined
+            }
+          >
+            Invite User
+          </Button>
         </CardHeader>
         <CardContent>
           {resetLink && (
@@ -160,13 +184,25 @@ export function SettingsUsers({ currentUserId, refreshKey }: SettingsUsersProps)
                 variant="outline"
                 size="sm"
                 className="mt-2"
-                onClick={() => {
-                  navigator.clipboard.writeText(resetLink);
-                  toast("Link copied to clipboard");
-                }}
+                onClick={() => copyResetLink(resetLink)}
               >
-                Copy
+                {isResetLinkCopied ? "Copied!" : "Copy"}
               </Button>
+            </div>
+          )}
+
+          {showBanner && (
+            <div
+              className={cn(
+                "mb-4 rounded-md border p-3 text-sm",
+                atCap
+                  ? "border-destructive/50 bg-destructive/5 text-destructive-foreground"
+                  : "bg-muted text-muted-foreground"
+              )}
+            >
+              {atCap
+                ? `${seatInfo!.seatsUsed} of ${seatInfo!.maxUsers} seats used. Remove a user or pending invitation to invite someone new, or upgrade your subscription.`
+                : `${seatInfo!.seatsUsed} of ${seatInfo!.maxUsers} seats used.`}
             </div>
           )}
 

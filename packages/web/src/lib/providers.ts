@@ -23,7 +23,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     authType: "api-key",
     settingsKey: "openai_api_key",
     envVar: "OPENAI_API_KEY",
-    defaultModel: "openai/gpt-4o-mini",
+    defaultModel: "openai/gpt-5.4-mini",
     placeholder: "sk-...",
   },
   google: {
@@ -39,7 +39,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     authType: "api-key",
     settingsKey: "ollama_cloud_api_key",
     envVar: "OLLAMA_CLOUD_API_KEY",
-    defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+    defaultModel: "ollama-cloud/gemini-3-flash-preview",
     placeholder: "sk-...",
   },
   "ollama-local": {
@@ -77,10 +77,17 @@ function makeValidationRequest(provider: ProviderName, apiKey: string): Promise<
     case "google":
       return fetch(`https://generativelanguage.googleapis.com/v1/models?key=${apiKey}`, {});
     case "ollama-cloud":
-      return fetch("https://ollama.com/v1/models", {
+      // /v1/models is a public catalog and returns 200 for any token, so it
+      // can't distinguish a real key from a typo. /v1/chat/completions checks
+      // auth before body validation: with an empty body a valid key gets 400,
+      // an invalid key gets 401. No tokens consumed either way.
+      return fetch("https://ollama.com/v1/chat/completions", {
+        method: "POST",
         headers: {
           Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
         },
+        body: "{}",
       });
     case "ollama-local":
       throw new Error("Use validateProviderUrl for URL-based providers");
@@ -108,6 +115,13 @@ export async function validateProviderKey(
     const response = await makeValidationRequest(provider, apiKey);
 
     if (response.ok) return { valid: true };
+
+    // Ollama Cloud's validation probe sends an empty body to chat/completions.
+    // A 400 response means auth passed and the body was (as intended) rejected —
+    // so the key is valid.
+    if (provider === "ollama-cloud" && response.status === 400) {
+      return { valid: true };
+    }
 
     // 401/403 could be a genuinely invalid key, or a transient auth issue
     // (observed with Claude Max OAuth tokens). Retry once before declaring invalid.

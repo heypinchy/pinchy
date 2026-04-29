@@ -87,11 +87,11 @@ A "Droplet" is DigitalOcean's name for a virtual server.
 
 ## Production setup
 
-The steps above get Pinchy running over plain HTTP. For production use, you should add HTTPS and pin your secrets. Follow the [VPS Deployment Guide — Production setup](/guides/vps-deployment/#production-setup) for:
+The steps above get Pinchy running over plain HTTP. The cloud-init script already pinned your secrets (`DB_PASSWORD`, `BETTER_AUTH_SECRET`, `ENCRYPTION_KEY`) in `/opt/pinchy/.env` and installed Caddy as a reverse proxy.
 
-- **HTTPS with Caddy** — automatic SSL certificates for your domain
-- **Pinning secrets** — so your encryption keys don't depend on Docker volumes
-- **Removing the iptables redirect** — once Caddy is running, remove the port 80→7777 redirect
+To enable HTTPS, follow the [HTTPS setup steps in the Hetzner guide](/guides/deploy-hetzner/#set-up-https-with-caddy) — the cloud-init flow is identical: edit `/etc/caddy/Caddyfile`, replace `:80` with your domain, and reload Caddy. Let's Encrypt is automatic.
+
+See the [VPS Deployment Guide — Production setup](/guides/vps-deployment/#production-setup) for further hardening (domain lock, automatic security updates).
 
 <details>
 <summary>How do I connect to my Droplet to run these commands?</summary>

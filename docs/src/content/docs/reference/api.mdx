@@ -11,6 +11,65 @@ Some endpoints are **admin only** — non-admin users receive a `403 Forbidden` 
 
 Agent chat is handled over WebSocket at `/api/ws`, not via REST. The browser sends JSON messages and receives streaming responses. For details on the WebSocket protocol, message types, and session management, see the [Architecture](/architecture/#request-flow) page.
 
+## Health
+
+### `GET /api/health`
+
+Service health check. **Public — no authentication required.** Suitable for load-balancer probes and uptime monitoring.
+
+**Response:** `200 OK` when Pinchy is running. `503 Service Unavailable` when upstream dependencies (database, OpenClaw) are unreachable.
+
+### `GET /api/health/openclaw`
+
+OpenClaw gateway reachability check. **Public — no authentication required.**
+
+Useful for monitoring the WebSocket gateway separately from the web process.
+
+## Setup (public)
+
+Setup endpoints handle the initial installation and first-admin account. They are accessible **only before setup has completed** — once an admin exists, they return `409 Conflict`.
+
+### `GET /api/setup/status`
+
+Check whether setup is required.
+
+**Response:**
+
+```json
+{
+  "setupComplete": false,
+  "providerConfigured": false
+}
+```
+
+### `POST /api/setup`
+
+Create the first admin account.
+
+**Request body:**
+
+| Field      | Type   | Required | Description                  |
+| ---------- | ------ | -------- | ---------------------------- |
+| `name`     | string | Yes      | Admin display name           |
+| `email`    | string | Yes      | Admin email address          |
+| `password` | string | Yes      | Admin password (min 8 chars) |
+
+**Response:** `201 Created`. A session cookie is set — the admin is logged in immediately.
+
+### `POST /api/setup/provider`
+
+Configure the first LLM provider as part of the setup flow.
+
+**Request body:**
+
+| Field      | Type   | Required | Description                                                     |
+| ---------- | ------ | -------- | --------------------------------------------------------------- |
+| `provider` | string | Yes      | `anthropic`, `openai`, `google`, `ollama-cloud`, `ollama-local` |
+| `apiKey`   | string | Cond.    | Required for cloud providers                                    |
+| `baseUrl`  | string | Cond.    | Required for `ollama-local`                                     |
+
+**Response:** `{ "success": true }`
+
 ## Agents
 
 ### `GET /api/agents`
@@ -206,6 +265,86 @@ Settings with `api_key` in the key name are automatically encrypted at rest.
 
 **Response:** `{ "success": true }`
 
+## LLM Providers (admin only)
+
+### `GET /api/settings/providers`
+
+List configured LLM providers. Credentials are masked.
+
+**Response:**
+
+```json
+[
+  { "provider": "anthropic", "configured": true, "isDefault": true },
+  { "provider": "openai", "configured": true, "isDefault": false }
+]
+```
+
+### `POST /api/settings/providers`
+
+Add or update a provider.
+
+**Request body:**
+
+| Field       | Type    | Required | Description                                 |
+| ----------- | ------- | -------- | ------------------------------------------- |
+| `provider`  | string  | Yes      | Provider identifier                         |
+| `apiKey`    | string  | Cond.    | API key (required for cloud providers)      |
+| `baseUrl`   | string  | Cond.    | URL (required for `ollama-local`)           |
+| `isDefault` | boolean | No       | Mark as the default provider for new agents |
+
+Pinchy validates the credentials by calling the provider's `/models` endpoint before persisting. API keys are encrypted at rest with AES-256-GCM.
+
+### `DELETE /api/settings/providers?provider=<id>`
+
+Remove a provider. Any agent still using a model from this provider will fail to start chats until reassigned.
+
+### `GET /api/providers/models`
+
+List available models across all configured providers. Populates the model dropdown in agent settings.
+
+**Response:**
+
+```json
+{
+  "models": [
+    {
+      "id": "claude-sonnet-4-6",
+      "provider": "anthropic",
+      "displayName": "Claude Sonnet 4.6",
+      "toolUse": true
+    }
+  ]
+}
+```
+
+The response is cached for one hour for cloud providers. Local Ollama is always fetched live.
+
+## Domain Lock (admin only)
+
+### `GET /api/settings/domain`
+
+Get the current domain lock status.
+
+**Response:**
+
+```json
+{
+  "lockedDomain": "pinchy.example.com",
+  "insecureMode": false
+}
+```
+
+### `PUT /api/settings/domain`
+
+Set or clear the locked domain. See [Lock Pinchy to a Domain](/guides/domain-lock/) for the full flow and safety guarantees.
+
+**Request body:**
+
+| Field          | Type         | Required | Description                                                      |
+| -------------- | ------------ | -------- | ---------------------------------------------------------------- |
+| `lockedDomain` | string\|null | Yes      | Canonical HTTPS hostname. Pass `null` to disable domain locking. |
+
 ## Organization Context (admin only)
 
 ### `GET /api/settings/context`
@@ -378,7 +517,7 @@ The admin constructs the invite URL from the returned token: `{origin}/invite/{t
 
 - `400` — missing or invalid role
 - `401` — not authenticated
-- `403` — not an admin
+- `403` — not an admin, or seat cap reached (enterprise license `maxUsers` limit exceeded — see `GET /api/enterprise/status`)
 
 ### `GET /api/users/invites`
 
@@ -443,6 +582,286 @@ Claim an invite token to create a new account or reset a password. **This endpoi
 **Errors:**
 
 - `400` — missing fields, invalid token, or token expired
+
+## Telegram Channels
+
+Connect agents to Telegram bots so users can chat with them from their phone. See [Set Up Telegram](/guides/telegram-setup/) for the end-to-end flow.
+
+### `GET /api/agents/:agentId/channels/telegram`
+
+Get the Telegram bot configuration for an agent. **Admin only.**
+
+**Response (not configured):**
+
+```json
+{ "configured": false, "mainBotConfigured": true }
+```
+
+**Response (configured):**
+
+```json
+{ "configured": true, "hint": "8a2f", "mainBotConfigured": true }
+```
+
+`hint` is the last 4 characters of the bot token for visual verification. `mainBotConfigured` indicates whether the global Smithers/main bot is set up — a prerequisite before any other agent can connect to Telegram.
+
+### `POST /api/agents/:agentId/channels/telegram`
+
+Connect an agent to a Telegram bot. **Admin only.** The main bot must be configured first (exception: the main bot itself).
+
+**Request body:**
+
+| Field      | Type   | Required | Description                 |
+| ---------- | ------ | -------- | --------------------------- |
+| `botToken` | string | Yes      | Bot token from `@BotFather` |
+
+**Response:**
+
+```json
+{ "botUsername": "support_pinchy_bot", "botId": 123456789 }
+```
+
+**Errors:**
+
+- `400` — invalid or non-working bot token
+- `409` — `telegram_not_configured` (main bot missing), or the bot token is already used by another agent
+
+### `DELETE /api/agents/:agentId/channels/telegram`
+
+Disconnect a Telegram bot from an agent. **Admin only.** Personal (Smithers) agents cannot be disconnected individually — use the "Remove Telegram for everyone" action instead.
+
+### `GET /api/settings/telegram`
+
+Get the current user's Telegram link status. Available to any authenticated user.
+
+**Response:**
+
+```json
+{ "linked": true, "channelUserId": "123456789" }
+```
+
+### `POST /api/settings/telegram`
+
+Link the current user's Telegram account using a pairing code received from the bot.
+
+**Request body:**
+
+| Field  | Type   | Required | Description                                     |
+| ------ | ------ | -------- | ----------------------------------------------- |
+| `code` | string | Yes      | Pairing code shown in Telegram after DM-ing bot |
+
+**Response:** `{ "linked": true, "telegramUserId": "..." }`
+
+**Errors:**
+
+- `400` — invalid or expired pairing code
+
+### `DELETE /api/settings/telegram`
+
+Unlink the current user's Telegram account.
+
+### `GET /api/settings/telegram/bots`
+
+List all Telegram bots connected across agents, with the agent each bot belongs to. **Admin only.**
+
+### `DELETE /api/settings/telegram/all`
+
+Remove Telegram from every agent at once. **Admin only.** This is the backend for the "Remove Telegram for everyone" flow in Settings → Telegram.
+
+## Integrations (admin only)
+
+External system integrations — currently **Odoo**. See [Integrations](/concepts/integrations/) for the conceptual overview and [Connect Odoo](/guides/connect-odoo/) for the setup guide.
+
+### `GET /api/integrations`
+
+List all integration connections with masked credentials.
+
+### `POST /api/integrations`
+
+Create a new integration connection.
+
+**Request body (Odoo):**
+
+```json
+{
+  "type": "odoo",
+  "name": "Production Odoo",
+  "description": "Main company instance",
+  "credentials": {
+    "url": "https://odoo.example.com",
+    "db": "production",
+    "login": "api-user@example.com",
+    "apiKey": "..."
+  }
+}
+```
+
+Credentials are encrypted at rest with AES-256-GCM.
+
+**Response:** `201 Created` — the created connection with masked credentials.
+
+**Errors:**
+
+- `400` — validation failed (bad URL, missing fields) or the URL resolves to a disallowed address (SSRF guard)
+
+### `GET /api/integrations/:connectionId`
+
+Get a single connection (credentials masked).
+
+### `PATCH /api/integrations/:connectionId`
+
+Update a connection's name, description, or credentials.
+
+### `DELETE /api/integrations/:connectionId`
+
+Delete a connection. Agents that reference it lose access immediately.
+
+### `POST /api/integrations/:connectionId/sync`
+
+Re-probe the external system: rediscover available models and recheck access rights. Permissions that no longer apply are removed.
+
+### `POST /api/integrations/:connectionId/test`
+
+Test credentials against the external system without persisting changes. Used by the setup wizard for live feedback.
+
+### `GET /api/agents/:agentId/integrations`
+
+Get an agent's integration permissions: which connections are enabled, access level (read-only, read-write, full, custom), and which data models are allowed.
+
+### `PATCH /api/agents/:agentId/integrations`
+
+Update an agent's integration permissions.
+
+## Usage Dashboard (admin only)
+
+Token usage and estimated cost aggregates. See [Usage & Costs Dashboard](/guides/usage-dashboard/) for the UI.
+
+### `GET /api/usage/summary`
+
+Per-agent usage totals within a time window.
+
+**Query parameters:**
+
+| Parameter | Type   | Default | Description                          |
+| --------- | ------ | ------- | ------------------------------------ |
+| `days`    | number | 30      | Look-back window. `0` means all-time |
+| `agentId` | string | —       | Filter by a single agent             |
+
+**Response:**
+
+```json
+{
+  "agents": [
+    {
+      "agentId": "uuid",
+      "agentName": "Smithers",
+      "totalInputTokens": "15432",
+      "totalOutputTokens": "3210",
+      "totalCacheReadTokens": "120",
+      "totalCacheWriteTokens": "45",
+      "totalCost": "0.08",
+      "deleted": false
+    }
+  ],
+  "totals": {
+    "chat": {
+      "inputTokens": "...",
+      "outputTokens": "...",
+      "cacheReadTokens": "...",
+      "cacheWriteTokens": "...",
+      "cost": "..."
+    },
+    "system": {
+      "inputTokens": "...",
+      "outputTokens": "...",
+      "cacheReadTokens": "...",
+      "cacheWriteTokens": "...",
+      "cost": "..."
+    },
+    "plugin": {
+      "inputTokens": "...",
+      "outputTokens": "...",
+      "cacheReadTokens": "...",
+      "cacheWriteTokens": "...",
+      "cost": "..."
+    }
+  }
+}
+```
+
+Source buckets classify where the tokens were consumed:
+
+- **chat** — direct user ↔ agent conversation
+- **system** — background work such as Smithers onboarding or summarization
+- **plugin** — work driven by a plugin subagent call
+
+### `GET /api/usage/by-user`
+
+Usage broken down by user. **Enterprise license required.**
+
+### `GET /api/usage/timeseries`
+
+Usage over time — used to render the dashboard charts. Query parameters: `days`, `agentId`, and `interval` (`day` or `hour`).
+
+### `GET /api/usage/export`
+
+Export usage records as CSV. **Enterprise license required.**
+
+## Enterprise License
+
+### `GET /api/enterprise/status`
+
+Get the current enterprise license status and seat usage. Any authenticated user can call this endpoint (non-admins see it too, so the UI can show licence-gated features correctly).
+
+**Response:**
+
+```json
+{
+  "enterprise": true,
+  "type": "paid",
+  "org": "Acme Corp",
+  "expiresAt": "2027-01-15T00:00:00.000Z",
+  "daysRemaining": 263,
+  "managedByEnv": false,
+  "seatsUsed": 7,
+  "maxUsers": 10
+}
+```
+
+| Field           | Type           | Description                                                                                                    |
+| --------------- | -------------- | -------------------------------------------------------------------------------------------------------------- |
+| `enterprise`    | boolean        | Whether an active enterprise license is present                                                                |
+| `type`          | string \| null | `"trial"` or `"paid"`. `null` when no license is active.                                                       |
+| `org`           | string \| null | Organisation name encoded in the license token. `null` when no license is active.                              |
+| `expiresAt`     | string \| null | ISO 8601 expiry timestamp. `null` for non-expiring tokens or when no license is active.                        |
+| `daysRemaining` | number \| null | Days until the key expires. `null` when the key has no expiry or no license is active.                         |
+| `managedByEnv`  | boolean        | `true` when the key comes from the `PINCHY_ENTERPRISE_KEY` environment variable (read-only in the Settings UI) |
+| `seatsUsed`     | number         | Number of seats currently in use: active users + valid pending invitations                                     |
+| `maxUsers`      | number         | Maximum seats allowed by the license. `0` means unlimited.                                                     |
+
+**Seat cap behaviour:** when `seatsUsed >= maxUsers` and `maxUsers > 0`, the **Invite User** button is disabled and the API rejects new invitations with `403`. Existing users are never affected. See [Enterprise Setup — Seat cap enforcement](/guides/enterprise-setup/#seat-cap-enforcement) for the full explanation.
+
+**Errors:**
+
+- `401` — not authenticated
+
+### `POST /api/enterprise/key`
+
+Save or update the enterprise license key. **Admin only.** Not available when the key is managed via the `PINCHY_ENTERPRISE_KEY` environment variable (`managedByEnv: true`).
+
+**Request body:**
+
+| Field | Type   | Required | Description           |
+| ----- | ------ | -------- | --------------------- |
+| `key` | string | Yes      | The JWT license token |
+
+**Response:** `{ "success": true }` — the new license status takes effect immediately without a restart.
+
+**Errors:**
+
+- `400` — key is missing or the JWT signature is invalid
+- `401` — not authenticated
+- `403` — not an admin, or key is managed by env var
 
 ## Groups (admin only, enterprise)
 
@@ -643,6 +1062,25 @@ If tampered entries are found, `valid` is `false` and `invalidIds` contains the 
 
 - `401` — not authenticated
 - `403` — not an admin
+
+### `GET /api/audit/event-types`
+
+List the distinct event types present in the current audit log. Useful for populating filter dropdowns without enumerating the full schema. **Admin only.**
+
+**Response:**
+
+```json
+{
+  "eventTypes": [
+    "auth.login",
+    "auth.failed",
+    "agent.created",
+    "channel.created",
+    "tool.shell",
+    "tool.denied"
+  ]
+}
+```
 
 ### `GET /api/audit/export`
 

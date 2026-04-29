@@ -71,7 +71,11 @@ describe("SettingsUsers", () => {
   function mockFetchForUsers(
     users: unknown[],
     invites: unknown[] = mockInvites,
-    { enterprise = false }: { enterprise?: boolean } = {}
+    {
+      enterprise = false,
+      maxUsers = 0,
+      seatsUsed = 0,
+    }: { enterprise?: boolean; maxUsers?: number; seatsUsed?: number } = {}
   ) {
     vi.mocked(global.fetch).mockImplementation(async (url) => {
       if (String(url) === "/api/users") {
@@ -84,7 +88,7 @@ describe("SettingsUsers", () => {
         return { ok: true, json: async () => [] } as Response;
       }
       if (String(url) === "/api/enterprise/status") {
-        return { ok: true, json: async () => ({ enterprise }) } as Response;
+        return { ok: true, json: async () => ({ enterprise, maxUsers, seatsUsed }) } as Response;
       }
       return { ok: false } as Response;
     });
@@ -282,6 +286,40 @@ describe("SettingsUsers", () => {
     });
 
     expect(screen.getByRole("button", { name: "Copy" })).toBeInTheDocument();
+  });
+
+  it("should show copied feedback when invite link Copy button is clicked", async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      writable: true,
+      configurable: true,
+    });
+
+    mockFetchForUsers(mockUsers, mockInvites);
+    render(<SettingsUsers currentUserId="user-1" />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Invite User" })).toBeInTheDocument();
+    });
+    await user.click(screen.getByRole("button", { name: "Invite User" }));
+    await waitFor(() => expect(screen.getByLabelText("Role")).toBeInTheDocument());
+
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ token: "invite-token-abc" }),
+    } as Response);
+    await user.click(screen.getByRole("button", { name: "Create Invite" }));
+
+    await waitFor(() =>
+      expect(screen.getByText("http://localhost:7777/invite/invite-token-abc")).toBeInTheDocument()
+    );
+
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Copied!" })).toBeInTheDocument();
+    });
   });
 
   it("should render group badges for users", async () => {
@@ -699,5 +737,27 @@ describe("SettingsUsers", () => {
       expect(tableView.getByText("expired")).toBeInTheDocument();
       expect(tableView.getByText("deactivated")).toBeInTheDocument();
     });
+  });
+
+  it("shows seat usage banner when maxUsers > 0", async () => {
+    mockFetchForUsers([], [], { enterprise: true, maxUsers: 10, seatsUsed: 7 });
+    render(<SettingsUsers currentUserId="u1" />);
+    expect(await screen.findByText(/7 of 10 seats used/i)).toBeInTheDocument();
+  });
+
+  it("disables the invite button when at the cap", async () => {
+    mockFetchForUsers([], [], { enterprise: true, maxUsers: 10, seatsUsed: 10 });
+    render(<SettingsUsers currentUserId="u1" />);
+    const inviteBtn = await screen.findByRole("button", { name: /invite user/i });
+    expect(inviteBtn).toBeDisabled();
+  });
+
+  it("hides banner when license is unlimited", async () => {
+    mockFetchForUsers([], [], { enterprise: true, maxUsers: 0, seatsUsed: 12 });
+    render(<SettingsUsers currentUserId="u1" />);
+    await waitFor(() => {
+      expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText(/seats used/i)).not.toBeInTheDocument();
   });
 });

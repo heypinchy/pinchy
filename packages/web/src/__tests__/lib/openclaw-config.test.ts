@@ -7,6 +7,7 @@ vi.mock("fs", async (importOriginal) => {
   const existsSyncMock = vi.fn().mockReturnValue(true);
   const mkdirSyncMock = vi.fn();
   const renameSyncMock = vi.fn();
+  const chmodSyncMock = vi.fn();
   return {
     ...actual,
     default: {
@@ -16,12 +17,14 @@ vi.mock("fs", async (importOriginal) => {
       existsSync: existsSyncMock,
       mkdirSync: mkdirSyncMock,
       renameSync: renameSyncMock,
+      chmodSync: chmodSyncMock,
     },
     writeFileSync: writeFileSyncMock,
     readFileSync: readFileSyncMock,
     existsSync: existsSyncMock,
     mkdirSync: mkdirSyncMock,
     renameSync: renameSyncMock,
+    chmodSync: chmodSyncMock,
   };
 });
 
@@ -30,7 +33,12 @@ vi.mock("@/db", () => ({
     select: vi.fn().mockImplementation(() => ({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockResolvedValue([]),
+          innerJoin: vi.fn().mockReturnValue(
+            Object.assign(Promise.resolve([]), {
+              where: vi.fn().mockResolvedValue([]),
+            })
+          ),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     })),
@@ -41,8 +49,12 @@ vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
 
+const { mockDecrypt } = vi.hoisted(() => ({
+  mockDecrypt: vi.fn((val: string) => val),
+}));
+
 vi.mock("@/lib/encryption", () => ({
-  decrypt: (val: string) => val,
+  decrypt: (val: string) => mockDecrypt(val),
   encrypt: (val: string) => val,
   getOrCreateSecret: vi.fn().mockReturnValue(Buffer.alloc(32)),
 }));
@@ -55,12 +67,26 @@ vi.mock("@/lib/migrate-onboarding", () => ({
   migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
 }));
 
+const { mockWriteSecretsFile, mockReadSecretsFile } = vi.hoisted(() => ({
+  mockWriteSecretsFile: vi.fn(),
+  mockReadSecretsFile: vi.fn().mockReturnValue({}),
+}));
+
+vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/openclaw-secrets")>();
+  return {
+    ...actual,
+    writeSecretsFile: mockWriteSecretsFile,
+    readSecretsFile: mockReadSecretsFile,
+  };
+});
+
 vi.mock("@/lib/provider-models", () => {
   const defaults: Record<string, string> = {
     anthropic: "anthropic/claude-haiku-4-5-20251001",
-    openai: "openai/gpt-4o-mini",
+    openai: "openai/gpt-5.4-mini",
     google: "google/gemini-2.5-flash",
-    "ollama-cloud": "ollama-cloud/gemini-3-flash-preview:cloud",
+    "ollama-cloud": "ollama-cloud/gemini-3-flash-preview",
     "ollama-local": "",
   };
   return {
@@ -73,6 +99,7 @@ import {
   regenerateOpenClawConfig,
   updateIdentityLinks,
   sanitizeOpenClawConfig,
+  updateTelegramChannelConfig,
 } from "@/lib/openclaw-config";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
@@ -85,11 +112,24 @@ const mockedMkdirSync = vi.mocked(mkdirSync);
 const mockedDb = vi.mocked(db);
 const mockedGetSetting = vi.mocked(getSetting);
 
-/** Helper: create a mock `from()` that returns a thenable with `.innerJoin()` */
+/**
+ * Helper: create a mock `innerJoin()` that returns a thenable supporting `.where()`.
+ * This models the new query chain: select().from().innerJoin().where().
+ */
+function mockInnerJoin(data: unknown[] = []) {
+  return vi.fn().mockReturnValue(
+    Object.assign(Promise.resolve(data), {
+      where: vi.fn().mockResolvedValue(data),
+    })
+  );
+}
+
+/** Helper: create a mock `from()` that returns a thenable with `.innerJoin()` and `.where()` */
 function mockFrom(data: unknown[] = []) {
   return vi.fn().mockImplementation(() =>
     Object.assign(Promise.resolve(data), {
-      innerJoin: vi.fn().mockResolvedValue([]),
+      innerJoin: mockInnerJoin([]),
+      where: vi.fn().mockResolvedValue(data),
     })
   );
 }
@@ -101,6 +141,7 @@ describe("regenerateOpenClawConfig", () => {
     mockedReadFileSync.mockImplementation(() => {
       throw new Error("ENOENT: no such file or directory");
     });
+    mockReadSecretsFile.mockReturnValue({});
     mockedDb.select.mockReturnValue({
       from: mockFrom(),
     } as never);
@@ -122,8 +163,8 @@ describe("regenerateOpenClawConfig", () => {
     // (`heartbeat: { every: "0m" }`). We set it per-agent, NOT on agents.defaults,
     // to avoid hot-reload races with Telegram (openclaw#47458).
     const agentsData = [
-      { id: "a1", name: "Smithers", model: "anthropic/claude-opus-4-6", createdAt: new Date() },
-      { id: "a2", name: "Jeeves", model: "openai/gpt-4o", createdAt: new Date() },
+      { id: "a1", name: "Smithers", model: "anthropic/claude-opus-4-7", createdAt: new Date() },
+      { id: "a2", name: "Jeeves", model: "openai/gpt-5.4", createdAt: new Date() },
     ];
     mockedDb.select.mockReturnValue({
       from: mockFrom(agentsData),
@@ -145,13 +186,13 @@ describe("regenerateOpenClawConfig", () => {
       {
         id: "uuid-agent-1",
         name: "Smithers",
-        model: "anthropic/claude-opus-4-6",
+        model: "anthropic/claude-opus-4-7",
         createdAt: new Date(),
       },
       {
         id: "uuid-agent-2",
         name: "Jeeves",
-        model: "openai/gpt-4o",
+        model: "openai/gpt-5.4",
         createdAt: new Date(),
       },
     ];
@@ -170,7 +211,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.agents.list[0]).toEqual({
       id: "uuid-agent-1",
       name: "Smithers",
-      model: "anthropic/claude-opus-4-6",
+      model: "anthropic/claude-opus-4-7",
       workspace: "/root/.openclaw/workspaces/uuid-agent-1",
       tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
       heartbeat: { every: "0m" },
@@ -178,14 +219,14 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.agents.list[1]).toEqual({
       id: "uuid-agent-2",
       name: "Jeeves",
-      model: "openai/gpt-4o",
+      model: "openai/gpt-5.4",
       workspace: "/root/.openclaw/workspaces/uuid-agent-2",
       tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
       heartbeat: { every: "0m" },
     });
   });
 
-  it("should preserve existing gateway.auth fields", async () => {
+  it("should preserve existing gateway mode/bind/token in openclaw.json", async () => {
     const existingConfig = {
       gateway: {
         mode: "local",
@@ -206,7 +247,12 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.gateway.auth.token).toBe("existing-secret-token");
+    // gateway.auth.token must be preserved as a plain string — OpenClaw requires
+    // a literal string for gateway authentication, not a SecretRef object
+    expect(config.gateway.auth).toEqual({
+      mode: "token",
+      token: "existing-secret-token",
+    });
     // OpenClaw-enriched fields (meta, commands, agents.defaults.*) are preserved
     // to avoid unnecessary diffs that trigger hot-reloads breaking Telegram polling
     expect(config.meta).toEqual({ version: "1.2.3", generatedAt: "2025-01-01T00:00:00Z" });
@@ -214,7 +260,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.gateway.bind).toBe("lan");
   });
 
-  it("should include provider env vars from settings", async () => {
+  it("should include provider env vars from settings as SecretRefs", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-decrypted";
       if (key === "openai_api_key") return "sk-openai-decrypted";
@@ -227,8 +273,11 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.env.ANTHROPIC_API_KEY).toBe("sk-ant-decrypted");
-    expect(config.env.OPENAI_API_KEY).toBe("sk-openai-decrypted");
+    // env.* must be string templates (not SecretRef objects) — OpenClaw's
+    // config validator rejects objects in env.*. The actual key is loaded by
+    // start-openclaw.sh from secrets.json into the OpenClaw process env.
+    expect(config.env.ANTHROPIC_API_KEY).toBe("${ANTHROPIC_API_KEY}");
+    expect(config.env.OPENAI_API_KEY).toBe("${OPENAI_API_KEY}");
     expect(config.env.GEMINI_API_KEY).toBeUndefined();
   });
 
@@ -244,7 +293,7 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.agents.defaults.model.primary).toBe("openai/gpt-4o-mini");
+    expect(config.agents.defaults.model.primary).toBe("openai/gpt-5.4-mini");
   });
 
   it("should handle empty agents list", async () => {
@@ -280,7 +329,9 @@ describe("regenerateOpenClawConfig", () => {
           name: "HR Knowledge Base",
           model: "anthropic/claude-haiku-4-5-20251001",
           templateId: "knowledge-base",
-          pluginConfig: { allowed_paths: ["/data/hr-docs/", "/data/policies/"] },
+          pluginConfig: {
+            "pinchy-files": { allowed_paths: ["/data/hr-docs/", "/data/policies/"] },
+          },
           allowedTools: ["pinchy_ls", "pinchy_read"],
           createdAt: new Date(),
         },
@@ -306,7 +357,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "custom-agent-id",
           name: "Dev Assistant",
-          model: "anthropic/claude-opus-4-6",
+          model: "anthropic/claude-opus-4-7",
           templateId: "custom",
           pluginConfig: null,
           allowedTools: [],
@@ -335,7 +386,9 @@ describe("regenerateOpenClawConfig", () => {
           name: "HR Knowledge Base",
           model: "anthropic/claude-haiku-4-5-20251001",
           templateId: "knowledge-base",
-          pluginConfig: { allowed_paths: ["/data/hr-docs/", "/data/policies/"] },
+          pluginConfig: {
+            "pinchy-files": { allowed_paths: ["/data/hr-docs/", "/data/policies/"] },
+          },
           allowedTools: ["pinchy_ls", "pinchy_read"],
           createdAt: new Date(),
         },
@@ -367,7 +420,7 @@ describe("regenerateOpenClawConfig", () => {
           name: "HR Knowledge Base",
           model: "anthropic/claude-haiku-4-5-20251001",
           templateId: "knowledge-base",
-          pluginConfig: { allowed_paths: ["/data/hr-docs/"] },
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
           allowedTools: ["pinchy_ls", "pinchy_read"],
           createdAt: new Date(),
         },
@@ -382,7 +435,8 @@ describe("regenerateOpenClawConfig", () => {
     // apiBaseUrl and gatewayToken live at the plugin-level config (alongside `agents`),
     // matching how pinchy-context and pinchy-audit expose them.
     expect(config.plugins.entries["pinchy-files"].config.apiBaseUrl).toBe("http://pinchy:7777");
-    expect(config.plugins.entries["pinchy-files"].config.gatewayToken).toBe("gw-token-files");
+    // OpenClaw 2026.4.26 does not resolve SecretRef in plugin configs — use plain string
+    expect(typeof config.plugins.entries["pinchy-files"].config.gatewayToken).toBe("string");
     // Per-agent allowed_paths is still nested under .agents
     expect(config.plugins.entries["pinchy-files"].config.agents["kb-agent-id"]).toEqual({
       allowed_paths: ["/data/hr-docs/"],
@@ -415,8 +469,9 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.env.ANTHROPIC_API_KEY).toBe("sk-ant-new");
+    expect(config.env.ANTHROPIC_API_KEY).toBe("${ANTHROPIC_API_KEY}");
     expect(config.env.OPENAI_API_KEY).toBeUndefined();
+    // gateway.auth.token is preserved as plain string (OpenClaw requires literal string)
     expect(config.gateway.auth.token).toBe("existing-token");
   });
 
@@ -431,7 +486,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "smithers-1",
           name: "Smithers",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           pluginConfig: null,
           allowedTools: ["pinchy_save_user_context"],
           ownerId: "user-1",
@@ -449,7 +504,8 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.entries["pinchy-context"]).toBeDefined();
     expect(config.plugins.entries["pinchy-context"].enabled).toBe(true);
     expect(config.plugins.entries["pinchy-context"].config.apiBaseUrl).toBe("http://pinchy:7777");
-    expect(config.plugins.entries["pinchy-context"].config.gatewayToken).toBe("gw-token-123");
+    // OpenClaw 2026.4.26 does not resolve SecretRef in plugin configs — use plain string
+    expect(typeof config.plugins.entries["pinchy-context"].config.gatewayToken).toBe("string");
     expect(config.plugins.entries["pinchy-context"].config.agents["smithers-1"]).toEqual({
       tools: ["save_user_context"],
       userId: "user-1",
@@ -469,10 +525,9 @@ describe("regenerateOpenClawConfig", () => {
 
     expect(config.plugins.entries["pinchy-audit"]).toBeDefined();
     expect(config.plugins.entries["pinchy-audit"].enabled).toBe(true);
-    expect(config.plugins.entries["pinchy-audit"].config).toEqual({
-      apiBaseUrl: "http://pinchy:7777",
-      gatewayToken: "gw-token-123",
-    });
+    // OpenClaw 2026.4.26 does not resolve SecretRef in plugin configs — use plain string
+    expect(config.plugins.entries["pinchy-audit"].config.apiBaseUrl).toBe("http://pinchy:7777");
+    expect(typeof config.plugins.entries["pinchy-audit"].config.gatewayToken).toBe("string");
   });
 
   it("should use PORT env var in plugin apiBaseUrl when set", async () => {
@@ -491,7 +546,7 @@ describe("regenerateOpenClawConfig", () => {
           {
             id: "smithers-1",
             name: "Smithers",
-            model: "anthropic/claude-sonnet-4-20250514",
+            model: "anthropic/claude-sonnet-4-6",
             pluginConfig: null,
             allowedTools: ["pinchy_save_user_context"],
             ownerId: "user-1",
@@ -528,7 +583,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "smithers-1",
           name: "Smithers",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           pluginConfig: null,
           allowedTools: ["pinchy_save_user_context"],
           ownerId: "user-1",
@@ -538,8 +593,8 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "kb-agent",
           name: "KB Agent",
-          model: "anthropic/claude-sonnet-4-20250514",
-          pluginConfig: { allowed_paths: ["/data/docs/"] },
+          model: "anthropic/claude-sonnet-4-6",
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
           allowedTools: ["pinchy_ls", "pinchy_read"],
           ownerId: null,
           isPersonal: false,
@@ -568,7 +623,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "admin-smithers",
           name: "Smithers",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           pluginConfig: null,
           allowedTools: ["pinchy_save_user_context", "pinchy_save_org_context"],
           ownerId: "admin-1",
@@ -603,10 +658,270 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models).toBeDefined();
     expect(config.models.providers["ollama-cloud"]).toBeDefined();
     expect(config.models.providers["ollama-cloud"].baseUrl).toBe("https://ollama.com/v1");
-    expect(config.models.providers["ollama-cloud"].apiKey).toBe("sk-ollama-test");
+    expect(config.models.providers["ollama-cloud"].apiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/ollama-cloud/apiKey",
+    });
     expect(config.models.providers["ollama-cloud"].api).toBe("openai-completions");
     expect(Array.isArray(config.models.providers["ollama-cloud"].models)).toBe(true);
     expect(config.models.providers["ollama-cloud"].models.length).toBeGreaterThan(0);
+  });
+
+  it("writes every tool-capable Ollama Cloud model into the config", async () => {
+    // OpenClaw reads this list to know which cloud models exist and how to
+    // prune their context. A mismatch between what Pinchy's UI lets the
+    // admin pick and what OpenClaw knows about means the agent would run
+    // with default context hints (or refuse the model entirely). Keep the
+    // lists locked.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const modelIds = (config.models.providers["ollama-cloud"].models as Array<{ id: string }>).map(
+      (m) => m.id
+    );
+
+    expect(modelIds.sort()).toEqual(
+      [
+        "deepseek-v3.1:671b",
+        "deepseek-v3.2",
+        "deepseek-v4-flash",
+        "deepseek-v4-pro",
+        "devstral-2:123b",
+        "devstral-small-2:24b",
+        "gemini-3-flash-preview",
+        "gemma4:31b",
+        "glm-4.6",
+        "glm-4.7",
+        "glm-5",
+        "glm-5.1",
+        "gpt-oss:120b",
+        "gpt-oss:20b",
+        "kimi-k2-thinking",
+        "kimi-k2.5",
+        "kimi-k2.6",
+        "minimax-m2",
+        "minimax-m2.1",
+        "minimax-m2.5",
+        "minimax-m2.7",
+        "ministral-3:14b",
+        "ministral-3:3b",
+        "ministral-3:8b",
+        "mistral-large-3:675b",
+        "nemotron-3-nano:30b",
+        "nemotron-3-super",
+        "qwen3-coder-next",
+        "qwen3-coder:480b",
+        "qwen3-next:80b",
+        "qwen3-vl:235b",
+        "qwen3-vl:235b-instruct",
+        "qwen3.5:397b",
+        "rnj-1:8b",
+      ].sort()
+    );
+  });
+
+  it("writes the correct context window for each Ollama Cloud model", async () => {
+    // Context windows are taken from each model's ollama.com/library/<name>
+    // page. Pinchy must not exceed the real limit (Ollama would reject the
+    // request) and shouldn't under-report either (unnecessary compaction).
+    // Ollama's "NK" convention is N * 1024, which we preserve here.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const models = config.models.providers["ollama-cloud"].models as Array<{
+      id: string;
+      contextWindow: number;
+    }>;
+    const ctx = Object.fromEntries(models.map((m) => [m.id, m.contextWindow]));
+
+    // 32K — smallest in the list, was previously over-reported as 128K
+    expect(ctx["rnj-1:8b"]).toBe(32768);
+    // 128K
+    expect(ctx["gpt-oss:20b"]).toBe(131072);
+    expect(ctx["gpt-oss:120b"]).toBe(131072);
+    // 160K
+    expect(ctx["deepseek-v3.1:671b"]).toBe(163840);
+    expect(ctx["deepseek-v3.2"]).toBe(163840);
+    // 198K (GLM family, minimax-m2.5)
+    expect(ctx["glm-4.6"]).toBe(202752);
+    expect(ctx["glm-4.7"]).toBe(202752);
+    expect(ctx["glm-5"]).toBe(202752);
+    expect(ctx["glm-5.1"]).toBe(202752);
+    expect(ctx["minimax-m2.5"]).toBe(202752);
+    // 200K (other minimax variants)
+    expect(ctx["minimax-m2"]).toBe(204800);
+    expect(ctx["minimax-m2.1"]).toBe(204800);
+    expect(ctx["minimax-m2.7"]).toBe(204800);
+    // 256K — the most common class
+    expect(ctx["devstral-2:123b"]).toBe(262144);
+    expect(ctx["gemma4:31b"]).toBe(262144);
+    expect(ctx["kimi-k2-thinking"]).toBe(262144);
+    expect(ctx["kimi-k2.5"]).toBe(262144);
+    expect(ctx["kimi-k2.6"]).toBe(262144);
+    expect(ctx["ministral-3:3b"]).toBe(262144);
+    expect(ctx["ministral-3:8b"]).toBe(262144);
+    expect(ctx["ministral-3:14b"]).toBe(262144);
+    expect(ctx["mistral-large-3:675b"]).toBe(262144);
+    expect(ctx["nemotron-3-super"]).toBe(262144);
+    expect(ctx["qwen3-coder-next"]).toBe(262144);
+    expect(ctx["qwen3-coder:480b"]).toBe(262144);
+    expect(ctx["qwen3-next:80b"]).toBe(262144);
+    expect(ctx["qwen3-vl:235b"]).toBe(262144);
+    expect(ctx["qwen3-vl:235b-instruct"]).toBe(262144);
+    expect(ctx["qwen3.5:397b"]).toBe(262144);
+    // 384K
+    expect(ctx["devstral-small-2:24b"]).toBe(393216);
+    // 1M
+    expect(ctx["deepseek-v4-flash"]).toBe(1048576);
+    expect(ctx["deepseek-v4-pro"]).toBe(1048576);
+    expect(ctx["gemini-3-flash-preview"]).toBe(1048576);
+    expect(ctx["nemotron-3-nano:30b"]).toBe(1048576);
+  });
+
+  it("writes reasoning, input (vision), and cost fields for every Ollama Cloud model", async () => {
+    // OpenClaw's ModelDefinitionConfig requires `reasoning`, `input`, and
+    // `cost` alongside contextWindow/maxTokens/compat. Without these the
+    // runtime falls back to silent defaults — vision-capable models get
+    // treated as text-only, reasoning models can't advertise thinking, and
+    // estimatedCostUsd stays 0 for every session. Verified per model on
+    // ollama.com/library/<name>.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const models = config.models.providers["ollama-cloud"].models as Array<{
+      id: string;
+      reasoning?: boolean;
+      input?: string[];
+      cost?: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    }>;
+    const byId = Object.fromEntries(models.map((m) => [m.id, m]));
+
+    // Vision-capable cloud models per ollama.com/search?c=vision&c=cloud
+    const visionModels = [
+      "devstral-small-2:24b",
+      "gemini-3-flash-preview",
+      "gemma4:31b",
+      "kimi-k2.5",
+      "kimi-k2.6",
+      "ministral-3:3b",
+      "ministral-3:8b",
+      "ministral-3:14b",
+      "mistral-large-3:675b",
+      "qwen3-vl:235b",
+      "qwen3-vl:235b-instruct",
+      "qwen3.5:397b",
+    ];
+    for (const id of visionModels) {
+      expect(byId[id].input).toEqual(["text", "image"]);
+    }
+    // Spot-check that text-only models stay text-only (gemma4 was the
+    // specific counter-example the user flagged during review)
+    expect(byId["rnj-1:8b"].input).toEqual(["text"]);
+    expect(byId["qwen3-coder:480b"].input).toEqual(["text"]);
+    expect(byId["deepseek-v3.2"].input).toEqual(["text"]);
+
+    // Reasoning-capable cloud models per ollama.com/search?c=thinking&c=cloud
+    const reasoningModels = [
+      "deepseek-v3.1:671b",
+      "deepseek-v3.2",
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+      "gemini-3-flash-preview",
+      "gemma4:31b",
+      "glm-4.6",
+      "glm-4.7",
+      "glm-5",
+      "glm-5.1",
+      "gpt-oss:20b",
+      "gpt-oss:120b",
+      "kimi-k2-thinking",
+      "kimi-k2.5",
+      "kimi-k2.6",
+      "minimax-m2",
+      "minimax-m2.5",
+      "minimax-m2.7",
+      "nemotron-3-nano:30b",
+      "nemotron-3-super",
+      "qwen3-next:80b",
+      "qwen3-vl:235b",
+      "qwen3-vl:235b-instruct",
+      "qwen3.5:397b",
+    ];
+    for (const id of reasoningModels) {
+      expect(byId[id].reasoning).toBe(true);
+    }
+    // Non-reasoning — qwen3-coder-next explicitly "Non-thinking mode only",
+    // ministral-3 / mistral-large-3 / devstral-* and rnj-1 not tagged,
+    // minimax-m2.1 absent from Ollama's thinking tag list.
+    const nonReasoningModels = [
+      "devstral-2:123b",
+      "devstral-small-2:24b",
+      "minimax-m2.1",
+      "ministral-3:3b",
+      "ministral-3:8b",
+      "ministral-3:14b",
+      "mistral-large-3:675b",
+      "qwen3-coder-next",
+      "qwen3-coder:480b",
+      "rnj-1:8b",
+    ];
+    for (const id of nonReasoningModels) {
+      expect(byId[id].reasoning).toBe(false);
+    }
+
+    // Ollama Cloud uses subscription pricing, not per-token billing (see
+    // ollama.com/pricing). Setting cost to zero is the honest value — a
+    // fabricated per-token rate would make the Usage dashboard lie about
+    // spend for users on the Free / Pro / Max plans.
+    for (const model of models) {
+      expect(model.cost).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+    }
+  });
+
+  it("opts every Ollama Cloud model into streaming usage reporting", async () => {
+    // Ollama Cloud's /v1/chat/completions only emits a final `usage` chunk
+    // when the request carries `stream_options: { include_usage: true }`.
+    // OpenClaw adds that flag only when the model config opts in via
+    // `compat.supportsUsageInStreaming: true` — its own auto-detection
+    // treats configured non-OpenAI endpoints as "not supported" by default.
+    // Without this opt-in, sessions have no inputTokens/outputTokens, the
+    // poller records nothing, and Usage & Costs stays empty.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const models = config.models.providers["ollama-cloud"].models as Array<{
+      id: string;
+      compat?: { supportsUsageInStreaming?: boolean };
+    }>;
+
+    for (const model of models) {
+      expect(model.compat?.supportsUsageInStreaming).toBe(true);
+    }
   });
 
   it("should not include models block when neither ollama provider is configured", async () => {
@@ -688,7 +1003,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "custom-agent-id",
           name: "Dev Assistant",
-          model: "anthropic/claude-opus-4-6",
+          model: "anthropic/claude-opus-4-7",
           templateId: "custom",
           pluginConfig: null,
           createdAt: new Date(),
@@ -733,7 +1048,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "agent-1",
           name: "Dev",
-          model: "anthropic/claude-opus-4-6",
+          model: "anthropic/claude-opus-4-7",
           templateId: "custom",
           pluginConfig: null,
           createdAt: new Date(),
@@ -764,7 +1079,7 @@ describe("regenerateOpenClawConfig", () => {
           model: "anthropic/claude-haiku-4-5-20251001",
           isPersonal: true,
           ownerId: "user-1",
-          allowedTools: ["pinchy_save_user_context", "docs_list", "docs_read"],
+          allowedTools: ["pinchy_save_user_context"],
           createdAt: new Date(),
         },
         {
@@ -852,6 +1167,396 @@ describe("sanitizeOpenClawConfig", () => {
   });
 });
 
+describe("pinchy-web config", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("should include pinchy-web entry when web-search connection exists and agent has web tools", async () => {
+    const agentsData = [
+      {
+        id: "web-agent",
+        name: "Web Agent",
+        model: "anthropic/claude-sonnet-4-6",
+        allowedTools: ["pinchy_web_search", "pinchy_web_fetch"],
+        pluginConfig: {
+          "pinchy-web": {
+            allowedDomains: ["docs.example.com"],
+            language: "de",
+            country: "at",
+            freshness: "month",
+          },
+        },
+        createdAt: new Date(),
+      },
+    ];
+
+    const webSearchConnections = [
+      {
+        id: "ws-conn-1",
+        type: "web-search",
+        name: "Brave Search",
+        description: "",
+        credentials: JSON.stringify({ apiKey: "BSA-test-key" }),
+        data: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          // agents table
+          return Object.assign(Promise.resolve(agentsData), {
+            innerJoin: mockInnerJoin([]),
+          });
+        }
+        // callCount 2 = agentConnectionPermissions (chained with innerJoin)
+        // callCount 3 = integrationConnections for web-search (with where)
+        if (callCount === 3) {
+          return Object.assign(Promise.resolve(webSearchConnections), {
+            innerJoin: mockInnerJoin([]),
+            where: vi.fn().mockResolvedValue(webSearchConnections),
+          });
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-web"]).toBeDefined();
+    expect(config.plugins.entries["pinchy-web"].enabled).toBe(true);
+    expect(config.plugins.entries["pinchy-web"].config.braveApiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/integrations/ws-conn-1/braveApiKey",
+    });
+    expect(config.plugins.entries["pinchy-web"].config.agents["web-agent"]).toEqual({
+      tools: ["pinchy_web_search", "pinchy_web_fetch"],
+      allowedDomains: ["docs.example.com"],
+      language: "de",
+      country: "at",
+      freshness: "month",
+    });
+    expect(config.plugins.allow).toContain("pinchy-web");
+  });
+
+  it("should not include pinchy-web when no web-search connection exists", async () => {
+    const agentsData = [
+      {
+        id: "web-agent",
+        name: "Web Agent",
+        model: "anthropic/claude-sonnet-4-6",
+        allowedTools: ["pinchy_web_search"],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+    ];
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(Promise.resolve(agentsData), {
+            innerJoin: mockInnerJoin([]),
+          });
+        }
+        // No web-search connections returned
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-web"]).toBeUndefined();
+  });
+
+  it("should not include pinchy-web when connection exists but no agent has web tools", async () => {
+    const agentsData = [
+      {
+        id: "plain-agent",
+        name: "Plain Agent",
+        model: "anthropic/claude-sonnet-4-6",
+        allowedTools: ["pinchy_ls", "pinchy_read"],
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
+        createdAt: new Date(),
+      },
+    ];
+
+    const webSearchConnections = [
+      {
+        id: "ws-conn-1",
+        type: "web-search",
+        name: "Brave Search",
+        description: "",
+        credentials: JSON.stringify({ apiKey: "BSA-key" }),
+        data: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(Promise.resolve(agentsData), {
+            innerJoin: mockInnerJoin([]),
+          });
+        }
+        if (callCount === 3) {
+          return Object.assign(Promise.resolve(webSearchConnections), {
+            innerJoin: mockInnerJoin([]),
+            where: vi.fn().mockResolvedValue(webSearchConnections),
+          });
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-web"]).toBeUndefined();
+  });
+
+  it("should only list pinchy_web_search when agent does not have pinchy_web_fetch", async () => {
+    const agentsData = [
+      {
+        id: "search-only-agent",
+        name: "Search Only",
+        model: "anthropic/claude-sonnet-4-6",
+        allowedTools: ["pinchy_web_search"],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+    ];
+
+    const webSearchConnections = [
+      {
+        id: "ws-conn-1",
+        type: "web-search",
+        name: "Brave Search",
+        description: "",
+        credentials: JSON.stringify({ apiKey: "BSA-key" }),
+        data: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(Promise.resolve(agentsData), {
+            innerJoin: mockInnerJoin([]),
+          });
+        }
+        if (callCount === 3) {
+          return Object.assign(Promise.resolve(webSearchConnections), {
+            innerJoin: mockInnerJoin([]),
+            where: vi.fn().mockResolvedValue(webSearchConnections),
+          });
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.plugins.entries["pinchy-web"]).toBeDefined();
+    expect(config.plugins.entries["pinchy-web"].config.agents["search-only-agent"].tools).toEqual([
+      "pinchy_web_search",
+    ]);
+  });
+
+  it("should pass through pluginConfig filter settings alongside tools", async () => {
+    const agentsData = [
+      {
+        id: "filtered-agent",
+        name: "Filtered Agent",
+        model: "anthropic/claude-sonnet-4-6",
+        allowedTools: ["pinchy_web_search", "pinchy_web_fetch"],
+        pluginConfig: {
+          "pinchy-web": {
+            allowedDomains: ["example.com", "docs.example.com"],
+            excludedDomains: ["evil.com"],
+            language: "en",
+            country: "us",
+            freshness: "week",
+          },
+        },
+        createdAt: new Date(),
+      },
+    ];
+
+    const webSearchConnections = [
+      {
+        id: "ws-conn-1",
+        type: "web-search",
+        name: "Brave Search",
+        description: "",
+        credentials: JSON.stringify({ apiKey: "BSA-filter-key" }),
+        data: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(Promise.resolve(agentsData), {
+            innerJoin: mockInnerJoin([]),
+          });
+        }
+        if (callCount === 3) {
+          return Object.assign(Promise.resolve(webSearchConnections), {
+            innerJoin: mockInnerJoin([]),
+            where: vi.fn().mockResolvedValue(webSearchConnections),
+          });
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const agentConfig = config.plugins.entries["pinchy-web"].config.agents["filtered-agent"];
+    expect(agentConfig).toEqual({
+      tools: ["pinchy_web_search", "pinchy_web_fetch"],
+      allowedDomains: ["example.com", "docs.example.com"],
+      excludedDomains: ["evil.com"],
+      language: "en",
+      country: "us",
+      freshness: "week",
+    });
+  });
+});
+
+describe("pinchy-web braveApiKey as SecretRef", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("writes pinchy-web.braveApiKey as SecretRef", async () => {
+    const agentsData = [
+      {
+        id: "web-agent",
+        name: "Web Agent",
+        model: "anthropic/claude-sonnet-4-6",
+        allowedTools: ["pinchy_web_search"],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+    ];
+
+    const webSearchConnections = [
+      {
+        id: "ws-conn-42",
+        type: "web-search",
+        name: "Brave Search",
+        description: "",
+        credentials: JSON.stringify({ apiKey: "BSA-secret-key" }),
+        data: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    let callCount = 0;
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) {
+          return Object.assign(Promise.resolve(agentsData), {
+            innerJoin: mockInnerJoin([]),
+          });
+        }
+        if (callCount === 3) {
+          return Object.assign(Promise.resolve(webSearchConnections), {
+            innerJoin: mockInnerJoin([]),
+            where: vi.fn().mockResolvedValue(webSearchConnections),
+          });
+        }
+        return Object.assign(Promise.resolve([]), {
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
+        });
+      }),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    // openclaw.json must contain a SecretRef for braveApiKey, not the plaintext key
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    expect(config.plugins.entries["pinchy-web"].config.braveApiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/integrations/ws-conn-42/braveApiKey",
+    });
+
+    // secrets.json must contain the actual key
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.integrations?.["ws-conn-42"]?.braveApiKey).toBe("BSA-secret-key");
+  });
+});
+
 describe("pinchy-odoo config size", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -922,7 +1627,8 @@ describe("pinchy-odoo config size", () => {
     mockedDb.select.mockReturnValue({
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
-          innerJoin: vi.fn().mockResolvedValue(permissionsData),
+          innerJoin: mockInnerJoin(permissionsData),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -944,6 +1650,188 @@ describe("pinchy-odoo config size", () => {
     // Config should be small (no field definitions bloating it)
     const configSize = written.length;
     expect(configSize).toBeLessThan(5000); // Without schema: ~2-3KB. With schema it would be 100KB+
+  });
+
+  it("skips agents whose Odoo connection can't be decrypted instead of crashing the whole config regeneration", async () => {
+    // Regression: if ENCRYPTION_KEY changes, conn.credentials can't be decrypted.
+    // Previously the thrown error bubbled up and regenerateOpenClawConfig()
+    // crashed — which meant EVERY agent's config stopped regenerating, not just
+    // the one with the broken Odoo link. Now we skip the unreadable agent and
+    // keep the rest of the config alive.
+    const agentsData = [
+      {
+        id: "good-agent",
+        name: "Good Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+      {
+        id: "broken-agent",
+        name: "Broken Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "good-agent",
+          connectionId: "conn-good",
+          model: "sale.order",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-good",
+          type: "odoo",
+          name: "Readable Odoo",
+          description: "",
+          credentials: JSON.stringify({
+            url: "https://good.odoo",
+            db: "prod",
+            uid: 2,
+            apiKey: "good-key",
+          }),
+          data: { models: [], lastSyncAt: "2026-04-01T00:00:00Z" },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+      {
+        agent_connection_permissions: {
+          agentId: "broken-agent",
+          connectionId: "conn-broken",
+          model: "sale.order",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-broken",
+          type: "odoo",
+          name: "Unreadable Odoo",
+          description: "",
+          credentials: "POISONED_BY_KEY_ROTATION",
+          data: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: mockInnerJoin(permissionsData),
+          where: vi.fn().mockResolvedValue([]),
+        })
+      ),
+    } as never);
+
+    // Fail decryption only for the broken connection's ciphertext
+    mockDecrypt.mockImplementation((val: string) => {
+      if (val === "POISONED_BY_KEY_ROTATION") {
+        throw new Error("Unsupported state or unable to authenticate data");
+      }
+      return val;
+    });
+
+    await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
+
+    const written = mockedWriteFileSync.mock.calls.at(-1)?.[1] as string;
+    const config = JSON.parse(written);
+    const odooAgents = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents ?? {};
+
+    expect(odooAgents["good-agent"]).toBeDefined();
+    expect(odooAgents["good-agent"].connection.url).toBe("https://good.odoo");
+    expect(odooAgents["broken-agent"]).toBeUndefined();
+
+    // Reset for subsequent tests
+    mockDecrypt.mockImplementation((val: string) => val);
+  });
+});
+
+describe("pinchy-odoo connection.apiKey as SecretRef", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("writes odoo connection.apiKey as SecretRef keyed by connection id", async () => {
+    const agentsData = [
+      {
+        id: "odoo-agent",
+        name: "Odoo Agent",
+        model: "anthropic/claude-haiku-4-5-20251001",
+        allowedTools: ["odoo_read"],
+        createdAt: new Date(),
+      },
+    ];
+
+    const permissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "odoo-agent",
+          connectionId: "conn-odoo-1",
+          model: "sale.order",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "conn-odoo-1",
+          type: "odoo",
+          name: "My Odoo",
+          description: "Production Odoo",
+          credentials: JSON.stringify({
+            url: "https://odoo.example.com",
+            db: "mydb",
+            uid: 2,
+            apiKey: "secret-odoo-key",
+          }),
+          data: { models: [], lastSyncAt: "2026-04-01T00:00:00Z" },
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(Promise.resolve(agentsData), {
+          innerJoin: mockInnerJoin(permissionsData),
+          where: vi.fn().mockResolvedValue([]),
+        })
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    // openclaw.json must contain a SecretRef for apiKey, not the plaintext key
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    const odooConfig = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents?.["odoo-agent"];
+    expect(odooConfig).toBeDefined();
+    expect(odooConfig.connection.apiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/integrations/conn-odoo-1/odooApiKey",
+    });
+    // Other connection fields must still be present in plaintext
+    expect(odooConfig.connection.url).toBe("https://odoo.example.com");
+    expect(odooConfig.connection.db).toBe("mydb");
+    expect(odooConfig.connection.uid).toBe(2);
+
+    // secrets.json must contain the actual key
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.integrations?.["conn-odoo-1"]?.odooApiKey).toBe("secret-odoo-key");
   });
 });
 
@@ -1018,7 +1906,9 @@ describe("restart-state integration", () => {
     expect(config.channels.telegram).toEqual({
       dmPolicy: "pairing",
       accounts: {
-        "agent-1": { botToken: "123456:ABC-token" },
+        "agent-1": {
+          botToken: "123456:ABC-token",
+        },
       },
     });
     expect(config.bindings).toEqual([
@@ -1038,11 +1928,12 @@ describe("restart-state integration", () => {
               { id: "agent-1", name: "Smithers", model: "m", allowedTools: [] },
               { id: "agent-2", name: "Support", model: "m", allowedTools: [] },
             ]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
         return Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockResolvedValue([]),
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
         });
       }),
     } as never);
@@ -1096,22 +1987,24 @@ describe("restart-state integration", () => {
                 ownerId: "user-b",
               },
             ]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
         // callCount 2 = agentConnectionPermissions (chained with innerJoin)
-        // callCount 3 = channel_links table: both users linked
-        if (callCount === 3) {
+        // callCount 3 = integrationConnections for web-search (chained with where)
+        // callCount 4 = channel_links table: both users linked
+        if (callCount === 4) {
           return Object.assign(
             Promise.resolve([
               { userId: "user-a", channel: "telegram", channelUserId: "111222333" },
               { userId: "user-b", channel: "telegram", channelUserId: "444555666" },
             ]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
         return Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockResolvedValue([]),
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
         });
       }),
     } as never);
@@ -1192,19 +2085,21 @@ describe("restart-state integration", () => {
           // First call: agents table
           return Object.assign(
             Promise.resolve([{ id: "agent-1", name: "Smithers", model: "m", allowedTools: [] }]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
         // callCount 2 = agentConnectionPermissions (chained with innerJoin)
-        // callCount 3 = channel_links table
-        if (callCount === 3) {
+        // callCount 3 = integrationConnections for web-search (chained with where)
+        // callCount 4 = channel_links table
+        if (callCount === 4) {
           return Object.assign(
             Promise.resolve([{ userId: "user-1", channel: "telegram", channelUserId: "999888" }]),
-            { innerJoin: vi.fn().mockResolvedValue([]) }
+            { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }
           );
         }
         return Object.assign(Promise.resolve([]), {
-          innerJoin: vi.fn().mockResolvedValue([]),
+          innerJoin: mockInnerJoin([]),
+          where: vi.fn().mockResolvedValue([]),
         });
       }),
     } as never);
@@ -1222,6 +2117,489 @@ describe("restart-state integration", () => {
 
     expect(config.session.identityLinks).toEqual({
       "user-1": ["telegram:999888"],
+    });
+  });
+
+  it("drops unknown fields from existingTelegram on regenerate", async () => {
+    // Seed openclaw.json with channels.telegram containing a known field (groupPolicy)
+    // and an unknown legacy field (weirdLegacyField)
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "secret" } },
+      channels: {
+        telegram: {
+          dmPolicy: "pairing",
+          groupPolicy: "allow",
+          weirdLegacyField: "foo",
+          accounts: {},
+        },
+      },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    // Known field is preserved
+    expect(config.channels.telegram.groupPolicy).toBe("allow");
+    // Unknown legacy field is dropped
+    expect(config.channels.telegram.weirdLegacyField).toBeUndefined();
+  });
+});
+
+describe("writeConfigAtomic plaintext secret guard", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("does NOT throw when provider keys are configured — they are written as ${VAR} env templates, never plaintext", async () => {
+    // OpenClaw's config validator rejects SecretRef objects in env.* (only strings).
+    // We work around this by writing ${VAR} env-template strings; start-openclaw.sh
+    // exports the real key from secrets.json into the OpenClaw process env at startup.
+    // The openclaw.json on disk contains only the template string, no plaintext.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-leaked-plaintext-key-abc123";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
+
+    // Template string written to openclaw.json (via writeFileSync)
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+    expect(config.env.ANTHROPIC_API_KEY).toBe("${ANTHROPIC_API_KEY}");
+    // Actual key is in secrets.json via writeSecretsFile, never in openclaw.json
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    expect(mockWriteSecretsFile.mock.calls[0][0].providers?.anthropic?.apiKey).toBe(
+      "sk-ant-leaked-plaintext-key-abc123"
+    );
+  });
+});
+
+describe("regenerateOpenClawConfig — env secrets", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+    process.env.OPENCLAW_SECRETS_PATH = "/tmp/test-secrets.json";
+  });
+
+  afterEach(() => {
+    delete process.env.OPENCLAW_SECRETS_PATH;
+  });
+
+  it("writes env.ANTHROPIC_API_KEY as a ${VAR} template string, not plaintext", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    // OpenClaw's config validator rejects SecretRef objects in env.* (must be string).
+    // ${VAR} templates are valid strings; OpenClaw resolves them from process.env at runtime.
+    expect(config.env.ANTHROPIC_API_KEY).toBe("${ANTHROPIC_API_KEY}");
+  });
+
+  it("writes the actual plaintext key to secrets.json under /providers/anthropic/apiKey", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.providers?.anthropic?.apiKey).toBe("sk-ant-the-real-key");
+  });
+
+  it("writes the same key into secrets.env.<envVar> for start-openclaw.sh to load", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      if (key === "openai_api_key") return "sk-openai-real-key";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    // The env block in secrets.json holds the real values that start-openclaw.sh
+    // exports as process env vars before launching openclaw. The openclaw.json
+    // env block has only ${VAR} templates that resolve against this process env.
+    expect(secretsArg.env?.ANTHROPIC_API_KEY).toBe("sk-ant-the-real-key");
+    expect(secretsArg.env?.OPENAI_API_KEY).toBe("sk-openai-real-key");
+  });
+
+  it("writes secrets.json BEFORE openclaw.json", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    const order: string[] = [];
+    mockWriteSecretsFile.mockImplementation(() => {
+      order.push("secrets.json");
+    });
+    mockedWriteFileSync.mockImplementation((path: unknown) => {
+      if (typeof path === "string" && path.includes("openclaw.json")) {
+        order.push("openclaw.json");
+      }
+    });
+
+    await regenerateOpenClawConfig();
+
+    const secretsIdx = order.indexOf("secrets.json");
+    const configIdx = order.indexOf("openclaw.json");
+    expect(secretsIdx).toBeGreaterThanOrEqual(0);
+    expect(configIdx).toBeGreaterThanOrEqual(0);
+    expect(secretsIdx).toBeLessThan(configIdx);
+  });
+
+  it("writes secrets.json even when openclaw.json content is unchanged (early-return path)", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    // First call writes the config — capture what was written
+    await regenerateOpenClawConfig();
+    const firstWrite = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    )![1] as string;
+
+    vi.clearAllMocks();
+    // Simulate openclaw.json already containing the same content — triggers early return
+    mockedReadFileSync.mockReturnValue(firstWrite);
+    mockedExistsSync.mockReturnValue(true);
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-the-real-key";
+      return null;
+    });
+
+    // Act: second call with same settings → early return fires
+    await regenerateOpenClawConfig();
+
+    // secrets.json MUST still be written (tmpfs is wiped on container restart)
+    expect(mockWriteSecretsFile).toHaveBeenCalledOnce();
+
+    // openclaw.json must NOT be written (early return)
+    const configWrite = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(configWrite).toBeUndefined();
+  });
+
+  it("writes models.providers.ollama-cloud.apiKey as SecretRef and stores value in secrets.json", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-cloud-secret";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    // openclaw.json must contain a SecretRef, not the plaintext key
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+    expect(config.models.providers["ollama-cloud"].apiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/ollama-cloud/apiKey",
+    });
+
+    // secrets.json must contain the actual key
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.providers?.["ollama-cloud"]?.apiKey).toBe("sk-ollama-cloud-secret");
+  });
+});
+
+describe("pinchy-* plugin gatewayToken as SecretRef", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockReadSecretsFile.mockReturnValue({});
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  const GW_TOKEN_REF = { source: "file", provider: "pinchy", id: "/gateway/token" };
+
+  it("preserves gateway.auth.token as plain string, keeps mode and bind", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-plaintext-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    const config = JSON.parse(written![1] as string);
+
+    // gateway.auth.token must be a plain string — OpenClaw requires a literal string
+    expect(config.gateway.auth).toEqual({ mode: "token", token: "gw-plaintext-token" });
+    // mode and bind are always set
+    expect(config.gateway.mode).toBe("local");
+    expect(config.gateway.bind).toBe("lan");
+  });
+
+  it("reads gateway token from secrets.json when existing config has a non-string token", async () => {
+    // Fallback scenario: openclaw.json has a non-string token (e.g. leftover SecretRef from
+    // a previous Pinchy version), secrets.json has the actual token string
+    const existingConfig = {
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        auth: { mode: "token", token: GW_TOKEN_REF },
+      },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+    mockReadSecretsFile.mockReturnValue({ gateway: { token: "gw-token-from-secrets" } });
+
+    await regenerateOpenClawConfig();
+
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.gateway?.token).toBe("gw-token-from-secrets");
+  });
+
+  it("writes pinchy-files.config.gatewayToken as plain string (OpenClaw 2026.4.26 plugin config)", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "kb-agent-id",
+          name: "HR KB",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/"] } },
+          allowedTools: ["pinchy_ls", "pinchy_read"],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    const config = JSON.parse(written![1] as string);
+    expect(config.plugins.entries["pinchy-files"].config.gatewayToken).toBe("gw-secret-token");
+  });
+
+  it("writes pinchy-context.config.gatewayToken as plain string (OpenClaw 2026.4.26 plugin config)", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "smithers-1",
+          name: "Smithers",
+          model: "anthropic/claude-sonnet-4-6",
+          pluginConfig: null,
+          allowedTools: ["pinchy_save_user_context"],
+          ownerId: "user-1",
+          isPersonal: true,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    const config = JSON.parse(written![1] as string);
+    expect(config.plugins.entries["pinchy-context"].config.gatewayToken).toBe("gw-secret-token");
+  });
+
+  it("writes pinchy-audit.config.gatewayToken as plain string (OpenClaw 2026.4.26 plugin config)", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    const config = JSON.parse(written![1] as string);
+    expect(config.plugins.entries["pinchy-audit"].config.gatewayToken).toBe("gw-secret-token");
+  });
+
+  it("writes pinchy-email.config.gatewayToken as plain string (OpenClaw 2026.4.26 plugin config)", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    const emailPermissionsData = [
+      {
+        agent_connection_permissions: {
+          agentId: "email-agent",
+          connectionId: "email-conn-1",
+          model: "email",
+          operation: "read",
+        },
+        integration_connections: {
+          id: "email-conn-1",
+          type: "google",
+          name: "Gmail",
+          description: "",
+          credentials: "{}",
+          data: null,
+          status: "active",
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      },
+    ];
+
+    mockedDb.select.mockReturnValue({
+      from: vi.fn().mockImplementation(() =>
+        Object.assign(
+          Promise.resolve([
+            {
+              id: "email-agent",
+              name: "Email Agent",
+              model: "anthropic/claude-haiku-4-5-20251001",
+              allowedTools: ["pinchy_email_read"],
+              createdAt: new Date(),
+            },
+          ]),
+          {
+            innerJoin: mockInnerJoin(emailPermissionsData),
+            where: vi.fn().mockResolvedValue([]),
+          }
+        )
+      ),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    const config = JSON.parse(written![1] as string);
+    expect(config.plugins.entries["pinchy-email"].config.gatewayToken).toBe("gw-secret-token");
+  });
+
+  it("stores gateway token under secrets.gateway.token", async () => {
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "gw-secret-token" } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    await regenerateOpenClawConfig();
+
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.gateway?.token).toBe("gw-secret-token");
+  });
+
+  it("does not include gateway in secrets when no gateway token exists", async () => {
+    // No existing config → no gateway token
+    await regenerateOpenClawConfig();
+
+    expect(mockWriteSecretsFile).toHaveBeenCalled();
+    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
+    expect(secretsArg.gateway).toBeUndefined();
+  });
+});
+
+describe("secrets provider config block", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("writes secrets.providers.pinchy pointing at /openclaw-secrets/secrets.json", async () => {
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    expect(config.secrets.providers.pinchy).toEqual({
+      source: "file",
+      path: "/openclaw-secrets/secrets.json",
+      mode: "json",
     });
   });
 });
@@ -1295,5 +2673,64 @@ describe("updateIdentityLinks", () => {
     updateIdentityLinks({ "user-1": ["telegram:123"] });
 
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support SecretRef in channel configs)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      throw new Error("ENOENT: no such file or directory");
+    });
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+  });
+
+  it("writes telegram botToken as plain string in openclaw.json", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-42",
+          name: "Bot Agent",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          isPersonal: false,
+          ownerId: null,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-42") return "bot-secret-token";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    expect(config.channels.telegram.accounts["agent-42"].botToken).toBe("bot-secret-token");
+  });
+
+  it("updateTelegramChannelConfig writes botToken as plain string", () => {
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan" },
+      })
+    );
+
+    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null);
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    expect(config.channels.telegram.accounts["agent-99"].botToken).toBe("tg-secret-token");
   });
 });

@@ -13,7 +13,7 @@ vi.mock("@/lib/providers", () => ({
       name: "OpenAI",
       settingsKey: "openai_api_key",
       envVar: "OPENAI_API_KEY",
-      defaultModel: "openai/gpt-4o-mini",
+      defaultModel: "openai/gpt-5.4-mini",
       placeholder: "sk-...",
     },
     google: {
@@ -27,7 +27,7 @@ vi.mock("@/lib/providers", () => ({
       name: "Ollama Cloud",
       settingsKey: "ollama_cloud_api_key",
       envVar: "OLLAMA_CLOUD_API_KEY",
-      defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+      defaultModel: "ollama-cloud/gemini-3-flash-preview",
       placeholder: "sk-...",
     },
     "ollama-local": {
@@ -72,7 +72,7 @@ describe("fetchProviderModels", () => {
       new Response(
         JSON.stringify({
           data: [
-            { id: "claude-opus-4-6", display_name: "Claude Opus 4.6" },
+            { id: "claude-opus-4-7", display_name: "Claude Opus 4.7" },
             { id: "claude-sonnet-4-6", display_name: "Claude Sonnet 4.6" },
           ],
         }),
@@ -87,7 +87,7 @@ describe("fetchProviderModels", () => {
       id: "anthropic",
       name: "Anthropic",
       models: [
-        { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" },
+        { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
         { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
       ],
     });
@@ -115,7 +115,7 @@ describe("fetchProviderModels", () => {
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("anthropic");
     expect(result[0].models).toEqual([
-      { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" },
+      { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
       { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
       { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
     ]);
@@ -133,7 +133,7 @@ describe("fetchProviderModels", () => {
       if (urlStr.includes("anthropic")) {
         return new Response(
           JSON.stringify({
-            data: [{ id: "claude-opus-4-6", display_name: "Claude Opus 4.6" }],
+            data: [{ id: "claude-opus-4-7", display_name: "Claude Opus 4.7" }],
           }),
           { status: 200 }
         );
@@ -141,7 +141,7 @@ describe("fetchProviderModels", () => {
       if (urlStr.includes("openai")) {
         return new Response(
           JSON.stringify({
-            data: [{ id: "gpt-4o" }, { id: "gpt-4o-mini" }, { id: "dall-e-3" }],
+            data: [{ id: "gpt-5.4" }, { id: "gpt-5.4-mini" }, { id: "dall-e-3" }],
           }),
           { status: 200 }
         );
@@ -156,14 +156,14 @@ describe("fetchProviderModels", () => {
     const anthropic = result.find((p) => p.id === "anthropic");
     expect(anthropic).toBeDefined();
     expect(anthropic!.models).toEqual([
-      { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" },
+      { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
     ]);
 
     const openai = result.find((p) => p.id === "openai");
     expect(openai).toBeDefined();
     expect(openai!.models).toEqual([
-      { id: "openai/gpt-4o", name: "gpt-4o" },
-      { id: "openai/gpt-4o-mini", name: "gpt-4o-mini" },
+      { id: "openai/gpt-5.4", name: "gpt-5.4" },
+      { id: "openai/gpt-5.4-mini", name: "gpt-5.4-mini" },
     ]);
     // dall-e-3 should be filtered out (doesn't start with gpt- or o)
   });
@@ -178,7 +178,7 @@ describe("fetchProviderModels", () => {
       new Response(
         JSON.stringify({
           data: [
-            { id: "gpt-4o" },
+            { id: "gpt-5.4" },
             { id: "o1" },
             { id: "o3-mini" },
             { id: "dall-e-3" },
@@ -197,7 +197,7 @@ describe("fetchProviderModels", () => {
     expect(openai).toBeDefined();
 
     const modelIds = openai!.models.map((m) => m.id);
-    expect(modelIds).toContain("openai/gpt-4o");
+    expect(modelIds).toContain("openai/gpt-5.4");
     expect(modelIds).toContain("openai/o1");
     expect(modelIds).toContain("openai/o3-mini");
     expect(modelIds).not.toContain("openai/dall-e-3");
@@ -239,7 +239,13 @@ describe("fetchProviderModels", () => {
     expect(google!.models).toEqual([{ id: "google/gemini-2.5-flash", name: "Gemini 2.0 Flash" }]);
   });
 
-  it("fetches and transforms Ollama models from OpenAI-compatible endpoint", async () => {
+  it("surfaces every tool-capable Ollama Cloud model and filters the rest", async () => {
+    // Allowlist is derived from each model's "tools" capability tag on its
+    // ollama.com/library/<name> page, not the aggregate search page — the
+    // search listing under c=tools&c=cloud is incomplete and omits several
+    // tool-capable cloud models (gpt-oss, qwen3-vl, mistral-large-3, etc.).
+    // Real IDs as returned by https://ollama.com/v1/models today — no
+    // ":cloud"/"-cloud" suffixes.
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "ollama_cloud_api_key") return "sk-ollama-test";
       return null;
@@ -249,9 +255,47 @@ describe("fetchProviderModels", () => {
       new Response(
         JSON.stringify({
           data: [
-            { id: "gemini-3-flash-preview:cloud" },
-            { id: "kimi-k2.5:cloud" },
-            { id: "nemotron-3-nano:30b-cloud" }, // not in allowed list, filtered out
+            // Tool-capable — should appear
+            { id: "deepseek-v3.1:671b" },
+            { id: "deepseek-v3.2" },
+            { id: "deepseek-v4-flash" },
+            { id: "deepseek-v4-pro" },
+            { id: "devstral-2:123b" },
+            { id: "devstral-small-2:24b" },
+            { id: "gemini-3-flash-preview" },
+            { id: "gemma4:31b" },
+            { id: "glm-4.6" },
+            { id: "glm-4.7" },
+            { id: "glm-5" },
+            { id: "glm-5.1" },
+            { id: "gpt-oss:20b" },
+            { id: "gpt-oss:120b" },
+            { id: "kimi-k2-thinking" },
+            { id: "kimi-k2.5" },
+            { id: "kimi-k2.6" },
+            { id: "minimax-m2" },
+            { id: "minimax-m2.1" },
+            { id: "minimax-m2.5" },
+            { id: "minimax-m2.7" },
+            { id: "ministral-3:3b" },
+            { id: "ministral-3:8b" },
+            { id: "ministral-3:14b" },
+            { id: "mistral-large-3:675b" },
+            { id: "nemotron-3-nano:30b" },
+            { id: "nemotron-3-super" },
+            { id: "qwen3-coder-next" },
+            { id: "qwen3-coder:480b" },
+            { id: "qwen3-next:80b" },
+            { id: "qwen3-vl:235b" },
+            { id: "qwen3-vl:235b-instruct" },
+            { id: "qwen3.5:397b" },
+            { id: "rnj-1:8b" },
+            // Not tool-capable per ollama.com library pages — must be filtered out
+            { id: "cogito-2.1:671b" },
+            { id: "gemma3:27b" },
+            { id: "gemma3:12b" },
+            { id: "gemma3:4b" },
+            { id: "kimi-k2:1t" },
           ],
         }),
         { status: 200 }
@@ -261,10 +305,55 @@ describe("fetchProviderModels", () => {
     const result = await fetchProviderModels();
     const ollama = result.find((p) => p.id === "ollama-cloud");
     expect(ollama).toBeDefined();
-    expect(ollama!.models).toEqual([
-      { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "gemini-3-flash-preview" },
-      { id: "ollama-cloud/kimi-k2.5:cloud", name: "kimi-k2.5" },
-    ]);
+    const ids = ollama!.models.map((m) => m.id);
+
+    // Every tool-capable model surfaces
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        "ollama-cloud/deepseek-v3.1:671b",
+        "ollama-cloud/deepseek-v3.2",
+        "ollama-cloud/deepseek-v4-flash",
+        "ollama-cloud/deepseek-v4-pro",
+        "ollama-cloud/devstral-2:123b",
+        "ollama-cloud/devstral-small-2:24b",
+        "ollama-cloud/gemini-3-flash-preview",
+        "ollama-cloud/gemma4:31b",
+        "ollama-cloud/glm-4.6",
+        "ollama-cloud/glm-4.7",
+        "ollama-cloud/glm-5",
+        "ollama-cloud/glm-5.1",
+        "ollama-cloud/gpt-oss:20b",
+        "ollama-cloud/gpt-oss:120b",
+        "ollama-cloud/kimi-k2-thinking",
+        "ollama-cloud/kimi-k2.5",
+        "ollama-cloud/kimi-k2.6",
+        "ollama-cloud/minimax-m2",
+        "ollama-cloud/minimax-m2.1",
+        "ollama-cloud/minimax-m2.5",
+        "ollama-cloud/minimax-m2.7",
+        "ollama-cloud/ministral-3:3b",
+        "ollama-cloud/ministral-3:8b",
+        "ollama-cloud/ministral-3:14b",
+        "ollama-cloud/mistral-large-3:675b",
+        "ollama-cloud/nemotron-3-nano:30b",
+        "ollama-cloud/nemotron-3-super",
+        "ollama-cloud/qwen3-coder-next",
+        "ollama-cloud/qwen3-coder:480b",
+        "ollama-cloud/qwen3-next:80b",
+        "ollama-cloud/qwen3-vl:235b",
+        "ollama-cloud/qwen3-vl:235b-instruct",
+        "ollama-cloud/qwen3.5:397b",
+        "ollama-cloud/rnj-1:8b",
+      ])
+    );
+    expect(ids).toHaveLength(34);
+
+    // Non-tool-capable models are filtered out
+    expect(ids).not.toContain("ollama-cloud/kimi-k2:1t");
+    expect(ids).not.toContain("ollama-cloud/gemma3:27b");
+    expect(ids).not.toContain("ollama-cloud/gemma3:12b");
+    expect(ids).not.toContain("ollama-cloud/gemma3:4b");
+    expect(ids).not.toContain("ollama-cloud/cogito-2.1:671b");
   });
 
   it("uses fallback models when API returns non-ok status", async () => {
@@ -283,10 +372,65 @@ describe("fetchProviderModels", () => {
     const openai = result.find((p) => p.id === "openai");
     expect(openai).toBeDefined();
     expect(openai!.models).toEqual([
-      { id: "openai/gpt-4o", name: "GPT-4o" },
-      { id: "openai/gpt-4o-mini", name: "GPT-4o Mini" },
-      { id: "openai/o1", name: "o1" },
+      { id: "openai/gpt-5.5", name: "GPT-5.5" },
+      { id: "openai/gpt-5.4", name: "GPT-5.4" },
+      { id: "openai/gpt-5.4-mini", name: "GPT-5.4 Mini" },
     ]);
+  });
+
+  it("falls back to every tool-capable cloud model when Ollama Cloud API fails", async () => {
+    // If the API errors out (rate limit, transient 5xx, network hiccup), the
+    // fallback must still list every tool-capable model — otherwise a single
+    // flaky fetch would silently shrink the admin's model picker.
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "ollama_cloud_api_key") return "sk-ollama-fallback";
+      return null;
+    });
+    vi.mocked(fetch).mockResolvedValue(new Response("boom", { status: 503 }));
+
+    const result = await fetchProviderModels();
+    const ollama = result.find((p) => p.id === "ollama-cloud");
+    expect(ollama).toBeDefined();
+    const ids = ollama!.models.map((m) => m.id);
+    expect(ids).toHaveLength(34);
+    expect(ids).toEqual(
+      expect.arrayContaining([
+        "ollama-cloud/deepseek-v3.1:671b",
+        "ollama-cloud/deepseek-v3.2",
+        "ollama-cloud/deepseek-v4-flash",
+        "ollama-cloud/deepseek-v4-pro",
+        "ollama-cloud/devstral-2:123b",
+        "ollama-cloud/devstral-small-2:24b",
+        "ollama-cloud/gemini-3-flash-preview",
+        "ollama-cloud/gemma4:31b",
+        "ollama-cloud/glm-4.6",
+        "ollama-cloud/glm-4.7",
+        "ollama-cloud/glm-5",
+        "ollama-cloud/glm-5.1",
+        "ollama-cloud/gpt-oss:20b",
+        "ollama-cloud/gpt-oss:120b",
+        "ollama-cloud/kimi-k2-thinking",
+        "ollama-cloud/kimi-k2.5",
+        "ollama-cloud/kimi-k2.6",
+        "ollama-cloud/minimax-m2",
+        "ollama-cloud/minimax-m2.1",
+        "ollama-cloud/minimax-m2.5",
+        "ollama-cloud/minimax-m2.7",
+        "ollama-cloud/ministral-3:3b",
+        "ollama-cloud/ministral-3:8b",
+        "ollama-cloud/ministral-3:14b",
+        "ollama-cloud/mistral-large-3:675b",
+        "ollama-cloud/nemotron-3-nano:30b",
+        "ollama-cloud/nemotron-3-super",
+        "ollama-cloud/qwen3-coder-next",
+        "ollama-cloud/qwen3-coder:480b",
+        "ollama-cloud/qwen3-next:80b",
+        "ollama-cloud/qwen3-vl:235b",
+        "ollama-cloud/qwen3-vl:235b-instruct",
+        "ollama-cloud/qwen3.5:397b",
+        "ollama-cloud/rnj-1:8b",
+      ])
+    );
   });
 
   it("caches results for subsequent calls", async () => {
@@ -296,7 +440,7 @@ describe("fetchProviderModels", () => {
     });
     vi.mocked(fetch).mockResolvedValue(
       new Response(
-        JSON.stringify({ data: [{ id: "claude-opus-4-6", display_name: "Claude Opus 4.6" }] }),
+        JSON.stringify({ data: [{ id: "claude-opus-4-7", display_name: "Claude Opus 4.7" }] }),
         { status: 200 }
       )
     );
@@ -490,7 +634,7 @@ describe("fetchProviderModels", () => {
     vi.mocked(fetch).mockResolvedValue(
       new Response(
         JSON.stringify({
-          data: [{ id: "claude-opus-4-6", display_name: "Claude Opus 4.6" }],
+          data: [{ id: "claude-opus-4-7", display_name: "Claude Opus 4.7" }],
         }),
         { status: 200 }
       )
@@ -553,7 +697,7 @@ describe("fetchProviderModels", () => {
     });
     vi.mocked(fetch).mockResolvedValue(
       new Response(
-        JSON.stringify({ data: [{ id: "claude-opus-4-6", display_name: "Claude Opus 4.6" }] }),
+        JSON.stringify({ data: [{ id: "claude-opus-4-7", display_name: "Claude Opus 4.7" }] }),
         { status: 200 }
       )
     );
@@ -570,7 +714,7 @@ describe("selectDefaultModel", () => {
   it("selects the smallest Anthropic model (haiku pattern)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
-      { id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" },
+      { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
       { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
       { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
     ];
@@ -580,11 +724,11 @@ describe("selectDefaultModel", () => {
   it("selects the mini OpenAI model (gpt-*-mini pattern)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
-      { id: "openai/gpt-4o", name: "gpt-4o" },
-      { id: "openai/gpt-4o-mini", name: "gpt-4o-mini" },
+      { id: "openai/gpt-5.4", name: "gpt-5.4" },
+      { id: "openai/gpt-5.4-mini", name: "gpt-5.4-mini" },
       { id: "openai/o1", name: "o1" },
     ];
-    expect(selectDefaultModel("openai", models)).toBe("openai/gpt-4o-mini");
+    expect(selectDefaultModel("openai", models)).toBe("openai/gpt-5.4-mini");
   });
 
   it("selects the flash Google model (gemini-*-flash pattern)", async () => {
@@ -599,13 +743,11 @@ describe("selectDefaultModel", () => {
   it("falls back to hardcoded default when all flash candidates are preview versions (ollama)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
-      { id: "ollama-cloud/kimi-k2.5:cloud", name: "Kimi K2.5" },
-      { id: "ollama-cloud/gemini-3-flash-preview:cloud", name: "Gemini 3 Flash Preview" },
-      { id: "ollama-cloud/qwen3.5:397b-cloud", name: "Qwen 3.5 397B" },
+      { id: "ollama-cloud/kimi-k2.5", name: "Kimi K2.5" },
+      { id: "ollama-cloud/gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
+      { id: "ollama-cloud/qwen3.5:397b", name: "Qwen 3.5 397B" },
     ];
-    expect(selectDefaultModel("ollama-cloud", models)).toBe(
-      "ollama-cloud/gemini-3-flash-preview:cloud"
-    );
+    expect(selectDefaultModel("ollama-cloud", models)).toBe("ollama-cloud/gemini-3-flash-preview");
   });
 
   it("prefers stable versions over preview versions", async () => {
@@ -637,14 +779,14 @@ describe("selectDefaultModel", () => {
 
   it("falls back to hardcoded default when no pattern matches", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
-    const models = [{ id: "anthropic/claude-opus-4-6", name: "Claude Opus 4.6" }];
+    const models = [{ id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" }];
     // No haiku in the list — falls back to PROVIDERS[provider].defaultModel
     expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
   });
 
   it("falls back to hardcoded default when model list is empty", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
-    expect(selectDefaultModel("openai", [])).toBe("openai/gpt-4o-mini");
+    expect(selectDefaultModel("openai", [])).toBe("openai/gpt-5.4-mini");
   });
 });
 
@@ -665,7 +807,7 @@ describe("getDefaultModel", () => {
       new Response(
         JSON.stringify({
           data: [
-            { id: "claude-opus-4-6", display_name: "Claude Opus 4.6" },
+            { id: "claude-opus-4-7", display_name: "Claude Opus 4.7" },
             { id: "claude-sonnet-4-6", display_name: "Claude Sonnet 4.6" },
             { id: "claude-haiku-4-5-20251001", display_name: "Claude Haiku 4.5" },
           ],
@@ -684,7 +826,7 @@ describe("getDefaultModel", () => {
 
     const { getDefaultModel } = await import("@/lib/provider-models");
     const model = await getDefaultModel("openai");
-    expect(model).toBe("openai/gpt-4o-mini");
+    expect(model).toBe("openai/gpt-5.4-mini");
   });
 });
 
@@ -810,12 +952,12 @@ describe("vision capability detection", () => {
 
     // Cloud providers are vision-capable
     expect(isModelVisionCapable("anthropic/claude-sonnet-4-6")).toBe(true);
-    expect(isModelVisionCapable("openai/gpt-4o")).toBe(true);
+    expect(isModelVisionCapable("openai/gpt-5.4")).toBe(true);
     expect(isModelVisionCapable("google/gemini-2.5-flash")).toBe(true);
 
     // ollama-cloud provider → all models vision-capable
-    expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b-cloud")).toBe(true);
-    expect(isModelVisionCapable("ollama-cloud/kimi-k2.5:cloud")).toBe(true);
+    expect(isModelVisionCapable("ollama-cloud/qwen3.5:397b")).toBe(true);
+    expect(isModelVisionCapable("ollama-cloud/kimi-k2.5")).toBe(true);
 
     // Unknown provider → not vision-capable (conservative default)
     expect(isModelVisionCapable("unknown/model")).toBe(false);

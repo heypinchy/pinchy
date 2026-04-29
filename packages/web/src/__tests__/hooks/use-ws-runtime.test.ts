@@ -747,7 +747,7 @@ describe("useWsRuntime", () => {
 
     const messages = result.current.runtime.messages;
     expect(messages[0].metadata).toEqual({
-      custom: { timestamp: "2026-03-15T10:30:00.000Z" },
+      custom: { timestamp: "2026-03-15T10:30:00.000Z", status: "sending" },
     });
   });
 
@@ -1429,6 +1429,415 @@ describe("useWsRuntime", () => {
     });
   });
 
+  describe("disconnect during active stream", () => {
+    it("should add a disconnect error message when stream is interrupted by a WebSocket error followed by close", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      // Real browser behavior: onerror always fires before onclose
+      act(() => {
+        ws.onerror?.();
+        ws.onclose?.();
+      });
+
+      const messages = result.current.runtime.messages;
+      const disconnectError = messages.find(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
+      );
+      expect(disconnectError).toBeDefined();
+    });
+
+    it("should not inject a disconnect error into the new agent chat when switching during an active stream", () => {
+      const { result, rerender } = renderHook(({ agentId }) => useWsRuntime(agentId), {
+        initialProps: { agentId: "agent-1" },
+      });
+      const ws1 = wsInstances[0];
+
+      act(() => {
+        ws1.onopen?.();
+      });
+
+      // Start a stream on agent-1
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+      act(() => {
+        ws1.onmessage?.({
+          data: JSON.stringify({ type: "chunk", content: "Hi", messageId: "msg-1" }),
+        });
+      });
+
+      // Switch to agent-2 while stream is active
+      rerender({ agentId: "agent-2" });
+
+      // Old connection closes (triggered by cleanup calling ws.close())
+      act(() => {
+        ws1.onclose?.();
+      });
+
+      // Agent-2's messages must be empty — no spurious disconnect error
+      expect(result.current.runtime.messages).toHaveLength(0);
+    });
+
+    it("should add a disconnect error message when stream is interrupted by close", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      // Disconnect while stream is active
+      act(() => {
+        ws.onclose?.();
+      });
+
+      const messages = result.current.runtime.messages;
+      const disconnectError = messages.find(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
+      );
+      expect(disconnectError).toBeDefined();
+    });
+
+    it("should not add a disconnect error message when idle (no active stream)", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "history", messages: [] }),
+        });
+      });
+
+      const messagesBefore = result.current.runtime.messages.length;
+
+      // Disconnect while idle
+      act(() => {
+        ws.onclose?.();
+      });
+
+      expect(result.current.runtime.messages).toHaveLength(messagesBefore);
+    });
+
+    it("should reset isDelayed to false when WebSocket disconnects", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      // Let it become delayed
+      act(() => {
+        vi.advanceTimersByTime(15000);
+      });
+      expect(result.current.isDelayed).toBe(true);
+
+      // Disconnect — isDelayed must clear
+      act(() => {
+        ws.onclose?.();
+      });
+      expect(result.current.isDelayed).toBe(false);
+    });
+  });
+
+  describe("reconnectExhausted", () => {
+    it("should return reconnectExhausted as false initially", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      expect(result.current.reconnectExhausted).toBe(false);
+    });
+
+    it("should set reconnectExhausted to true after all reconnect attempts fail", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws1 = wsInstances[0];
+
+      act(() => {
+        ws1.onopen?.();
+      });
+
+      // Exhaust all MAX_RECONNECT_ATTEMPTS (10) + the original connection
+      for (let i = 0; i < 10; i++) {
+        const ws = wsInstances[wsInstances.length - 1];
+        act(() => {
+          ws.onclose?.();
+        });
+        act(() => {
+          vi.advanceTimersByTime(5000);
+        });
+      }
+
+      // 11th disconnect — no more reconnect attempts
+      const lastWs = wsInstances[wsInstances.length - 1];
+      act(() => {
+        lastWs.onclose?.();
+      });
+
+      expect(result.current.reconnectExhausted).toBe(true);
+    });
+
+    it("should reset reconnectExhausted to false when reconnect succeeds", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws1 = wsInstances[0];
+
+      act(() => {
+        ws1.onopen?.();
+      });
+
+      // Fail a few times (but not all)
+      for (let i = 0; i < 3; i++) {
+        const ws = wsInstances[wsInstances.length - 1];
+        act(() => {
+          ws.onclose?.();
+        });
+        act(() => {
+          vi.advanceTimersByTime(5000);
+        });
+      }
+
+      // Successful reconnect
+      const ws4 = wsInstances[wsInstances.length - 1];
+      act(() => {
+        ws4.onopen?.();
+      });
+
+      expect(result.current.reconnectExhausted).toBe(false);
+    });
+  });
+
+  describe("stuck request timeout", () => {
+    it("should add a timeout error message after 60 seconds without any activity", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      // 59 seconds — should still be running
+      act(() => {
+        vi.advanceTimersByTime(59_000);
+      });
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      // 60 seconds without any activity — stuck timeout fires
+      act(() => {
+        vi.advanceTimersByTime(1_000);
+      });
+      expect(result.current.runtime.isRunning).toBe(false);
+
+      const messages = result.current.runtime.messages;
+      const timeoutError = messages.find(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.timedOut === true
+      );
+      expect(timeoutError).toBeDefined();
+    });
+
+    it("should reset the stuck timer when a chunk arrives", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      // 50 seconds pass, then a chunk arrives
+      act(() => {
+        vi.advanceTimersByTime(50_000);
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "chunk", content: "Hi", messageId: "msg-1" }),
+        });
+      });
+
+      // 50 more seconds — still under 60s from last activity, should not timeout
+      act(() => {
+        vi.advanceTimersByTime(50_000);
+      });
+      expect(result.current.runtime.isRunning).toBe(true);
+
+      // 10 more seconds (60s since last chunk) — now it should timeout
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+      expect(result.current.runtime.isRunning).toBe(false);
+    });
+
+    it("should reset the stuck timer when a thinking heartbeat arrives", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      // 50 seconds pass, then a thinking heartbeat arrives
+      act(() => {
+        vi.advanceTimersByTime(50_000);
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "thinking" }),
+        });
+      });
+
+      // 59 more seconds — still under 60s from last heartbeat
+      act(() => {
+        vi.advanceTimersByTime(59_000);
+      });
+      expect(result.current.runtime.isRunning).toBe(true);
+    });
+
+    it("should clear the stuck timer when complete arrives", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "chunk", content: "Hi", messageId: "msg-1" }),
+        });
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "complete" }),
+        });
+      });
+
+      // Advance past 60s — should NOT fire timeout because stream is done
+      act(() => {
+        vi.advanceTimersByTime(120_000);
+      });
+
+      const messages = result.current.runtime.messages;
+      const timeoutError = messages.find(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.timedOut === true
+      );
+      expect(timeoutError).toBeUndefined();
+    });
+
+    it("should clear the stuck timer on disconnect", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+
+      // Disconnect at 30s — should clear stuck timer
+      act(() => {
+        vi.advanceTimersByTime(30_000);
+      });
+      act(() => {
+        ws.onclose?.();
+      });
+
+      // Advance to 90s total — stuck timer must NOT fire (it was cleared on disconnect)
+      act(() => {
+        vi.advanceTimersByTime(60_000);
+      });
+
+      const messages = result.current.runtime.messages;
+      const timeoutErrors = messages.filter(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.timedOut === true
+      );
+      // Disconnect error yes, but no separate timeout error
+      expect(timeoutErrors).toHaveLength(0);
+    });
+
+    it("should not start stuck timer when no message has been sent", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(120_000);
+      });
+
+      expect(result.current.runtime.isRunning).toBe(false);
+      expect(result.current.runtime.messages).toHaveLength(0);
+    });
+  });
+
   describe("openclaw restart messages", () => {
     it("should call triggerRestart when openclaw:restarting message is received", () => {
       renderHook(() => useWsRuntime("agent-1"));
@@ -1464,6 +1873,104 @@ describe("useWsRuntime", () => {
 
       // triggerRestart should NOT be called for ready messages
       expect(mockTriggerRestart).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("auto-recovery on OpenClaw reconnect", () => {
+    it("re-requests history when fullyConnected transitions false → true", async () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      // Step 1: fully connect and load history
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [{ role: "assistant", content: "Hello!" }],
+          }),
+        });
+      });
+
+      expect(result.current.isHistoryLoaded).toBe(true);
+      expect(result.current.isOpenClawConnected).toBe(true);
+
+      // Step 2: OpenClaw goes unavailable (fullyConnected: true → false)
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "openclaw_status", connected: false }),
+        });
+      });
+      expect(result.current.isOpenClawConnected).toBe(false);
+
+      // Count sends so far
+      const sendsBefore = ws.send.mock.calls.length;
+
+      // Step 3: OpenClaw comes back (fullyConnected: false → true — rising edge)
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "openclaw_status", connected: true }),
+        });
+      });
+      expect(result.current.isOpenClawConnected).toBe(true);
+
+      // A { type: "history" } frame with the correct agentId must have been sent after the rising edge
+      const historySentAfter = ws.send.mock.calls
+        .slice(sendsBefore)
+        .map((call: string[]) => JSON.parse(call[0]))
+        .filter((msg: { type: string }) => msg.type === "history");
+      expect(historySentAfter).toHaveLength(1);
+      expect(historySentAfter[0].agentId).toBe("agent-1");
+    });
+
+    it("does NOT re-request history on initial mount (no false → true rising edge)", () => {
+      renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      // Connect for the first time — ws.onopen already sends history
+      act(() => {
+        ws.onopen?.();
+      });
+
+      // Only one history request should have been sent (from onopen), not two
+      const historyRequests = ws.send.mock.calls
+        .map((call: string[]) => JSON.parse(call[0]))
+        .filter((msg: { type: string }) => msg.type === "history");
+      expect(historyRequests).toHaveLength(1);
+    });
+
+    it("does NOT re-request history when OpenClaw was never loaded (isHistoryLoaded = false)", () => {
+      renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      // Connect but do NOT send history response yet (isHistoryLoaded stays false)
+      act(() => {
+        ws.onopen?.();
+      });
+
+      // isOpenClawConnected starts true; simulate a false → true transition without history loaded
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "openclaw_status", connected: false }),
+        });
+      });
+
+      const sendsBefore = ws.send.mock.calls.length;
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "openclaw_status", connected: true }),
+        });
+      });
+
+      // isHistoryLoaded is still false — must NOT send another history request
+      const historySentAfter = ws.send.mock.calls
+        .slice(sendsBefore)
+        .map((call: string[]) => JSON.parse(call[0]))
+        .filter((msg: { type: string }) => msg.type === "history");
+      expect(historySentAfter).toHaveLength(0);
     });
   });
 });

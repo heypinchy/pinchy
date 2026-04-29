@@ -201,8 +201,29 @@
     {
       "idx": 28,
       "version": "7",
-      "when": 1776241633414,
-      "tag": "0028_parallel_rocket_racer",
+      "when": 1776147600000,
+      "tag": "0027_pending_integration_status",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1776278400000,
+      "tag": "0028_plugin_config_namespace",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1777161600000,
+      "tag": "0030_greeting_message_not_null",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1777487955440,
+      "tag": "0031_naive_maelstrom",
       "breakpoints": true
     }
   ]

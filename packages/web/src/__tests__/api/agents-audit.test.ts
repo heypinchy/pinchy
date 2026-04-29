@@ -158,6 +158,11 @@ describe("POST /api/agents audit logging", () => {
         name: "Test Agent",
         model: "anthropic/claude-haiku-4-5-20251001",
         templateId: "custom",
+        modelSelection: {
+          source: "provider-default",
+          hint: null,
+          reason: "provider-default (anthropic)",
+        },
       },
     });
   });
@@ -183,7 +188,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     mockAgent({
       id: "agent-1",
       name: "Test Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       isPersonal: false,
       ownerId: null,
     });
@@ -191,12 +196,12 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
       name: "Updated Agent",
-      model: "anthropic/claude-opus-4-6",
+      model: "anthropic/claude-opus-4-7",
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
-      body: JSON.stringify({ name: "Updated Agent", model: "anthropic/claude-opus-4-6" }),
+      body: JSON.stringify({ name: "Updated Agent", model: "anthropic/claude-opus-4-7" }),
       headers: { "Content-Type": "application/json" },
     });
 
@@ -214,7 +219,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
       detail: {
         changes: {
           name: { from: "Test Agent", to: "Updated Agent" },
-          model: { from: "anthropic/claude-sonnet-4-20250514", to: "anthropic/claude-opus-4-6" },
+          model: { from: "anthropic/claude-sonnet-4-6", to: "anthropic/claude-opus-4-7" },
         },
       },
     });
@@ -229,7 +234,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     mockAgent({
       id: "agent-1",
       name: "Test Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       isPersonal: false,
       ownerId: null,
     });
@@ -237,12 +242,12 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
       name: "Test Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
-      body: JSON.stringify({ name: "Test Agent", model: "anthropic/claude-sonnet-4-20250514" }),
+      body: JSON.stringify({ name: "Test Agent", model: "anthropic/claude-sonnet-4-6" }),
       headers: { "Content-Type": "application/json" },
     });
 
@@ -263,7 +268,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     mockAgent({
       id: "agent-1",
       name: "Test Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       isPersonal: false,
       ownerId: null,
     });
@@ -316,6 +321,53 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
         },
       },
     });
+  });
+
+  it("logs pluginConfig changes in audit log", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const oldConfig = { "pinchy-web": { allowedDomains: ["old.com"] } };
+    const newConfig = { "pinchy-web": { allowedDomains: ["new.com", "other.com"] } };
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      isPersonal: false,
+      ownerId: null,
+      pluginConfig: oldConfig,
+    });
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      pluginConfig: newConfig,
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ pluginConfig: newConfig }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({
+          changes: expect.objectContaining({
+            pluginConfig: { from: oldConfig, to: newConfig },
+          }),
+        }),
+      })
+    );
   });
 });
 
@@ -466,12 +518,12 @@ describe("PATCH /api/agents/[agentId] IDENTITY.md regeneration", () => {
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
       name: "Agent",
-      model: "openai/gpt-4o",
+      model: "openai/gpt-5.4",
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
-      body: JSON.stringify({ model: "openai/gpt-4o" }),
+      body: JSON.stringify({ model: "openai/gpt-5.4" }),
       headers: { "Content-Type": "application/json" },
     });
 

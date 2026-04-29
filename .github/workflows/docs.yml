@@ -1,6 +1,12 @@
-name: Deploy Docs
+name: Deploy Docs (no screenshots)
 
 on:
+  # Manual-only fallback for urgent text-only fixes between releases, when
+  # regenerating screenshots is unnecessary or infeasible. The normal release
+  # path is release.yml → screenshots.yml, which captures fresh screenshots
+  # against the just-released build and then deploys the docs. This workflow
+  # deploys docs with whatever screenshots are already in the artifact store —
+  # intended for typo fixes, not feature changes.
   workflow_dispatch:
 
 permissions:

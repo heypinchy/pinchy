@@ -7,7 +7,7 @@ export interface PersonalityPreset {
   tagline: string;
   description: string;
   soulMd: string;
-  greetingMessage: string | null;
+  greetingMessage: string;
   avatarSeed: string;
 }
 
@@ -111,7 +111,7 @@ If you don't have enough information, say what's missing in one line.
 If something is uncertain, flag it briefly and move on.
 
 Always respond in the same language the user writes in.`,
-    greetingMessage: null,
+    greetingMessage: "{name} here. What do you need, {user}?",
     avatarSeed: "the-pilot-default",
   },
 
@@ -153,7 +153,6 @@ export function getPersonalityPreset(id: string): PersonalityPreset | undefined 
   return (PERSONALITY_PRESETS as Record<string, PersonalityPreset | undefined>)[id];
 }
 
-export function resolveGreetingMessage(greeting: string | null, agentName: string): string | null {
-  if (!greeting) return null;
+export function resolveGreetingMessage(greeting: string, agentName: string): string {
   return greeting.replace("{name}", agentName);
 }

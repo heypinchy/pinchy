@@ -10,6 +10,7 @@ import { getPersonalityPreset, resolveGreetingMessage } from "@/lib/personality-
 import { generateAvatarSeed } from "@/lib/avatar";
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
 import { validateAllowedPaths } from "@/lib/path-validation";
+import { validatePinchyWebConfig } from "@/lib/domain-validation";
 import {
   ensureWorkspace,
   writeWorkspaceFile,
@@ -21,9 +22,11 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
+import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 import { appendAuditLog } from "@/lib/audit";
 import { getVisibleAgents } from "@/lib/visible-agents";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
+import { detectEmailOperations } from "@/lib/tool-registry";
 
 export async function GET() {
   const session = await getSession({ headers: await headers() });
@@ -68,9 +71,17 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: `Unknown template: ${templateId}` }, { status: 400 });
   }
 
-  // Templates with pluginId require directory selection
-  if (template.pluginId) {
-    const paths = pluginConfig?.allowed_paths;
+  // Validate pinchy-web domain lists (parity with PATCH — agents created with
+  // a knowledge-base template may carry a pinchy-web block in pluginConfig
+  // alongside pinchy-files.allowed_paths).
+  const pluginConfigError = validatePinchyWebConfig(pluginConfig);
+  if (pluginConfigError) {
+    return NextResponse.json({ error: pluginConfigError }, { status: 400 });
+  }
+
+  // Only file-access plugin requires directory selection
+  if (template.pluginId === "pinchy-files") {
+    const paths = pluginConfig?.["pinchy-files"]?.allowed_paths;
     if (!Array.isArray(paths) || paths.length === 0) {
       return NextResponse.json(
         { error: "At least one directory must be selected" },
@@ -93,14 +104,54 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Email templates require a connection
+  if (template.requiresEmailConnection && !connectionId) {
+    return NextResponse.json(
+      { error: "An email connection is required for this template" },
+      { status: 400 }
+    );
+  }
+
   // Resolve personality preset from template
   const preset = getPersonalityPreset(template.defaultPersonality);
 
-  // Determine default model dynamically from provider's live model list
+  // Determine model: use template-aware resolver when modelHint is present,
+  // fall back to provider default for templates without a hint (e.g. "custom").
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
-  const model = defaultProvider
-    ? await getDefaultModel(defaultProvider)
-    : "anthropic/claude-haiku-4-5-20251001";
+
+  let model: string;
+  let modelSelectionSource: "template-hint" | "provider-default" = "provider-default";
+  let modelSelectionReason: string;
+
+  if (template.modelHint && defaultProvider) {
+    try {
+      const resolved = await resolveModelForTemplate({
+        hint: template.modelHint,
+        provider: defaultProvider,
+      });
+      model = resolved.model;
+      modelSelectionReason = resolved.reason;
+      modelSelectionSource = "template-hint";
+    } catch (err) {
+      if (err instanceof TemplateCapabilityUnavailableError) {
+        return NextResponse.json(
+          {
+            error: "template_capability_unavailable",
+            message: err.message,
+            missingCapabilities: err.missingCapabilities,
+            docsUrl: err.docsUrl,
+          },
+          { status: 400 }
+        );
+      }
+      throw err;
+    }
+  } else {
+    model = defaultProvider
+      ? await getDefaultModel(defaultProvider)
+      : "anthropic/claude-haiku-4-5-20251001";
+    modelSelectionReason = `provider-default (${defaultProvider ?? "anthropic fallback"})`;
+  }
 
   const [agent] = await db
     .insert(agents)
@@ -115,7 +166,7 @@ export async function POST(request: NextRequest) {
       avatarSeed: generateAvatarSeed(),
       personalityPresetId: template.defaultPersonality,
       greetingMessage: resolveGreetingMessage(
-        template.defaultGreetingMessage ?? preset?.greetingMessage ?? null,
+        template.defaultGreetingMessage ?? preset?.greetingMessage ?? "Hi {user}. How can I help?",
         name.trim()
       ),
     })
@@ -127,7 +178,16 @@ export async function POST(request: NextRequest) {
       actorId: session.user.id!,
       eventType: "agent.created",
       resource: `agent:${agent.id}`,
-      detail: { name: agent.name, model: agent.model, templateId },
+      detail: {
+        name: agent.name,
+        model: agent.model,
+        templateId,
+        modelSelection: {
+          source: modelSelectionSource,
+          hint: template.modelHint ?? null,
+          reason: modelSelectionReason,
+        },
+      },
       outcome: "success",
     })
   );
@@ -177,6 +237,36 @@ export async function POST(request: NextRequest) {
           outcome: "success",
         }).catch(console.error);
       }
+    }
+  }
+
+  // Auto-configure email permissions when template requires email connection
+  if (template.requiresEmailConnection && connectionId) {
+    const emailOps = detectEmailOperations(template.allowedTools);
+
+    if (emailOps.length > 0) {
+      const permissionRows = emailOps.map((op) => ({
+        agentId: agent.id,
+        connectionId,
+        model: "email",
+        operation: op,
+      }));
+
+      await db.insert(agentConnectionPermissions).values(permissionRows);
+
+      appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: `agent:${agent.id}`,
+        detail: {
+          action: "agent_integration_permissions_auto_configured",
+          agentId: agent.id,
+          connectionId,
+          permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
+        },
+        outcome: "success",
+      }).catch(console.error);
     }
   }
 

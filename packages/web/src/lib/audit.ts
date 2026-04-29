@@ -29,6 +29,7 @@ export type AuditResource =
   | "settings"
   | "config"
   | "channel"
+  | "chat"
   | "briefing";
 
 export type AuditEventType =
@@ -41,6 +42,7 @@ export type AuditEventType =
   | "agent.updated"
   | "agent.deleted"
   | "user.invited"
+  | "user.invite_blocked"
   | "user.updated"
   | "user.deleted"
   | "config.changed"
@@ -52,6 +54,7 @@ export type AuditEventType =
   | "user.role_updated"
   | "channel.created"
   | "channel.deleted"
+  | "chat.retry_triggered"
   | "briefing.created"
   | "briefing.updated"
   | "briefing.deleted";
@@ -159,7 +162,11 @@ export type AuditLogEntry =
       detail: DeleteDetail;
     })
   | (AuditLogBase & {
-      eventType: `${AuditResource}.created` | "user.invited" | "config.changed";
+      eventType:
+        | `${AuditResource}.created`
+        | "user.invited"
+        | "user.invite_blocked"
+        | "config.changed";
       detail: Record<string, unknown>;
     })
   | (AuditLogBase & {
@@ -172,6 +179,10 @@ export type AuditLogEntry =
     })
   | (AuditLogBase & {
       eventType: `tool.${string}`;
+      detail?: Record<string, unknown>;
+    })
+  | (AuditLogBase & {
+      eventType: `chat.${string}`;
       detail?: Record<string, unknown>;
     });
 

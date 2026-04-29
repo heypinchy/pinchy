@@ -23,7 +23,12 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
-import { useOdooPermissions, type Operation, type OdooModel } from "@/hooks/use-odoo-permissions";
+import {
+  useOdooPermissions,
+  type Operation,
+  type OdooModel,
+  type Connection,
+} from "@/hooks/use-odoo-permissions";
 import type { OdooAccessLevel } from "@/lib/tool-registry";
 import { MODEL_CATEGORIES } from "@/lib/integrations/odoo-sync";
 
@@ -63,6 +68,7 @@ function groupModelsByCategory(models: OdooModel[]): Array<{ label: string; mode
 
 interface OdooPermissionSectionProps {
   agentId: string;
+  connections: Connection[];
   onChange: (
     values: {
       connectionId: string;
@@ -72,9 +78,12 @@ interface OdooPermissionSectionProps {
   ) => void;
 }
 
-export function OdooPermissionSection({ agentId, onChange }: OdooPermissionSectionProps) {
+export function OdooPermissionSection({
+  agentId,
+  connections,
+  onChange,
+}: OdooPermissionSectionProps) {
   const {
-    connections,
     connectionId,
     accessLevel,
     addedModels,
@@ -89,7 +98,7 @@ export function OdooPermissionSection({ agentId, onChange }: OdooPermissionSecti
     getModelAccess,
     getPermissions,
     isDirty,
-  } = useOdooPermissions(agentId);
+  } = useOdooPermissions(agentId, connections);
 
   const [addModelOpen, setAddModelOpen] = useState(false);
 

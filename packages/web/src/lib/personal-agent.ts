@@ -26,9 +26,12 @@ export async function createSmithersAgent({
   isPersonal,
   isAdmin = false,
 }: CreateSmithersOptions) {
+  // docs_list / docs_read come from the pinchy-docs plugin, which is enabled
+  // automatically for every personal agent (see openclaw-config.ts). No need
+  // to list them here.
   const allowedTools = isAdmin
-    ? ["pinchy_save_user_context", "pinchy_save_org_context", "docs_list", "docs_read"]
-    : ["pinchy_save_user_context", "docs_list", "docs_read"];
+    ? ["pinchy_save_user_context", "pinchy_save_org_context"]
+    : ["pinchy_save_user_context"];
 
   const [agent] = await db
     .insert(agents)
@@ -71,7 +74,7 @@ export async function seedPersonalAgent(userId: string, isAdmin = false) {
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
   const model = defaultProvider
     ? await getDefaultModel(defaultProvider)
-    : "anthropic/claude-sonnet-4-20250514";
+    : "anthropic/claude-sonnet-4-6";
 
   return createSmithersAgent({ model, ownerId: userId, isPersonal: true, isAdmin });
 }

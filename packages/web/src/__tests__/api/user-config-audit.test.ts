@@ -51,7 +51,7 @@ vi.mock("@/lib/providers", () => ({
       authType: "api-key",
       settingsKey: "openai_api_key",
       envVar: "OPENAI_API_KEY",
-      defaultModel: "openai/gpt-4o-mini",
+      defaultModel: "openai/gpt-5.4-mini",
       placeholder: "sk-...",
     },
     google: {
@@ -67,7 +67,7 @@ vi.mock("@/lib/providers", () => ({
       authType: "api-key",
       settingsKey: "ollama_cloud_api_key",
       envVar: "OLLAMA_CLOUD_API_KEY",
-      defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+      defaultModel: "ollama-cloud/gemini-3-flash-preview",
       placeholder: "sk-...",
     },
   },

@@ -37,6 +37,8 @@ The API key inherits the Odoo permissions of the user who created it. If you wan
    - **API Key** — the key you copied in step 1
 4. Click **Test & Connect**
 
+![Add Integration → Odoo wizard with URL, database, email, and API key fields](/screenshots/integrations-odoo-wizard.png)
+
 Pinchy verifies the credentials and probes the available data models. If the connection fails, double-check the URL and API key.
 
 ## 3. Review the sync
@@ -58,7 +60,16 @@ A connection alone doesn't give any agent access. You need to explicitly grant i
    - **Models** — optionally restrict to specific models (e.g. only `sale.order` and `res.partner`)
 5. Click **Save**
 
-For details on access levels, see the [Integrations](/concepts/integrations/) concept page.
+### Access levels
+
+| Level            | Tools enabled                                         | Use case                     |
+| ---------------- | ----------------------------------------------------- | ---------------------------- |
+| **Read-only**    | schema, read, count, aggregate                        | Reporting, dashboards, Q&A   |
+| **Read & Write** | schema, read, count, aggregate, create, write         | Data entry, updating records |
+| **Full**         | schema, read, count, aggregate, create, write, delete | Full CRUD — use with caution |
+| **Custom**       | You pick individual tools                             | Fine-grained control         |
+
+Each level maps directly to the Odoo tools that get enabled for the agent. See [Agent Permissions](/concepts/agent-permissions/) for the full tool list.
 
 ## 5. Test it
 
@@ -113,6 +124,16 @@ Read-only templates are safe to deploy immediately — they can't modify your da
 
 :::note
 Templates depend on specific Odoo modules being installed. For example, **Fleet Manager** requires the Fleet module, **Manufacturing Planner** requires MRP, and **Subscription Manager** works best with the Subscriptions module. If a template can't be activated, check the missing models list shown during agent creation and install the corresponding module in Odoo.
+:::
+
+## Re-syncing when Odoo permissions change
+
+If the Odoo admin changes the API user's permissions after you've set up the connection, agents may lose access to certain models. When this happens, the agent gets a clear error message explaining that access was denied.
+
+To re-sync: go to **Settings → Integrations**, select the connection, and click **Re-sync**. Pinchy probes the available models again and updates the connection accordingly.
+
+:::warning
+Re-syncing may remove models that are no longer accessible. Agents that were configured to use those models will lose access to them.
 :::
 
 ## What's next

@@ -291,4 +291,39 @@ describe("UserDetailSheet", () => {
     expect(screen.getByRole("combobox")).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: /engineering/i })).toBeDisabled();
   });
+
+  it("should show copied feedback when reset link Copy button is clicked", async () => {
+    const user = userEvent.setup();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      value: { writeText },
+      writable: true,
+      configurable: true,
+    });
+
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ token: "reset-token-xyz" }),
+    } as Response);
+
+    render(
+      <UserDetailSheet
+        user={mockUser}
+        allGroups={allGroups}
+        isEnterprise={true}
+        currentUserId="admin-1"
+        open={true}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /reset password/i }));
+
+    await screen.findByText(/reset-token-xyz/);
+
+    await user.click(screen.getByRole("button", { name: "Copy" }));
+
+    await screen.findByRole("button", { name: "Copied!" });
+  });
 });

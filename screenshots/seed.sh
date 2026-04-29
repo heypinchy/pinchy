@@ -163,19 +163,37 @@ docker compose exec -T openclaw sh -c '
 DIR_COUNT=$(docker compose exec -T pinchy sh -c 'cat /openclaw-config/data-directories.json' 2>/dev/null | python3 -c "import sys,json; print(len(json.load(sys.stdin).get('directories',[])))" 2>/dev/null || echo "0")
 echo "  ✅ $DIR_COUNT directories configured"
 
-# Frink: safe tools + 3/6 directories
+# Web Search integration (enables hasApiKey path in Web Search UI for screenshots)
+echo "🔍 Adding Web Search integration..."
+api -X POST "$BASE_URL/api/integrations" -d '{
+  "type":"web-search",
+  "name":"Brave Search",
+  "description":"Demo API key for screenshots",
+  "credentials":{"apiKey":"BSAdemo-screenshot-placeholder-key"}
+}' > /dev/null 2>&1 && echo "  ✅ Brave Search connected" || echo "  ⚠️  Web Search connection failed"
+
+# Frink: files (3/6 directories) + web search with mixed domain restrictions
 if [ -n "$FRINK_ID" ]; then
   api -X PATCH "$BASE_URL/api/agents/$FRINK_ID" -d '{
-    "allowedTools": ["pinchy_ls", "pinchy_read"],
-    "pluginConfig": { "allowed_paths": ["/data/Reactor Operations", "/data/Safety Protocols", "/data/Employee Handbook"] }
-  }' > /dev/null 2>&1 && echo "  ✅ Frink: safe tools + 3 directories" || echo "  ⚠️  Frink config failed"
+    "allowedTools": ["pinchy_ls", "pinchy_read", "pinchy_web_search", "pinchy_web_fetch"],
+    "pluginConfig": {
+      "pinchy-files": { "allowed_paths": ["/data/Reactor Operations", "/data/Safety Protocols", "/data/Employee Handbook"] },
+      "pinchy-web": {
+        "allowedDomains": ["nrc.gov", "iaea.org", "docs.springfield.energy"],
+        "excludedDomains": ["reddit.com"],
+        "freshness": "pw",
+        "language": "en",
+        "country": "US"
+      }
+    }
+  }' > /dev/null 2>&1 && echo "  ✅ Frink: files + web search with domain restrictions" || echo "  ⚠️  Frink config failed"
 fi
 
 # Tibor: safe + powerful tools
 if [ -n "$TIBOR_ID" ]; then
   api -X PATCH "$BASE_URL/api/agents/$TIBOR_ID" -d '{
     "allowedTools": ["pinchy_ls", "pinchy_read", "shell", "web_fetch"],
-    "pluginConfig": { "allowed_paths": ["/data/Reactor Operations"] }
+    "pluginConfig": { "pinchy-files": { "allowed_paths": ["/data/Reactor Operations"] } }
   }' > /dev/null 2>&1 && echo "  ✅ Tibor: safe + powerful tools" || echo "  ⚠️  Tibor config failed"
 fi
 

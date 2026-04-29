@@ -9,4 +9,9 @@ if [ ! -w "$HOME" ]; then
   exit 0
 fi
 
+# Bring node_modules in sync with the lockfile before building. This is a no-op
+# (<1s) when already consistent, and auto-heals stale installs after a branch
+# switch or rebase — without that, the build fails on missing platform-specific
+# native binaries (e.g. lightningcss-darwin-arm64) that the lockfile requires.
+CI=true pnpm install --frozen-lockfile
 pnpm build

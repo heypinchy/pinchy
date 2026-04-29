@@ -18,6 +18,7 @@ const ADMIN_DB_URL = "postgresql://pinchy:pinchy_dev@localhost:5435/pinchy";
 const INTEGRATION_DB = "pinchy_integration_test";
 const INTEGRATION_DB_URL = `postgresql://pinchy:pinchy_dev@localhost:5435/${INTEGRATION_DB}`;
 const CONFIG_DIR = "/tmp/pinchy-integration-openclaw";
+const SECRETS_DIR = "/tmp/pinchy-integration-secrets";
 const PROJECT_ROOT = path.resolve(__dirname, "../../../..");
 const PACKAGE_ROOT = path.resolve(__dirname, "../..");
 
@@ -52,9 +53,12 @@ export default async function globalSetup() {
   await startFakeOllama();
   console.log(`[integration-setup] fake Ollama started on port ${FAKE_OLLAMA_PORT}`);
 
-  // 2. Ensure config dir exists (OpenClaw will be mounted here)
+  // 2. Ensure bind-mount targets exist BEFORE docker compose runs.
+  //    If Docker creates them, they are owned by root and Pinchy (host, non-root)
+  //    can't write secrets.json there.
   mkdirSync(CONFIG_DIR, { recursive: true });
   mkdirSync(`${CONFIG_DIR}/workspaces`, { recursive: true });
+  mkdirSync(SECRETS_DIR, { recursive: true });
 
   // 3. Start Docker integration stack (skip if already running, e.g. pre-started in CI)
   if (isDockerStackRunning()) {
@@ -85,18 +89,29 @@ export default async function globalSetup() {
     console.log("[integration-setup] DB migrated");
   }
 
-  // 5. Seed Ollama URL and default provider
-  //    host.docker.internal reaches the fake Ollama from inside the OpenClaw container
+  // 5. Seed Ollama URL, default provider, and a fake Ollama-Cloud key.
+  //    host.docker.internal reaches the fake Ollama from inside the OpenClaw container.
+  //
+  //    The Ollama-Cloud key is intentionally a dummy value — fake Ollama doesn't need
+  //    auth. We seed it so Pinchy's regenerateOpenClawConfig() writes the
+  //    `models.providers.ollama-cloud.apiKey: secretRef(...)` reference into
+  //    openclaw.json (see openclaw-config.ts ~line 615). That makes OpenClaw resolve
+  //    the SecretRef on every gateway boot/reload — which exercises the strict
+  //    "secrets.json owner must equal process uid" check that v0.5.0's tmpfs
+  //    architecture would otherwise leave untested. Without this seed, the integration
+  //    stack passes even when secrets ownership is misconfigured, because no SecretRef
+  //    reference ever forces OpenClaw to read secrets.json.
   const postgres = (await import("postgres")).default;
   const sql = postgres(INTEGRATION_DB_URL);
   await sql.unsafe(`
     INSERT INTO settings (key, value, encrypted) VALUES
       ('ollama_local_url', 'http://host.docker.internal:11435', false),
-      ('default_provider', 'ollama-local', false)
+      ('default_provider', 'ollama-local', false),
+      ('ollama_cloud_api_key', 'dummy-integration-test-key', false)
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, encrypted = false
   `);
   await sql.end();
-  console.log("[integration-setup] Ollama URL seeded");
+  console.log("[integration-setup] Ollama URL + dummy cloud key seeded");
 
   // 6. Run setup wizard so Pinchy writes openclaw.json WITH Smithers before OpenClaw
   //    restarts. This must happen before restarting OpenClaw (step 7) so the container
@@ -126,9 +141,14 @@ export default async function globalSetup() {
     stdio: "inherit",
   });
 
-  // 8. Wait for Pinchy to reconnect to OpenClaw (up to 60s)
+  // 8. Wait for Pinchy to reconnect to OpenClaw (up to 120s).
+  //    openclaw-node's exponential backoff (1s → 2s → 4s → … → 30s cap, plus
+  //    the lib double-fires reconnect on every error+close pair) means a
+  //    reconnect after a full container restart can take 45-90s before a
+  //    timer happens to fire while the gateway is healthy. 120s is well
+  //    inside that envelope without masking real regressions.
   console.log("[integration-setup] Waiting for Pinchy to reconnect to OpenClaw...");
-  const deadline = Date.now() + 60000;
+  const deadline = Date.now() + 120000;
   let reconnected = false;
   while (Date.now() < deadline) {
     try {
@@ -144,7 +164,7 @@ export default async function globalSetup() {
     await new Promise((r) => setTimeout(r, 500));
   }
   if (!reconnected) {
-    throw new Error("[integration-setup] Pinchy did not reconnect to OpenClaw within 60s");
+    throw new Error("[integration-setup] Pinchy did not reconnect to OpenClaw within 120s");
   }
   console.log("[integration-setup] Pinchy reconnected to OpenClaw — integration stack ready");
 }

@@ -34,7 +34,7 @@ vi.mock("@/lib/providers", () => ({
       authType: "api-key",
       settingsKey: "openai_api_key",
       envVar: "OPENAI_API_KEY",
-      defaultModel: "openai/gpt-4o-mini",
+      defaultModel: "openai/gpt-5.4-mini",
       placeholder: "sk-...",
     },
     google: {
@@ -50,7 +50,7 @@ vi.mock("@/lib/providers", () => ({
       authType: "api-key",
       settingsKey: "ollama_cloud_api_key",
       envVar: "OLLAMA_CLOUD_API_KEY",
-      defaultModel: "ollama-cloud/gemini-3-flash-preview:cloud",
+      defaultModel: "ollama-cloud/gemini-3-flash-preview",
       placeholder: "sk-...",
     },
     "ollama-local": {
@@ -333,8 +333,8 @@ describe("DELETE /api/settings/providers", () => {
       return null;
     });
     vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
-      { id: "agent-1", model: "openai/gpt-4o-mini" },
-      { id: "agent-2", model: "openai/gpt-4o" },
+      { id: "agent-1", model: "openai/gpt-5.4-mini" },
+      { id: "agent-2", model: "openai/gpt-5.4" },
       { id: "agent-3", model: "anthropic/claude-haiku-4-5-20251001" },
     ] as any[]);
 

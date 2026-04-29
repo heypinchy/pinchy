@@ -74,19 +74,19 @@ describe("resolveGreetingMessage", () => {
     expect(result).toBe("Good day. I'm Smithers. How may I help?");
   });
 
-  it("returns null when greeting is null", () => {
-    expect(resolveGreetingMessage(null, "Jet")).toBeNull();
-  });
-
   it("returns greeting unchanged when no placeholder present", () => {
     expect(resolveGreetingMessage("Hello!", "Ada")).toBe("Hello!");
   });
 
+  it("every preset has a non-empty greetingMessage (NOT NULL at schema level)", () => {
+    for (const preset of Object.values(PERSONALITY_PRESETS)) {
+      expect(preset.greetingMessage).toBeTruthy();
+    }
+  });
+
   it("preset greeting messages contain {name} placeholder", () => {
     for (const preset of Object.values(PERSONALITY_PRESETS)) {
-      if (preset.greetingMessage) {
-        expect(preset.greetingMessage).toContain("{name}");
-      }
+      expect(preset.greetingMessage).toContain("{name}");
     }
   });
 });

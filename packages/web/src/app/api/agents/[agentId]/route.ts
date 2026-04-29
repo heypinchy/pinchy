@@ -13,6 +13,7 @@ import { db } from "@/db";
 import { agentGroups, groups, type AgentPluginConfig } from "@/db/schema";
 import { getAgentGroupIds } from "@/lib/groups";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
+import { validatePinchyWebConfig } from "@/lib/domain-validation";
 
 export async function GET(
   request: NextRequest,
@@ -61,6 +62,12 @@ export async function PATCH(
 
   const body = await request.json();
 
+  // Validate pluginConfig structure if provided
+  const pluginConfigError = validatePinchyWebConfig(body.pluginConfig);
+  if (pluginConfigError) {
+    return NextResponse.json({ error: pluginConfigError }, { status: 400 });
+  }
+
   if (
     body.name !== undefined &&
     typeof body.name === "string" &&
@@ -104,13 +111,22 @@ export async function PATCH(
     }
   }
 
+  // greetingMessage is required at the schema level — reject attempts to clear it
+  if (
+    body.greetingMessage !== undefined &&
+    (body.greetingMessage === null ||
+      (typeof body.greetingMessage === "string" && body.greetingMessage.trim() === ""))
+  ) {
+    return NextResponse.json({ error: "Greeting message cannot be empty" }, { status: 400 });
+  }
+
   // Build update data
   const data: {
     name?: string;
     model?: string;
     allowedTools?: string[];
     pluginConfig?: AgentPluginConfig | null;
-    greetingMessage?: string | null;
+    greetingMessage?: string;
     tagline?: string | null;
     avatarSeed?: string | null;
     personalityPresetId?: string | null;
@@ -148,6 +164,13 @@ export async function PATCH(
     const oldTools = existingAgent.allowedTools ?? [];
     if (JSON.stringify(oldTools) !== JSON.stringify(data.allowedTools)) {
       changes.allowedTools = { from: oldTools, to: data.allowedTools };
+    }
+  }
+  if (data.pluginConfig !== undefined) {
+    const oldConfig = existingAgent.pluginConfig ?? null;
+    const newConfig = data.pluginConfig ?? null;
+    if (JSON.stringify(oldConfig) !== JSON.stringify(newConfig)) {
+      changes.pluginConfig = { from: oldConfig, to: newConfig };
     }
   }
 

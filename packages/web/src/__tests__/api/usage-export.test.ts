@@ -75,7 +75,7 @@ describe("GET /api/usage/export", () => {
       agentId: "a2",
       agentName: "Helper",
       sessionKey: "agent:a2:user-u2",
-      model: "gpt-4o",
+      model: "gpt-5.4",
       inputTokens: 2000,
       outputTokens: 800,
       cacheReadTokens: 0,

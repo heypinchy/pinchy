@@ -41,6 +41,29 @@ describe("ChatErrorMessage", () => {
     expect(heading).not.toHaveTextContent("Smitherscouldn't respond");
   });
 
+  it("should render the heading as a single text node so flex whitespace collapse can't merge the words", () => {
+    // Regression: "{agentLabel} couldn't respond" produced two adjacent text
+    // nodes ("Smithers" and " couldn't respond"). In a flex container, each
+    // becomes an anonymous flex item and `white-space: normal` strips the
+    // leading space of the second — rendering as "Smitherscouldn't respond".
+    // Asserting a single text node guarantees no whitespace can be collapsed.
+    render(
+      <ChatErrorMessage
+        error={{
+          agentName: "Smithers",
+          providerError: "Your credit balance is too low.",
+        }}
+      />
+    );
+
+    const heading = screen.getByText(/couldn't respond/i);
+    const textNodes = Array.from(heading.childNodes).filter(
+      (n) => n.nodeType === Node.TEXT_NODE && n.textContent?.trim()
+    );
+    expect(textNodes).toHaveLength(1);
+    expect(textNodes[0].textContent).toBe("Smithers couldn't respond");
+  });
+
   it("should render provider error without hint when hint is null", () => {
     render(
       <ChatErrorMessage

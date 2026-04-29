@@ -1,6 +1,16 @@
 FROM node:22-slim
 
-RUN apt-get update && apt-get install -y git inotify-tools procps && rm -rf /var/lib/apt/lists/*
+# python3 + build-essential are needed for native npm modules (better-sqlite3
+# in pinchy-files) to compile from source when the prebuilt binary doesn't
+# match the current node:22-slim point release. Without them the image build
+# fails intermittently whenever the upstream base image bumps Node.js.
+RUN apt-get update && apt-get install -y \
+      git \
+      inotify-tools \
+      procps \
+      python3 \
+      build-essential \
+    && rm -rf /var/lib/apt/lists/*
 
 RUN npm install -g openclaw@2026.4.12
 
@@ -18,10 +28,31 @@ RUN cd /tmp/pinchy-odoo && npm install --omit=dev && \
     cp -r /tmp/pinchy-odoo/node_modules /opt/pinchy-odoo-deps/ && \
     rm -rf /tmp/pinchy-odoo
 
+# Install pinchy-web plugin dependencies
+COPY packages/plugins/pinchy-web/package.json /tmp/pinchy-web/package.json
+RUN cd /tmp/pinchy-web && npm install --omit=dev && \
+    mkdir -p /opt/pinchy-web-deps && \
+    cp -r /tmp/pinchy-web/node_modules /opt/pinchy-web-deps/ && \
+    rm -rf /tmp/pinchy-web
+
+# Install pinchy-email plugin dependencies
+COPY packages/plugins/pinchy-email/package.json /tmp/pinchy-email/package.json
+RUN cd /tmp/pinchy-email && npm install --omit=dev && \
+    mkdir -p /opt/pinchy-email-deps && \
+    cp -r /tmp/pinchy-email/node_modules /opt/pinchy-email-deps/ && \
+    rm -rf /tmp/pinchy-email
+
 COPY config/openclaw.json /root/.openclaw/openclaw.json
 COPY config/ensure-gateway-token.js /ensure-gateway-token.js
 COPY config/start-openclaw.sh /start-openclaw.sh
 RUN chmod +x /start-openclaw.sh
+
+# Bake Pinchy's user-facing docs into the image so Smithers' docs_list /
+# docs_read tools (pinchy-docs plugin) work in every deploy. Previously
+# this path came from a relative bind-mount in docker-compose.yml, which
+# only exists when the full repo is checked out next to compose.yml —
+# broken for every clean end-user install (cloud-init, curl-and-go).
+COPY docs/src/content/docs /pinchy-docs
 
 EXPOSE 18789
 

@@ -1,0 +1,39 @@
+---
+title: Chat Connection States
+description: How Pinchy tracks the health of the agent connection and what each state means for you.
+---
+
+Pinchy tracks the health of the agent connection in real time so you always know what's happening — and what to do if something goes wrong.
+
+## The four states
+
+| State       | Indicator     | What it means                                        |
+| ----------- | ------------- | ---------------------------------------------------- |
+| Starting    | Yellow        | Pinchy is loading your conversation history.         |
+| Ready       | Green         | The agent is available and waiting for your message. |
+| Responding  | Green         | The agent is generating a reply. You can still type. |
+| Unavailable | Red or Yellow | The agent can't be reached right now.                |
+
+## Unavailable reasons
+
+When the state is Unavailable, the indicator and status message explain why:
+
+- **Disconnected** (red): The connection dropped. Pinchy is trying to reconnect automatically.
+- **Configuring** (yellow): You recently changed agent settings. Pinchy is applying the changes and will be ready in a moment.
+- **Exhausted** (red): Reconnection attempts failed. You need to reload the page to resume.
+
+## Auto-recovery
+
+When the agent runtime becomes reachable again — whether after a network drop or after a settings change — Pinchy automatically requests the latest conversation history and resumes where it left off. No reload needed.
+
+## Brief disconnects don't lock the UI
+
+Pinchy waits 2 seconds before showing the Disconnected state. During those 2 seconds the interface stays in its previous state (Ready or Responding) so short network hiccups are absorbed silently without disrupting your flow.
+
+## Typing while the agent responds
+
+You can type your next message while the agent is still generating a reply. Only the **Send** button and the **Retry** button are disabled during a response — the text input stays active so you can prepare follow-up questions.
+
+---
+
+See also: [Message Delivery & Retry](/guides/retry-messages) for how to recover from failed messages.

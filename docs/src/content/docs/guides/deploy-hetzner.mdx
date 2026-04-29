@@ -62,17 +62,51 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
     Under **Image**, make sure **OS Images** is selected and pick **Ubuntu** (the latest LTS version).
 
-7.  **Skip SSH Keys (for now)**
+7.  **Add your SSH key (required)**
 
-    Scroll past the **Networking** and **SSH keys** sections — you can leave them at their defaults. You'll see a warning saying "No SSH key selected" — that's fine. The cloud-init script below handles everything automatically, and you won't need SSH access for the initial setup.
+    Scroll to the **SSH keys** section and attach an SSH key. This is required — without it you can't upgrade Pinchy later, hand out production secrets, or enable HTTPS. Hetzner never sets a root password on Ubuntu cloud images, so the SSH key is your only way in.
 
     <details>
 
-    <summary>When would I need SSH access?</summary>
+    <summary>I don't have an SSH key yet</summary>
 
-    SSH is needed later for production hardening (setting up HTTPS, pinning secrets, etc.). You can add an SSH key at any time via the Hetzner console, or use the **web console** (available on the server's detail page) for emergency access.
+    An SSH key is a pair of files that proves you are you when connecting to a server. It replaces passwords and is far more secure. Creating one takes under a minute.
+
+    **On your computer, open a terminal:**
+    - **Mac** — open **Terminal** (⌘+Space, type "Terminal")
+    - **Windows** — open **PowerShell** (Start menu)
+    - **Linux** — any terminal app
+
+    **Check if you already have a key:**
+
+    ```bash
+    cat ~/.ssh/id_ed25519.pub
+    ```
+
+    If you see a line starting with `ssh-ed25519`, you already have a key — copy the output and skip to the next step. If you get "No such file or directory", create one:
+
+    ```bash
+    ssh-keygen -t ed25519 -C "your-email@example.com"
+    ```
+
+    Press Enter three times to accept defaults (empty passphrase is fine for a throwaway demo; use one for production). Then display and copy the public key:
+
+    ```bash
+    cat ~/.ssh/id_ed25519.pub
+    ```
+
+    **Add it to Hetzner:**
+
+    Back in the Cloud Console, the SSH keys section has an **Add SSH Key** button. Paste the full public key (the `ssh-ed25519 AAAA…` line, including your email), give it a name, and save. It now appears in the list — tick its checkbox to attach it to this server.
 
     </details>
+
+    <Aside type="caution">
+      Skipping the SSH key leaves the server with no login path at all.
+      Hetzner's web console shows a `login:` prompt, but there's no password —
+      the only recovery is to use "Reset root password" in the Cloud Console
+      actions menu. Don't skip this step.
+    </Aside>
 
 8.  **Paste the setup script**
 
@@ -85,11 +119,11 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
     <summary>What does this script do?</summary>
 
     This is a **cloud-init** script — a standard way to configure servers on first boot. When your server starts, it automatically:
-    1. Installs Docker and a firewall
+    1. Installs Caddy, Docker, and a firewall
     2. Opens only the ports needed (SSH, HTTP, HTTPS)
     3. Adds 2 GB of swap space (a safety net for heavy agent workloads)
-    4. Shows a loading page while Pinchy images are being downloaded
-    5. Downloads and starts Pinchy from pre-built Docker images
+    4. Configures Caddy as a reverse proxy with a built-in loading page — so visitors see a friendly page during install and through any future Pinchy restart
+    5. Downloads and starts Pinchy from pre-built Docker images (bound to `127.0.0.1:7777`, reachable only via Caddy)
 
     No manual setup required. You can also [download the script](/cloud-init.yml) separately.
 
@@ -105,12 +139,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
 11. **Open Pinchy**
 
-    After about a minute, visit `http://<your-server-ip>` in your browser (replace `<your-server-ip>` with the actual IP address). You should see the Pinchy setup wizard.
-
-    <Aside type="note">
-      If you see a connection error, wait another 30 seconds — the images might
-      still be downloading.
-    </Aside>
+    Visit `http://<your-server-ip>` in your browser (replace `<your-server-ip>` with the actual IP address). You'll see a loading page while Pinchy finishes installing, then it automatically hands off to the setup wizard — no refresh needed.
 
     The setup wizard will guide you through creating your admin account and configuring your first LLM provider.
 
@@ -118,7 +147,7 @@ Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU
 
 ## Production setup
 
-The steps above get Pinchy running over plain HTTP. Before using it with real data, add HTTPS and pin your secrets.
+The steps above get Pinchy running over plain HTTP on port 80. Before using it with real data, add HTTPS and lock your domain.
 
 All commands below run **on your server**. You have two options to connect:
 
@@ -174,71 +203,49 @@ While connected, every command you type runs on your server. Type `exit` to disc
 
 ### Set up HTTPS with Caddy
 
-Install Caddy, which handles SSL certificates automatically:
+Caddy is already installed and serving Pinchy on port 80 — the cloud-init script set it up. Switching to HTTPS is a single edit.
 
-```bash
-apt-get install -y caddy
-```
-
-Edit the Caddy configuration:
+Open the Caddy configuration:
 
 ```bash
 nano /etc/caddy/Caddyfile
 ```
 
-Replace the contents with (use your actual domain):
+Replace the `:80 {` line at the top with your domain (keep the rest of the file as is):
 
 ```
 pinchy.example.com {
-    reverse_proxy localhost:7777
+    reverse_proxy 127.0.0.1:7777 127.0.0.1:9999 {
+        lb_policy first
+        lb_try_duration 1s
+        fail_duration 5s
+    }
 }
 ```
 
-Save the file (Ctrl+O, Enter, Ctrl+X) and restart Caddy:
+Save the file (Ctrl+O, Enter, Ctrl+X) and reload Caddy:
 
 ```bash
-systemctl restart caddy
+systemctl reload caddy
 ```
 
-After a few seconds, visit `https://pinchy.example.com` — Caddy automatically provisions a Let's Encrypt certificate.
+After a few seconds, visit `https://pinchy.example.com` — Caddy automatically provisions a Let's Encrypt certificate. The loading-page fallback on `:9999` stays unchanged so users still see a friendly page if Pinchy ever becomes unreachable during an upgrade or restart.
 
-### Remove the port 80 redirect
+<Aside type="tip">
+  Pinchy already listens only on `127.0.0.1:7777` — Caddy is the single entry
+  point from the internet. No `PINCHY_PORT` changes needed.
+</Aside>
 
-The setup script added an iptables rule that redirected port 80 → 7777 for the initial HTTP access. Now that Caddy handles both port 80 and 443, remove it:
+### Lock your domain
 
-```bash
-iptables -t nat -D PREROUTING -p tcp --dport 80 -j REDIRECT --to-ports 7777
-iptables -t nat -D OUTPUT -p tcp -o lo --dport 80 -j REDIRECT --to-ports 7777
-netfilter-persistent save
-```
+Once HTTPS is working, open **Settings → Security** in the Pinchy web UI and enter your domain (e.g. `pinchy.example.com`).
 
-### Pin secrets
+After saving, Pinchy will reject requests from any other origin with a 403 error — including access via the raw server IP address.
 
-By default, Pinchy auto-generates secrets on first start and stores them in Docker volumes. Pin your own secrets so they survive volume recreation:
-
-```bash
-nano /opt/pinchy/.env
-```
-
-Add these lines (generate each value with `openssl rand -hex 32`, run it three times):
-
-```bash
-DB_PASSWORD=<output of openssl rand -hex 32>
-BETTER_AUTH_SECRET=<output of openssl rand -hex 32>
-ENCRYPTION_KEY=<output of openssl rand -hex 32>
-```
-
-Then restart Pinchy to apply:
-
-```bash
-cd /opt/pinchy
-docker compose up -d
-```
-
-<Aside type="caution">
-  Changing `DB_PASSWORD` after the database is already running requires also
-  updating the password inside PostgreSQL. For a fresh setup, do this before
-  completing the setup wizard.
+<Aside type="note">
+  Secrets (database password, session secret, encryption key) were automatically
+  generated and saved to `/opt/pinchy/.env` when your server was first created.
+  They are already pinned — no manual step needed.
 </Aside>
 
 ## Point your domain (optional but recommended)

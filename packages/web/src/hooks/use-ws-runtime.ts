@@ -13,6 +13,9 @@ import {
   type AssistantRuntime,
 } from "@assistant-ui/react";
 import type { ChatError } from "@/components/assistant-ui/chat-error-message";
+import { reduceMessages, type Action } from "./message-status-reducer";
+import type { MessageStatus } from "./message-status-reducer";
+import { isOrphaned as computeIsOrphaned } from "./orphan-detector";
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 
@@ -23,9 +26,16 @@ interface WsMessage {
   images?: string[];
   timestamp?: string;
   error?: ChatError;
+  /** Delivery status — only set for user messages managed by the reducer */
+  status?: MessageStatus;
+  /** When true, the UI shows a Retry button to re-trigger the agent */
+  retryable?: boolean;
+  /** Which retry action to invoke — only set when retryable is true */
+  retryReason?: "orphan" | "partial_stream_failure" | "send_failure";
 }
 
 const DELAY_HINT_MS = 15_000;
+const STUCK_TIMEOUT_MS = 60_000;
 
 function convertMessage(msg: WsMessage): ThreadMessageLike {
   const parts: Array<{ type: "text"; text: string } | { type: "image"; image: string }> = [
@@ -41,6 +51,9 @@ function convertMessage(msg: WsMessage): ThreadMessageLike {
   const custom: Record<string, unknown> = {};
   if (msg.timestamp) custom.timestamp = msg.timestamp;
   if (msg.error) custom.error = msg.error;
+  if (msg.status) custom.status = msg.status;
+  if (msg.retryable) custom.retryable = msg.retryable;
+  if (msg.retryReason) custom.retryReason = msg.retryReason;
 
   return {
     role: msg.role,
@@ -48,6 +61,26 @@ function convertMessage(msg: WsMessage): ThreadMessageLike {
     id: msg.id,
     metadata: Object.keys(custom).length > 0 ? { custom } : undefined,
   };
+}
+
+type WsContent = string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
+
+/**
+ * Build the WebSocket content payload — plain string when there are no images,
+ * structured parts array when images need to be carried alongside text.
+ */
+function buildWsContent(text: string, images: string[] | undefined): WsContent {
+  if (!images || images.length === 0) {
+    return text;
+  }
+  const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
+  if (text) {
+    parts.push({ type: "text", text });
+  }
+  for (const img of images) {
+    parts.push({ type: "image_url", image_url: { url: img } });
+  }
+  return parts;
 }
 
 class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
@@ -64,9 +97,20 @@ const MAX_RECONNECT_ATTEMPTS = 10;
 
 export function useWsRuntime(agentId: string): {
   runtime: AssistantRuntime;
+  isRunning: boolean;
   isConnected: boolean;
   isDelayed: boolean;
   isHistoryLoaded: boolean;
+  /**
+   * Upstream OpenClaw connectivity. Independent from `isConnected` (which only
+   * tracks the browser↔Pinchy WS). Defaults to true; flips on `openclaw_status`
+   * frames that the server pushes whenever upstream changes.
+   */
+  isOpenClawConnected: boolean;
+  reconnectExhausted: boolean;
+  isOrphaned: boolean;
+  onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
+  onRetryResend: (messageId: string) => void;
 } {
   const { triggerRestart } = useRestart();
   const [messages, setMessages] = useState<WsMessage[]>([]);
@@ -74,13 +118,39 @@ export function useWsRuntime(agentId: string): {
   const [isConnected, setIsConnected] = useState(false);
   const [isDelayed, setIsDelayed] = useState(false);
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
+  const [isOpenClawConnected, setIsOpenClawConnected] = useState(true);
+  const [reconnectExhausted, setReconnectExhausted] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const resetStuckTimerRef = useRef<(() => void) | null>(null);
   const mountedRef = useRef(true);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldRecoverFromHistoryRef = useRef(false);
   const pendingMessageRef = useRef<string | null>(null);
+  const isRunningRef = useRef(false);
+  /**
+   * True iff at least one assistant chunk was received during the current turn.
+   * Reset when a new turn starts (user sends or retry). Used to classify
+   * incoming error frames: with chunks → partial_stream_failure, without
+   * chunks → send_failure. Both reasons resend the original user message.
+   */
+  const hasReceivedChunkRef = useRef(false);
+  /**
+   * Set when a retry is triggered; cleared on the first chunk of the new turn.
+   * Tells the chunk handler to drop any trailing partial assistant response
+   * (left over from the interrupted previous turn) so the UI shows only the
+   * fresh response, matching what survives in OpenClaw's persisted history.
+   */
+  const trimTrailingOnNextChunkRef = useRef(false);
+  /** Tracks pending ack timers by clientMessageId. Cleared on ack or unmount. */
+  const pendingAckTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
+  // Tracks the current agentId so stale WebSocket handlers (from before an
+  // agent switch) can detect they belong to an old connection and bail out.
+  // Updated at the start of the useEffect (before connecting), not during render,
+  // so the new value is in place before any stale onclose/onmessage fires.
+  const agentIdRef = useRef(agentId);
 
   // Reset state when switching agents — prevents stale messages from
   // one agent blocking history load for a different agent.
@@ -94,17 +164,74 @@ export function useWsRuntime(agentId: string): {
     setIsHistoryLoaded(false);
   }
 
+  /**
+   * Dispatch a reducer action against the messages state.
+   * The hook's WsMessage is a superset of the reducer's WsMessage shape —
+   * we cast here so the pure reducer can operate on the shared `id` and
+   * `status` fields without needing to know about `images`, `error`, etc.
+   */
+  const dispatchMessages = useCallback((action: Action) => {
+    setMessages(
+      (prev) =>
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        reduceMessages(prev as any, action) as unknown as WsMessage[]
+    );
+  }, []);
+
   useEffect(() => {
+    // Update before connect() so stale handlers from the previous agent see
+    // the new agentId as soon as the cleanup's ws.close() fires asynchronously.
+    agentIdRef.current = agentId;
     mountedRef.current = true;
     reconnectAttemptRef.current = 0;
     shouldRecoverFromHistoryRef.current = false;
 
+    // Snapshot the ack-timers Map at effect start so the cleanup can iterate
+    // it without ESLint flagging "ref value will likely have changed". The
+    // ref's `.current` is never reassigned (only mutated via set/delete), so
+    // `ackTimers` and `pendingAckTimers.current` always point to the same Map.
+    const ackTimers = pendingAckTimers.current;
+
+    function clearStuckTimer() {
+      if (stuckTimerRef.current) {
+        clearTimeout(stuckTimerRef.current);
+        stuckTimerRef.current = null;
+      }
+    }
+
+    function resetStuckTimer() {
+      clearStuckTimer();
+      stuckTimerRef.current = setTimeout(() => {
+        isRunningRef.current = false;
+        setIsRunning(false);
+        setIsDelayed(false);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: uuid(),
+            role: "assistant",
+            content: "",
+            error: { timedOut: true },
+            retryable: true,
+            retryReason: "partial_stream_failure" as const,
+          },
+        ]);
+      }, STUCK_TIMEOUT_MS);
+    }
+
+    // Expose resetStuckTimer to onNew (defined outside this useEffect)
+    resetStuckTimerRef.current = resetStuckTimer;
+
     function connect() {
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const ws = new WebSocket(`${protocol}//${window.location.host}/api/ws?agentId=${agentId}`);
+      // Snapshot the agentId at connection time. Handlers compare this against
+      // agentIdRef.current to detect stale connections after an agent switch.
+      const connectionAgentId = agentId;
 
       ws.onopen = () => {
         setIsConnected(true);
+        setReconnectExhausted(false);
         reconnectAttemptRef.current = 0;
         ws.send(JSON.stringify({ type: "history", agentId }));
 
@@ -116,8 +243,37 @@ export function useWsRuntime(agentId: string): {
       };
 
       ws.onclose = () => {
+        if (connectionAgentId !== agentIdRef.current) return;
         setIsConnected(false);
-        setIsRunning(false);
+        setIsDelayed(false);
+        clearStuckTimer();
+        if (delayTimerRef.current) {
+          clearTimeout(delayTimerRef.current);
+          delayTimerRef.current = null;
+        }
+
+        // If a stream was in progress, inject a disconnect error so the user
+        // knows the response may have been lost.
+        if (isRunningRef.current) {
+          isRunningRef.current = false;
+          setIsRunning(false);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: uuid(),
+              role: "assistant",
+              content: "",
+              error: { disconnected: true },
+              retryable: true,
+              retryReason: hasReceivedChunkRef.current
+                ? ("partial_stream_failure" as const)
+                : ("send_failure" as const),
+            },
+          ]);
+        } else {
+          setIsRunning(false);
+        }
+
         setIsHistoryLoaded(false);
 
         if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
@@ -125,15 +281,21 @@ export function useWsRuntime(agentId: string): {
           const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 5000);
           reconnectAttemptRef.current++;
           reconnectTimerRef.current = setTimeout(connect, delay);
+        } else if (mountedRef.current) {
+          setReconnectExhausted(true);
         }
       };
 
       ws.onerror = () => {
+        if (connectionAgentId !== agentIdRef.current) return;
+        // onclose always fires after onerror — let onclose handle isRunning and
+        // the disconnect error injection so the user sees the right feedback.
         setIsConnected(false);
-        setIsRunning(false);
+        clearStuckTimer();
       };
 
       ws.onmessage = (event) => {
+        if (connectionAgentId !== agentIdRef.current) return;
         try {
           const data = JSON.parse(event.data);
 
@@ -142,43 +304,94 @@ export function useWsRuntime(agentId: string): {
             return;
           }
 
+          if (data.type === "openclaw_status") {
+            setIsOpenClawConnected(!!data.connected);
+            return;
+          }
+
           if (data.type === "history") {
-            const historyMessages = (data.messages ?? []).map(
-              (msg: { role: string; content: string; timestamp?: string }) => ({
-                id: uuid(),
-                role: msg.role === "system" ? "assistant" : msg.role,
-                content: msg.content,
-                timestamp: msg.timestamp,
-              })
-            );
+            const serverMessages: Array<{ role: string; content: string; timestamp?: string }> =
+              data.messages ?? [];
+            const historyMessages: WsMessage[] = serverMessages.map((msg) => ({
+              id: uuid(),
+              role: (msg.role === "system" ? "assistant" : msg.role) as "user" | "assistant",
+              content: msg.content ?? "",
+              timestamp: msg.timestamp,
+            }));
             const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
             setMessages((prev) => {
-              if (prev.length === 0) return historyMessages;
-
-              // After reconnects, replace a partial trailing assistant message
-              // with canonical history from the server.
-              const last = prev[prev.length - 1];
-              if (shouldRecoverFromHistory && last?.role === "assistant") {
+              if (prev.length === 0) {
                 return historyMessages;
               }
-
+              // After reconnects, replace local messages with canonical history
+              // from the server. Skip the wipe when server history is empty
+              // (typically because upstream OpenClaw is unreachable and Pinchy
+              // returned an empty history) — empty can't be canonical when we
+              // already have local messages.
+              // Note: we intentionally replace even if the last local message is
+              // a synthetic disconnect-error bubble, because the server's history
+              // is the ground truth after reconnect.
+              if (shouldRecoverFromHistory && historyMessages.length > 0) {
+                // Only replace if the last non-error message is an assistant turn
+                // (i.e. we were in the middle of a response when disconnected).
+                const lastNonError = [...prev].reverse().find((m) => !m.error);
+                if (lastNonError?.role === "assistant") {
+                  return historyMessages;
+                }
+              }
               return prev;
             });
             shouldRecoverFromHistoryRef.current = false;
+            // Reconcile any in-flight "sending" messages against server history.
+            // Route through the reducer so matching logic is centralised.
+            dispatchMessages({
+              type: "history-reconcile",
+              history: serverMessages.map((m) => ({ role: m.role, content: m.content })),
+            });
             setIsHistoryLoaded(true);
+            return;
+          }
+
+          if (data.type === "ack") {
+            // Cancel the pending timeout timer before dispatching the ack
+            const clientMessageId = data.clientMessageId as string;
+            const ackTimer = pendingAckTimers.current.get(clientMessageId);
+            if (ackTimer !== undefined) {
+              clearTimeout(ackTimer);
+              pendingAckTimers.current.delete(clientMessageId);
+            }
+            // Transition user message sending → sent
+            dispatchMessages({ type: "ack", clientMessageId });
             return;
           }
 
           if (data.type === "thinking") {
             // Server keep-alive: defeats browser/proxy WebSocket idle
             // timeouts during long pauses (e.g. local Ollama tool-use loops).
-            // No state change needed — we just don't want to drop the frame.
+            // Reset stuck timer so a slow-but-alive agent doesn't get killed.
+            // Also cancel any pending ack timers — OpenClaw is clearly processing
+            // this session so the message was received.
+            for (const timer of pendingAckTimers.current.values()) {
+              clearTimeout(timer);
+            }
+            pendingAckTimers.current.clear();
+            isRunningRef.current = true;
             setIsRunning(true);
+            resetStuckTimer();
             return;
           }
 
           if (data.type === "chunk") {
+            // Cancel pending ack timers — receiving a chunk proves OpenClaw got the
+            // message, so the ack timeout would be a false positive if it fired now.
+            for (const timer of pendingAckTimers.current.values()) {
+              clearTimeout(timer);
+            }
+            pendingAckTimers.current.clear();
+            isRunningRef.current = true;
+            hasReceivedChunkRef.current = true;
             setIsRunning(true);
+            resetStuckTimer();
 
             if (delayTimerRef.current) {
               clearTimeout(delayTimerRef.current);
@@ -187,12 +400,28 @@ export function useWsRuntime(agentId: string): {
             setIsDelayed(false);
 
             setMessages((prev) => {
-              const last = prev[prev.length - 1];
+              // A successful chunk auto-dismisses any prior error bubble — the
+              // retry succeeded, so the previous failure no longer reflects state.
+              let filtered = prev.filter((m) => !m.error);
+              // Right after a retry, drop any trailing partial assistant from the
+              // interrupted previous turn so the UI matches what OpenClaw actually
+              // persisted. Only fires on the first chunk of the new turn.
+              if (trimTrailingOnNextChunkRef.current) {
+                trimTrailingOnNextChunkRef.current = false;
+                const lastUserIdx = filtered.map((m) => m.role).lastIndexOf("user");
+                if (lastUserIdx >= 0) {
+                  filtered = filtered.slice(0, lastUserIdx + 1);
+                }
+              }
+              const last = filtered[filtered.length - 1];
               if (last?.role === "assistant" && last.id === data.messageId) {
-                return [...prev.slice(0, -1), { ...last, content: last.content + data.content }];
+                return [
+                  ...filtered.slice(0, -1),
+                  { ...last, content: last.content + data.content },
+                ];
               }
               return [
-                ...prev,
+                ...filtered,
                 {
                   id: data.messageId,
                   role: "assistant",
@@ -215,7 +444,10 @@ export function useWsRuntime(agentId: string): {
               clearTimeout(delayTimerRef.current);
               delayTimerRef.current = null;
             }
+            clearStuckTimer();
             setIsDelayed(false);
+            isRunningRef.current = false;
+            hasReceivedChunkRef.current = false;
             setIsRunning(false);
           }
 
@@ -224,6 +456,7 @@ export function useWsRuntime(agentId: string): {
               clearTimeout(delayTimerRef.current);
               delayTimerRef.current = null;
             }
+            clearStuckTimer();
             setIsDelayed(false);
 
             const error: ChatError = data.providerError
@@ -235,14 +468,21 @@ export function useWsRuntime(agentId: string): {
               : { message: data.message || "An unknown error occurred." };
 
             setMessages((prev) => [
-              ...prev,
+              // Remove any existing error bubble — only one error is ever shown
+              // at a time to avoid stacking after repeated retries.
+              ...prev.filter((m) => !m.error),
               {
                 id: uuid(),
                 role: "assistant",
                 content: "",
                 error,
+                retryable: true,
+                retryReason: hasReceivedChunkRef.current
+                  ? ("partial_stream_failure" as const)
+                  : ("send_failure" as const),
               },
             ]);
+            isRunningRef.current = false;
             setIsRunning(false);
           }
         } catch {
@@ -263,9 +503,51 @@ export function useWsRuntime(agentId: string): {
       if (delayTimerRef.current) {
         clearTimeout(delayTimerRef.current);
       }
+      clearStuckTimer();
+      // Clear all pending ack timers to avoid memory leaks and stale dispatches.
+      // Use the snapshot captured at effect start (see comment above) — the ref
+      // is never reassigned, so the snapshot points to the same Map.
+      for (const timer of ackTimers.values()) {
+        clearTimeout(timer);
+      }
+      ackTimers.clear();
       wsRef.current?.close();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
+
+  // Auto-recovery: when OpenClaw becomes reachable again after being unavailable,
+  // re-request history so the session is populated with any messages that arrived
+  // while we were offline (e.g. OpenClaw cold-cache scenario from Task 1).
+  // Only fires on the rising edge (false → true) and only after history has already
+  // been loaded once — this prevents double-requesting on the initial connect where
+  // ws.onopen already sends the history frame.
+  const fullyConnected = isConnected && isOpenClawConnected;
+  const prevFullyConnectedRef = useRef(fullyConnected);
+  useEffect(() => {
+    const wasConnected = prevFullyConnectedRef.current;
+    prevFullyConnectedRef.current = fullyConnected;
+    // Skip the initial render (no transition yet)
+    if (wasConnected === fullyConnected) return;
+    // Rising edge: was disconnected/unavailable, is now fully connected
+    if (fullyConnected && !wasConnected && isHistoryLoaded) {
+      wsRef.current?.send(JSON.stringify({ type: "history", agentId }));
+    }
+  }, [fullyConnected, isHistoryLoaded, agentId]);
+
+  /**
+   * Send a JSON-serialised payload over the WebSocket if it's open, otherwise
+   * queue it for delivery the moment the next connection completes the
+   * handshake (see `connect()` in the main effect — it flushes
+   * pendingMessageRef on open).
+   */
+  const sendOrQueue = useCallback((payload: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(payload);
+    } else {
+      pendingMessageRef.current = payload;
+    }
+  }, []);
 
   const onNew = useCallback(
     async (message: AppendMessage) => {
@@ -310,15 +592,26 @@ export function useWsRuntime(agentId: string): {
 
       if (!text.trim() && images.length === 0) return;
 
-      const userMessage: WsMessage = {
-        id: uuid(),
-        role: "user",
-        content: text,
-        timestamp: new Date().toISOString(),
-        ...(images.length > 0 && { images }),
-      };
+      const clientMessageId = uuid();
 
-      setMessages((prev) => [...prev, userMessage]);
+      // Add the user message directly with status: "sending" and an ISO timestamp
+      // for display. The reducer is used only for status transitions (ack, timeout,
+      // etc.) on already-added messages — not for the initial insertion, so we keep
+      // the hook's string timestamp format intact.
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: clientMessageId,
+          role: "user",
+          content: text,
+          timestamp: new Date().toISOString(),
+          status: "sending",
+          ...(images.length > 0 && { images }),
+        },
+      ]);
+
+      isRunningRef.current = true;
+      hasReceivedChunkRef.current = false;
       setIsRunning(true);
 
       // Start delay hint timer
@@ -329,38 +622,127 @@ export function useWsRuntime(agentId: string): {
         setIsDelayed(true);
       }, DELAY_HINT_MS);
 
-      // Build content: structured array if images present, plain string otherwise
-      let wsContent: string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
-      if (images.length > 0) {
-        const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
-        if (text) {
-          parts.push({ type: "text", text });
-        }
-        for (const img of images) {
-          parts.push({ type: "image_url", image_url: { url: img } });
-        }
-        wsContent = parts;
-      } else {
-        wsContent = text;
-      }
+      // Start stuck timer — fires if no activity (chunk or thinking) for 60s
+      resetStuckTimerRef.current?.();
 
       const payload = JSON.stringify({
         type: "message",
-        content: wsContent,
+        content: buildWsContent(text, images),
         agentId,
+        clientMessageId,
       });
 
-      if (wsRef.current?.readyState === WebSocket.OPEN) {
-        wsRef.current.send(payload);
-      } else {
-        // Queue for delivery when connection opens
-        pendingMessageRef.current = payload;
-      }
+      sendOrQueue(payload);
+
+      // Start a 10-second ack timeout. If no ack arrives before the timer
+      // fires, dispatch a "timeout" action to transition the message to "failed".
+      // Note: isRunning is NOT reset here — the ack timeout only covers message
+      // delivery status. isRunning resets only on complete/error/disconnect/stuck.
+      const ackTimer = setTimeout(() => {
+        pendingAckTimers.current.delete(clientMessageId);
+        dispatchMessages({ type: "timeout", clientMessageId });
+      }, 10_000);
+      pendingAckTimers.current.set(clientMessageId, ackTimer);
     },
-    [agentId]
+    [agentId, dispatchMessages, sendOrQueue]
   );
 
-  const convertedMessages = useMemo(() => messages.map(convertMessage), [messages]);
+  const onRetryContinue = useCallback(
+    (reason: "orphan" | "partial_stream_failure" | "send_failure") => {
+      // All retry reasons go through the resend path — the OpenClaw Gateway
+      // requires `message: NonEmptyString` on every agent request, so there's
+      // no "continue from session history without a new message" mode. The
+      // reason is threaded through the message frame so the audit log
+      // distinguishes orphan / partial_stream_failure / send_failure retries.
+      const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+      if (!lastUserMsg) return;
+
+      if (lastUserMsg.status === "failed") {
+        dispatchMessages({ type: "retry-resend", clientMessageId: lastUserMsg.id });
+      }
+
+      isRunningRef.current = true;
+      hasReceivedChunkRef.current = false;
+      trimTrailingOnNextChunkRef.current = true;
+      setIsRunning(true);
+
+      const payload = JSON.stringify({
+        type: "message",
+        agentId,
+        content: buildWsContent(lastUserMsg.content, lastUserMsg.images),
+        clientMessageId: lastUserMsg.id,
+        isRetry: true,
+        retryReason: reason,
+      });
+
+      sendOrQueue(payload);
+    },
+    [agentId, messages, dispatchMessages, sendOrQueue]
+  );
+
+  const onRetryResend = useCallback(
+    (messageId: string) => {
+      // Find the failed message — bail out if not found or not in failed state
+      const failedMsg = messages.find((m) => m.id === messageId && m.status === "failed");
+      if (!failedMsg) return;
+
+      // Flip status back to "sending"
+      dispatchMessages({ type: "retry-resend", clientMessageId: messageId });
+
+      isRunningRef.current = true;
+      setIsRunning(true);
+
+      // Start delay hint timer
+      if (delayTimerRef.current) {
+        clearTimeout(delayTimerRef.current);
+      }
+      delayTimerRef.current = setTimeout(() => {
+        setIsDelayed(true);
+      }, DELAY_HINT_MS);
+
+      // Start stuck timer — fires if no activity (chunk or thinking) for 60s
+      resetStuckTimerRef.current?.();
+
+      // Re-send the WS frame with the SAME clientMessageId and original content
+      const payload = JSON.stringify({
+        type: "message",
+        agentId,
+        content: buildWsContent(failedMsg.content, failedMsg.images),
+        clientMessageId: messageId,
+        isRetry: true,
+      });
+
+      sendOrQueue(payload);
+
+      // Restart the 10s ack timer
+      const ackTimer = setTimeout(() => {
+        pendingAckTimers.current.delete(messageId);
+        dispatchMessages({ type: "timeout", clientMessageId: messageId });
+      }, 10_000);
+      pendingAckTimers.current.set(messageId, ackTimer);
+    },
+    [agentId, messages, dispatchMessages, sendOrQueue]
+  );
+
+  const isOrphaned = computeIsOrphaned(messages, { isRunning, isHistoryLoaded });
+
+  const convertedMessages = useMemo(() => {
+    const base = messages.map(convertMessage);
+    if (isOrphaned) {
+      return [
+        ...base,
+        {
+          role: "assistant" as const,
+          id: "synthetic-orphan",
+          content: [{ type: "text" as const, text: "The agent didn't respond." }],
+          metadata: {
+            custom: { syntheticOrphanError: true, retryable: true, retryReason: "orphan" },
+          },
+        },
+      ];
+    }
+    return base;
+  }, [messages, isOrphaned]);
 
   const runtime = useExternalStoreRuntime({
     messages: convertedMessages,
@@ -372,5 +754,16 @@ export function useWsRuntime(agentId: string): {
     },
   });
 
-  return { runtime, isConnected, isDelayed, isHistoryLoaded };
+  return {
+    runtime,
+    isRunning,
+    isConnected,
+    isDelayed,
+    isHistoryLoaded,
+    isOpenClawConnected,
+    reconnectExhausted,
+    isOrphaned,
+    onRetryContinue,
+    onRetryResend,
+  };
 }

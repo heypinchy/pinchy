@@ -42,6 +42,7 @@ interface Template {
   description: string;
   requiresDirectories: boolean;
   requiresOdooConnection: boolean;
+  requiresEmailConnection?: boolean;
   odooAccessLevel?: string;
   defaultTagline: string | null;
 }
@@ -157,6 +158,7 @@ export function NewAgentForm() {
   const selectedTemplateObj = templates.find((t) => t.id === selectedTemplate);
   const requiresDirectories = selectedTemplateObj?.requiresDirectories ?? false;
   const requiresOdooConnection = selectedTemplateObj?.requiresOdooConnection ?? false;
+  const requiresEmailConnection = selectedTemplateObj?.requiresEmailConnection ?? false;
 
   // Fetch directories when a template requiring them is selected
   useEffect(() => {
@@ -188,7 +190,11 @@ export function NewAgentForm() {
         const res = await fetch("/api/integrations");
         if (res.ok) {
           const data = await res.json();
-          const odoo = (data as OdooConnection[]).filter((c: OdooConnection) => c.type === "odoo");
+          // Hide unreadable rows from the agent-creation flow — they can't be used
+          // and would show as "undefined URL". Admins clean them up in Settings.
+          const odoo = (data as OdooConnection[]).filter(
+            (c: OdooConnection) => c.type === "odoo" && !c.cannotDecrypt
+          );
           setOdooConnections(odoo);
 
           // Auto-select if only one connection
@@ -204,6 +210,31 @@ export function NewAgentForm() {
 
     fetchConnections();
   }, [requiresOdooConnection]);
+
+  // Fetch email connections when an email template is selected
+  useEffect(() => {
+    if (!requiresEmailConnection) return;
+
+    async function fetchEmailConnections() {
+      setLoadingConnections(true);
+      try {
+        const res = await fetch("/api/integrations");
+        if (res.ok) {
+          const data = await res.json();
+          const email = (data as OdooConnection[]).filter(
+            (c: OdooConnection) => c.type === "google" && !c.cannotDecrypt
+          );
+          if (email.length === 1) {
+            setSelectedConnectionId(email[0].id);
+          }
+        }
+      } finally {
+        setLoadingConnections(false);
+      }
+    }
+
+    fetchEmailConnections();
+  }, [requiresEmailConnection]);
 
   // Validate template against selected connection
   useEffect(() => {
@@ -238,8 +269,9 @@ export function NewAgentForm() {
     setOdooConnections([]);
     setSelectedConnectionId(null);
     setValidationResult(null);
-    if (selectedTemplateObj) {
-      form.setValue("tagline", selectedTemplateObj.defaultTagline || "");
+    if (selectedTemplate) {
+      const templateDef = getTemplate(selectedTemplate);
+      form.setValue("tagline", templateDef?.defaultTagline || "");
     }
 
     // Pre-fill name with a suggested name (except for custom template)
@@ -278,10 +310,10 @@ export function NewAgentForm() {
       };
 
       if (requiresDirectories && selectedPaths.length > 0) {
-        body.pluginConfig = { allowed_paths: selectedPaths };
+        body.pluginConfig = { "pinchy-files": { allowed_paths: selectedPaths } };
       }
 
-      if (requiresOdooConnection && selectedConnectionId) {
+      if ((requiresOdooConnection || requiresEmailConnection) && selectedConnectionId) {
         body.connectionId = selectedConnectionId;
       }
 
@@ -313,7 +345,7 @@ export function NewAgentForm() {
   const createDisabled =
     submitting ||
     (requiresDirectories && selectedPaths.length === 0) ||
-    (requiresOdooConnection && !selectedConnectionId) ||
+    ((requiresOdooConnection || requiresEmailConnection) && !selectedConnectionId) ||
     hasMissingModels;
 
   return (
