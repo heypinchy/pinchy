@@ -264,7 +264,7 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 
 **Staging**
 
-- [ ] Staging instance on `:next` was clicked through today: Smithers chat, one live integration, one custom agent
+- [ ] Staging instance on `:next` was clicked through today: Smithers chat, one live integration, one custom agent. See [Staging instance](https://docs.heypinchy.com/guides/deploy-hetzner/#staging-instance) for the one-time setup and the refresh command (`docker compose pull && up -d`) you run before each click-through.
 
 ### Release steps
 

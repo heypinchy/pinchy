@@ -1,0 +1,104 @@
+#cloud-config
+# Pinchy STAGING — automated VPS setup
+# https://docs.heypinchy.com/guides/deploy-hetzner/#staging-instance
+#
+# This is the staging variant of cloud-init.yml. It tracks the `:next`
+# Docker images (rebuilt on every push to main) and uses the
+# docker-compose.yml from the main branch — so the instance always
+# reflects what will ship in the next release.
+#
+# Differences vs the production cloud-init:
+#   - PINCHY_VERSION=next  (instead of a pinned vX.Y.Z tag)
+#   - docker-compose.yml is fetched from `main` (instead of a release tag)
+#   - No bundled loading page — Caddy serves a minimal "booting" message
+#     during the ~30-second initial pull. Staging is for the team, not
+#     the public, so the fancy installer page isn't worth the version-tag
+#     coupling.
+#
+# After boot, visit http://<your-server-ip>. To enable HTTPS, replace `:80`
+# in /etc/caddy/Caddyfile with your staging domain (e.g. staging.heypinchy.com)
+# and run `systemctl reload caddy` — Let's Encrypt is automatic.
+#
+# DO NOT enter production API keys into this instance. Use test keys only.
+
+runcmd:
+  # Add Caddy's official Cloudsmith apt repository (GPG-verified)
+  - apt-get update -qq
+  - apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https curl gpg
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  - curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | tee /etc/apt/sources.list.d/caddy-stable.list
+  - apt-get update -qq
+
+  # Write Caddyfile BEFORE installing caddy, so Caddy's first start uses our config.
+  # Staging has no separate loading page upstream — during boot, Caddy responds with
+  # a short "Pinchy is starting…" body until Pinchy is reachable on 7777.
+  - mkdir -p /etc/caddy
+  - |
+    cat > /etc/caddy/Caddyfile <<'EOF'
+    # Pinchy STAGING reverse proxy
+    # Primary upstream: Pinchy on 127.0.0.1:7777
+    # During the first ~30s after boot, Pinchy isn't up yet — Caddy serves
+    # a short "starting" message instead of bubbling up an upstream error.
+    #
+    # To enable HTTPS: replace `:80` with your staging domain (e.g.
+    # staging.heypinchy.com) and run `systemctl reload caddy`. Caddy
+    # provisions Let's Encrypt automatically.
+
+    :80 {
+        @up {
+            path *
+        }
+        reverse_proxy @up 127.0.0.1:7777 {
+            lb_try_duration 1s
+            fail_duration 5s
+        }
+        handle_errors {
+            respond "Pinchy is starting — refresh in a few seconds." 503
+        }
+    }
+    EOF
+
+  # Install Caddy, Docker, and UFW in one apt call (Caddy starts with our Caddyfile).
+  # --force-confold keeps our pre-staged /etc/caddy/Caddyfile without dpkg's
+  # interactive conffile prompt, which would otherwise fail cloud-init (no stdin)
+  # and leave the caddy package in iU state (postinst skipped, `caddy` user never
+  # created, systemd start fails with exit 217/USER).
+  - DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Options::=--force-confold caddy docker.io docker-compose-v2 ufw
+  - systemctl enable --now caddy
+  - systemctl reload caddy
+
+  # Firewall
+  - ufw allow OpenSSH
+  - ufw allow 80/tcp
+  - ufw allow 443/tcp
+  - ufw --force enable
+
+  # Docker
+  - systemctl enable docker
+  - systemctl start docker
+
+  # Swap (recommended for 4 GB servers)
+  - fallocate -l 2G /swapfile
+  - chmod 600 /swapfile
+  - mkswap /swapfile
+  - swapon /swapfile
+  - echo '/swapfile none swap sw 0 0' >> /etc/fstab
+
+  # Generate pinned secrets — Pinchy keeps its secure 127.0.0.1:7777 default,
+  # reachable only via Caddy on the same host.
+  - mkdir -p /opt/pinchy
+  - echo "PINCHY_VERSION=next" >> /opt/pinchy/.env
+  - echo "DB_PASSWORD=$(openssl rand -hex 32)" >> /opt/pinchy/.env
+  - echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> /opt/pinchy/.env
+  - echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> /opt/pinchy/.env
+  - chmod 600 /opt/pinchy/.env
+
+  # Download compose file from main (always tracks the latest main HEAD)
+  - curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/main/docker-compose.yml -o /opt/pinchy/docker-compose.yml
+  - cd /opt/pinchy && docker compose pull
+
+  # Start Pinchy
+  - cd /opt/pinchy && docker compose up -d
+
+  # Wait for Pinchy to be healthy (polled directly, not through Caddy)
+  - for i in $(seq 1 120); do curl -sf http://127.0.0.1:7777/api/health > /dev/null 2>&1 && break; sleep 2; done

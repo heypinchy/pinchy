@@ -5,6 +5,7 @@ description: Deploy a self-hosted AI agent platform on Hetzner Cloud. Step-by-st
 
 import { Aside, Code, Steps } from "@astrojs/starlight/components";
 import cloudInitScript from "../../../snippets/cloud-init.yml?raw";
+import cloudInitNextScript from "../../../snippets/cloud-init-next.yml?raw";
 
 Hetzner Cloud is an excellent choice for running Pinchy. Their servers run in EU data centers (Germany and Finland), which keeps your data under EU jurisdiction — no overseas transfers, no third-party cloud AI providers touching your conversations. Combined with strong price-to-performance ratios, it's the go-to option for European teams that take data sovereignty seriously.
 
@@ -264,6 +265,48 @@ An A record is a DNS entry that maps a domain name (like `pinchy.example.com`) t
 Look for "DNS records" or "DNS settings" in your domain registrar's dashboard.
 
 </details>
+
+## Staging instance
+
+If you contribute to Pinchy or run pre-release click-throughs before tagging a release, set up a second Hetzner instance that tracks the `:next` Docker images (rebuilt on every push to `main`). The setup mirrors production with three differences: it pins `PINCHY_VERSION=next`, fetches `docker-compose.yml` from the `main` branch, and skips the bundled installer page (Caddy serves a short "starting" message during the ~30-second initial pull).
+
+<Aside type="caution">
+  Staging instances are reachable from the public internet by default. Never
+  enter production API keys, real customer data, or production Telegram bot
+  tokens — the team treats staging as throwaway. Lock the instance down with
+  Caddy basic auth, an IP allowlist, or a Hetzner cloud firewall before going
+  further.
+</Aside>
+
+### One-time setup
+
+<Steps>
+
+1.  **Create a second Hetzner server** following the same steps as above (4 GB RAM, EU location, SSH key).
+
+2.  **Paste this cloud-init script** into the **User Data** field instead of the production one:
+
+    <Code code={cloudInitNextScript} lang="yaml" title="cloud-init-next.yml" />
+
+3.  **(Optional) Point a staging subdomain** at the server, e.g. `staging.pinchy.example.com`, then SSH in and replace `:80` in `/etc/caddy/Caddyfile` with your domain. Run `systemctl reload caddy`. Caddy provisions Let's Encrypt automatically.
+
+4.  **Open the Pinchy setup wizard** in your browser, create a test admin, and configure **test API keys only**.
+
+</Steps>
+
+### Refreshing staging to the latest `main`
+
+Every push to `main` triggers the **Pre-release** workflow, which builds and publishes new `:next` images. To pull the latest version onto your staging instance:
+
+```bash
+ssh root@<staging-ip> "cd /opt/pinchy && docker compose pull && docker compose up -d"
+```
+
+Run this manually before each pre-release click-through. Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184) and lands in v0.6.0.
+
+### Saving cost between releases
+
+A CX22 staging instance costs about €5/month if it runs continuously. Between releases, you can **stop** the server in the Hetzner console — you only pay for storage (~€1/month) until you start it again. On restart, run the refresh command above to pick up any `:next` changes.
 
 ## Hetzner-specific tips
 
