@@ -7,6 +7,11 @@ export default defineConfig({
   image: {
     service: passthroughImageService(),
   },
+  redirects: {
+    // Brief-lived alternate URL added by the openclaw-tmpfs PR before
+    // v0.5.0 shipped. Content was consolidated into /guides/upgrading/.
+    '/upgrade-notes/v0.5.0': '/guides/upgrading',
+  },
   integrations: [
     starlight({
       title: 'Pinchy',
