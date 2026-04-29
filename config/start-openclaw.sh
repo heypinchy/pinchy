@@ -64,18 +64,24 @@ get_secrets_mtime() {
 # next gateway boot.
 ensure_secrets_root_owned() {
     if [ ! -f "$SECRETS_FILE" ]; then
-        echo "[secrets-chown] $SECRETS_FILE does not exist, skipping"
+        echo "[secrets-fix] $SECRETS_FILE does not exist, skipping"
         return 0
     fi
     local before
     before=$(stat -c "%U:%G %a" "$SECRETS_FILE" 2>/dev/null || echo "stat-failed")
-    if chown root:root "$SECRETS_FILE" 2>&1; then
-        local after
-        after=$(stat -c "%U:%G %a" "$SECRETS_FILE" 2>/dev/null || echo "stat-failed")
-        echo "[secrets-chown] $SECRETS_FILE: $before -> $after"
-    else
-        echo "[secrets-chown] FAILED to chown $SECRETS_FILE (was $before): $?"
-    fi
+    # Fix BOTH ownership and mode. Ownership: OpenClaw's resolver requires
+    # file owner == process uid (root). Mode: OpenClaw's resolver also
+    # rejects group/world readable as "permissions are too open" — even
+    # mode 0644 (default rw-r--r-- on most umasks) trips this. Pinchy's
+    # writeFileSync says { mode: 0o600 } but on bind-mounted volumes
+    # in CI the resulting file ends up 0644 anyway (likely Node honoring
+    # the host umask over the explicit mode option for non-newly-created
+    # paths after rename). chmod 0600 here defensively.
+    chown root:root "$SECRETS_FILE" 2>/dev/null || true
+    chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
+    local after
+    after=$(stat -c "%U:%G %a" "$SECRETS_FILE" 2>/dev/null || echo "stat-failed")
+    echo "[secrets-fix] $SECRETS_FILE: $before -> $after"
 }
 
 # Returns 0 (truthy) if every key in secrets.json's env block already matches
