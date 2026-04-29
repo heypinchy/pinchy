@@ -1,21 +1,26 @@
 ---
 title: Agent Settings
-description: Reference for all agent configuration options — general settings, personality presets, instructions, permissions, and access control.
+description: Reference for all agent configuration options — general settings, personality presets, instructions, permissions, access control, and Telegram channels.
 ---
 
-import { Aside } from "@astrojs/starlight/components";
+import { Aside, Badge } from "@astrojs/starlight/components";
 
-Every agent in Pinchy is configured through a settings page with up to five tabs. To open it, navigate to an agent's chat and click the **gear icon** in the top bar.
+Every agent in Pinchy is configured through a settings page. To open it, navigate to an agent's chat and click the **gear icon** in the top bar. Which tabs you see depends on your role and the agent type.
 
-| Tab              | What it controls                    | Who can see it                          |
-| ---------------- | ----------------------------------- | --------------------------------------- |
-| **General**      | Name, tagline, model, agent type    | Admins and personal agent owners        |
-| **Personality**  | Avatar, personality preset, SOUL.md | Admins and personal agent owners        |
-| **Instructions** | AGENTS.md operating instructions    | Admins and personal agent owners        |
-| **Permissions**  | Tool allow-list, directory access   | Admins only (shared agents)             |
-| **Access**       | Visibility mode, group assignment   | Admins only (shared agents, enterprise) |
+| Tab                                                   | What it controls                     | Who can see it             |
+| ----------------------------------------------------- | ------------------------------------ | -------------------------- |
+| **General**                                           | Name, tagline, model, agent type     | Everyone who can edit      |
+| **Personality**                                       | Avatar, personality preset, SOUL.md  | Everyone who can edit      |
+| **Instructions**                                      | AGENTS.md operating instructions     | Everyone who can edit      |
+| **Permissions**                                       | Tool allow-list, directory access    | Admins only, shared agents |
+| **Access** <Badge text="Enterprise" variant="note" /> | Visibility mode, group assignment    | Admins only, shared agents |
+| **Telegram**                                          | Connect a Telegram bot to this agent | Admins only                |
 
-The Permissions and Access tabs are only visible for shared agents and only to admins. Personal agents (the auto-created agent each user gets) do not show these tabs.
+The Permissions and Access tabs exist only for shared agents. Personal agents (the auto-created Smithers each user gets) don't show them because there's nothing to share. Admins still see the Telegram tab on Smithers, but the main Smithers bot is managed centrally via **Settings → Telegram** rather than per-agent.
+
+:::note[Enterprise feature]
+The **Access** tab requires a Pinchy Enterprise license. Without a license, the tab shows an upgrade prompt. See [Enterprise Setup](/guides/enterprise-setup/) for details.
+:::
 
 ## General tab
 
@@ -109,15 +114,11 @@ When a safe tool is enabled, the **Allowed Directories** picker appears so you c
 
 For a deeper explanation of the permission model, defense in depth, and how permissions are translated to OpenClaw configuration, see [Agent Permissions](/concepts/agent-permissions/).
 
-## Access tab
+## Access tab <Badge text="Enterprise" variant="note" />
 
-<Aside type="tip">
-  Access control is an enterprise feature. It requires an active enterprise
-  license key. See [Groups](/concepts/groups/) for details on creating and
-  managing groups.
-</Aside>
+The Access tab controls which users can see and use an agent. Without an enterprise license, this tab shows an upgrade prompt. See [Groups](/concepts/groups/) for details on creating and managing groups.
 
-The Access tab controls which users can see and use an agent. Without an enterprise license, this tab shows an upgrade prompt.
+![Agent Settings — Access tab with visibility modes and group picker](/screenshots/agent-settings-access.png)
 
 ### Visibility modes
 
@@ -132,15 +133,28 @@ New agents are created with **Restricted** visibility by default. This lets admi
 
 When visibility is set to **Restricted**, a group picker appears listing all groups configured in **Settings**. Check one or more groups to grant their members access. If no groups are selected, only admins can see the agent.
 
+## Telegram tab
+
+![Agent Settings — Telegram tab with bot connection status](/screenshots/agent-settings-telegram.png)
+
+The Telegram tab lets admins connect a Telegram bot directly to this agent, so users can chat with the agent from their phone. Each agent can have its own bot with its own Telegram username.
+
+The main Pinchy bot must be set up first via **Settings → Telegram** — users link their Telegram accounts once via the main bot and can then message any bot they have permission to use. For Smithers, this tab shows the shared main bot status; to remove it, use "Remove Telegram for everyone" in **Settings → Telegram**. For other agents, the tab shows a token field and a Connect button.
+
+For the full flow including BotFather setup and account linking, see [Set Up Telegram](/guides/telegram-setup/).
+
 ## Creating agents
 
-Agents are created from the **Create New Agent** page. The flow is:
+Agents are created from the **Create New Agent** page. Pinchy ships with pre-configured templates for common use cases — Knowledge Base agents, vision-powered document analyzers, Odoo ERP assistants, email agents, and more. Each template auto-configures tools, personality, and system instructions; you choose a name and any template-specific options.
 
-1. **Choose a template** — select either **Knowledge Base** (pre-configured with safe file tools) or **Custom Agent** (starts with no tools).
-2. **Configure basics** — enter a name and optional tagline. Knowledge Base agents also require selecting at least one data directory.
-3. **Create** — the agent is created and the runtime restarts. You are redirected to the new agent's chat.
+The generic starting points are:
 
-After creation, all settings can be changed at any time through the settings page described above.
+- **Knowledge Base** — pre-configured with safe file tools for answering questions from directories you select
+- **Custom Agent** — starts with no tools, for when you want to configure everything manually
+
+Domain-specific templates (e.g., Sales Analyst, HR Analyst, Contract Analyzer) appear in the template picker when the corresponding integration is connected or their required capabilities are available. See [Connect Odoo](/guides/connect-odoo/#agent-templates) for the Odoo template list.
+
+After creation, all settings can be changed at any time through the settings page described above. The runtime restarts automatically after creation to activate the new agent's config.
 
 ## Save behavior
 

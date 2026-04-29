@@ -1,5 +1,5 @@
 #cloud-config
-# Pinchy %%PINCHY_VERSION%% — Automated VPS Setup
+# Pinchy v0.4.4 — Automated VPS Setup
 # https://docs.heypinchy.com/guides/vps-deployment/
 #
 # This cloud-init script installs Caddy (reverse proxy), Docker, and Pinchy,
@@ -21,7 +21,7 @@ runcmd:
 
   # Stage loading page for Caddy's fallback upstream
   - mkdir -p /var/www/pinchy-loading
-  - curl -fsSL https://github.com/heypinchy/pinchy/releases/download/%%PINCHY_VERSION%%/installing.html -o /var/www/pinchy-loading/index.html
+  - curl -fsSL https://github.com/heypinchy/pinchy/releases/download/v0.4.4/installing.html -o /var/www/pinchy-loading/index.html
   - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /var/www/pinchy-loading/index.html
 
   # Write Caddyfile BEFORE installing caddy, so Caddy's first start uses our config
@@ -89,13 +89,14 @@ runcmd:
   # Generate pinned secrets — Pinchy keeps its secure 127.0.0.1:7777 default,
   # reachable only via Caddy on the same host.
   - mkdir -p /opt/pinchy
+  - echo "PINCHY_VERSION=%%PINCHY_VERSION%%" >> /opt/pinchy/.env
   - echo "DB_PASSWORD=$(openssl rand -hex 32)" >> /opt/pinchy/.env
   - echo "BETTER_AUTH_SECRET=$(openssl rand -hex 32)" >> /opt/pinchy/.env
   - echo "ENCRYPTION_KEY=$(openssl rand -hex 32)" >> /opt/pinchy/.env
   - chmod 600 /opt/pinchy/.env
 
   # Download compose file and pull images (Caddy serves loading page throughout)
-  - curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o /opt/pinchy/docker-compose.yml
+  - curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.4/docker-compose.yml -o /opt/pinchy/docker-compose.yml
   - cd /opt/pinchy && docker compose pull
 
   # Start Pinchy — Caddy automatically swaps to the primary upstream within 5s

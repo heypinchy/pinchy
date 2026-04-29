@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
 import { getLicenseStatus, isKeyFromEnv } from "@/lib/enterprise";
+import { getSeatUsage } from "@/lib/seat-usage";
 import { SettingsPageContent } from "@/components/settings-page-content";
 
 export const metadata: Metadata = {
@@ -20,6 +21,7 @@ export default async function SettingsPage({
     getLicenseStatus(),
   ]);
   const isAdmin = session?.user?.role === "admin";
+  const usage = isAdmin ? await getSeatUsage(licenseStatus) : null;
   return (
     <SettingsPageContent
       initialTab={tab}
@@ -33,6 +35,8 @@ export default async function SettingsPage({
               expiresAt: licenseStatus.expiresAt?.toISOString() ?? null,
               daysRemaining: licenseStatus.daysRemaining ?? null,
               managedByEnv: isKeyFromEnv(),
+              maxUsers: licenseStatus.maxUsers,
+              seatsUsed: usage?.used ?? 0,
             }
           : undefined
       }

@@ -6,15 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
-
-interface LicenseInfo {
-  enterprise: boolean;
-  type: string | null;
-  org: string | null;
-  expiresAt: string | null;
-  daysRemaining: number | null;
-  managedByEnv: boolean;
-}
+import type { LicenseInfo } from "@/lib/enterprise";
 
 interface SettingsLicenseProps {
   onEnterpriseActivated?: () => void;
@@ -42,8 +34,9 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
   }, []);
 
   useEffect(() => {
+    if (initialLicense) return;
     fetchStatus();
-  }, [fetchStatus]);
+  }, [fetchStatus, initialLicense]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -56,9 +49,10 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
       });
       if (res.ok) {
         const data = await res.json();
-        setLicense(data);
+        await fetchStatus();
         setKeyInput("");
         setShowInput(false);
+        window.dispatchEvent(new Event("license-updated"));
         if (data.enterprise) {
           onEnterpriseActivated?.();
         }
@@ -110,6 +104,11 @@ export function SettingsLicense({ onEnterpriseActivated, initialLicense }: Setti
                   day: "numeric",
                 })}{" "}
                 ({license.daysRemaining} days remaining)
+              </p>
+            )}
+            {license.maxUsers > 0 && (
+              <p className="text-sm">
+                Seats: {license.seatsUsed} / {license.maxUsers} used
               </p>
             )}
             {license.managedByEnv && (

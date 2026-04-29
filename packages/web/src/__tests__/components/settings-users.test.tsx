@@ -71,7 +71,11 @@ describe("SettingsUsers", () => {
   function mockFetchForUsers(
     users: unknown[],
     invites: unknown[] = mockInvites,
-    { enterprise = false }: { enterprise?: boolean } = {}
+    {
+      enterprise = false,
+      maxUsers = 0,
+      seatsUsed = 0,
+    }: { enterprise?: boolean; maxUsers?: number; seatsUsed?: number } = {}
   ) {
     vi.mocked(global.fetch).mockImplementation(async (url) => {
       if (String(url) === "/api/users") {
@@ -84,7 +88,7 @@ describe("SettingsUsers", () => {
         return { ok: true, json: async () => [] } as Response;
       }
       if (String(url) === "/api/enterprise/status") {
-        return { ok: true, json: async () => ({ enterprise }) } as Response;
+        return { ok: true, json: async () => ({ enterprise, maxUsers, seatsUsed }) } as Response;
       }
       return { ok: false } as Response;
     });
@@ -733,5 +737,27 @@ describe("SettingsUsers", () => {
       expect(tableView.getByText("expired")).toBeInTheDocument();
       expect(tableView.getByText("deactivated")).toBeInTheDocument();
     });
+  });
+
+  it("shows seat usage banner when maxUsers > 0", async () => {
+    mockFetchForUsers([], [], { enterprise: true, maxUsers: 10, seatsUsed: 7 });
+    render(<SettingsUsers currentUserId="u1" />);
+    expect(await screen.findByText(/7 of 10 seats used/i)).toBeInTheDocument();
+  });
+
+  it("disables the invite button when at the cap", async () => {
+    mockFetchForUsers([], [], { enterprise: true, maxUsers: 10, seatsUsed: 10 });
+    render(<SettingsUsers currentUserId="u1" />);
+    const inviteBtn = await screen.findByRole("button", { name: /invite user/i });
+    expect(inviteBtn).toBeDisabled();
+  });
+
+  it("hides banner when license is unlimited", async () => {
+    mockFetchForUsers([], [], { enterprise: true, maxUsers: 0, seatsUsed: 12 });
+    render(<SettingsUsers currentUserId="u1" />);
+    await waitFor(() => {
+      expect(screen.queryByText("Loading...")).not.toBeInTheDocument();
+    });
+    expect(screen.queryByText(/seats used/i)).not.toBeInTheDocument();
   });
 });

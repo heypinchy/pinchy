@@ -58,22 +58,6 @@ You don't need to worry about these — Pinchy handles them on every startup:
 - **New environment variables** — Check the release notes for any new variables. Pinchy won't crash if they're missing (features may just be disabled), but review them in your `.env` file.
 - **Docker Compose changes** — The `curl` command in step 2 downloads the latest `docker-compose.yml`. If new volumes or services were added, they're created automatically on first start.
 
-## Pinning to a specific version
-
-By default, `docker-compose.yml` uses `image: ghcr.io/heypinchy/pinchy:latest`. This means the next `docker compose pull` will fetch whatever `latest` currently points to — usually fine, but a surprise if you want predictable upgrades.
-
-To pin to a specific version, edit `docker-compose.yml` and replace `:latest` with the version tag for both services:
-
-```yaml
-services:
-  pinchy:
-    image: ghcr.io/heypinchy/pinchy:v0.4.0
-  openclaw:
-    image: ghcr.io/heypinchy/pinchy-openclaw:v0.4.0
-```
-
-Now `docker compose pull` only updates when you bump the tag manually. Recommended for production environments where you want to control exactly when upgrades happen.
-
 ## Restoring from backup
 
 If you need to roll back after an upgrade:
@@ -116,16 +100,125 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.4.3 to %%PINCHY_VERSION%%
+## Upgrading from v0.4.4 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+None for the standard upgrade path — the new `docker-compose.yml` you download below already contains the `openclaw-secrets` tmpfs block needed by the new SecretRef architecture.
+
+If you maintain a **custom `docker-compose.yml`** (e.g. for a non-standard deployment, a different orchestrator profile, or a downstream fork), you must add this `tmpfs` block to the `openclaw` service definition before starting %%PINCHY_VERSION%%:
+
+```yaml
+services:
+  openclaw:
+    tmpfs:
+      - /openclaw-secrets:mode=0700,uid=1000,gid=1000
+    # …rest of the service definition
+```
+
+Without this, OpenClaw starts but cannot read its secrets, and every agent request fails with an authentication error.
+
+### Upgrade notes
+
+%%PINCHY_VERSION%% moves image version pinning from `docker-compose.yml` into `.env`. This is a one-time migration — after this, upgrading only means editing `PINCHY_VERSION` in `.env` and running `docker compose pull && docker compose up -d`.
+
+<Steps>
+
+1. **Back up your database** (as always):
+
+   ```bash
+   docker compose exec db pg_dump -U pinchy pinchy > backup-$(date +%Y%m%d).sql
+   ```
+
+2. **Fetch the new `docker-compose.yml`**:
+
+   ```bash
+   cd /opt/pinchy
+   curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+   ```
+
+3. **Add `PINCHY_VERSION` to your `.env`**:
+
+   ```bash
+   echo "PINCHY_VERSION=%%PINCHY_VERSION%%" >> /opt/pinchy/.env
+   ```
+
+4. **Pull and restart**:
+
+   ```bash
+   docker compose pull && docker compose up -d
+   ```
+
+</Steps>
+
+If you skip step 3, `docker compose up` fails loudly with a clear message telling you exactly what to add — this is by design, so a forgotten pin can't silently pull the wrong version.
+
+#### Telegram: brief downtime on first start
+
+OpenClaw detects the new SecretRef config format and hot-reloads. Telegram channels may be unresponsive for roughly 30 seconds during this reload. They recover automatically — no restart or re-configuration needed.
+
+#### Recommended: rotate your API keys
+
+Before %%PINCHY_VERSION%%, decrypted API keys were written into `openclaw.json` on disk. Docker volumes persist across container restarts, which means previous versions of `openclaw.json` (with decrypted keys inside) may still exist in volume history or backup snapshots taken before %%PINCHY_VERSION%%. After upgrading, rotate the keys at each provider:
+
+- **Anthropic** — Settings → API Keys → revoke old, generate new
+- **OpenAI** — API Keys → revoke old, generate new
+- **Google (Gemini)** — Google Cloud Console → API Credentials
+- **Ollama Cloud** — ollama.com/settings → API Keys
+- **Telegram bot** — message @BotFather → `/revoke` → `/newtoken` (only if you suspect exposure; revoking invalidates the previous webhook setup)
+
+Then in Pinchy, go to **Settings → Providers** and re-enter each new key. Pinchy validates each one against the provider's API before saving. Optionally, delete old volume backups that predate %%PINCHY_VERSION%% if you no longer need them.
+
+This is a "nice to do" for most deployments, but if your server was ever compromised or you share volume backups with third parties, treat it as required.
+
+#### Optional: scan audit logs for historical plaintext
+
+If your compliance requirements demand evidence that no API keys were logged in plain text in your audit trail, run the bundled scan script:
+
+```bash
+docker compose exec pinchy npx tsx packages/web/scripts/scan-audit-logs-for-plaintext.ts
+```
+
+It checks audit log entries for patterns that look like API keys (Anthropic `sk-ant-…`, OpenAI `sk-…`, Google `AIza…`, Ollama Cloud, Telegram bot tokens). A clean result means your audit trail doesn't contain any key material.
+
+#### Future upgrades
+
+From %%PINCHY_VERSION%% onwards, upgrading is just:
+
+```bash
+# Edit /opt/pinchy/.env → change PINCHY_VERSION to the new tag
+docker compose pull && docker compose up -d
+```
+
+The `docker-compose.yml` only changes when we add new services or volumes, which is rare. Release notes will tell you when a fetch is needed.
+
+### What's new in %%PINCHY_VERSION%%
+
+- **SecretRef architecture (RAM-only secrets)** — API keys no longer touch disk. The `openclaw.json` config file holds opaque `SecretRef` pointers; the actual key material lives in a tmpfs volume (`/openclaw-secrets/secrets.json`) that exists only in RAM and is never persisted. Compliance-friendly default for regulated industries. See [Secrets & API Key Storage](/security/secrets/).
+- **Web Search integration** — connect Pinchy to the Brave Search API and grant agents per-tool access to search and page fetch. Per-agent filters for domain allow/deny, freshness, language, and region let you scope what each agent can reach. See [Set Up Web Search](/guides/web-search-setup/).
+- **Gmail integration** — connect Google accounts via OAuth and give agents scoped email access: read, create drafts, or send. A guided wizard walks admins through the Google Cloud Console setup. See [Connect Email](/guides/connect-email/).
+- **Per-template model recommendations** — agent templates now declare preferred model tiers (fast, balanced, reasoning) and required capabilities (vision, long-context, tools). When creating an agent from a template, Pinchy picks the best match from your installed models automatically.
+- **Message delivery status** — the chat interface now tracks whether each message reached the agent. A message dims briefly while the network round-trip completes; once the agent acknowledges it, the bubble returns to normal. If delivery fails, a "Couldn't deliver" notice appears.
+- **Retry button** — when a message fails to deliver, the agent doesn't respond, or a response stream drops mid-way, a Retry button appears directly below the failed message. Pinchy handles the right recovery action automatically — resend, re-trigger, or continue the partial response — depending on what went wrong. See [Message Delivery Status & Retry](/guides/retry-messages/).
+- **Chat connection states with auto-recovery** — the chat indicator now shows four distinct states (Starting, Ready, Responding, Unavailable) with a 2-second hysteresis that absorbs brief network hiccups. When the agent runtime becomes reachable again after a drop or settings change, Pinchy automatically refreshes the conversation history. See [Chat Connection States](/explanation/chat-states/).
+- **Seat-cap enforcement for licensed deployments** — Settings → Users now shows current seat usage (active users + pending invites) against the licensed `maxUsers` cap. The Invite button is disabled when at the cap, and the invite endpoint refuses to issue new invitations with a `user.invite_blocked` audit entry. License expiry banner refreshes without a page reload.
+- **Integration delete with preflight** — deleting an integration now shows a dialog with the agent usage count up front. If agents are connected, you can detach-and-delete in one step instead of hunting through every agent. The state machine handles in-flight deletions cleanly so a failed delete doesn't leave orphaned references.
+- **Customizing your deployment** — new guide documents the supported customization surface: `docker-compose.override.yml`. Pinchy's `docker-compose.yml` is owned by the project and replaced on upgrade — overrides go into the override file, which Docker Compose merges automatically and upgrades never touch. See [Customizing Your Deployment](/guides/customizing-deployment/).
+
+#### Heads-up: Google template-model realignment
+
+If you create new agents from a template with the Google provider, the `balanced` tier now picks `gemini-2.5-flash` instead of `gemini-2.5-pro`, matching Google's own tier descriptions (Flash is "best price-performance"; Pro is the reasoning tier). The `fast` tier picks `gemini-2.5-flash-lite`, and `reasoning` picks `gemini-2.5-pro`. **Existing agents are unaffected** — model IDs are only resolved at agent-creation time and never re-resolved on existing agents.
+
+## Upgrading from v0.4.3 to v0.4.4
 
 Standard upgrade — no breaking changes, no new required environment variables.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.4/docker-compose.yml -o docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
-### What's fixed in %%PINCHY_VERSION%%
+### What's fixed in v0.4.4
 
 - **Integrations list no longer blanks out when one row can't be decrypted** — if the `ENCRYPTION_KEY` ever changed (e.g. accidentally overridden via `.env`), one un-decryptable row in `integration_connections` silently caused `GET /api/integrations` to return 500, and the UI fell back to "No integrations configured yet" for every integration — including freshly-added ones that would decrypt fine. Each row is now decrypted in isolation; unreadable rows surface in Settings → Integrations as a warning card with a Delete action so admins can recover without DB access. `regenerateOpenClawConfig()` got the same per-row isolation, so one broken connection no longer takes down every agent's config.
 

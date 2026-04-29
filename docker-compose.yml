@@ -1,6 +1,6 @@
 services:
   pinchy:
-    image: ghcr.io/heypinchy/pinchy:latest
+    image: ghcr.io/heypinchy/pinchy:${PINCHY_VERSION:?set PINCHY_VERSION in .env (e.g. PINCHY_VERSION=v0.5.0)}
     ports:
       - "${PINCHY_PORT:-127.0.0.1:7777}:7777"
     environment:
@@ -11,6 +11,7 @@ services:
       - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY:-}
     volumes:
       - openclaw-config:/openclaw-config
+      - openclaw-secrets:/openclaw-secrets
       - pinchy-workspaces:/openclaw-config/workspaces
       - openclaw-extensions:/openclaw-extensions
       - pinchy-secrets:/app/secrets
@@ -23,11 +24,12 @@ services:
         condition: service_started
 
   openclaw:
-    image: ghcr.io/heypinchy/pinchy-openclaw:latest
+    image: ghcr.io/heypinchy/pinchy-openclaw:${PINCHY_VERSION:?set PINCHY_VERSION in .env (e.g. PINCHY_VERSION=v0.5.0)}
     expose:
       - "18789"
     volumes:
       - openclaw-config:/root/.openclaw
+      - openclaw-secrets:/openclaw-secrets
       - pinchy-workspaces:/root/.openclaw/workspaces
       - openclaw-extensions:/root/.openclaw/extensions
       - pinchy-data:/data
@@ -57,3 +59,13 @@ volumes:
   pinchy-secrets:
   openclaw-extensions:
   pinchy-pdf-cache:
+  openclaw-secrets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      # uid/gid match the pinchy user inside the Pinchy container
+      # (Dockerfile.pinchy: useradd -r → uid 999). OpenClaw runs as root
+      # and can write here regardless of ownership; Pinchy needs ownership
+      # to atomically rewrite secrets.json via writeSecretsFile().
+      o: "mode=0770,uid=999,gid=999"

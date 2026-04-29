@@ -6,15 +6,23 @@ import { OdooClient } from "odoo-node";
 import { getSession } from "@/lib/auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 
-const testCredentialsSchema = z.object({
-  type: z.literal("odoo"),
-  credentials: z.object({
-    url: z.string().url(),
-    db: z.string().min(1),
-    login: z.string().min(1),
-    apiKey: z.string().min(1),
+const testCredentialsSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("odoo"),
+    credentials: z.object({
+      url: z.string().url(),
+      db: z.string().min(1),
+      login: z.string().min(1),
+      apiKey: z.string().min(1),
+    }),
   }),
-});
+  z.object({
+    type: z.literal("web-search"),
+    credentials: z.object({
+      apiKey: z.string().min(1),
+    }),
+  }),
+]);
 
 export async function POST(request: NextRequest) {
   const session = await getSession({ headers: await headers() });
@@ -32,6 +40,21 @@ export async function POST(request: NextRequest) {
       { error: "Validation failed", details: parsed.error.flatten() },
       { status: 400 }
     );
+  }
+
+  if (parsed.data.type === "web-search") {
+    try {
+      const res = await fetch("https://api.search.brave.com/res/v1/web/search?q=test&count=1", {
+        headers: { "X-Subscription-Token": parsed.data.credentials.apiKey },
+      });
+      if (!res.ok) {
+        return NextResponse.json({ success: false, error: "Invalid API key" });
+      }
+      return NextResponse.json({ success: true });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Connection failed";
+      return NextResponse.json({ success: false, error: message });
+    }
   }
 
   const { credentials } = parsed.data;

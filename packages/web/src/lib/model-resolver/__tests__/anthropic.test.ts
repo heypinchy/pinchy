@@ -13,9 +13,9 @@ describe("resolveAnthropic", () => {
     expect(r.model).toMatch(/sonnet/);
   });
 
-  it("maps tier=reasoning to opus", () => {
+  it("maps tier=reasoning to opus 4.7 (latest)", () => {
     const r = resolveAnthropic({ tier: "reasoning" });
-    expect(r.model).toMatch(/opus/);
+    expect(r.model).toBe("anthropic/claude-opus-4-7");
   });
 
   it("ignores taskType — cloud providers cover all tasks within a tier", () => {

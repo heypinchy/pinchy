@@ -27,6 +27,20 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+// Default to inactive license so existing tests are unaffected by seat-cap logic
+vi.mock("@/lib/enterprise", () => ({
+  getLicenseStatus: vi.fn().mockResolvedValue({
+    active: false,
+    ver: 1,
+    maxUsers: 0,
+    features: [],
+  }),
+}));
+
+vi.mock("@/lib/seat-usage", () => ({
+  getSeatUsage: vi.fn(),
+}));
+
 vi.mock("@/db", () => {
   const mockFrom = vi.fn().mockImplementation(() => {
     const result = Promise.resolve([]);

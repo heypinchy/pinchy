@@ -517,7 +517,7 @@ The admin constructs the invite URL from the returned token: `{origin}/invite/{t
 
 - `400` — missing or invalid role
 - `401` — not authenticated
-- `403` — not an admin
+- `403` — not an admin, or seat cap reached (enterprise license `maxUsers` limit exceeded — see `GET /api/enterprise/status`)
 
 ### `GET /api/users/invites`
 
@@ -806,6 +806,62 @@ Usage over time — used to render the dashboard charts. Query parameters: `days
 ### `GET /api/usage/export`
 
 Export usage records as CSV. **Enterprise license required.**
+
+## Enterprise License
+
+### `GET /api/enterprise/status`
+
+Get the current enterprise license status and seat usage. Any authenticated user can call this endpoint (non-admins see it too, so the UI can show licence-gated features correctly).
+
+**Response:**
+
+```json
+{
+  "enterprise": true,
+  "type": "paid",
+  "org": "Acme Corp",
+  "expiresAt": "2027-01-15T00:00:00.000Z",
+  "daysRemaining": 263,
+  "managedByEnv": false,
+  "seatsUsed": 7,
+  "maxUsers": 10
+}
+```
+
+| Field           | Type           | Description                                                                                                    |
+| --------------- | -------------- | -------------------------------------------------------------------------------------------------------------- |
+| `enterprise`    | boolean        | Whether an active enterprise license is present                                                                |
+| `type`          | string \| null | `"trial"` or `"paid"`. `null` when no license is active.                                                       |
+| `org`           | string \| null | Organisation name encoded in the license token. `null` when no license is active.                              |
+| `expiresAt`     | string \| null | ISO 8601 expiry timestamp. `null` for non-expiring tokens or when no license is active.                        |
+| `daysRemaining` | number \| null | Days until the key expires. `null` when the key has no expiry or no license is active.                         |
+| `managedByEnv`  | boolean        | `true` when the key comes from the `PINCHY_ENTERPRISE_KEY` environment variable (read-only in the Settings UI) |
+| `seatsUsed`     | number         | Number of seats currently in use: active users + valid pending invitations                                     |
+| `maxUsers`      | number         | Maximum seats allowed by the license. `0` means unlimited.                                                     |
+
+**Seat cap behaviour:** when `seatsUsed >= maxUsers` and `maxUsers > 0`, the **Invite User** button is disabled and the API rejects new invitations with `403`. Existing users are never affected. See [Enterprise Setup — Seat cap enforcement](/guides/enterprise-setup/#seat-cap-enforcement) for the full explanation.
+
+**Errors:**
+
+- `401` — not authenticated
+
+### `POST /api/enterprise/key`
+
+Save or update the enterprise license key. **Admin only.** Not available when the key is managed via the `PINCHY_ENTERPRISE_KEY` environment variable (`managedByEnv: true`).
+
+**Request body:**
+
+| Field | Type   | Required | Description           |
+| ----- | ------ | -------- | --------------------- |
+| `key` | string | Yes      | The JWT license token |
+
+**Response:** `{ "success": true }` — the new license status takes effect immediately without a restart.
+
+**Errors:**
+
+- `400` — key is missing or the JWT signature is invalid
+- `401` — not authenticated
+- `403` — not an admin, or key is managed by env var
 
 ## Groups (admin only, enterprise)
 

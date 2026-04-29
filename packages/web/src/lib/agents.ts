@@ -16,7 +16,7 @@ export interface UpdateAgentInput {
   model?: string;
   allowedTools?: string[];
   pluginConfig?: AgentPluginConfig | null;
-  greetingMessage?: string | null;
+  greetingMessage?: string;
   tagline?: string | null;
   avatarSeed?: string | null;
   personalityPresetId?: string | null;

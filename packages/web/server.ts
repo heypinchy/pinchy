@@ -2,7 +2,6 @@ import { createServer } from "http";
 import { parse } from "url";
 import next from "next";
 import { WebSocketServer, type WebSocket } from "ws";
-import { readFileSync } from "fs";
 import { OpenClawClient } from "openclaw-node";
 import { ClientRouter } from "./src/server/client-router";
 import { SessionCache } from "./src/server/session-cache";
@@ -12,10 +11,12 @@ import { openClawConnectionState } from "./src/server/openclaw-connection-state"
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
+import { setupOpenClawStatusBroadcaster } from "./src/server/openclaw-status-broadcaster";
 import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
+import { readGatewayToken } from "./src/lib/gateway-token-reader";
 
 logCapture.install();
 
@@ -31,25 +32,6 @@ const app = next({ dev });
 const handle = app.getRequestHandler();
 
 const OPENCLAW_WS_URL = process.env.OPENCLAW_WS_URL;
-const OPENCLAW_CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
-const GATEWAY_TOKEN_PATH = process.env.GATEWAY_TOKEN_PATH || "/openclaw-config/gateway-token";
-
-function readGatewayToken(): string {
-  // Try dedicated token file first (world-readable, written by OpenClaw startup)
-  try {
-    const token = readFileSync(GATEWAY_TOKEN_PATH, "utf-8").trim();
-    if (token) return token;
-  } catch {
-    // Fall through to config file
-  }
-  // Fall back to reading from main config (works when running as same user)
-  try {
-    const config = JSON.parse(readFileSync(OPENCLAW_CONFIG_PATH, "utf-8"));
-    return config.gateway?.auth?.token ?? "";
-  } catch {
-    return "";
-  }
-}
 
 async function waitForGatewayToken(maxWaitMs = 30000): Promise<string> {
   const start = Date.now();
@@ -88,6 +70,19 @@ app.prepare().then(async () => {
   } catch (err) {
     console.error(
       "[pinchy] Failed to load domain cache:",
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  // One-time migration: delete legacy openclaw.json.bak (may contain plaintext secrets).
+  // Runs before any config read/write so the .bak file never gets a chance to be used.
+  try {
+    const { migrateToSecretRef } = await import("./src/lib/openclaw-migration");
+    const configPath = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
+    migrateToSecretRef(configPath);
+  } catch (err) {
+    console.error(
+      "[pinchy] Failed to run secret-ref migration:",
       err instanceof Error ? err.message : err
     );
   }
@@ -156,6 +151,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   });
 
   let openclawClient: OpenClawClient | null = null;
+  let statusBroadcaster: ReturnType<typeof setupOpenClawStatusBroadcaster> | null = null;
 
   const sessionCache = new SessionCache();
 
@@ -224,6 +220,10 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   wss.on("connection", (clientWs) => {
     const sessionInfo = sessionMap.get(clientWs);
     if (!sessionInfo) return;
+
+    // Push the current upstream OpenClaw status so the indicator reflects
+    // reality even when this connection was opened during an OpenClaw outage.
+    statusBroadcaster?.sendInitialStatus(clientWs);
 
     const router = openclawClient
       ? new ClientRouter(openclawClient, sessionInfo.userId, sessionInfo.userRole, sessionCache)
@@ -342,6 +342,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     });
 
     setupOpenClawDisconnectHandler(openclawClient, sessionMap);
+    statusBroadcaster = setupOpenClawStatusBroadcaster(openclawClient, sessionMap);
 
     openclawClient.on("disconnected", () => {
       openClawConnectionState.connected = false;

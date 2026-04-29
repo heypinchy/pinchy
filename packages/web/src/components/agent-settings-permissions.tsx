@@ -14,15 +14,18 @@ import {
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { OdooPermissionSection } from "@/components/odoo-permission-section";
 import { EmailPermissionSection } from "@/components/email-permission-section";
+import { WebSearchPermissionSection } from "@/components/web-search-permission-section";
 import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions";
+import type { AgentPluginConfig } from "@/db/schema";
 
-interface PermissionsValues {
+export interface PermissionsValues {
   allowedTools: string[];
   allowedPaths: string[];
   integrations: Array<{
     connectionId: string;
     permissions: Array<{ model: string; operation: string }>;
   }>;
+  webSearchConfig?: AgentPluginConfig["pinchy-web"];
 }
 
 interface Connection {
@@ -40,7 +43,7 @@ interface AgentSettingsPermissionsProps {
     id: string;
     model: string;
     allowedTools: string[];
-    pluginConfig: { allowed_paths?: string[] } | null;
+    pluginConfig: AgentPluginConfig | null;
   };
   directories: Array<{ path: string; name: string }>;
   connections: Connection[];
@@ -58,14 +61,17 @@ export function AgentSettingsPermissions({
   // KB tools = non-integration safe tools only
   const kbTools = getToolsByCategory("safe").filter((t) => !t.integration);
 
-  // Filter initial allowedTools to only KB tools (exclude odoo_* and email_*)
+  // Web tools = powerful tools with web-search integration
+  const webTools = getToolsByCategory("powerful").filter((t) => t.integration === "web-search");
+
+  // Filter initial allowedTools to only KB + web tools (exclude odoo_* and email_*)
   const initialKbTools = agent.allowedTools.filter(
     (id) => !id.startsWith("odoo_") && !id.startsWith("email_")
   );
 
   const [allowedKbTools, setAllowedKbTools] = useState<string[]>(initialKbTools);
   const [allowedPaths, setAllowedPaths] = useState<string[]>(
-    agent.pluginConfig?.allowed_paths ?? []
+    agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []
   );
   const [odooIntegration, setOdooIntegration] = useState<{
     connectionId: string;
@@ -77,25 +83,41 @@ export function AgentSettingsPermissions({
     permissions: Array<{ model: string; operation: string }>;
   } | null>(null);
   const [emailIsDirty, setEmailIsDirty] = useState(false);
+  const [webSearchConfig, setWebSearchConfig] = useState<AgentPluginConfig["pinchy-web"]>(
+    agent.pluginConfig?.["pinchy-web"] ?? {}
+  );
 
   const initialKbToolsRef = useRef(initialKbTools);
-  const initialAllowedPaths = useRef(agent.pluginConfig?.allowed_paths ?? []);
+  const initialAllowedPaths = useRef(agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []);
+  const initialWebSearchConfig = useRef(agent.pluginConfig?.["pinchy-web"] ?? {});
 
   const hasKbToolChecked = kbTools.some((tool) => allowedKbTools.includes(tool.id));
+  const hasWebToolChecked = webTools.some((tool) => allowedKbTools.includes(tool.id));
+
+  // Check if the agent has sensitive data access (file tools or odoo tools)
+  const hasSensitiveDataAccess =
+    allowedKbTools.includes("pinchy_ls") ||
+    allowedKbTools.includes("pinchy_read") ||
+    odooIntegration !== null ||
+    emailIntegration !== null;
+
+  const showSecurityWarning = hasWebToolChecked && hasSensitiveDataAccess;
 
   // Partition active (non-pending) connections by integration type
-  const { odooConnections, emailConnections } = useMemo(() => {
+  const { odooConnections, emailConnections, webSearchConnections } = useMemo(() => {
     const active = connections.filter((c) => c.status !== "pending");
     return {
       odooConnections: active.filter((c) => c.type === "odoo") as OdooConnection[],
       emailConnections: active.filter((c) => EMAIL_CONNECTION_TYPES.has(c.type)),
+      webSearchConnections: active.filter((c) => c.type === "web-search"),
     };
   }, [connections]);
 
   const showOdoo = odooConnections.length > 0;
   const showEmail = emailConnections.length > 0;
+  const hasWebSearchApiKey = webSearchConnections.length > 0;
 
-  // Compute the combined allowedTools array (KB tools + odoo tools + email tools)
+  // Compute the combined allowedTools array (KB tools + web tools + odoo tools + email tools)
   const computeAllowedTools = useCallback(
     (
       currentKbTools: string[],
@@ -149,7 +171,9 @@ export function AgentSettingsPermissions({
         JSON.stringify([...initialKbToolsRef.current].sort()) ||
       JSON.stringify([...allowedPaths].sort()) !==
         JSON.stringify([...initialAllowedPaths.current].sort());
-    const isDirty = kbDirty || odooIsDirty || emailIsDirty;
+    const webConfigDirty =
+      JSON.stringify(webSearchConfig) !== JSON.stringify(initialWebSearchConfig.current);
+    const isDirty = kbDirty || odooIsDirty || emailIsDirty || webConfigDirty;
     // Collect all active integrations
     const integrations: Array<{
       connectionId: string;
@@ -162,6 +186,7 @@ export function AgentSettingsPermissions({
         allowedTools: allAllowedTools,
         allowedPaths,
         integrations,
+        webSearchConfig,
       },
       isDirty
     );
@@ -172,6 +197,7 @@ export function AgentSettingsPermissions({
     odooIsDirty,
     emailIntegration,
     emailIsDirty,
+    webSearchConfig,
     onChange,
     computeAllowedTools,
   ]);
@@ -206,6 +232,10 @@ export function AgentSettingsPermissions({
   ) {
     setEmailIntegration(values);
     setEmailIsDirty(isDirty);
+  }
+
+  function handleWebSearchConfigChange(config: AgentPluginConfig["pinchy-web"]) {
+    setWebSearchConfig(config);
   }
 
   return (
@@ -253,6 +283,37 @@ export function AgentSettingsPermissions({
           </Alert>
         )}
       </section>
+
+      {/* Web Search section — only when at least one active Web Search connection exists */}
+      {hasWebSearchApiKey && (
+        <section className="space-y-4">
+          <h3 className="text-lg font-semibold">Web Search</h3>
+          <div className="space-y-3">
+            {webTools.map((tool) => (
+              <div key={tool.id} className="flex items-center space-x-3">
+                <Checkbox
+                  id={`tool-${tool.id}`}
+                  checked={allowedKbTools.includes(tool.id)}
+                  onCheckedChange={() => handleToolToggle(tool.id)}
+                  aria-label={tool.label}
+                />
+                <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
+                  <span className="font-medium">{tool.label}</span>
+                  <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
+                </Label>
+              </div>
+            ))}
+          </div>
+
+          {hasWebToolChecked && (
+            <WebSearchPermissionSection
+              config={webSearchConfig ?? {}}
+              onChange={handleWebSearchConfigChange}
+              showSecurityWarning={showSecurityWarning}
+            />
+          )}
+        </section>
+      )}
 
       {/* Odoo section — only when at least one active Odoo connection exists */}
       {showOdoo && (

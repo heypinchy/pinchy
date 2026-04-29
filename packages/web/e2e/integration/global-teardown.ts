@@ -19,7 +19,20 @@ export default async function globalTeardown() {
   await sql.end();
   console.log("[integration-teardown] test DB dropped");
 
-  // 3. Stop Docker integration stack
+  // 3. Capture OpenClaw container logs BEFORE teardown so the workflow's
+  //    failure handler has something to show. Without this, by the time
+  //    the workflow runs `docker compose logs` the container is gone.
+  try {
+    execSync(
+      "docker compose -f docker-compose.integration.yml logs openclaw > /tmp/openclaw-integration.log 2>&1 || true",
+      { cwd: PROJECT_ROOT }
+    );
+    console.log("[integration-teardown] OpenClaw logs captured to /tmp/openclaw-integration.log");
+  } catch {
+    // Best-effort; don't fail teardown on log capture
+  }
+
+  // 4. Stop Docker integration stack
   execSync("docker compose -f docker-compose.integration.yml down", {
     cwd: PROJECT_ROOT,
     stdio: "inherit",

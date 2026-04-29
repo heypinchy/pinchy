@@ -14,7 +14,7 @@ describe("AgentSettingsGeneral", () => {
   const defaultAgent = {
     id: "agent-1",
     name: "Smithers",
-    model: "anthropic/claude-sonnet-4-20250514",
+    model: "anthropic/claude-sonnet-4-6",
     isPersonal: false,
     tagline: "Your reliable assistant",
   };
@@ -23,14 +23,14 @@ describe("AgentSettingsGeneral", () => {
       id: "anthropic",
       name: "Anthropic",
       models: [
-        { id: "anthropic/claude-sonnet-4-20250514", name: "Claude Sonnet 4" },
+        { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4" },
         { id: "anthropic/claude-opus-4-20250514", name: "Claude Opus 4" },
       ],
     },
     {
       id: "openai",
       name: "OpenAI",
-      models: [{ id: "openai/gpt-4o", name: "GPT-4o" }],
+      models: [{ id: "openai/gpt-5.4", name: "GPT-4o" }],
     },
   ];
 
@@ -306,7 +306,7 @@ describe("AgentSettingsGeneral", () => {
         expect.objectContaining({
           name: "Smithers",
           tagline: "Your reliable assistant",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
         }),
         false
       );

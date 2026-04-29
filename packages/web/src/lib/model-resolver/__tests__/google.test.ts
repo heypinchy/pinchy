@@ -2,20 +2,20 @@ import { describe, expect, it } from "vitest";
 import { resolveGoogle } from "../providers/google";
 
 describe("resolveGoogle", () => {
-  it("maps tier=fast to gemini flash variant", () => {
+  it("maps tier=fast to gemini-2.5-flash-lite (Google's fastest stable)", () => {
     const r = resolveGoogle({ tier: "fast" });
-    expect(r.model).toMatch(/flash/i);
+    expect(r.model).toBe("google/gemini-2.5-flash-lite");
     expect(r.fallbackUsed).toBe(false);
   });
 
-  it("maps tier=balanced to gemini pro variant", () => {
+  it("maps tier=balanced to gemini-2.5-flash (Google's balanced stable)", () => {
     const r = resolveGoogle({ tier: "balanced" });
-    expect(r.model).toMatch(/pro/i);
+    expect(r.model).toBe("google/gemini-2.5-flash");
   });
 
-  it("maps tier=reasoning to gemini ultra or thinking variant", () => {
+  it("maps tier=reasoning to gemini-2.5-pro (Google's most-advanced stable)", () => {
     const r = resolveGoogle({ tier: "reasoning" });
-    expect(r.model).toBeDefined();
+    expect(r.model).toBe("google/gemini-2.5-pro");
   });
 
   it("ignores taskType — cloud providers cover all tasks within a tier", () => {

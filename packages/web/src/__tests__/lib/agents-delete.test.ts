@@ -8,7 +8,7 @@ vi.mock("@/db", () => {
         {
           id: "agent-1",
           name: "Test Agent",
-          model: "anthropic/claude-opus-4-6",
+          model: "anthropic/claude-opus-4-7",
           deletedAt: new Date(),
         },
       ]),
@@ -53,7 +53,7 @@ describe("deleteAgent", () => {
           {
             id: "agent-1",
             name: "Test Agent",
-            model: "anthropic/claude-opus-4-6",
+            model: "anthropic/claude-opus-4-7",
             deletedAt: new Date(),
           },
         ]),
@@ -67,7 +67,7 @@ describe("deleteAgent", () => {
     expect(result).toMatchObject({
       id: "agent-1",
       name: "Test Agent",
-      model: "anthropic/claude-opus-4-6",
+      model: "anthropic/claude-opus-4-7",
     });
   });
 
@@ -111,7 +111,7 @@ describe("deleteAgent — soft-delete", () => {
           {
             id: "agent-1",
             name: "Test Agent",
-            model: "anthropic/claude-opus-4-6",
+            model: "anthropic/claude-opus-4-7",
             deletedAt: new Date(),
           },
         ]),

@@ -3,6 +3,17 @@ import { validateLicense, type LicenseStatus } from "@/lib/license";
 
 export type { LicenseStatus, LicenseType } from "@/lib/license";
 
+export interface LicenseInfo {
+  enterprise: boolean;
+  type: string | null;
+  org: string | null;
+  expiresAt: string | null;
+  daysRemaining: number | null;
+  managedByEnv: boolean;
+  maxUsers: number;
+  seatsUsed: number;
+}
+
 // Production public key (ES256 / P-256)
 // Generated with: npx tsx scripts/generate-license.ts --generate-keypair
 const PRODUCTION_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----

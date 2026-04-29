@@ -240,7 +240,7 @@ describe("NewAgentForm", () => {
       );
     expect(agentCall).toBeDefined();
     const sentBody = JSON.parse((agentCall![1] as any).body);
-    expect(sentBody.pluginConfig).toEqual({ allowed_paths: ["/data/hr-docs"] });
+    expect(sentBody.pluginConfig).toEqual({ "pinchy-files": { allowed_paths: ["/data/hr-docs"] } });
   });
 
   it("should show docs link for knowledge-base template", async () => {

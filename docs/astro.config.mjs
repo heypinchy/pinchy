@@ -7,6 +7,11 @@ export default defineConfig({
   image: {
     service: passthroughImageService(),
   },
+  redirects: {
+    // Brief-lived alternate URL added by the openclaw-tmpfs PR before
+    // v0.5.0 shipped. Content was consolidated into /guides/upgrading/.
+    '/upgrade-notes/v0.5.0': '/guides/upgrading',
+  },
   integrations: [
     starlight({
       title: 'Pinchy',
@@ -127,10 +132,13 @@ export default defineConfig({
             { label: 'Deploy on Hetzner Cloud', slug: 'guides/deploy-hetzner' },
             { label: 'Deploy on DigitalOcean', slug: 'guides/deploy-digitalocean' },
             { label: 'Upgrading', slug: 'guides/upgrading' },
+            { label: 'Customizing Your Deployment', slug: 'guides/customizing-deployment' },
             { label: 'Hardening', slug: 'guides/hardening' },
             { label: 'HTTPS & Domain Lock', slug: 'guides/domain-lock' },
             { label: 'Connect Email (Gmail)', slug: 'guides/connect-email' },
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
+            { label: 'Set Up Web Search', slug: 'guides/web-search-setup' },
+            { label: 'Message Delivery & Retry', slug: 'guides/retry-messages' },
           ],
         },
         {
@@ -139,6 +147,7 @@ export default defineConfig({
             { label: 'Architecture', slug: 'architecture' },
             { label: 'Philosophy', slug: 'concepts/philosophy' },
             { label: 'Agent Memory', slug: 'explanation/agent-memory' },
+            { label: 'Chat Connection States', slug: 'explanation/chat-states' },
             { label: 'Agent Settings', slug: 'concepts/agent-settings' },
             { label: 'Agent Permissions', slug: 'concepts/agent-permissions' },
             { label: 'Context Management', slug: 'concepts/context' },
