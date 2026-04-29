@@ -13,7 +13,10 @@ export default defineConfig({
   retries: 0,
   workers: 1,
   reporter: "list",
-  timeout: 120000, // 2 min per test (LLM responses can be slow)
+  timeout: 180000, // 3 min per test: LLM responses can be slow, plus Pinchy
+  // may be mid-reconnect to OpenClaw (openclaw-node exponential backoff
+  // makes worst-case reconnect ~90s after a SIGUSR1) when a bot reply
+  // round-trips through pinchy plugins.
   // Skip @llm tests in CI — they require real Anthropic API auth that
   // OpenClaw's per-agent auth-profiles system doesn't pick up from env vars.
   // Pairing tests (no LLM needed) run in all environments.
