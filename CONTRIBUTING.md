@@ -264,7 +264,7 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 
 **Staging**
 
-- [ ] Staging instance on `:next` was clicked through today: Smithers chat, one live integration, one custom agent. See [Staging instance](https://docs.heypinchy.com/guides/deploy-hetzner/#staging-instance) for the one-time setup and the refresh command (`docker compose pull && up -d`) you run before each click-through.
+- [ ] Staging instance on `:next` was clicked through today: Smithers chat, one live integration, one custom agent. See [Staging instance setup](#staging-instance-setup) for the one-time setup and the refresh command (`docker compose pull && up -d`) you run before each click-through.
 
 ### Release steps
 
@@ -300,6 +300,34 @@ A Drizzle migration or config change breaks the upgrade from the previous tag. R
 
 **`pnpm audit` fail (release script)**
 A high or critical CVE was flagged in a production dependency. Fix the vulnerability (update the dep or switch to a patched version), or — if the finding is a false positive or acceptable risk — re-run with `--skip-audit` and document the acceptance in the release notes under a "Known issues" subsection.
+
+## Staging instance setup
+
+The pre-release click-through gate happens against a staging Hetzner instance that tracks the `:next` Docker images (rebuilt by `pre-release.yml` on every push to `main`). The setup mirrors the production Hetzner deploy with three differences: it pins `PINCHY_VERSION=next`, fetches `docker-compose.yml` from the `main` branch, and skips the bundled installer page (Caddy serves a short "starting" message during the ~30-second initial pull).
+
+This is intentionally an internal/contributor workflow — the public docs at [docs.heypinchy.com](https://docs.heypinchy.com) cover production deploys only.
+
+> **Caution.** Staging is reachable from the public internet by default. Never enter production API keys, real customer data, or production Telegram bot tokens. Treat staging as throwaway. Lock the instance down with Caddy basic auth, an IP allowlist, or a Hetzner cloud firewall before going further.
+
+### One-time setup
+
+1. **Create a Hetzner server** following the steps in the [Deploy on Hetzner Cloud](https://docs.heypinchy.com/guides/deploy-hetzner/) guide (4 GB RAM, EU location, SSH key) — but **paste [`staging/cloud-init.yml`](staging/cloud-init.yml) into the User Data field** instead of the production `cloud-init.yml`.
+2. (Optional) Point a staging subdomain at the server IP, then SSH in and replace `:80` in `/etc/caddy/Caddyfile` with your domain. Run `systemctl reload caddy` — Let's Encrypt is automatic.
+3. Open the Pinchy setup wizard, create a test admin, configure **test API keys only**.
+
+### Refreshing staging to the latest `main`
+
+Every push to `main` triggers the **Pre-release** workflow, which builds and publishes new `:next` images. Pull them onto your staging instance:
+
+```bash
+ssh root@<staging-ip> "cd /opt/pinchy && docker compose pull && docker compose up -d"
+```
+
+Run this manually before each pre-release click-through. Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184) and lands in v0.6.0.
+
+### Saving cost between releases
+
+A CX22 staging instance costs about €5/month if it runs continuously. Between releases, you can **stop** the server in the Hetzner console — you only pay for storage (~€1/month) until you start it again. On restart, run the refresh command above to pick up any `:next` changes.
 
 ## Questions?
 

@@ -2,10 +2,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it, expect } from "vitest";
 
-const cloudInitNextPath = resolve(
-  __dirname,
-  "../../../../../docs/src/snippets/cloud-init-next.yml"
-);
+const cloudInitNextPath = resolve(__dirname, "../../../../../staging/cloud-init.yml");
 const composePath = resolve(__dirname, "../../../../../docker-compose.yml");
 
 describe("cloud-init-next.yml (staging)", () => {
