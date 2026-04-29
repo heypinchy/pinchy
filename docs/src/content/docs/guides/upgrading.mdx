@@ -106,7 +106,17 @@ If you need to roll back after an upgrade:
 
 None for the standard upgrade path — the new `docker-compose.yml` you download below already contains the `openclaw-secrets` tmpfs block needed by the new SecretRef architecture.
 
-If you maintain a **custom `docker-compose.yml`** (e.g. for a non-standard deployment), you must add the `tmpfs` block to the `openclaw` service definition before starting v0.5.0. See the standard `docker-compose.yml` for the exact shape, or the deep-dive at [Upgrading to v0.5.0](/upgrade-notes/v0.5.0/).
+If you maintain a **custom `docker-compose.yml`** (e.g. for a non-standard deployment, a different orchestrator profile, or a downstream fork), you must add this `tmpfs` block to the `openclaw` service definition before starting %%PINCHY_VERSION%%:
+
+```yaml
+services:
+  openclaw:
+    tmpfs:
+      - /openclaw-secrets:mode=0700,uid=1000,gid=1000
+    # …rest of the service definition
+```
+
+Without this, OpenClaw starts but cannot read its secrets, and every agent request fails with an authentication error.
 
 ### Upgrade notes
 
@@ -143,9 +153,33 @@ If you maintain a **custom `docker-compose.yml`** (e.g. for a non-standard deplo
 
 If you skip step 3, `docker compose up` fails loudly with a clear message telling you exactly what to add — this is by design, so a forgotten pin can't silently pull the wrong version.
 
+#### Telegram: brief downtime on first start
+
+OpenClaw detects the new SecretRef config format and hot-reloads. Telegram channels may be unresponsive for roughly 30 seconds during this reload. They recover automatically — no restart or re-configuration needed.
+
 #### Recommended: rotate your API keys
 
-Before %%PINCHY_VERSION%%, decrypted API keys were written into `openclaw.json` on disk. Docker volumes persist across container restarts, which means previous versions of your keys may still exist in volume history or backup snapshots. After upgrading, rotate your API keys at the provider (Anthropic, OpenAI, etc.) and re-enter the new keys in **Settings → Providers**. This is a "nice to do" for most deployments, but if your server was ever compromised or you share volume backups with third parties, treat it as required. See [Upgrading to v0.5.0](/upgrade-notes/v0.5.0/) for the full rationale and an optional audit-log scan script.
+Before %%PINCHY_VERSION%%, decrypted API keys were written into `openclaw.json` on disk. Docker volumes persist across container restarts, which means previous versions of `openclaw.json` (with decrypted keys inside) may still exist in volume history or backup snapshots taken before %%PINCHY_VERSION%%. After upgrading, rotate the keys at each provider:
+
+- **Anthropic** — Settings → API Keys → revoke old, generate new
+- **OpenAI** — API Keys → revoke old, generate new
+- **Google (Gemini)** — Google Cloud Console → API Credentials
+- **Ollama Cloud** — ollama.com/settings → API Keys
+- **Telegram bot** — message @BotFather → `/revoke` → `/newtoken` (only if you suspect exposure; revoking invalidates the previous webhook setup)
+
+Then in Pinchy, go to **Settings → Providers** and re-enter each new key. Pinchy validates each one against the provider's API before saving. Optionally, delete old volume backups that predate %%PINCHY_VERSION%% if you no longer need them.
+
+This is a "nice to do" for most deployments, but if your server was ever compromised or you share volume backups with third parties, treat it as required.
+
+#### Optional: scan audit logs for historical plaintext
+
+If your compliance requirements demand evidence that no API keys were logged in plain text in your audit trail, run the bundled scan script:
+
+```bash
+docker compose exec pinchy npx tsx packages/web/scripts/scan-audit-logs-for-plaintext.ts
+```
+
+It checks audit log entries for patterns that look like API keys (Anthropic `sk-ant-…`, OpenAI `sk-…`, Google `AIza…`, Ollama Cloud, Telegram bot tokens). A clean result means your audit trail doesn't contain any key material.
 
 #### Future upgrades
 
@@ -160,7 +194,7 @@ The `docker-compose.yml` only changes when we add new services or volumes, which
 
 ### What's new in %%PINCHY_VERSION%%
 
-- **SecretRef architecture (RAM-only secrets)** — API keys no longer touch disk. The `openclaw.json` config file holds opaque `SecretRef` pointers; the actual key material lives in a tmpfs volume (`/openclaw-secrets/secrets.json`) that exists only in RAM and is never persisted. Compliance-friendly default for regulated industries. See [Secrets & API Key Storage](/security/secrets/) and the [v0.5.0 upgrade deep-dive](/upgrade-notes/v0.5.0/).
+- **SecretRef architecture (RAM-only secrets)** — API keys no longer touch disk. The `openclaw.json` config file holds opaque `SecretRef` pointers; the actual key material lives in a tmpfs volume (`/openclaw-secrets/secrets.json`) that exists only in RAM and is never persisted. Compliance-friendly default for regulated industries. See [Secrets & API Key Storage](/security/secrets/).
 - **Web Search integration** — connect Pinchy to the Brave Search API and grant agents per-tool access to search and page fetch. Per-agent filters for domain allow/deny, freshness, language, and region let you scope what each agent can reach. See [Set Up Web Search](/guides/web-search-setup/).
 - **Gmail integration** — connect Google accounts via OAuth and give agents scoped email access: read, create drafts, or send. A guided wizard walks admins through the Google Cloud Console setup. See [Connect Email](/guides/connect-email/).
 - **Per-template model recommendations** — agent templates now declare preferred model tiers (fast, balanced, reasoning) and required capabilities (vision, long-context, tools). When creating an agent from a template, Pinchy picks the best match from your installed models automatically.
