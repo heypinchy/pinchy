@@ -63,7 +63,19 @@ get_secrets_mtime() {
 # to 999-owned → mtime watcher detects → this script chowns again before the
 # next gateway boot.
 ensure_secrets_root_owned() {
-    [ -f "$SECRETS_FILE" ] && chown root:root "$SECRETS_FILE" 2>/dev/null || true
+    if [ ! -f "$SECRETS_FILE" ]; then
+        echo "[secrets-chown] $SECRETS_FILE does not exist, skipping"
+        return 0
+    fi
+    local before
+    before=$(stat -c "%U:%G %a" "$SECRETS_FILE" 2>/dev/null || echo "stat-failed")
+    if chown root:root "$SECRETS_FILE" 2>&1; then
+        local after
+        after=$(stat -c "%U:%G %a" "$SECRETS_FILE" 2>/dev/null || echo "stat-failed")
+        echo "[secrets-chown] $SECRETS_FILE: $before -> $after"
+    else
+        echo "[secrets-chown] FAILED to chown $SECRETS_FILE (was $before): $?"
+    fi
 }
 
 # Returns 0 (truthy) if every key in secrets.json's env block already matches

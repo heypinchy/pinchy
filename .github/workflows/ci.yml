@@ -985,7 +985,10 @@ jobs:
       - name: Show Docker logs on failure
         if: failure()
         run: |
-          echo "=== OpenClaw logs ==="
+          echo "=== OpenClaw logs (captured by globalTeardown before stack-down) ==="
+          cat /tmp/openclaw-integration.log 2>/dev/null || echo "no captured log file"
+          echo ""
+          echo "=== OpenClaw logs (live, may be empty if container already stopped) ==="
           docker compose -f docker-compose.integration.yml logs openclaw 2>/dev/null || true
           echo "=== DB logs ==="
           docker compose -f docker-compose.integration.yml logs db 2>/dev/null || true
