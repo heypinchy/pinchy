@@ -46,7 +46,7 @@ describe("updateAgent", () => {
   });
 
   it("calls regenerateOpenClawConfig when model changes", async () => {
-    await updateAgent("agent-1", { model: "openai/gpt-4o" });
+    await updateAgent("agent-1", { model: "openai/gpt-5.4" });
     expect(regenerateOpenClawConfig).toHaveBeenCalled();
   });
 

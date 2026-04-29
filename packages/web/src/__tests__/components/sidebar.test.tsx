@@ -88,7 +88,7 @@ describe("AppSidebar", () => {
       {
         id: "1",
         name: "Smithers",
-        model: "anthropic/claude-sonnet-4-20250514",
+        model: "anthropic/claude-sonnet-4-6",
         isPersonal: false,
         tagline: null,
         avatarSeed: null,
@@ -161,7 +161,7 @@ describe("AppSidebar", () => {
         {
           id: "1",
           name: "Test Agent",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: "my-seed",
@@ -181,7 +181,7 @@ describe("AppSidebar", () => {
         {
           id: "1",
           name: "Smithers",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           isPersonal: true,
           tagline: null,
           avatarSeed: "__smithers__",
@@ -203,7 +203,7 @@ describe("AppSidebar", () => {
         {
           id: "1",
           name: "HR Bot",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: "Answers HR questions",
           avatarSeed: null,
@@ -222,7 +222,7 @@ describe("AppSidebar", () => {
         {
           id: "1",
           name: "HR Bot",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: "Answers HR questions from your documents",
           avatarSeed: null,
@@ -242,7 +242,7 @@ describe("AppSidebar", () => {
         {
           id: "1",
           name: "A Very Long Agent Name That Gets Truncated",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
@@ -262,7 +262,7 @@ describe("AppSidebar", () => {
         {
           id: "1",
           name: "HR Bot",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
@@ -309,7 +309,7 @@ describe("AppSidebar", () => {
       {
         id: "agent-1",
         name: "Alpha",
-        model: "anthropic/claude-sonnet-4-20250514",
+        model: "anthropic/claude-sonnet-4-6",
         isPersonal: false,
         tagline: null,
         avatarSeed: null,
@@ -317,7 +317,7 @@ describe("AppSidebar", () => {
       {
         id: "agent-2",
         name: "Beta",
-        model: "anthropic/claude-sonnet-4-20250514",
+        model: "anthropic/claude-sonnet-4-6",
         isPersonal: false,
         tagline: null,
         avatarSeed: null,
@@ -418,7 +418,7 @@ describe("AppSidebar", () => {
         {
           id: "1",
           name: "Shared Agent",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
@@ -426,7 +426,7 @@ describe("AppSidebar", () => {
         {
           id: "2",
           name: "My Personal Agent",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           isPersonal: true,
           tagline: null,
           avatarSeed: null,
@@ -451,7 +451,7 @@ describe("AppSidebar", () => {
         {
           id: "1",
           name: "Smithers",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           isPersonal: true,
           tagline: null,
           avatarSeed: "__smithers__",
@@ -459,7 +459,7 @@ describe("AppSidebar", () => {
         {
           id: "2",
           name: "Zara",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
@@ -467,7 +467,7 @@ describe("AppSidebar", () => {
         {
           id: "3",
           name: "Ada",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,
@@ -475,7 +475,7 @@ describe("AppSidebar", () => {
         {
           id: "4",
           name: "Maya",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           isPersonal: false,
           tagline: null,
           avatarSeed: null,

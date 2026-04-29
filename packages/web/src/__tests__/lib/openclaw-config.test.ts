@@ -84,7 +84,7 @@ vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
 vi.mock("@/lib/provider-models", () => {
   const defaults: Record<string, string> = {
     anthropic: "anthropic/claude-haiku-4-5-20251001",
-    openai: "openai/gpt-4o-mini",
+    openai: "openai/gpt-5.4-mini",
     google: "google/gemini-2.5-flash",
     "ollama-cloud": "ollama-cloud/gemini-3-flash-preview",
     "ollama-local": "",
@@ -163,8 +163,8 @@ describe("regenerateOpenClawConfig", () => {
     // (`heartbeat: { every: "0m" }`). We set it per-agent, NOT on agents.defaults,
     // to avoid hot-reload races with Telegram (openclaw#47458).
     const agentsData = [
-      { id: "a1", name: "Smithers", model: "anthropic/claude-opus-4-6", createdAt: new Date() },
-      { id: "a2", name: "Jeeves", model: "openai/gpt-4o", createdAt: new Date() },
+      { id: "a1", name: "Smithers", model: "anthropic/claude-opus-4-7", createdAt: new Date() },
+      { id: "a2", name: "Jeeves", model: "openai/gpt-5.4", createdAt: new Date() },
     ];
     mockedDb.select.mockReturnValue({
       from: mockFrom(agentsData),
@@ -186,13 +186,13 @@ describe("regenerateOpenClawConfig", () => {
       {
         id: "uuid-agent-1",
         name: "Smithers",
-        model: "anthropic/claude-opus-4-6",
+        model: "anthropic/claude-opus-4-7",
         createdAt: new Date(),
       },
       {
         id: "uuid-agent-2",
         name: "Jeeves",
-        model: "openai/gpt-4o",
+        model: "openai/gpt-5.4",
         createdAt: new Date(),
       },
     ];
@@ -211,7 +211,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.agents.list[0]).toEqual({
       id: "uuid-agent-1",
       name: "Smithers",
-      model: "anthropic/claude-opus-4-6",
+      model: "anthropic/claude-opus-4-7",
       workspace: "/root/.openclaw/workspaces/uuid-agent-1",
       tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
       heartbeat: { every: "0m" },
@@ -219,7 +219,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.agents.list[1]).toEqual({
       id: "uuid-agent-2",
       name: "Jeeves",
-      model: "openai/gpt-4o",
+      model: "openai/gpt-5.4",
       workspace: "/root/.openclaw/workspaces/uuid-agent-2",
       tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
       heartbeat: { every: "0m" },
@@ -293,7 +293,7 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.agents.defaults.model.primary).toBe("openai/gpt-4o-mini");
+    expect(config.agents.defaults.model.primary).toBe("openai/gpt-5.4-mini");
   });
 
   it("should handle empty agents list", async () => {
@@ -357,7 +357,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "custom-agent-id",
           name: "Dev Assistant",
-          model: "anthropic/claude-opus-4-6",
+          model: "anthropic/claude-opus-4-7",
           templateId: "custom",
           pluginConfig: null,
           allowedTools: [],
@@ -486,7 +486,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "smithers-1",
           name: "Smithers",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           pluginConfig: null,
           allowedTools: ["pinchy_save_user_context"],
           ownerId: "user-1",
@@ -546,7 +546,7 @@ describe("regenerateOpenClawConfig", () => {
           {
             id: "smithers-1",
             name: "Smithers",
-            model: "anthropic/claude-sonnet-4-20250514",
+            model: "anthropic/claude-sonnet-4-6",
             pluginConfig: null,
             allowedTools: ["pinchy_save_user_context"],
             ownerId: "user-1",
@@ -583,7 +583,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "smithers-1",
           name: "Smithers",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           pluginConfig: null,
           allowedTools: ["pinchy_save_user_context"],
           ownerId: "user-1",
@@ -593,7 +593,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "kb-agent",
           name: "KB Agent",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
           allowedTools: ["pinchy_ls", "pinchy_read"],
           ownerId: null,
@@ -623,7 +623,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "admin-smithers",
           name: "Smithers",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           pluginConfig: null,
           allowedTools: ["pinchy_save_user_context", "pinchy_save_org_context"],
           ownerId: "admin-1",
@@ -1003,7 +1003,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "custom-agent-id",
           name: "Dev Assistant",
-          model: "anthropic/claude-opus-4-6",
+          model: "anthropic/claude-opus-4-7",
           templateId: "custom",
           pluginConfig: null,
           createdAt: new Date(),
@@ -1048,7 +1048,7 @@ describe("regenerateOpenClawConfig", () => {
         {
           id: "agent-1",
           name: "Dev",
-          model: "anthropic/claude-opus-4-6",
+          model: "anthropic/claude-opus-4-7",
           templateId: "custom",
           pluginConfig: null,
           createdAt: new Date(),
@@ -1182,7 +1182,7 @@ describe("pinchy-web config", () => {
       {
         id: "web-agent",
         name: "Web Agent",
-        model: "anthropic/claude-sonnet-4-20250514",
+        model: "anthropic/claude-sonnet-4-6",
         allowedTools: ["pinchy_web_search", "pinchy_web_fetch"],
         pluginConfig: {
           "pinchy-web": {
@@ -1261,7 +1261,7 @@ describe("pinchy-web config", () => {
       {
         id: "web-agent",
         name: "Web Agent",
-        model: "anthropic/claude-sonnet-4-20250514",
+        model: "anthropic/claude-sonnet-4-6",
         allowedTools: ["pinchy_web_search"],
         pluginConfig: null,
         createdAt: new Date(),
@@ -1298,7 +1298,7 @@ describe("pinchy-web config", () => {
       {
         id: "plain-agent",
         name: "Plain Agent",
-        model: "anthropic/claude-sonnet-4-20250514",
+        model: "anthropic/claude-sonnet-4-6",
         allowedTools: ["pinchy_ls", "pinchy_read"],
         pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
         createdAt: new Date(),
@@ -1353,7 +1353,7 @@ describe("pinchy-web config", () => {
       {
         id: "search-only-agent",
         name: "Search Only",
-        model: "anthropic/claude-sonnet-4-20250514",
+        model: "anthropic/claude-sonnet-4-6",
         allowedTools: ["pinchy_web_search"],
         pluginConfig: null,
         createdAt: new Date(),
@@ -1411,7 +1411,7 @@ describe("pinchy-web config", () => {
       {
         id: "filtered-agent",
         name: "Filtered Agent",
-        model: "anthropic/claude-sonnet-4-20250514",
+        model: "anthropic/claude-sonnet-4-6",
         allowedTools: ["pinchy_web_search", "pinchy_web_fetch"],
         pluginConfig: {
           "pinchy-web": {
@@ -1493,7 +1493,7 @@ describe("pinchy-web braveApiKey as SecretRef", () => {
       {
         id: "web-agent",
         name: "Web Agent",
-        model: "anthropic/claude-sonnet-4-20250514",
+        model: "anthropic/claude-sonnet-4-6",
         allowedTools: ["pinchy_web_search"],
         pluginConfig: null,
         createdAt: new Date(),
@@ -2460,7 +2460,7 @@ describe("pinchy-* plugin gatewayToken as SecretRef", () => {
         {
           id: "smithers-1",
           name: "Smithers",
-          model: "anthropic/claude-sonnet-4-20250514",
+          model: "anthropic/claude-sonnet-4-6",
           pluginConfig: null,
           allowedTools: ["pinchy_save_user_context"],
           ownerId: "user-1",

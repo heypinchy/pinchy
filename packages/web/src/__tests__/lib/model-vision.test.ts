@@ -8,7 +8,7 @@ describe("isModelVisionCapable", () => {
     });
 
     it("should return true for any OpenAI model", () => {
-      expect(isModelVisionCapable("openai/gpt-4o-mini")).toBe(true);
+      expect(isModelVisionCapable("openai/gpt-5.4-mini")).toBe(true);
     });
 
     it("should return true for any Google model", () => {

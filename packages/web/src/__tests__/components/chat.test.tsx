@@ -208,7 +208,7 @@ describe("Chat", () => {
     const liveAgent: Agent = {
       id: "agent-1",
       name: "Renamed Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       isPersonal: true,
       tagline: "New tagline",
       avatarSeed: "new-seed",

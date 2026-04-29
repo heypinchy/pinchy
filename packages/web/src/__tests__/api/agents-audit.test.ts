@@ -188,7 +188,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     mockAgent({
       id: "agent-1",
       name: "Test Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       isPersonal: false,
       ownerId: null,
     });
@@ -196,12 +196,12 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
       name: "Updated Agent",
-      model: "anthropic/claude-opus-4-6",
+      model: "anthropic/claude-opus-4-7",
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
-      body: JSON.stringify({ name: "Updated Agent", model: "anthropic/claude-opus-4-6" }),
+      body: JSON.stringify({ name: "Updated Agent", model: "anthropic/claude-opus-4-7" }),
       headers: { "Content-Type": "application/json" },
     });
 
@@ -219,7 +219,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
       detail: {
         changes: {
           name: { from: "Test Agent", to: "Updated Agent" },
-          model: { from: "anthropic/claude-sonnet-4-20250514", to: "anthropic/claude-opus-4-6" },
+          model: { from: "anthropic/claude-sonnet-4-6", to: "anthropic/claude-opus-4-7" },
         },
       },
     });
@@ -234,7 +234,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     mockAgent({
       id: "agent-1",
       name: "Test Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       isPersonal: false,
       ownerId: null,
     });
@@ -242,12 +242,12 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
       name: "Test Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
-      body: JSON.stringify({ name: "Test Agent", model: "anthropic/claude-sonnet-4-20250514" }),
+      body: JSON.stringify({ name: "Test Agent", model: "anthropic/claude-sonnet-4-6" }),
       headers: { "Content-Type": "application/json" },
     });
 
@@ -268,7 +268,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     mockAgent({
       id: "agent-1",
       name: "Test Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       isPersonal: false,
       ownerId: null,
     });
@@ -335,7 +335,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     mockAgent({
       id: "agent-1",
       name: "Test Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       isPersonal: false,
       ownerId: null,
       pluginConfig: oldConfig,
@@ -344,7 +344,7 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
       name: "Test Agent",
-      model: "anthropic/claude-sonnet-4-20250514",
+      model: "anthropic/claude-sonnet-4-6",
       pluginConfig: newConfig,
     } as never);
 
@@ -518,12 +518,12 @@ describe("PATCH /api/agents/[agentId] IDENTITY.md regeneration", () => {
     vi.mocked(updateAgent).mockResolvedValueOnce({
       id: "agent-1",
       name: "Agent",
-      model: "openai/gpt-4o",
+      model: "openai/gpt-5.4",
     } as never);
 
     const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
       method: "PATCH",
-      body: JSON.stringify({ model: "openai/gpt-4o" }),
+      body: JSON.stringify({ model: "openai/gpt-5.4" }),
       headers: { "Content-Type": "application/json" },
     });
 
