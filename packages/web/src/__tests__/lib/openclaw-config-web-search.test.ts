@@ -7,6 +7,7 @@ vi.mock("fs", async (importOriginal) => {
   const existsSyncMock = vi.fn().mockReturnValue(true);
   const mkdirSyncMock = vi.fn();
   const renameSyncMock = vi.fn();
+  const chmodSyncMock = vi.fn();
   return {
     ...actual,
     default: {
@@ -16,12 +17,14 @@ vi.mock("fs", async (importOriginal) => {
       existsSync: existsSyncMock,
       mkdirSync: mkdirSyncMock,
       renameSync: renameSyncMock,
+      chmodSync: chmodSyncMock,
     },
     writeFileSync: writeFileSyncMock,
     readFileSync: readFileSyncMock,
     existsSync: existsSyncMock,
     mkdirSync: mkdirSyncMock,
     renameSync: renameSyncMock,
+    chmodSync: chmodSyncMock,
   };
 });
 
@@ -63,6 +66,16 @@ vi.mock("@/server/restart-state", () => ({
 vi.mock("@/lib/migrate-onboarding", () => ({
   migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
 }));
+
+vi.mock("@/lib/openclaw-secrets", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/openclaw-secrets")>();
+  return {
+    ...actual,
+    writeSecretsFile: vi.fn(),
+    updateSecretsFile: vi.fn(),
+    readSecretsFile: vi.fn().mockReturnValue({}),
+  };
+});
 
 vi.mock("@/lib/provider-models", () => {
   const defaults: Record<string, string> = {
@@ -187,7 +200,12 @@ describe("pinchy-web config generation", () => {
     const config = JSON.parse(written);
 
     const webPluginConfig = config.plugins.entries["pinchy-web"].config;
-    expect(webPluginConfig.braveApiKey).toBe("brave-key-xyz");
+    // braveApiKey is a SecretRef — plaintext never lands in openclaw.json
+    expect(webPluginConfig.braveApiKey).toMatchObject({
+      source: "file",
+      provider: "pinchy",
+      id: expect.stringContaining("braveApiKey"),
+    });
 
     const agentConfig = webPluginConfig.agents["ws-agent"];
     expect(agentConfig.tools).toEqual(["pinchy_web_search", "pinchy_web_fetch"]);
