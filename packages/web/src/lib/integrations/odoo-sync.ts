@@ -112,6 +112,88 @@ export const MODEL_CATEGORIES: ModelCategory[] = [
     label: "Notes",
     models: [{ model: "note.note", name: "Notes" }],
   },
+  {
+    id: "manufacturing",
+    label: "Manufacturing",
+    models: [
+      { model: "mrp.production", name: "Manufacturing Orders" },
+      { model: "mrp.bom", name: "Bills of Materials" },
+      { model: "mrp.bom.line", name: "BOM Lines" },
+      { model: "mrp.workorder", name: "Work Orders" },
+      { model: "mrp.workcenter", name: "Work Centers" },
+    ],
+  },
+  {
+    id: "project",
+    label: "Project",
+    models: [
+      { model: "project.project", name: "Projects" },
+      { model: "project.task", name: "Tasks" },
+      { model: "project.task.type", name: "Task Stages" },
+    ],
+  },
+  {
+    id: "expenses",
+    label: "Expenses",
+    models: [
+      { model: "hr.expense", name: "Expense Lines" },
+      { model: "hr.expense.sheet", name: "Expense Reports" },
+    ],
+  },
+  {
+    id: "recruitment",
+    label: "Recruitment",
+    models: [
+      { model: "hr.applicant", name: "Applicants" },
+      { model: "hr.recruitment.stage", name: "Recruitment Stages" },
+      { model: "hr.recruitment.source", name: "Recruitment Sources" },
+    ],
+  },
+  {
+    id: "pos",
+    label: "Point of Sale",
+    models: [
+      { model: "pos.order", name: "POS Orders" },
+      { model: "pos.order.line", name: "POS Order Lines" },
+      { model: "pos.session", name: "POS Sessions" },
+      { model: "pos.config", name: "POS Configurations" },
+      { model: "pos.payment", name: "POS Payments" },
+      { model: "pos.payment.method", name: "Payment Methods" },
+    ],
+  },
+  {
+    id: "marketing",
+    label: "Marketing",
+    models: [
+      { model: "mailing.mailing", name: "Email Campaigns" },
+      { model: "mailing.list", name: "Mailing Lists" },
+      { model: "mailing.contact", name: "Mailing Contacts" },
+      { model: "mailing.trace", name: "Mailing Traces" },
+      { model: "utm.campaign", name: "UTM Campaigns" },
+      { model: "utm.source", name: "UTM Sources" },
+      { model: "utm.medium", name: "UTM Mediums" },
+    ],
+  },
+  {
+    id: "fleet",
+    label: "Fleet",
+    models: [
+      { model: "fleet.vehicle", name: "Vehicles" },
+      { model: "fleet.vehicle.model", name: "Vehicle Models" },
+      { model: "fleet.vehicle.log.services", name: "Service Logs" },
+      { model: "fleet.vehicle.log.contract", name: "Contracts" },
+      { model: "fleet.service.type", name: "Service Types" },
+    ],
+  },
+  {
+    id: "website",
+    label: "Website",
+    models: [
+      { model: "website", name: "Websites" },
+      { model: "website.visitor", name: "Visitors" },
+      { model: "website.track", name: "Page Tracks" },
+    ],
+  },
 ];
 
 /**

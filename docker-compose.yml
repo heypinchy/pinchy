@@ -15,6 +15,7 @@ services:
       - pinchy-workspaces:/openclaw-config/workspaces
       - openclaw-extensions:/openclaw-extensions
       - pinchy-secrets:/app/secrets
+      - ./integration-docs:/integration-docs:ro
     restart: unless-stopped
     depends_on:
       db:
