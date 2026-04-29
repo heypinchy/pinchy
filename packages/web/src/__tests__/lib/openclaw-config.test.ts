@@ -2675,7 +2675,7 @@ describe("updateIdentityLinks", () => {
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
   });
 
-  it("regression: refuses to write if existing config has no gateway.mode (avoids clobber from EACCES)", async () => {
+  it("regression: throws if existing config has no gateway.mode (avoids clobber from EACCES)", async () => {
     // This reproduces the production-image telegram-e2e cascade: while
     // OpenClaw is mid-SIGUSR1-restart, openclaw.json is briefly root:0600.
     // readExistingConfig hits EACCES, returns {} after retries. Without
@@ -2692,14 +2692,12 @@ describe("updateIdentityLinks", () => {
     });
 
     const { updateIdentityLinks } = await import("@/lib/openclaw-config");
-    updateIdentityLinks({ "user-1": ["telegram:123"] });
 
+    // Throwing (rather than silently returning) lets the API route surface
+    // the failure as a 5xx so the user can retry, instead of dropping the
+    // identity-link update on the floor.
+    expect(() => updateIdentityLinks({ "user-1": ["telegram:123"] })).toThrow(/gateway\.mode/);
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
-    // Two warns expected: one from readExistingConfig's persistent-EACCES
-    // path, one from updateIdentityLinks' missing-gateway.mode guard. We
-    // only assert the latter — its presence proves the safety check fired.
-    const allWarnCalls = warnSpy.mock.calls.map((call) => call.join(" "));
-    expect(allWarnCalls.some((msg) => msg.includes("refusing to write"))).toBe(true);
     warnSpy.mockRestore();
   });
 });
