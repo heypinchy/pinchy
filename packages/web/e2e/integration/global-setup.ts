@@ -89,18 +89,29 @@ export default async function globalSetup() {
     console.log("[integration-setup] DB migrated");
   }
 
-  // 5. Seed Ollama URL and default provider
-  //    host.docker.internal reaches the fake Ollama from inside the OpenClaw container
+  // 5. Seed Ollama URL, default provider, and a fake Ollama-Cloud key.
+  //    host.docker.internal reaches the fake Ollama from inside the OpenClaw container.
+  //
+  //    The Ollama-Cloud key is intentionally a dummy value — fake Ollama doesn't need
+  //    auth. We seed it so Pinchy's regenerateOpenClawConfig() writes the
+  //    `models.providers.ollama-cloud.apiKey: secretRef(...)` reference into
+  //    openclaw.json (see openclaw-config.ts ~line 615). That makes OpenClaw resolve
+  //    the SecretRef on every gateway boot/reload — which exercises the strict
+  //    "secrets.json owner must equal process uid" check that v0.5.0's tmpfs
+  //    architecture would otherwise leave untested. Without this seed, the integration
+  //    stack passes even when secrets ownership is misconfigured, because no SecretRef
+  //    reference ever forces OpenClaw to read secrets.json.
   const postgres = (await import("postgres")).default;
   const sql = postgres(INTEGRATION_DB_URL);
   await sql.unsafe(`
     INSERT INTO settings (key, value, encrypted) VALUES
       ('ollama_local_url', 'http://host.docker.internal:11435', false),
-      ('default_provider', 'ollama-local', false)
+      ('default_provider', 'ollama-local', false),
+      ('ollama_cloud_api_key', 'dummy-integration-test-key', false)
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, encrypted = false
   `);
   await sql.end();
-  console.log("[integration-setup] Ollama URL seeded");
+  console.log("[integration-setup] Ollama URL + dummy cloud key seeded");
 
   // 6. Run setup wizard so Pinchy writes openclaw.json WITH Smithers before OpenClaw
   //    restarts. This must happen before restarting OpenClaw (step 7) so the container
