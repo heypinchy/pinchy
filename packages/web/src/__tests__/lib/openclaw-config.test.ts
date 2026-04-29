@@ -1198,6 +1198,7 @@ describe("regenerateOpenClawConfig", () => {
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
           innerJoin: mockInnerJoin(permissionsData),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -1264,6 +1265,7 @@ describe("regenerateOpenClawConfig", () => {
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
           innerJoin: mockInnerJoin(permissionsData),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -1331,6 +1333,7 @@ describe("regenerateOpenClawConfig", () => {
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
           innerJoin: mockInnerJoin(permissionsData),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -1407,6 +1410,7 @@ describe("regenerateOpenClawConfig", () => {
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
           innerJoin: mockInnerJoin(permissionsData),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -1469,6 +1473,7 @@ describe("regenerateOpenClawConfig", () => {
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
           innerJoin: mockInnerJoin(permissionsData),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -1535,6 +1540,7 @@ describe("regenerateOpenClawConfig", () => {
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
           innerJoin: mockInnerJoin(permissionsData),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
@@ -1667,6 +1673,7 @@ describe("regenerateOpenClawConfig", () => {
       from: vi.fn().mockImplementation(() =>
         Object.assign(Promise.resolve(agentsData), {
           innerJoin: mockInnerJoin(permissionsData),
+          where: vi.fn().mockResolvedValue([]),
         })
       ),
     } as never);
