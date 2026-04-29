@@ -433,9 +433,12 @@ describe("Composer input vs send disabled state", () => {
     expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
   });
 
-  it("disables both input and send when 'unavailable'", async () => {
+  it("keeps input enabled but disables send when 'unavailable'", async () => {
+    // Typing must never be blocked: a user mid-sentence shouldn't lose
+    // their thought just because the WebSocket reconnects. Only Send is
+    // gated on connection state.
     await renderComposerWith({ kind: "unavailable", reason: "disconnected" });
-    expect(screen.getByRole("textbox")).toBeDisabled();
+    expect(screen.getByRole("textbox")).not.toBeDisabled();
     expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
   });
 
@@ -445,9 +448,17 @@ describe("Composer input vs send disabled state", () => {
     expect(screen.getByRole("button", { name: /send message/i })).not.toBeDisabled();
   });
 
-  it("disables both input and send when 'starting'", async () => {
+  it("keeps input enabled but disables send when 'starting'", async () => {
+    // Same intent as the 'unavailable' case: let users start typing while
+    // history loads; submission stays gated until the runtime is ready.
     await renderComposerWith({ kind: "starting" });
-    expect(screen.getByRole("textbox")).toBeDisabled();
+    expect(screen.getByRole("textbox")).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
+  });
+
+  it("keeps input enabled but disables send when 'unavailable/configuring'", async () => {
+    await renderComposerWith({ kind: "unavailable", reason: "configuring" });
+    expect(screen.getByRole("textbox")).not.toBeDisabled();
     expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
   });
 });

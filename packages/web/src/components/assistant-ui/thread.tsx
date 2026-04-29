@@ -241,9 +241,9 @@ const DraftPersistence: FC = () => {
 };
 
 export const Composer: FC = () => {
-  const chatStatus = useContext(ChatStatusContext);
-  const inputAllowed = chatStatus.kind !== "unavailable" && chatStatus.kind !== "starting";
-
+  // Typing is always allowed — only the send button reflects connection
+  // state. A reconnect mid-sentence must not block the user from finishing
+  // their thought; submission is what's gated.
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <DraftPersistence />
@@ -255,7 +255,6 @@ export const Composer: FC = () => {
           rows={1}
           autoFocus
           aria-label="Message input"
-          disabled={!inputAllowed}
         />
         <ComposerAction />
       </ComposerPrimitive.AttachmentDropzone>
