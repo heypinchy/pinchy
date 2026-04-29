@@ -44,6 +44,28 @@ get_secrets_mtime() {
     [ -f "$SECRETS_FILE" ] && stat -c %Y "$SECRETS_FILE" 2>/dev/null || echo 0
 }
 
+# Pinchy writes secrets.json as a non-root user (uid 999 in production where
+# the pinchy container drops privileges, or the test runner's uid in CI
+# integration tests). OpenClaw's secrets-file resolver checks that the file's
+# owner equals the reading process's uid (root, here) and rejects any
+# cross-uid arrangement.
+#
+# In OpenClaw 2026.4.12, the json-schema for file-source providers does NOT
+# accept the `allowInsecurePath` flag (the flag exists in the resolver code
+# and the exec-source schema, but file-source has additionalProperties: false
+# and rejects it). The only way to make 2026.4.12 read a Pinchy-owned
+# secrets.json is to chown the file before each gateway start/reload — which
+# this script can do because it runs as root.
+#
+# The directory's mode (0770, owner 999) means Pinchy's atomic temp+rename
+# in writeSecretsFile() still works after we chown the resulting file: rename
+# is a directory-level operation. Pinchy replaces the file → file flips back
+# to 999-owned → mtime watcher detects → this script chowns again before the
+# next gateway boot.
+ensure_secrets_root_owned() {
+    [ -f "$SECRETS_FILE" ] && chown root:root "$SECRETS_FILE" 2>/dev/null || true
+}
+
 # Returns 0 (truthy) if every key in secrets.json's env block already matches
 # the current process environment, 1 if any value differs. Lets the watch loop
 # skip an expensive gateway restart when Pinchy rewrites secrets.json without
@@ -184,6 +206,7 @@ auto_approve_devices &
 # OpenClaw 2026.4.26 keeps `openclaw gateway` in the foreground (it does NOT
 # daemonize), so without `&` the script would block here and the secrets-mtime
 # watch loop would never run — provider-key updates wouldn't propagate.
+ensure_secrets_root_owned
 echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 &
 
@@ -217,6 +240,7 @@ while true; do
                 echo "secrets.json provider env changed, reloading and restarting gateway"
             fi
             load_provider_env_vars
+            ensure_secrets_root_owned
             # Kill the gateway by process name (not saved PID). OpenClaw self-
             # respawns on plugin/config changes (SIGUSR1 full process restart,
             # see "[gateway] restart mode: full process restart"), which makes
@@ -236,6 +260,7 @@ while true; do
             install_plugin_deps
             scan_data_directories
             load_provider_env_vars
+            ensure_secrets_root_owned
             openclaw gateway --port 18789 &
         fi
     fi
