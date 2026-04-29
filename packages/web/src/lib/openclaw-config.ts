@@ -69,11 +69,40 @@ function writeConfigAtomic(content: string) {
 }
 
 function readExistingConfig(): Record<string, unknown> {
-  try {
-    return JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
-  } catch {
-    return {};
+  // Retry briefly on EACCES. OpenClaw rewrites openclaw.json as root:0600 on
+  // every internal SIGUSR1 restart; start-openclaw.sh's 3s chmod loop opens
+  // it back up to 0666, but Pinchy (uid 999) can hit a small window where
+  // the file is unreadable. Without retry, readFileSync throws → catch
+  // returns {} → targeted writes (updateTelegramChannelConfig etc.) would
+  // produce a config WITHOUT the gateway block, and OpenClaw's next start
+  // refuses with "Gateway start blocked: existing config is missing
+  // gateway.mode". 5 × 100ms covers two chmod-loop ticks worst case.
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      return JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== "EACCES") {
+        // ENOENT (file not yet written) is a normal cold-start case; other
+        // errors (parse failures, etc.) are bugs we can't paper over here.
+        return {};
+      }
+      if (attempt === 4) {
+        console.warn(
+          "[openclaw-config] readExistingConfig: persistent EACCES on",
+          CONFIG_PATH,
+          "— returning empty (callers must guard against partial writes)"
+        );
+        return {};
+      }
+      // Synchronous busy-wait. Async would change all caller signatures.
+      const start = Date.now();
+      while (Date.now() - start < 100) {
+        // spin
+      }
+    }
   }
+  return {};
 }
 
 function deepMerge(
@@ -766,6 +795,15 @@ export async function regenerateOpenClawConfig() {
 export function updateIdentityLinks(identityLinks: Record<string, string[]>): void {
   const existing = readExistingConfig();
 
+  // Same safety as updateTelegramChannelConfig — see comment there.
+  const existingGateway = existing.gateway as Record<string, unknown> | undefined;
+  if (!existingGateway?.mode) {
+    console.warn(
+      "[openclaw-config] updateIdentityLinks: refusing to write — existing config has no gateway.mode"
+    );
+    return;
+  }
+
   const session = (existing.session as Record<string, unknown>) || {};
   const updatedSession = {
     ...session,
@@ -805,6 +843,22 @@ export function updateTelegramChannelConfig(
   identityLinks: Record<string, string[]> | null
 ): void {
   const existing = readExistingConfig();
+
+  // Safety: refuse to write a config that would clobber the gateway block.
+  // If readExistingConfig returned an empty/partial object (EACCES race or
+  // corrupted file), modifying channels/bindings on top of it and writing
+  // back would produce a config without gateway.mode — OpenClaw refuses
+  // to start with "Gateway start blocked: existing config is missing
+  // gateway.mode" and falls into a restart loop. Better to log loudly and
+  // fail this single update than corrupt the running gateway.
+  const existingGateway = existing.gateway as Record<string, unknown> | undefined;
+  if (!existingGateway?.mode) {
+    console.warn(
+      "[openclaw-config] updateTelegramChannelConfig: refusing to write — existing config has no gateway.mode",
+      "(likely EACCES on initial read). The full regenerateOpenClawConfig path will repair it."
+    );
+    return;
+  }
 
   if (accountId && account) {
     const existingTelegram =
