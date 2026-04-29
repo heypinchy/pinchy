@@ -230,13 +230,20 @@ jobs:
 
       - name: Verify OpenClaw connection (production)
         run: |
+          # Setup wizard rewrites openclaw.json (adds Smithers, plus the
+          # anthropic plugin OpenClaw auto-enables for Smithers' default model),
+          # which OpenClaw treats as a plugins-changed reload → SIGUSR1 → full
+          # process restart. Pinchy's openclaw-node uses exponential backoff on
+          # reconnect (1s → 2s → 4s → … → 30s cap), so it can take ~60s for
+          # Pinchy to land back on a healthy gateway after that restart cascade.
+          # 120s (60 × 2s) gives headroom without masking real failures.
           echo "Waiting for OpenClaw connection after setup..."
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             if docker compose logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
               echo "OpenClaw connection verified (attempt $i)"
               break
             fi
-            if [ "$i" -eq 30 ]; then
+            if [ "$i" -eq 60 ]; then
               echo "::error::Pinchy never connected to OpenClaw Gateway"
               docker compose logs pinchy openclaw
               exit 1
@@ -419,13 +426,15 @@ jobs:
 
       - name: Verify OpenClaw connection (dev)
         run: |
+          # Same exponential-backoff window as the production verify above:
+          # setup wizard's SIGUSR1 means Pinchy can take ~60-90s to reconnect.
           echo "Waiting for OpenClaw connection after setup..."
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             if docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
               echo "OpenClaw connection verified (attempt $i)"
               break
             fi
-            if [ "$i" -eq 30 ]; then
+            if [ "$i" -eq 60 ]; then
               echo "::error::Pinchy never connected to OpenClaw Gateway"
               docker compose -f docker-compose.yml -f docker-compose.dev.yml logs pinchy openclaw
               exit 1
@@ -950,7 +959,11 @@ jobs:
       # to the DB before it exists unless we pre-provision it here.
       - name: Pre-start integration Docker stack
         run: |
+          # Pre-create bind-mount targets so Docker doesn't create them as root,
+          # which would prevent Pinchy (running on the host as the CI user) from
+          # writing secrets.json — see openclaw-tmpfs branch.
           mkdir -p /tmp/pinchy-integration-openclaw/workspaces
+          mkdir -p /tmp/pinchy-integration-secrets
           docker compose -f docker-compose.integration.yml up -d --wait
 
       - name: Create and migrate integration DB
@@ -1034,7 +1047,7 @@ jobs:
       - name: Check links
         uses: lycheeverse/lychee-action@v2
         with:
-          args: "--no-progress --max-retries 3 --retry-wait-time 5 '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev'"
+          args: "--no-progress --max-retries 3 --retry-wait-time 5 '**/*.md' '**/*.mdx' --exclude-path node_modules --exclude-path .git --exclude-path docs --exclude 'localhost' --exclude 'linkedin\\.com' --exclude 'sonner\\.emilkowal\\.dev' --exclude 'squawkhq\\.com'"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

@@ -258,6 +258,8 @@ describe("fetchProviderModels", () => {
             // Tool-capable — should appear
             { id: "deepseek-v3.1:671b" },
             { id: "deepseek-v3.2" },
+            { id: "deepseek-v4-flash" },
+            { id: "deepseek-v4-pro" },
             { id: "devstral-2:123b" },
             { id: "devstral-small-2:24b" },
             { id: "gemini-3-flash-preview" },
@@ -270,6 +272,7 @@ describe("fetchProviderModels", () => {
             { id: "gpt-oss:120b" },
             { id: "kimi-k2-thinking" },
             { id: "kimi-k2.5" },
+            { id: "kimi-k2.6" },
             { id: "minimax-m2" },
             { id: "minimax-m2.1" },
             { id: "minimax-m2.5" },
@@ -309,6 +312,8 @@ describe("fetchProviderModels", () => {
       expect.arrayContaining([
         "ollama-cloud/deepseek-v3.1:671b",
         "ollama-cloud/deepseek-v3.2",
+        "ollama-cloud/deepseek-v4-flash",
+        "ollama-cloud/deepseek-v4-pro",
         "ollama-cloud/devstral-2:123b",
         "ollama-cloud/devstral-small-2:24b",
         "ollama-cloud/gemini-3-flash-preview",
@@ -321,6 +326,7 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/gpt-oss:120b",
         "ollama-cloud/kimi-k2-thinking",
         "ollama-cloud/kimi-k2.5",
+        "ollama-cloud/kimi-k2.6",
         "ollama-cloud/minimax-m2",
         "ollama-cloud/minimax-m2.1",
         "ollama-cloud/minimax-m2.5",
@@ -340,7 +346,7 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/rnj-1:8b",
       ])
     );
-    expect(ids).toHaveLength(31);
+    expect(ids).toHaveLength(34);
 
     // Non-tool-capable models are filtered out
     expect(ids).not.toContain("ollama-cloud/kimi-k2:1t");
@@ -386,11 +392,13 @@ describe("fetchProviderModels", () => {
     const ollama = result.find((p) => p.id === "ollama-cloud");
     expect(ollama).toBeDefined();
     const ids = ollama!.models.map((m) => m.id);
-    expect(ids).toHaveLength(31);
+    expect(ids).toHaveLength(34);
     expect(ids).toEqual(
       expect.arrayContaining([
         "ollama-cloud/deepseek-v3.1:671b",
         "ollama-cloud/deepseek-v3.2",
+        "ollama-cloud/deepseek-v4-flash",
+        "ollama-cloud/deepseek-v4-pro",
         "ollama-cloud/devstral-2:123b",
         "ollama-cloud/devstral-small-2:24b",
         "ollama-cloud/gemini-3-flash-preview",
@@ -403,6 +411,7 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/gpt-oss:120b",
         "ollama-cloud/kimi-k2-thinking",
         "ollama-cloud/kimi-k2.5",
+        "ollama-cloud/kimi-k2.6",
         "ollama-cloud/minimax-m2",
         "ollama-cloud/minimax-m2.1",
         "ollama-cloud/minimax-m2.5",

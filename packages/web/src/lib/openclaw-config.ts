@@ -1,5 +1,12 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "fs";
 import { dirname } from "path";
+import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
+import {
+  writeSecretsFile,
+  readSecretsFile,
+  secretRef,
+  type SecretsBundle,
+} from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
@@ -19,7 +26,6 @@ import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
-const GATEWAY_TOKEN_PATH = process.env.GATEWAY_TOKEN_PATH || "/openclaw-config/gateway-token";
 
 /**
  * Remove stale Pinchy plugins from the allow list that have no matching entry.
@@ -55,6 +61,8 @@ function writeConfigAtomic(content: string) {
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
+  // Defense-in-depth: never let a plaintext secret land in openclaw.json.
+  assertNoPlaintextSecrets(JSON.parse(content));
   const tmpPath = CONFIG_PATH + ".tmp";
   writeFileSync(tmpPath, content, { encoding: "utf-8", mode: 0o644 });
   renameSync(tmpPath, CONFIG_PATH);
@@ -100,23 +108,57 @@ export async function regenerateOpenClawConfig() {
 
   const existing = readExistingConfig();
 
-  // Preserve only the gateway block from existing config (contains auth token,
-  // mode, bind, and any OpenClaw-generated fields). Everything else is rebuilt
-  // from DB state so deleted providers/agents get cleaned up.
-  const gateway = (existing.gateway as Record<string, unknown>) || { mode: "local", bind: "lan" };
-  // Ensure mode and bind are always set
-  gateway.mode = "local";
-  gateway.bind = "lan";
+  // Build the gateway block. mode and bind are always set. auth.token is written
+  // as a plain string — OpenClaw requires a literal string for gateway auth and
+  // does not resolve SecretRef objects in the gateway.auth block.
+  // The same token is also written to secrets.json so Pinchy can read it.
+  const existingGateway = (existing.gateway as Record<string, unknown>) || {};
+  const existingAuth = (existingGateway.auth as Record<string, unknown>) || {};
+  // Extract gateway token: prefer plain string from existing config, fall back to secrets.json
+  const gatewayTokenValue =
+    typeof existingAuth.token === "string" ? existingAuth.token : readSecretsFile().gateway?.token;
+  if (!gatewayTokenValue) {
+    // Either ensure-gateway-token.js hasn't run yet (first start), or the
+    // OpenClaw container is broken. Logging instead of throwing so a fresh
+    // setup can recover once the token appears in secrets.json on the next
+    // regenerateOpenClawConfig() pass.
+    console.warn(
+      "[openclaw-config] No gateway token found in existing config or secrets.json. " +
+        "Writing empty token — OpenClaw auth will reject requests until the token is provisioned."
+    );
+  }
+
+  const gateway: Record<string, unknown> = {
+    ...existingGateway,
+    mode: "local",
+    bind: "lan",
+    auth: {
+      mode: "token",
+      token: gatewayTokenValue || "",
+    },
+  };
 
   // Read all agents from DB
   const allAgents = await db.select().from(agents);
 
-  // Read provider API keys from settings
+  // Read provider API keys from settings. Pinchy writes a ${VAR} template
+  // string into env.* and the real key into secrets.json. start-openclaw.sh
+  // exports the secret as a process env var on container start, so OpenClaw
+  // resolves the template at runtime against its own process env.
+  //
+  // We can't use a SecretRef object in env.* — OpenClaw's config validator
+  // rejects it ("Invalid input: expected string, received object"). The
+  // ${VAR} string passes validation, and OpenClaw treats it as an env-source
+  // SecretRef when resolving (see openclaw types.secrets parseEnvTemplateSecretRef).
   const env: Record<string, string> = {};
-  for (const [, providerConfig] of Object.entries(PROVIDERS)) {
+  const providerSecrets: Record<string, { apiKey: string }> = {};
+  const envSecrets: Record<string, string> = {};
+  for (const [providerKey, providerConfig] of Object.entries(PROVIDERS)) {
     const apiKey = await getSetting(providerConfig.settingsKey);
     if (apiKey && providerConfig.envVar) {
-      env[providerConfig.envVar] = apiKey;
+      env[providerConfig.envVar] = `\${${providerConfig.envVar}}`;
+      providerSecrets[providerKey] = { apiKey };
+      envSecrets[providerConfig.envVar] = apiKey;
     }
   }
 
@@ -193,6 +235,23 @@ export async function regenerateOpenClawConfig() {
   const config: Record<string, unknown> = {
     gateway,
     env,
+    secrets: {
+      providers: {
+        pinchy: {
+          source: "file",
+          // OPENCLAW_SECRETS_PATH_IN_OPENCLAW lets integration tests bind-mount
+          // the secrets file at a different path inside the OpenClaw container
+          // than the one Pinchy writes from the host. In production both
+          // containers share the same tmpfs volume, so OPENCLAW_SECRETS_PATH is
+          // sufficient and OPENCLAW_SECRETS_PATH_IN_OPENCLAW stays unset.
+          path:
+            process.env.OPENCLAW_SECRETS_PATH_IN_OPENCLAW ||
+            process.env.OPENCLAW_SECRETS_PATH ||
+            "/openclaw-secrets/secrets.json",
+          mode: "json",
+        },
+      },
+    },
     agents: deepMerge(existingAgents, {
       defaults: pinchyDefaults,
       list: agentsList,
@@ -208,10 +267,14 @@ export async function regenerateOpenClawConfig() {
 
   const entries: Record<string, unknown> = {};
 
-  const gatewayAuth = (gateway as Record<string, unknown>).auth as
-    | Record<string, unknown>
-    | undefined;
-  const gatewayToken = (gatewayAuth?.token as string) || "";
+  // Write gateway token to secrets.json so Pinchy can read it at startup from secrets.json
+  const gatewaySecret = gatewayTokenValue ? { token: gatewayTokenValue } : undefined;
+
+  // OpenClaw 2026.4.26 does not resolve SecretRef in plugins.entries.*.config —
+  // the validator rejects the config with "gatewayToken: invalid config: must be
+  // string". We therefore inline the plain token in plugin configs. Can move to
+  // SecretRef once we upgrade OpenClaw to a version that resolves them here.
+  const gatewayTokenString = gatewayTokenValue || "";
 
   // pinchy-files needs apiBaseUrl/gatewayToken so it can report vision API
   // token usage (from scanned-PDF processing) back to Pinchy via
@@ -223,7 +286,7 @@ export async function regenerateOpenClawConfig() {
       config: {
         apiBaseUrl:
           process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-        gatewayToken,
+        gatewayToken: gatewayTokenString,
         agents: pluginConfigs["pinchy-files"],
       },
     };
@@ -263,7 +326,7 @@ export async function regenerateOpenClawConfig() {
       config: {
         apiBaseUrl:
           process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-        gatewayToken,
+        gatewayToken: gatewayTokenString,
         agents: contextPluginAgents,
       },
     };
@@ -275,7 +338,7 @@ export async function regenerateOpenClawConfig() {
     enabled: true,
     config: {
       apiBaseUrl: process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-      gatewayToken,
+      gatewayToken: gatewayTokenString,
     },
   };
 
@@ -293,6 +356,7 @@ export async function regenerateOpenClawConfig() {
     .where(ne(integrationConnections.status, "pending"));
 
   const odooAgentConfigs: Record<string, Record<string, unknown>> = {};
+  const integrationSecrets: SecretsBundle["integrations"] = {};
   const permsByAgent = new Map<
     string,
     Map<
@@ -367,6 +431,11 @@ export async function regenerateOpenClawConfig() {
       }
     }
 
+    integrationSecrets[conn.id] = {
+      ...(integrationSecrets[conn.id] || {}),
+      odooApiKey: decryptedCreds.apiKey,
+    };
+
     odooAgentConfigs[agentId] = {
       connection: {
         name: conn.name,
@@ -374,7 +443,7 @@ export async function regenerateOpenClawConfig() {
         url: decryptedCreds.url,
         db: decryptedCreds.db,
         uid: decryptedCreds.uid,
-        apiKey: decryptedCreds.apiKey,
+        apiKey: secretRef(`/integrations/${conn.id}/odooApiKey`),
       },
       permissions,
       modelNames,
@@ -434,10 +503,14 @@ export async function regenerateOpenClawConfig() {
       }
 
       if (Object.keys(webAgentConfigs).length > 0) {
+        integrationSecrets[webConn.id] = {
+          ...(integrationSecrets[webConn.id] || {}),
+          braveApiKey: decryptedWebCreds.apiKey,
+        };
         entries["pinchy-web"] = {
           enabled: true,
           config: {
-            braveApiKey: decryptedWebCreds.apiKey,
+            braveApiKey: secretRef(`/integrations/${webConn.id}/braveApiKey`),
             agents: webAgentConfigs,
           },
         };
@@ -493,7 +566,7 @@ export async function regenerateOpenClawConfig() {
       config: {
         apiBaseUrl:
           process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
-        gatewayToken,
+        gatewayToken: gatewayTokenString,
         agents: emailAgentConfigs,
       },
     };
@@ -522,9 +595,10 @@ export async function regenerateOpenClawConfig() {
   const modelProviders: Record<string, unknown> = {};
 
   if (ollamaCloudKey) {
+    providerSecrets["ollama-cloud"] = { apiKey: ollamaCloudKey };
     modelProviders["ollama-cloud"] = {
       baseUrl: "https://ollama.com/v1",
-      apiKey: ollamaCloudKey,
+      apiKey: secretRef("/providers/ollama-cloud/apiKey"),
       api: "openai-completions",
       // Derived from TOOL_CAPABLE_OLLAMA_CLOUD_MODELS — see that file for
       // the source of each capability (ollama.com/library/<name>).
@@ -633,15 +707,18 @@ export async function regenerateOpenClawConfig() {
       }
     }
 
-    // Preserve OpenClaw-enriched channel fields (groupPolicy, streaming)
+    // Preserve OpenClaw-enriched channel fields (groupPolicy, streaming).
+    // Use an explicit allow-list instead of spread to prevent unknown/legacy
+    // fields (including potential legacy secrets) from leaking into the config.
     const existingTelegram =
       ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
+    const ENRICHED_TELEGRAM_FIELDS = ["groupPolicy", "streaming"] as const;
+    const preservedTelegram: Record<string, unknown> = {};
+    for (const f of ENRICHED_TELEGRAM_FIELDS) {
+      if (f in existingTelegram) preservedTelegram[f] = existingTelegram[f];
+    }
     config.channels = {
-      telegram: {
-        ...existingTelegram,
-        dmPolicy: "pairing",
-        accounts,
-      },
+      telegram: { ...preservedTelegram, dmPolicy: "pairing", accounts },
     };
     config.bindings = bindings;
     config.session = {
@@ -649,6 +726,16 @@ export async function regenerateOpenClawConfig() {
       ...(Object.keys(identityLinks).length > 0 && { identityLinks }),
     };
   }
+
+  // Always write secrets.json — tmpfs is wiped on container restart, secrets.json
+  // must be present for OpenClaw to resolve SecretRef pointers (provider API keys etc.).
+  const secretsBundle: SecretsBundle = {
+    gateway: gatewaySecret,
+    providers: providerSecrets,
+    integrations: integrationSecrets,
+    env: envSecrets,
+  };
+  writeSecretsFile(secretsBundle);
 
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts
   const newContent = JSON.stringify(config, null, 2);
@@ -660,17 +747,6 @@ export async function regenerateOpenClawConfig() {
   }
 
   writeConfigAtomic(newContent);
-
-  // Sync gateway-token file so Pinchy's startup reader and OpenClaw always
-  // agree on the token. Without this, a stale gateway-token file causes
-  // token_mismatch errors on every WebSocket reconnect (openclaw#drift).
-  if (gatewayToken) {
-    try {
-      writeFileSync(GATEWAY_TOKEN_PATH, gatewayToken, { encoding: "utf-8", mode: 0o644 });
-    } catch {
-      // Non-critical — openclaw.json is the authoritative source
-    }
-  }
 }
 
 // ── Targeted config updates ───────────────────────────────────────────────
@@ -731,12 +807,11 @@ export function updateTelegramChannelConfig(
   const existing = readExistingConfig();
 
   if (accountId && account) {
-    // Add/update account
     const existingTelegram =
       ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
     const existingAccounts = (existingTelegram.accounts as Record<string, unknown>) || {};
 
-    existingAccounts[accountId] = account;
+    existingAccounts[accountId] = { botToken: account.botToken };
 
     existing.channels = {
       ...((existing.channels as Record<string, unknown>) || {}),
@@ -756,7 +831,6 @@ export function updateTelegramChannelConfig(
       { agentId: accountId, match: { channel: "telegram", accountId } },
     ];
   } else if (accountId && !account) {
-    // Remove specific account
     const existingTelegram =
       ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
     const existingAccounts = (existingTelegram.accounts as Record<string, unknown>) || {};
