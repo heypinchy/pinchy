@@ -177,6 +177,22 @@ User feedback (errors, success confirmations) must use the correct display patte
 
 **Never mix both for the same action.** A form submission error is always inline, never a toast. A success confirmation is always a toast, never inline (exception: multi-step flows that show a success screen).
 
+### Secrets Handling
+
+Every new sensitive field that would land in `openclaw.json` MUST use a
+SecretRef pointer, never a plaintext value. See
+`packages/web/src/lib/openclaw-secrets.ts` for helpers and
+`packages/web/src/lib/openclaw-plaintext-scanner.ts` for the defense-in-depth
+check that will refuse writes containing plaintext secrets.
+
+Pattern for adding a new secret:
+1. Decrypt from DB in `regenerateOpenClawConfig()`.
+2. Add it to the `SecretsBundle` via its stable JSON pointer.
+3. Emit a `secretRef(pointer)` in the spot in `openclaw.json` where the
+   plaintext would have gone.
+4. Add a test asserting both halves — value in `secrets.json`, ref in
+   `openclaw.json`.
+
 ### Documentation
 - **Docs site**: `docs/` directory, built with Astro Starlight. Deployed to [docs.heypinchy.com](https://docs.heypinchy.com).
 - **Docs-first process**: Every feature plan MUST include a documentation update task. When behavior changes, docs must be updated in the same PR.
