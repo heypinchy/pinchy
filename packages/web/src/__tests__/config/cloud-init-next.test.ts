@@ -49,6 +49,18 @@ describe("cloud-init-next.yml (staging)", () => {
     expect(cloudInit).not.toMatch(/\/var\/www\/pinchy-loading/);
   });
 
+  it("does not set lb_try_duration on the staging reverse_proxy", () => {
+    // Regression guard: a 1s lb_try_duration was set initially (carried over
+    // from the prod Caddyfile, where it makes sense alongside the loading-page
+    // fallback upstream). On staging there's no fallback — Caddy aborting
+    // after 1s during Next.js's JIT route compile (3-5s on first request)
+    // sent every cold-start request straight to handle_errors → 503 →
+    // browser sees "Pinchy is starting" even after Pinchy was actually up.
+    // For a single-upstream proxy with no fallback, just let Caddy wait.
+    expect(cloudInit).not.toMatch(/lb_try_duration/);
+    expect(cloudInit).not.toMatch(/fail_duration/);
+  });
+
   it("does not override PINCHY_PORT so Pinchy keeps the secure 127.0.0.1:7777 default", () => {
     expect(cloudInit).not.toMatch(/PINCHY_PORT=/);
     expect(compose).toMatch(/\$\{PINCHY_PORT:-127\.0\.0\.1:7777\}:7777/);

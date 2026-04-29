@@ -45,13 +45,7 @@ runcmd:
     # provisions Let's Encrypt automatically.
 
     :80 {
-        @up {
-            path *
-        }
-        reverse_proxy @up 127.0.0.1:7777 {
-            lb_try_duration 1s
-            fail_duration 5s
-        }
+        reverse_proxy 127.0.0.1:7777
         handle_errors {
             respond "Pinchy is starting — refresh in a few seconds." 503
         }
