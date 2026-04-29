@@ -798,10 +798,10 @@ export function updateIdentityLinks(identityLinks: Record<string, string[]>): vo
   // Same safety as updateTelegramChannelConfig — see comment there.
   const existingGateway = existing.gateway as Record<string, unknown> | undefined;
   if (!existingGateway?.mode) {
-    console.warn(
-      "[openclaw-config] updateIdentityLinks: refusing to write — existing config has no gateway.mode"
+    throw new Error(
+      "[openclaw-config] updateIdentityLinks: existing config has no gateway.mode " +
+        "(likely EACCES race on /openclaw-config/openclaw.json). Retry the request."
     );
-    return;
   }
 
   const session = (existing.session as Record<string, unknown>) || {};
@@ -849,15 +849,15 @@ export function updateTelegramChannelConfig(
   // corrupted file), modifying channels/bindings on top of it and writing
   // back would produce a config without gateway.mode — OpenClaw refuses
   // to start with "Gateway start blocked: existing config is missing
-  // gateway.mode" and falls into a restart loop. Better to log loudly and
-  // fail this single update than corrupt the running gateway.
+  // gateway.mode" and falls into a restart loop. Throwing here lets the
+  // calling API route return 503 to the user instead of silently dropping
+  // the channel update.
   const existingGateway = existing.gateway as Record<string, unknown> | undefined;
   if (!existingGateway?.mode) {
-    console.warn(
-      "[openclaw-config] updateTelegramChannelConfig: refusing to write — existing config has no gateway.mode",
-      "(likely EACCES on initial read). The full regenerateOpenClawConfig path will repair it."
+    throw new Error(
+      "[openclaw-config] updateTelegramChannelConfig: existing config has no gateway.mode " +
+        "(likely EACCES race on /openclaw-config/openclaw.json). Retry the request."
     );
-    return;
   }
 
   if (accountId && account) {

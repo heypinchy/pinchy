@@ -223,8 +223,13 @@ load_provider_env_vars
 SECRETS_MTIME=$(get_secrets_mtime)
 
 # OpenClaw rewrites openclaw.json with root-only permissions on every startup
-# and internal restart. Run a background loop that keeps fixing permissions.
-(while true; do sleep 3; fix_config_permissions; done) &
+# and internal restart. Run a tight background loop that fixes permissions
+# faster than Pinchy can hit the EACCES window. 0.2s tick keeps the worst
+# case under 250ms — comfortably inside Pinchy's readExistingConfig retry
+# budget (5 × 100ms). Was 3s previously, which let Pinchy give up before
+# the chmod caught up and silently wrote a stripped config (see
+# fix(openclaw-config): guard targeted writes against EACCES read).
+(while true; do sleep 0.2; fix_config_permissions; done) &
 
 # Start auto-approver in background — stops when Pinchy signals connection
 # (writes pinchy-device-approved). Safety timeout: 5 minutes.
