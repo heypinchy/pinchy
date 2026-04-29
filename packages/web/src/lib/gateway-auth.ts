@@ -1,14 +1,5 @@
 import { timingSafeEqual } from "crypto";
-import { readSecretsFile } from "@/lib/openclaw-secrets";
-
-function readGatewayToken(): string | null {
-  try {
-    const secrets = readSecretsFile();
-    return secrets.gateway?.token ?? null;
-  } catch {
-    return null;
-  }
-}
+import { readGatewayToken } from "@/lib/gateway-token-reader";
 
 export function constantTimeEqual(a: string, b: string): boolean {
   const aBuf = Buffer.from(a);

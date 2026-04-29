@@ -1,15 +1,18 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { writeFileSync, unlinkSync, mkdirSync, existsSync } from "fs";
+import { writeFileSync, unlinkSync, mkdirSync, existsSync, rmSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
 
 const TEST_SECRETS_DIR = join(tmpdir(), "pinchy-gateway-auth-test");
 const TEST_SECRETS_PATH = join(TEST_SECRETS_DIR, "secrets.json");
+const TEST_CONFIG_PATH = join(TEST_SECRETS_DIR, "openclaw.json");
+const origConfigPath = process.env.OPENCLAW_CONFIG_PATH;
 
 describe("validateGatewayToken", () => {
   beforeEach(() => {
     vi.resetModules();
     process.env.OPENCLAW_SECRETS_PATH = TEST_SECRETS_PATH;
+    process.env.OPENCLAW_CONFIG_PATH = TEST_CONFIG_PATH;
     if (!existsSync(TEST_SECRETS_DIR)) {
       mkdirSync(TEST_SECRETS_DIR, { recursive: true });
     }
@@ -17,8 +20,10 @@ describe("validateGatewayToken", () => {
 
   afterEach(() => {
     delete process.env.OPENCLAW_SECRETS_PATH;
+    if (origConfigPath !== undefined) process.env.OPENCLAW_CONFIG_PATH = origConfigPath;
+    else delete process.env.OPENCLAW_CONFIG_PATH;
     try {
-      unlinkSync(TEST_SECRETS_PATH);
+      rmSync(TEST_SECRETS_DIR, { recursive: true, force: true });
     } catch {
       // ignore
     }
@@ -78,5 +83,26 @@ describe("validateGatewayToken", () => {
 
     const headers = new Headers({ Authorization: "Bearer some-token" });
     expect(validateGatewayToken(headers)).toBe(false);
+  });
+
+  it("regression: validates against openclaw.json when secrets.json is unreadable (root-owned 0600)", async () => {
+    // Reproduces the v0.5.0 staging cold-start bug: start-openclaw.sh chmods
+    // secrets.json to root:root 0600 to satisfy OpenClaw's strict secrets-mode
+    // check. Pinchy (uid 999) can't read it. Without this fallback, every
+    // pinchy-audit before_tool_call hook returns 401 and Smithers can't use
+    // any tool — including pinchy-docs, so it can't read the docs.
+    //
+    // Both files normally carry the same token (regenerateOpenClawConfig writes
+    // both). Validation must succeed if EITHER source has a matching token.
+    writeFileSync(
+      TEST_CONFIG_PATH,
+      JSON.stringify({ gateway: { auth: { token: "the-real-token" } } })
+    );
+    // No secrets.json — simulates the file being unreadable.
+
+    const { validateGatewayToken } = await import("@/lib/gateway-auth");
+
+    const headers = new Headers({ Authorization: "Bearer the-real-token" });
+    expect(validateGatewayToken(headers)).toBe(true);
   });
 });
