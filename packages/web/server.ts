@@ -16,7 +16,7 @@ import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
-import { readSecretsFile } from "./src/lib/openclaw-secrets";
+import { readGatewayToken } from "./src/lib/gateway-token-reader";
 
 logCapture.install();
 
@@ -32,14 +32,6 @@ const app = next({ dev });
 const handle = app.getRequestHandler();
 
 const OPENCLAW_WS_URL = process.env.OPENCLAW_WS_URL;
-
-function readGatewayToken(): string {
-  try {
-    return readSecretsFile().gateway?.token ?? "";
-  } catch {
-    return "";
-  }
-}
 
 async function waitForGatewayToken(maxWaitMs = 30000): Promise<string> {
   const start = Date.now();
