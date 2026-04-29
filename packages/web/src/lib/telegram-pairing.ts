@@ -34,7 +34,17 @@ export function resolvePairingCode(code: string): PairingResult {
     if (!match) return { found: false };
 
     return { found: true, telegramUserId: match.id };
-  } catch {
+  } catch (err) {
+    // Log non-ENOENT errors loudly. The default bare-catch swallowed EACCES
+    // on v0.5.0 staging (file written root:0600 by OpenClaw, Pinchy uid 999
+    // can't read it) which surfaced as a misleading "Invalid pairing code"
+    // to the user — the file existed but was unreadable, not missing. ENOENT
+    // is filtered out because cold start (file not yet written) is normal.
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "ENOENT") {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[telegram-pairing] failed to read pairing file:", message);
+    }
     return { found: false };
   }
 }

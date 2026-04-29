@@ -151,8 +151,18 @@ node -e "
 # Make OpenClaw config writable by Pinchy (non-root).
 # OpenClaw creates openclaw.json with 600 (root-only). Pinchy needs write access
 # to update provider keys and agent configuration via regenerateOpenClawConfig().
+#
+# Also fix the telegram-pairing.json file: OpenClaw 2026.4.12 writes it as
+# root:0600, but Pinchy (uid 999) needs to read it to look up Telegram user
+# IDs from pairing codes. Without this chmod, every linkTelegram POST returns
+# "Invalid or expired pairing code" because readFileSync throws EACCES inside
+# resolvePairingCode and the bare catch returns { found: false } silently.
 fix_config_permissions() {
     chmod 666 /root/.openclaw/openclaw.json 2>/dev/null || true
+    # Use a glob so we also catch any sibling credential files OpenClaw
+    # writes alongside the pairing file (allowFrom stores etc.) — they too
+    # are written by root and consumed by Pinchy.
+    chmod -R a+r /root/.openclaw/credentials 2>/dev/null || true
 }
 fix_config_permissions
 
