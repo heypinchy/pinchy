@@ -254,15 +254,26 @@ SECRETS_MTIME=$(get_secrets_mtime)
 # rename, closing the window before any reload can pick up the bad owner.
 # Watches the directory (not the file) because Pinchy's writeSecretsFile
 # uses tmp+rename, which replaces the inode each time.
-(inotifywait -m -q -e close_write,moved_to "$(dirname "$SECRETS_FILE")" 2>/dev/null | \
-    while read -r _dir _events filename; do
-        # Only react to the secrets file itself, ignoring sibling .tmp writes
-        # and any other unrelated activity in the directory.
-        if [ "$filename" = "$(basename "$SECRETS_FILE")" ]; then
-            chown root:root "$SECRETS_FILE" 2>/dev/null || true
-            chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
-        fi
-    done) &
+#
+# Wrapped in a respawn loop: inotifywait can die if the kernel watch limit
+# (fs.inotify.max_user_watches) is exhausted or the binary OOMs. Without
+# this loop the secrets file would be defended only by the 0.2 s chmod
+# tick — still safer than nothing, but the tighter inotify response is the
+# primary guarantee. The 1 s sleep prevents a tight crash loop from
+# burning CPU if inotifywait fails to start at all.
+(while true; do
+    inotifywait -m -q -e close_write,moved_to "$(dirname "$SECRETS_FILE")" 2>/dev/null | \
+        while read -r _dir _events filename; do
+            # Only react to the secrets file itself, ignoring sibling .tmp writes
+            # and any other unrelated activity in the directory.
+            if [ "$filename" = "$(basename "$SECRETS_FILE")" ]; then
+                chown root:root "$SECRETS_FILE" 2>/dev/null || true
+                chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
+            fi
+        done
+    echo "[secrets-watcher] inotifywait exited; respawning in 1s"
+    sleep 1
+done) &
 
 # Start auto-approver in background — stops when Pinchy signals connection
 # (writes pinchy-device-approved). Safety timeout: 5 minutes.
