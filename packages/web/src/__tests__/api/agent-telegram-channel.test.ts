@@ -34,7 +34,6 @@ vi.mock("@/lib/openclaw-config", () => ({
 const mockClearAllowStoreForAccount = vi.fn();
 const mockRecalculateTelegramAllowStores = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/telegram-allow-store", () => ({
-  clearAllowStore: vi.fn(),
   clearAllowStoreForAccount: (...args: unknown[]) => mockClearAllowStoreForAccount(...args),
   recalculateTelegramAllowStores: (...args: unknown[]) =>
     mockRecalculateTelegramAllowStores(...args),

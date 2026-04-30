@@ -62,6 +62,28 @@ describe("GET /api/data-directories", () => {
     expect(body.directories).toEqual([]);
   });
 
+  it("should log a warning and return empty array when file is not readable due to EACCES", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const err = new Error(
+      "EACCES: permission denied, open '/openclaw-config/data-directories.json'"
+    );
+    (err as NodeJS.ErrnoException).code = "EACCES";
+    vi.mocked(readFileSync).mockImplementation(() => {
+      throw err;
+    });
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(body.directories).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("[data-directories]"),
+      expect.any(String),
+      expect.stringContaining("EACCES")
+    );
+    warn.mockRestore();
+  });
+
   it("should return 401 without auth", async () => {
     const { auth } = await import("@/lib/auth");
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
