@@ -776,6 +776,45 @@ export async function regenerateOpenClawConfig() {
   }
 
   writeConfigAtomic(newContent);
+
+  // Push the new config to OpenClaw via WebSocket RPC. Writing the file alone
+  // is not enough — OpenClaw's internal inotify watcher has surfaced 60+ s of
+  // detection latency on production volumes (issue #200 follow-up), causing
+  // a freshly created agent to fail with `unknown agent id` when the user
+  // sends a message immediately after creation. config.apply() forces an
+  // immediate runtime reload via the WebSocket session that's already open.
+  //
+  // Best-effort: if the client isn't initialised yet (cold start, before the
+  // first WS connection) or the apply fails, the file write is still on
+  // disk and OpenClaw's inotify will eventually pick it up. We log loudly
+  // but don't throw, so agent creation succeeds even when the push can't.
+  await pushConfigToOpenClaw(newContent);
+}
+
+async function pushConfigToOpenClaw(newContent: string): Promise<void> {
+  let client;
+  try {
+    const { getOpenClawClient } = await import("@/server/openclaw-client");
+    client = getOpenClawClient();
+  } catch {
+    // OpenClaw client isn't wired up yet — typical during the first
+    // regenerateOpenClawConfig() call before the gateway WS connects.
+    // The file write above is enough; inotify will catch up eventually.
+    return;
+  }
+
+  try {
+    const current = (await client.config.get()) as { hash: string };
+    await client.config.apply(newContent, current.hash, {
+      note: "pinchy: regenerateOpenClawConfig",
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn(
+      "[openclaw-config] config.apply RPC failed; relying on inotify fallback:",
+      message
+    );
+  }
 }
 
 // ── Targeted config updates ───────────────────────────────────────────────

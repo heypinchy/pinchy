@@ -1,135 +1,100 @@
 /**
- * Hot-reload secrets-owner race regression test (issue #200).
+ * Agent hot-reload E2E test — regression for the v0.5.0 staging bug where a
+ * newly created custom agent surfaced as `unknown agent id "<uuid>"` on the
+ * first chat message after creation.
  *
- * Bug on staging during v0.5.0 click-through:
- *   POST /api/agents → Pinchy writes openclaw.json + secrets.json →
- *   OpenClaw inotify triggers a reload → reload re-resolves secret
- *   providers → finds /openclaw-secrets/secrets.json owned by uid 999
- *   (Pinchy) → rejects with `SECRETS_RELOADER_DEGRADED: must be owned
- *   by the current user (uid=0)` → new agents.list silently dropped
- *   → user sees `unknown agent id "<uuid>"` when chatting.
+ * Two distinct manifestations across PRs:
  *
- * Fix (two layers): inotifywait on /openclaw-secrets/ chowns the file
- * on every close_write/moved_to event (sub-millisecond response), with
- * the existing 0.2 s chmod tick as defense-in-depth. See
- * `config/start-openclaw.sh`.
+ *   1. (#200, fixed in #201) `secrets.json` was owned by uid 999 when
+ *      OpenClaw's reload pipeline tried to re-resolve secret providers,
+ *      so the reload bailed with `SECRETS_RELOADER_DEGRADED` and the new
+ *      `agents.list` was silently dropped.
  *
- * What this test reproduces directly:
- *   1. Atomically write secrets.json with uid 999 ownership using
- *      Pinchy's exact tmp+rename pattern (`writeSecretsFile()`).
- *   2. The inotify watcher fires moved_to within milliseconds and
- *      chowns root:root before any OpenClaw reload could see uid 999.
- *   3. Owner is verified back to 0:0 within a 500 ms budget — far
- *      tighter than the 30 s legacy chown loop, but well within
- *      inotify reaction times in practice.
+ *   2. (this fix) Even with secrets owner correct, OpenClaw's internal
+ *      file-watcher does not promptly notice an `agents.list` change
+ *      written to `openclaw.json`. On staging the reload fired only ~60 s
+ *      after the file write — far too late for the user, who already saw
+ *      "unknown agent id" within seconds of clicking Send.
  *
- * This is a server-side, deterministic test of the race window —
- * does not depend on any per-agent auth-profile mechanics, the LLM
- * mock, or the chat UI.
+ * The fix for (2) is for Pinchy to push the new config to OpenClaw via the
+ * WebSocket RPC `client.config.apply()` immediately after writing the file,
+ * instead of relying on inotify. See `regenerateOpenClawConfig()` in
+ * `packages/web/src/lib/openclaw-config.ts`.
  *
- * Why this lives in the telegram E2E suite:
- *   The suite already runs against `docker-compose.e2e.yml` which
- *   uses the production Dockerfile.pinchy (uid 999 demotion). That's
- *   currently the only CI surface where the owner mismatch can
- *   manifest. Once the rest of the E2E suites migrate to the
- *   production image (#196), this spec should move to a more apt
- *   location (e.g. an `agents/` or `infrastructure/` E2E suite).
+ * What this test reproduces:
+ *   1. POST /api/agents to create a brand-new custom agent.
+ *   2. Open the chat page for it and send a message.
+ *   3. Assert that within 60 s some response indicator appears AND that
+ *      it is NOT the `unknown agent id` error. Other errors are tolerated
+ *      (e.g. FailoverError on per-agent auth profiles in the test mock
+ *      setup) — those are unrelated to the bug under test.
+ *
+ * Why this lives in the telegram E2E suite (production image stack):
+ *   The suite runs against `docker-compose.e2e.yml` which uses
+ *   `Dockerfile.pinchy` — the only CI surface today with the production
+ *   uid 999 demotion. Once the rest of the E2E suites migrate to the
+ *   production image (#196), move this spec to a more apt location.
  */
 
 import { test, expect } from "@playwright/test";
-import { execSync } from "child_process";
-import path from "path";
-import { waitForOpenClawConnected, waitForPinchy, seedSetup } from "./helpers";
+import { seedSetup, waitForOpenClawConnected, waitForPinchy } from "./helpers";
 
-const COMPOSE_FILES = "-f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml";
-// Compose files live at the repo root; the test runner cwd is packages/web.
-const REPO_ROOT = path.resolve(__dirname, "../../../..");
-
-function inOpenClaw(cmd: string): string {
-  return execSync(`docker compose ${COMPOSE_FILES} exec -T openclaw sh -c "${cmd}"`, {
-    encoding: "utf-8",
-    cwd: REPO_ROOT,
-    // PINCHY_VERSION is required by docker-compose.yml's image: line; the
-    // value doesn't matter for `exec` (it just looks up the running
-    // container by service name), so any non-empty string works.
-    env: { ...process.env, PINCHY_VERSION: process.env.PINCHY_VERSION || "local" },
-  }).trim();
-}
-
-function getSecretsOwner(): string {
-  return inOpenClaw("stat -c '%u:%g' /openclaw-secrets/secrets.json 2>/dev/null || echo 'missing'");
-}
-
-function readSecretsJson(): string {
-  // Returns the raw JSON text — base64-encoded over the docker-exec wire so
-  // newlines and shell metachars survive the round-trip intact.
-  const b64 = inOpenClaw("base64 -w0 /openclaw-secrets/secrets.json");
-  return Buffer.from(b64, "base64").toString("utf-8");
-}
-
-function writeSecretsJsonAsRoot(content: string): void {
-  // Pipe via base64 again to avoid quoting trouble on any payload.
-  const b64 = Buffer.from(content, "utf-8").toString("base64");
-  inOpenClaw(
-    `echo '${b64}' | base64 -d > /openclaw-secrets/secrets.json.tmp && ` +
-      `chown root:root /openclaw-secrets/secrets.json.tmp && ` +
-      `chmod 0600 /openclaw-secrets/secrets.json.tmp && ` +
-      `mv /openclaw-secrets/secrets.json.tmp /openclaw-secrets/secrets.json`
-  );
-}
-
-test.describe("Secrets owner race (#200)", () => {
+test.describe("Agent hot-reload (production image)", () => {
   test.beforeAll(async ({}, testInfo) => {
-    testInfo.setTimeout(180000);
+    testInfo.setTimeout(300000);
     await waitForPinchy();
     await seedSetup();
     await waitForOpenClawConnected(120000);
   });
 
-  test("atomic tmp+rename writing uid 999 is restored to root before any reload could read it", async () => {
-    test.setTimeout(30000);
+  test("custom agent created via API does not surface 'unknown agent id' on first chat", async ({
+    page,
+  }) => {
+    test.setTimeout(180000);
 
-    // Pre-condition: file exists and is root-owned (start-openclaw.sh
-    // chowns it on container start).
-    const startOwner = getSecretsOwner();
-    expect(startOwner).toBe("0:0");
+    // 1. Login via UI so the browser context owns the session cookie that
+    //    the chat WebSocket auth requires.
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@test.local");
+    await page.getByLabel("Password", { exact: true }).fill("test-password-123");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
 
-    // Snapshot the real secrets payload so we can restore it after the
-    // test. Otherwise we'd leave `secrets.json` as the `{}` we write below,
-    // which would strip provider keys and break any subsequent test in
-    // this suite that depends on OpenClaw resolving auth.
-    const originalContent = readSecretsJson();
+    // 2. Create a custom agent via the public API. POST /api/agents calls
+    //    `regenerateOpenClawConfig()` which (a) writes openclaw.json + secrets.json
+    //    to disk and (b) — with the fix — pushes the new config via the
+    //    config.apply WebSocket RPC. Without (b), the new agents.list takes
+    //    ~60 s to reach OpenClaw's runtime via inotify.
+    const createRes = await page.request.post("/api/agents", {
+      data: {
+        name: `HotReloadTest-${Date.now()}`,
+        templateId: "custom",
+      },
+    });
+    expect(createRes.ok()).toBe(true);
+    const agent = (await createRes.json()) as { id: string };
 
-    try {
-      // Reproduce Pinchy's atomic writeSecretsFile() pattern exactly:
-      // 1. Write a tmp file (here as root, content doesn't matter for the race).
-      // 2. chown it to uid 999 (Pinchy's uid; we cannot run as uid 999 from
-      //    inside the OpenClaw container — there's no such user — but the
-      //    end-state on disk after Pinchy's rename is the same: owner 999).
-      // 3. mv onto secrets.json — this is the moved_to event inotify watches.
-      // The replaced inode is now uid 999, exactly the bug condition.
-      inOpenClaw(
-        "echo '{}' > /openclaw-secrets/secrets.json.tmp && " +
-          "chown 999:999 /openclaw-secrets/secrets.json.tmp && " +
-          "mv /openclaw-secrets/secrets.json.tmp /openclaw-secrets/secrets.json"
-      );
+    // 3. Open chat for the freshly created agent and send a message.
+    await page.goto(`/chat/${agent.id}`);
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 15000 });
+    await input.fill("Hello, are you there?");
+    await input.press("Enter");
 
-      // inotify reacts in single-digit milliseconds — far faster than the
-      // 200 ms chmod loop. Poll fast (10 ms) and tightly bounded (500 ms)
-      // so a regression of either path (loop or watcher) is visible.
-      let owner = "";
-      const deadline = Date.now() + 500;
-      while (Date.now() < deadline) {
-        owner = getSecretsOwner();
-        if (owner === "0:0") break;
-        await new Promise((r) => setTimeout(r, 10));
-      }
+    // 4. Wait for SOME chat-completion signal — either a successful response
+    //    or any error banner. With the fix, this lands within seconds.
+    //    Without the fix, the new agent isn't registered and Pinchy waits
+    //    on a chat that never resolves; the error banner only appears after
+    //    the connection timeout fires.
+    await page
+      .getByText(/Mock response from test server|couldn't respond|unknown agent id/i)
+      .first()
+      .waitFor({ state: "visible", timeout: 90000 });
 
-      expect(owner).toBe("0:0");
-    } finally {
-      // Restore the original secrets payload regardless of test outcome —
-      // subsequent tests need a valid bundle.
-      writeSecretsJsonAsRoot(originalContent);
-    }
+    // 5. Specific assertion: the bug fingerprint `unknown agent id` must NOT
+    //    appear. Any other error (e.g. provider auth failures from the mock
+    //    setup) is unrelated to this bug and tolerated.
+    const unknownAgentError = page.getByText(/unknown agent id/i);
+    await expect(unknownAgentError).not.toBeVisible();
   });
 });
