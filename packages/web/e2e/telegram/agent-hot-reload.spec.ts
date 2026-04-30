@@ -74,6 +74,15 @@ test.describe("Agent hot-reload (production image)", () => {
     expect(createRes.ok()).toBe(true);
     const agent = (await createRes.json()) as { id: string };
 
+    // 2.5. The config push triggered a gateway restart (because Pinchy's
+    //      regenerated config touches plugins.entries.* — a hot-reload
+    //      isn't possible). On a busy CI runner the restart cycle takes
+    //      ~15-30 s; until OpenClaw is reachable again, the chat WS would
+    //      either hang or drop. Wait for steady state before opening the chat
+    //      page to keep the assertion focused on the unknown-agent-id bug
+    //      rather than picking up restart-window flakiness.
+    await waitForOpenClawConnected(60000);
+
     // 3. Open chat for the freshly created agent and send a message.
     await page.goto(`/chat/${agent.id}`);
     const input = page.getByPlaceholder(/send a message/i);
