@@ -1,0 +1,23 @@
+{
+  "id": "pinchy-pipedrive",
+  "name": "Pinchy Pipedrive",
+  "description": "Pipedrive CRM integration with entity-level permissions.",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "agents": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "connection": { "type": "object" },
+            "permissions": { "type": "object" },
+            "entityNames": { "type": "object" }
+          },
+          "required": ["connection", "permissions"]
+        }
+      }
+    },
+    "required": ["agents"]
+  }
+}

@@ -31,15 +31,25 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
 }));
 
-const { mockAuthenticate, mockVersion, mockModels, mockFields, mockCheckAccessRights } = vi.hoisted(
-  () => ({
-    mockAuthenticate: vi.fn(),
-    mockVersion: vi.fn(),
-    mockModels: vi.fn(),
-    mockFields: vi.fn(),
-    mockCheckAccessRights: vi.fn().mockResolvedValue(true),
-  })
-);
+const {
+  mockAuthenticate,
+  mockVersion,
+  mockModels,
+  mockFields,
+  mockCheckAccessRights,
+  mockFetchPipedriveSchema,
+} = vi.hoisted(() => ({
+  mockAuthenticate: vi.fn(),
+  mockVersion: vi.fn(),
+  mockModels: vi.fn(),
+  mockFields: vi.fn(),
+  mockCheckAccessRights: vi.fn().mockResolvedValue(true),
+  mockFetchPipedriveSchema: vi.fn(),
+}));
+
+vi.mock("@/lib/integrations/pipedrive-sync", () => ({
+  fetchPipedriveSchema: (...args: unknown[]) => mockFetchPipedriveSchema(...args),
+}));
 
 vi.mock("odoo-node", () => {
   function OdooClient() {
@@ -132,6 +142,25 @@ const validCredentials = {
   login: "admin",
   apiKey: "secret-key",
   uid: 2,
+};
+
+const validPipedriveCredentials = {
+  apiToken: "pd-token-123",
+  companyDomain: "mycompany",
+  companyName: "My Company Ltd",
+  userId: 42,
+  userName: "Jane Doe",
+};
+
+const mockPipedriveConnection = {
+  id: "conn-pd-1",
+  type: "pipedrive",
+  name: "Test Pipedrive",
+  description: "Test Pipedrive connection",
+  credentials: "encrypted-pd-creds",
+  data: null,
+  createdAt: new Date("2026-01-01"),
+  updatedAt: new Date("2026-01-01"),
 };
 
 describe("GET /api/integrations", () => {
@@ -1563,5 +1592,596 @@ describe("POST /api/integrations/[connectionId]/sync", () => {
     expect(response.status).toBe(200);
     expect(body.success).toBe(false);
     expect(body.error).toContain("Could not access any Odoo models");
+  });
+});
+
+// =============================================================================
+// Pipedrive-specific tests
+// =============================================================================
+
+describe("GET /api/integrations (Pipedrive)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+  });
+
+  it("should mask Pipedrive credentials correctly", async () => {
+    mockSelectFrom.mockImplementationOnce(() => {
+      return Promise.resolve([mockPipedriveConnection]);
+    });
+    mockDecrypt.mockReturnValueOnce(JSON.stringify(validPipedriveCredentials));
+    const { GET } = await import("@/app/api/integrations/route");
+
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body[0].credentials).toEqual({
+      companyDomain: "mycompany",
+      companyName: "My Company Ltd",
+      userName: "Jane Doe",
+    });
+    // Must NOT contain apiToken or userId
+    expect(body[0].credentials).not.toHaveProperty("apiToken");
+    expect(body[0].credentials).not.toHaveProperty("userId");
+  });
+});
+
+describe("POST /api/integrations (Pipedrive)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockEncrypt.mockReturnValue("encrypted-creds");
+    mockDecrypt.mockReturnValue(JSON.stringify(validPipedriveCredentials));
+    mockInsertValues.mockReturnValue({
+      returning: vi.fn().mockResolvedValue([mockPipedriveConnection]),
+    });
+  });
+
+  it("should accept Pipedrive type and create connection", async () => {
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "pipedrive",
+        name: "Prod Pipedrive",
+        description: "Production CRM",
+        credentials: validPipedriveCredentials,
+      }),
+    });
+    const response = await POST(request);
+    const body = await response.json();
+
+    expect(response.status).toBe(201);
+    expect(mockEncrypt).toHaveBeenCalledWith(JSON.stringify(validPipedriveCredentials));
+    expect(mockInsertValues).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "pipedrive",
+        name: "Prod Pipedrive",
+        description: "Production CRM",
+        credentials: "encrypted-creds",
+      })
+    );
+    // Response should have Pipedrive-style masked credentials
+    expect(body.credentials).toEqual({
+      companyDomain: "mycompany",
+      companyName: "My Company Ltd",
+      userName: "Jane Doe",
+    });
+  });
+
+  it("should not call validateExternalUrl for Pipedrive", async () => {
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "pipedrive",
+        name: "Prod Pipedrive",
+        credentials: validPipedriveCredentials,
+      }),
+    });
+    const response = await POST(request);
+
+    expect(response.status).toBe(201);
+    // URL validation is Odoo-specific — Pipedrive uses api.pipedrive.com
+  });
+
+  it("should return 400 for invalid Pipedrive credentials", async () => {
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "pipedrive",
+        name: "Test",
+        credentials: { apiToken: "" },
+      }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+  });
+
+  it("should log audit entry for Pipedrive creation", async () => {
+    const { POST } = await import("@/app/api/integrations/route");
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "pipedrive",
+        name: "Prod Pipedrive",
+        credentials: validPipedriveCredentials,
+      }),
+    });
+    await POST(request);
+
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({
+          action: "integration_created",
+          type: "pipedrive",
+          name: "Prod Pipedrive",
+        }),
+      })
+    );
+  });
+});
+
+describe("GET /api/integrations/[connectionId] (Pipedrive)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+  });
+
+  it("should return Pipedrive connection with masked credentials", async () => {
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([mockPipedriveConnection]) as Promise<
+        (typeof mockPipedriveConnection)[]
+      > & { where: ReturnType<typeof vi.fn> };
+      result.where = vi.fn().mockResolvedValue([mockPipedriveConnection]);
+      return result;
+    });
+    mockDecrypt.mockReturnValueOnce(JSON.stringify(validPipedriveCredentials));
+    const { GET } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await GET(makeRequest("/api/integrations/conn-pd-1"), {
+      params: Promise.resolve({ connectionId: "conn-pd-1" }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.credentials).toEqual({
+      companyDomain: "mycompany",
+      companyName: "My Company Ltd",
+      userName: "Jane Doe",
+    });
+    expect(body.credentials).not.toHaveProperty("apiToken");
+  });
+});
+
+describe("PATCH /api/integrations/[connectionId] (Pipedrive)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+  });
+
+  it("should accept Pipedrive credentials on update", async () => {
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([mockPipedriveConnection]) as Promise<
+        (typeof mockPipedriveConnection)[]
+      > & { where: ReturnType<typeof vi.fn> };
+      result.where = vi.fn().mockResolvedValue([mockPipedriveConnection]);
+      return result;
+    });
+    mockUpdateSet.mockReturnValueOnce({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([{ ...mockPipedriveConnection, name: "Updated PD" }]),
+      }),
+    });
+    mockDecrypt.mockReturnValueOnce(JSON.stringify(validPipedriveCredentials));
+
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const newCreds = { ...validPipedriveCredentials, apiToken: "new-pd-token" };
+    const response = await PATCH(
+      makeRequest("/api/integrations/conn-pd-1", {
+        method: "PATCH",
+        body: JSON.stringify({ credentials: newCreds }),
+      }),
+      { params: Promise.resolve({ connectionId: "conn-pd-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockEncrypt).toHaveBeenCalledWith(JSON.stringify(newCreds));
+  });
+});
+
+describe("POST /api/integrations/[connectionId]/sync (Pipedrive)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockDecrypt.mockReturnValue(JSON.stringify(validPipedriveCredentials));
+    mockFetchPipedriveSchema.mockResolvedValue({
+      success: true,
+      entities: 10,
+      lastSyncAt: "2026-04-13T12:00:00.000Z",
+      categories: [],
+      data: { entities: [], lastSyncAt: "2026-04-13T12:00:00.000Z" },
+    });
+  });
+
+  it("should dispatch to fetchPipedriveSchema for Pipedrive connections", async () => {
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([mockPipedriveConnection]) as Promise<
+        (typeof mockPipedriveConnection)[]
+      > & { where: ReturnType<typeof vi.fn> };
+      result.where = vi.fn().mockResolvedValue([mockPipedriveConnection]);
+      return result;
+    });
+    const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/conn-pd-1/sync", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-pd-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.entities).toBe(10);
+    expect(body.lastSyncAt).toBeDefined();
+    expect(mockFetchPipedriveSchema).toHaveBeenCalledWith("pd-token-123");
+  });
+
+  it("should log audit with entityCount for Pipedrive sync", async () => {
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([mockPipedriveConnection]) as Promise<
+        (typeof mockPipedriveConnection)[]
+      > & { where: ReturnType<typeof vi.fn> };
+      result.where = vi.fn().mockResolvedValue([mockPipedriveConnection]);
+      return result;
+    });
+    const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
+
+    await POST(makeRequest("/api/integrations/conn-pd-1/sync", { method: "POST" }), {
+      params: Promise.resolve({ connectionId: "conn-pd-1" }),
+    });
+
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resource: "integration:conn-pd-1",
+        detail: expect.objectContaining({
+          action: "integration_schema_synced",
+          entityCount: 10,
+        }),
+      })
+    );
+  });
+
+  it("should return error when Pipedrive sync fails", async () => {
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([mockPipedriveConnection]) as Promise<
+        (typeof mockPipedriveConnection)[]
+      > & { where: ReturnType<typeof vi.fn> };
+      result.where = vi.fn().mockResolvedValue([mockPipedriveConnection]);
+      return result;
+    });
+    mockFetchPipedriveSchema.mockResolvedValueOnce({
+      success: false,
+      error: "Could not access any Pipedrive entities.",
+    });
+    const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/conn-pd-1/sync", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-pd-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toContain("Pipedrive");
+  });
+});
+
+describe("POST /api/integrations/[connectionId]/test (Pipedrive)", () => {
+  let mockFetch: ReturnType<typeof vi.fn>;
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockFetch = vi.fn();
+    global.fetch = mockFetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("should test Pipedrive connection via API", async () => {
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([mockPipedriveConnection]) as Promise<
+        (typeof mockPipedriveConnection)[]
+      > & { where: ReturnType<typeof vi.fn> };
+      result.where = vi.fn().mockResolvedValue([mockPipedriveConnection]);
+      return result;
+    });
+    mockDecrypt.mockReturnValueOnce(JSON.stringify(validPipedriveCredentials));
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        success: true,
+        data: {
+          id: 42,
+          name: "Jane Doe",
+          company_domain: "mycompany",
+          company_name: "My Company Ltd",
+        },
+      }),
+    });
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/conn-pd-1/test", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-pd-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.companyDomain).toBe("mycompany");
+    expect(body.companyName).toBe("My Company Ltd");
+    expect(mockFetch).toHaveBeenCalledWith("https://api.pipedrive.com/v1/users/me", {
+      headers: { "x-api-token": "pd-token-123" },
+    });
+  });
+
+  it("should return error when Pipedrive auth fails", async () => {
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([mockPipedriveConnection]) as Promise<
+        (typeof mockPipedriveConnection)[]
+      > & { where: ReturnType<typeof vi.fn> };
+      result.where = vi.fn().mockResolvedValue([mockPipedriveConnection]);
+      return result;
+    });
+    mockDecrypt.mockReturnValueOnce(JSON.stringify(validPipedriveCredentials));
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        success: false,
+        error: "Invalid API token",
+      }),
+    });
+    const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/conn-pd-1/test", { method: "POST" }),
+      { params: Promise.resolve({ connectionId: "conn-pd-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Invalid API token");
+  });
+});
+
+describe("POST /api/integrations/test-credentials (Pipedrive)", () => {
+  let mockFetch: ReturnType<typeof vi.fn>;
+  const originalFetch = global.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockFetch = vi.fn();
+    global.fetch = mockFetch;
+  });
+
+  afterEach(() => {
+    global.fetch = originalFetch;
+  });
+
+  it("should accept Pipedrive type and test credentials via API", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        success: true,
+        data: {
+          id: 42,
+          name: "Jane Doe",
+          company_domain: "mycompany",
+          company_name: "My Company Ltd",
+        },
+      }),
+    });
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "pipedrive",
+          credentials: { apiToken: "pd-token-123" },
+        }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.companyDomain).toBe("mycompany");
+    expect(body.companyName).toBe("My Company Ltd");
+    expect(body.userId).toBe(42);
+    expect(body.userName).toBe("Jane Doe");
+    expect(mockFetch).toHaveBeenCalledWith("https://api.pipedrive.com/v1/users/me", {
+      headers: { "x-api-token": "pd-token-123" },
+    });
+  });
+
+  it("should return error when Pipedrive API returns failure", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        success: false,
+        error: "Invalid token",
+      }),
+    });
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "pipedrive",
+          credentials: { apiToken: "bad-token" },
+        }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBeDefined();
+  });
+
+  it("should return error when Pipedrive API request fails", async () => {
+    mockFetch.mockRejectedValueOnce(new Error("Network error"));
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "pipedrive",
+          credentials: { apiToken: "pd-token-123" },
+        }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(body.error).toBe("Network error");
+  });
+
+  it("should return 400 for missing Pipedrive apiToken", async () => {
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "pipedrive",
+          credentials: { apiToken: "" },
+        }),
+      })
+    );
+    expect(response.status).toBe(400);
+  });
+
+  it("should not call validateExternalUrl for Pipedrive", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        success: true,
+        data: {
+          id: 42,
+          name: "Jane Doe",
+          company_domain: "mycompany",
+          company_name: "My Company Ltd",
+        },
+      }),
+    });
+    const { POST } = await import("@/app/api/integrations/test-credentials/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/test-credentials", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "pipedrive",
+          credentials: { apiToken: "pd-token-123" },
+        }),
+      })
+    );
+
+    expect(response.status).toBe(200);
+    // No URL validation call — Pipedrive uses central API
+  });
+});
+
+describe("POST /api/integrations/sync-preview (Pipedrive)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockFetchPipedriveSchema.mockResolvedValue({
+      success: true,
+      entities: 10,
+      lastSyncAt: "2026-04-13T12:00:00.000Z",
+      categories: [
+        {
+          id: "crm",
+          label: "CRM",
+          accessible: true,
+          accessibleEntities: ["Deals", "Persons"],
+          totalEntities: 5,
+        },
+      ],
+      data: { entities: [], lastSyncAt: "2026-04-13T12:00:00.000Z" },
+    });
+  });
+
+  it("should call fetchPipedriveSchema for Pipedrive type", async () => {
+    const { POST } = await import("@/app/api/integrations/sync-preview/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/sync-preview", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "pipedrive",
+          credentials: { apiToken: "pd-token-123" },
+        }),
+      })
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(true);
+    expect(body.entities).toBe(10);
+    expect(mockFetchPipedriveSchema).toHaveBeenCalledWith("pd-token-123");
+  });
+
+  it("should reject invalid Pipedrive credentials in sync-preview", async () => {
+    const { POST } = await import("@/app/api/integrations/sync-preview/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/sync-preview", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "pipedrive",
+          credentials: { apiToken: "" },
+        }),
+      })
+    );
+
+    expect(response.status).toBe(400);
+  });
+
+  it("should still handle Odoo sync-preview requests", async () => {
+    const { POST } = await import("@/app/api/integrations/sync-preview/route");
+
+    const response = await POST(
+      makeRequest("/api/integrations/sync-preview", {
+        method: "POST",
+        body: JSON.stringify({
+          type: "odoo",
+          credentials: validCredentials,
+        }),
+      })
+    );
+
+    // Should not call pipedrive, should pass through to odoo path
+    expect(mockFetchPipedriveSchema).not.toHaveBeenCalled();
   });
 });

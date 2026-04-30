@@ -7,6 +7,7 @@ import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog } from "@/lib/audit";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import { pipedriveCredentialsSchema } from "@/lib/integrations/pipedrive-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { deleteOAuthSettings } from "@/lib/integrations/oauth-settings";
@@ -19,6 +20,7 @@ const baseUpdateSchema = z.object({
 
 const credentialSchemas: Record<string, z.ZodType> = {
   odoo: odooCredentialsSchema,
+  pipedrive: pipedriveCredentialsSchema,
   "web-search": z.object({ apiKey: z.string().min(1) }).strict(),
 };
 

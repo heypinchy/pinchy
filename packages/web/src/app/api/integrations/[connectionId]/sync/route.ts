@@ -6,8 +6,10 @@ import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { decrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
+import { pipedriveCredentialsSchema } from "@/lib/integrations/pipedrive-schema";
 import { appendAuditLog } from "@/lib/audit";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
+import { fetchPipedriveSchema } from "@/lib/integrations/pipedrive-sync";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
@@ -34,6 +36,48 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
 
   try {
     const decrypted = JSON.parse(decrypt(connection.credentials));
+
+    if (connection.type === "pipedrive") {
+      const parsed = pipedriveCredentialsSchema.safeParse(decrypted);
+      if (!parsed.success) {
+        return NextResponse.json(
+          { success: false, error: "Invalid credentials format" },
+          { status: 200 }
+        );
+      }
+
+      const result = await fetchPipedriveSchema(parsed.data.apiToken);
+      if (!result.success) {
+        return NextResponse.json(result);
+      }
+
+      await db
+        .update(integrationConnections)
+        .set({ data: result.data, updatedAt: new Date() })
+        .where(eq(integrationConnections.id, connectionId));
+
+      appendAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: `integration:${connectionId}`,
+        detail: {
+          action: "integration_schema_synced",
+          id: connectionId,
+          name: connection.name,
+          entityCount: result.entities,
+        },
+        outcome: "success",
+      }).catch(console.error);
+
+      return NextResponse.json({
+        success: true,
+        entities: result.entities,
+        lastSyncAt: result.lastSyncAt,
+      });
+    }
+
+    // Odoo (default)
     const parsed = odooCredentialsSchema.safeParse(decrypted);
     if (!parsed.success) {
       return NextResponse.json(

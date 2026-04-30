@@ -5,6 +5,7 @@ import { z } from "zod";
 import { OdooClient } from "odoo-node";
 import { getSession } from "@/lib/auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { getPipedriveBaseUrl } from "@/lib/integrations/pipedrive-api";
 
 const testCredentialsSchema = z.discriminatedUnion("type", [
   z.object({
@@ -14,6 +15,12 @@ const testCredentialsSchema = z.discriminatedUnion("type", [
       db: z.string().min(1),
       login: z.string().min(1),
       apiKey: z.string().min(1),
+    }),
+  }),
+  z.object({
+    type: z.literal("pipedrive"),
+    credentials: z.object({
+      apiToken: z.string().min(1),
     }),
   }),
   z.object({
@@ -42,6 +49,35 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (parsed.data.type === "pipedrive") {
+    const { apiToken } = parsed.data.credentials;
+
+    try {
+      const response = await fetch(`${getPipedriveBaseUrl()}/v1/users/me`, {
+        headers: { "x-api-token": apiToken },
+      });
+      const data = await response.json();
+
+      if (!data.success) {
+        return NextResponse.json({
+          success: false,
+          error: data.error || "Authentication failed",
+        });
+      }
+
+      return NextResponse.json({
+        success: true,
+        companyDomain: data.data.company_domain,
+        companyName: data.data.company_name,
+        userId: data.data.id,
+        userName: data.data.name,
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Connection failed";
+      return NextResponse.json({ success: false, error: message });
+    }
+  }
+
   if (parsed.data.type === "web-search") {
     try {
       const res = await fetch("https://api.search.brave.com/res/v1/web/search?q=test&count=1", {
@@ -57,6 +93,7 @@ export async function POST(request: NextRequest) {
     }
   }
 
+  // Odoo
   const { credentials } = parsed.data;
 
   const urlCheck = validateExternalUrl(credentials.url);

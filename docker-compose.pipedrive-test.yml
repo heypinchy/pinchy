@@ -1,0 +1,20 @@
+# Test overlay: adds mock Pipedrive server for E2E testing.
+# Usage: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.pipedrive-test.yml up --build -d
+
+services:
+  pipedrive-mock:
+    build:
+      context: config/pipedrive-mock
+    ports:
+      - "8080:8080"
+      - "9003:9003"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:9003/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  pinchy:
+    environment:
+      # Redirect Pipedrive API calls to the mock server for E2E testing
+      - PIPEDRIVE_API_URL=http://pipedrive-mock:8080

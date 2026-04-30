@@ -8,6 +8,10 @@ import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
 import { appendAuditLog } from "@/lib/audit";
 import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrations/odoo-schema";
+import {
+  pipedriveCredentialsSchema,
+  pipedriveConnectionDataSchema,
+} from "@/lib/integrations/pipedrive-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 
@@ -18,6 +22,13 @@ const createIntegrationSchema = z.discriminatedUnion("type", [
     description: z.string().max(500).default(""),
     credentials: odooCredentialsSchema,
     data: odooConnectionDataSchema.optional(),
+  }),
+  z.object({
+    type: z.literal("pipedrive"),
+    name: z.string().min(1).max(100),
+    description: z.string().max(500).default(""),
+    credentials: pipedriveCredentialsSchema,
+    data: pipedriveConnectionDataSchema.optional(),
   }),
   z.object({
     type: z.literal("web-search"),
@@ -61,6 +72,7 @@ export async function GET() {
         type: conn.type,
         name: conn.name,
         description: conn.description,
+        status: conn.status,
         data: null,
         createdAt: conn.createdAt,
         updatedAt: conn.updatedAt,
@@ -115,7 +127,10 @@ export async function POST(request: NextRequest) {
   }
 
   const encryptedCredentials = encrypt(JSON.stringify(credentials));
-  const data = parsed.data.type === "odoo" ? (parsed.data.data ?? null) : null;
+  const data =
+    parsed.data.type === "odoo" || parsed.data.type === "pipedrive"
+      ? (parsed.data.data ?? null)
+      : null;
 
   const [connection] = await db
     .insert(integrationConnections)

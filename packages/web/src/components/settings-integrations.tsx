@@ -35,9 +35,25 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 // toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
 import { EditOAuthDialog } from "./edit-oauth-dialog";
-import { BraveIcon, GoogleIcon, OdooIcon } from "./integration-icons";
+import { BraveIcon, GoogleIcon, OdooIcon, PipedriveIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
-import { getAccessibleCategoryLabels } from "@/lib/integrations/odoo-sync";
+import { getAccessibleCategoryLabels as getOdooCategoryLabels } from "@/lib/integrations/odoo-sync";
+import { getAccessibleCategoryLabels as getPipedriveCategoryLabels } from "@/lib/integrations/pipedrive-sync";
+
+function IntegrationIcon({ type }: { type: string }) {
+  switch (type) {
+    case "odoo":
+      return <OdooIcon className="h-6 w-12 shrink-0" />;
+    case "pipedrive":
+      return <PipedriveIcon className="h-6 w-6 shrink-0" />;
+    case "google":
+      return <GoogleIcon className="h-6 w-6 shrink-0" />;
+    case "web-search":
+      return <BraveIcon className="h-6 w-6 shrink-0" />;
+    default:
+      return <Plug className="h-6 w-6 shrink-0" />;
+  }
+}
 
 function formatRelativeTime(dateString: string): string {
   const date = new Date(dateString);
@@ -155,22 +171,22 @@ export function SettingsIntegrations() {
                   );
                 }
                 const isOdoo = conn.type === "odoo";
-                const categories = isOdoo ? getAccessibleCategoryLabels(conn.data) : [];
+                const isPipedrive = conn.type === "pipedrive";
+                const isSyncable = isOdoo || isPipedrive;
+                const categories = isPipedrive
+                  ? getPipedriveCategoryLabels(conn.data)
+                  : isOdoo
+                    ? getOdooCategoryLabels(conn.data)
+                    : [];
                 const lastSyncAt =
-                  isOdoo && conn.data && typeof conn.data.lastSyncAt === "string"
+                  isSyncable && conn.data && typeof conn.data.lastSyncAt === "string"
                     ? conn.data.lastSyncAt
                     : null;
                 return (
                   <div key={conn.id} className="rounded-lg border p-4 space-y-2">
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-3">
-                        {conn.type === "google" ? (
-                          <GoogleIcon className="h-6 w-6 shrink-0" />
-                        ) : conn.type === "web-search" ? (
-                          <BraveIcon className="h-6 w-6 shrink-0" />
-                        ) : (
-                          <OdooIcon className="h-6 w-12 shrink-0" />
-                        )}
+                        <IntegrationIcon type={conn.type} />
                         <span className="text-sm font-medium">{conn.name}</span>
                       </div>
                       <DropdownMenu>
@@ -214,7 +230,7 @@ export function SettingsIntegrations() {
                                   >
                                     {testing === conn.id ? "Testing..." : "Test Connection"}
                                   </DropdownMenuItem>
-                                  {isOdoo && (
+                                  {isSyncable && (
                                     <DropdownMenuItem
                                       onClick={() => syncSchema(conn.id)}
                                       disabled={syncing === conn.id}
@@ -257,7 +273,7 @@ export function SettingsIntegrations() {
                             <Loader2 className="h-3.5 w-3.5 animate-spin" />
                             <span>Syncing schema...</span>
                           </>
-                        ) : !isOdoo ? (
+                        ) : !isSyncable ? (
                           <>
                             <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
                             <span>Connected</span>

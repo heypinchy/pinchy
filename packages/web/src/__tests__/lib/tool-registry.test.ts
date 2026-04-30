@@ -36,13 +36,19 @@ describe("TOOL_REGISTRY", () => {
 
   it("contains powerful tools", () => {
     const powerful = TOOL_REGISTRY.filter((t) => t.category === "powerful");
-    expect(powerful.length).toBe(7);
+    expect(powerful.length).toBe(13);
     expect(powerful.map((t) => t.id)).toEqual([
       "pinchy_web_search",
       "pinchy_web_fetch",
       "odoo_create",
       "odoo_write",
       "odoo_delete",
+      "pipedrive_create",
+      "pipedrive_update",
+      "pipedrive_delete",
+      "pipedrive_merge",
+      "pipedrive_relate",
+      "pipedrive_convert",
       "email_draft",
       "email_send",
     ]);
@@ -169,7 +175,10 @@ describe("Odoo access level helpers", () => {
   it("non-integration tools don't have integration set", () => {
     const nonIntegrationTools = TOOL_REGISTRY.filter(
       (t) =>
-        !t.id.startsWith("odoo_") && !t.id.startsWith("email_") && !t.id.startsWith("pinchy_web_")
+        !t.id.startsWith("odoo_") &&
+        !t.id.startsWith("pipedrive_") &&
+        !t.id.startsWith("email_") &&
+        !t.id.startsWith("pinchy_web_")
     );
     for (const tool of nonIntegrationTools) {
       expect(tool.integration).toBeUndefined();
