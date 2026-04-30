@@ -63,27 +63,34 @@ test.describe("Secrets owner race (#200)", () => {
     await waitForOpenClawConnected(120000);
   });
 
-  test("secrets.json never lingers as uid 999 long enough for a reload to fail", async () => {
-    test.setTimeout(60000);
+  test("atomic tmp+rename writing uid 999 is restored to root before any reload could read it", async () => {
+    test.setTimeout(30000);
 
-    // Sanity: secrets file must exist (Pinchy writes it during seedSetup).
-    const initialOwner = getSecretsOwner();
-    expect(initialOwner).not.toBe("missing");
+    // Pre-condition: file exists and is root-owned (start-openclaw.sh
+    // chowns it on container start).
+    const startOwner = getSecretsOwner();
+    expect(startOwner).toBe("0:0");
 
-    // Force the bad owner state. This simulates Pinchy's atomic
-    // writeSecretsFile() which always lands the file as uid 999 after
-    // renameSync — that's the moment the bug bites.
-    inOpenClaw("chown 999:999 /openclaw-secrets/secrets.json");
-    expect(getSecretsOwner()).toBe("999:999");
+    // Reproduce Pinchy's atomic writeSecretsFile() pattern exactly:
+    // 1. Write a tmp file (here as root, content doesn't matter for the race).
+    // 2. chown it to uid 999 (Pinchy's uid; we cannot run as uid 999 from
+    //    inside the OpenClaw container — there's no such user — but the
+    //    end-state on disk after Pinchy's rename is the same: owner 999).
+    // 3. mv onto secrets.json — this is the moved_to event inotify watches.
+    // The replaced inode is now uid 999, exactly the bug condition.
+    inOpenClaw(
+      "echo '{}' > /openclaw-secrets/secrets.json.tmp && chown 999:999 /openclaw-secrets/secrets.json.tmp && mv /openclaw-secrets/secrets.json.tmp /openclaw-secrets/secrets.json"
+    );
 
-    // The fast-tick chmod loop runs every 200 ms. Within ~1 s it must
-    // have restored root:root. Poll up to 3 s for safety margin.
-    let owner = "999:999";
-    const deadline = Date.now() + 3000;
+    // inotify reacts in single-digit milliseconds — far faster than the
+    // 200 ms chmod loop. Poll fast (10 ms) and tightly bounded (500 ms)
+    // so a regression of either path (loop or watcher) is visible.
+    let owner = "";
+    const deadline = Date.now() + 500;
     while (Date.now() < deadline) {
       owner = getSecretsOwner();
       if (owner === "0:0") break;
-      await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 10));
     }
 
     expect(owner).toBe("0:0");
