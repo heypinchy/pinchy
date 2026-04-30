@@ -7,23 +7,14 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Form,
-  FormControl,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormMessage,
-} from "@/components/ui/form";
+import { Form, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { CheckCircle2 } from "lucide-react";
 import { PasswordInput } from "@/components/password-input";
 import { useTokenParam } from "@/hooks/use-token-param";
 
-const inviteClaimSchema = z
+const resetSchema = z
   .object({
-    name: z.string().min(1, "Name is required"),
     password: z.string().min(8, "Password must be at least 8 characters"),
     confirmPassword: z.string(),
   })
@@ -32,20 +23,20 @@ const inviteClaimSchema = z
     path: ["confirmPassword"],
   });
 
-type InviteClaimValues = z.infer<typeof inviteClaimSchema>;
+type ResetValues = z.infer<typeof resetSchema>;
 
-export default function InviteClaimPage() {
+export default function ResetPasswordPage() {
   const token = useTokenParam();
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
 
-  const form = useForm<InviteClaimValues>({
-    resolver: zodResolver(inviteClaimSchema),
-    defaultValues: { name: "", password: "", confirmPassword: "" },
+  const form = useForm<ResetValues>({
+    resolver: zodResolver(resetSchema),
+    defaultValues: { password: "", confirmPassword: "" },
   });
 
-  async function onSubmit(values: InviteClaimValues) {
+  async function onSubmit(values: ResetValues) {
     setLoading(true);
     setError("");
 
@@ -53,12 +44,12 @@ export default function InviteClaimPage() {
       const res = await fetch("/api/invite/claim", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token, name: values.name, password: values.password }),
+        body: JSON.stringify({ token, password: values.password }),
       });
 
       if (!res.ok) {
         const data = await res.json();
-        setError(data.error || "Failed to create account");
+        setError(data.error || "Failed to reset password");
         return;
       }
 
@@ -82,8 +73,8 @@ export default function InviteClaimPage() {
                 <div className="flex justify-center mb-2">
                   <CheckCircle2 className="size-12 text-primary" />
                 </div>
-                <CardTitle>Account created!</CardTitle>
-                <CardDescription>You can now sign in with your credentials.</CardDescription>
+                <CardTitle>Password reset!</CardTitle>
+                <CardDescription>You can now sign in with your new password.</CardDescription>
               </CardHeader>
               <CardContent>
                 <Button asChild className="w-full">
@@ -94,27 +85,13 @@ export default function InviteClaimPage() {
           ) : (
             <>
               <CardHeader>
-                <CardTitle>You&apos;ve been invited to Pinchy</CardTitle>
-                <CardDescription>Set up your account to get started.</CardDescription>
+                <CardTitle>Reset your password</CardTitle>
+                <CardDescription>Enter a new password for your account.</CardDescription>
               </CardHeader>
               <CardContent>
                 <Form {...form}>
                   <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
                     {error && <p className="text-sm text-destructive">{error}</p>}
-
-                    <FormField
-                      control={form.control}
-                      name="name"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Name</FormLabel>
-                          <FormControl>
-                            <Input type="text" {...field} />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
 
                     <FormField
                       control={form.control}
@@ -141,7 +118,7 @@ export default function InviteClaimPage() {
                     />
 
                     <Button type="submit" disabled={loading} className="w-full">
-                      {loading ? "Creating account..." : "Create account"}
+                      {loading ? "Resetting password..." : "Reset password"}
                     </Button>
                   </form>
                 </Form>

@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { UserDetailSheet } from "@/components/user-detail-sheet";
@@ -40,8 +40,14 @@ const allGroups = [
 ];
 
 describe("UserDetailSheet", () => {
+  const originalLocation = window.location;
+
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(window, "location", { value: originalLocation, writable: true });
   });
 
   it("should render user name and email", () => {
@@ -325,5 +331,36 @@ describe("UserDetailSheet", () => {
     await user.click(screen.getByRole("button", { name: "Copy" }));
 
     await screen.findByRole("button", { name: "Copied!" });
+  });
+
+  it("should show reset link with /reset/ path after clicking Reset Password", async () => {
+    const user = userEvent.setup();
+    vi.spyOn(global, "fetch").mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ token: "abc123" }),
+    } as Response);
+
+    Object.defineProperty(window, "location", {
+      value: { origin: "https://demo.heypinchy.com" },
+      writable: true,
+    });
+
+    render(
+      <UserDetailSheet
+        user={mockUser}
+        allGroups={allGroups}
+        isEnterprise={true}
+        currentUserId="admin-1"
+        open={true}
+        onOpenChange={vi.fn()}
+        onSaved={vi.fn()}
+      />
+    );
+
+    await user.click(screen.getByRole("button", { name: /reset password/i }));
+
+    await waitFor(() => {
+      expect(screen.getByText("https://demo.heypinchy.com/reset/abc123")).toBeInTheDocument();
+    });
   });
 });
