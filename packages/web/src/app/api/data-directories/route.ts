@@ -15,7 +15,12 @@ export async function GET() {
     const json = readFileSync(DATA_DIRECTORIES_JSON, "utf-8");
     const data = JSON.parse(json);
     return NextResponse.json({ directories: data.directories });
-  } catch {
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "ENOENT") {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[data-directories]", `failed to read ${DATA_DIRECTORIES_JSON}:`, message);
+    }
     return NextResponse.json({ directories: [] });
   }
 }

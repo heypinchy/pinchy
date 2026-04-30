@@ -162,7 +162,9 @@ fix_config_permissions() {
     # Use a glob so we also catch any sibling credential files OpenClaw
     # writes alongside the pairing file (allowFrom stores etc.) — they too
     # are written by root and consumed by Pinchy.
-    chmod -R a+r /root/.openclaw/credentials 2>/dev/null || true
+    # a+rX: r for all files, x only for directories (capital X) so uid 999
+    # can both enter the credentials/ dir (exec bit) and read files inside it.
+    chmod -R a+rX /root/.openclaw/credentials 2>/dev/null || true
 }
 fix_config_permissions
 
