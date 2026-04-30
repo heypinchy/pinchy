@@ -52,7 +52,37 @@ function getAgentConfig(
   return agentConfigs[agentId] ?? null;
 }
 
+/**
+ * Defense-in-depth runtime validation. The TypeScript signature claims
+ * `apiKey: string`, but Pinchy historically wrote it as a `SecretRef`
+ * object (`{ source, provider, id }`) intending OpenClaw to resolve it.
+ * OpenClaw 2026.4.x does not resolve SecretRefs in arbitrary plugin
+ * config paths, so the unresolved object reached this plugin and was
+ * forwarded to `odoo-node` as the password — causing Odoo to crash with
+ * `unhashable type: 'dict'` (#209). If a future regression sends the
+ * wrong shape again, fail fast here with a clear, plugin-side error
+ * instead of producing a confusing Python-server crash.
+ */
+function assertConnectionShape(connection: AgentOdooConfig["connection"]): void {
+  const fields: Array<[keyof AgentOdooConfig["connection"], "string" | "number"]> = [
+    ["url", "string"],
+    ["db", "string"],
+    ["uid", "number"],
+    ["apiKey", "string"],
+  ];
+  for (const [name, expected] of fields) {
+    const actual = typeof connection[name];
+    if (actual !== expected) {
+      throw new Error(
+        `pinchy-odoo: connection.${name} must be a ${expected}, got ${actual}` +
+          `${actual === "object" ? " (looks like an unresolved SecretRef — see issue #209)" : ""}`
+      );
+    }
+  }
+}
+
 function createClient(config: AgentOdooConfig): OdooClient {
+  assertConnectionShape(config.connection);
   return new OdooClient({
     url: config.connection.url,
     db: config.connection.db,

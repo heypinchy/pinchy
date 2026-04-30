@@ -511,3 +511,64 @@ describe("client caching", () => {
     expect(OdooClient).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * Defense-in-depth runtime checks at the plugin's edge. The TypeScript
+ * type says `apiKey: string`, but Pinchy historically wrote it as a
+ * `SecretRef` object — OpenClaw didn't resolve it, the plugin forwarded
+ * the dict to Odoo, and Odoo crashed with `unhashable type: 'dict'`
+ * (#209). These tests assert the plugin fails fast with a clear error
+ * if a future regression sends the wrong shape, instead of producing a
+ * Python-server crash deep inside `odoo-node`.
+ */
+describe("connection shape validation (#209 guardrail)", () => {
+  it("rejects an unresolved SecretRef-shaped apiKey with a clear plugin-side error", async () => {
+    const brokenConfig = {
+      connection: {
+        ...testConnection,
+        // Exactly the shape Pinchy was writing pre-#209: an unresolved
+        // SecretRef object instead of a plaintext string.
+        apiKey: { source: "file", provider: "pinchy", id: "/integrations/x/odooApiKey" },
+      },
+      permissions: testPermissions,
+      modelNames: {},
+    };
+
+    const tools = createApi({ [agentId]: brokenConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-1", { model: "sale.order", filters: [] });
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("apiKey must be a string");
+    expect(text).toContain("SecretRef");
+    expect(text).toContain("#209");
+  });
+
+  it("rejects a non-numeric uid with a clear error", async () => {
+    const brokenConfig = {
+      connection: {
+        ...testConnection,
+        uid: "2" as unknown as number, // came from JSON without coercion
+      },
+      permissions: testPermissions,
+      modelNames: {},
+    };
+
+    const tools = createApi({ [agentId]: brokenConfig });
+    const tool = findTool(tools, "odoo_count", agentId)!;
+
+    const result = await tool.execute("call-1", { model: "sale.order", filters: [] });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("uid must be a number");
+  });
+
+  it("does not reject a well-formed connection", async () => {
+    mockSearchCount.mockResolvedValue(0);
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_count", agentId)!;
+
+    const result = await tool.execute("call-1", { model: "sale.order", filters: [] });
+    expect(result.isError).toBeFalsy();
+  });
+});
