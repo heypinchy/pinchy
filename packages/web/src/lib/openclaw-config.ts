@@ -799,17 +799,16 @@ async function pushOrWriteConfig(newContent: string): Promise<void> {
     return;
   }
 
-  // Retry the apply until OpenClaw's WebSocket is actually reachable. The
-  // openclaw-node client auto-reconnects, but during a gateway restart
-  // cascade (cold start, secrets.json mtime change, plugin enable, …) it
-  // can be disconnected for several seconds. Without retry, the very common
-  // case of POST /api/agents-during-cold-start falls back to file-write +
-  // inotify, which on production volumes is the 60 s slow path the apply
-  // RPC was meant to avoid.
+  // Brief retry to absorb transient disconnects (the openclaw-node WS
+  // reconnects within a couple of seconds in normal operation). Past that,
+  // fall back to file write — the cold-start cascade window can keep the
+  // WS down for tens of seconds, and we don't want interactive save flows
+  // (e.g. agent permissions save) hanging that long. inotify will still
+  // pick up the file write eventually, just slower.
   //
-  // Total budget ~15 s: covers one full gateway restart cycle. Past that,
-  // fall back to file write so agent creation never fails outright.
-  const backoffsMs = [100, 250, 500, 1000, 2000, 4000, 7000];
+  // Budget ~3.5 s sums to less than the typical UX timeout for save
+  // operations (~5 s spinners) while still riding through brief blips.
+  const backoffsMs = [100, 250, 500, 1000, 2000];
   let lastErr: unknown = null;
   for (const delayMs of backoffsMs) {
     try {
