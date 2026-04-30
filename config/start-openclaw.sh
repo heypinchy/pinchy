@@ -165,6 +165,19 @@ fix_config_permissions() {
     # a+rX: r for all files, x only for directories (capital X) so uid 999
     # can both enter the credentials/ dir (exec bit) and read files inside it.
     chmod -R a+rX /root/.openclaw/credentials 2>/dev/null || true
+    # Re-take ownership of secrets.json. Pinchy writes it as uid 999 (the
+    # pinchy user inside its container); OpenClaw's secret-resolver requires
+    # owner == process uid (root) and refuses to reload otherwise. The 30 s
+    # mtime watch loop further down chowns it after a write, but the [reload]
+    # pipeline triggered by inotify on openclaw.json fires within ~100 ms of
+    # Pinchy's regenerateOpenClawConfig() — long before that loop wakes up.
+    # Without this fast tick, a freshly created agent surfaces as
+    # `unknown agent id` because the reload fails on secrets and the new
+    # agents.list never enters runtime. See issue #200.
+    if [ -f "$SECRETS_FILE" ]; then
+        chown root:root "$SECRETS_FILE" 2>/dev/null || true
+        chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
+    fi
 }
 fix_config_permissions
 
