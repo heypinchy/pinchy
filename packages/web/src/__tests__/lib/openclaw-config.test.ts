@@ -1845,7 +1845,22 @@ describe("pinchy-odoo config size", () => {
   });
 });
 
-describe("pinchy-odoo connection.apiKey as SecretRef", () => {
+describe("pinchy-odoo connection.apiKey", () => {
+  // Background: we originally wrote `apiKey` as a SecretRef pointer
+  // (`{ source: "file", provider: "pinchy", id: "/integrations/.../odooApiKey" }`)
+  // intending OpenClaw to resolve it at runtime. OpenClaw 2026.4.x does NOT
+  // resolve SecretRef objects in arbitrary plugin config paths — only in a
+  // hand-coded list of known fields (e.g. `models.providers.X.apiKey`,
+  // `gateway.auth.token`). The unresolved object reached the `pinchy-odoo`
+  // plugin, was forwarded to `odoo-node` as the password, and Odoo's
+  // Python server failed with `unhashable type: 'dict'` when it tried to
+  // use the dict as a hash key (#209). Pinchy now writes `apiKey` as a
+  // plaintext string, matching the existing pattern used for
+  // `pinchy-context.config.gatewayToken`. Odoo API keys don't match any
+  // pattern in `openclaw-plaintext-scanner.ts` so the
+  // defense-in-depth check still passes; the `tools.openclaw-secrets`
+  // tmpfs is irrelevant for this field.
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockedExistsSync.mockReturnValue(true);
@@ -1855,7 +1870,7 @@ describe("pinchy-odoo connection.apiKey as SecretRef", () => {
     mockedGetSetting.mockResolvedValue(null);
   });
 
-  it("writes odoo connection.apiKey as SecretRef keyed by connection id", async () => {
+  it("writes odoo connection.apiKey as a plaintext string the plugin can use directly", async () => {
     const agentsData = [
       {
         id: "odoo-agent",
@@ -1903,7 +1918,6 @@ describe("pinchy-odoo connection.apiKey as SecretRef", () => {
 
     await regenerateOpenClawConfig();
 
-    // openclaw.json must contain a SecretRef for apiKey, not the plaintext key
     const written = mockedWriteFileSync.mock.calls.find(
       (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
     );
@@ -1912,20 +1926,18 @@ describe("pinchy-odoo connection.apiKey as SecretRef", () => {
 
     const odooConfig = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents?.["odoo-agent"];
     expect(odooConfig).toBeDefined();
-    expect(odooConfig.connection.apiKey).toEqual({
-      source: "file",
-      provider: "pinchy",
-      id: "/integrations/conn-odoo-1/odooApiKey",
-    });
-    // Other connection fields must still be present in plaintext
+
+    // Critical: apiKey must be a string. If it leaks through as the
+    // SecretRef object `{ source, provider, id }`, the plugin forwards
+    // that dict to Odoo and Python crashes with
+    // `unhashable type: 'dict'`.
+    expect(typeof odooConfig.connection.apiKey).toBe("string");
+    expect(odooConfig.connection.apiKey).toBe("secret-odoo-key");
+
+    // Other connection fields are unchanged.
     expect(odooConfig.connection.url).toBe("https://odoo.example.com");
     expect(odooConfig.connection.db).toBe("mydb");
     expect(odooConfig.connection.uid).toBe(2);
-
-    // secrets.json must contain the actual key
-    expect(mockWriteSecretsFile).toHaveBeenCalled();
-    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
-    expect(secretsArg.integrations?.["conn-odoo-1"]?.odooApiKey).toBe("secret-odoo-key");
   });
 });
 

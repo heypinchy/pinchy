@@ -460,11 +460,6 @@ export async function regenerateOpenClawConfig() {
       }
     }
 
-    integrationSecrets[conn.id] = {
-      ...(integrationSecrets[conn.id] || {}),
-      odooApiKey: decryptedCreds.apiKey,
-    };
-
     odooAgentConfigs[agentId] = {
       connection: {
         name: conn.name,
@@ -472,7 +467,17 @@ export async function regenerateOpenClawConfig() {
         url: decryptedCreds.url,
         db: decryptedCreds.db,
         uid: decryptedCreds.uid,
-        apiKey: secretRef(`/integrations/${conn.id}/odooApiKey`),
+        // Plaintext, not SecretRef. OpenClaw 2026.4.x does not resolve
+        // SecretRef objects in plugin config paths — only in a hand-coded
+        // set of known fields (e.g. models.providers.*.apiKey). When this
+        // was a SecretRef, the unresolved `{ source, provider, id }` dict
+        // reached `pinchy-odoo`, was forwarded as the password to Odoo,
+        // and Python failed with `unhashable type: 'dict'` (#209). Same
+        // pragma as `pinchy-context.config.gatewayToken` and Telegram bot
+        // tokens — all plaintext for the same reason. Odoo API keys don't
+        // match any provider-key pattern in `openclaw-plaintext-scanner`,
+        // so its defense-in-depth check still passes.
+        apiKey: decryptedCreds.apiKey,
       },
       permissions,
       modelNames,
