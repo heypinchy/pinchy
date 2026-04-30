@@ -775,60 +775,55 @@ export async function regenerateOpenClawConfig() {
     // File doesn't exist yet — write it
   }
 
-  // Prefer pushing via the WebSocket RPC: config.apply writes the file on
-  // OpenClaw's side AND triggers a single reload. Writing the file ourselves
-  // first would cause inotify to fire, then config.apply to fire again —
-  // two restart cascades back-to-back, which leaves chat.history unavailable
-  // for tens of seconds and surfaces as `unknown agent id` to users sending
-  // messages mid-cycle.
-  //
-  // Fallback: if no client is connected yet (cold start before the first WS
-  // session) or the RPC errors, write the file ourselves and rely on
-  // OpenClaw's inotify to pick it up.
-  await pushOrWriteConfig(newContent);
+  // The file is the canonical source of truth. OpenClaw's inotify watcher
+  // will eventually pick it up — slowly on production volumes (~60 s),
+  // which is the latency `pushConfigInBackground` exists to hide.
+  writeConfigAtomic(newContent);
+
+  // Best-effort RPC push for faster runtime propagation. Fire-and-forget:
+  // the user-visible POST that triggered this regenerate must return as
+  // soon as the file is on disk, since `config.apply` can block 10–30 s
+  // when the change requires a gateway restart. Blocking that long broke
+  // interactive save flows (Odoo permissions Save & Restart, where the
+  // UI waits for "All changes saved").
+  pushConfigInBackground(newContent);
 }
 
-async function pushOrWriteConfig(newContent: string): Promise<void> {
-  let client;
-  try {
-    const { getOpenClawClient } = await import("@/server/openclaw-client");
-    client = getOpenClawClient();
-  } catch {
-    // Client not initialised yet — typical pre-WS-connect cold start.
-    writeConfigAtomic(newContent);
-    return;
-  }
-
-  // Brief retry to absorb transient disconnects (the openclaw-node WS
-  // reconnects within a couple of seconds in normal operation). Past that,
-  // fall back to file write — the cold-start cascade window can keep the
-  // WS down for tens of seconds, and we don't want interactive save flows
-  // (e.g. agent permissions save) hanging that long. inotify will still
-  // pick up the file write eventually, just slower.
-  //
-  // Budget ~3.5 s sums to less than the typical UX timeout for save
-  // operations (~5 s spinners) while still riding through brief blips.
-  const backoffsMs = [100, 250, 500, 1000, 2000];
-  let lastErr: unknown = null;
-  for (const delayMs of backoffsMs) {
+function pushConfigInBackground(newContent: string): void {
+  void (async () => {
+    let client;
     try {
-      const current = (await client.config.get()) as { hash: string };
-      await client.config.apply(newContent, current.hash, {
-        note: "pinchy: regenerateOpenClawConfig",
-      });
+      const { getOpenClawClient } = await import("@/server/openclaw-client");
+      client = getOpenClawClient();
+    } catch {
+      // No client — file write + inotify is the only path here.
       return;
-    } catch (err) {
-      lastErr = err;
-      await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
-  }
 
-  const message = lastErr instanceof Error ? lastErr.message : String(lastErr);
-  console.warn(
-    "[openclaw-config] config.apply RPC failed after retries; falling back to file write:",
-    message
-  );
-  writeConfigAtomic(newContent);
+    // Brief retry across transient WS disconnects. Beyond ~3.5 s the WS is
+    // probably down due to the cold-start cascade, and inotify will catch
+    // up; no point keeping a background coroutine alive longer.
+    const backoffsMs = [100, 250, 500, 1000, 2000];
+    for (let i = 0; i < backoffsMs.length; i++) {
+      try {
+        const current = (await client.config.get()) as { hash: string };
+        await client.config.apply(newContent, current.hash, {
+          note: "pinchy: regenerateOpenClawConfig",
+        });
+        return;
+      } catch (err) {
+        if (i === backoffsMs.length - 1) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(
+            "[openclaw-config] background config.apply failed; relying on inotify:",
+            message
+          );
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, backoffsMs[i]));
+      }
+    }
+  })();
 }
 
 // ── Targeted config updates ───────────────────────────────────────────────
