@@ -40,7 +40,10 @@ export interface OllamaCloudModel {
 
 const ZERO_COST = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } as const;
 
-export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
+// `as const satisfies` keeps the literal types of every `id` (so we can
+// derive a strict union below) while still validating each entry against
+// the `OllamaCloudModel` shape.
+export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
   {
     id: "deepseek-v3.1:671b",
     contextWindow: 163840,
@@ -153,15 +156,31 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS: readonly OllamaCloudModel[] = [
   },
   { id: "qwen3.5:397b", contextWindow: 262144, maxTokens: 8192, reasoning: true, vision: true },
   { id: "rnj-1:8b", contextWindow: 32768, maxTokens: 8192, reasoning: false, vision: false },
-];
+] as const satisfies readonly OllamaCloudModel[];
+
+/**
+ * Literal-string union of every model ID in the curated list. Use this in
+ * resolvers, agent templates, and anywhere else that hard-codes an Ollama
+ * Cloud model — TypeScript will then refuse to compile if you reference a
+ * model that's been removed (the `llama3.3:70b → HTTP 404` bug from
+ * v0.5.0 staging would have failed at the type level).
+ */
+export type OllamaCloudModelId = (typeof TOOL_CAPABLE_OLLAMA_CLOUD_MODELS)[number]["id"];
 
 /** Just the IDs — used by the `/v1/models` transform and fallback list. */
-export const TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS = TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.map(
-  (m) => m.id
-);
+export const TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS: readonly OllamaCloudModelId[] =
+  TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.map((m) => m.id);
 
-/** Subset of IDs that accept image input. Used by the vision-capability check. */
-export const VISION_OLLAMA_CLOUD_MODEL_IDS = new Set(
+/**
+ * Subset of IDs that accept image input. Used by the vision-capability check.
+ *
+ * Typed as `Set<string>` (not `Set<OllamaCloudModelId>`) because callers
+ * pass model strings of unknown provenance (e.g. names returned from
+ * OpenClaw's runtime, user input). `Set.has` is strict on its element type
+ * in modern TS; widening here keeps the call sites simple without
+ * sacrificing correctness — the set still only ever contains curated IDs.
+ */
+export const VISION_OLLAMA_CLOUD_MODEL_IDS: ReadonlySet<string> = new Set(
   TOOL_CAPABLE_OLLAMA_CLOUD_MODELS.filter((m) => m.vision).map((m) => m.id)
 );
 
