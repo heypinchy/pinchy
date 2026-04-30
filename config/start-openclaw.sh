@@ -246,6 +246,24 @@ SECRETS_MTIME=$(get_secrets_mtime)
 # fix(openclaw-config): guard targeted writes against EACCES read).
 (while true; do sleep 0.2; fix_config_permissions; done) &
 
+# Defense in depth for the secrets owner race (#200): the 0.2 s tick above
+# averages ~100 ms behind a Pinchy write, but OpenClaw's inotify-driven
+# reload pipeline also fires within ~50–100 ms — leaving a small window
+# where the reload sees uid 999 and bails with SECRETS_RELOADER_DEGRADED.
+# inotifywait reacts within a handful of milliseconds to Pinchy's atomic
+# rename, closing the window before any reload can pick up the bad owner.
+# Watches the directory (not the file) because Pinchy's writeSecretsFile
+# uses tmp+rename, which replaces the inode each time.
+(inotifywait -m -q -e close_write,moved_to "$(dirname "$SECRETS_FILE")" 2>/dev/null | \
+    while read -r _dir _events filename; do
+        # Only react to the secrets file itself, ignoring sibling .tmp writes
+        # and any other unrelated activity in the directory.
+        if [ "$filename" = "$(basename "$SECRETS_FILE")" ]; then
+            chown root:root "$SECRETS_FILE" 2>/dev/null || true
+            chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
+        fi
+    done) &
+
 # Start auto-approver in background — stops when Pinchy signals connection
 # (writes pinchy-device-approved). Safety timeout: 5 minutes.
 auto_approve_devices &
