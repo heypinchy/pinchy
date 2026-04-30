@@ -794,20 +794,42 @@ async function pushOrWriteConfig(newContent: string): Promise<void> {
     const { getOpenClawClient } = await import("@/server/openclaw-client");
     client = getOpenClawClient();
   } catch {
+    // Client not initialised yet — typical pre-WS-connect cold start.
     writeConfigAtomic(newContent);
     return;
   }
 
-  try {
-    const current = (await client.config.get()) as { hash: string };
-    await client.config.apply(newContent, current.hash, {
-      note: "pinchy: regenerateOpenClawConfig",
-    });
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    console.warn("[openclaw-config] config.apply RPC failed; falling back to file write:", message);
-    writeConfigAtomic(newContent);
+  // Retry the apply until OpenClaw's WebSocket is actually reachable. The
+  // openclaw-node client auto-reconnects, but during a gateway restart
+  // cascade (cold start, secrets.json mtime change, plugin enable, …) it
+  // can be disconnected for several seconds. Without retry, the very common
+  // case of POST /api/agents-during-cold-start falls back to file-write +
+  // inotify, which on production volumes is the 60 s slow path the apply
+  // RPC was meant to avoid.
+  //
+  // Total budget ~15 s: covers one full gateway restart cycle. Past that,
+  // fall back to file write so agent creation never fails outright.
+  const backoffsMs = [100, 250, 500, 1000, 2000, 4000, 7000];
+  let lastErr: unknown = null;
+  for (const delayMs of backoffsMs) {
+    try {
+      const current = (await client.config.get()) as { hash: string };
+      await client.config.apply(newContent, current.hash, {
+        note: "pinchy: regenerateOpenClawConfig",
+      });
+      return;
+    } catch (err) {
+      lastErr = err;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
   }
+
+  const message = lastErr instanceof Error ? lastErr.message : String(lastErr);
+  console.warn(
+    "[openclaw-config] config.apply RPC failed after retries; falling back to file write:",
+    message
+  );
+  writeConfigAtomic(newContent);
 }
 
 // ── Targeted config updates ───────────────────────────────────────────────

@@ -39,12 +39,54 @@
 import { test, expect } from "@playwright/test";
 import { seedSetup, waitForOpenClawConnected, waitForPinchy } from "./helpers";
 
+const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
+
+/**
+ * Wait until OpenClaw is reachable AND stays reachable for `stableMs`.
+ *
+ * The Pinchy cold-start cascade (#189) restarts the OpenClaw gateway
+ * multiple times in the first ~2 minutes after a fresh `docker compose up`:
+ * once when Pinchy first writes openclaw.json, once when the secrets-mtime
+ * watcher in start-openclaw.sh notices the provider-key change, possibly
+ * more if plugin enable/disable triggers extra restart cycles. The plain
+ * `waitForOpenClawConnected` catches the first brief connected window and
+ * returns — but the next restart is still ahead, and any test that races
+ * regenerateOpenClawConfig against that window sees the WS disconnected
+ * and the new agent never reaches OpenClaw runtime in time.
+ *
+ * Waiting for `stableMs` of continuous connectivity gives a strong signal
+ * that the cascade is done.
+ */
+async function waitForOpenClawStable(stableMs = 10000, timeout = 180000): Promise<void> {
+  const start = Date.now();
+  let stableSince: number | null = null;
+  while (Date.now() - start < timeout) {
+    try {
+      const res = await fetch(`${PINCHY_URL}/api/health/openclaw`);
+      const data = (await res.json()) as { connected: boolean };
+      if (data.connected) {
+        if (stableSince === null) stableSince = Date.now();
+        if (Date.now() - stableSince >= stableMs) return;
+      } else {
+        stableSince = null;
+      }
+    } catch {
+      stableSince = null;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  throw new Error(`OpenClaw never stably connected for ${stableMs}ms within ${timeout}ms`);
+}
+
 test.describe("Agent hot-reload (production image)", () => {
   test.beforeAll(async ({}, testInfo) => {
     testInfo.setTimeout(300000);
     await waitForPinchy();
     await seedSetup();
     await waitForOpenClawConnected(120000);
+    // Don't just catch the first connected window — the cold-start cascade
+    // can drop the WS again seconds later. Wait for sustained connectivity.
+    await waitForOpenClawStable();
   });
 
   test("custom agent created via API does not surface 'unknown agent id' on first chat", async ({
