@@ -94,6 +94,16 @@ vi.mock("@/lib/provider-models", () => {
   };
 });
 
+const { mockGetClient, mockConfigGet, mockConfigApply } = vi.hoisted(() => ({
+  mockGetClient: vi.fn(),
+  mockConfigGet: vi.fn(),
+  mockConfigApply: vi.fn(),
+}));
+
+vi.mock("@/server/openclaw-client", () => ({
+  getOpenClawClient: () => mockGetClient(),
+}));
+
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "fs";
 import {
   regenerateOpenClawConfig,
@@ -146,6 +156,12 @@ describe("regenerateOpenClawConfig", () => {
       from: mockFrom(),
     } as never);
     mockedGetSetting.mockResolvedValue(null);
+    // Default: no OpenClaw client connected — exercises the cold-start path
+    // that falls back to writing the file directly. Individual tests can
+    // override mockGetClient to return a connected client.
+    mockGetClient.mockImplementation(() => {
+      throw new Error("OpenClaw client not initialized");
+    });
   });
 
   it("should write config with restrictive file permissions", async () => {
@@ -1106,6 +1122,87 @@ describe("regenerateOpenClawConfig", () => {
       "smithers-1": {},
     });
     expect(config.plugins.allow).toContain("pinchy-docs");
+  });
+
+  describe("config propagation to OpenClaw runtime (#200)", () => {
+    // Pinchy must push config changes to OpenClaw's *runtime*, not just
+    // disk. The original bug: writing openclaw.json relied on OpenClaw's
+    // internal inotify watcher, which on production volumes had ~60 s of
+    // pickup latency. Users sending messages right after creating an
+    // agent saw `unknown agent id "<uuid>"` because the runtime didn't
+    // yet know the agent. The fix is to call `client.config.apply` over
+    // the WebSocket RPC — same content, but propagated immediately.
+
+    it("calls client.config.apply when the OpenClaw client is connected, instead of writing the file", async () => {
+      mockConfigGet.mockResolvedValue({ hash: "abc123" });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+
+      await regenerateOpenClawConfig();
+
+      expect(mockConfigGet).toHaveBeenCalledOnce();
+      expect(mockConfigApply).toHaveBeenCalledOnce();
+
+      // Critical: the file write path must NOT be taken when the RPC succeeds.
+      // Otherwise both inotify (from the file write) AND the apply trigger
+      // separate reload cycles, causing back-to-back gateway restarts that
+      // leave chat.history unavailable for tens of seconds.
+      expect(mockedWriteFileSync).not.toHaveBeenCalled();
+
+      // The apply must include the regenerated config content and the hash
+      // returned by config.get for optimistic-locking.
+      const applyArgs = mockConfigApply.mock.calls[0];
+      expect(applyArgs[0]).toContain('"agents"'); // raw config JSON
+      expect(applyArgs[1]).toBe("abc123"); // baseHash
+    });
+
+    it("retries config.apply across transient WebSocket disconnects, then succeeds", async () => {
+      // openclaw-node throws this exact error string when the WS is
+      // mid-reconnect — extremely common during cold start.
+      const transient = new Error("Not connected to OpenClaw Gateway");
+      mockConfigGet
+        .mockRejectedValueOnce(transient)
+        .mockRejectedValueOnce(transient)
+        .mockResolvedValue({ hash: "xyz789" });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+
+      await regenerateOpenClawConfig();
+
+      expect(mockConfigGet.mock.calls.length).toBeGreaterThanOrEqual(3);
+      expect(mockConfigApply).toHaveBeenCalledOnce();
+      expect(mockedWriteFileSync).not.toHaveBeenCalled();
+    });
+
+    it("falls back to writing the file when config.apply fails after all retries", async () => {
+      // Persistent disconnection — every retry fails. We must still write the
+      // file so OpenClaw eventually picks it up via inotify; otherwise the
+      // new agent would never reach the runtime at all.
+      mockConfigGet.mockRejectedValue(new Error("Not connected to OpenClaw Gateway"));
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+
+      await regenerateOpenClawConfig();
+
+      expect(mockConfigApply).not.toHaveBeenCalled();
+      // Fallback wrote the file — OpenClaw's inotify will eventually catch up.
+      expect(mockedWriteFileSync).toHaveBeenCalled();
+    }, 30000);
+
+    it("falls back to writing the file at cold start before the OpenClaw client is initialised", async () => {
+      // Default beforeEach sets mockGetClient to throw — covers the cold-start
+      // path. The file write must happen so OpenClaw gets a config to load.
+      await regenerateOpenClawConfig();
+
+      expect(mockConfigGet).not.toHaveBeenCalled();
+      expect(mockConfigApply).not.toHaveBeenCalled();
+      expect(mockedWriteFileSync).toHaveBeenCalled();
+    });
   });
 });
 
