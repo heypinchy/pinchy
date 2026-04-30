@@ -863,6 +863,12 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      # Chromium is needed by agent-hot-reload.spec.ts which drives the chat UI.
+      # The other Telegram tests are fetch-only, but Playwright still requires
+      # a browser binary present at config-load time.
+      - name: Install Playwright browsers
+        run: pnpm -C packages/web exec playwright install chromium --with-deps
+
       - name: Start test stack with mock Telegram
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml up --build -d
         env:
