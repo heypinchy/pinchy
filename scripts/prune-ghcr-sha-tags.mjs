@@ -78,8 +78,9 @@ function ghApi(args) {
 
 function listVersions({ org, pkg }) {
   // --jq '.[]' flattens each page's array into a stream of one JSON object
-  // per line, sidestepping the "concatenated arrays" issue with --paginate
-  // on array endpoints.
+  // per line (gh emits compact one-per-line for non-string values),
+  // sidestepping the "concatenated arrays" issue with --paginate on array
+  // endpoints.
   const stdout = ghApi([
     "--paginate",
     `/orgs/${org}/packages/container/${pkg}/versions`,
@@ -89,7 +90,15 @@ function listVersions({ org, pkg }) {
   return stdout
     .split("\n")
     .filter((line) => line.trim().length > 0)
-    .map((line) => JSON.parse(line));
+    .map((line, index) => {
+      try {
+        return JSON.parse(line);
+      } catch (error) {
+        throw new Error(
+          `gh api returned non-JSON on line ${index + 1}: ${error.message}\nLine was: ${line.slice(0, 200)}`,
+        );
+      }
+    });
 }
 
 function deleteVersion({ org, pkg, id }) {
@@ -105,7 +114,7 @@ function summarise(version) {
   return `id=${version.id} created=${version.created_at} tags=[${tags.join(", ")}]`;
 }
 
-async function main() {
+function main() {
   const args = parseArgs(process.argv.slice(2));
 
   const mode = args.dryRun ? "DRY RUN" : "LIVE";
@@ -157,7 +166,9 @@ async function main() {
   }
 }
 
-main().catch((error) => {
+try {
+  main();
+} catch (error) {
   console.error(`Error: ${error.message}`);
   process.exit(1);
-});
+}

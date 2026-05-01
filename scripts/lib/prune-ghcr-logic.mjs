@@ -13,7 +13,11 @@ const PROTECTED_TAG_PATTERNS = [
   /^v\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?$/,
 ];
 
-const SHA_TAG_PATTERN = /^sha-[a-f0-9]+$/;
+// `git rev-parse --short` produces 7-40 hex chars. The current build
+// workflow uses --short=12 but tightening the bound to the full git range
+// (rather than a single +) is cheap and keeps human-tagged values like
+// `sha-1` or `sha-mycustomname` from ever being eligible for deletion.
+const SHA_TAG_PATTERN = /^sha-[a-f0-9]{7,40}$/;
 
 const isProtectedTag = (tag) =>
   PROTECTED_TAG_PATTERNS.some((re) => re.test(tag));

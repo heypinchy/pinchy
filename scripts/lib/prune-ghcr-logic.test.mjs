@@ -2,16 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { selectVersionsToDelete } from "./prune-ghcr-logic.mjs";
 
-const v = (overrides) => ({
-  id: 1,
-  created_at: "2026-01-01T00:00:00Z",
-  metadata: { container: { tags: [] } },
-  ...overrides,
-  metadata: {
-    container: {
-      tags: overrides.tags ?? [],
-    },
-  },
+const v = ({
+  id = 1,
+  tags = [],
+  created_at = "2026-01-01T00:00:00Z",
+} = {}) => ({
+  id,
+  created_at,
+  metadata: { container: { tags } },
 });
 
 const NOW = new Date("2026-05-01T00:00:00Z");
@@ -57,6 +55,26 @@ test("never deletes untagged versions", () => {
 test("never deletes versions with unrecognised tag shapes", () => {
   // Defensive: if someone manually tagged something weird, leave it alone.
   const versions = [v({ id: 1, tags: ["custom-tag"] })];
+  const result = selectVersionsToDelete(versions, { keepCount: 0, now: NOW });
+  assert.deepEqual(result, []);
+});
+
+test("never deletes 'sha-*' tags too short to be a real short SHA", () => {
+  // git rev-parse --short produces 7-40 hex chars. A `sha-1` tag is almost
+  // certainly something someone manually tagged for a non-CI reason —
+  // leave it alone.
+  const versions = [
+    v({ id: 1, tags: ["sha-1"] }),
+    v({ id: 2, tags: ["sha-aa"] }),
+    v({ id: 3, tags: ["sha-abcdef"] }), // 6 chars, still below the threshold
+  ];
+  const result = selectVersionsToDelete(versions, { keepCount: 0, now: NOW });
+  assert.deepEqual(result, []);
+});
+
+test("'sha-*' tags with non-hex chars are treated as unrecognised", () => {
+  // git short SHAs are pure hex. `sha-mycustomname` is human-tagged.
+  const versions = [v({ id: 1, tags: ["sha-mycustomname"] })];
   const result = selectVersionsToDelete(versions, { keepCount: 0, now: NOW });
   assert.deepEqual(result, []);
 });
@@ -139,11 +157,11 @@ test("deleteOlderThanDays is applied AFTER keepCount", () => {
   // 5 sha-* versions, all old. keepCount=2 means we keep the 2 newest unconditionally,
   // then the age filter applies to the remaining 3.
   const versions = [
-    v({ id: 1, tags: ["sha-1"], created_at: "2026-01-01T00:00:00Z" }),
-    v({ id: 2, tags: ["sha-2"], created_at: "2026-01-02T00:00:00Z" }),
-    v({ id: 3, tags: ["sha-3"], created_at: "2026-04-25T00:00:00Z" }),
-    v({ id: 4, tags: ["sha-4"], created_at: "2026-04-29T00:00:00Z" }),
-    v({ id: 5, tags: ["sha-5"], created_at: "2026-04-30T00:00:00Z" }),
+    v({ id: 1, tags: ["sha-1111111"], created_at: "2026-01-01T00:00:00Z" }),
+    v({ id: 2, tags: ["sha-2222222"], created_at: "2026-01-02T00:00:00Z" }),
+    v({ id: 3, tags: ["sha-3333333"], created_at: "2026-04-25T00:00:00Z" }),
+    v({ id: 4, tags: ["sha-4444444"], created_at: "2026-04-29T00:00:00Z" }),
+    v({ id: 5, tags: ["sha-5555555"], created_at: "2026-04-30T00:00:00Z" }),
   ];
   const result = selectVersionsToDelete(versions, {
     keepCount: 2,
@@ -160,9 +178,9 @@ test("ignores protected versions when applying keepCount", () => {
   // keepCount applies only to sha-* candidates.
   const versions = [
     v({ id: 1, tags: ["v0.4.4"], created_at: "2026-04-30T00:00:00Z" }),
-    v({ id: 2, tags: ["sha-aa"], created_at: "2026-04-29T00:00:00Z" }),
-    v({ id: 3, tags: ["sha-bb"], created_at: "2026-04-28T00:00:00Z" }),
-    v({ id: 4, tags: ["sha-cc"], created_at: "2026-04-27T00:00:00Z" }),
+    v({ id: 2, tags: ["sha-aaaaaaa"], created_at: "2026-04-29T00:00:00Z" }),
+    v({ id: 3, tags: ["sha-bbbbbbb"], created_at: "2026-04-28T00:00:00Z" }),
+    v({ id: 4, tags: ["sha-ccccccc"], created_at: "2026-04-27T00:00:00Z" }),
   ];
   const result = selectVersionsToDelete(versions, { keepCount: 2, now: NOW });
   // sha candidates: 2, 3, 4 (newest first). Keep 2 (id 2, 3), delete id 4.

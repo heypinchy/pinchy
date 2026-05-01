@@ -28,7 +28,16 @@ on:
   #   - cron: "0 3 1,15 * *"  # 1st and 15th of each month at 03:00 UTC
 
 permissions:
+  contents: read
   packages: write
+
+# A second trigger while one is still running would race on the same DELETE
+# calls — the second run would 404 on already-deleted versions and exit
+# non-zero. Serialise instead. (Matrix legs within a single run still run
+# in parallel; this only queues across workflow runs.)
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   prune:
@@ -46,14 +55,23 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           ORG: heypinchy
           PACKAGE: ${{ matrix.package }}
-          # Defaults apply on schedule runs (where inputs are empty).
-          # workflow_dispatch always overrides them.
-          DRY_RUN: ${{ inputs.dry_run || 'true' }}
+          EVENT_NAME: ${{ github.event_name }}
+          # GHA ternaries trip on falsy boolean inputs (`false || 'true'`
+          # evaluates to 'true'), so derive dry-run in bash instead.
+          DISPATCH_DRY_RUN: ${{ inputs.dry_run }}
           KEEP: ${{ inputs.keep || '20' }}
           OLDER_THAN_DAYS: ${{ inputs.older_than_days || '' }}
         run: |
+          # Schedule runs are always live (the whole point of the schedule
+          # is to actually prune); manual dispatch honours the user's input;
+          # any other event type defaults to dry-run to fail safe.
+          case "$EVENT_NAME" in
+            schedule)          dry_run=false ;;
+            workflow_dispatch) dry_run="$DISPATCH_DRY_RUN" ;;
+            *)                 dry_run=true ;;
+          esac
           args=(--org "$ORG" --package "$PACKAGE" --keep "$KEEP")
-          if [ "$DRY_RUN" = "false" ]; then
+          if [ "$dry_run" = "false" ]; then
             args+=(--no-dry-run)
           else
             args+=(--dry-run)
