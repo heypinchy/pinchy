@@ -15,8 +15,8 @@
  *
  * What this test reproduces:
  *   1. Wait for stable connectivity (cold-start cascade settled — this
- *      is the part that made the previous E2E (#203 then dropped in
- *      6d516585e) flaky; here it's pure setup, never raced against).
+ *      is the part that made the previous E2E from #203 flaky and got
+ *      it dropped; here it's pure setup, never raced against).
  *   2. POST /api/agents with a fresh custom agent.
  *   3. Read OpenClaw logs for the next 10 s and assert:
  *      a) `agents.list` reload event WAS detected — proves the config
@@ -52,7 +52,6 @@ import {
 } from "./helpers";
 
 const BOT_TOKEN = "123456:ABC-no-restart-cascade";
-const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 
 // docker compose must run from the repo root where the compose files live.
 // Playwright's cwd is `packages/web/`, so resolve up two levels. Also set
@@ -82,7 +81,11 @@ function openClawLogsSince(sinceIso: string): string {
  *   - `[gateway] received SIGUSR1; restarting`
  *   - `[reload] config change requires gateway restart`
  *   - `[gateway] received SIGTERM; shutting down` (start-openclaw.sh kill)
- *   - `[gateway] ready (` (gateway came back up — last ready means last restart finished)
+ *   - `[gateway] ready (` — included intentionally even though it's the
+ *     trailing edge of a restart, not the leading edge: every cold-start
+ *     stack emits at least one of these. By treating it as a marker we
+ *     correctly wait `quietMs` after the gateway becomes operational, not
+ *     just after the SIGUSR1 fires.
  */
 async function waitForOpenClawQuiet(quietMs = 30000, timeout = 240000): Promise<void> {
   const start = Date.now();
@@ -141,6 +144,7 @@ test.describe.serial("Agent create — no gateway restart cascade (#193)", () =>
     // To establish a baseline that matches Pinchy's full regenerated config,
     // do an explicit warm-up agent create here. Cascade resolves, baseline
     // updates, then the actual test action below has a true small diff.
+    const warmupMark = new Date(Date.now() - 1000).toISOString();
     const warmupRes = await pinchyPost("/api/agents", {
       name: `Warmup-${Date.now()}`,
       templateId: "custom",
@@ -153,6 +157,22 @@ test.describe.serial("Agent create — no gateway restart cascade (#193)", () =>
     // can scan logs BEFORE the restart marker appears and return false-quiet.
     await new Promise((r) => setTimeout(r, 5000));
     await waitForOpenClawQuiet();
+
+    // Localize failures: if the warmup itself triggered a restart, the
+    // cascade is from a setup-stage problem (sparse-baseline, env
+    // propagation, etc.) — not from the test action. Failing here points
+    // a finger at the right cause; failing in the assertion below would
+    // misleadingly look like the production fix doesn't work. Note: a
+    // restart in the warmup window is acceptable in some staging-cold
+    // scenarios, so we tolerate it but log a warning instead of failing
+    // hard. The test assertion remains the source of truth.
+    const warmupLogs = openClawLogsSince(warmupMark);
+    if (/requires gateway restart/.test(warmupLogs)) {
+      console.warn(
+        "[warmup] gateway restarted during warmup — beforeAll is recovering, but this means the cold-start baseline was sparse. " +
+          "If the actual assertion below fails with the same restart fingerprint, the warmup didn't actually establish a stable baseline."
+      );
+    }
   });
 
   test("POST /api/agents triggers a hot-reload, not a full gateway restart", async () => {
