@@ -1,0 +1,64 @@
+name: Prune GHCR sha-* tags
+
+# Replacement for the previous prune-sha-tags job (removed in #212 after it
+# silently deleted all v* / latest / next images on 2026-05-01). The
+# replacement filters on actual tag names — not container digests — and
+# defaults to dry-run so any policy change can be reviewed before it deletes
+# anything. Filtering logic lives in scripts/lib/prune-ghcr-logic.mjs and
+# is unit-tested with node --test.
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry run (preview only, no deletions)"
+        type: boolean
+        default: true
+      keep:
+        description: "Number of most-recent sha-* tags to keep per package"
+        type: string
+        default: "20"
+      older_than_days:
+        description: "Only delete sha-* tags older than this many days (blank = no age filter)"
+        type: string
+        default: ""
+  # Schedule is intentionally disabled until a manual dry-run on each package
+  # has been reviewed (see #213 acceptance criteria). To re-enable, uncomment:
+  # schedule:
+  #   - cron: "0 3 1,15 * *"  # 1st and 15th of each month at 03:00 UTC
+
+permissions:
+  packages: write
+
+jobs:
+  prune:
+    name: Prune sha-* tags
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [pinchy, pinchy-openclaw]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run prune script
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ORG: heypinchy
+          PACKAGE: ${{ matrix.package }}
+          # Defaults apply on schedule runs (where inputs are empty).
+          # workflow_dispatch always overrides them.
+          DRY_RUN: ${{ inputs.dry_run || 'true' }}
+          KEEP: ${{ inputs.keep || '20' }}
+          OLDER_THAN_DAYS: ${{ inputs.older_than_days || '' }}
+        run: |
+          args=(--org "$ORG" --package "$PACKAGE" --keep "$KEEP")
+          if [ "$DRY_RUN" = "false" ]; then
+            args+=(--no-dry-run)
+          else
+            args+=(--dry-run)
+          fi
+          if [ -n "$OLDER_THAN_DAYS" ]; then
+            args+=(--older-than-days "$OLDER_THAN_DAYS")
+          fi
+          node scripts/prune-ghcr-sha-tags.mjs "${args[@]}"

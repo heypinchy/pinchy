@@ -53,6 +53,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Test (root scripts)
+        run: pnpm test:scripts
+
       - name: Build
         run: pnpm build
 
