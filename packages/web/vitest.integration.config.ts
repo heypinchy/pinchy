@@ -25,10 +25,11 @@ export default defineConfig({
     setupFiles: ["./src/test-helpers/integration/setup.ts"],
     globalSetup: ["./src/test-helpers/integration/global-setup.ts"],
     // TRUNCATE in beforeEach makes parallel workers race on the shared DB.
-    // Single-fork keeps things simple; if test count grows we can add per-
-    // worker DB names and remove this.
+    // fileParallelism: false runs all test files sequentially in a single
+    // worker; if test count grows we can switch to per-worker DB names and
+    // remove this.
     pool: "forks",
-    forks: { singleFork: true },
+    fileParallelism: false,
     // 30s default per test — DB roundtrips + Better Auth signup are slower
     // than mocked unit tests but still fail-fast for genuine hangs.
     testTimeout: 30_000,
