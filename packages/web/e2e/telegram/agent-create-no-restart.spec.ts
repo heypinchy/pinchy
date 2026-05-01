@@ -146,6 +146,12 @@ test.describe.serial("Agent create — no gateway restart cascade (#193)", () =>
       templateId: "custom",
     });
     expect(warmupRes.status, await warmupRes.text()).toBeLessThan(300);
+
+    // The warmup's config.apply propagates async (fire-and-forget). Sleep
+    // long enough for any restart cascade to start showing in the OpenClaw
+    // logs — without this, the immediately-following waitForOpenClawQuiet
+    // can scan logs BEFORE the restart marker appears and return false-quiet.
+    await new Promise((r) => setTimeout(r, 5000));
     await waitForOpenClawQuiet();
   });
 
