@@ -1999,6 +1999,7 @@ describe("restart-state integration", () => {
 
     expect(config.channels.telegram).toEqual({
       dmPolicy: "pairing",
+      enabled: true,
       accounts: {
         "agent-1": {
           botToken: "123456:ABC-token",
@@ -2259,6 +2260,392 @@ describe("restart-state integration", () => {
     expect(config.channels.telegram.groupPolicy).toBe("allow");
     // Unknown legacy field is dropped
     expect(config.channels.telegram.weirdLegacyField).toBeUndefined();
+  });
+
+  it("preserves channels.telegram.enabled when OpenClaw set it on auto-enable (#193)", async () => {
+    // OpenClaw writes back `"enabled": true` whenever Telegram is auto-enabled
+    // ("[gateway] auto-enabled plugins: Telegram configured, enabled
+    // automatically"). If Pinchy strips this field on the next regenerate,
+    // OpenClaw sees a config diff, fires another full gateway restart, the
+    // restart auto-enables Telegram again and re-adds the field — endless
+    // ping-pong loop where every settings save costs 15-30s of "Agent runtime
+    // is not available" downtime.
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "secret" } },
+      channels: {
+        telegram: {
+          dmPolicy: "pairing",
+          enabled: true,
+          accounts: { "agent-1": { botToken: "123456:ABC-token" } },
+        },
+      },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    expect(config.channels.telegram.enabled).toBe(true);
+  });
+
+  it("writes channels.telegram.enabled=true on first generate when no existing config (#193)", async () => {
+    // Defense in depth for the auto-enable ping-pong: don't depend on
+    // OpenClaw's auto-enable side-effect to put `enabled: true` in the
+    // file. Pinchy writes it actively whenever it emits a telegram block,
+    // so the very first generate matches what OpenClaw expects after its
+    // auto-enable step. Otherwise the cycle starts:
+    //   write1 (no enabled) → restart → OpenClaw adds enabled → write2 strips
+    //   it → restart → ... — exactly the staging cascade observed on
+    //   2026-05-01.
+    // mockedReadFileSync stays at default (throws ENOENT) — fresh config.
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    expect(config.channels.telegram.enabled).toBe(true);
+  });
+
+  it("preserves plugins.entries.<provider> auto-enabled by OpenClaw (#193)", async () => {
+    // Same class of bug as channels.telegram.enabled: OpenClaw auto-enables
+    // each configured provider and writes `plugins.entries.<provider> = { enabled: true }`
+    // back to openclaw.json. If Pinchy strips this on the next regenerate,
+    // OpenClaw sees a `plugins.entries.<provider>` diff and restarts the
+    // gateway. Verified on local E2E stack 2026-05-01: a fresh `POST
+    // /api/agents` restarted the gateway because of `plugins.entries.anthropic`.
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "secret" } },
+      plugins: {
+        allow: ["anthropic", "pinchy-audit"],
+        entries: {
+          anthropic: { enabled: true },
+          "pinchy-audit": { enabled: true, config: {} },
+        },
+      },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-fake-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    // The OpenClaw-managed entry must survive the regenerate.
+    expect(config.plugins.entries.anthropic).toEqual({ enabled: true });
+  });
+
+  it("skips file write and config.apply RPC when only meta.lastTouchedAt differs (#193, openclaw#75534)", async () => {
+    // OpenClaw stamps `meta.lastTouchedAt = now()` on every write it
+    // performs (config.apply RPC, internal restart-bookkeeping). Pinchy
+    // preserves `meta` from the existing config when regenerating, so
+    // back-to-back regenerates with no DB changes produce content that
+    // differs ONLY in that field. A byte-equal early return doesn't catch
+    // this, so without normalize-compare Pinchy would still send a
+    // config.apply RPC, OpenClaw's diff would (spuriously, see
+    // openclaw#75534) flag env.* paths as changed against its
+    // runtime-resolved snapshot, and trigger a full gateway restart.
+    //
+    // Asserts: when only meta.lastTouchedAt differs, regenerateOpenClawConfig
+    // makes NO write to the openclaw.json path AND NO config.apply RPC call.
+    mockGetClient.mockReturnValue({
+      config: {
+        get: mockConfigGet,
+        apply: mockConfigApply,
+      },
+    });
+    mockConfigGet.mockResolvedValue({ hash: "h1" });
+    mockConfigApply.mockResolvedValue(undefined);
+
+    const baseConfig = {
+      meta: { lastTouchedAt: "2026-05-01T10:00:00.000Z" },
+      gateway: { mode: "local", bind: "lan", auth: { token: "t" } },
+      env: { ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}" },
+      agents: { list: [] },
+      plugins: {
+        allow: ["pinchy-audit"],
+        entries: { "pinchy-audit": { enabled: true, config: {} } },
+      },
+    };
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([]),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-fake";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    // First generate with no existing file — Pinchy writes the initial config
+    // and kicks off a background config.apply.
+    await regenerateOpenClawConfig();
+    const firstWrite = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(firstWrite).toBeDefined();
+    const firstContent = firstWrite![1] as string;
+
+    // Drain the first generate's background coroutine. Without this, its
+    // delayed config.apply call would race with the post-test assertion.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    const applyCallsBeforeSecondGenerate = mockConfigApply.mock.calls.length;
+
+    // Now simulate OpenClaw having stamped a NEW lastTouchedAt onto the file
+    // (the only difference; everything else byte-identical).
+    const stampedExisting = JSON.parse(firstContent);
+    if (!stampedExisting.meta) stampedExisting.meta = {};
+    stampedExisting.meta.lastTouchedAt = "2026-05-01T10:05:00.000Z";
+    const stampedExistingStr = JSON.stringify(stampedExisting, null, 2);
+
+    mockedWriteFileSync.mockClear();
+    mockedReadFileSync.mockReturnValue(stampedExistingStr);
+
+    await regenerateOpenClawConfig();
+    // Drain any background work the second generate might have scheduled.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // No openclaw.json write (the only diff was OpenClaw-managed metadata).
+    const secondConfigWrite = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(secondConfigWrite).toBeUndefined();
+
+    // No NEW config.apply RPC. Without the workaround, sending the RPC would
+    // trigger OpenClaw's snapshot-vs-parsed env-resolution diff and a full
+    // restart. Compare against the count after the first generate, not zero,
+    // because the first generate legitimately pushes once.
+    expect(mockConfigApply.mock.calls.length).toBe(applyCallsBeforeSecondGenerate);
+  });
+
+  it("redacts unchanged env values to OpenClaw sentinel in config.apply payload (#193, openclaw#75534)", async () => {
+    // OpenClaw's diffConfigPaths compares snapshot.config (env values
+    // RESOLVED to actual secrets like "sk-ant-...") against parsed.config
+    // (Pinchy's "${ANTHROPIC_API_KEY}" template). They never match, so
+    // env.* always appears in changedPaths, and env.* has no rule in
+    // BASE_RELOAD_RULES — triggers a full gateway restart on every
+    // settings save (#193 dominant cause after the channels.telegram and
+    // plugins.entries fixes).
+    //
+    // Workaround: send "__OPENCLAW_REDACTED__" for env keys whose template
+    // is unchanged from existing. OpenClaw's parseValidateConfigFromRawOrRespond
+    // calls restoreRedactedValues BEFORE diffConfigPaths, so the sentinel
+    // gets replaced with snapshot.config's resolved value → no env diff →
+    // no spurious restart.
+    mockGetClient.mockReturnValue({
+      config: { get: mockConfigGet, apply: mockConfigApply },
+    });
+    mockConfigGet.mockResolvedValue({ hash: "h-existing" });
+    mockConfigApply.mockResolvedValue(undefined);
+
+    // Existing on disk: env contains the template (Pinchy's prior write).
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "t" } },
+      env: { ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}" },
+      agents: {
+        list: [{ id: "a1", name: "Smithers", model: "anthropic/claude-haiku-4-5-20251001" }],
+      },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig, null, 2));
+
+    // Pinchy's regenerate adds a new agent; env stays the same.
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "a1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+        {
+          id: "a2",
+          name: "NewAgent",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-fake";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+    // Drain background coroutine.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(mockConfigApply).toHaveBeenCalledTimes(1);
+    const [payload] = mockConfigApply.mock.calls[0];
+    const sent = JSON.parse(payload as string) as Record<string, unknown>;
+    const sentEnv = sent.env as Record<string, string>;
+
+    // ANTHROPIC_API_KEY was already in existing with the same template
+    // value → must be sentinel-redacted.
+    expect(sentEnv.ANTHROPIC_API_KEY).toBe("__OPENCLAW_REDACTED__");
+  });
+
+  it("keeps templates for new env keys not in existing config (#193)", async () => {
+    // When a new provider is configured (e.g. user adds OpenAI key for the
+    // first time), Pinchy emits a new env key. We CAN'T sentinel-redact it —
+    // OpenClaw has no snapshot value to restore from. The template form
+    // stays, OpenClaw resolves at runtime, and the resulting restart is
+    // legitimate (provider env truly changed). Test guards against
+    // accidentally over-redacting.
+    mockGetClient.mockReturnValue({
+      config: { get: mockConfigGet, apply: mockConfigApply },
+    });
+    mockConfigGet.mockResolvedValue({ hash: "h-existing" });
+    mockConfigApply.mockResolvedValue(undefined);
+
+    // Existing has only ANTHROPIC_API_KEY.
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "t" } },
+      env: { ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}" },
+      agents: { list: [] },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig, null, 2));
+
+    mockedDb.select.mockReturnValue({ from: mockFrom([]) } as never);
+    // Pinchy now has BOTH anthropic and openai configured.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-fake";
+      if (key === "openai_api_key") return "sk-openai-fake";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    expect(mockConfigApply).toHaveBeenCalledTimes(1);
+    const [payload] = mockConfigApply.mock.calls[0];
+    const sent = JSON.parse(payload as string) as Record<string, unknown>;
+    const sentEnv = sent.env as Record<string, string>;
+
+    // Existing key → sentinel.
+    expect(sentEnv.ANTHROPIC_API_KEY).toBe("__OPENCLAW_REDACTED__");
+    // New key → template (so OpenClaw can resolve and bootstrap it).
+    expect(sentEnv.OPENAI_API_KEY).toBe("${OPENAI_API_KEY}");
+  });
+
+  it("regenerateOpenClawConfig is byte-idempotent against its own previous output (#193)", async () => {
+    // Hardest assertion: two consecutive generates with identical DB state
+    // must produce identical openclaw.json content. If they don't, OpenClaw
+    // sees a config diff on every settings save and may restart the gateway
+    // depending on which paths differ. This test specifically catches the
+    // class of bug where Pinchy's regenerate strips fields it doesn't know
+    // about that OpenClaw legitimately wrote back.
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      return null;
+    });
+
+    // First generate: no existing file (cold start).
+    await regenerateOpenClawConfig();
+    const firstWrite = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(firstWrite).toBeDefined();
+    const firstContent = firstWrite![1] as string;
+
+    // Reset call log; seed the existing-file read with what we just wrote.
+    mockedWriteFileSync.mockClear();
+    mockedReadFileSync.mockReturnValue(firstContent);
+
+    // Second generate against the file Pinchy itself just wrote.
+    await regenerateOpenClawConfig();
+
+    // Two outcomes are acceptable: (a) early-return because content is
+    // identical (no second write at all — best case), or (b) a write whose
+    // content equals the first. Either proves idempotency.
+    const secondWrite = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    if (secondWrite) {
+      expect(secondWrite[1]).toBe(firstContent);
+    }
   });
 });
 
