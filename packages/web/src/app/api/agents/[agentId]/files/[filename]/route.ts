@@ -1,18 +1,12 @@
 // audit-exempt: knowledge base file edits are per-agent content changes, not admin actions
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
-import { getSession } from "@/lib/auth";
+import { NextResponse } from "next/server";
+import { withAuth } from "@/lib/api-auth";
 import { readWorkspaceFile, writeWorkspaceFile } from "@/lib/workspace";
 import { getAgentWithAccess, assertAgentWriteAccess } from "@/lib/agent-access";
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
-export async function GET(request: NextRequest, { params }: Params) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const GET = withAuth<Params>(async (_req, { params }, session) => {
   const { agentId, filename } = await params;
 
   const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
@@ -25,14 +19,9 @@ export async function GET(request: NextRequest, { params }: Params) {
     const message = error instanceof Error ? error.message : "Invalid file";
     return NextResponse.json({ error: message }, { status: 400 });
   }
-}
+});
 
-export async function PUT(request: NextRequest, { params }: Params) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const PUT = withAuth<Params>(async (request, { params }, session) => {
   const { agentId, filename } = await params;
 
   const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
@@ -58,4 +47,4 @@ export async function PUT(request: NextRequest, { params }: Params) {
     const message = error instanceof Error ? error.message : "Invalid file";
     return NextResponse.json({ error: message }, { status: 400 });
   }
-}
+});

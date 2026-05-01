@@ -1,30 +1,15 @@
 // audit-exempt: org context editing is a content change, not a security-sensitive admin action
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
-import { getSession } from "@/lib/auth";
+import { NextResponse } from "next/server";
+import { withAdmin } from "@/lib/api-auth";
 import { getSetting, setSetting } from "@/lib/settings";
 import { syncOrgContextToWorkspaces } from "@/lib/context-sync";
 
-export async function GET() {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const GET = withAdmin(async () => {
   const content = await getSetting("org_context");
   return NextResponse.json({ content: content ?? "" });
-}
+});
 
-export async function PUT(request: NextRequest) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const PUT = withAdmin(async (request) => {
   const { content } = await request.json();
 
   if (typeof content !== "string") {
@@ -36,4 +21,4 @@ export async function PUT(request: NextRequest) {
   await syncOrgContextToWorkspaces();
 
   return NextResponse.json({ success: true });
-}
+});

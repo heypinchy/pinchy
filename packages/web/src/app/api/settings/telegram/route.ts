@@ -1,7 +1,6 @@
 // audit-exempt: User self-service action (linking own Telegram account), not an admin operation
 import { NextResponse } from "next/server";
-import { headers } from "next/headers";
-import { getSession } from "@/lib/auth";
+import { withAuth } from "@/lib/api-auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
 import { updateIdentityLinks } from "@/lib/openclaw-config";
 import { recalculateTelegramAllowStores, removePairingRequest } from "@/lib/telegram-allow-store";
@@ -27,12 +26,7 @@ async function buildIdentityLinks(): Promise<Record<string, string[]>> {
   return identityLinks;
 }
 
-export async function GET() {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const GET = withAuth(async (_req, _ctx, session) => {
   const link = await db.query.channelLinks.findFirst({
     where: and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")),
   });
@@ -41,14 +35,9 @@ export async function GET() {
     linked: !!link,
     channelUserId: link?.channelUserId ?? null,
   });
-}
+});
 
-export async function POST(req: Request) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const POST = withAuth(async (req, _ctx, session) => {
   const { code } = await req.json();
   if (!code || typeof code !== "string") {
     return NextResponse.json({ error: "Pairing code is required" }, { status: 400 });
@@ -92,14 +81,9 @@ export async function POST(req: Request) {
   updateIdentityLinks(await buildIdentityLinks());
 
   return NextResponse.json({ linked: true, telegramUserId });
-}
+});
 
-export async function DELETE() {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const DELETE = withAuth(async (_req, _ctx, session) => {
   // Find the user's telegram ID before deleting
   const existingLink = await db.query.channelLinks.findFirst({
     where: and(eq(channelLinks.userId, session.user.id), eq(channelLinks.channel, "telegram")),
@@ -121,4 +105,4 @@ export async function DELETE() {
   updateIdentityLinks(await buildIdentityLinks());
 
   return NextResponse.json({ linked: false });
-}
+});

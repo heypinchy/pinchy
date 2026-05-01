@@ -199,7 +199,7 @@ describe("POST /api/agents", () => {
     const response = await POST(request);
     expect(response.status).toBe(403);
     const body = await response.json();
-    expect(body.error).toBe("Admin access required");
+    expect(body.error).toBe("Forbidden");
   });
 
   it("should create an agent from a knowledge-base template", async () => {

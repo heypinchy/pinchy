@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
-import { headers } from "next/headers";
 import { randomBytes } from "crypto";
-import { getSession } from "@/lib/auth";
+import { withAdmin } from "@/lib/api-auth";
 import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
@@ -14,15 +13,7 @@ const GOOGLE_OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/userinfo.email",
 ].join(" ");
 
-export async function GET(request: Request) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const GET = withAdmin(async (request) => {
   const settings = await getOAuthSettings("google");
   if (!settings) {
     return NextResponse.json({ error: "Google OAuth not configured" }, { status: 400 });
@@ -95,4 +86,4 @@ export async function GET(request: Request) {
   });
 
   return response;
-}
+});
