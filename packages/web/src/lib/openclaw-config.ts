@@ -574,10 +574,26 @@ export async function regenerateOpenClawConfig() {
   const existingAllow = ((existing.plugins as Record<string, unknown>)?.allow as string[]) || [];
   const ourPlugins = new Set(Object.keys(entries));
   const pinchyPluginPrefixes = ["pinchy-"];
-  const openClawPlugins = existingAllow.filter(
-    (p) => !pinchyPluginPrefixes.some((prefix) => p.startsWith(prefix))
-  );
+  const isPinchyPlugin = (p: string) => pinchyPluginPrefixes.some((prefix) => p.startsWith(prefix));
+  const openClawPlugins = existingAllow.filter((p) => !isPinchyPlugin(p));
   const allowedPlugins = [...new Set([...openClawPlugins, ...ourPlugins])];
+
+  // Preserve OpenClaw-managed plugin entries that we don't write ourselves.
+  // OpenClaw auto-enables each configured provider (anthropic, openai, google,
+  // ollama-cloud) and the telegram channel by writing
+  // `plugins.entries.<id> = { enabled: true }` into openclaw.json on startup.
+  // Without this preservation the next regenerate strips those entries,
+  // OpenClaw treats it as a config diff and triggers a full gateway restart
+  // (15-30 s downtime, "Agent runtime is not available" banner — #193).
+  // Same root cause as the channels.telegram.enabled fix above; this covers
+  // the plugins.entries.* surface.
+  const existingEntries =
+    ((existing.plugins as Record<string, unknown>)?.entries as Record<string, unknown>) || {};
+  for (const [pluginId, entry] of Object.entries(existingEntries)) {
+    if (!isPinchyPlugin(pluginId) && !(pluginId in entries)) {
+      entries[pluginId] = entry;
+    }
+  }
 
   if (allowedPlugins.length > 0 || Object.keys(entries).length > 0) {
     config.plugins = { allow: allowedPlugins, entries };
@@ -702,9 +718,16 @@ export async function regenerateOpenClawConfig() {
       }
     }
 
-    // Preserve OpenClaw-enriched channel fields (groupPolicy, streaming).
+    // Preserve OpenClaw-enriched channel fields (groupPolicy, streaming, enabled).
     // Use an explicit allow-list instead of spread to prevent unknown/legacy
     // fields (including potential legacy secrets) from leaking into the config.
+    // `enabled` is on the list because OpenClaw writes back `"enabled": true`
+    // whenever Telegram is auto-enabled at gateway startup. Without it on the
+    // list, the next regenerate strips the field, OpenClaw treats that as a
+    // config diff and triggers a full gateway restart, the restart re-runs
+    // auto-enable and re-adds the field — endless ping-pong loop where every
+    // settings save costs 15-30 s of "Agent runtime is not available"
+    // downtime (#193).
     const existingTelegram =
       ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
     const ENRICHED_TELEGRAM_FIELDS = ["groupPolicy", "streaming"] as const;
@@ -712,8 +735,16 @@ export async function regenerateOpenClawConfig() {
     for (const f of ENRICHED_TELEGRAM_FIELDS) {
       if (f in existingTelegram) preservedTelegram[f] = existingTelegram[f];
     }
+    // Defense in depth: write `enabled: true` actively when we emit the
+    // telegram block at all. Pinchy's source of truth is "telegram has
+    // ≥1 account configured" → channels.telegram block is emitted; "no
+    // accounts" → block is deleted (further down). So whenever the block
+    // exists, it should be enabled. Without this active write, the field's
+    // presence depends on OpenClaw's auto-enable side-effect having run
+    // first, and any regenerate before that side-effect fires would strip
+    // it and trigger the ping-pong.
     config.channels = {
-      telegram: { ...preservedTelegram, dmPolicy: "pairing", accounts },
+      telegram: { ...preservedTelegram, enabled: true, dmPolicy: "pairing", accounts },
     };
     config.bindings = bindings;
     config.session = {
@@ -737,6 +768,18 @@ export async function regenerateOpenClawConfig() {
   try {
     const existing = readFileSync(CONFIG_PATH, "utf-8");
     if (existing === newContent) return;
+    // Workaround for openclaw#75534: OpenClaw stamps `meta.lastTouchedAt`
+    // on every write it performs (config.apply RPC, internal restart
+    // bookkeeping). Pinchy preserves `meta` from existing, so back-to-back
+    // regenerates with no DB changes still differ on this single field.
+    // Without this normalize-compare, sending the byte-different config
+    // via config.apply triggers OpenClaw's diff-against-runtime-resolved-
+    // snapshot to flag env.* paths as changed (env templates "${VAR}" vs
+    // resolved "sk-..."), which falls through `BASE_RELOAD_RULES` to the
+    // default full-restart trigger. Result: every settings save costs
+    // 15-30 s of "Agent runtime is not available" downtime (#193).
+    // Removable when we bump OpenClaw past the upstream fix; tracked in #215.
+    if (configsAreEquivalentUpToOpenClawMetadata(existing, newContent)) return;
   } catch {
     // File doesn't exist yet — write it
   }
@@ -755,6 +798,92 @@ export async function regenerateOpenClawConfig() {
   pushConfigInBackground(newContent);
 }
 
+/**
+ * Compare two openclaw.json strings for semantic equivalence, ignoring
+ * fields that OpenClaw stamps onto the file independently of any user
+ * change. Used to short-circuit redundant config writes / config.apply
+ * RPCs that would otherwise trigger spurious gateway restarts via
+ * openclaw#75534. See call site for full rationale and removal tracking.
+ *
+ * Currently normalized: `meta.lastTouchedAt` (a write-time timestamp).
+ * Add other OpenClaw-managed metadata fields here if they ever surface.
+ */
+function configsAreEquivalentUpToOpenClawMetadata(a: string, b: string): boolean {
+  try {
+    const pa = JSON.parse(a) as Record<string, unknown>;
+    const pb = JSON.parse(b) as Record<string, unknown>;
+    const stripMeta = (cfg: Record<string, unknown>) => {
+      const meta = cfg.meta as Record<string, unknown> | undefined;
+      if (!meta) return;
+      delete meta.lastTouchedAt;
+      // If meta becomes empty after stripping, remove it entirely so an
+      // absent-meta config (cold start) compares equal to a meta-with-only-
+      // lastTouchedAt config (post-OpenClaw-stamp).
+      if (Object.keys(meta).length === 0) delete cfg.meta;
+    };
+    stripMeta(pa);
+    stripMeta(pb);
+    return JSON.stringify(pa) === JSON.stringify(pb);
+  } catch {
+    return false;
+  }
+}
+
+// OpenClaw's redacted-value sentinel. When OpenClaw sees this string in
+// `env.<KEY>` (or any other registered redactable path) inside an incoming
+// config.apply payload, it restores the corresponding value from
+// snapshot.config before running the change-paths diff. We rely on this
+// to avoid openclaw#75534's spurious env.* restart trigger: Pinchy sends
+// the sentinel for env keys whose template hasn't changed, OpenClaw
+// substitutes the resolved snapshot value, diffConfigPaths finds no env
+// diff, no restart.
+//
+// Defined in OpenClaw's `runtime-schema-*.js` as
+//   const REDACTED_SENTINEL = "__OPENCLAW_REDACTED__";
+// Stable since 2026.4.x. Removable when openclaw#75534 lands; tracked in #215.
+const OPENCLAW_REDACTED_SENTINEL = "__OPENCLAW_REDACTED__";
+
+/**
+ * Replace `env.<KEY>` values with OpenClaw's redacted sentinel for keys
+ * whose template form is unchanged from `existingContent`. New env keys
+ * (not present in existing) keep their template form — they represent a
+ * legitimate configuration change and the restart they trigger is valid.
+ *
+ * On cold start (no existing file), returns the input unchanged.
+ *
+ * This is the workaround for openclaw#75534: see comment on the sentinel
+ * constant above. Removable when upstream lands the writer-level fix.
+ */
+function redactUnchangedEnvForApply(newContent: string): string {
+  let existingContent: string;
+  try {
+    existingContent = readFileSync(CONFIG_PATH, "utf-8");
+  } catch {
+    return newContent;
+  }
+  try {
+    const newCfg = JSON.parse(newContent) as Record<string, unknown>;
+    const existingCfg = JSON.parse(existingContent) as Record<string, unknown>;
+    const newEnv = (newCfg.env as Record<string, string>) ?? {};
+    const existingEnv = (existingCfg.env as Record<string, string>) ?? {};
+    const redactedEnv: Record<string, string> = {};
+    for (const [key, val] of Object.entries(newEnv)) {
+      if (key in existingEnv && existingEnv[key] === val) {
+        redactedEnv[key] = OPENCLAW_REDACTED_SENTINEL;
+      } else {
+        redactedEnv[key] = val;
+      }
+    }
+    if (Object.keys(redactedEnv).length === 0 && !("env" in newCfg)) {
+      return newContent;
+    }
+    newCfg.env = redactedEnv;
+    return JSON.stringify(newCfg, null, 2);
+  } catch {
+    return newContent;
+  }
+}
+
 function pushConfigInBackground(newContent: string): void {
   void (async () => {
     let client;
@@ -766,6 +895,14 @@ function pushConfigInBackground(newContent: string): void {
       return;
     }
 
+    // Workaround for openclaw#75534: replace unchanged env values with
+    // OpenClaw's REDACTED sentinel before sending. Without this, every
+    // config.apply payload trips OpenClaw's resolved-vs-template diff for
+    // env.* paths and triggers a full gateway restart even when only a
+    // hot-reloadable path (agents.list, bindings) actually changed.
+    // Removable when openclaw#75534 lands; tracked in #215.
+    const payload = redactUnchangedEnvForApply(newContent);
+
     // Brief retry across transient WS disconnects. Beyond ~3.5 s the WS is
     // probably down due to the cold-start cascade, and inotify will catch
     // up; no point keeping a background coroutine alive longer.
@@ -773,7 +910,7 @@ function pushConfigInBackground(newContent: string): void {
     for (let i = 0; i < backoffsMs.length; i++) {
       try {
         const current = (await client.config.get()) as { hash: string };
-        await client.config.apply(newContent, current.hash, {
+        await client.config.apply(payload, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
         });
         return;
