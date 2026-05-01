@@ -95,10 +95,13 @@ jobs:
 
     services:
       postgres:
-        image: postgres:16
-        credentials:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        # Pull from mirror.gcr.io (Google's public Docker Hub mirror) instead of
+        # docker.io to bypass the 200/6h auth rate limit. Service containers are
+        # started by the GitHub Actions runner BEFORE any user step runs, so the
+        # docker-mirror composite action can't help here — the only way to
+        # avoid docker.io is to point the image reference at the mirror
+        # directly. mirror.gcr.io is anonymous, so no credentials are needed.
+        image: mirror.gcr.io/library/postgres:16
         env:
           POSTGRES_DB: pinchy
           POSTGRES_USER: pinchy
