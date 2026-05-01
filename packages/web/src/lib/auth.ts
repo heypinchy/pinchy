@@ -69,7 +69,28 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
   }
 });
 
+/**
+ * Decide whether to override Better Auth's default rate limiting.
+ *
+ * Default: returns `undefined` so Better Auth uses its own behaviour
+ * (`enabled: NODE_ENV === "production"`, with a /sign-in/* limit of
+ * 3 req / 10s per IP).
+ *
+ * `PINCHY_E2E_TESTING=1` disables it. We set this in
+ * `docker-compose.e2e.yml` so Playwright form-login flows can exercise
+ * the production image without the test runner locking itself out
+ * after a few `loginViaUI` calls. Production deployments never set
+ * this env var.
+ */
+export function getAuthRateLimitConfig(): { enabled: false } | undefined {
+  if (process.env.PINCHY_E2E_TESTING === "1") {
+    return { enabled: false };
+  }
+  return undefined;
+}
+
 export const auth = betterAuth({
+  rateLimit: getAuthRateLimitConfig(),
   trustedOrigins: (request) => {
     const domain = getCachedDomain();
     if (domain) {

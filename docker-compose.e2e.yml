@@ -19,6 +19,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.pinchy
+    environment:
+      # Disable Better Auth's per-IP rate limit on /sign-in/* (3 req / 10s).
+      # The limit is on by default in NODE_ENV=production and locks Playwright
+      # form-login flows out after the third sign-in within the window. Only
+      # ever set in this E2E overlay; production deploys leave it unset and
+      # keep the rate limit enabled.
+      PINCHY_E2E_TESTING: "1"
   openclaw:
     build:
       context: .
