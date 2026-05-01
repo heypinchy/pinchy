@@ -167,18 +167,8 @@ export function useWsRuntime(agentId: string): {
     setIsHistoryLoaded(false);
   }
 
-  /**
-   * Dispatch a reducer action against the messages state.
-   * The hook's WsMessage is a superset of the reducer's WsMessage shape —
-   * we cast here so the pure reducer can operate on the shared `id` and
-   * `status` fields without needing to know about `images`, `error`, etc.
-   */
   const dispatchMessages = useCallback((action: Action) => {
-    setMessages(
-      (prev) =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        reduceMessages(prev as any, action) as unknown as WsMessage[]
-    );
+    setMessages((prev) => reduceMessages(prev, action));
   }, []);
 
   useEffect(() => {
