@@ -194,8 +194,12 @@ describe("EnterpriseBanner", () => {
         document.dispatchEvent(new Event("visibilitychange"));
       });
 
-      // Give any stray promises a chance to land
-      await new Promise((resolve) => setTimeout(resolve, 10));
+      // Flush any microtasks the visibility handler may have scheduled —
+      // a stray re-fetch would land on the microtask queue, not after a
+      // real wall-clock delay.
+      await act(async () => {
+        await Promise.resolve();
+      });
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 

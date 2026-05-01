@@ -54,26 +54,35 @@ describe("registerShutdownHandlers", () => {
   });
 
   it("awaits async stopFns before exiting", async () => {
-    const order: string[] = [];
-    const stopA = vi.fn().mockImplementation(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 10));
-      order.push("A");
-    });
-    const stopB = vi.fn().mockImplementation(() => {
-      order.push("B");
-    });
-    const exit = vi.fn().mockImplementation(() => {
-      order.push("exit");
-    });
+    vi.useFakeTimers();
+    try {
+      const order: string[] = [];
+      const stopA = vi.fn().mockImplementation(async () => {
+        // Async work scheduled on the timer queue — handler must await it
+        // before moving on to stopB and exit.
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        order.push("A");
+      });
+      const stopB = vi.fn().mockImplementation(() => {
+        order.push("B");
+      });
+      const exit = vi.fn().mockImplementation(() => {
+        order.push("exit");
+      });
 
-    const dispose = registerShutdownHandlers([stopA, stopB], { exit });
-    disposers.push(dispose);
+      const dispose = registerShutdownHandlers([stopA, stopB], { exit });
+      disposers.push(dispose);
 
-    process.emit("SIGTERM", "SIGTERM");
-    await new Promise((resolve) => setTimeout(resolve, 30));
+      process.emit("SIGTERM", "SIGTERM");
+      // Drive stopA's setTimeout via the fake clock; the handler chain then
+      // runs stopB and exit synchronously after stopA resolves.
+      await vi.advanceTimersByTimeAsync(10);
 
-    // Exit must come strictly after both stop fns finished
-    expect(order).toEqual(["A", "B", "exit"]);
+      // Exit must come strictly after both stop fns finished
+      expect(order).toEqual(["A", "B", "exit"]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns a disposer that removes the signal handlers", async () => {

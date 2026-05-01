@@ -42,13 +42,18 @@ describe("validateLicense", () => {
 
   it("returns active=false for an expired token", async () => {
     const { validateLicense } = await import("@/lib/license");
-    // Create a token that expires immediately
-    const token = await createTestToken({}, "1s");
-    // Wait for it to expire
-    await new Promise((r) => setTimeout(r, 1500));
-    const status = await validateLicense(token, testPublicKeyPem);
-    expect(status.active).toBe(false);
-    expect(status.features).toEqual([]);
+    // jose checks exp against the current clock — advance the system clock
+    // past the token's expiry instead of waiting in real time.
+    vi.useFakeTimers();
+    try {
+      const token = await createTestToken({}, "1s");
+      vi.setSystemTime(Date.now() + 1500);
+      const status = await validateLicense(token, testPublicKeyPem);
+      expect(status.active).toBe(false);
+      expect(status.features).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("returns active=false for an invalid signature", async () => {
