@@ -24,8 +24,9 @@ services:
       # The limit is on by default in NODE_ENV=production and locks Playwright
       # form-login flows out after the third sign-in within the window. Only
       # ever set in this E2E overlay; production deploys leave it unset and
-      # keep the rate limit enabled.
-      PINCHY_E2E_TESTING: "1"
+      # keep the rate limit enabled. `auth-config-consistency.test.ts` blocks
+      # this var from being added to `docker-compose.yml` or `.dev.yml`.
+      PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT: "1"
   openclaw:
     build:
       context: .

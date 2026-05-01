@@ -76,14 +76,20 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
  * (`enabled: NODE_ENV === "production"`, with a /sign-in/* limit of
  * 3 req / 10s per IP).
  *
- * `PINCHY_E2E_TESTING=1` disables it. We set this in
+ * `PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT=1` disables it. We set this in
  * `docker-compose.e2e.yml` so Playwright form-login flows can exercise
  * the production image without the test runner locking itself out
  * after a few `loginViaUI` calls. Production deployments never set
- * this env var.
+ * this env var, and `auth-config-consistency.test.ts` blocks anyone
+ * from accidentally adding it to `docker-compose.yml`.
+ *
+ * Evaluated once at module load (when `auth` is constructed). Changing
+ * the env var at runtime has no effect on the live `auth` instance —
+ * the container restarts whenever the value changes, which is fine
+ * because Docker injects env at process start.
  */
 export function getAuthRateLimitConfig(): { enabled: false } | undefined {
-  if (process.env.PINCHY_E2E_TESTING === "1") {
+  if (process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT === "1") {
     return { enabled: false };
   }
   return undefined;

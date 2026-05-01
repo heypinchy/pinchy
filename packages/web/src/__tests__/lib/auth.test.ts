@@ -58,34 +58,34 @@ describe("auth configuration", () => {
 
 describe("getAuthRateLimitConfig", () => {
   it("returns undefined by default — uses Better Auth's NODE_ENV-driven default (enabled in prod)", () => {
-    const original = process.env.PINCHY_E2E_TESTING;
-    delete process.env.PINCHY_E2E_TESTING;
+    const original = process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT;
+    delete process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT;
     try {
       expect(getAuthRateLimitConfig()).toBeUndefined();
     } finally {
-      if (original !== undefined) process.env.PINCHY_E2E_TESTING = original;
+      if (original !== undefined) process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT = original;
     }
   });
 
-  it("returns { enabled: false } when PINCHY_E2E_TESTING=1 — bypasses /sign-in/* rate limit (3 req / 10s) so Playwright form-login tests don't lock themselves out against the production image", () => {
-    const original = process.env.PINCHY_E2E_TESTING;
-    process.env.PINCHY_E2E_TESTING = "1";
+  it("returns { enabled: false } when PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT=1 — bypasses /sign-in/* rate limit (3 req / 10s) so Playwright form-login tests don't lock themselves out against the production image", () => {
+    const original = process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT;
+    process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT = "1";
     try {
       expect(getAuthRateLimitConfig()).toEqual({ enabled: false });
     } finally {
-      if (original === undefined) delete process.env.PINCHY_E2E_TESTING;
-      else process.env.PINCHY_E2E_TESTING = original;
+      if (original === undefined) delete process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT;
+      else process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT = original;
     }
   });
 
   it("treats values other than '1' as not set — guard against accidentally disabling rate limiting in production", () => {
-    const original = process.env.PINCHY_E2E_TESTING;
-    process.env.PINCHY_E2E_TESTING = "true";
+    const original = process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT;
+    process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT = "true";
     try {
       expect(getAuthRateLimitConfig()).toBeUndefined();
     } finally {
-      if (original === undefined) delete process.env.PINCHY_E2E_TESTING;
-      else process.env.PINCHY_E2E_TESTING = original;
+      if (original === undefined) delete process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT;
+      else process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT = original;
     }
   });
 });

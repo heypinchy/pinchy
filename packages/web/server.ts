@@ -30,6 +30,18 @@ if (process.env.BETTER_AUTH_URL) {
   );
 }
 
+if (process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT === "1") {
+  // Surface this loud at startup. Production deployments must NEVER set this
+  // — it disables Better Auth's brute-force protection on /sign-in/*. The
+  // only legitimate setter is docker-compose.e2e.yml, which is itself only
+  // ever layered on top of docker-compose.yml during CI E2E runs.
+  console.warn(
+    "⚠ PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT=1 — auth rate limiting is OFF. " +
+      "This must only ever be set in E2E test stacks. If you see this in " +
+      "production logs, unset the env var and restart immediately."
+  );
+}
+
 const dev = process.env.NODE_ENV !== "production";
 const app = next({ dev });
 const handle = app.getRequestHandler();

@@ -68,4 +68,30 @@ describe("auth config consistency", () => {
     const content = readFileSync(resolve(PROJECT_ROOT, "packages/web/src/lib/auth.ts"), "utf-8");
     expect(content).toContain("trustedOrigins");
   });
+
+  describe("PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT — security guardrail", () => {
+    // The env var disables Better Auth's rate limit on /sign-in/* (3 req / 10s
+    // per IP). It MUST only ever appear in the E2E-only compose overlay, never
+    // in production compose, so a misplaced copy-paste can't accidentally turn
+    // off brute-force protection on a live deployment.
+    const ENV_VAR = "PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT";
+
+    it(`docker-compose.yml must NOT set ${ENV_VAR} (production compose)`, () => {
+      const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.yml"), "utf-8");
+      expect(
+        content,
+        `${ENV_VAR} found in docker-compose.yml — that file deploys to production. Move it to docker-compose.e2e.yml.`
+      ).not.toContain(ENV_VAR);
+    });
+
+    it(`docker-compose.dev.yml must NOT set ${ENV_VAR} (dev compose; rate limit is off in dev anyway)`, () => {
+      const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.dev.yml"), "utf-8");
+      expect(content).not.toContain(ENV_VAR);
+    });
+
+    it(`docker-compose.e2e.yml DOES set ${ENV_VAR} (the only legitimate location)`, () => {
+      const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.e2e.yml"), "utf-8");
+      expect(content).toContain(ENV_VAR);
+    });
+  });
 });

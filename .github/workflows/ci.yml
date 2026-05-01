@@ -762,8 +762,8 @@ jobs:
     # The earlier attempt to land this (PR #195) reverted because Playwright's
     # browser-form login flow hit Better Auth's NODE_ENV=production rate
     # limit (3 sign-ins / 10s per IP) — the loginViaUI calls across odoo
-    # specs blew through it after 3-4 attempts. PINCHY_E2E_TESTING=1 in
-    # docker-compose.e2e.yml disables that limit only for this E2E stack.
+    # specs blew through it after 3-4 attempts. PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT=1
+    # in docker-compose.e2e.yml disables that limit only for this E2E stack.
     env:
       PINCHY_VERSION: latest
 
