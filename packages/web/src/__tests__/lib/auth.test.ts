@@ -43,7 +43,7 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn(),
 }));
 
-import { auth } from "@/lib/auth";
+import { auth, getAuthRateLimitConfig } from "@/lib/auth";
 
 describe("auth configuration", () => {
   it("should export auth instance", () => {
@@ -53,5 +53,39 @@ describe("auth configuration", () => {
   it("should have api.getSession method", () => {
     expect(auth.api).toBeDefined();
     expect(typeof auth.api.getSession).toBe("function");
+  });
+});
+
+describe("getAuthRateLimitConfig", () => {
+  it("returns undefined by default — uses Better Auth's NODE_ENV-driven default (enabled in prod)", () => {
+    const original = process.env.PINCHY_E2E_TESTING;
+    delete process.env.PINCHY_E2E_TESTING;
+    try {
+      expect(getAuthRateLimitConfig()).toBeUndefined();
+    } finally {
+      if (original !== undefined) process.env.PINCHY_E2E_TESTING = original;
+    }
+  });
+
+  it("returns { enabled: false } when PINCHY_E2E_TESTING=1 — bypasses /sign-in/* rate limit (3 req / 10s) so Playwright form-login tests don't lock themselves out against the production image", () => {
+    const original = process.env.PINCHY_E2E_TESTING;
+    process.env.PINCHY_E2E_TESTING = "1";
+    try {
+      expect(getAuthRateLimitConfig()).toEqual({ enabled: false });
+    } finally {
+      if (original === undefined) delete process.env.PINCHY_E2E_TESTING;
+      else process.env.PINCHY_E2E_TESTING = original;
+    }
+  });
+
+  it("treats values other than '1' as not set — guard against accidentally disabling rate limiting in production", () => {
+    const original = process.env.PINCHY_E2E_TESTING;
+    process.env.PINCHY_E2E_TESTING = "true";
+    try {
+      expect(getAuthRateLimitConfig()).toBeUndefined();
+    } finally {
+      if (original === undefined) delete process.env.PINCHY_E2E_TESTING;
+      else process.env.PINCHY_E2E_TESTING = original;
+    }
   });
 });
