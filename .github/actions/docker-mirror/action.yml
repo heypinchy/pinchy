@@ -1,19 +1,35 @@
 name: Configure Docker Hub mirror
 description: >
-  Points the runner's Docker daemon at mirror.gcr.io as a pull-through cache
-  for Docker Hub. Sidesteps the 200 pulls/6h rate limit that throttled CI
-  whenever several jobs built images in parallel (we hit it during the
-  v0.4.2 release prep). Google operates mirror.gcr.io as a public cache
-  with the same path layout as Docker Hub, so no Dockerfile changes are
-  needed — the daemon transparently fetches from the mirror and falls
-  back to Docker Hub on a miss.
+  Sidesteps Docker Hub's 200 pulls/6h authenticated rate limit (which CI hit
+  consistently as of 2026-05-01) by pulling the Docker Hub library images
+  Pinchy depends on directly from mirror.gcr.io and re-tagging them locally.
+  After this action runs, `docker compose pull` / `up` finds the images in
+  the local cache and never touches docker.io.
+
+  Why pre-pull beats `registry-mirrors` alone: a daemon-level mirror config
+  silently falls back to docker.io on any mirror miss / lookup hiccup. That
+  fallback still consumes rate-limit quota — verified in CI runs 25224536490
+  and 25222971253 where `db Error toomanyrequests` fired even with
+  registry-mirrors set. Pre-pulling makes the docker.io path literally
+  unreachable for the images we control.
 runs:
   using: composite
   steps:
-    - name: Configure Docker daemon registry mirror
+    - name: Configure Docker daemon registry mirror (defense-in-depth)
       shell: bash
       run: |
         sudo mkdir -p /etc/docker
         echo '{"registry-mirrors":["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json >/dev/null
         sudo systemctl restart docker
         until docker info >/dev/null 2>&1; do sleep 1; done
+
+    - name: Pre-pull Docker Hub library images via mirror.gcr.io
+      shell: bash
+      run: |
+        # Keep this list in sync with `image:` references to docker.io
+        # library/* images across docker-compose*.yml. The daemon mirror
+        # is defense-in-depth for anything we miss here.
+        for image in postgres:17 caddy:2; do
+          docker pull "mirror.gcr.io/library/${image}"
+          docker tag "mirror.gcr.io/library/${image}" "${image}"
+        done
