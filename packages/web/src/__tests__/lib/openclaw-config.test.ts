@@ -2581,6 +2581,77 @@ describe("restart-state integration", () => {
     expect(sentEnv.OPENAI_API_KEY).toBe("${OPENAI_API_KEY}");
   });
 
+  it("plugins.allow order is stable when existing config has different ordering (#193)", async () => {
+    // CI repro (run 25222907678 on commit d091c6f): OpenClaw writes the
+    // `plugins.allow` array back to openclaw.json with its own ordering
+    // (typically alphabetical because telegram is auto-enabled after the
+    // pinchy-* entries are inserted, then the whole map is serialised).
+    //
+    // The previous regenerate built `allowedPlugins` as
+    // `[...new Set([...openClawPlugins, ...ourPlugins])]` which puts
+    // OpenClaw-managed plugins (telegram) FIRST and pinchy-* in entries
+    // insertion order — completely different from what OpenClaw wrote.
+    //
+    // OpenClaw's reload engine treats array order as significant for
+    // `plugins.allow` and emits "config change requires gateway restart
+    // (plugins.allow)" whenever the order differs, even if the set of
+    // plugins is identical. Result: every settings save / agent create
+    // triggers a 15-30s "Agent runtime is not available" banner.
+    //
+    // Fix: produce a stable ordering (alphabetical) that does not depend
+    // on insertion order, so two consecutive regenerates emit identical
+    // arrays regardless of what OpenClaw wrote in between.
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "smithers-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          pluginConfig: null,
+          allowedTools: ["pinchy_save_user_context"],
+          ownerId: "user-1",
+          isPersonal: true,
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:smithers-1") return "123456:ABC-token";
+      return null;
+    });
+
+    // Existing config matches what OpenClaw writes back after auto-enabling
+    // telegram: alphabetical order across the full union (pinchy-* + telegram).
+    const existingAllow = ["pinchy-audit", "pinchy-context", "pinchy-docs", "telegram"];
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", auth: { token: "gw-token" } },
+        plugins: {
+          allow: existingAllow,
+          entries: {
+            telegram: { enabled: true },
+          },
+        },
+      })
+    );
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    // The set of plugins must match (sanity check).
+    expect(new Set(config.plugins.allow)).toEqual(new Set(existingAllow));
+    // The order must be identical to what OpenClaw wrote — otherwise OpenClaw
+    // diff'd against its own file sees `plugins.allow` as changed and triggers
+    // a full gateway restart.
+    expect(config.plugins.allow).toEqual(existingAllow);
+  });
+
   it("regenerateOpenClawConfig is byte-idempotent against its own previous output (#193)", async () => {
     // Hardest assertion: two consecutive generates with identical DB state
     // must produce identical openclaw.json content. If they don't, OpenClaw

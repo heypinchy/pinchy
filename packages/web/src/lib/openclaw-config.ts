@@ -576,7 +576,13 @@ export async function regenerateOpenClawConfig() {
   const pinchyPluginPrefixes = ["pinchy-"];
   const isPinchyPlugin = (p: string) => pinchyPluginPrefixes.some((prefix) => p.startsWith(prefix));
   const openClawPlugins = existingAllow.filter((p) => !isPinchyPlugin(p));
-  const allowedPlugins = [...new Set([...openClawPlugins, ...ourPlugins])];
+  // Sort for byte-stable output: OpenClaw treats `plugins.allow` array order
+  // as significant in its reload diff and triggers a full gateway restart
+  // when ordering changes. Without this sort, our insertion-order ([...openClaw,
+  // ...ours]) doesn't match what OpenClaw writes back after auto-enabling
+  // telegram (alphabetical-ish), and every regenerate triggers a 15-30s
+  // restart cascade. See #193.
+  const allowedPlugins = [...new Set([...openClawPlugins, ...ourPlugins])].sort();
 
   // Preserve OpenClaw-managed plugin entries that we don't write ourselves.
   // OpenClaw auto-enables each configured provider (anthropic, openai, google,
