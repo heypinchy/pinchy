@@ -1881,9 +1881,16 @@ describe("useWsRuntime", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws = wsInstances[0];
 
-      // Step 1: fully connect and load history
+      // Step 1: fully connect, receive openclaw_status: true (server confirms
+      // upstream readiness — required since the client default is now false,
+      // see issue #198), and load history.
       act(() => {
         ws.onopen?.();
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "openclaw_status", connected: true }),
+        });
       });
       act(() => {
         ws.onmessage?.({
@@ -1950,13 +1957,9 @@ describe("useWsRuntime", () => {
         ws.onopen?.();
       });
 
-      // isOpenClawConnected starts true; simulate a false → true transition without history loaded
-      act(() => {
-        ws.onmessage?.({
-          data: JSON.stringify({ type: "openclaw_status", connected: false }),
-        });
-      });
-
+      // isOpenClawConnected starts false (issue #198); simulate a false → true
+      // transition without history loaded — the rising edge must NOT trigger
+      // a history re-request because isHistoryLoaded is still false.
       const sendsBefore = ws.send.mock.calls.length;
 
       act(() => {
