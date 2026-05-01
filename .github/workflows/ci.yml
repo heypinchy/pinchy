@@ -719,12 +719,18 @@ jobs:
         if: steps.prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: |
-          # Capture pull output so we can distinguish a missing-image
-          # condition (GHCR retention, deleted package, etc.) from a real
-          # pull failure (network, registry down). Missing previous-version
-          # images make the upgrade test impossible to run, but they are
-          # not a regression in *this* PR — skip with a warning instead of
-          # failing. See PR #212 for the incident that motivated this.
+          # Capture pull output so we can distinguish failures we can do
+          # nothing about from real pull failures (network, registry down):
+          #   * Missing previous-version images (GHCR retention etc.) — see
+          #     PR #212 for the original incident.
+          #   * Docker Hub org-wide rate-limit exhaustion — pulls of
+          #     postgres:17 etc. through mirror.gcr.io fall back to Docker
+          #     Hub when the mirror has a miss, and the org's anonymous
+          #     bucket is regularly drained by parallel CI runs. Same
+          #     not-our-fault category as missing images, same response.
+          # Missing previous-version images make the upgrade test impossible
+          # to run, but they are not a regression in *this* PR — skip with a
+          # warning instead of failing.
           set +e
           docker compose pull 2>&1 | tee pull.log
           status=${PIPESTATUS[0]}
@@ -735,7 +741,12 @@ jobs:
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "::error::docker compose pull failed for an unexpected reason (not a missing-image condition). See pull.log above."
+            if grep -qE "toomanyrequests|pull rate limit" pull.log; then
+              echo "::warning::Docker Hub rate-limit exhausted for the org during this run (mirror.gcr.io fell back to docker.io and was throttled). Skipping upgrade test — not a regression in this PR."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::docker compose pull failed for an unexpected reason (not a missing-image or rate-limit condition). See pull.log above."
             exit 1
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
