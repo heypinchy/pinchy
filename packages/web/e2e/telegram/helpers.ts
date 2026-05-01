@@ -351,13 +351,13 @@ export async function waitForTelegramPolling(timeout = 30000): Promise<void> {
     try {
       const res = await fetch(`${MOCK_TELEGRAM_URL}/control/health`);
       const data = await res.json();
-      // Once any bot has actually polled (called getUpdates), the channel is
-      // live. Note: `bots > 0` would also pass after a getMe-only validation,
-      // but that doesn't mean the bot is receiving messages. Use
-      // pollingTokens (populated on getUpdates) as the real readiness signal.
-      if (Array.isArray(data.pollingTokens) && data.pollingTokens.length > 0) return;
-      // Backwards-compat for older mocks that don't expose pollingTokens.
-      if (!("pollingTokens" in data) && data.bots > 0) return;
+      // `bots > 0` means at least one bot has been registered (called getMe).
+      // For most tests this is enough — the immediate next assertion
+      // (e.g. "send a message and expect a pairing response") has its own
+      // generous waitForBotResponse timeout that absorbs the brief gap
+      // between getMe and the first getUpdates. Multi-bot scenarios that
+      // need a SPECIFIC bot to be live should use waitForBotPolling instead.
+      if (data.bots > 0) return;
     } catch {
       // Not ready yet
     }
