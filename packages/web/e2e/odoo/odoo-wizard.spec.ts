@@ -150,14 +150,19 @@ test.describe.serial("Odoo Wizard Flow", () => {
     // Wait for the connection to appear in the list
     await expect(page.getByText("Connected")).toBeVisible({ timeout: 10000 });
 
-    // Get the connection name before deletion for later assertion
-    const connectionCard = page.locator(".rounded-lg.border.p-4").first();
+    // Scope to the visible tabpanel. The settings page uses keepMounted so
+    // every other tab (Groups, License, etc.) is also in the DOM but hidden.
+    // The Groups tab's EnterpriseFeatureCard has the same .rounded-lg.border.p-4
+    // classes as a connection card, and in production builds it consistently
+    // hits the DOM before the integrations content — so a global `.first()`
+    // matched the wrong (hidden) card. `getByRole("tabpanel")` only returns
+    // accessibility-visible panels (display:none ones drop out of the tree).
+    const integrationsPanel = page.getByRole("tabpanel");
+    const connectionCard = integrationsPanel.locator(".rounded-lg.border.p-4").first();
     const connectionName = await connectionCard.locator(".font-medium").first().textContent();
 
-    // Open the dropdown menu (three dots). Targeting data-slot is stable
-    // across shadcn theme changes and prod-build class transformations —
-    // the previous `getByRole("button").filter({ has: svg })` matched
-    // ambiguously against the production build.
+    // Open the dropdown menu (three dots). data-slot is shadcn/ui's canonical
+    // anchor — stable across theme tweaks and prod-build class transformations.
     await connectionCard.locator("[data-slot='dropdown-menu-trigger']").click();
 
     // Click Delete in the dropdown
