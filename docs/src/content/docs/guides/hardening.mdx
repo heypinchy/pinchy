@@ -257,6 +257,43 @@ The `internal: true` flag prevents containers on that network from reaching the 
 
 See the [VPS Deployment guide](/guides/vps-deployment/#set-up-https-with-caddy) for the complete production setup walkthrough.
 
+## Authentication rate limiting
+
+Pinchy ships with hardened, per-path rate limits on every credential-handling endpoint, configured at `packages/web/src/lib/auth.ts`. The values are explicit (not delegated to library defaults) so a future Better Auth upgrade cannot silently weaken them.
+
+Rate limiting is **enabled in production only** (`NODE_ENV === "production"`). It is intentionally off in dev and in Playwright E2E runs that exercise login flows.
+
+### Per-path thresholds (per IP)
+
+| Endpoint                   | Window | Max | Threat addressed                                     |
+| -------------------------- | ------ | --- | ---------------------------------------------------- |
+| `/sign-in/email`           | 60s    | 5   | Credential stuffing, brute force                     |
+| `/sign-up/email`           | 5 min  | 3   | Account-creation spam                                |
+| `/forget-password`         | 10 min | 3   | Password-reset email spam (DOS against user inboxes) |
+| `/reset-password`          | 10 min | 5   | Reset-token brute force                              |
+| `/request-password-reset`  | 10 min | 3   | Reset email spam                                     |
+| `/send-verification-email` | 10 min | 3   | Verification email spam                              |
+| `/change-password`         | 10 min | 5   | Post-auth abuse (stolen session)                     |
+| `/change-email`            | 10 min | 3   | Account takeover via email change (stolen session)   |
+| All other auth endpoints   | 10s    | 100 | Generic flood protection                             |
+
+### What this protects against
+
+- **Credential stuffing.** 5 sign-in attempts per minute per IP (vs. Better Auth's default 18/min) makes leaked-password lists impractical to replay against a single IP.
+- **Targeted brute force.** Combined with the audit trail's `auth.failed` events, repeated failures are visible and rate-bounded.
+- **Reset-flow abuse.** Tight windows on `/forget-password` and `/send-verification-email` prevent a single IP from spamming a victim's inbox or burning through reset tokens.
+- **Post-auth account takeover.** If a session is stolen, `/change-email` and `/change-password` are throttled hard enough that an attacker cannot quickly pivot to permanent control.
+
+### Limits of IP-based rate limiting
+
+- **IP rotation defeats per-IP limits.** A residential-proxy pool can sidestep these thresholds. We don't ship per-account lockout yet — a planned brute-force lockout will trigger on N consecutive `auth.failed` audit events for the same email.
+- **Storage is in-memory.** Counters reset on container restart and are not shared across replicas. For single-replica self-hosted deployments this is acceptable; for multi-replica deployments switch to a shared store (Redis) — not currently exposed as a config option, file an issue if you need this.
+- **Trust the X-Forwarded-For header from your reverse proxy only.** Better Auth derives the client IP from headers. If your reverse proxy does not set `X-Forwarded-For` to the real client IP — or worse, blindly trusts the header from the client — rate limiting can be bypassed. The reverse-proxy snippets earlier in this guide are configured correctly.
+
+### Customizing the thresholds
+
+The values are intentional defaults. If your CISO requires stricter limits (e.g. 3 sign-ins per minute), edit `getAuthRateLimitConfig` in `packages/web/src/lib/auth.ts` and rebuild your image. The `auth-config-consistency.test.ts` and `auth.test.ts` test suites pin the expected values so accidental loosening will fail CI.
+
 ## AUDIT_HMAC_SECRET configuration
 
 The audit trail uses HMAC-SHA256 to sign every log entry. By default, Pinchy auto-generates a secret at startup. For production, set a persistent secret.
