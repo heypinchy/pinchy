@@ -19,8 +19,28 @@ const PRIVATE_IP_PATTERNS = [
 const MAX_REDIRECT_HOPS = 5;
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
 
+// Detect IPv4-mapped IPv6 addresses (::ffff:0:0/96) and return the embedded
+// IPv4 in dotted-quad form. A known SSRF-bypass vector if we only match
+// IPv4 patterns against IPv4-shaped strings.
+//
+// Two forms exist in the wild:
+//   * Mixed:  ::ffff:127.0.0.1            (RFC 4291 §2.5.5 alternate form)
+//   * Hex:    ::ffff:7f00:1               (Node's URL parser canonicalises to this)
+function unwrapIPv4Mapped(ip: string): string | null {
+  const mixed = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/i.exec(ip);
+  if (mixed) return mixed[1];
+  const hex = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(ip);
+  if (hex) {
+    const high = parseInt(hex[1], 16);
+    const low = parseInt(hex[2], 16);
+    return `${(high >> 8) & 0xff}.${high & 0xff}.${(low >> 8) & 0xff}.${low & 0xff}`;
+  }
+  return null;
+}
+
 function isPrivateIp(ip: string): boolean {
-  return PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(ip));
+  const target = unwrapIPv4Mapped(ip) ?? ip;
+  return PRIVATE_IP_PATTERNS.some((pattern) => pattern.test(target));
 }
 
 type ResolvedHost =
@@ -31,16 +51,19 @@ type ResolvedHost =
 
 async function resolveHost(hostname: string): Promise<ResolvedHost> {
   if (hostname === "localhost") return { kind: "private" };
-  const literalFamily = net.isIP(hostname);
+  // URL parser keeps brackets around IPv6 hostnames (e.g. "[::1]"); strip
+  // them before passing to net.isIP / pattern checks.
+  const stripped = hostname.replace(/^\[|\]$/g, "");
+  const literalFamily = net.isIP(stripped);
   if (literalFamily === 4) {
-    return isPrivateIp(hostname)
+    return isPrivateIp(stripped)
       ? { kind: "private" }
-      : { kind: "literal", address: hostname, family: 4 };
+      : { kind: "literal", address: stripped, family: 4 };
   }
   if (literalFamily === 6) {
-    return isPrivateIp(hostname)
+    return isPrivateIp(stripped)
       ? { kind: "private" }
-      : { kind: "literal", address: hostname, family: 6 };
+      : { kind: "literal", address: stripped, family: 6 };
   }
   const [ipv4s, ipv6s] = await Promise.all([
     dns.resolve4(hostname).catch(() => [] as string[]),
@@ -141,13 +164,9 @@ export async function webFetch(
 
   // SSRF guard — resolve hostname, reject private addresses, pin the
   // resolved address for the actual request to close the DNS-rebinding
-  // TOCTOU window (#165).
-  let resolved: ResolvedHost;
-  try {
-    resolved = await resolveHost(hostname);
-  } catch {
-    resolved = { kind: "unresolvable" };
-  }
+  // TOCTOU window (#165). resolveHost catches DNS errors internally and
+  // returns "unresolvable" rather than throwing.
+  const resolved = await resolveHost(hostname);
   if (resolved.kind === "private") {
     return {
       content: `Access to private network addresses is not allowed.`,

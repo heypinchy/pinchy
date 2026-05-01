@@ -213,6 +213,39 @@ describe("webFetch", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
+    it("blocks IPv4-mapped IPv6 wrapping a private IPv4 (::ffff:10.0.0.1)", async () => {
+      // Attacker DNS returns an IPv4-mapped IPv6 address that embeds a
+      // private IPv4. Without unwrapping, the regex check sees an opaque
+      // IPv6 string that none of the IPv4 patterns match.
+      resolve4Mock.mockResolvedValue([]);
+      resolve6Mock.mockResolvedValue(["::ffff:10.0.0.1"]);
+
+      const result = await webFetch("https://sneaky.example.com/page");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("blocks ::ffff:127.0.0.1 (IPv4-mapped loopback)", async () => {
+      const result = await webFetch("http://[::ffff:127.0.0.1]/admin");
+
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain("private network");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("allows IPv4-mapped IPv6 wrapping a public IPv4 (::ffff:8.8.8.8)", async () => {
+      resolve4Mock.mockResolvedValue([]);
+      resolve6Mock.mockResolvedValue(["::ffff:8.8.8.8"]);
+      mockHtmlResponse("<html><body><p>OK</p></body></html>");
+
+      const result = await webFetch("https://example.com/page");
+
+      expect(result.isError).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalled();
+    });
+
     it("blocks redirects to private IPs (SSRF via redirect)", async () => {
       // First request returns a redirect to a private IP
       fetchMock.mockResolvedValueOnce({
