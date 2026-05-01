@@ -1,8 +1,6 @@
 // audit-exempt: provider removal is a settings change, audit logging planned for a future PR
 import { NextResponse } from "next/server";
-import { headers } from "next/headers";
-import { getSession } from "@/lib/auth";
-import { requireAdmin } from "@/lib/api-auth";
+import { withAuth, withAdmin } from "@/lib/api-auth";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
@@ -13,12 +11,7 @@ import { eq } from "drizzle-orm";
 
 const VALID_PROVIDERS = Object.keys(PROVIDERS) as ProviderName[];
 
-export async function GET() {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const GET = withAuth(async (_req, _ctx, session) => {
   const isAdmin = session.user.role === "admin";
   const defaultProvider = await getSetting("default_provider");
 
@@ -34,12 +27,9 @@ export async function GET() {
   }
 
   return NextResponse.json({ defaultProvider, providers });
-}
+});
 
-export async function DELETE(request: Request) {
-  const sessionOrError = await requireAdmin();
-  if (sessionOrError instanceof NextResponse) return sessionOrError;
-
+export const DELETE = withAdmin(async (request) => {
   const body = await request.json();
   const provider = body.provider as ProviderName;
 
@@ -101,4 +91,4 @@ export async function DELETE(request: Request) {
   await regenerateOpenClawConfig();
 
   return NextResponse.json({ success: true });
-}
+});

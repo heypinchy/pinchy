@@ -1,7 +1,6 @@
-import { NextRequest, NextResponse, after } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse, after } from "next/server";
 import { revalidatePath } from "next/cache";
-import { getSession } from "@/lib/auth";
+import { withAuth, withAdmin } from "@/lib/api-auth";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { agents, agentConnectionPermissions, integrationConnections } from "@/db/schema";
@@ -28,26 +27,12 @@ import { getVisibleAgents } from "@/lib/visible-agents";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 import { detectEmailOperations } from "@/lib/tool-registry";
 
-export async function GET() {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const GET = withAuth(async (_req, _ctx, session) => {
   const visibleAgents = await getVisibleAgents(session.user.id!, session.user.role ?? "member");
   return NextResponse.json(visibleAgents);
-}
+});
 
-export async function POST(request: NextRequest) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const POST = withAdmin(async (request, _ctx, session) => {
   const body = await request.json();
   const { name, templateId, tagline, pluginConfig, connectionId } = body;
 
@@ -292,4 +277,4 @@ export async function POST(request: NextRequest) {
   revalidatePath("/", "layout");
 
   return NextResponse.json(agent, { status: 201 });
-}
+});

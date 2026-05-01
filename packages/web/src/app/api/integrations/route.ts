@@ -1,8 +1,7 @@
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
-import { getSession } from "@/lib/auth";
+import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
@@ -27,15 +26,7 @@ const createIntegrationSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-export async function GET() {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const GET = withAdmin(async () => {
   const connections = await db.select().from(integrationConnections);
 
   // Decrypt per row and isolate failures: if ENCRYPTION_KEY changed (e.g. an
@@ -71,17 +62,9 @@ export async function GET() {
   });
 
   return NextResponse.json(masked);
-}
+});
 
-export async function POST(request: NextRequest) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const POST = withAdmin(async (request, _ctx, session) => {
   const body = await request.json();
   const parsed = createIntegrationSchema.safeParse(body);
   if (!parsed.success) {
@@ -144,4 +127,4 @@ export async function POST(request: NextRequest) {
     },
     { status: 201 }
   );
-}
+});

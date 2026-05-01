@@ -1,7 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { getSession } from "@/lib/auth";
+import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { decrypt } from "@/lib/encryption";
@@ -12,15 +11,7 @@ import { validateExternalUrl } from "@/lib/integrations/url-validation";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
-export async function POST(request: NextRequest, { params }: RouteContext) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const POST = withAdmin<RouteContext>(async (_req, { params }, session) => {
   const { connectionId } = await params;
 
   const [connection] = await db
@@ -80,4 +71,4 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
     const message = error instanceof Error ? error.message : "Sync failed";
     return NextResponse.json({ success: false, error: message }, { status: 200 });
   }
-}
+});

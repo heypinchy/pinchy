@@ -1,15 +1,11 @@
 // audit-exempt: users updating their own profile is a self-service action
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
-import { getSession } from "@/lib/auth";
+import { NextResponse } from "next/server";
+import { withAuth } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 
-export async function PATCH(request: NextRequest) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
+export const PATCH = withAuth(async (request, _ctx, session) => {
   const { name } = await request.json();
 
   if (!name || typeof name !== "string" || !name.trim()) {
@@ -19,4 +15,4 @@ export async function PATCH(request: NextRequest) {
   await db.update(users).set({ name: name.trim() }).where(eq(users.id, session.user.id));
 
   return NextResponse.json({ success: true });
-}
+});
