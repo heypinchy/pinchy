@@ -89,6 +89,49 @@ jobs:
             })();
           "
 
+  vitest-integration:
+    name: Vitest Integration Tests (real DB)
+    runs-on: ubuntu-latest
+
+    # Real-DB unit-style tests (#229). Distinct from `e2e` (full Playwright
+    # browser stack) and `integration` (OpenClaw + fake Ollama via
+    # docker-compose.integration.yml). Just Postgres + Drizzle migrations +
+    # the route handlers under test.
+    services:
+      postgres:
+        image: postgres:17
+        credentials:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        env:
+          POSTGRES_DB: pinchy
+          POSTGRES_USER: pinchy
+          POSTGRES_PASSWORD: pinchy_dev
+        ports:
+          - 5436:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run vitest integration tests
+        run: pnpm -C packages/web test:db
+        env:
+          VITEST_INTEGRATION_DB_URL: postgresql://pinchy:pinchy_dev@localhost:5436/pinchy_test_vitest
+
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest

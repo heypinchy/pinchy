@@ -80,10 +80,34 @@ pnpm dev
 ### Running tests
 
 ```bash
+# Unit tests (fast, mocked, no Docker required)
 pnpm test
+
+# DB integration tests (real Postgres, slower — opts you into the DB-backed runner)
+pnpm test:db
 ```
 
 All new features require tests. We practice TDD — write the failing test first, then the implementation.
+
+`pnpm test:db` provisions a `pinchy_test_vitest` database against the dev-stack Postgres on `localhost:5434`. Start it once with:
+
+```bash
+PINCHY_VERSION=dev docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db
+```
+
+To target a different Postgres, set `VITEST_INTEGRATION_DB_URL` (e.g. `postgresql://pinchy:pinchy_dev@localhost:5436/pinchy_test_vitest`).
+
+#### When to mock the database vs. use the real one
+
+We're moving away from `vi.mock("@/db", ...)` in route-level tests (see [#229](https://github.com/heypinchy/pinchy/issues/229)). The rule of thumb:
+
+| Test target                                                                      | Use the real DB?                                                  |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| Pure functions, components, helpers with no DB calls                             | No — keep them in `*.test.ts` (the unit suite)                    |
+| Route handlers, lib code whose primary job is to talk to the DB                  | Yes — write `*.integration.test.ts` against the real schema       |
+| External network calls (OpenClaw gateway, Telegram, Anthropic, FS-heavy helpers) | Mock those at the module boundary even inside an integration test |
+
+Convention: any file matching `**/*.integration.test.ts` runs in `pnpm test:db` and is excluded from `pnpm test`. Setup files live in [`packages/web/src/test-helpers/integration/`](packages/web/src/test-helpers/integration/).
 
 ## Code Style
 
