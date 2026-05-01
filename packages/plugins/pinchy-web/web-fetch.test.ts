@@ -9,7 +9,7 @@ vi.mock("node:dns/promises", () => ({
 }));
 
 // Import after mock setup
-const { webFetch } = await import("./web-fetch.js");
+const { webFetch, pinnedLookup } = await import("./web-fetch.js");
 
 describe("webFetch", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
@@ -276,6 +276,42 @@ describe("webFetch", () => {
       expect(result.content).toBe("Final content");
     });
 
+    it("pins the resolved IP for the actual fetch (DNS rebinding mitigation)", async () => {
+      // Attacker DNS: returns a public IP to the pre-check, would return a
+      // private IP to a follow-up resolution. Without pinning, fetch could be
+      // tricked into hitting the private IP (classic TOCTOU).
+      resolve4Mock
+        .mockResolvedValueOnce(["93.184.216.34"]) // guard sees public
+        .mockResolvedValueOnce(["10.0.0.5"]); // a second resolution would see private
+      resolve6Mock.mockResolvedValue([]);
+      mockHtmlResponse("<html><body><p>Safe</p></body></html>");
+
+      const result = await webFetch("https://example.com/page");
+
+      // Guard passes on the public address.
+      expect(result.isError).toBeUndefined();
+
+      // fetch must be dispatched through a pinned-IP undici Agent so the OS
+      // resolver cannot return a different (private) IP at connect time.
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const callArgs = fetchMock.mock.calls[0] as [string, Record<string, unknown>];
+      expect(callArgs[1]).toBeDefined();
+      expect(callArgs[1].dispatcher).toBeDefined();
+    });
+
+    it("does not attach a dispatcher when the URL is already an IP literal", async () => {
+      // No DNS to rebind — the URL itself names the destination address.
+      mockHtmlResponse("<html><body><p>Direct</p></body></html>");
+
+      const result = await webFetch("https://93.184.216.34/page");
+
+      expect(result.isError).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // No DNS resolution attempted for IP literals.
+      expect(resolve4Mock).not.toHaveBeenCalled();
+      expect(resolve6Mock).not.toHaveBeenCalled();
+    });
+
     it("rejects too many redirects", async () => {
       // 6 consecutive redirects (limit is 5)
       for (let i = 0; i < 6; i++) {
@@ -292,6 +328,40 @@ describe("webFetch", () => {
 
       expect(result.isError).toBe(true);
       expect(result.content).toContain("Too many redirects");
+    });
+  });
+
+  describe("pinnedLookup", () => {
+    it("invokes the callback with the pinned address regardless of hostname", async () => {
+      const lookup = pinnedLookup("93.184.216.34", 4);
+
+      const result = await new Promise<{ address: string; family: number }>(
+        (resolve, reject) => {
+          lookup("evil.com", {}, (err, address, family) => {
+            if (err) reject(err);
+            else resolve({ address: address as string, family: family as number });
+          });
+        },
+      );
+
+      expect(result.address).toBe("93.184.216.34");
+      expect(result.family).toBe(4);
+    });
+
+    it("supports IPv6 addresses", async () => {
+      const lookup = pinnedLookup("2606:2800:220:1:248:1893:25c8:1946", 6);
+
+      const result = await new Promise<{ address: string; family: number }>(
+        (resolve, reject) => {
+          lookup("example.com", {}, (err, address, family) => {
+            if (err) reject(err);
+            else resolve({ address: address as string, family: family as number });
+          });
+        },
+      );
+
+      expect(result.address).toBe("2606:2800:220:1:248:1893:25c8:1946");
+      expect(result.family).toBe(6);
     });
   });
 
