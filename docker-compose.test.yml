@@ -27,6 +27,16 @@ services:
       - NODE_TLS_REJECT_UNAUTHORIZED=0
       # Route LLM calls to mock server — Anthropic SDK respects ANTHROPIC_BASE_URL
       - ANTHROPIC_BASE_URL=https://172.28.0.10
+      # Pre-export the fake API key so OpenClaw can resolve `${ANTHROPIC_API_KEY}`
+      # templates from process startup. Without this, the gateway's template
+      # resolver returns undefined for the key until start-openclaw.sh's
+      # secrets-watcher loop notices Pinchy's first secrets.json write,
+      # exports the var, and SIGTERMs the gateway to inherit it. During that
+      # window any config write hits the openclaw#75534 false-positive
+      # env.* restart trigger because snapshot has empty/undefined env values
+      # while the disk file has `${VAR}` templates. Matches the value in
+      # seedSetup() (e2e/telegram/helpers.ts).
+      - ANTHROPIC_API_KEY=sk-ant-fake-key-for-e2e-testing
 
   pinchy:
     environment:
