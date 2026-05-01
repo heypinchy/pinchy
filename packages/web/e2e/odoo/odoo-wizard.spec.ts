@@ -154,11 +154,11 @@ test.describe.serial("Odoo Wizard Flow", () => {
     const connectionCard = page.locator(".rounded-lg.border.p-4").first();
     const connectionName = await connectionCard.locator(".font-medium").first().textContent();
 
-    // Open the dropdown menu (three dots)
-    await connectionCard
-      .getByRole("button")
-      .filter({ has: page.locator("svg") })
-      .click();
+    // Open the dropdown menu (three dots). Targeting data-slot is stable
+    // across shadcn theme changes and prod-build class transformations —
+    // the previous `getByRole("button").filter({ has: svg })` matched
+    // ambiguously against the production build.
+    await connectionCard.locator("[data-slot='dropdown-menu-trigger']").click();
 
     // Click Delete in the dropdown
     await page.getByRole("menuitem", { name: /delete/i }).click();
