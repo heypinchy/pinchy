@@ -204,7 +204,7 @@ describe("credential fetching", () => {
     vi.clearAllMocks();
   });
 
-  it("fetches credentials on each tool execution", async () => {
+  it("caches credentials within TTL — second tool call reuses fetched token", async () => {
     mockCredentialResponse();
     mockList.mockResolvedValue([]);
 
@@ -214,11 +214,31 @@ describe("credential fetching", () => {
     await tool.execute("call-1", {});
     await tool.execute("call-2", {});
 
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
     expect(mockFetch).toHaveBeenCalledWith(
       "http://pinchy:7777/api/internal/integrations/conn-1/credentials",
       { headers: { Authorization: "Bearer test-gateway-token" } },
     );
+  });
+
+  it("refetches credentials after the TTL window expires", async () => {
+    vi.useFakeTimers();
+    try {
+      mockCredentialResponse();
+      mockList.mockResolvedValue([]);
+
+      const tools = createApi();
+      const tool = findTool(tools, "email_list", agentId)!;
+
+      await tool.execute("call-1", {});
+      // Advance well past 5min TTL
+      vi.advanceTimersByTime(6 * 60 * 1000);
+      await tool.execute("call-2", {});
+
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("creates GmailAdapter with fetched access token", async () => {
@@ -258,6 +278,103 @@ describe("credential fetching", () => {
 
     expect(result.content[0].text).toContain("ECONNREFUSED");
     expect(result.isError).toBe(true);
+  });
+
+  it("REGRESSION (#209): rejects SecretRef-shaped credentials with a clear hint, never reaching Gmail", async () => {
+    // The credentials API returns the unresolved SecretRef object instead
+    // of decrypted credentials (the bug shape from #209). The plugin must
+    // reject this at the boundary instead of forwarding `undefined` as
+    // accessToken to Gmail (which would produce a confusing 401).
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        type: "google",
+        credentials: {
+          source: "file",
+          provider: "pinchy",
+          id: "/integrations/conn-1/accessToken",
+        },
+      }),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("must be a string");
+    expect(text).toContain("#209");
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it("rejects credentials with missing accessToken", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ type: "google", credentials: {} }),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("accessToken");
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it("invalidates cache and refetches when Gmail returns 401 (rotated/expired token)", async () => {
+    // First call: cached token works
+    mockCredentialResponse("stale-token");
+    mockList.mockResolvedValueOnce([]);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+    await tool.execute("call-1", {});
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+
+    // Second call: Gmail responds 401 (token expired in the meantime),
+    // plugin must invalidate cache, refetch, and retry once with the
+    // fresh token from Pinchy.
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        type: "google",
+        credentials: { accessToken: "fresh-token" },
+      }),
+    });
+    mockList
+      .mockRejectedValueOnce(new Error("HTTP 401: Invalid Credentials"))
+      .mockResolvedValueOnce([]);
+
+    const result = await tool.execute("call-2", {});
+
+    expect(result.isError).toBeFalsy();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    // call-1: 1 list call. call-2: 1 list call that rejects with 401, then
+    // a retry list call after cache invalidation. Total = 3.
+    expect(mockList).toHaveBeenCalledTimes(3);
+    // Second GmailAdapter instantiation must use the fresh token
+    expect(GmailAdapter).toHaveBeenLastCalledWith({ accessToken: "fresh-token" });
+  });
+
+  it("surfaces the auth error if the refetched token also fails", async () => {
+    mockCredentialResponse();
+    mockList
+      .mockRejectedValueOnce(new Error("HTTP 401: Invalid Credentials"))
+      .mockRejectedValueOnce(new Error("HTTP 401: Invalid Credentials"));
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("401");
+    // Two fetches: initial + refetch after first 401
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(mockList).toHaveBeenCalledTimes(2);
   });
 });
 

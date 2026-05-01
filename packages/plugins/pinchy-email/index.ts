@@ -80,11 +80,45 @@ function errorResult(error: unknown): {
   };
 }
 
+interface EmailCredentials {
+  accessToken: string;
+}
+
+/**
+ * Defense-in-depth: fail fast with a clear error if the credentials API
+ * returns the wrong shape (e.g. an unresolved SecretRef object instead
+ * of a plain string accessToken — the bug class behind #209). Without
+ * this assertion a malformed payload would propagate to the Gmail API
+ * as `accessToken: undefined`, producing a confusing 401 that masks the
+ * real cause.
+ */
+function assertCredentialsShape(creds: unknown): asserts creds is EmailCredentials {
+  if (!creds || typeof creds !== "object") {
+    throw new Error(`pinchy-email: credentials must be an object, got ${typeof creds}`);
+  }
+  const obj = creds as Record<string, unknown>;
+  const looksLikeSecretRef =
+    typeof obj.source === "string" &&
+    typeof obj.provider === "string" &&
+    typeof obj.id === "string";
+  const actual = typeof obj.accessToken;
+  if (actual !== "string") {
+    const hint = looksLikeSecretRef
+      ? " (the credentials API returned an unresolved SecretRef — see #209)"
+      : actual === "object"
+        ? " (looks like an unresolved SecretRef — see #209)"
+        : "";
+    throw new Error(
+      `pinchy-email: credentials.accessToken must be a string, got ${actual}${hint}`,
+    );
+  }
+}
+
 async function fetchCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
   connectionId: string,
-): Promise<{ accessToken: string }> {
+): Promise<EmailCredentials> {
   const response = await fetch(
     `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
     { headers: { Authorization: `Bearer ${gatewayToken}` } },
@@ -96,7 +130,8 @@ async function fetchCredentials(
     );
   }
 
-  const data = await response.json();
+  const data = (await response.json()) as { credentials?: unknown };
+  assertCredentialsShape(data.credentials);
   return data.credentials;
 }
 
@@ -110,6 +145,62 @@ const plugin = {
     const agentConfigs = pluginConfig?.agents ?? {};
     const apiBaseUrl = pluginConfig?.apiBaseUrl ?? "";
     const gatewayToken = pluginConfig?.gatewayToken ?? "";
+
+    // GmailAdapter cache per agent. Built lazily on first tool call:
+    // fetch credentials from Pinchy → instantiate GmailAdapter. TTL keeps
+    // the cache fresh enough that token rotation propagates within
+    // CREDENTIALS_TTL_MS without anyone restarting OpenClaw — and on a
+    // 401 from Gmail (which happens immediately after the access token
+    // expires, since the Pinchy-side OAuth refresh races the call) we
+    // invalidate eagerly and refetch once before surfacing the error.
+    const CREDENTIALS_TTL_MS = 5 * 60 * 1000; // 5 minutes
+    const cache = new Map<string, { gmail: GmailAdapter; expiresAt: number }>();
+
+    function invalidate(agentId: string) {
+      cache.delete(agentId);
+    }
+
+    async function getOrCreateClient(
+      agentId: string,
+      config: AgentEmailConfig,
+    ): Promise<GmailAdapter> {
+      const hit = cache.get(agentId);
+      if (hit && hit.expiresAt > Date.now()) return hit.gmail;
+      const creds = await fetchCredentials(apiBaseUrl, gatewayToken, config.connectionId);
+      const gmail = new GmailAdapter({ accessToken: creds.accessToken });
+      cache.set(agentId, { gmail, expiresAt: Date.now() + CREDENTIALS_TTL_MS });
+      return gmail;
+    }
+
+    /**
+     * Run a Gmail call with one transparent retry on auth failure.
+     * Gmail returns a 401 (or "Invalid Credentials") when the access
+     * token is stale. Pinchy's credentials API auto-refreshes Google
+     * OAuth tokens server-side, so on a 401 we invalidate the local
+     * cache, refetch (which triggers the refresh), and retry once.
+     */
+    async function withAuthRetry<T>(
+      agentId: string,
+      config: AgentEmailConfig,
+      fn: (gmail: GmailAdapter) => Promise<T>,
+    ): Promise<T> {
+      const gmail = await getOrCreateClient(agentId, config);
+      try {
+        return await fn(gmail);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message.toLowerCase() : "";
+        const isAuthError =
+          msg.includes("401") ||
+          msg.includes("invalid credentials") ||
+          msg.includes("invalid_grant") ||
+          msg.includes("token has been expired") ||
+          msg.includes("unauthorized");
+        if (!isAuthError) throw err;
+        invalidate(agentId);
+        const fresh = await getOrCreateClient(agentId, config);
+        return fn(fresh);
+      }
+    }
 
     // 1. email_list
     api.registerTool(
@@ -148,20 +239,13 @@ const plugin = {
                 return permissionDenied("read");
               }
 
-              const credentials = await fetchCredentials(
-                apiBaseUrl,
-                gatewayToken,
-                config.connectionId,
+              const result = await withAuthRetry(agentId, config, (gmail) =>
+                gmail.list({
+                  folder: params.folder as string | undefined,
+                  limit: params.limit as number | undefined,
+                  unreadOnly: params.unreadOnly as boolean | undefined,
+                }),
               );
-              const gmail = new GmailAdapter({
-                accessToken: credentials.accessToken,
-              });
-
-              const result = await gmail.list({
-                folder: params.folder as string | undefined,
-                limit: params.limit as number | undefined,
-                unreadOnly: params.unreadOnly as boolean | undefined,
-              });
 
               return {
                 content: [
@@ -206,16 +290,9 @@ const plugin = {
                 return permissionDenied("read");
               }
 
-              const credentials = await fetchCredentials(
-                apiBaseUrl,
-                gatewayToken,
-                config.connectionId,
+              const result = await withAuthRetry(agentId, config, (gmail) =>
+                gmail.read(params.id as string),
               );
-              const gmail = new GmailAdapter({
-                accessToken: credentials.accessToken,
-              });
-
-              const result = await gmail.read(params.id as string);
 
               return {
                 content: [
@@ -265,19 +342,12 @@ const plugin = {
                 return permissionDenied("read");
               }
 
-              const credentials = await fetchCredentials(
-                apiBaseUrl,
-                gatewayToken,
-                config.connectionId,
+              const result = await withAuthRetry(agentId, config, (gmail) =>
+                gmail.search({
+                  query: params.query as string,
+                  limit: params.limit as number | undefined,
+                }),
               );
-              const gmail = new GmailAdapter({
-                accessToken: credentials.accessToken,
-              });
-
-              const result = await gmail.search({
-                query: params.query as string,
-                limit: params.limit as number | undefined,
-              });
 
               return {
                 content: [
@@ -329,21 +399,14 @@ const plugin = {
                 return permissionDenied("draft");
               }
 
-              const credentials = await fetchCredentials(
-                apiBaseUrl,
-                gatewayToken,
-                config.connectionId,
+              const result = await withAuthRetry(agentId, config, (gmail) =>
+                gmail.draft({
+                  to: params.to as string,
+                  subject: params.subject as string,
+                  body: params.body as string,
+                  replyTo: params.replyTo as string | undefined,
+                }),
               );
-              const gmail = new GmailAdapter({
-                accessToken: credentials.accessToken,
-              });
-
-              const result = await gmail.draft({
-                to: params.to as string,
-                subject: params.subject as string,
-                body: params.body as string,
-                replyTo: params.replyTo as string | undefined,
-              });
 
               return {
                 content: [
@@ -395,21 +458,14 @@ const plugin = {
                 return permissionDenied("send");
               }
 
-              const credentials = await fetchCredentials(
-                apiBaseUrl,
-                gatewayToken,
-                config.connectionId,
+              const result = await withAuthRetry(agentId, config, (gmail) =>
+                gmail.send({
+                  to: params.to as string,
+                  subject: params.subject as string,
+                  body: params.body as string,
+                  replyTo: params.replyTo as string | undefined,
+                }),
               );
-              const gmail = new GmailAdapter({
-                accessToken: credentials.accessToken,
-              });
-
-              const result = await gmail.send({
-                to: params.to as string,
-                subject: params.subject as string,
-                body: params.body as string,
-                replyTo: params.replyTo as string | undefined,
-              });
 
               return {
                 content: [
