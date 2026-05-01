@@ -179,19 +179,72 @@ User feedback (errors, success confirmations) must use the correct display patte
 
 ### Secrets Handling
 
-Every new sensitive field that would land in `openclaw.json` MUST use a
-SecretRef pointer, never a plaintext value. See
-`packages/web/src/lib/openclaw-secrets.ts` for helpers and
-`packages/web/src/lib/openclaw-plaintext-scanner.ts` for the defense-in-depth
-check that will refuse writes containing plaintext secrets.
+Three secret-handling patterns, each with a specific scope. Pick the
+right one based on **who reads the secret at runtime**.
 
-Pattern for adding a new secret:
-1. Decrypt from DB in `regenerateOpenClawConfig()`.
-2. Add it to the `SecretsBundle` via its stable JSON pointer.
-3. Emit a `secretRef(pointer)` in the spot in `openclaw.json` where the
-   plaintext would have gone.
-4. Add a test asserting both halves — value in `secrets.json`, ref in
-   `openclaw.json`.
+#### Pattern A — OpenClaw built-in resolves (SecretRef)
+
+For paths OpenClaw itself walks at runtime:
+- `models.providers.<name>.apiKey` (LLM provider keys)
+- `gateway.auth.token` (gateway auth — written as plaintext)
+- `env.<VAR>` env-var templates resolved against process env
+
+Use `secretRef(pointer)` from `packages/web/src/lib/openclaw-secrets.ts`,
+add the value to the `SecretsBundle`, write the ref in `openclaw.json`.
+Add a test asserting both halves.
+
+#### Pattern B — Pinchy-aware plugins fetch via API (preferred for new credentials)
+
+For credentials consumed by `packages/plugins/pinchy-*` plugins (Odoo,
+web-search, email, future: Pipedrive, Salesforce, Stripe, etc.):
+
+**Do NOT** put the credential — or even a SecretRef pointer — in the
+plugin's config block in `openclaw.json`. OpenClaw 2026.4.x does not
+walk arbitrary plugin config trees for SecretRef resolution; an
+unresolved SecretRef object would reach the plugin verbatim and
+typically blow up downstream (see #209: an Odoo dict reached the Python
+server, which crashed with `unhashable type: 'dict'`).
+
+Instead:
+1. In `regenerateOpenClawConfig()`, write only `apiBaseUrl`,
+   `gatewayToken`, and the integration's opaque `connectionId` into the
+   plugin config (per-agent or top-level depending on the plugin).
+2. The plugin fetches credentials lazily from
+   `GET /api/internal/integrations/:connectionId/credentials` with the
+   gateway token as Bearer auth — same call pattern as `pinchy-email`,
+   `pinchy-odoo`, `pinchy-web`.
+3. Cache in the plugin (5-min TTL recommended) plus invalidate-on-401
+   for credential rotation.
+4. Validate the returned credential shape at the plugin's edge with a
+   clear `must be a string, got object` error if a regression sends
+   an unresolved SecretRef.
+5. Test at four layers:
+   - Unit: openclaw-config writes the right shape (no credentials in
+     plugin config; only connectionId + bootstrap creds).
+   - Plugin unit: cache hit/miss, refetch on 401, shape validation
+     rejects SecretRef payloads.
+   - Plugin integration: against in-process mock-pinchy + the relevant
+     mock service (e.g. mock-odoo). See
+     `packages/plugins/pinchy-odoo/__tests__/integration.test.ts` for
+     the canonical example.
+   - Manual on staging.
+
+#### Pattern C — Bootstrap credentials (plaintext, single source)
+
+`gateway.auth.token` and `plugins.entries.pinchy-*.config.gatewayToken`
+are written as plaintext into `openclaw.json`. They are the *bootstrap*
+credentials used to authenticate everything else. They cannot themselves
+be fetched via Pinchy's API (chicken-and-egg). Treat them as the trust
+root for the OpenClaw container; rotate by regenerating the config and
+restarting OpenClaw.
+
+#### Defense in depth
+
+`packages/web/src/lib/openclaw-plaintext-scanner.ts` checks every
+`openclaw.json` write for known provider-key prefixes (Anthropic
+`sk-ant-…`, OpenAI `sk-…`, Gemini `AIza…`, etc.). Add a pattern there
+when you onboard any new provider whose secret has a recognisable
+prefix — even if you're following Pattern B.
 
 ### Documentation
 - **Docs site**: `docs/` directory, built with Astro Starlight. Deployed to [docs.heypinchy.com](https://docs.heypinchy.com).

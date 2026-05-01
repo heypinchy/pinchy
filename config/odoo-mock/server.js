@@ -764,14 +764,35 @@ const controlServer = http.createServer(async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Start servers
+// Public API for in-process consumers (vitest integration tests).
+//
+// Auto-starts on the published Docker ports when run as a CLI (e.g. inside
+// the docker-compose service). Tests can instead import the module and
+// call `start()` to spin both servers up on ephemeral ports without
+// touching the docker-compose stack.
 // ---------------------------------------------------------------------------
 resetNextIds();
 
-jsonRpcServer.listen(8069, () => {
-  console.log("Mock Odoo JSON-RPC server listening on port 8069");
-});
+async function start({ jsonRpcPort = 8069, controlPort = 9002 } = {}) {
+  await new Promise((resolve) => jsonRpcServer.listen(jsonRpcPort, resolve));
+  await new Promise((resolve) => controlServer.listen(controlPort, resolve));
+  return {
+    jsonRpcPort: jsonRpcServer.address().port,
+    controlPort: controlServer.address().port,
+    async stop() {
+      await Promise.all([
+        new Promise((r) => jsonRpcServer.close(r)),
+        new Promise((r) => controlServer.close(r)),
+      ]);
+    },
+  };
+}
 
-controlServer.listen(9002, () => {
-  console.log("Mock Odoo Control API listening on port 9002");
-});
+if (require.main === module) {
+  start().then(({ jsonRpcPort, controlPort }) => {
+    console.log(`Mock Odoo JSON-RPC server listening on port ${jsonRpcPort}`);
+    console.log(`Mock Odoo Control API listening on port ${controlPort}`);
+  });
+}
+
+module.exports = { start };

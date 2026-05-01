@@ -18,7 +18,6 @@ import {
   channelLinks,
 } from "@/db/schema";
 import { getSetting } from "@/lib/settings";
-import { decrypt } from "@/lib/encryption";
 import { computeDeniedGroups } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
@@ -423,22 +422,6 @@ export async function regenerateOpenClawConfig() {
 
     const conn = firstConnection.connection;
 
-    // Robust against key rotation: if this connection's credentials can't be
-    // decrypted, skip it — the alternative is crashing the whole config
-    // regeneration, which leaves every agent broken. The admin can see and
-    // delete the orphaned row via Settings → Integrations.
-    let decryptedCreds: { url: string; db: string; uid: number; apiKey: string };
-    try {
-      decryptedCreds = JSON.parse(decrypt(conn.credentials));
-    } catch (err) {
-      console.warn(
-        `[openclaw-config] Skipping agent ${agentId}'s Odoo connection ${conn.id} ` +
-          `(${conn.name}) — credentials can't be decrypted. ENCRYPTION_KEY may have ` +
-          `changed. Admin must delete and re-add the integration.`,
-        err
-      );
-      continue;
-    }
     const permissions: Record<string, string[]> = {};
     for (const [model, ops] of firstConnection.ops) {
       permissions[model] = ops;
@@ -460,20 +443,16 @@ export async function regenerateOpenClawConfig() {
       }
     }
 
-    integrationSecrets[conn.id] = {
-      ...(integrationSecrets[conn.id] || {}),
-      odooApiKey: decryptedCreds.apiKey,
-    };
-
+    // No credentials in plugin config. The plugin fetches them on demand
+    // from /api/internal/integrations/<connectionId>/credentials with the
+    // gateway token. See packages/plugins/pinchy-odoo/index.ts and
+    // packages/web/src/app/api/internal/integrations/[connectionId]/credentials/route.ts.
+    // This keeps openclaw.json free of long-lived per-tenant secrets and
+    // lets Pinchy own rotation, audit, and per-agent authorization
+    // centrally — same pattern as pinchy-email. See #209 for the bug
+    // that motivated the migration away from SecretRef-in-plugin-config.
     odooAgentConfigs[agentId] = {
-      connection: {
-        name: conn.name,
-        description: conn.description,
-        url: decryptedCreds.url,
-        db: decryptedCreds.db,
-        uid: decryptedCreds.uid,
-        apiKey: secretRef(`/integrations/${conn.id}/odooApiKey`),
-      },
+      connectionId: conn.id,
       permissions,
       modelNames,
     };
@@ -483,6 +462,9 @@ export async function regenerateOpenClawConfig() {
     entries["pinchy-odoo"] = {
       enabled: true,
       config: {
+        apiBaseUrl:
+          process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+        gatewayToken: gatewayTokenString,
         agents: odooAgentConfigs,
       },
     };
@@ -497,53 +479,37 @@ export async function regenerateOpenClawConfig() {
   if (webSearchConnections.length > 0) {
     const webConn = webSearchConnections[0];
 
-    // Robust against key rotation: skip the web-search plugin entirely if the
-    // stored credentials can't be decrypted. Without a valid API key the
-    // plugin would crash on every tool call — better to disable it and let
-    // the admin delete/re-add the connection via Settings → Integrations.
-    let decryptedWebCreds: { apiKey: string } | null = null;
-    try {
-      decryptedWebCreds = JSON.parse(decrypt(webConn.credentials));
-    } catch (err) {
-      console.warn(
-        `[openclaw-config] Skipping Web Search integration ${webConn.id} (${webConn.name}) — ` +
-          `credentials can't be decrypted. ENCRYPTION_KEY may have changed. Admin must ` +
-          `delete and re-add the integration.`,
-        err
-      );
+    const webAgentConfigs: Record<string, Record<string, unknown>> = {};
+
+    for (const agent of allAgents) {
+      const allowedTools = (agent.allowedTools as string[]) || [];
+      const hasWebSearch = allowedTools.includes("pinchy_web_search");
+      const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
+
+      if (hasWebSearch || hasWebFetch) {
+        const webConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-web"] ?? {};
+        const tools: string[] = [];
+        if (hasWebSearch) tools.push("pinchy_web_search");
+        if (hasWebFetch) tools.push("pinchy_web_fetch");
+
+        webAgentConfigs[agent.id] = { tools, ...webConfig };
+      }
     }
 
-    if (decryptedWebCreds) {
-      const webAgentConfigs: Record<string, Record<string, unknown>> = {};
-
-      for (const agent of allAgents) {
-        const allowedTools = (agent.allowedTools as string[]) || [];
-        const hasWebSearch = allowedTools.includes("pinchy_web_search");
-        const hasWebFetch = allowedTools.includes("pinchy_web_fetch");
-
-        if (hasWebSearch || hasWebFetch) {
-          const webConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-web"] ?? {};
-          const tools: string[] = [];
-          if (hasWebSearch) tools.push("pinchy_web_search");
-          if (hasWebFetch) tools.push("pinchy_web_fetch");
-
-          webAgentConfigs[agent.id] = { tools, ...webConfig };
-        }
-      }
-
-      if (Object.keys(webAgentConfigs).length > 0) {
-        integrationSecrets[webConn.id] = {
-          ...(integrationSecrets[webConn.id] || {}),
-          braveApiKey: decryptedWebCreds.apiKey,
-        };
-        entries["pinchy-web"] = {
-          enabled: true,
-          config: {
-            braveApiKey: secretRef(`/integrations/${webConn.id}/braveApiKey`),
-            agents: webAgentConfigs,
-          },
-        };
-      }
+    if (Object.keys(webAgentConfigs).length > 0) {
+      // No braveApiKey in plugin config. The plugin fetches it on demand
+      // from the credentials API — same pattern as pinchy-odoo / pinchy-email.
+      // See #209 for the bug class motivated this migration.
+      entries["pinchy-web"] = {
+        enabled: true,
+        config: {
+          apiBaseUrl:
+            process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+          gatewayToken: gatewayTokenString,
+          connectionId: webConn.id,
+          agents: webAgentConfigs,
+        },
+      };
     }
   }
 

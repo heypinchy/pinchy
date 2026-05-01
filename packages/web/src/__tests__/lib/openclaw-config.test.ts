@@ -1335,11 +1335,11 @@ describe("pinchy-web config", () => {
 
     expect(config.plugins.entries["pinchy-web"]).toBeDefined();
     expect(config.plugins.entries["pinchy-web"].enabled).toBe(true);
-    expect(config.plugins.entries["pinchy-web"].config.braveApiKey).toEqual({
-      source: "file",
-      provider: "pinchy",
-      id: "/integrations/ws-conn-1/braveApiKey",
-    });
+    // braveApiKey is fetched on demand via the credentials API — not in config (#209)
+    expect(config.plugins.entries["pinchy-web"].config.braveApiKey).toBeUndefined();
+    expect(config.plugins.entries["pinchy-web"].config.connectionId).toBe("ws-conn-1");
+    expect(typeof config.plugins.entries["pinchy-web"].config.apiBaseUrl).toBe("string");
+    expect(typeof config.plugins.entries["pinchy-web"].config.gatewayToken).toBe("string");
     expect(config.plugins.entries["pinchy-web"].config.agents["web-agent"]).toEqual({
       tools: ["pinchy_web_search", "pinchy_web_fetch"],
       allowedDomains: ["docs.example.com"],
@@ -1572,7 +1572,7 @@ describe("pinchy-web config", () => {
   });
 });
 
-describe("pinchy-web braveApiKey as SecretRef", () => {
+describe("pinchy-web: credentials fetched on demand via Pinchy API (#209)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedExistsSync.mockReturnValue(true);
@@ -1582,7 +1582,7 @@ describe("pinchy-web braveApiKey as SecretRef", () => {
     mockedGetSetting.mockResolvedValue(null);
   });
 
-  it("writes pinchy-web.braveApiKey as SecretRef", async () => {
+  it("writes only connectionId + apiBaseUrl + gatewayToken — no braveApiKey in openclaw.json", async () => {
     const agentsData = [
       {
         id: "web-agent",
@@ -1631,23 +1631,21 @@ describe("pinchy-web braveApiKey as SecretRef", () => {
 
     await regenerateOpenClawConfig();
 
-    // openclaw.json must contain a SecretRef for braveApiKey, not the plaintext key
+    // openclaw.json must NOT contain the apiKey at all (#209): the plugin
+    // fetches it on demand from /api/internal/integrations/<id>/credentials.
     const written = mockedWriteFileSync.mock.calls.find(
       (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
     );
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
-    expect(config.plugins.entries["pinchy-web"].config.braveApiKey).toEqual({
-      source: "file",
-      provider: "pinchy",
-      id: "/integrations/ws-conn-42/braveApiKey",
-    });
-
-    // secrets.json must contain the actual key
-    expect(mockWriteSecretsFile).toHaveBeenCalled();
-    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
-    expect(secretsArg.integrations?.["ws-conn-42"]?.braveApiKey).toBe("BSA-secret-key");
+    const webPlugin = config.plugins.entries["pinchy-web"].config;
+    expect(webPlugin.connectionId).toBe("ws-conn-42");
+    expect(typeof webPlugin.apiBaseUrl).toBe("string");
+    expect(typeof webPlugin.gatewayToken).toBe("string");
+    // No braveApiKey, no SecretRef pointer.
+    expect(webPlugin.braveApiKey).toBeUndefined();
+    expect(written![1]).not.toContain("BSA-secret-key");
   });
 });
 
@@ -1746,23 +1744,17 @@ describe("pinchy-odoo config size", () => {
     expect(configSize).toBeLessThan(5000); // Without schema: ~2-3KB. With schema it would be 100KB+
   });
 
-  it("skips agents whose Odoo connection can't be decrypted instead of crashing the whole config regeneration", async () => {
-    // Regression: if ENCRYPTION_KEY changes, conn.credentials can't be decrypted.
-    // Previously the thrown error bubbled up and regenerateOpenClawConfig()
-    // crashed — which meant EVERY agent's config stopped regenerating, not just
-    // the one with the broken Odoo link. Now we skip the unreadable agent and
-    // keep the rest of the config alive.
+  it("does not decrypt Odoo connection credentials at config-write time", async () => {
+    // Since #209: credential decryption happens lazily in the
+    // /api/internal/integrations/:id/credentials endpoint when the plugin
+    // asks for credentials — never in regenerateOpenClawConfig itself.
+    // This means ENCRYPTION_KEY rotation does NOT brick the openclaw.json
+    // generation: the config still gets the connectionId, and only the
+    // first plugin tool call surfaces the decryption error to the user.
     const agentsData = [
       {
-        id: "good-agent",
-        name: "Good Agent",
-        model: "anthropic/claude-haiku-4-5-20251001",
-        allowedTools: ["odoo_read"],
-        createdAt: new Date(),
-      },
-      {
-        id: "broken-agent",
-        name: "Broken Agent",
+        id: "odoo-agent",
+        name: "Odoo Agent",
         model: "anthropic/claude-haiku-4-5-20251001",
         allowedTools: ["odoo_read"],
         createdAt: new Date(),
@@ -1772,38 +1764,15 @@ describe("pinchy-odoo config size", () => {
     const permissionsData = [
       {
         agent_connection_permissions: {
-          agentId: "good-agent",
-          connectionId: "conn-good",
+          agentId: "odoo-agent",
+          connectionId: "conn-odoo",
           model: "sale.order",
           operation: "read",
         },
         integration_connections: {
-          id: "conn-good",
+          id: "conn-odoo",
           type: "odoo",
-          name: "Readable Odoo",
-          description: "",
-          credentials: JSON.stringify({
-            url: "https://good.odoo",
-            db: "prod",
-            uid: 2,
-            apiKey: "good-key",
-          }),
-          data: { models: [], lastSyncAt: "2026-04-01T00:00:00Z" },
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      },
-      {
-        agent_connection_permissions: {
-          agentId: "broken-agent",
-          connectionId: "conn-broken",
-          model: "sale.order",
-          operation: "read",
-        },
-        integration_connections: {
-          id: "conn-broken",
-          type: "odoo",
-          name: "Unreadable Odoo",
+          name: "Some Odoo",
           description: "",
           credentials: "POISONED_BY_KEY_ROTATION",
           data: null,
@@ -1822,12 +1791,9 @@ describe("pinchy-odoo config size", () => {
       ),
     } as never);
 
-    // Fail decryption only for the broken connection's ciphertext
-    mockDecrypt.mockImplementation((val: string) => {
-      if (val === "POISONED_BY_KEY_ROTATION") {
-        throw new Error("Unsupported state or unable to authenticate data");
-      }
-      return val;
+    // Make decrypt throw to verify it is NOT called during config write.
+    mockDecrypt.mockImplementation(() => {
+      throw new Error("decrypt should never be called from openclaw-config for Odoo connections");
     });
 
     await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
@@ -1836,16 +1802,31 @@ describe("pinchy-odoo config size", () => {
     const config = JSON.parse(written);
     const odooAgents = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents ?? {};
 
-    expect(odooAgents["good-agent"]).toBeDefined();
-    expect(odooAgents["good-agent"].connection.url).toBe("https://good.odoo");
-    expect(odooAgents["broken-agent"]).toBeUndefined();
+    expect(odooAgents["odoo-agent"]).toBeDefined();
+    expect(odooAgents["odoo-agent"].connectionId).toBe("conn-odoo");
 
     // Reset for subsequent tests
     mockDecrypt.mockImplementation((val: string) => val);
   });
 });
 
-describe("pinchy-odoo connection.apiKey as SecretRef", () => {
+describe("pinchy-odoo: credentials fetched on demand via Pinchy API (#209)", () => {
+  // The previous design wrote `apiKey` as a SecretRef pointer
+  // (`{ source: "file", provider: "pinchy", id: "..." }`) into
+  // openclaw.json, intending OpenClaw to resolve it. OpenClaw 2026.4.x
+  // does NOT resolve SecretRefs in arbitrary plugin config paths, so
+  // the unresolved dict reached the Odoo plugin and was forwarded to
+  // Odoo as the password — which crashed the Odoo Python server with
+  // `unhashable type: 'dict'`.
+  //
+  // The new design follows pinchy-email: the plugin gets only an
+  // opaque `connectionId` plus the gateway token, and fetches
+  // credentials on demand from
+  // `/api/internal/integrations/<id>/credentials`. openclaw.json no
+  // longer carries any per-integration credential — secrets stay in
+  // the encrypted DB, owned by Pinchy, with a single rotation/audit
+  // surface.
+
   beforeEach(() => {
     vi.clearAllMocks();
     mockedExistsSync.mockReturnValue(true);
@@ -1855,7 +1836,7 @@ describe("pinchy-odoo connection.apiKey as SecretRef", () => {
     mockedGetSetting.mockResolvedValue(null);
   });
 
-  it("writes odoo connection.apiKey as SecretRef keyed by connection id", async () => {
+  it("writes only connectionId + apiBaseUrl + gatewayToken — no credentials in openclaw.json", async () => {
     const agentsData = [
       {
         id: "odoo-agent",
@@ -1903,29 +1884,31 @@ describe("pinchy-odoo connection.apiKey as SecretRef", () => {
 
     await regenerateOpenClawConfig();
 
-    // openclaw.json must contain a SecretRef for apiKey, not the plaintext key
     const written = mockedWriteFileSync.mock.calls.find(
       (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
     );
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
-    const odooConfig = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents?.["odoo-agent"];
-    expect(odooConfig).toBeDefined();
-    expect(odooConfig.connection.apiKey).toEqual({
-      source: "file",
-      provider: "pinchy",
-      id: "/integrations/conn-odoo-1/odooApiKey",
-    });
-    // Other connection fields must still be present in plaintext
-    expect(odooConfig.connection.url).toBe("https://odoo.example.com");
-    expect(odooConfig.connection.db).toBe("mydb");
-    expect(odooConfig.connection.uid).toBe(2);
+    const odooPlugin = config.plugins?.entries?.["pinchy-odoo"]?.config;
+    expect(odooPlugin).toBeDefined();
+    // Plugin-level: apiBaseUrl + gatewayToken are present so the plugin
+    // can reach Pinchy.
+    expect(typeof odooPlugin.apiBaseUrl).toBe("string");
+    expect(odooPlugin.apiBaseUrl).toContain("/");
+    expect(typeof odooPlugin.gatewayToken).toBe("string");
 
-    // secrets.json must contain the actual key
-    expect(mockWriteSecretsFile).toHaveBeenCalled();
-    const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
-    expect(secretsArg.integrations?.["conn-odoo-1"]?.odooApiKey).toBe("secret-odoo-key");
+    const odooAgent = odooPlugin.agents?.["odoo-agent"];
+    expect(odooAgent).toBeDefined();
+    expect(odooAgent.connectionId).toBe("conn-odoo-1");
+    // Critical: no credentials at all in the agent config. No `connection`
+    // object, no `apiKey`, no SecretRef pointer. The plugin will fetch
+    // credentials from Pinchy on first tool call.
+    expect(odooAgent.connection).toBeUndefined();
+    expect(JSON.stringify(odooAgent)).not.toContain("secret-odoo-key");
+
+    // The whole openclaw.json must not leak the apiKey under any path.
+    expect(written![1]).not.toContain("secret-odoo-key");
   });
 });
 

@@ -37,26 +37,39 @@ interface AgentTool {
   ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean; details?: unknown }>;
 }
 
-const testConnection = {
-  name: "Test Odoo",
-  description: "Test instance",
+// The plugin no longer takes credentials in its config — it fetches them
+// on demand from Pinchy's internal credentials API. Tests stub `fetch`
+// to return a canonical credentials response for any connectionId.
+const testCredentials = {
   url: "https://odoo.example.com",
   db: "testdb",
   uid: 2,
   apiKey: "test-api-key",
 };
 
-
 const testPermissions = {
   "sale.order": ["read"],
   "res.partner": ["read", "write", "create"],
 };
 
+const fetchMock = vi.fn(async () => ({
+  ok: true,
+  status: 200,
+  statusText: "OK",
+  json: async () => ({ type: "odoo", credentials: testCredentials }),
+}));
+// Vitest typing dance: cast through unknown for mock fetch
+globalThis.fetch = fetchMock as unknown as typeof fetch;
+
 function createApi(agentConfigs: Record<string, unknown> = {}) {
   const tools: Array<{ factory: (ctx: { agentId?: string }) => AgentTool | null; name: string }> = [];
 
   const api = {
-    pluginConfig: { agents: agentConfigs },
+    pluginConfig: {
+      apiBaseUrl: "http://pinchy-test:7777",
+      gatewayToken: "test-gateway-token",
+      agents: agentConfigs,
+    },
     registerTool: (factory: (ctx: { agentId?: string }) => AgentTool | null, opts?: { name?: string }) => {
       tools.push({ factory, name: opts?.name ?? "" });
     },
@@ -74,7 +87,7 @@ function findTool(tools: ReturnType<typeof createApi>, name: string, agentId?: s
 
 const agentId = "agent-1";
 const agentConfig = {
-  connection: testConnection,
+  connectionId: "conn-test-1",
   permissions: testPermissions,
   modelNames: {
     "sale.order": "Sales Order",
@@ -472,12 +485,18 @@ describe("error handling", () => {
   });
 });
 
-describe("client caching", () => {
+describe("client caching (#209 layer 2: credentials fetched lazily, cached)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ type: "odoo", credentials: testCredentials }),
+    } as unknown as Response);
   });
 
-  it("reuses the same OdooClient across multiple tool calls for the same agent", async () => {
+  it("fetches credentials once and reuses the OdooClient across multiple tool calls for the same agent", async () => {
     mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
     mockSearchCount.mockResolvedValue(0);
 
@@ -489,15 +508,17 @@ describe("client caching", () => {
     await readTool.execute("call-2", { model: "sale.order", filters: [] });
     await countTool.execute("call-3", { model: "sale.order", filters: [] });
 
-    // OdooClient constructor should be called only once despite 3 tool calls
+    // Credentials API hit exactly once across the 3 tool calls
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    // OdooClient constructor called exactly once (cached client reused)
     expect(OdooClient).toHaveBeenCalledTimes(1);
   });
 
-  it("creates separate clients for different agents", async () => {
+  it("fetches credentials separately for different agents (no cross-agent leakage)", async () => {
     mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
 
     const agent2Config = {
-      connection: { ...testConnection, url: "https://other.example.com" },
+      connectionId: "conn-test-2",
       permissions: testPermissions,
     };
     const tools = createApi({ [agentId]: agentConfig, "agent-2": agent2Config });
@@ -508,6 +529,49 @@ describe("client caching", () => {
     await tool1.execute("call-1", { model: "sale.order", filters: [] });
     await tool2.execute("call-2", { model: "sale.order", filters: [] });
 
+    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(OdooClient).toHaveBeenCalledTimes(2);
+    // Each fetch hit the connectionId-specific path
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls.some((u) => u.includes("conn-test-1"))).toBe(true);
+    expect(urls.some((u) => u.includes("conn-test-2"))).toBe(true);
+  });
+
+  it("fails fast with a clear error if the credentials API returns the SecretRef object shape (#209 regression)", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({
+        type: "odoo",
+        // Exactly the broken shape from staging: an unresolved SecretRef.
+        credentials: { source: "file", provider: "pinchy", id: "/integrations/x/odooApiKey" },
+      }),
+    } as unknown as Response);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_count", agentId)!;
+
+    const result = await tool.execute("call-1", { model: "sale.order", filters: [] });
+
+    expect(result.isError).toBe(true);
+    const text = result.content[0].text;
+    expect(text).toContain("must be a string");
+    expect(text).toContain("#209");
+  });
+
+  it("invalidates the cache and refetches credentials on auth error", async () => {
+    mockSearchRead.mockRejectedValueOnce(new Error("Access Denied: invalid api key"));
+    mockSearchRead.mockResolvedValueOnce({ records: [], total: 0, limit: 100, offset: 0 });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-1", { model: "sale.order", filters: [] });
+
+    expect(result.isError).toBeFalsy();
+    // First call fetched, error invalidated cache, second call refetched
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(mockSearchRead).toHaveBeenCalledTimes(2);
   });
 });

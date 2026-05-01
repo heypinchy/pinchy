@@ -11,9 +11,7 @@ interface ContentBlock {
 }
 
 interface PluginApi {
-  pluginConfig?: {
-    agents?: Record<string, AgentOdooConfig>;
-  };
+  pluginConfig?: PluginConfig;
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
     opts?: { name?: string },
@@ -32,17 +30,23 @@ interface AgentTool {
   ) => Promise<{ content: ContentBlock[]; isError?: boolean; details?: unknown }>;
 }
 
+interface PluginConfig {
+  apiBaseUrl: string;
+  gatewayToken: string;
+  agents: Record<string, AgentOdooConfig>;
+}
+
 interface AgentOdooConfig {
-  connection: {
-    name: string;
-    description: string;
-    url: string;
-    db: string;
-    uid: number;
-    apiKey: string;
-  };
+  connectionId: string;
   permissions: Permissions;
   modelNames?: Record<string, string>;
+}
+
+interface OdooCredentials {
+  url: string;
+  db: string;
+  uid: number;
+  apiKey: string;
 }
 
 function getAgentConfig(
@@ -52,12 +56,81 @@ function getAgentConfig(
   return agentConfigs[agentId] ?? null;
 }
 
-function createClient(config: AgentOdooConfig): OdooClient {
+/**
+ * Defense-in-depth: fail fast with a clear error if the credentials API
+ * returns the wrong shape (e.g. a SecretRef object instead of strings —
+ * the bug that caused Odoo's Python server to crash with
+ * `unhashable type: 'dict'`, see issue #209). Without this assertion a
+ * malformed payload would propagate all the way to Odoo before erroring.
+ */
+function assertCredentialsShape(creds: unknown): asserts creds is OdooCredentials {
+  if (!creds || typeof creds !== "object") {
+    throw new Error(`pinchy-odoo: credentials must be an object, got ${typeof creds}`);
+  }
+  const obj = creds as Record<string, unknown>;
+  // Detect the SecretRef-shaped payload (#209) up front so the error
+  // message points at the actual root cause instead of a "field missing"
+  // symptom that's harder to debug.
+  const looksLikeSecretRef =
+    typeof obj.source === "string" && typeof obj.provider === "string" && typeof obj.id === "string";
+  const expected: Array<[keyof OdooCredentials, "string" | "number"]> = [
+    ["url", "string"],
+    ["db", "string"],
+    ["uid", "number"],
+    ["apiKey", "string"],
+  ];
+  for (const [name, type] of expected) {
+    const actual = typeof obj[name];
+    if (actual !== type) {
+      const hint = looksLikeSecretRef
+        ? " (the credentials API returned an unresolved SecretRef — see #209)"
+        : actual === "object"
+          ? " (looks like an unresolved SecretRef — see #209)"
+          : "";
+      throw new Error(
+        `pinchy-odoo: credentials.${name} must be a ${type}, got ${actual}${hint}`,
+      );
+    }
+  }
+}
+
+/**
+ * Fetch decrypted Odoo credentials from Pinchy's internal credentials API.
+ *
+ * The plugin only ever sees the connectionId and a gateway token — the
+ * actual apiKey lives in Pinchy's encrypted database and is delivered
+ * over a single authenticated HTTP request per cache miss. This keeps
+ * `openclaw.json` free of long-lived per-tenant secrets and lets Pinchy
+ * own rotation, audit, and per-agent authorization centrally.
+ *
+ * See: packages/web/src/app/api/internal/integrations/[connectionId]/credentials/route.ts
+ */
+async function fetchCredentials(
+  apiBaseUrl: string,
+  gatewayToken: string,
+  connectionId: string,
+): Promise<OdooCredentials> {
+  const response = await fetch(
+    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
+    { headers: { Authorization: `Bearer ${gatewayToken}` } },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch Odoo credentials for connection ${connectionId}: ` +
+        `HTTP ${response.status} ${response.statusText}`,
+    );
+  }
+  const data = (await response.json()) as { credentials?: unknown };
+  assertCredentialsShape(data.credentials);
+  return data.credentials;
+}
+
+function createClient(creds: OdooCredentials): OdooClient {
   return new OdooClient({
-    url: config.connection.url,
-    db: config.connection.db,
-    uid: config.connection.uid,
-    apiKey: config.connection.apiKey,
+    url: creds.url,
+    db: creds.db,
+    uid: creds.uid,
+    apiKey: creds.apiKey,
   });
 }
 
@@ -107,21 +180,64 @@ const plugin = {
   description: "Odoo ERP integration with model-level permissions.",
 
   register(api: PluginApi) {
-    const agentConfigs = api.pluginConfig?.agents ?? {};
+    const pluginConfig = api.pluginConfig;
+    const agentConfigs = pluginConfig?.agents ?? {};
+    const apiBaseUrl = pluginConfig?.apiBaseUrl ?? "";
+    const gatewayToken = pluginConfig?.gatewayToken ?? "";
 
-    // Client cache per agent — avoids creating new connections per tool call.
-    // Limitation: If credentials are rotated, the cache holds stale clients until
-    // OpenClaw restarts. This is acceptable since credential rotation is rare and
-    // always accompanied by a config regeneration which triggers a restart.
-    const clientCache = new Map<string, OdooClient>();
+    // Client cache per agent. Built lazily on first tool call: fetch
+    // credentials from Pinchy → instantiate OdooClient. TTL keeps the
+    // cache fresh enough that credential rotation propagates within
+    // CREDENTIALS_TTL_MS without anyone restarting OpenClaw — and on a
+    // 401 from Odoo (which is what happens immediately after a rotation
+    // or revocation) we invalidate eagerly and refetch once before
+    // surfacing the error to the user.
+    const CREDENTIALS_TTL_MS = 5 * 60 * 1000; // 5 minutes
+    const cache = new Map<string, { client: OdooClient; expiresAt: number }>();
 
-    function getOrCreateClient(agentId: string, config: AgentOdooConfig): OdooClient {
-      let client = clientCache.get(agentId);
-      if (!client) {
-        client = createClient(config);
-        clientCache.set(agentId, client);
-      }
+    function invalidate(agentId: string) {
+      cache.delete(agentId);
+    }
+
+    async function getOrCreateClient(
+      agentId: string,
+      config: AgentOdooConfig,
+    ): Promise<OdooClient> {
+      const hit = cache.get(agentId);
+      if (hit && hit.expiresAt > Date.now()) return hit.client;
+      const creds = await fetchCredentials(apiBaseUrl, gatewayToken, config.connectionId);
+      const client = createClient(creds);
+      cache.set(agentId, { client, expiresAt: Date.now() + CREDENTIALS_TTL_MS });
       return client;
+    }
+
+    /**
+     * Run an Odoo call with one transparent retry on auth failure.
+     * Odoo throws an `AccessDenied` / 401-shaped error when the apiKey is
+     * stale (rotated, revoked, expired). We invalidate the cache and
+     * fetch fresh credentials once — if it still fails, surface to the
+     * user.
+     */
+    async function withAuthRetry<T>(
+      agentId: string,
+      config: AgentOdooConfig,
+      fn: (client: OdooClient) => Promise<T>,
+    ): Promise<T> {
+      const client = await getOrCreateClient(agentId, config);
+      try {
+        return await fn(client);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message.toLowerCase() : "";
+        const isAuthError =
+          msg.includes("access denied") ||
+          msg.includes("invalid api key") ||
+          msg.includes("401") ||
+          msg.includes("authenticat");
+        if (!isAuthError) throw err;
+        invalidate(agentId);
+        const fresh = await getOrCreateClient(agentId, config);
+        return fn(fresh);
+      }
     }
 
     // 1. odoo_schema
@@ -173,8 +289,9 @@ const plugin = {
 
               // Fetch fields live from Odoo (lightweight call — the agent
               // caches the result in its conversation context naturally)
-              const client = getOrCreateClient(agentId, config);
-              const fields = await client.fields(model);
+              const fields = await withAuthRetry(agentId, config, (client) =>
+                client.fields(model),
+              );
 
               return {
                 content: [
@@ -237,13 +354,14 @@ const plugin = {
                 return permissionDenied("read", model);
               }
 
-              const client = getOrCreateClient(agentId, config);
-              const result = await client.searchRead(model, params.filters as unknown[], {
-                fields: params.fields as string[] | undefined,
-                limit: params.limit as number | undefined,
-                offset: params.offset as number | undefined,
-                order: params.order as string | undefined,
-              });
+              const result = await withAuthRetry(agentId, config, (client) =>
+                client.searchRead(model, params.filters as unknown[], {
+                  fields: params.fields as string[] | undefined,
+                  limit: params.limit as number | undefined,
+                  offset: params.offset as number | undefined,
+                  order: params.order as string | undefined,
+                }),
+              );
 
               return { content: [{ type: "text", text: JSON.stringify(result) }] };
             } catch (error) {
@@ -287,8 +405,9 @@ const plugin = {
                 return permissionDenied("read", model);
               }
 
-              const client = getOrCreateClient(agentId, config);
-              const count = await client.searchCount(model, params.filters as unknown[]);
+              const count = await withAuthRetry(agentId, config, (client) =>
+                client.searchCount(model, params.filters as unknown[]),
+              );
 
               return { content: [{ type: "text", text: JSON.stringify({ count }) }] };
             } catch (error) {
@@ -346,17 +465,18 @@ const plugin = {
                 return permissionDenied("read", model);
               }
 
-              const client = getOrCreateClient(agentId, config);
-              const result = await client.readGroup(
-                model,
-                params.filters as unknown[],
-                params.fields as string[],
-                params.groupby as string[],
-                {
-                  limit: params.limit as number | undefined,
-                  offset: params.offset as number | undefined,
-                  orderby: params.orderby as string | undefined,
-                },
+              const result = await withAuthRetry(agentId, config, (client) =>
+                client.readGroup(
+                  model,
+                  params.filters as unknown[],
+                  params.fields as string[],
+                  params.groupby as string[],
+                  {
+                    limit: params.limit as number | undefined,
+                    offset: params.offset as number | undefined,
+                    orderby: params.orderby as string | undefined,
+                  },
+                ),
               );
 
               return { content: [{ type: "text", text: JSON.stringify(result) }] };
@@ -396,8 +516,9 @@ const plugin = {
                 return permissionDenied("create", model);
               }
 
-              const client = getOrCreateClient(agentId, config);
-              const id = await client.create(model, params.values as Record<string, unknown>);
+              const id = await withAuthRetry(agentId, config, (client) =>
+                client.create(model, params.values as Record<string, unknown>),
+              );
 
               return { content: [{ type: "text", text: JSON.stringify({ id }) }] };
             } catch (error) {
@@ -441,11 +562,12 @@ const plugin = {
                 return permissionDenied("write", model);
               }
 
-              const client = getOrCreateClient(agentId, config);
-              const success = await client.write(
-                model,
-                params.ids as number[],
-                params.values as Record<string, unknown>,
+              const success = await withAuthRetry(agentId, config, (client) =>
+                client.write(
+                  model,
+                  params.ids as number[],
+                  params.values as Record<string, unknown>,
+                ),
               );
 
               return { content: [{ type: "text", text: JSON.stringify({ success }) }] };
@@ -489,8 +611,9 @@ const plugin = {
                 return permissionDenied("delete", model);
               }
 
-              const client = getOrCreateClient(agentId, config);
-              const success = await client.unlink(model, params.ids as number[]);
+              const success = await withAuthRetry(agentId, config, (client) =>
+                client.unlink(model, params.ids as number[]),
+              );
 
               return { content: [{ type: "text", text: JSON.stringify({ success }) }] };
             } catch (error) {
