@@ -135,6 +135,17 @@ Sanitization runs at two layers:
 
 The redaction rules are built-in and require no configuration.
 
+### Email addresses (GDPR Art. 17)
+
+Email addresses are personal data under GDPR. Because the audit log is HMAC-signed and append-only, a raw email address written into a row would survive every right-to-erasure request — the row cannot be edited, and editing would invalidate its signature.
+
+Pinchy avoids this by **never recording plaintext email addresses in `detail`**. Instead, events that need to identify an inviter, login attempt, or invited recipient store two derived fields:
+
+- **`emailHash`** — keyed HMAC-SHA256 of the lowercased+trimmed email, using the same `audit_hmac_secret` that signs each row. An admin holding a known address can recompute the hash and match against the log; a leaked log on its own does not yield the addresses back.
+- **`emailPreview`** — short masked form, e.g. `cl…lm@devcraft.academy` (first 2 + last 2 characters of the local part, plus the full domain). Enough for a human auditor to recognise an address they already know, not enough for bulk re-identification.
+
+`user.deleted` events go further: they record only the user's display name. The `userId` is already in the `resource` field, and the audit log is not the right place to keep a deactivated user's contact details.
+
 ## How HMAC signing works
 
 Each audit log entry is signed with **HMAC-SHA256** to ensure integrity:

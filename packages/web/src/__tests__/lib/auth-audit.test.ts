@@ -4,9 +4,13 @@ const { mockAppendAuditLog } = vi.hoisted(() => ({
   mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("@/lib/audit", () => ({
-  appendAuditLog: mockAppendAuditLog,
-}));
+vi.mock("@/lib/audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/audit")>();
+  return {
+    ...actual,
+    appendAuditLog: mockAppendAuditLog,
+  };
+});
 
 vi.mock("@/db", () => ({
   db: {},
@@ -64,10 +68,11 @@ function createMockContext(overrides: Record<string, unknown> = {}) {
 describe("auth audit logging (Better Auth hooks)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("AUDIT_HMAC_SECRET", "f".repeat(64));
   });
 
   describe("sign-in hooks", () => {
-    it("should log auth.login on successful sign-in", async () => {
+    it("should log auth.login on successful sign-in with redacted email (no plaintext PII)", async () => {
       const ctx = createMockContext({
         context: {
           newSession: {
@@ -90,11 +95,17 @@ describe("auth audit logging (Better Auth hooks)", () => {
         actorId: "user-123",
         eventType: "auth.login",
         outcome: "success",
-        detail: { email: "admin@example.com" },
+        detail: {
+          emailHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+          emailPreview: "ad…in@example.com",
+        },
       });
+
+      const detail = mockAppendAuditLog.mock.calls[0][0].detail;
+      expect(detail).not.toHaveProperty("email");
     });
 
-    it("should log auth.failed on failed sign-in", async () => {
+    it("should log auth.failed on failed sign-in with redacted email (no plaintext PII)", async () => {
       const ctx = createMockContext({
         context: {
           newSession: null,
@@ -111,11 +122,19 @@ describe("auth audit logging (Better Auth hooks)", () => {
         eventType: "auth.failed",
         outcome: "failure",
         error: { message: "Invalid credentials" },
-        detail: { email: "unknown@example.com", reason: "invalid_credentials" },
+        detail: {
+          emailHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+          emailPreview: "un…wn@example.com",
+          reason: "invalid_credentials",
+        },
       });
+
+      const detail = mockAppendAuditLog.mock.calls[0][0].detail;
+      expect(detail).not.toHaveProperty("email");
+      expect(JSON.stringify(detail)).not.toContain("unknown@example.com");
     });
 
-    it("should use 'unknown' email when body has no email", async () => {
+    it("should use 'unknown' placeholder when body has no email", async () => {
       const ctx = createMockContext({
         context: {
           newSession: null,
@@ -132,7 +151,11 @@ describe("auth audit logging (Better Auth hooks)", () => {
         eventType: "auth.failed",
         outcome: "failure",
         error: { message: "Invalid credentials" },
-        detail: { email: "unknown", reason: "invalid_credentials" },
+        detail: {
+          emailHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+          emailPreview: "unknown",
+          reason: "invalid_credentials",
+        },
       });
     });
 

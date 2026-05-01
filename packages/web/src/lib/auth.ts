@@ -6,7 +6,7 @@ import { verifyPassword as verifyScrypt } from "better-auth/crypto";
 import bcrypt from "bcryptjs";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, redactEmail } from "@/lib/audit";
 import { getCachedDomain } from "@/lib/domain";
 
 /**
@@ -28,7 +28,10 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
           actorType: "user",
           actorId: newSession.user.id,
           eventType: "auth.login",
-          detail: { email },
+          // GDPR Art. 17: never log plaintext email — the audit row is
+          // HMAC-signed and cannot be redacted later. redactEmail()
+          // gives us a keyed hash + masked preview instead.
+          detail: redactEmail(email),
           outcome: "success",
         });
       } catch {
@@ -41,7 +44,7 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
           actorType: "system",
           actorId: "system",
           eventType: "auth.failed",
-          detail: { email, reason: "invalid_credentials" },
+          detail: { ...redactEmail(email), reason: "invalid_credentials" },
           outcome: "failure",
           error: { message: "Invalid credentials" },
         });

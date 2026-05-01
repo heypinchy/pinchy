@@ -1,9 +1,11 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { createHmac } from "crypto";
 import {
   computeRowHmacV1,
   computeRowHmacV2,
   ROW_HMAC_VERIFIERS,
   truncateDetail,
+  redactEmail,
 } from "@/lib/audit";
 
 describe("computeRowHmac", () => {
@@ -227,5 +229,66 @@ describe("truncateDetail", () => {
     const large = { data: "x".repeat(3000) };
     const result = truncateDetail(large) as Record<string, unknown>;
     expect(result._truncated).toBe(true);
+  });
+});
+
+describe("redactEmail", () => {
+  const SECRET_HEX = "f".repeat(64);
+  const expectedHash = (email: string) =>
+    createHmac("sha256", Buffer.from(SECRET_HEX, "hex"))
+      .update(email.trim().toLowerCase())
+      .digest("hex");
+
+  beforeEach(() => {
+    vi.stubEnv("AUDIT_HMAC_SECRET", SECRET_HEX);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("returns emailHash and emailPreview, but never the raw email", () => {
+    const result = redactEmail("clemens.helm@devcraft.academy");
+    expect(result).toEqual({
+      emailHash: expectedHash("clemens.helm@devcraft.academy"),
+      emailPreview: "cl…lm@devcraft.academy",
+    });
+    expect(JSON.stringify(result)).not.toContain("clemens.helm@devcraft.academy");
+  });
+
+  it("normalises email to lowercase + trimmed before hashing (so case variations collide)", () => {
+    const a = redactEmail("Foo.Bar@Example.com");
+    const b = redactEmail("  foo.bar@example.com  ");
+    expect(a.emailHash).toBe(b.emailHash);
+    expect(a.emailHash).toBe(expectedHash("foo.bar@example.com"));
+  });
+
+  it("produces different hashes for different emails", () => {
+    const a = redactEmail("alice@example.com");
+    const b = redactEmail("bob@example.com");
+    expect(a.emailHash).not.toBe(b.emailHash);
+  });
+
+  it("preview format uses first-2 + ellipsis + last-2 of local part for long locals", () => {
+    expect(redactEmail("clemens.helm@devcraft.academy").emailPreview).toBe(
+      "cl…lm@devcraft.academy"
+    );
+    expect(redactEmail("alexander@x.io").emailPreview).toBe("al…er@x.io");
+  });
+
+  it("preview keeps short local parts intact (no ellipsis below 5 chars)", () => {
+    // Truncating "ab@x.com" to "ab…ab" reveals nothing — leave it as-is.
+    expect(redactEmail("ab@x.com").emailPreview).toBe("ab@x.com");
+    expect(redactEmail("john@test.io").emailPreview).toBe("john@test.io");
+  });
+
+  it("handles invalid email shape (no @) without throwing", () => {
+    const result = redactEmail("unknown");
+    expect(result.emailHash).toBe(expectedHash("unknown"));
+    expect(result.emailPreview).toBe("unknown");
+  });
+
+  it("preview uses lowercased domain (mirrors hashing input)", () => {
+    expect(redactEmail("Alice@EXAMPLE.com").emailPreview).toBe("al…ce@example.com");
   });
 });

@@ -138,6 +138,7 @@ Every admin action that changes state MUST be logged via `appendAuditLog()`. The
 - **Use added/removed diffs for membership changes.** Don't just log the final count — log who/what was added and removed with `{ id, name }` pairs.
 - **Include the resource name in the detail** for delete events (the resource itself won't be queryable after deletion).
 - **Keep detail under 2048 bytes** (larger payloads are auto-truncated with `_truncated: true`). For bulk operations with many items, summarize if needed.
+- **Never write plaintext email addresses (or other PII) into `detail`.** The audit log is HMAC-signed and append-only — once an email lands in detail, GDPR Art. 17 erasure conflicts with row integrity. For events that need to identify a recipient/login attempt, spread `redactEmail(email)` from `@/lib/audit` (gives an `emailHash` + masked `emailPreview`). For `user.deleted` and similar events where the userId is already in `resource`, log only the display name.
 
 Example patterns:
 ```jsonc
@@ -145,8 +146,8 @@ Example patterns:
 { "added": [{ "id": "u1", "name": "Max" }], "removed": [{ "id": "u2", "name": "Anna" }], "memberCount": 5 }
 // Agent visibility change
 { "changes": { "visibility": { "from": "all", "to": "restricted" }, "allowedGroups": { "added": [{ "id": "g1", "name": "Engineering" }] } } }
-// User invited with groups
-{ "email": "max@example.com", "role": "member", "groups": [{ "id": "g1", "name": "Engineering" }] }
+// User invited with groups (email redacted)
+{ "emailHash": "<hex64>", "emailPreview": "ma…ax@example.com", "role": "member", "groups": [{ "id": "g1", "name": "Engineering" }] }
 // Telegram channel configured for agent
 { "agent": { "id": "a1", "name": "Support Bot" }, "channel": "telegram", "botUsername": "support_pinchy_bot" }
 // Telegram channel removed from agent
@@ -161,6 +162,7 @@ When creating or modifying any POST/PUT/PATCH/DELETE endpoint:
 4. All referenced entities snapshotted as `{ id, name }` pairs (`EntityRef`)?
 5. Test exists that verifies the `appendAuditLog` call with correct payload?
 6. `outcome` field set correctly? `'success'` for the happy path (default), `'failure'` for error paths that still deserve an audit entry?
+7. No plaintext email or other PII in `detail`? If you need to identify an email, use `redactEmail()` from `@/lib/audit`. If the resource already encodes the userId, log the display name only.
 
 ### Error & Notification Display Policy
 User feedback (errors, success confirmations) must use the correct display pattern. Using the wrong one creates inconsistent UX.

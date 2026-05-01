@@ -106,7 +106,10 @@ export async function DELETE(
       actorId: session.user.id!,
       eventType: "user.deleted",
       resource: `user:${userId}`,
-      detail: { name: deactivated.name, email: deactivated.email },
+      // GDPR Art. 17: never record the email here. The audit log is
+      // HMAC-signed and append-only, so we cannot redact later. userId
+      // is in `resource`; name is enough for human-readable diffing.
+      detail: { name: deactivated.name },
       outcome: "success",
     })
   );
