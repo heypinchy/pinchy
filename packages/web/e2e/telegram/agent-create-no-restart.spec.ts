@@ -124,8 +124,28 @@ test.describe.serial("Agent create — no gateway restart cascade (#193)", () =>
     await waitForTelegramPolling();
 
     // After connectBot, OpenClaw restarts to pick up the new bot account.
-    // Wait until logs show no restart activity for 30 s — only then is the
-    // assertion window guaranteed to attribute restarts to the test action.
+    // Wait until logs show no restart activity for 30 s.
+    await waitForOpenClawQuiet();
+
+    // Warm-up regenerate. After a fresh gateway start, OpenClaw's reload
+    // subsystem keeps the config it loaded at startup as `currentCompareConfig`.
+    // If that config is sparse (e.g. an early Pinchy write before
+    // seedSetup populated provider/bot settings), the FIRST Pinchy
+    // regenerate after gateway boot diffs against the sparse baseline —
+    // showing 6+ paths as changed (env, plugins.allow, plugins.entries.telegram,
+    // bindings, channels, session) regardless of what actually changed at
+    // the user level. The first restart-trigger paths there bypass our
+    // env-redact workaround because file-watcher's diff doesn't go through
+    // `restoreRedactedValues`.
+    //
+    // To establish a baseline that matches Pinchy's full regenerated config,
+    // do an explicit warm-up agent create here. Cascade resolves, baseline
+    // updates, then the actual test action below has a true small diff.
+    const warmupRes = await pinchyPost("/api/agents", {
+      name: `Warmup-${Date.now()}`,
+      templateId: "custom",
+    });
+    expect(warmupRes.status, await warmupRes.text()).toBeLessThan(300);
     await waitForOpenClawQuiet();
   });
 
