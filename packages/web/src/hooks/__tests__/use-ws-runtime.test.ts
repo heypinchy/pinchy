@@ -1007,8 +1007,22 @@ describe("openclaw_status frame", () => {
     capturedMessages = [];
   });
 
-  it("defaults isOpenClawConnected to true before any frame arrives", () => {
+  it("defaults isOpenClawConnected to false until the server confirms readiness (issue #198)", () => {
+    // Green must be earned, not assumed. During the OpenClaw cold-start window
+    // after a fresh deploy, the server hasn't yet reported upstream status, so
+    // the indicator must stay red rather than lying with green.
     const { result } = renderHook(() => useWsRuntime("agent-1"));
+    expect(result.current.isOpenClawConnected).toBe(false);
+  });
+
+  it("flips isOpenClawConnected to true on openclaw_status: true frame", async () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "openclaw_status", connected: true });
+    });
+
     expect(result.current.isOpenClawConnected).toBe(true);
   });
 

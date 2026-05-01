@@ -103,8 +103,11 @@ export function useWsRuntime(agentId: string): {
   isHistoryLoaded: boolean;
   /**
    * Upstream OpenClaw connectivity. Independent from `isConnected` (which only
-   * tracks the browser↔Pinchy WS). Defaults to true; flips on `openclaw_status`
-   * frames that the server pushes whenever upstream changes.
+   * tracks the browser↔Pinchy WS). Defaults to false — green must be earned
+   * via an `openclaw_status: true` frame from the server. Defaulting to true
+   * caused issue #198 (indicator lied during the OpenClaw cold-start window
+   * after a fresh deploy, when the server has no chance to push a status
+   * frame because the broadcaster wasn't initialised yet).
    */
   isOpenClawConnected: boolean;
   reconnectExhausted: boolean;
@@ -118,7 +121,7 @@ export function useWsRuntime(agentId: string): {
   const [isConnected, setIsConnected] = useState(false);
   const [isDelayed, setIsDelayed] = useState(false);
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
-  const [isOpenClawConnected, setIsOpenClawConnected] = useState(true);
+  const [isOpenClawConnected, setIsOpenClawConnected] = useState(false);
   const [reconnectExhausted, setReconnectExhausted] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
