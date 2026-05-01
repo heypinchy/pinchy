@@ -50,7 +50,7 @@ export function sanitizeOpenClawConfig(): boolean {
   if (cleaned.length === allow.length) return false;
 
   plugins.allow = cleaned;
-  writeConfigAtomic(JSON.stringify(config, null, 2));
+  writeConfigAtomic(JSON.stringify(config, null, 2).trimEnd() + "\n");
   return true;
 }
 
@@ -763,8 +763,15 @@ export async function regenerateOpenClawConfig() {
   };
   writeSecretsFile(secretsBundle);
 
-  // Only write if content actually changed — prevents unnecessary OpenClaw restarts
-  const newContent = JSON.stringify(config, null, 2);
+  // Only write if content actually changed — prevents unnecessary OpenClaw restarts.
+  // Format must match what OpenClaw's writeConfigFile produces (trimEnd + "\n")
+  // so the SHA256 hashes line up. OpenClaw's reload subsystem dedupes
+  // chokidar-fired reloads against `lastAppliedWriteHash` (set when
+  // config.apply runs); if our file hash equals the apply's hash, the
+  // chokidar reload is correctly skipped. Without the trailing newline,
+  // hashes diverge and chokidar fires a redundant reload that diffs against
+  // a stale `currentCompareConfig` — see #193 / openclaw#75534.
+  const newContent = JSON.stringify(config, null, 2).trimEnd() + "\n";
   try {
     const existing = readFileSync(CONFIG_PATH, "utf-8");
     if (existing === newContent) return;
@@ -963,8 +970,11 @@ export function updateIdentityLinks(identityLinks: Record<string, string[]>): vo
 
   const updated = { ...existing, session: updatedSession };
 
-  // Only write if content actually changed
-  const newContent = JSON.stringify(updated, null, 2);
+  // Only write if content actually changed. Format matches OpenClaw's
+  // writeConfigFile output (trimEnd + "\n") so SHA256 hashes line up
+  // for the reload-subsystem dedup. See call site of regenerateOpenClawConfig
+  // for the full rationale.
+  const newContent = JSON.stringify(updated, null, 2).trimEnd() + "\n";
   try {
     const current = readFileSync(CONFIG_PATH, "utf-8");
     if (current === newContent) return;
@@ -1075,7 +1085,7 @@ export function updateTelegramChannelConfig(
     ...(identityLinks !== null && { identityLinks }),
   };
 
-  const newContent = JSON.stringify(existing, null, 2);
+  const newContent = JSON.stringify(existing, null, 2).trimEnd() + "\n";
   try {
     const current = readFileSync(CONFIG_PATH, "utf-8");
     if (current === newContent) return;
