@@ -17,7 +17,7 @@ export interface ChatStatusInputs {
    * server. Gates the transition out of "starting" so the indicator never
    * turns green before the initial greeting/history is on screen (issue #197).
    */
-  hasContent: boolean;
+  hasInitialContent: boolean;
   isRunning: boolean;
   reconnectExhausted: boolean;
   configuring: boolean;
@@ -47,7 +47,7 @@ export function useChatStatus(inputs: ChatStatusInputs): ChatStatus {
   if (inputs.reconnectExhausted) return { kind: "unavailable", reason: "exhausted" };
   if (inputs.configuring) return { kind: "unavailable", reason: "configuring" };
   if (!fullyConnected && delayedDisconnect) return { kind: "unavailable", reason: "disconnected" };
-  if (!inputs.isHistoryLoaded || !inputs.hasContent) return { kind: "starting" };
+  if (!inputs.isHistoryLoaded || !inputs.hasInitialContent) return { kind: "starting" };
   if (inputs.isRunning) return { kind: "responding" };
   return { kind: "ready" };
 }

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
+import { useChatStatus } from "@/hooks/use-chat-status";
 
 // Track all created WebSocket instances
 let wsInstances: MockWebSocket[] = [];
@@ -1085,13 +1086,13 @@ describe("useWsRuntime", () => {
     });
   });
 
-  describe("hasContent", () => {
+  describe("hasInitialContent", () => {
     // Issue #197: gate the transition out of "starting" on having something
     // renderable (a message or an authoritative empty signal). Otherwise the
     // indicator can flip green while the chat is briefly blank.
     it("is false initially", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
-      expect(result.current.hasContent).toBe(false);
+      expect(result.current.hasInitialContent).toBe(false);
     });
 
     it("is false when server returns empty history without sessionKnown flag", () => {
@@ -1107,7 +1108,7 @@ describe("useWsRuntime", () => {
         });
       });
 
-      expect(result.current.hasContent).toBe(false);
+      expect(result.current.hasInitialContent).toBe(false);
     });
 
     it("becomes true when history arrives with at least one message", () => {
@@ -1126,7 +1127,7 @@ describe("useWsRuntime", () => {
         });
       });
 
-      expect(result.current.hasContent).toBe(true);
+      expect(result.current.hasInitialContent).toBe(true);
     });
 
     it("becomes true when server signals sessionKnown with empty history", () => {
@@ -1148,11 +1149,60 @@ describe("useWsRuntime", () => {
         });
       });
 
-      expect(result.current.hasContent).toBe(true);
+      expect(result.current.hasInitialContent).toBe(true);
     });
 
-    it("clears the historyKnownEmpty signal on disconnect", () => {
-      // hasContent must not stay true purely because of a stale "known empty"
+    it("transitions chatStatus from 'starting' to 'ready' atomically with the message arriving", () => {
+      // Issue #197 — the whole point of this fix: when the history frame
+      // arrives, the indicator must not flip green before the message is on
+      // screen. We assert atomicity by composing useWsRuntime + useChatStatus
+      // and observing both in the same render snapshot.
+      const { result } = renderHook(() => {
+        const ws = useWsRuntime("agent-1");
+        const status = useChatStatus({
+          isConnected: ws.isConnected,
+          isOpenClawConnected: ws.isOpenClawConnected,
+          isHistoryLoaded: ws.isHistoryLoaded,
+          hasInitialContent: ws.hasInitialContent,
+          isRunning: ws.isRunning,
+          reconnectExhausted: ws.reconnectExhausted,
+          configuring: false,
+        });
+        return { ws, status };
+      });
+
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "openclaw_status", connected: true }),
+        });
+      });
+
+      // Connected upstream + downstream, but no content yet → still "starting".
+      expect(result.current.status).toEqual({ kind: "starting" });
+      expect(result.current.ws.runtime.messages).toHaveLength(0);
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [{ role: "assistant", content: "Hello!" }],
+          }),
+        });
+      });
+
+      // Single render after the history frame: status is 'ready' AND the
+      // message is in the runtime. Both flip in the same React batch — there
+      // is no intermediate snapshot where the indicator is green but the
+      // chat is empty.
+      expect(result.current.status).toEqual({ kind: "ready" });
+      expect(result.current.ws.runtime.messages).toHaveLength(1);
+    });
+
+    it("clears the knownEmptyHistory signal on disconnect", () => {
+      // hasInitialContent must not stay true purely because of a stale "known empty"
       // signal after the connection drops — otherwise on reconnect we'd
       // briefly show "ready" before fresh history arrives.
       const { result } = renderHook(() => useWsRuntime("agent-1"));
@@ -1166,13 +1216,13 @@ describe("useWsRuntime", () => {
           data: JSON.stringify({ type: "history", messages: [], sessionKnown: true }),
         });
       });
-      expect(result.current.hasContent).toBe(true);
+      expect(result.current.hasInitialContent).toBe(true);
 
       act(() => {
         ws.onclose?.();
       });
 
-      expect(result.current.hasContent).toBe(false);
+      expect(result.current.hasInitialContent).toBe(false);
     });
   });
 

@@ -6,7 +6,7 @@ const base = {
   isConnected: true,
   isOpenClawConnected: true,
   isHistoryLoaded: true,
-  hasContent: true,
+  hasInitialContent: true,
   isRunning: false,
   reconnectExhausted: false,
   configuring: false,
@@ -28,14 +28,14 @@ describe("useChatStatus", () => {
     // appears on screen. Server has responded (`isHistoryLoaded`), but the
     // greeting/history messages haven't been committed to local state yet.
     const { result } = renderHook(() =>
-      useChatStatus({ ...base, isHistoryLoaded: true, hasContent: false })
+      useChatStatus({ ...base, isHistoryLoaded: true, hasInitialContent: false })
     );
     expect(result.current).toEqual({ kind: "starting" });
   });
 
   it("returns 'ready' when history is loaded and content is renderable", () => {
     const { result } = renderHook(() =>
-      useChatStatus({ ...base, isHistoryLoaded: true, hasContent: true })
+      useChatStatus({ ...base, isHistoryLoaded: true, hasInitialContent: true })
     );
     expect(result.current).toEqual({ kind: "ready" });
   });

@@ -116,7 +116,7 @@ export function useWsRuntime(agentId: string): {
    * server. Drives the transition out of "starting" so the indicator can't
    * turn green before the initial greeting/history is committed (issue #197).
    */
-  hasContent: boolean;
+  hasInitialContent: boolean;
   reconnectExhausted: boolean;
   isOrphaned: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
@@ -134,7 +134,7 @@ export function useWsRuntime(agentId: string): {
    * leave "starting" with an empty thread instead of waiting forever for
    * messages that won't arrive. Reset on every reconnect/agent-switch.
    */
-  const [historyKnownEmpty, setHistoryKnownEmpty] = useState(false);
+  const [knownEmptyHistory, setKnownEmptyHistory] = useState(false);
   const [isOpenClawConnected, setIsOpenClawConnected] = useState(false);
   const [reconnectExhausted, setReconnectExhausted] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
@@ -179,7 +179,7 @@ export function useWsRuntime(agentId: string): {
     setIsRunning(false);
     setIsDelayed(false);
     setIsHistoryLoaded(false);
-    setHistoryKnownEmpty(false);
+    setKnownEmptyHistory(false);
   }
 
   /**
@@ -293,7 +293,7 @@ export function useWsRuntime(agentId: string): {
         }
 
         setIsHistoryLoaded(false);
-        setHistoryKnownEmpty(false);
+        setKnownEmptyHistory(false);
 
         if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
           shouldRecoverFromHistoryRef.current = true;
@@ -336,7 +336,7 @@ export function useWsRuntime(agentId: string): {
             // unavailable (e.g. OpenClaw restart race). Without this flag the
             // chat would sit in "starting" forever waiting for messages that
             // aren't coming — see issue #197.
-            setHistoryKnownEmpty(sessionKnown && serverMessages.length === 0);
+            setKnownEmptyHistory(sessionKnown && serverMessages.length === 0);
             const historyMessages: WsMessage[] = serverMessages.map((msg) => ({
               id: uuid(),
               role: (msg.role === "system" ? "assistant" : msg.role) as "user" | "assistant",
@@ -750,7 +750,7 @@ export function useWsRuntime(agentId: string): {
   );
 
   const isOrphaned = computeIsOrphaned(messages, { isRunning, isHistoryLoaded });
-  const hasContent = messages.length > 0 || historyKnownEmpty;
+  const hasInitialContent = messages.length > 0 || knownEmptyHistory;
 
   const convertedMessages = useMemo(() => {
     const base = messages.map(convertMessage);
@@ -786,7 +786,7 @@ export function useWsRuntime(agentId: string): {
     isConnected,
     isDelayed,
     isHistoryLoaded,
-    hasContent,
+    hasInitialContent,
     isOpenClawConnected,
     reconnectExhausted,
     isOrphaned,
