@@ -1,8 +1,12 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import React from "react";
 import "@testing-library/jest-dom";
 import { sendingOpacityClass } from "@/components/assistant-ui/thread";
+
+// Mutable AuiIf state — lets individual tests flip thread.isRunning so we can
+// exercise the Send/Cancel mutual-exclusion path covered by issue #207.
+const auiState = vi.hoisted(() => ({ isRunning: false }));
 
 vi.mock("@assistant-ui/react", () => ({
   MessagePrimitive: {
@@ -73,8 +77,12 @@ vi.mock("@assistant-ui/react", () => ({
     children?: React.ReactNode;
     condition: (s: Record<string, unknown>) => boolean;
   }) => {
-    // For tests, we evaluate condition with a mock state
-    const show = condition({ thread: { isRunning: false }, message: { isCopied: false } });
+    // For tests, we evaluate condition with a mock state. Tests can flip
+    // `auiState.isRunning` to exercise the running/stopped branches.
+    const show = condition({
+      thread: { isRunning: auiState.isRunning },
+      message: { isCopied: false },
+    });
     return show ? <>{children}</> : null;
   },
   useMessage: vi.fn(),
@@ -460,5 +468,51 @@ describe("Composer input vs send disabled state", () => {
     await renderComposerWith({ kind: "unavailable", reason: "configuring" });
     expect(screen.getByRole("textbox")).not.toBeDisabled();
     expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
+  });
+});
+
+describe("ComposerAction Send/Stop mutual exclusion (#207)", () => {
+  beforeEach(() => {
+    auiState.isRunning = false;
+  });
+
+  async function renderComposerWith(status: { kind: string; reason?: string }) {
+    const { ChatStatusContext } = await import("@/components/chat");
+    const { Composer } = await import("@/components/assistant-ui/thread");
+    return render(
+      <ChatStatusContext.Provider value={status as never}>
+        <Composer />
+      </ChatStatusContext.Provider>
+    );
+  }
+
+  it("shows only Stop (not Send) while a generation is running", async () => {
+    auiState.isRunning = true;
+    // chat status is 'responding' mid-stream — the original bug rendered
+    // both buttons disabled in this combination.
+    await renderComposerWith({ kind: "responding" });
+
+    expect(screen.queryByRole("button", { name: /send message/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /stop generating/i })).toBeInTheDocument();
+  });
+
+  it("shows only Send (not Stop) when no generation is running", async () => {
+    auiState.isRunning = false;
+    await renderComposerWith({ kind: "ready" });
+
+    expect(screen.getByRole("button", { name: /send message/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /stop generating/i })).not.toBeInTheDocument();
+  });
+
+  it("never shows both Send and Stop together, even during stuck generation", async () => {
+    // Repro of the dead-end state from the issue: running + chat status not
+    // ready (e.g. orphaned generation after a navigation).
+    auiState.isRunning = true;
+    await renderComposerWith({ kind: "unavailable", reason: "disconnected" });
+
+    const sendBtn = screen.queryByRole("button", { name: /send message/i });
+    const stopBtn = screen.queryByRole("button", { name: /stop generating/i });
+
+    expect(sendBtn === null && stopBtn !== null).toBe(true);
   });
 });
