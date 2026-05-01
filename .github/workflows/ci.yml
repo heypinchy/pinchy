@@ -97,24 +97,14 @@ jobs:
     # browser stack) and `integration` (OpenClaw + fake Ollama via
     # docker-compose.integration.yml). Just Postgres + Drizzle migrations +
     # the route handlers under test.
-    services:
-      postgres:
-        image: postgres:17
-        credentials:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-        env:
-          POSTGRES_DB: pinchy
-          POSTGRES_USER: pinchy
-          POSTGRES_PASSWORD: pinchy_dev
-        ports:
-          - 5436:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 5
-
+    #
+    # Note: we use the runner's pre-installed PostgreSQL service (started
+    # below) instead of GitHub Actions `services: postgres: image: …`. The
+    # services block forces a Docker Hub pull on job start, which the
+    # docker-mirror action can't intercept (services run before any user
+    # steps), so this job otherwise inherits the org-wide Docker Hub
+    # rate-limit fragility that has been flaking the e2e jobs. Ubuntu
+    # runners ship Postgres pre-installed and ready, so no pull required.
     steps:
       - uses: actions/checkout@v4
 
@@ -127,10 +117,19 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
+      - name: Start runner Postgres and create pinchy role
+        run: |
+          sudo systemctl start postgresql.service
+          sudo -u postgres psql -v ON_ERROR_STOP=1 <<'SQL'
+          CREATE USER pinchy WITH PASSWORD 'pinchy_dev' SUPERUSER;
+          SQL
+          # Default cluster listens on 5432; surface it on the URL the
+          # global-setup expects.
+
       - name: Run vitest integration tests
         run: pnpm -C packages/web test:db
         env:
-          VITEST_INTEGRATION_DB_URL: postgresql://pinchy:pinchy_dev@localhost:5436/pinchy_test_vitest
+          VITEST_INTEGRATION_DB_URL: postgresql://pinchy:pinchy_dev@localhost:5432/pinchy_test_vitest
 
   e2e:
     name: E2E Tests
