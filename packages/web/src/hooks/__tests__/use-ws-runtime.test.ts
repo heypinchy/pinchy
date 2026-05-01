@@ -1026,27 +1026,16 @@ describe("openclaw_status frame", () => {
     expect(result.current.isOpenClawConnected).toBe(true);
   });
 
-  it("flips isOpenClawConnected to false on openclaw_status: false frame", async () => {
+  it("flips isOpenClawConnected back to false on openclaw_status: false frame after a green confirmation", async () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
 
     await act(async () => {
       latestWs().simulateOpen();
+      latestWs().simulateMessage({ type: "openclaw_status", connected: true });
       latestWs().simulateMessage({ type: "openclaw_status", connected: false });
     });
 
     expect(result.current.isOpenClawConnected).toBe(false);
-  });
-
-  it("flips isOpenClawConnected back to true on openclaw_status: true frame", async () => {
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
-
-    await act(async () => {
-      latestWs().simulateOpen();
-      latestWs().simulateMessage({ type: "openclaw_status", connected: false });
-      latestWs().simulateMessage({ type: "openclaw_status", connected: true });
-    });
-
-    expect(result.current.isOpenClawConnected).toBe(true);
   });
 });
 

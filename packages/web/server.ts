@@ -11,7 +11,10 @@ import { openClawConnectionState } from "./src/server/openclaw-connection-state"
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
-import { setupOpenClawStatusBroadcaster } from "./src/server/openclaw-status-broadcaster";
+import {
+  setupOpenClawStatusBroadcaster,
+  createColdStartStatusBroadcaster,
+} from "./src/server/openclaw-status-broadcaster";
 import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
@@ -151,7 +154,13 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   });
 
   let openclawClient: OpenClawClient | null = null;
-  let statusBroadcaster: ReturnType<typeof setupOpenClawStatusBroadcaster> | null = null;
+  // Pre-construct a cold-start stand-in so the WS server always has a
+  // broadcaster to call. Belt-and-suspenders for issue #198: even if a
+  // future client change reintroduces an optimistic default, a browser
+  // connecting before the OpenClaw block has run still receives an
+  // honest `openclaw_status: false` frame.
+  let statusBroadcaster: ReturnType<typeof setupOpenClawStatusBroadcaster> =
+    createColdStartStatusBroadcaster();
 
   const sessionCache = new SessionCache();
 
@@ -223,7 +232,8 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
 
     // Push the current upstream OpenClaw status so the indicator reflects
     // reality even when this connection was opened during an OpenClaw outage.
-    statusBroadcaster?.sendInitialStatus(clientWs);
+    // The broadcaster is always defined — see the cold-start stand-in above.
+    statusBroadcaster.sendInitialStatus(clientWs);
 
     const router = openclawClient
       ? new ClientRouter(openclawClient, sessionInfo.userId, sessionInfo.userRole, sessionCache)
