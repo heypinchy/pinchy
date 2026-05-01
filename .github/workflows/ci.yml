@@ -661,11 +661,36 @@ jobs:
             echo "DB_PASSWORD=${{ steps.shared.outputs.db_password }}"
           } > .env
 
-      - name: Phase 1 — start previous version and wait healthy
+      - name: Phase 1 — pull previous version's images
+        id: pull-prev
         if: steps.prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: |
-          docker compose pull
+          # Capture pull output so we can distinguish a missing-image
+          # condition (GHCR retention, deleted package, etc.) from a real
+          # pull failure (network, registry down). Missing previous-version
+          # images make the upgrade test impossible to run, but they are
+          # not a regression in *this* PR — skip with a warning instead of
+          # failing. See PR #212 for the incident that motivated this.
+          set +e
+          docker compose pull 2>&1 | tee pull.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            if grep -qE "manifest unknown|not found" pull.log; then
+              echo "::warning::Previous release (${{ steps.prev.outputs.tag }}) images are no longer available in GHCR. Skipping upgrade test — this is not a regression in this PR. See issue #213 for the prune-mechanism rebuild that prevents this from recurring."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::docker compose pull failed for an unexpected reason (not a missing-image condition). See pull.log above."
+            exit 1
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Phase 1 — start previous version and wait healthy
+        if: steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
           docker compose up -d
           for i in $(seq 1 30); do
             if curl -sf http://localhost:7777/api/health; then
@@ -680,7 +705,7 @@ jobs:
           exit 1
 
       - name: Phase 2 — swap to this PR's compose file + images
-        if: steps.prev.outputs.skip == 'false'
+        if: steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: |
           SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
@@ -705,7 +730,7 @@ jobs:
           exit 1
 
       - name: Assert pinchy still binds to 127.0.0.1 after upgrade (not 0.0.0.0)
-        if: steps.prev.outputs.skip == 'false'
+        if: steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: |
           # Docker bypasses UFW — only 127.0.0.1 binding prevents external access.
@@ -720,7 +745,7 @@ jobs:
           fi
 
       - name: Tear down
-        if: always() && steps.prev.outputs.skip == 'false'
+        if: always() && steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: docker compose down -v
 
