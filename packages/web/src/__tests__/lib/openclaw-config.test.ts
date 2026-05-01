@@ -3146,8 +3146,9 @@ describe("updateIdentityLinks", () => {
       session: { identityLinks: { "user-1": ["telegram:123"] } },
     };
     // readFileSync is called twice: once by readExistingConfig, once by the skip-if-unchanged check.
-    // Both must return the same content that would be produced by JSON.stringify(updated, null, 2).
-    const serialized = JSON.stringify(existingConfig, null, 2);
+    // Both must return the same content that would be produced by JSON.stringify(updated, null, 2)
+    // followed by trimEnd() + "\n" — see openclaw-config.ts for the format-match rationale.
+    const serialized = JSON.stringify(existingConfig, null, 2).trimEnd() + "\n";
     mockedReadFileSync.mockReturnValue(serialized);
 
     const { updateIdentityLinks } = await import("@/lib/openclaw-config");
