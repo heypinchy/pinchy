@@ -12,6 +12,15 @@ function csvField(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
+function isErrorObject(value: unknown): value is { message: string } {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "message" in value &&
+    typeof (value as { message: unknown }).message === "string"
+  );
+}
+
 function exportTimestamp(now: Date): string {
   const yyyy = now.getUTCFullYear();
   const mm = String(now.getUTCMonth() + 1).padStart(2, "0");
@@ -35,7 +44,11 @@ export async function GET(request: NextRequest) {
     );
   }
 
-  const status = url.searchParams.get("status");
+  // Treat empty-string `status=` the same as an absent param — common
+  // when forms serialize unset selects as `?status=`. Strict-validate
+  // any other unknown value, mirroring the `format=` validation above.
+  const statusRaw = url.searchParams.get("status");
+  const status = statusRaw === "" ? null : statusRaw;
   if (status !== null && status !== "success" && status !== "failure") {
     return NextResponse.json(
       { error: `Unsupported status '${status}'. Use 'success' or 'failure'.` },
@@ -109,8 +122,11 @@ export async function GET(request: NextRequest) {
     version: e.version,
     outcome: e.outcome === "success" || e.outcome === "failure" ? e.outcome : null,
     // sanitizeDetail walks the object: it leaves the `message` key intact
-    // but redacts known secret patterns inside the string itself.
-    error: e.error ? sanitizeDetail(e.error as { message: string }) : null,
+    // but redacts known secret patterns inside the string itself. The
+    // type guard is defense-in-depth — every row schema-validated to
+    // {message: string} | null today, but a future migration or manual
+    // backfill could violate that without TypeScript catching it.
+    error: isErrorObject(e.error) ? sanitizeDetail(e.error) : null,
     rowHmac: e.rowHmac,
   }));
 
@@ -165,7 +181,12 @@ export async function GET(request: NextRequest) {
   }
 
   // Audit the export itself (compliance requirement: who exported what, when).
-  // Wrapped in try/catch so audit-log infrastructure failures don't break exports.
+  // Wrapped in try/catch so audit-log infrastructure failures don't break
+  // exports — but logged loudly so a sustained outage of the audit-log
+  // path is operationally visible. Sequential await (not fire-and-forget)
+  // is intentional: an admin who clicks "Export" then immediately queries
+  // the audit log expects to see their own entry, and the latency cost
+  // of one INSERT is negligible compared to the export itself.
   try {
     await appendAuditLog({
       actorType: "user",
@@ -175,8 +196,8 @@ export async function GET(request: NextRequest) {
       outcome: "success",
       detail: { format, filterSummary, rowCount: rows.length },
     });
-  } catch {
-    // Fire-and-forget: the export succeeded, audit logging is best-effort.
+  } catch (err) {
+    console.error("[audit-export] failed to log audit.exported event", err);
   }
 
   return response;
