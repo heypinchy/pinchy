@@ -11,6 +11,13 @@ export interface ChatStatusInputs {
   isConnected: boolean;
   isOpenClawConnected: boolean;
   isHistoryLoaded: boolean;
+  /**
+   * True once there is something renderable in the chat — at least one
+   * message, or an authoritative "session known but empty" signal from the
+   * server. Gates the transition out of "starting" so the indicator never
+   * turns green before the initial greeting/history is on screen (issue #197).
+   */
+  hasContent: boolean;
   isRunning: boolean;
   reconnectExhausted: boolean;
   configuring: boolean;
@@ -40,7 +47,7 @@ export function useChatStatus(inputs: ChatStatusInputs): ChatStatus {
   if (inputs.reconnectExhausted) return { kind: "unavailable", reason: "exhausted" };
   if (inputs.configuring) return { kind: "unavailable", reason: "configuring" };
   if (!fullyConnected && delayedDisconnect) return { kind: "unavailable", reason: "disconnected" };
-  if (!inputs.isHistoryLoaded) return { kind: "starting" };
+  if (!inputs.isHistoryLoaded || !inputs.hasContent) return { kind: "starting" };
   if (inputs.isRunning) return { kind: "responding" };
   return { kind: "ready" };
 }

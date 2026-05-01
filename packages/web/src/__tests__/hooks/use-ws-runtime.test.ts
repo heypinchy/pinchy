@@ -1085,6 +1085,97 @@ describe("useWsRuntime", () => {
     });
   });
 
+  describe("hasContent", () => {
+    // Issue #197: gate the transition out of "starting" on having something
+    // renderable (a message or an authoritative empty signal). Otherwise the
+    // indicator can flip green while the chat is briefly blank.
+    it("is false initially", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      expect(result.current.hasContent).toBe(false);
+    });
+
+    it("is false when server returns empty history without sessionKnown flag", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "history", messages: [] }),
+        });
+      });
+
+      expect(result.current.hasContent).toBe(false);
+    });
+
+    it("becomes true when history arrives with at least one message", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [{ role: "assistant", content: "Hello!" }],
+          }),
+        });
+      });
+
+      expect(result.current.hasContent).toBe(true);
+    });
+
+    it("becomes true when server signals sessionKnown with empty history", () => {
+      // OpenClaw restart race: session exists, history temporarily unavailable.
+      // We must leave "starting" instead of waiting forever for messages.
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [],
+            sessionKnown: true,
+          }),
+        });
+      });
+
+      expect(result.current.hasContent).toBe(true);
+    });
+
+    it("clears the historyKnownEmpty signal on disconnect", () => {
+      // hasContent must not stay true purely because of a stale "known empty"
+      // signal after the connection drops — otherwise on reconnect we'd
+      // briefly show "ready" before fresh history arrives.
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "history", messages: [], sessionKnown: true }),
+        });
+      });
+      expect(result.current.hasContent).toBe(true);
+
+      act(() => {
+        ws.onclose?.();
+      });
+
+      expect(result.current.hasContent).toBe(false);
+    });
+  });
+
   describe("auto-reconnect", () => {
     it("should reconnect after connection closes unexpectedly", () => {
       renderHook(() => useWsRuntime("agent-1"));
