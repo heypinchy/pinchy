@@ -106,15 +106,15 @@ describe("SettingsProfile", () => {
     render(<SettingsProfile userName="Alice" />);
 
     await user.type(screen.getByLabelText("Current Password"), "oldpass123");
-    await user.type(screen.getByLabelText("New Password"), "newpass456");
-    await user.type(screen.getByLabelText("Confirm Password"), "newpass456");
+    await user.type(screen.getByLabelText("New Password"), "NewSecret789!");
+    await user.type(screen.getByLabelText("Confirm Password"), "NewSecret789!");
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith("/api/users/me/password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ currentPassword: "oldpass123", newPassword: "newpass456" }),
+        body: JSON.stringify({ currentPassword: "oldpass123", newPassword: "NewSecret789!" }),
       });
     });
   });
@@ -129,8 +129,8 @@ describe("SettingsProfile", () => {
     render(<SettingsProfile userName="Alice" />);
 
     await user.type(screen.getByLabelText("Current Password"), "oldpass123");
-    await user.type(screen.getByLabelText("New Password"), "newpass456");
-    await user.type(screen.getByLabelText("Confirm Password"), "newpass456");
+    await user.type(screen.getByLabelText("New Password"), "NewSecret789!");
+    await user.type(screen.getByLabelText("Confirm Password"), "NewSecret789!");
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
     await waitFor(() => {
@@ -148,8 +148,8 @@ describe("SettingsProfile", () => {
     render(<SettingsProfile userName="Alice" />);
 
     await user.type(screen.getByLabelText("Current Password"), "oldpass123");
-    await user.type(screen.getByLabelText("New Password"), "newpass456");
-    await user.type(screen.getByLabelText("Confirm Password"), "newpass456");
+    await user.type(screen.getByLabelText("New Password"), "NewSecret789!");
+    await user.type(screen.getByLabelText("Confirm Password"), "NewSecret789!");
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
     await waitFor(() => {
@@ -165,7 +165,7 @@ describe("SettingsProfile", () => {
     render(<SettingsProfile userName="Alice" />);
 
     await user.type(screen.getByLabelText("Current Password"), "oldpass123");
-    await user.type(screen.getByLabelText("New Password"), "newpass456");
+    await user.type(screen.getByLabelText("New Password"), "NewSecret789!");
     await user.type(screen.getByLabelText("Confirm Password"), "different789");
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
@@ -234,8 +234,8 @@ describe("SettingsProfile", () => {
     render(<SettingsProfile userName="Alice" />);
 
     await user.type(screen.getByLabelText("Current Password"), "wrongpass");
-    await user.type(screen.getByLabelText("New Password"), "newpass456");
-    await user.type(screen.getByLabelText("Confirm Password"), "newpass456");
+    await user.type(screen.getByLabelText("New Password"), "NewSecret789!");
+    await user.type(screen.getByLabelText("Confirm Password"), "NewSecret789!");
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
     await waitFor(() => {
@@ -253,8 +253,8 @@ describe("SettingsProfile", () => {
     render(<SettingsProfile userName="Alice" />);
 
     await user.type(screen.getByLabelText("Current Password"), "wrongpass");
-    await user.type(screen.getByLabelText("New Password"), "newpass456");
-    await user.type(screen.getByLabelText("Confirm Password"), "newpass456");
+    await user.type(screen.getByLabelText("New Password"), "NewSecret789!");
+    await user.type(screen.getByLabelText("Confirm Password"), "NewSecret789!");
     await user.click(screen.getByRole("button", { name: "Change Password" }));
 
     await waitFor(() => {
@@ -296,8 +296,8 @@ describe("SettingsProfile", () => {
       render(<SettingsProfile userName="Alice" onDirtyChange={onDirtyChange} />);
 
       await user.type(screen.getByLabelText("Current Password"), "oldpass123");
-      await user.type(screen.getByLabelText("New Password"), "newpass456");
-      await user.type(screen.getByLabelText("Confirm Password"), "newpass456");
+      await user.type(screen.getByLabelText("New Password"), "NewSecret789!");
+      await user.type(screen.getByLabelText("Confirm Password"), "NewSecret789!");
       await user.click(screen.getByRole("button", { name: "Change Password" }));
 
       await waitFor(() => {

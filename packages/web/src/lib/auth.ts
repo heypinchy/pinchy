@@ -8,6 +8,7 @@ import { db } from "@/db";
 import * as schema from "@/db/schema";
 import { appendAuditLog, redactEmail } from "@/lib/audit";
 import { getCachedDomain } from "@/lib/domain";
+import { PASSWORD_MIN_LENGTH } from "@/lib/validate-password";
 
 /**
  * After-hook middleware for audit trail logging.
@@ -168,6 +169,12 @@ export const auth = betterAuth({
   }),
   emailAndPassword: {
     enabled: true,
+    // Mirror Pinchy's policy (see lib/validate-password.ts) so Better Auth's
+    // own /sign-up and /change-password paths cannot accept passwords below
+    // our length floor. Pinchy's route validators run validatePassword first
+    // and enforce the full policy (length + letter+digit + breach-list);
+    // this is defense in depth.
+    minPasswordLength: PASSWORD_MIN_LENGTH,
     password: {
       // Accept legacy bcrypt hashes from pre-migration users
       verify: async ({ password, hash }) => {

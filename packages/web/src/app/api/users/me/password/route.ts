@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { auth } from "@/lib/auth";
 import { withAuth } from "@/lib/api-auth";
+import { validatePassword } from "@/lib/validate-password";
 
 export const POST = withAuth(async (request) => {
   const { currentPassword, newPassword } = await request.json();
@@ -10,11 +11,9 @@ export const POST = withAuth(async (request) => {
   if (!currentPassword) {
     return NextResponse.json({ error: "Current password is required" }, { status: 400 });
   }
-  if (!newPassword || newPassword.length < 8) {
-    return NextResponse.json(
-      { error: "New password must be at least 8 characters" },
-      { status: 400 }
-    );
+  const passwordError = validatePassword(newPassword);
+  if (passwordError) {
+    return NextResponse.json({ error: passwordError }, { status: 400 });
   }
 
   try {

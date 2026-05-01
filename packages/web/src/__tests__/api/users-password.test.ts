@@ -64,7 +64,7 @@ describe("POST /api/users/me/password", () => {
   });
 
   it("should return 400 when currentPassword is missing", async () => {
-    const response = await POST(makePostRequest({ newPassword: "newpass123" }));
+    const response = await POST(makePostRequest({ newPassword: "Br1ghtNova!2" }));
     expect(response.status).toBe(400);
     const data = await response.json();
     expect(data.error).toBe("Current password is required");
@@ -72,25 +72,61 @@ describe("POST /api/users/me/password", () => {
 
   it("should return 400 when newPassword is too short", async () => {
     const response = await POST(
-      makePostRequest({ currentPassword: "oldpass123", newPassword: "short" })
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "short" })
     );
     expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.error).toBe("New password must be at least 8 characters");
+    expect(data.error).toBe("Password must be at least 12 characters");
+  });
+
+  it("should return 400 when newPassword is exactly 11 characters (just below new minimum)", async () => {
+    const response = await POST(
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "elevenchar1" })
+    );
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toBe("Password must be at least 12 characters");
+  });
+
+  it("should return 400 when newPassword has no letter", async () => {
+    const response = await POST(
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "918273645091" })
+    );
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toBe("Password must contain at least one letter and one number");
+  });
+
+  it("should return 400 when newPassword has no number", async () => {
+    const response = await POST(
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "abcdefghijkl" })
+    );
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toBe("Password must contain at least one letter and one number");
+  });
+
+  it("should return 400 when newPassword is in the common-password list", async () => {
+    const response = await POST(
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "password1234" })
+    );
+    expect(response.status).toBe(400);
+    const data = await response.json();
+    expect(data.error).toBe("Password is too common. Please choose a less predictable one.");
   });
 
   it("should return 400 when newPassword is missing", async () => {
-    const response = await POST(makePostRequest({ currentPassword: "oldpass123" }));
+    const response = await POST(makePostRequest({ currentPassword: "oldpass1234567" }));
     expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.error).toBe("New password must be at least 8 characters");
+    expect(data.error).toBe("Password must be at least 12 characters");
   });
 
   it("should return 403 when current password is incorrect", async () => {
     vi.mocked(auth.api.changePassword).mockRejectedValueOnce(new Error("Invalid credentials"));
 
     const response = await POST(
-      makePostRequest({ currentPassword: "wrongpass", newPassword: "newpass123" })
+      makePostRequest({ currentPassword: "wrongpass1234", newPassword: "Br1ghtNova!2" })
     );
     expect(response.status).toBe(403);
     const data = await response.json();
@@ -99,7 +135,7 @@ describe("POST /api/users/me/password", () => {
 
   it("should return 200 on successful password change", async () => {
     const response = await POST(
-      makePostRequest({ currentPassword: "oldpass123", newPassword: "newpass123" })
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" })
     );
     expect(response.status).toBe(200);
     const data = await response.json();
@@ -107,9 +143,9 @@ describe("POST /api/users/me/password", () => {
     expect(auth.api.changePassword).toHaveBeenCalled();
   });
 
-  it("should accept valid passwords with exactly 8 characters", async () => {
+  it("should accept valid passwords with exactly 12 characters", async () => {
     const response = await POST(
-      makePostRequest({ currentPassword: "oldpass123", newPassword: "newpass12" })
+      makePostRequest({ currentPassword: "oldpass1234567", newPassword: "Br1ghtNova!2" })
     );
     expect(response.status).toBe(200);
   });

@@ -136,8 +136,8 @@ describe("Setup Form", () => {
       expect(screen.getByLabelText(/email/i)).toBeInTheDocument();
     });
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
-    await user.type(screen.getByLabelText(/^password$/i), "password123");
-    await user.type(screen.getByLabelText(/confirm password/i), "password123");
+    await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
+    await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
@@ -154,8 +154,8 @@ describe("Setup Form", () => {
     });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "not-an-email");
-    await user.type(screen.getByLabelText(/^password$/i), "password123");
-    await user.type(screen.getByLabelText(/confirm password/i), "password123");
+    await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
+    await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
@@ -177,7 +177,7 @@ describe("Setup Form", () => {
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
-      expect(screen.getByText("Password must be at least 8 characters")).toBeInTheDocument();
+      expect(screen.getByText("Password must be at least 12 characters")).toBeInTheDocument();
     });
   });
 
@@ -190,7 +190,7 @@ describe("Setup Form", () => {
     });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
-    await user.type(screen.getByLabelText(/^password$/i), "password123");
+    await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
     await user.type(screen.getByLabelText(/confirm password/i), "different456");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
@@ -210,8 +210,8 @@ describe("Setup Form", () => {
     });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
-    await user.type(screen.getByLabelText(/^password$/i), "password123");
-    await user.type(screen.getByLabelText(/confirm password/i), "password123");
+    await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
+    await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
@@ -221,7 +221,7 @@ describe("Setup Form", () => {
         body: JSON.stringify({
           name: "Admin User",
           email: "admin@test.com",
-          password: "password123",
+          password: "Br1ghtNova!2",
         }),
       });
     });
@@ -236,8 +236,8 @@ describe("Setup Form", () => {
     });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
-    await user.type(screen.getByLabelText(/^password$/i), "password123");
-    await user.type(screen.getByLabelText(/confirm password/i), "password123");
+    await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
+    await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
@@ -255,8 +255,8 @@ describe("Setup Form", () => {
     });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
-    await user.type(screen.getByLabelText(/^password$/i), "password123");
-    await user.type(screen.getByLabelText(/confirm password/i), "password123");
+    await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
+    await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
@@ -292,8 +292,8 @@ describe("Setup Form", () => {
     });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
-    await user.type(screen.getByLabelText(/^password$/i), "password123");
-    await user.type(screen.getByLabelText(/confirm password/i), "password123");
+    await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
+    await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
@@ -326,8 +326,8 @@ describe("Setup Form", () => {
     });
     await user.type(screen.getByLabelText(/name/i), "Admin User");
     await user.type(screen.getByLabelText(/email/i), "admin@test.com");
-    await user.type(screen.getByLabelText(/^password$/i), "password123");
-    await user.type(screen.getByLabelText(/confirm password/i), "password123");
+    await user.type(screen.getByLabelText(/^password$/i), "Br1ghtNova!2");
+    await user.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {

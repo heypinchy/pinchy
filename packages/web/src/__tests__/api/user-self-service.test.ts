@@ -155,8 +155,8 @@ describe("POST /api/users/me/password", () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
 
     const request = makeRequest({
-      currentPassword: "old123456",
-      newPassword: "new123456",
+      currentPassword: "oldpass1234567",
+      newPassword: "Br1ghtNova!2",
     });
 
     const response = await POST(request);
@@ -172,7 +172,7 @@ describe("POST /api/users/me/password", () => {
       expires: "",
     } as any);
 
-    const request = makeRequest({ newPassword: "new123456" });
+    const request = makeRequest({ newPassword: "Br1ghtNova!2" });
 
     const response = await POST(request);
     expect(response.status).toBe(400);
@@ -181,14 +181,14 @@ describe("POST /api/users/me/password", () => {
     expect(body.error).toBe("Current password is required");
   });
 
-  it("returns 400 when newPassword is too short (< 8)", async () => {
+  it("returns 400 when newPassword is too short (< 12)", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "member" },
       expires: "",
     } as any);
 
     const request = makeRequest({
-      currentPassword: "old123456",
+      currentPassword: "oldpass1234567",
       newPassword: "short",
     });
 
@@ -196,7 +196,43 @@ describe("POST /api/users/me/password", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("New password must be at least 8 characters");
+    expect(body.error).toBe("Password must be at least 12 characters");
+  });
+
+  it("returns 400 when newPassword has no digit (closes 8-char downgrade gap)", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "member" },
+      expires: "",
+    } as any);
+
+    const request = makeRequest({
+      currentPassword: "oldpass1234567",
+      newPassword: "abcdefghijkl",
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+
+    const body = await response.json();
+    expect(body.error).toBe("Password must contain at least one letter and one number");
+  });
+
+  it("returns 400 when newPassword is in the common-password list", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "member" },
+      expires: "",
+    } as any);
+
+    const request = makeRequest({
+      currentPassword: "oldpass1234567",
+      newPassword: "password1234",
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+
+    const body = await response.json();
+    expect(body.error).toBe("Password is too common. Please choose a less predictable one.");
   });
 
   it("returns 403 when currentPassword is incorrect", async () => {
@@ -210,8 +246,8 @@ describe("POST /api/users/me/password", () => {
     );
 
     const request = makeRequest({
-      currentPassword: "wrongpassword",
-      newPassword: "new123456",
+      currentPassword: "wrongpassword1",
+      newPassword: "Br1ghtNova!2",
     });
 
     const response = await POST(request);
@@ -230,8 +266,8 @@ describe("POST /api/users/me/password", () => {
     vi.mocked((auth.api as any).changePassword).mockResolvedValueOnce({});
 
     const request = makeRequest({
-      currentPassword: "old123456",
-      newPassword: "new123456",
+      currentPassword: "oldpass1234567",
+      newPassword: "Br1ghtNova!2",
     });
 
     const response = await POST(request);
@@ -244,8 +280,8 @@ describe("POST /api/users/me/password", () => {
     expect((auth.api as any).changePassword).toHaveBeenCalledWith(
       expect.objectContaining({
         body: {
-          currentPassword: "old123456",
-          newPassword: "new123456",
+          currentPassword: "oldpass1234567",
+          newPassword: "Br1ghtNova!2",
           revokeOtherSessions: false,
         },
       })
@@ -263,8 +299,8 @@ describe("POST /api/users/me/password", () => {
     );
 
     const request = makeRequest({
-      currentPassword: "old123456",
-      newPassword: "new123456",
+      currentPassword: "oldpass1234567",
+      newPassword: "Br1ghtNova!2",
     });
 
     const response = await POST(request);

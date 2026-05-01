@@ -69,6 +69,15 @@ describe("auth config consistency", () => {
     expect(content).toContain("trustedOrigins");
   });
 
+  it("auth.ts should set Better Auth minPasswordLength to PASSWORD_MIN_LENGTH (defense in depth)", () => {
+    // Without this, Better Auth's own /sign-up and /change-password paths
+    // would fall back to its default minPasswordLength of 8, undermining
+    // the length policy that our route validators enforce. See issue #234.
+    const content = readFileSync(resolve(PROJECT_ROOT, "packages/web/src/lib/auth.ts"), "utf-8");
+    expect(content).toContain("PASSWORD_MIN_LENGTH");
+    expect(content).toMatch(/minPasswordLength:\s*PASSWORD_MIN_LENGTH/);
+  });
+
   describe("PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT — security guardrail", () => {
     // The env var disables Better Auth's rate limit on /sign-in/* (3 req / 10s
     // per IP). It MUST only ever appear in the E2E-only compose overlay, never

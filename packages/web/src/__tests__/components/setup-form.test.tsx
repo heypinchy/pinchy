@@ -87,8 +87,8 @@ describe("SetupForm", () => {
 
     await userEvent.type(screen.getByLabelText(/name/i), "Admin");
     await userEvent.type(screen.getByLabelText(/email/i), "admin@test.com");
-    await userEvent.type(screen.getByLabelText("Password", { exact: true }), "password123");
-    await userEvent.type(screen.getByLabelText(/confirm password/i), "different123");
+    await userEvent.type(screen.getByLabelText("Password", { exact: true }), "Br1ghtNova!2");
+    await userEvent.type(screen.getByLabelText(/confirm password/i), "Different123!");
     await userEvent.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => expect(screen.getByText(/passwords do not match/i)).toBeInTheDocument());
@@ -111,8 +111,8 @@ describe("SetupForm", () => {
 
     await userEvent.type(screen.getByLabelText(/name/i), "Admin");
     await userEvent.type(screen.getByLabelText(/email/i), "admin@test.com");
-    await userEvent.type(screen.getByLabelText("Password", { exact: true }), "password123");
-    await userEvent.type(screen.getByLabelText(/confirm password/i), "password123");
+    await userEvent.type(screen.getByLabelText("Password", { exact: true }), "Br1ghtNova!2");
+    await userEvent.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
     await userEvent.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() =>
@@ -137,8 +137,8 @@ describe("SetupForm", () => {
 
     await userEvent.type(screen.getByLabelText(/name/i), "Admin");
     await userEvent.type(screen.getByLabelText(/email/i), "admin@test.com");
-    await userEvent.type(screen.getByLabelText("Password", { exact: true }), "password123");
-    await userEvent.type(screen.getByLabelText(/confirm password/i), "password123");
+    await userEvent.type(screen.getByLabelText("Password", { exact: true }), "Br1ghtNova!2");
+    await userEvent.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
     await userEvent.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => screen.getByRole("button", { name: /continue to sign in/i }));
@@ -164,8 +164,8 @@ describe("SetupForm", () => {
 
     await userEvent.type(screen.getByLabelText(/name/i), "Admin");
     await userEvent.type(screen.getByLabelText(/email/i), "admin@test.com");
-    await userEvent.type(screen.getByLabelText("Password", { exact: true }), "password123");
-    await userEvent.type(screen.getByLabelText(/confirm password/i), "password123");
+    await userEvent.type(screen.getByLabelText("Password", { exact: true }), "Br1ghtNova!2");
+    await userEvent.type(screen.getByLabelText(/confirm password/i), "Br1ghtNova!2");
     await userEvent.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => expect(screen.getByText(/setup already complete/i)).toBeInTheDocument());
