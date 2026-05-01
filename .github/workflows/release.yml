@@ -3,6 +3,12 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to republish images for (e.g. v0.4.4). Builds & pushes Docker images only — does NOT re-create the GitHub Release or redeploy docs."
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -17,6 +23,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
 
       # Point buildkit at mirror.gcr.io as a pull-through cache for Docker
       # Hub (same reason as .github/actions/docker-mirror in CI — avoids the
@@ -42,8 +50,12 @@ jobs:
         with:
           images: ghcr.io/heypinchy/pinchy
           tags: |
-            type=semver,pattern=v{{version}}
-            type=raw,value=latest
+            type=semver,pattern=v{{version}},value=${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+            # `:latest` is only updated by tag-push (the canonical release
+            # event). workflow_dispatch republishes a specific tag and must
+            # not move `:latest` — that would silently downgrade users who
+            # pin to `:latest` if an older tag is republished.
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
 
       - name: Build and push Pinchy image
         uses: docker/build-push-action@v6
@@ -63,8 +75,12 @@ jobs:
         with:
           images: ghcr.io/heypinchy/pinchy-openclaw
           tags: |
-            type=semver,pattern=v{{version}}
-            type=raw,value=latest
+            type=semver,pattern=v{{version}},value=${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+            # `:latest` is only updated by tag-push (the canonical release
+            # event). workflow_dispatch republishes a specific tag and must
+            # not move `:latest` — that would silently downgrade users who
+            # pin to `:latest` if an older tag is republished.
+            type=raw,value=latest,enable=${{ github.event_name == 'push' }}
 
       - name: Build and push OpenClaw image
         uses: docker/build-push-action@v6
@@ -100,9 +116,11 @@ jobs:
 
       - name: Write .env with this release's version
         working-directory: ${{ steps.install-dir.outputs.path }}
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
         run: |
           {
-            echo "PINCHY_VERSION=${GITHUB_REF_NAME}"
+            echo "PINCHY_VERSION=${RELEASE_TAG}"
             echo "DB_PASSWORD=$(openssl rand -hex 32)"
           } > .env
           # BETTER_AUTH_SECRET + ENCRYPTION_KEY remain unset on purpose —
@@ -170,6 +188,9 @@ jobs:
 
   release:
     name: Create GitHub Release
+    # Skipped on workflow_dispatch: republishing images for an existing tag
+    # must not re-create a release that already exists.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     needs: [docker, end-user-install-published]
 

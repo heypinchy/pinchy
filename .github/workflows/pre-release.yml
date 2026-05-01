@@ -3,9 +3,6 @@ name: Pre-release
 on:
   push:
     branches: [main]
-  schedule:
-    # Biweekly: prune old :sha-* tags from GHCR. Runs at 03:00 UTC on the 1st and 15th.
-    - cron: "0 3 1,15 * *"
 
 permissions:
   contents: read
@@ -14,7 +11,6 @@ permissions:
 jobs:
   build:
     name: Build & push :next and :sha-<short>
-    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,23 +58,3 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
-
-  prune-sha-tags:
-    name: Prune :sha-* tags older than 30 days
-    if: github.event_name == 'schedule'
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        package: [pinchy, pinchy-openclaw]
-    steps:
-      - name: Delete old :sha-* tags for ${{ matrix.package }}
-        uses: actions/delete-package-versions@v5
-        with:
-          package-name: ${{ matrix.package }}
-          package-type: container
-          min-versions-to-keep: 10
-          # Safety: only tags matching this pattern will be considered
-          # for deletion. :latest, :next, and semver v* tags (including
-          # pre-release suffixes like v0.5.0-rc.1) are NEVER matched.
-          delete-only-pre-release-versions: false
-          ignore-versions: '^(latest|next|v\d+\.\d+\.\d+(-[a-zA-Z0-9.]+)?)$'
