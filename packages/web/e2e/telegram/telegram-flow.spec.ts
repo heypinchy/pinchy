@@ -25,6 +25,7 @@ import {
   waitForMockTelegram,
   waitForOpenClawConnected,
   waitForTelegramPolling,
+  waitForBotPolling,
   seedSetup,
 } from "./helpers";
 
@@ -246,8 +247,13 @@ test.describe.serial("Multi-Bot Telegram", () => {
     expect(result.botUsername).toBeTruthy();
     console.log(`[multi-bot] Second bot: @${result.botUsername} for agent ${secondAgentId}`);
 
-    // Wait for OpenClaw to start polling the second bot
-    await waitForTelegramPolling();
+    // Wait for OpenClaw to start polling THE SECOND bot specifically. The
+    // generic waitForTelegramPolling() returns as soon as Smithers' polling
+    // resumes, which can happen well before the new bot's channel comes up
+    // — and adding a second account triggers an OpenClaw channel restart
+    // (openclaw#47458). Without this wait, test 10 sends a message to a bot
+    // that isn't listening yet.
+    await waitForBotPolling(SECOND_BOT_TOKEN);
   });
 
   test("second bot responds to unlinked user with pairing code", async () => {
