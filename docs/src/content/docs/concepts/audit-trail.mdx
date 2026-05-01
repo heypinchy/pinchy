@@ -54,8 +54,9 @@ When viewing a failed event's detail, the error message is shown
 prominently above the raw event JSON, so you don't have to dig through the
 detail blob to find the cause.
 
-The **Status** column is also included in CSV exports, alongside an Error
-column with the failure message. Status filtering applies to exports too.
+The **Status** column is also included in CSV and PDF exports, alongside
+an Error column with the failure message. Status filtering applies to
+exports too.
 
 ### Authentication
 
@@ -169,23 +170,48 @@ The response indicates whether all entries are intact:
 
 If tampered entries are found, `valid` is `false` and `invalidIds` contains the IDs of the affected rows.
 
-## CSV export for compliance
+## Export for compliance
 
-The audit log can be exported as a CSV file for external compliance tools, auditors, or archival:
+The audit log can be exported in two formats — **CSV** for data analysis and downstream tooling, **PDF** for formal reports, archival, and regulatory submissions. Both formats apply the same filters and pass through the same sanitization rules, so secrets are never written to either output.
+
+EU AI Act Article 12 (record-keeping for high-risk AI systems, applicable from 2 August 2026) and most enterprise compliance frameworks require that audit logs can be produced for external review on demand. Both exports include the per-row HMAC signature so an auditor can independently verify that the exported entries match the cryptographic evidence in the database.
+
+### What's included in the export
+
+Every export — regardless of format — contains:
+
+- **Timestamp** (UTC, ISO 8601)
+- **Actor** — name (snapshotted) and ID, plus type (user, agent, system)
+- **Event type** — what happened (`auth.login`, `agent.updated`, `tool.shell`, …)
+- **Resource** — name (snapshotted) and ID of the affected entity, where applicable
+- **Status** — `success` or `failure` (legacy entries before status tracking show empty)
+- **Error message** — for failed events
+- **Detail** — the structured event payload, **after** sensitive-data redaction
+- **Integrity hash** — the row's HMAC-SHA256 signature, so the export is independently verifiable
+- **Schema version** — which HMAC version was used to sign the row
 
 ### Via the admin UI
 
 1. Navigate to the **Audit** page.
-2. Apply any desired filters (date range, event type, user).
-3. Click **Export CSV**.
+2. Apply any desired filters (date range, event type, status).
+3. Click **Export** and choose **Export as CSV** or **Export as PDF**.
 
 ### Via the API
 
-Send a `GET` request to `/api/audit/export` with optional filter parameters (`eventType`, `actorId`, `from`, `to`).
+Send a `GET` request to `/api/audit/export` with optional filter parameters (`eventType`, `actorId`, `resource`, `status`, `from`, `to`). Use the `format` parameter to pick the output: `csv` (default) or `pdf`.
 
 ```bash
+# CSV export (default)
 curl -b session_cookie "https://your-pinchy-instance/api/audit/export?from=2026-01-01&to=2026-02-01" -o audit-log.csv
+
+# PDF export — formal report, suitable for printing and archival
+curl -b session_cookie "https://your-pinchy-instance/api/audit/export?format=pdf&from=2026-01-01&to=2026-02-01" -o audit-log.pdf
+
+# Filter to a specific agent's tool calls
+curl -b session_cookie "https://your-pinchy-instance/api/audit/export?resource=agent:abc123&eventType=tool.shell" -o smithers-shell-audit.csv
 ```
+
+The PDF report contains a header with generation timestamp, the active filters, and the total number of entries, followed by a paginated table of the entries themselves. Each page is footed with a page counter and a reminder that the underlying data is HMAC-SHA256 signed.
 
 ## Immutability guarantees
 

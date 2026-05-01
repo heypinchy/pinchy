@@ -17,6 +17,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Table,
   TableBody,
   TableCell,
@@ -215,20 +221,20 @@ export function AuditLogTable() {
     fetchEntries();
   }, [fetchEntries]);
 
-  async function handleExportCsv() {
+  async function handleExport(format: "csv" | "pdf") {
     const params = new URLSearchParams();
+    params.set("format", format);
     if (eventTypeFilter) params.set("eventType", eventTypeFilter);
     if (statusFilter) params.set("status", statusFilter);
     if (dateFrom) params.set("from", localDateStart(dateFrom));
     if (dateTo) params.set("to", localDateEnd(dateTo));
     const res = await fetch(`/api/audit/export?${params.toString()}`);
     if (res.ok) {
-      const csvText = await res.text();
-      const blob = new Blob([csvText], { type: "text/csv" });
+      const blob = await res.blob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = "audit-log.csv";
+      link.download = `audit-log.${format}`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -353,9 +359,15 @@ export function AuditLogTable() {
           </div>
         </div>
 
-        <Button variant="outline" onClick={handleExportCsv}>
-          Export CSV
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline">Export</Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onSelect={() => handleExport("csv")}>Export as CSV</DropdownMenuItem>
+            <DropdownMenuItem onSelect={() => handleExport("pdf")}>Export as PDF</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       {verifyResult && (

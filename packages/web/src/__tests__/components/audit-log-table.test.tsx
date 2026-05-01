@@ -143,48 +143,82 @@ describe("AuditLogTable", () => {
     });
   });
 
-  it("should trigger CSV download when Export CSV is clicked", async () => {
+  it("should trigger CSV download via Export menu → CSV", async () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    // Mock the export fetch
     const csvContent = "id,timestamp,eventType\n1,2026-02-21,auth.login";
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
-      text: async () => csvContent,
+      blob: async () => new Blob([csvContent], { type: "text/csv" }),
       headers: new Headers({
         "content-disposition": 'attachment; filename="audit-log.csv"',
       }),
     } as Response);
 
-    // Mock URL.createObjectURL and URL.revokeObjectURL
     const createObjectURLSpy = vi
       .spyOn(URL, "createObjectURL")
       .mockReturnValue("blob:http://localhost/fake");
     const revokeObjectURLSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
 
     const user = userEvent.setup();
-    await user.click(screen.getByRole("button", { name: "Export CSV" }));
+    await user.click(screen.getByRole("button", { name: /export/i }));
+    await user.click(screen.getByRole("menuitem", { name: /csv/i }));
 
     await waitFor(() => {
       expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("/api/audit/export"));
     });
+    expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("format=csv"));
 
     createObjectURLSpy.mockRestore();
     revokeObjectURLSpy.mockRestore();
   });
 
-  it("should pass active filters to export CSV", async () => {
+  it("should trigger PDF download via Export menu → PDF", async () => {
     renderWithEntriesLoaded();
 
     await waitFor(() => {
       expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
     });
 
-    // Set a date filter
+    vi.mocked(global.fetch).mockResolvedValueOnce({
+      ok: true,
+      blob: async () =>
+        new Blob([new Uint8Array([0x25, 0x50, 0x44, 0x46])], {
+          type: "application/pdf",
+        }),
+      headers: new Headers({
+        "content-disposition": 'attachment; filename="audit-log.pdf"',
+      }),
+    } as Response);
+
+    const createObjectURLSpy = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:http://localhost/fake");
+    const revokeObjectURLSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /export/i }));
+    await user.click(screen.getByRole("menuitem", { name: /pdf/i }));
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("format=pdf"));
+    });
+
+    createObjectURLSpy.mockRestore();
+    revokeObjectURLSpy.mockRestore();
+  });
+
+  it("should pass active filters to PDF export", async () => {
+    renderWithEntriesLoaded();
+
+    await waitFor(() => {
+      expect(screen.getAllByText("auth.login").length).toBeGreaterThan(0);
+    });
+
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
       json: async () => mockAuditResponse,
@@ -197,11 +231,12 @@ describe("AuditLogTable", () => {
       expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("from=2026-02-01"));
     });
 
-    // Now click Export CSV — it should include the from filter
-    const csvContent = "id,timestamp,eventType\n1,2026-02-21,auth.login";
     vi.mocked(global.fetch).mockResolvedValueOnce({
       ok: true,
-      text: async () => csvContent,
+      blob: async () =>
+        new Blob([new Uint8Array([0x25, 0x50, 0x44, 0x46])], {
+          type: "application/pdf",
+        }),
     } as Response);
 
     const createObjectURLSpy = vi
@@ -209,10 +244,14 @@ describe("AuditLogTable", () => {
       .mockReturnValue("blob:http://localhost/fake");
     const revokeObjectURLSpy = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
 
-    await user.click(screen.getByRole("button", { name: "Export CSV" }));
+    await user.click(screen.getByRole("button", { name: /export/i }));
+    await user.click(screen.getByRole("menuitem", { name: /pdf/i }));
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith(expect.stringContaining("from=2026-02-01"));
+      const calls = vi.mocked(global.fetch).mock.calls.map((c) => String(c[0]));
+      expect(calls.some((c) => c.includes("format=pdf") && c.includes("from=2026-02-01"))).toBe(
+        true
+      );
     });
 
     createObjectURLSpy.mockRestore();
