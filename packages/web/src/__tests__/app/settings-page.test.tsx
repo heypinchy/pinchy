@@ -67,6 +67,10 @@ vi.mock("@/components/settings-groups", () => ({
   },
 }));
 
+vi.mock("@/components/timezone-settings", () => ({
+  TimezoneSettings: () => <div data-testid="mock-timezone-settings">Timezone</div>,
+}));
+
 vi.mock("@/components/settings-context", () => ({
   SettingsContext: ({
     userContext,
