@@ -2650,6 +2650,11 @@ describe("restart-state integration", () => {
     // diff'd against its own file sees `plugins.allow` as changed and triggers
     // a full gateway restart.
     expect(config.plugins.allow).toEqual(existingAllow);
+    // Stronger property: the output must be self-consistently sorted regardless
+    // of what OpenClaw wrote. Without this, the test above could pass simply
+    // because the test fixture happens to be alphabetical — masking the case
+    // where a future OpenClaw version uses a different deterministic order.
+    expect(config.plugins.allow).toEqual([...config.plugins.allow].sort());
   });
 
   it("regenerateOpenClawConfig is byte-idempotent against its own previous output (#193)", async () => {
@@ -2659,6 +2664,11 @@ describe("restart-state integration", () => {
     // depending on which paths differ. This test specifically catches the
     // class of bug where Pinchy's regenerate strips fields it doesn't know
     // about that OpenClaw legitimately wrote back.
+    //
+    // Note: this test alone is insufficient — it only proves Pinchy → Pinchy
+    // idempotency, not Pinchy ↔ OpenClaw idempotency. The "plugins.allow order
+    // is stable" test above covers the harder case where OpenClaw rewrites
+    // arrays in its own deterministic order between Pinchy generates.
     mockedDb.select.mockReturnValue({
       from: mockFrom([
         {
