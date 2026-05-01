@@ -146,13 +146,20 @@ export async function pinchyGet(path: string, cookie: string): Promise<Response>
   });
 }
 
+// Issue #235: state-changing requests must declare a same-origin source so
+// the CSRF gate accepts them. Cookie-only auth would otherwise be CSRF-able.
+function mutatingHeaders(cookie: string): Record<string, string> {
+  return {
+    "Content-Type": "application/json",
+    Cookie: cookie,
+    Origin: PINCHY_URL,
+  };
+}
+
 export async function pinchyPost(path: string, body: unknown, cookie: string): Promise<Response> {
   return fetch(`${PINCHY_URL}${path}`, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Cookie: cookie,
-    },
+    headers: mutatingHeaders(cookie),
     body: JSON.stringify(body),
   });
 }
@@ -160,10 +167,7 @@ export async function pinchyPost(path: string, body: unknown, cookie: string): P
 export async function pinchyPut(path: string, body: unknown, cookie: string): Promise<Response> {
   return fetch(`${PINCHY_URL}${path}`, {
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      Cookie: cookie,
-    },
+    headers: mutatingHeaders(cookie),
     body: JSON.stringify(body),
   });
 }
@@ -171,10 +175,7 @@ export async function pinchyPut(path: string, body: unknown, cookie: string): Pr
 export async function pinchyPatch(path: string, body: unknown, cookie: string): Promise<Response> {
   return fetch(`${PINCHY_URL}${path}`, {
     method: "PATCH",
-    headers: {
-      "Content-Type": "application/json",
-      Cookie: cookie,
-    },
+    headers: mutatingHeaders(cookie),
     body: JSON.stringify(body),
   });
 }
@@ -182,7 +183,7 @@ export async function pinchyPatch(path: string, body: unknown, cookie: string): 
 export async function pinchyDelete(path: string, cookie: string): Promise<Response> {
   return fetch(`${PINCHY_URL}${path}`, {
     method: "DELETE",
-    headers: { Cookie: cookie },
+    headers: { Cookie: cookie, Origin: PINCHY_URL },
   });
 }
 

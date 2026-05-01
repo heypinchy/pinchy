@@ -10,6 +10,12 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:7778",
     trace: "retain-on-failure",
+    // CSRF gate (issue #235) requires Origin/Referer on state-changing API
+    // requests. Playwright's APIRequestContext doesn't auto-set Origin, so we
+    // send it globally — same-origin to baseURL — to mimic a real browser.
+    extraHTTPHeaders: {
+      Origin: "http://localhost:7778",
+    },
   },
   globalSetup: "./e2e/global-setup.ts",
   globalTeardown: "./e2e/global-teardown.ts",

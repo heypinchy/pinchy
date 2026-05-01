@@ -43,6 +43,8 @@ export async function login(
 function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    // Issue #235: state-changing requests must declare a same-origin source.
+    Origin: PINCHY_URL,
   };
   if (sessionCookie) {
     headers["Cookie"] = sessionCookie;

@@ -296,6 +296,50 @@ The `/sign-in/*` and `/sign-up/*` wildcard entries cover any future sub-path (OA
 
 The values are intentional defaults. If your CISO requires stricter limits (e.g. 3 sign-ins per minute), edit `getAuthRateLimitConfig` in `packages/web/src/lib/auth.ts` and rebuild your image. The `auth-config-consistency.test.ts` and `auth.test.ts` test suites pin the expected values so accidental loosening will fail CI.
 
+## Cross-Site Request Forgery (CSRF) protection
+
+Pinchy enforces an Origin/Referer check on every state-changing API request (POST/PUT/PATCH/DELETE under `/api/`). This prevents an attacker from triggering admin actions through a logged-in admin's browser by hosting a malicious page that auto-submits a cross-site form to your Pinchy instance.
+
+### How it works
+
+For each state-changing request:
+
+1. The `Origin` header must match the request's own scheme + host (reconstructed from `x-forwarded-host` and `x-forwarded-proto` when behind a reverse proxy).
+2. If `Origin` is absent, the `Referer` header is checked against the same allow-list.
+3. If neither header matches, the request is rejected with `403 Forbidden` and an `auth.csrf_blocked` audit log entry is written.
+
+Better Auth's own routes (`/api/auth/*`) are exempt — they have their own `trustedOrigins` enforcement.
+
+### Reverse proxy configuration
+
+The Origin check relies on knowing the public-facing host and scheme. If your reverse proxy strips or rewrites these headers, the check will reject legitimate requests. Set both headers explicitly:
+
+```nginx
+# nginx
+proxy_set_header X-Forwarded-Host  $host;
+proxy_set_header X-Forwarded-Proto $scheme;
+```
+
+```caddyfile
+# Caddy sets X-Forwarded-Host and X-Forwarded-Proto by default — no extra config needed.
+pinchy.example.com {
+    reverse_proxy localhost:7777
+}
+```
+
+### Auditing CSRF probes
+
+Blocked requests appear in the audit log as `auth.csrf_blocked` with `outcome: failure`. The `detail` payload captures `method`, `pathname`, `origin`, `referer`, and the offending `remoteAddress`, so probes show up in the audit log alongside failed logins. Use the audit dashboard (or `GET /api/audit?eventType=auth.csrf_blocked`) to review them.
+
+### Defense in depth
+
+The CSRF gate is layered with two other request-source defenses:
+
+- **Domain lock** (`Settings → Security → Domain lock`) — rejects any request whose `Host` header doesn't match the configured domain. Closes off requests that come in via direct IP, an unconfigured hostname, or a host header injection.
+- **`SameSite=Lax` session cookie** — Better Auth's default. Prevents cookies from being attached to most third-party requests, but is not sufficient on its own (top-level form posts under Lax can still attach cookies in some browsers).
+
+Together they enforce: the request hit the right destination (domain lock), came from a legitimate source (CSRF gate), and the session cookie is unforgeable (Better Auth + SameSite).
+
 ## AUDIT_HMAC_SECRET configuration
 
 The audit trail uses HMAC-SHA256 to sign every log entry. By default, Pinchy auto-generates a secret at startup. For production, set a persistent secret.

@@ -80,7 +80,7 @@ test.describe.serial("Odoo Permission Setup", () => {
     // the sync endpoint called explicitly.
     const syncRes = await fetch(`${PINCHY_URL}/api/integrations/${connectionId}/sync`, {
       method: "POST",
-      headers: { Cookie: cookie },
+      headers: { Cookie: cookie, Origin: PINCHY_URL },
     });
     // Sync may or may not exist — if not, the wizard already synced
     if (syncRes.ok) {

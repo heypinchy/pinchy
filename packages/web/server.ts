@@ -135,8 +135,9 @@ app.prepare().then(async () => {
 
   const { isHostAllowed } = await import("./src/server/host-check");
   const { getCachedDomain } = await import("./src/lib/domain-cache");
+  const { applyCsrfGate } = await import("./src/server/csrf-check");
 
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
     const { pathname } = parse(req.url!, true);
     const host = (req.headers["x-forwarded-host"] as string) || req.headers.host;
     if (!isHostAllowed(host, pathname)) {
@@ -162,6 +163,9 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       }
       return;
     }
+
+    if (await applyCsrfGate(req, res)) return;
+
     handle(req, res, parse(req.url!, true));
   });
 
