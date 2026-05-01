@@ -14,18 +14,12 @@ vi.mock("@/lib/settings", () => ({
   getSetting: (...args: unknown[]) => mockGetSetting(...args),
 }));
 
-vi.mock("@/db", () => ({
-  db: {
-    query: {
-      agents: {
-        findMany: vi.fn().mockResolvedValue([]),
-      },
-    },
-  },
+const mockGetVisibleAgents = vi.fn();
+vi.mock("@/lib/visible-agents", () => ({
+  getVisibleAgents: (...args: unknown[]) => mockGetVisibleAgents(...args),
 }));
 
 import { GET } from "@/app/api/settings/telegram/bots/route";
-import { db } from "@/db";
 
 const adminSession = {
   user: { id: "user-1", email: "admin@test.com", role: "admin" },
@@ -40,6 +34,7 @@ describe("GET /api/settings/telegram/bots", () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
     mockGetSetting.mockResolvedValue(null);
+    mockGetVisibleAgents.mockResolvedValue([]);
   });
 
   it("returns 401 when not authenticated", async () => {
@@ -50,9 +45,9 @@ describe("GET /api/settings/telegram/bots", () => {
   });
 
   it("returns empty array when no agents have bots", async () => {
-    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
+    mockGetVisibleAgents.mockResolvedValueOnce([
       { id: "a1", name: "Smithers", isPersonal: false, visibility: "all" },
-    ] as any);
+    ]);
     mockGetSetting.mockResolvedValue(null);
 
     const response = await GET();
@@ -63,10 +58,10 @@ describe("GET /api/settings/telegram/bots", () => {
   });
 
   it("returns bots for agents with configured telegram", async () => {
-    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
+    mockGetVisibleAgents.mockResolvedValueOnce([
       { id: "a1", name: "Smithers", isPersonal: false, visibility: "all" },
       { id: "a2", name: "Support", isPersonal: false, visibility: "all" },
-    ] as any);
+    ]);
     mockGetSetting.mockImplementation(async (key: string) => {
       if (key === "telegram_bot_username:a1") return "acme_smithers_bot";
       return null;
@@ -82,10 +77,10 @@ describe("GET /api/settings/telegram/bots", () => {
   });
 
   it("returns personal (Smithers) bots first for pairing priority", async () => {
-    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
+    mockGetVisibleAgents.mockResolvedValueOnce([
       { id: "a1", name: "Silvia", isPersonal: false, visibility: "all" },
       { id: "a2", name: "Smithers", isPersonal: true, ownerId: "user-1" },
-    ] as any);
+    ]);
     mockGetSetting.mockImplementation(async (key: string) => {
       if (key === "telegram_bot_username:a1") return "silvia_bot";
       if (key === "telegram_bot_username:a2") return "smithers_bot";
@@ -95,35 +90,88 @@ describe("GET /api/settings/telegram/bots", () => {
     const response = await GET();
     const data = await response.json();
 
-    // Smithers (personal) should be first — the UI uses bots[0] for pairing QR code
     expect(data.bots[0].botUsername).toBe("smithers_bot");
     expect(data.bots[0].isPersonal).toBe(true);
   });
 
-  it("shows all bots to non-admin users (no visibility filtering for pairing)", async () => {
+  it("calls getVisibleAgents with the session user id and role for filtering", async () => {
     mockGetSession.mockResolvedValueOnce(memberSession);
-    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
-      // Admin's personal Smithers with bot — non-admin user needs to see this for pairing
-      { id: "a1", name: "Smithers", isPersonal: true, ownerId: "user-1" },
-      // Shared agent with restricted visibility
-      { id: "a2", name: "Support", isPersonal: false, visibility: "restricted" },
-    ] as any);
+    mockGetVisibleAgents.mockResolvedValueOnce([]);
+
+    await GET();
+
+    expect(mockGetVisibleAgents).toHaveBeenCalledWith("user-2", "member");
+  });
+
+  it("does not return a restricted shared agent's bot to a member without group access", async () => {
+    mockGetSession.mockResolvedValueOnce(memberSession);
+    // getVisibleAgents already filters by RBAC: the restricted agent (a2) is excluded.
+    mockGetVisibleAgents.mockResolvedValueOnce([
+      { id: "a1", name: "Smithers", isPersonal: false, visibility: "all" },
+    ]);
     mockGetSetting.mockImplementation(async (key: string) => {
       if (key === "telegram_bot_username:a1") return "acme_smithers_bot";
-      if (key === "telegram_bot_username:a2") return "support_bot";
+      if (key === "telegram_bot_username:a2") return "hr_bot";
       return null;
     });
 
     const response = await GET();
     const data = await response.json();
 
-    // Both bots visible — this endpoint is for pairing, not for agent access
-    expect(data.bots).toHaveLength(2);
-    expect(data.bots).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ botUsername: "acme_smithers_bot" }),
-        expect.objectContaining({ botUsername: "support_bot" }),
-      ])
+    expect(response.status).toBe(200);
+    expect(data.bots).toHaveLength(1);
+    expect(data.bots[0].botUsername).toBe("acme_smithers_bot");
+    expect(data.bots).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ botUsername: "hr_bot" })])
     );
+  });
+
+  it("does not return another user's personal agent's bot to a member", async () => {
+    mockGetSession.mockResolvedValueOnce(memberSession);
+    // Member sees only their own personal agent — admin's personal Smithers (a-admin) is filtered out by getVisibleAgents.
+    mockGetVisibleAgents.mockResolvedValueOnce([
+      { id: "a-self", name: "Smithers", isPersonal: true, ownerId: "user-2" },
+    ]);
+    mockGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_username:a-self") return "self_smithers_bot";
+      if (key === "telegram_bot_username:a-admin") return "admin_smithers_bot";
+      return null;
+    });
+
+    const response = await GET();
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.bots).toHaveLength(1);
+    expect(data.bots[0].botUsername).toBe("self_smithers_bot");
+    expect(data.bots).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ botUsername: "admin_smithers_bot" })])
+    );
+  });
+
+  it("returns all bots to an admin", async () => {
+    mockGetSession.mockResolvedValueOnce(adminSession);
+    mockGetVisibleAgents.mockResolvedValueOnce([
+      { id: "a1", name: "Smithers", isPersonal: true, ownerId: "user-1" },
+      { id: "a2", name: "Support", isPersonal: false, visibility: "all" },
+      { id: "a3", name: "HR", isPersonal: false, visibility: "restricted" },
+    ]);
+    mockGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_username:a1") return "smithers_bot";
+      if (key === "telegram_bot_username:a2") return "support_bot";
+      if (key === "telegram_bot_username:a3") return "hr_bot";
+      return null;
+    });
+
+    const response = await GET();
+    const data = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(data.bots).toHaveLength(3);
+    expect(data.bots.map((b: { botUsername: string }) => b.botUsername).sort()).toEqual([
+      "hr_bot",
+      "smithers_bot",
+      "support_bot",
+    ]);
   });
 });
