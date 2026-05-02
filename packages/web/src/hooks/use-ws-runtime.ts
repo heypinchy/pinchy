@@ -110,6 +110,13 @@ export function useWsRuntime(agentId: string): {
    * frame because the broadcaster wasn't initialised yet).
    */
   isOpenClawConnected: boolean;
+  /**
+   * True once the chat has something renderable on screen — at least one
+   * message OR an authoritative "session known but empty" signal from the
+   * server. Drives the transition out of "starting" so the indicator can't
+   * turn green before the initial greeting/history is committed (issue #197).
+   */
+  hasInitialContent: boolean;
   reconnectExhausted: boolean;
   isOrphaned: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
@@ -121,6 +128,13 @@ export function useWsRuntime(agentId: string): {
   const [isConnected, setIsConnected] = useState(false);
   const [isDelayed, setIsDelayed] = useState(false);
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
+  /**
+   * Set when the server confirms a session exists but its history is
+   * temporarily unavailable (e.g. during an OpenClaw restart). Lets the chat
+   * leave "starting" with an empty thread instead of waiting forever for
+   * messages that won't arrive. Reset on every reconnect/agent-switch.
+   */
+  const [knownEmptyHistory, setKnownEmptyHistory] = useState(false);
   const [isOpenClawConnected, setIsOpenClawConnected] = useState(false);
   const [reconnectExhausted, setReconnectExhausted] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
@@ -165,6 +179,7 @@ export function useWsRuntime(agentId: string): {
     setIsRunning(false);
     setIsDelayed(false);
     setIsHistoryLoaded(false);
+    setKnownEmptyHistory(false);
   }
 
   const dispatchMessages = useCallback((action: Action) => {
@@ -268,6 +283,7 @@ export function useWsRuntime(agentId: string): {
         }
 
         setIsHistoryLoaded(false);
+        setKnownEmptyHistory(false);
 
         if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
           shouldRecoverFromHistoryRef.current = true;
@@ -305,6 +321,12 @@ export function useWsRuntime(agentId: string): {
           if (data.type === "history") {
             const serverMessages: Array<{ role: string; content: string; timestamp?: string }> =
               data.messages ?? [];
+            const sessionKnown: boolean = data.sessionKnown === true;
+            // Server tells us the session exists but its history is currently
+            // unavailable (e.g. OpenClaw restart race). Without this flag the
+            // chat would sit in "starting" forever waiting for messages that
+            // aren't coming — see issue #197.
+            setKnownEmptyHistory(sessionKnown && serverMessages.length === 0);
             const historyMessages: WsMessage[] = serverMessages.map((msg) => ({
               id: uuid(),
               role: (msg.role === "system" ? "assistant" : msg.role) as "user" | "assistant",
@@ -718,6 +740,7 @@ export function useWsRuntime(agentId: string): {
   );
 
   const isOrphaned = computeIsOrphaned(messages, { isRunning, isHistoryLoaded });
+  const hasInitialContent = messages.length > 0 || knownEmptyHistory;
 
   const convertedMessages = useMemo(() => {
     const base = messages.map(convertMessage);
@@ -753,6 +776,7 @@ export function useWsRuntime(agentId: string): {
     isConnected,
     isDelayed,
     isHistoryLoaded,
+    hasInitialContent,
     isOpenClawConnected,
     reconnectExhausted,
     isOrphaned,

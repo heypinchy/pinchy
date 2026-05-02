@@ -2630,6 +2630,93 @@ describe("restart-state integration", () => {
       expect(secondWrite[1]).toBe(firstContent);
     }
   });
+
+  it("preserves plugins.allow order when an OpenClaw-managed plugin (telegram) is appended after Pinchy's pinchy-* plugins (#237 cascade)", async () => {
+    // Real-world failure mode driving the agent-create-no-restart flake:
+    //   1. Pinchy first-write: allow = ["pinchy-audit", "pinchy-context", "pinchy-docs"]
+    //   2. connectBot → OpenClaw auto-enables telegram and APPENDS it to the
+    //      list, producing allow = ["pinchy-audit", "pinchy-context",
+    //      "pinchy-docs", "telegram"] on disk after restart.
+    //   3. Next regenerate (POST /api/agents) reads that file, then rebuilds
+    //      allow as `[...openClawPlugins, ...ourPlugins-in-insertion-order]`,
+    //      producing ["telegram", "pinchy-docs", "pinchy-context", "pinchy-audit"].
+    //   4. OpenClaw's file-watcher diffs the new file against its in-memory
+    //      currentCompareConfig, sees `plugins.allow` reordered, and triggers
+    //      a full gateway restart (plugins.allow is restart-required).
+    //
+    // The fix is to preserve the existing order: keep wanted entries at their
+    // original positions, append truly new plugins at the end. With no
+    // additions/removals, the array must be byte-identical to existing.
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: ["pinchy_save_user_context"],
+          isPersonal: true,
+          ownerId: "user-1",
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      if (key === "default_provider") return "anthropic";
+      if (key === "anthropic_api_key") return "sk-ant-fake";
+      return null;
+    });
+
+    // Existing config models the post-connectBot, post-restart state.
+    // OpenClaw appended `telegram` AFTER Pinchy's pinchy-* plugins.
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "t" } },
+      env: { ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}" },
+      agents: {
+        defaults: { model: { primary: "anthropic/claude-haiku-4-5-20251001" } },
+        list: [
+          {
+            id: "agent-1",
+            name: "Smithers",
+            model: "anthropic/claude-haiku-4-5-20251001",
+            workspace: "/agents/agent-1",
+            heartbeat: { every: "0m" },
+          },
+        ],
+      },
+      plugins: {
+        allow: ["pinchy-audit", "pinchy-context", "pinchy-docs", "telegram"],
+        entries: {
+          "pinchy-audit": { enabled: true, config: {} },
+          "pinchy-context": { enabled: true, config: {} },
+          "pinchy-docs": { enabled: true, config: {} },
+          telegram: { enabled: true },
+        },
+      },
+      channels: { telegram: { enabled: true } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig, null, 2).trimEnd() + "\n");
+
+    await regenerateOpenClawConfig();
+
+    const write = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    if (write) {
+      const written = JSON.parse(write[1] as string);
+      // Same set, same order. Without the fix, telegram migrates to position 0
+      // and the pinchy-* entries get re-shuffled by entries-insertion order.
+      expect(written.plugins.allow).toEqual([
+        "pinchy-audit",
+        "pinchy-context",
+        "pinchy-docs",
+        "telegram",
+      ]);
+    }
+    // Acceptable alternative: byte-equal early return (no write).
+    // Either proves the regenerate did not reorder allow.
+  });
 });
 
 describe("writeConfigAtomic plaintext secret guard", () => {

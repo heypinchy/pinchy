@@ -7,6 +7,27 @@ vi.mock("@/lib/api-auth", () => ({
   requireAdmin: vi.fn(),
 }));
 
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
+
+vi.mock("@/lib/audit-sanitize", async () => {
+  const actual =
+    await vi.importActual<typeof import("@/lib/audit-sanitize")>("@/lib/audit-sanitize");
+  return {
+    ...actual,
+    sanitizeDetail: vi.fn(actual.sanitizeDetail),
+  };
+});
+
+vi.mock("@/lib/audit-pdf", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/audit-pdf")>("@/lib/audit-pdf");
+  return {
+    ...actual,
+    renderAuditPdf: vi.fn(actual.renderAuditPdf),
+  };
+});
+
 // Build chainable mock for select().from().leftJoin().leftJoin().leftJoin().where().orderBy()
 const mockOrderBy = vi.fn();
 const mockWhere = vi.fn().mockReturnValue({ orderBy: mockOrderBy });
@@ -60,6 +81,9 @@ vi.mock("drizzle-orm/pg-core", () => ({
 }));
 
 import { requireAdmin } from "@/lib/api-auth";
+import { appendAuditLog } from "@/lib/audit";
+import { sanitizeDetail } from "@/lib/audit-sanitize";
+import { renderAuditPdf } from "@/lib/audit-pdf";
 
 const HEADER =
   "id,timestamp,actorType,actorId,actorName,eventType,resource,resourceName,detail,version,outcome,error,rowHmac";
@@ -308,7 +332,7 @@ describe("GET /api/audit/export", () => {
     const body = await response.text();
     const lines = body.split("\n");
     expect(lines[0]).toBe(HEADER);
-    expect(lines[1]).toContain(",2,failure,");
+    expect(lines[1]).toContain(',2,"failure",');
     expect(lines[1]).toContain("boom");
     expect(lines[1]).toContain("deadbeef");
   });
@@ -343,7 +367,7 @@ describe("GET /api/audit/export", () => {
     );
     const body = await response.text();
     const lines = body.split("\n");
-    expect(lines[1]).toContain(",1,,");
+    expect(lines[1]).toContain(',1,"","",');
     expect(lines[1]).toContain("v1hash");
   });
 
@@ -496,5 +520,325 @@ describe("GET /api/audit/export", () => {
     expect(body).toContain('""from"":""old""');
     // actorName contains both ' and " — " must be doubled and field quoted
     expect(body).toContain('"O\'Brien, ""the boss"""');
+  });
+
+  // ── Error message sanitization ───────────────────────────────────────
+
+  it("redacts secrets in error.message in CSV", async () => {
+    mockOrderBy.mockResolvedValue([
+      {
+        id: 1,
+        timestamp: new Date("2026-03-01T10:00:00Z"),
+        actorType: "agent",
+        actorId: "agent-1",
+        eventType: "tool.web_fetch",
+        resource: "agent:agent-1",
+        detail: {},
+        rowHmac: "h",
+        version: 2,
+        outcome: "failure",
+        error: {
+          message: "Failed POST https://api.example.com with token sk-ant-abcdefghij1234567890XYZ",
+        },
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ]);
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+    const body = await response.text();
+    expect(body).not.toContain("sk-ant-abcdefghij1234567890XYZ");
+    expect(body).toContain("[REDACTED]");
+  });
+
+  // ── CSV: all textual fields are quoted (RFC 4180 robustness) ─────────
+
+  it("quotes every textual CSV field (defends against commas in resource/eventType)", async () => {
+    mockOrderBy.mockResolvedValue([
+      {
+        id: 1,
+        timestamp: new Date("2026-03-01T10:00:00Z"),
+        actorType: "user",
+        actorId: "user,with,commas",
+        eventType: "tool.weird,name",
+        resource: "settings,with,commas",
+        detail: null,
+        rowHmac: "h",
+        version: 2,
+        outcome: "success",
+        error: null,
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ]);
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+    const body = await response.text();
+    expect(body).toContain('"user,with,commas"');
+    expect(body).toContain('"tool.weird,name"');
+    expect(body).toContain('"settings,with,commas"');
+    // RFC 4180 round-trip: a quote-aware parser must yield exactly 13
+    // fields for both the header and the data row, regardless of how many
+    // commas appear inside quoted values.
+    const parseRow = (line: string): string[] => {
+      const fields: string[] = [];
+      let cur = "";
+      let inQ = false;
+      for (let i = 0; i < line.length; i++) {
+        const c = line[i];
+        if (c === '"') {
+          if (inQ && line[i + 1] === '"') {
+            cur += '"';
+            i++;
+          } else {
+            inQ = !inQ;
+          }
+        } else if (c === "," && !inQ) {
+          fields.push(cur);
+          cur = "";
+        } else {
+          cur += c;
+        }
+      }
+      fields.push(cur);
+      return fields;
+    };
+    expect(parseRow(body.split("\n")[0])).toHaveLength(13);
+    expect(parseRow(body.split("\n")[1])).toHaveLength(13);
+  });
+
+  // ── Strict status validation ─────────────────────────────────────────
+
+  it("returns 400 for unknown status value (consistent with format)", async () => {
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export?status=oops") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+    expect(response.status).toBe(400);
+  });
+
+  // ── audit.exported event ─────────────────────────────────────────────
+
+  it("logs audit.exported event after successful CSV export", async () => {
+    mockOrderBy.mockResolvedValue([
+      {
+        id: 1,
+        timestamp: new Date("2026-03-01T10:00:00Z"),
+        actorType: "user",
+        actorId: "user-1",
+        eventType: "auth.login",
+        resource: null,
+        detail: null,
+        rowHmac: "h",
+        version: 2,
+        outcome: "success",
+        error: null,
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ]);
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    await GET(
+      new Request(
+        "http://localhost/api/audit/export?eventType=auth.login"
+      ) as unknown as Parameters<typeof import("@/app/api/audit/export/route").GET>[0]
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "audit.exported",
+        actorType: "user",
+        actorId: "admin-1",
+        outcome: "success",
+        detail: expect.objectContaining({
+          format: "csv",
+          rowCount: 1,
+          filterSummary: expect.stringContaining("event=auth.login"),
+        }),
+      })
+    );
+  });
+
+  it("logs audit.exported event after successful PDF export", async () => {
+    mockOrderBy.mockResolvedValue([]);
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    await GET(
+      new Request("http://localhost/api/audit/export?format=pdf") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "audit.exported",
+        outcome: "success",
+        detail: expect.objectContaining({ format: "pdf", rowCount: 0 }),
+      })
+    );
+  });
+
+  it("export still succeeds when audit-log infrastructure fails", async () => {
+    // Audit logging is fire-and-forget: if it throws, the export must
+    // still return the data. Otherwise the very compliance feature we
+    // added would itself become a single point of failure for exports.
+    mockOrderBy.mockResolvedValue([]);
+    vi.mocked(appendAuditLog).mockRejectedValueOnce(new Error("DB down"));
+    // Suppress the console.error the route emits in this scenario.
+    const errSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+
+    expect(response.status).toBe(200);
+    const body = await response.text();
+    expect(body).toContain(HEADER);
+    // The route should have logged the failure for operational visibility,
+    // not silently swallowed it.
+    expect(errSpy).toHaveBeenCalled();
+
+    errSpy.mockRestore();
+  });
+
+  // ── PDF-side: error.message reaches renderer already sanitized ───────
+
+  it("passes already-sanitized error.message to the PDF renderer", async () => {
+    mockOrderBy.mockResolvedValue([
+      {
+        id: 1,
+        timestamp: new Date("2026-03-01T10:00:00Z"),
+        actorType: "agent",
+        actorId: "agent-1",
+        eventType: "tool.web_fetch",
+        resource: "agent:agent-1",
+        detail: null,
+        rowHmac: "h",
+        version: 2,
+        outcome: "failure",
+        error: {
+          message: "Failed POST https://api.example.com with token sk-ant-abcdefghij1234567890XYZ",
+        },
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ]);
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    await GET(
+      new Request("http://localhost/api/audit/export?format=pdf") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+
+    expect(renderAuditPdf).toHaveBeenCalledTimes(1);
+    const passedRows = vi.mocked(renderAuditPdf).mock.calls[0][0];
+    expect(passedRows[0].error?.message).not.toContain("sk-ant-abcdefghij1234567890XYZ");
+    expect(passedRows[0].error?.message).toContain("[REDACTED]");
+  });
+
+  // ── Empty-string status param is treated as no filter ────────────────
+
+  it("treats empty ?status= as no filter (returns 200, not 400)", async () => {
+    mockOrderBy.mockResolvedValue([]);
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export?status=") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+    expect(response.status).toBe(200);
+  });
+
+  it("does not log audit.exported when format is invalid (400 path)", async () => {
+    const { GET } = await import("@/app/api/audit/export/route");
+    await GET(
+      new Request("http://localhost/api/audit/export?format=xml") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  // ── Filename includes time so re-exports don't overwrite ─────────────
+
+  it("filename includes hour-minute timestamp", async () => {
+    mockOrderBy.mockResolvedValue([]);
+
+    const { GET } = await import("@/app/api/audit/export/route");
+    const response = await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+    const disposition = response.headers.get("Content-Disposition") ?? "";
+    // Expect pattern audit-log-YYYY-MM-DD-HHMM.csv
+    expect(disposition).toMatch(/audit-log-\d{4}-\d{2}-\d{2}-\d{4}\.csv/);
+  });
+
+  // ── Sanitize is actually invoked (regression guard) ──────────────────
+
+  it("invokes sanitizeDetail on detail (regression guard)", async () => {
+    vi.mocked(sanitizeDetail).mockClear();
+    mockOrderBy.mockResolvedValue([
+      {
+        id: 1,
+        timestamp: new Date("2026-03-01T10:00:00Z"),
+        actorType: "user",
+        actorId: "u1",
+        eventType: "auth.login",
+        resource: null,
+        detail: { foo: "bar" },
+        rowHmac: "h",
+        version: 2,
+        outcome: "success",
+        error: null,
+        actorName: null,
+        actorBanned: null,
+        resourceAgentName: null,
+        resourceAgentDeleted: null,
+        resourceUserName: null,
+        resourceUserBanned: null,
+      },
+    ]);
+    const { GET } = await import("@/app/api/audit/export/route");
+    await GET(
+      new Request("http://localhost/api/audit/export") as unknown as Parameters<
+        typeof import("@/app/api/audit/export/route").GET
+      >[0]
+    );
+    expect(sanitizeDetail).toHaveBeenCalled();
   });
 });
