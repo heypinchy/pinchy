@@ -308,7 +308,10 @@ For each state-changing request:
 2. If `Origin` is absent, the `Referer` header is checked against the same allow-list.
 3. If neither header matches, the request is rejected with `403 Forbidden` and an `auth.csrf_blocked` audit log entry is written.
 
-Better Auth's own routes (`/api/auth/*`) are exempt — they have their own `trustedOrigins` enforcement.
+Two route prefixes are exempt:
+
+- `/api/auth/*` — Better Auth enforces its own `trustedOrigins` allow-list here.
+- `/api/internal/*` — OpenClaw plugins call these routes with `Authorization: Bearer <gateway-token>`. Bearer-token routes are not CSRF-able (browsers can't forge `Authorization` headers cross-origin), and the plugins are non-browser clients that don't send `Origin`/`Referer`.
 
 ### Reverse proxy configuration
 
@@ -326,6 +329,8 @@ pinchy.example.com {
     reverse_proxy localhost:7777
 }
 ```
+
+If your deployment chains multiple reverse proxies, `X-Forwarded-Host` may arrive as a comma-separated list (`public.example.com, internal:7777`). The gate compares `Origin` against the **first** (outermost) hop — the public name the browser actually saw. Each proxy in the chain should append, not overwrite, the existing header.
 
 ### Auditing CSRF probes
 

@@ -16,20 +16,28 @@ export type CsrfCheckResult = { allowed: true } | { allowed: false; reason: stri
 
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 
-// Better Auth maintains its own trustedOrigins check on /api/auth/* routes
-// (see packages/web/src/lib/auth.ts trustedOrigins option). We exempt that
-// prefix to avoid double-enforcement and to keep its config the single source
-// of truth for sign-in/sign-out.
-const EXEMPT_PREFIXES = ["/api/auth/"];
+// Routes exempt from the Origin/Referer check.
+// - /api/auth/*       — Better Auth has its own trustedOrigins enforcement.
+// - /api/internal/*   — bearer-token-authed (Authorization header) calls from
+//                       OpenClaw plugins; not browser-driven, so not CSRF-able.
+//                       Browsers cannot forge Authorization headers cross-origin.
+const EXEMPT_PREFIXES = ["/api/auth/", "/api/internal/"];
 
 function parseOriginUrl(value: string): { protocol: string; host: string } | null {
   try {
     const url = new URL(value);
     if (!url.protocol || !url.host) return null;
-    return { protocol: url.protocol.replace(/:$/, ""), host: url.host };
+    return { protocol: url.protocol, host: url.host };
   } catch {
     return null;
   }
+}
+
+// RFC 7239 multi-hop: x-forwarded-host may be "public.example.com, internal:7777".
+// The first hop is the public name the browser saw, which is what Origin matches.
+function publicHopOf(host: string): string {
+  const comma = host.indexOf(",");
+  return (comma === -1 ? host : host.slice(0, comma)).trim();
 }
 
 function matchesRequestHost(
@@ -39,9 +47,9 @@ function matchesRequestHost(
 ): boolean {
   const parsed = parseOriginUrl(candidate);
   if (!parsed) return false;
-  const expectedProto = forwardedProto ?? "http";
+  const expectedProto = `${forwardedProto ?? "http"}:`;
   if (parsed.protocol !== expectedProto) return false;
-  return normalizeHost(parsed.host) === normalizeHost(host);
+  return normalizeHost(parsed.host) === normalizeHost(publicHopOf(host));
 }
 
 export function isCsrfRequestAllowed(input: CsrfCheckInput): CsrfCheckResult {

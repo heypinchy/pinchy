@@ -73,6 +73,82 @@ describe("CSRF check", () => {
     });
   });
 
+  describe("Internal token-authed routes", () => {
+    // /api/internal/* uses Authorization: Bearer <gateway-token> auth from
+    // OpenClaw plugins (non-browser). Bearer-token routes are not CSRF-able
+    // because browsers can't forge Authorization headers cross-origin.
+    // Plugins do not send Origin/Referer, so the gate must let them through.
+    it("exempts /api/internal/usage/record without Origin/Referer", () => {
+      expect(
+        isCsrfRequestAllowed({
+          method: "POST",
+          pathname: "/api/internal/usage/record",
+          origin: undefined,
+          referer: undefined,
+          host: "pinchy:7777",
+          forwardedProto: undefined,
+        })
+      ).toEqual({ allowed: true });
+    });
+
+    it("exempts /api/internal/audit/tool-use without Origin/Referer", () => {
+      expect(
+        isCsrfRequestAllowed({
+          method: "POST",
+          pathname: "/api/internal/audit/tool-use",
+          origin: undefined,
+          referer: undefined,
+          host: "pinchy:7777",
+          forwardedProto: undefined,
+        })
+      ).toEqual({ allowed: true });
+    });
+
+    it("exempts /api/internal/integrations/<id>/credentials GET regardless", () => {
+      expect(
+        isCsrfRequestAllowed({
+          method: "GET",
+          pathname: "/api/internal/integrations/abc/credentials",
+          origin: undefined,
+          referer: undefined,
+          host: "pinchy:7777",
+          forwardedProto: undefined,
+        })
+      ).toEqual({ allowed: true });
+    });
+  });
+
+  describe("X-Forwarded-Host with multiple proxy hops", () => {
+    // RFC 7239: a multi-hop deployment may produce a comma-separated header
+    // value ("public.example.com, internal:7777"). The gate should compare
+    // Origin against the first (outermost) hop, since that's the public name
+    // the browser actually saw.
+    it("matches Origin against the first hop in a comma-separated host", () => {
+      expect(
+        isCsrfRequestAllowed({
+          method: "POST",
+          pathname: "/api/agents",
+          origin: "https://pinchy.example.com",
+          referer: undefined,
+          host: "pinchy.example.com, internal:7777",
+          forwardedProto: "https",
+        })
+      ).toEqual({ allowed: true });
+    });
+
+    it("blocks when the Origin matches only an internal hop, not the public one", () => {
+      const result = isCsrfRequestAllowed({
+        method: "POST",
+        pathname: "/api/agents",
+        origin: "https://internal:7777",
+        referer: undefined,
+        host: "pinchy.example.com, internal:7777",
+        forwardedProto: "https",
+      });
+      expect(result.allowed).toBe(false);
+    });
+  });
+
   describe("Origin header check", () => {
     it("allows POST when Origin matches request host (https)", () => {
       expect(
