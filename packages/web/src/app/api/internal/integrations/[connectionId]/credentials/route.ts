@@ -8,6 +8,71 @@ import { decrypt, encrypt } from "@/lib/encryption";
 import { isTokenExpired, refreshAccessToken } from "@/lib/integrations/google-oauth";
 import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
 
+interface GoogleCredentials {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt?: string;
+  [k: string]: unknown;
+}
+
+// Per-connectionId in-flight refresh tracker. When a Google access token has
+// expired and multiple plugin calls arrive concurrently, only the first caller
+// fires refreshAccessToken; the rest await the same Promise and observe the
+// same fresh token. Without this, every concurrent caller would burn a refresh
+// against Google with the same refresh_token, and refresh-token rotation means
+// all but one fail with invalid_grant — corrupting the stored credential bundle.
+// See issue #237.
+const inFlightGoogleRefreshes = new Map<string, Promise<GoogleCredentials>>();
+
+async function refreshGoogleCredentials(
+  connectionId: string,
+  current: GoogleCredentials
+): Promise<GoogleCredentials> {
+  const existing = inFlightGoogleRefreshes.get(connectionId);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      const oauthSettings = await getOAuthSettings("google");
+      if (!oauthSettings) {
+        console.error("Google OAuth token refresh failed: OAuth settings not configured");
+        return current;
+      }
+
+      const refreshed = await refreshAccessToken({
+        refreshToken: current.refreshToken,
+        clientId: oauthSettings.clientId,
+        clientSecret: oauthSettings.clientSecret,
+      });
+
+      const updated: GoogleCredentials = {
+        ...current,
+        accessToken: refreshed.accessToken,
+        expiresAt: refreshed.expiresAt,
+      };
+
+      await db
+        .update(integrationConnections)
+        .set({
+          credentials: encrypt(JSON.stringify(updated)),
+          updatedAt: new Date(),
+        })
+        .where(eq(integrationConnections.id, connectionId));
+
+      console.log("Refreshed Google OAuth token for connection", connectionId);
+      return updated;
+    } catch (err) {
+      console.error("Google OAuth token refresh failed:", err);
+      return current;
+    }
+  })().finally(() => {
+    inFlightGoogleRefreshes.delete(connectionId);
+  });
+
+  inFlightGoogleRefreshes.set(connectionId, promise);
+  return promise;
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ connectionId: string }> }
@@ -41,41 +106,14 @@ export async function GET(
     return NextResponse.json({ error: "Failed to decrypt credentials" }, { status: 500 });
   }
 
-  // TODO: Add mutex/lock to prevent concurrent refresh calls for the same connectionId
-  // Auto-refresh expired Google OAuth tokens (graceful degradation: return old credentials on failure)
+  // Auto-refresh expired Google OAuth tokens (graceful degradation: return old credentials on failure).
+  // Concurrent callers for the same connectionId share a single refresh via inFlightGoogleRefreshes.
   if (
     connection.type === "google" &&
     credentials.expiresAt &&
     isTokenExpired(credentials.expiresAt)
   ) {
-    try {
-      const oauthSettings = await getOAuthSettings("google");
-      if (!oauthSettings) {
-        console.error("Google OAuth token refresh failed: OAuth settings not configured");
-      } else {
-        const refreshed = await refreshAccessToken({
-          refreshToken: credentials.refreshToken,
-          clientId: oauthSettings.clientId,
-          clientSecret: oauthSettings.clientSecret,
-        });
-
-        credentials.accessToken = refreshed.accessToken;
-        credentials.expiresAt = refreshed.expiresAt;
-
-        // Persist the refreshed credentials back to DB
-        await db
-          .update(integrationConnections)
-          .set({
-            credentials: encrypt(JSON.stringify(credentials)),
-            updatedAt: new Date(),
-          })
-          .where(eq(integrationConnections.id, connectionId));
-
-        console.log("Refreshed Google OAuth token for connection", connectionId);
-      }
-    } catch (err) {
-      console.error("Google OAuth token refresh failed:", err);
-    }
+    credentials = await refreshGoogleCredentials(connectionId, credentials as GoogleCredentials);
   }
 
   return NextResponse.json({ type: connection.type, credentials });
