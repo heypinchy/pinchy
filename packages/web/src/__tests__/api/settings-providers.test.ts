@@ -100,11 +100,16 @@ vi.mock("drizzle-orm", async (importOriginal) => {
   };
 });
 
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: vi.fn().mockResolvedValue(undefined),
+}));
+
 import { auth } from "@/lib/auth";
 import { getSetting, deleteSetting, setSetting } from "@/lib/settings";
 import { resetCache } from "@/lib/provider-models";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { db } from "@/db";
+import { appendAuditLog } from "@/lib/audit";
 
 describe("GET /api/settings/providers", () => {
   beforeEach(() => {
@@ -352,12 +357,26 @@ describe("DELETE /api/settings/providers", () => {
       return null;
     });
     vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
-      { id: "agent-1", model: "anthropic/claude-haiku-4-5-20251001" },
+      { id: "agent-1", name: "Smithers", model: "anthropic/claude-haiku-4-5-20251001" },
     ] as any[]);
 
     await DELETE(makeRequest({ provider: "openai" }));
 
     expect(db.update).not.toHaveBeenCalled();
+    // Audit log still fires with empty migratedAgents — proves the call is
+    // unconditional on the success path, not conditional on migration count.
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "settings.deleted",
+        resource: "settings:provider:openai",
+        detail: expect.objectContaining({
+          name: "OpenAI",
+          provider: "openai",
+          agentCount: 0,
+          migratedAgents: [],
+        }),
+      })
+    );
   });
 
   it("should call regenerateOpenClawConfig after successful deletion", async () => {
@@ -381,13 +400,152 @@ describe("DELETE /api/settings/providers", () => {
       return null;
     });
     vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
-      { id: "agent-1", model: "ollama/llama3:latest" },
-      { id: "agent-2", model: "anthropic/claude-haiku-4-5-20251001" },
+      { id: "agent-1", name: "Local Helper", model: "ollama/llama3:latest" },
+      { id: "agent-2", name: "Smithers", model: "anthropic/claude-haiku-4-5-20251001" },
     ] as any[]);
 
     await DELETE(makeRequest({ provider: "ollama-local" }));
 
     // Only the ollama agent should be migrated, not the anthropic one
     expect(db.update).toHaveBeenCalledTimes(1);
+    // Audit detail must distinguish the machine id ("ollama-local") from the
+    // human-readable name ("Ollama (Local)") and capture the ollama/ → anthropic
+    // model migration so the prefix-mapping never silently leaks into the log.
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        resource: "settings:provider:ollama-local",
+        detail: expect.objectContaining({
+          name: "Ollama (Local)",
+          provider: "ollama-local",
+          wasDefault: true,
+          newDefault: "anthropic",
+          agentCount: 1,
+          migratedAgents: [
+            {
+              id: "agent-1",
+              name: "Local Helper",
+              fromModel: "ollama/llama3:latest",
+              toModel: "anthropic/claude-haiku-4-5-20251001",
+            },
+          ],
+        }),
+      })
+    );
+  });
+
+  it("should cap migratedAgents at 10 entries and mark detail as truncated", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "openai_api_key") return "sk-openai-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+    // 11 openai agents — one over the cap. The structured agentCount /
+    // migratedAgentsTruncated fields must survive even when the full list
+    // wouldn't fit in audit's 2KB detail budget.
+    const manyAgents = Array.from({ length: 11 }, (_, i) => ({
+      id: `agent-${i}`,
+      name: `Agent ${i}`,
+      model: "openai/gpt-5.4-mini",
+    }));
+    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce(manyAgents as any[]);
+
+    await DELETE(makeRequest({ provider: "openai" }));
+
+    const call = vi.mocked(appendAuditLog).mock.calls[0]?.[0];
+    expect(call?.detail).toMatchObject({
+      agentCount: 11,
+      migratedAgentsTruncated: true,
+    });
+    expect((call?.detail as { migratedAgents: unknown[] }).migratedAgents).toHaveLength(10);
+  });
+
+  it("should write an audit log entry when a non-default provider is removed", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "openai_api_key") return "sk-openai-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([
+      { id: "agent-1", name: "Sales Bot", model: "openai/gpt-5.4-mini" },
+      { id: "agent-2", name: "Smithers", model: "anthropic/claude-haiku-4-5-20251001" },
+    ] as any[]);
+
+    const response = await DELETE(makeRequest({ provider: "openai" }));
+
+    expect(response.status).toBe(200);
+    expect(appendAuditLog).toHaveBeenCalledTimes(1);
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "1",
+      eventType: "settings.deleted",
+      resource: "settings:provider:openai",
+      outcome: "success",
+      detail: {
+        name: "OpenAI",
+        provider: "openai",
+        wasDefault: false,
+        agentCount: 1,
+        migratedAgents: [
+          {
+            id: "agent-1",
+            name: "Sales Bot",
+            fromModel: "openai/gpt-5.4-mini",
+            toModel: "anthropic/claude-haiku-4-5-20251001",
+          },
+        ],
+      },
+    });
+  });
+
+  it("should record the new default in the audit log when removing the default provider", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "openai_api_key") return "sk-openai-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+    vi.mocked(db.query.agents.findMany).mockResolvedValueOnce([] as any[]);
+
+    await DELETE(makeRequest({ provider: "anthropic" }));
+
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "1",
+      eventType: "settings.deleted",
+      resource: "settings:provider:anthropic",
+      outcome: "success",
+      detail: {
+        name: "Anthropic",
+        provider: "anthropic",
+        wasDefault: true,
+        newDefault: "openai",
+        agentCount: 0,
+        migratedAgents: [],
+      },
+    });
+  });
+
+  it("should not write an audit log when the request is rejected", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "2", email: "user@test.com", role: "member" },
+    } as any);
+
+    await DELETE(makeRequest({ provider: "anthropic" }));
+
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("should not write an audit log when trying to delete the last configured provider", async () => {
+    vi.mocked(getSetting).mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-secret";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await DELETE(makeRequest({ provider: "anthropic" }));
+
+    expect(appendAuditLog).not.toHaveBeenCalled();
   });
 });
