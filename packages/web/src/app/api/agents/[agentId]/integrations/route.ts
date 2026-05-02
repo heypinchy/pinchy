@@ -155,7 +155,7 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
       .filter((p) => !newSet.has(`${p.model}:${p.operation}`))
       .map((p) => ({ model: p.model, operation: p.operation }));
 
-    appendAuditLog({
+    await appendAuditLog({
       actorType: "user",
       actorId: session.user.id!,
       eventType: "config.changed",
@@ -167,7 +167,7 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
         changes: { added, removed },
       },
       outcome: "success",
-    }).catch(console.error);
+    });
 
     return NextResponse.json({ success: true });
   } catch (err) {
@@ -201,7 +201,7 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
   // Audit log
   const removed = existingPerms.map((p) => ({ model: p.model, operation: p.operation }));
 
-  appendAuditLog({
+  await appendAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "config.changed",
@@ -212,7 +212,7 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
       removed,
     },
     outcome: "success",
-  }).catch(console.error);
+  });
 
   return NextResponse.json({ success: true });
 });

@@ -118,14 +118,14 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
     .returning();
 
   if (Object.keys(changes).length > 0) {
-    appendAuditLog({
+    await appendAuditLog({
       actorType: "user",
       actorId: session.user.id!,
       eventType: "config.changed",
       resource: `integration:${connectionId}`,
       detail: { action: "integration_updated", id: connectionId, changes },
       outcome: "success",
-    }).catch(console.error);
+    });
   }
 
   return NextResponse.json({
@@ -160,14 +160,14 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     }
   }
 
-  appendAuditLog({
+  await appendAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "config.changed",
     resource: `integration:${connectionId}`,
     detail: { action: "integration_deleted", type: existing.type, name: existing.name },
     outcome: "success",
-  }).catch(console.error);
+  });
 
   return NextResponse.json({ success: true });
 });

@@ -175,7 +175,6 @@ import {
   writeIdentityFile,
 } from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { appendAuditLog } from "@/lib/audit";
 
 describe("POST /api/agents", () => {
   beforeEach(() => {

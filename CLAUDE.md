@@ -132,6 +132,10 @@ pinchy/
 ### Audit Trail Guidelines
 Every admin action that changes state MUST be logged via `appendAuditLog()`. The `detail` JSON field must follow these rules:
 
+- **Never fire-and-forget.** `appendAuditLog(...).catch(console.error)` is forbidden by ESLint (`pinchy/require-audit-log` rule, see #231) — silently swallowed audit failures break the compliance contract. Pick one of three patterns:
+  - `await appendAuditLog(...)` — preferred for **idempotent** state changes (PUT/PATCH/DELETE on existing resources). If the audit write fails, the route returns 500 and the client retries — same end state.
+  - `deferAuditLog(...)` from `@/lib/audit-deferred` — for **non-rollbackable** side effects that already happened (POST creating a row, OAuth tokens persisted, schema synced). Wraps `after()` so the audit runs after the response. Failures increment a process-wide counter and emit a structured `event: "audit_log_write_failed"` JSON line. Request scope only — throws outside route handlers.
+  - `try { await appendAuditLog(...) } catch (err) { recordAuditFailure(err, entry) }` — for **WebSocket / cron / non-request contexts** where `after()` isn't available. Same structured failure signal as `deferAuditLog`, but synchronous and never throws.
 - **Every `appendAuditLog` call must specify `outcome: 'success' | 'failure'`.** TypeScript enforces this at the call site. For events that by construction represent a completed action (`*.created`, `*.updated`, `*.deleted`, `auth.login`, `auth.logout`, `config.changed`, etc.), pass `outcome: 'success'`. For intrinsic-failure events like `auth.failed` and `tool.denied`, pass `outcome: 'failure'` and an `error: { message }` object describing why.
 - **Snapshot human-readable names alongside IDs.** IDs alone are useless after an entity is deleted. Always include `{ id, name }` pairs for referenced entities (groups, users, agents).
 - **Log what changed, not just that something changed.** Bad: `{ changes: ["visibility"] }`. Good: `{ changes: { visibility: { from: "all", to: "restricted" }, allowedGroups: { added: [{ id, name }], removed: [{ id, name }] } } }`.
@@ -156,13 +160,14 @@ Example patterns:
 
 ### Checklist for API Routes with State Changes
 When creating or modifying any POST/PUT/PATCH/DELETE endpoint:
-1. `appendAuditLog()` call present? If not needed: add `// audit-exempt: <reason>` comment
-2. Event type uses a valid `AuditResource` prefix (agent, group, user, settings, config)?
-3. Detail payload uses the correct base type (`UpdateDetail` for `*.updated`, `DeleteDetail` for `*.deleted`, `MembershipDetail` for `*.members_updated`)?
-4. All referenced entities snapshotted as `{ id, name }` pairs (`EntityRef`)?
-5. Test exists that verifies the `appendAuditLog` call with correct payload?
-6. `outcome` field set correctly? `'success'` for the happy path (default), `'failure'` for error paths that still deserve an audit entry?
-7. No plaintext email or other PII in `detail`? If you need to identify an email, use `redactEmail()` from `@/lib/audit`. If the resource already encodes the userId, log the display name only.
+1. `appendAuditLog()` or `deferAuditLog()` call present? If not needed: add `// audit-exempt: <reason>` comment
+2. Pattern matches the action shape — `await appendAuditLog` for idempotent ops, `deferAuditLog` for non-rollbackable side effects? (See "Never fire-and-forget" above.)
+3. Event type uses a valid `AuditResource` prefix (agent, group, user, settings, config)?
+4. Detail payload uses the correct base type (`UpdateDetail` for `*.updated`, `DeleteDetail` for `*.deleted`, `MembershipDetail` for `*.members_updated`)?
+5. All referenced entities snapshotted as `{ id, name }` pairs (`EntityRef`)?
+6. Test exists that verifies the `appendAuditLog` call with correct payload?
+7. `outcome` field set correctly? `'success'` for the happy path (default), `'failure'` for error paths that still deserve an audit entry?
+8. No plaintext email or other PII in `detail`? If you need to identify an email, use `redactEmail()` from `@/lib/audit`. If the resource already encodes the userId, log the display name only.
 
 ### Error & Notification Display Policy
 User feedback (errors, success confirmations) must use the correct display pattern. Using the wrong one creates inconsistent UX.

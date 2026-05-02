@@ -23,6 +23,7 @@ import { type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
 import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { getVisibleAgents } from "@/lib/visible-agents";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 import { detectEmailOperations } from "@/lib/tool-registry";
@@ -208,7 +209,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
         await db.insert(agentConnectionPermissions).values(permissionRows);
 
-        appendAuditLog({
+        deferAuditLog({
           actorType: "user",
           actorId: session.user.id!,
           eventType: "config.changed",
@@ -220,7 +221,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
             permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
           },
           outcome: "success",
-        }).catch(console.error);
+        });
       }
     }
   }
@@ -239,7 +240,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
       await db.insert(agentConnectionPermissions).values(permissionRows);
 
-      appendAuditLog({
+      deferAuditLog({
         actorType: "user",
         actorId: session.user.id!,
         eventType: "config.changed",
@@ -251,7 +252,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
           permissions: permissionRows.map((p) => ({ model: p.model, operation: p.operation })),
         },
         outcome: "success",
-      }).catch(console.error);
+      });
     }
   }
 

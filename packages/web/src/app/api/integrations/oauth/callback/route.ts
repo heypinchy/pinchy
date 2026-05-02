@@ -9,7 +9,8 @@ import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { encrypt } from "@/lib/encryption";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
-import { appendAuditLog, redactEmail } from "@/lib/audit";
+import { redactEmail } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { eq, and } from "drizzle-orm";
 
 function errorRedirect(origin: string, error: string) {
@@ -78,7 +79,7 @@ export async function GET(request: Request) {
   });
 
   if (!tokenResponse.ok) {
-    appendAuditLog({
+    deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
       eventType: "config.changed",
@@ -89,7 +90,7 @@ export async function GET(request: Request) {
         error: { message: "token_exchange_failed" },
       },
       outcome: "failure",
-    }).catch(console.error);
+    });
     return errorRedirect(origin, "token_exchange_failed");
   }
 
@@ -102,7 +103,7 @@ export async function GET(request: Request) {
   });
 
   if (!profileResponse.ok) {
-    appendAuditLog({
+    deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
       eventType: "config.changed",
@@ -113,7 +114,7 @@ export async function GET(request: Request) {
         error: { message: "profile_fetch_failed" },
       },
       outcome: "failure",
-    }).catch(console.error);
+    });
     return errorRedirect(origin, "profile_fetch_failed");
   }
 
@@ -190,7 +191,7 @@ export async function GET(request: Request) {
   // keyed hash + masked preview; the connectionId in `resource` is enough
   // to look up the live mailbox name from the integrations table while it
   // exists.
-  appendAuditLog({
+  deferAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "config.changed",
@@ -201,7 +202,7 @@ export async function GET(request: Request) {
       ...redactEmail(emailAddress),
     },
     outcome: "success",
-  }).catch(console.error);
+  });
 
   // 10. Clean up cookies and redirect
   const successUrl = new URL("/settings", origin);

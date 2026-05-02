@@ -5,7 +5,7 @@ import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { decrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 
@@ -48,7 +48,7 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       .set({ data: result.data, updatedAt: new Date() })
       .where(eq(integrationConnections.id, connectionId));
 
-    appendAuditLog({
+    deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
       eventType: "config.changed",
@@ -60,7 +60,7 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
         modelCount: result.models,
       },
       outcome: "success",
-    }).catch(console.error);
+    });
 
     return NextResponse.json({
       success: true,

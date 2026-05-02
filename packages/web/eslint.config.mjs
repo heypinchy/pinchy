@@ -35,7 +35,8 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-explicit-any": "off",
     },
   },
-  // Pinchy custom rules — broad scope.
+  // Pinchy custom rules — broad scope (PII detection wherever appendAuditLog
+  // is called):
   // - no-pii-in-audit-detail: forbid plaintext `email:` / `emailAddress:`
   //   keys inside appendAuditLog(...) detail (GDPR Art. 17 — see #238).
   //   Applies to API routes, lib/, and server/ because appendAuditLog is
@@ -47,17 +48,30 @@ const eslintConfig = defineConfig([
       "pinchy/no-pii-in-audit-detail": "error",
     },
   },
+  // Pinchy custom rules — repo-wide (the fire-and-forget ban must reach
+  // every source file, not just route handlers):
+  // - require-audit-log: every state-changing route handler must call
+  //   appendAuditLog or deferAuditLog (or set a // audit-exempt: <reason>
+  //   file comment). Also forbids fire-and-forget `.catch()` chained
+  //   directly onto appendAuditLog calls in any source file (see #231).
+  //   The route-handler check is gated by file path inside the rule itself;
+  //   the fire-and-forget check applies to every source file.
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    plugins: { pinchy: pinchyPlugin },
+    rules: {
+      "pinchy/require-audit-log": "error",
+    },
+  },
   // Pinchy custom rules — API route handlers only:
-  // - require-audit-log: every state-changing handler must call appendAuditLog
-  //   (or set a // audit-exempt: <reason> file comment)
   // - no-direct-session: every protected route must use the centralized
   //   helpers in @/lib/api-auth (withAuth / withAdmin / requireAdmin) instead
   //   of calling getSession or auth.api.getSession directly
   //   (opt out with a // auth-direct: <reason> file comment)
   {
     files: ["src/app/api/**/route.ts"],
+    plugins: { pinchy: pinchyPlugin },
     rules: {
-      "pinchy/require-audit-log": "error",
       "pinchy/no-direct-session": "error",
     },
   },

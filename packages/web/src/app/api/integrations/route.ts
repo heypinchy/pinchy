@@ -5,7 +5,7 @@ import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrations/odoo-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
@@ -111,14 +111,14 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     })
     .returning();
 
-  appendAuditLog({
+  deferAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "config.changed",
     resource: `integration:${connection.id}`,
     detail: { action: "integration_created", type, name },
     outcome: "success",
-  }).catch(console.error);
+  });
 
   return NextResponse.json(
     {

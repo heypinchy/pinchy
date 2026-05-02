@@ -30,6 +30,14 @@ tester.run("require-audit-log", rule, {
       code: `export const POST = async (req) => { appendAuditLog({ eventType: "test" }); }`,
       filename: "/app/api/groups/route.ts",
     },
+    {
+      code: `export async function POST(req) { await appendAuditLog({ eventType: "test" }); }`,
+      filename: "/app/api/groups/route.ts",
+    },
+    {
+      code: `export async function POST(req) { deferAuditLog({ eventType: "test" }); }`,
+      filename: "/app/api/groups/route.ts",
+    },
   ],
   invalid: [
     {
@@ -61,6 +69,21 @@ tester.run("require-audit-log", rule, {
       code: `export async function PATCH(req) { return "ok"; }`,
       filename: "/app/api/users/route.ts",
       errors: [{ messageId: "missingAuditLog" }],
+    },
+    {
+      code: `export async function POST(req) { appendAuditLog({ eventType: "test" }).catch(console.error); }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "noFireAndForgetAudit" }],
+    },
+    {
+      code: `export async function DELETE(req) { appendAuditLog({ eventType: "test" }).catch(() => {}); }`,
+      filename: "/app/api/groups/[id]/route.ts",
+      errors: [{ messageId: "noFireAndForgetAudit" }],
+    },
+    {
+      code: `export const PATCH = async (req) => { appendAuditLog({ eventType: "test" }).catch(console.error); }`,
+      filename: "/app/api/groups/route.ts",
+      errors: [{ messageId: "noFireAndForgetAudit" }],
     },
   ],
 });
