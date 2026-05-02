@@ -181,6 +181,33 @@ describe("Setup Form", () => {
     });
   });
 
+  it("should show validation error inline when password is in the breach-list (no API roundtrip)", async () => {
+    const user = userEvent.setup();
+    render(<SetupForm />);
+
+    await waitFor(() => {
+      expect(screen.getByLabelText(/name/i)).toBeInTheDocument();
+    });
+    await user.type(screen.getByLabelText(/name/i), "Admin User");
+    await user.type(screen.getByLabelText(/email/i), "admin@test.com");
+    await user.type(screen.getByLabelText(/^password$/i), "passwordpassword");
+    await user.type(screen.getByLabelText(/confirm password/i), "passwordpassword");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Password is too common. Please choose a less predictable one.")
+      ).toBeInTheDocument();
+    });
+    // Preflight calls /api/setup/status — we just need to confirm no POST to /api/setup
+    const setupPosts = vi
+      .mocked(global.fetch)
+      .mock.calls.filter(
+        ([url, init]) => typeof url === "string" && url === "/api/setup" && init?.method === "POST"
+      );
+    expect(setupPosts).toHaveLength(0);
+  });
+
   it("should show validation error when passwords do not match", async () => {
     const user = userEvent.setup();
     render(<SetupForm />);

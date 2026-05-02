@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { isCommonPassword } from "@/lib/common-passwords";
 
 /**
@@ -32,3 +33,15 @@ export function validatePassword(password: string): string | null {
 
   return null;
 }
+
+/**
+ * Shared zod schema for password fields. Mirrors `validatePassword` so
+ * forms surface the same errors inline (no API roundtrip needed) and a
+ * future policy bump only has to change this file.
+ */
+export const passwordSchema = z.string().superRefine((val, ctx) => {
+  const error = validatePassword(val);
+  if (error) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: error });
+  }
+});

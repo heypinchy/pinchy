@@ -19,12 +19,13 @@ import {
 import { CheckCircle2, Loader2, AlertTriangle } from "lucide-react";
 import { PasswordInput } from "@/components/password-input";
 import { ReportIssueLink } from "@/components/report-issue-link";
+import { passwordSchema } from "@/lib/validate-password";
 
 const setupSchema = z
   .object({
     name: z.string().min(1, "Name is required"),
     email: z.email("Invalid email address"),
-    password: z.string().min(12, "Password must be at least 12 characters"),
+    password: passwordSchema,
     confirmPassword: z.string(),
   })
   .refine((data) => data.password === data.confirmPassword, {

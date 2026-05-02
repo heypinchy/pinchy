@@ -99,6 +99,24 @@ describe("Invite Claim Page", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  it("should show validation error inline when password is in the breach-list (no API roundtrip)", async () => {
+    const user = userEvent.setup();
+    render(<InviteClaimPage />);
+
+    await user.type(screen.getByLabelText(/name/i), "Test User");
+    await user.type(screen.getByLabelText(/^password$/i), "passwordpassword");
+    await user.type(screen.getByLabelText(/confirm password/i), "passwordpassword");
+    await user.click(screen.getByRole("button", { name: /create account/i }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Password is too common. Please choose a less predictable one.")
+      ).toBeInTheDocument();
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it("should show validation error when passwords do not match", async () => {
     const user = userEvent.setup();
     render(<InviteClaimPage />);

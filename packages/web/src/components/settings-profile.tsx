@@ -18,16 +18,17 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { authClient } from "@/lib/auth-client";
+import { passwordSchema } from "@/lib/validate-password";
 
 const nameSchema = z.object({
   name: z.string().min(1, "Name is required"),
 });
 
-const passwordSchema = z
+const changePasswordSchema = z
   .object({
     currentPassword: z.string().min(1, "Current password is required"),
-    newPassword: z.string().min(12, "Password must be at least 12 characters"),
-    confirmPassword: z.string().min(12, "Password must be at least 12 characters"),
+    newPassword: passwordSchema,
+    confirmPassword: z.string(),
   })
   .refine((data) => data.newPassword === data.confirmPassword, {
     message: "Passwords don't match",
@@ -35,7 +36,7 @@ const passwordSchema = z
   });
 
 type NameFormValues = z.infer<typeof nameSchema>;
-type PasswordFormValues = z.infer<typeof passwordSchema>;
+type PasswordFormValues = z.infer<typeof changePasswordSchema>;
 
 interface SettingsProfileProps {
   userName: string;
@@ -58,7 +59,7 @@ export function SettingsProfile({ userName, onDirtyChange }: SettingsProfileProp
   }, [userName, nameForm]);
 
   const passwordForm = useForm<PasswordFormValues>({
-    resolver: zodResolver(passwordSchema),
+    resolver: zodResolver(changePasswordSchema),
     defaultValues: { currentPassword: "", newPassword: "", confirmPassword: "" },
   });
 

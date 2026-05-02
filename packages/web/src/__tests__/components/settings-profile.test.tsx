@@ -176,6 +176,25 @@ describe("SettingsProfile", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   });
 
+  it("should show validation error inline when newPassword is in the breach-list (no API roundtrip)", async () => {
+    const user = userEvent.setup();
+
+    render(<SettingsProfile userName="Alice" />);
+
+    await user.type(screen.getByLabelText("Current Password"), "oldpass1234567");
+    await user.type(screen.getByLabelText("New Password"), "passwordpassword");
+    await user.type(screen.getByLabelText("Confirm Password"), "passwordpassword");
+    await user.click(screen.getByRole("button", { name: "Change Password" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Password is too common. Please choose a less predictable one.")
+      ).toBeInTheDocument();
+    });
+
+    expect(global.fetch).not.toHaveBeenCalled();
+  });
+
   it("should show validation error when name is empty", async () => {
     const user = userEvent.setup();
 

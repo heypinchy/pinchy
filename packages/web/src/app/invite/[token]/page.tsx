@@ -19,11 +19,12 @@ import {
 } from "@/components/ui/form";
 import { CheckCircle2 } from "lucide-react";
 import { PasswordInput } from "@/components/password-input";
+import { passwordSchema } from "@/lib/validate-password";
 
 const inviteClaimSchema = z
   .object({
     name: z.string().min(1, "Name is required"),
-    password: z.string().min(12, "Password must be at least 12 characters"),
+    password: passwordSchema,
     confirmPassword: z.string(),
   })
   .refine((data) => data.password === data.confirmPassword, {
