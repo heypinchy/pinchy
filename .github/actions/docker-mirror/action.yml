@@ -26,10 +26,25 @@ runs:
     - name: Pre-pull Docker Hub library images via mirror.gcr.io
       shell: bash
       run: |
-        # Keep this list in sync with `image:` references to docker.io
-        # library/* images across docker-compose*.yml. The daemon mirror
-        # is defense-in-depth for anything we miss here.
-        for image in postgres:17 caddy:2; do
+        # Auto-discover docker.io library images across all
+        # docker-compose*.yml so this stays correct when new services
+        # are added without anyone touching this action. The regex
+        # matches `image: <name>:<tag>` lines where <name> has no `/`
+        # (i.e. no registry prefix → defaults to docker.io/library/<name>)
+        # and no `${...}` interpolation. The daemon mirror is defense-
+        # in-depth for anything this discovery misses.
+        images=$(
+          grep -hE '^[[:space:]]+image:[[:space:]]+[a-z0-9_.-]+:[a-z0-9_.-]+[[:space:]]*$' docker-compose*.yml \
+            | awk '{print $NF}' \
+            | sort -u
+        )
+        if [ -z "$images" ]; then
+          echo "::warning::No docker.io library images discovered in docker-compose*.yml — pre-pull skipped. If your stack pulls library images, the daemon mirror is your only line of defense."
+          exit 0
+        fi
+        # shellcheck disable=SC2086 # word-splitting is intentional here
+        echo "Pre-pulling docker.io library image(s) via mirror.gcr.io:" $images
+        while IFS= read -r image; do
           docker pull "mirror.gcr.io/library/${image}"
           docker tag "mirror.gcr.io/library/${image}" "${image}"
-        done
+        done <<< "$images"
