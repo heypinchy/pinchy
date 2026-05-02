@@ -1023,12 +1023,20 @@ jobs:
       - name: Show logs on failure
         if: failure()
         run: |
-          echo "=== Pinchy logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy 2>&1 | tail -50
+          # Mock telegram is the primary diagnostic for the known flake (#TBD):
+          # we need to see every bot token that ever polled, not just the last
+          # 30 lines. Each bot pings getUpdates every ≤30s, so a 7-test suite
+          # easily logs hundreds of lines. tail -2000 covers a full run.
+          echo "=== Mock Telegram health snapshot ==="
+          curl -sf http://localhost:9001/control/health | jq . || echo "health endpoint unreachable"
+          echo "=== Mock Telegram all bot responses ==="
+          curl -sf 'http://localhost:9001/control/responses' | jq . || echo "responses endpoint unreachable"
+          echo "=== Mock Telegram logs (full) ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs telegram-mock 2>&1 | tail -2000
           echo "=== OpenClaw logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs openclaw 2>&1 | tail -50
-          echo "=== Mock Telegram logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs telegram-mock 2>&1 | tail -30
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs openclaw 2>&1 | tail -500
+          echo "=== Pinchy logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy 2>&1 | tail -200
 
       - name: Tear down
         if: always()
