@@ -106,6 +106,12 @@ exports too.
 | ---------------- | ------------------------------------------------------------------- |
 | `config.changed` | A system configuration setting was changed (e.g., provider API key) |
 
+### Audit trail access
+
+| Event Type       | Description                                                                                                                                                        |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `audit.exported` | An admin downloaded an audit-trail export (CSV or PDF). The detail records the chosen format, applied filters, and row count — but never the exported data itself. |
+
 ### What is NOT logged
 
 **Chat messages are not logged in the audit trail.** The audit trail records actions and events, not conversation content. Chat messages are stored separately in the conversation history managed by OpenClaw.
@@ -212,6 +218,19 @@ curl -b session_cookie "https://your-pinchy-instance/api/audit/export?resource=a
 ```
 
 The PDF report contains a header with generation timestamp, the active filters, and the total number of entries, followed by a paginated table of the entries themselves. Each page is footed with a page counter and a reminder that the underlying data is HMAC-SHA256 signed.
+
+### CSV vs PDF — when to use which
+
+The two formats target different audiences:
+
+- **CSV** is the complete record. It includes every column, including the structured `detail` payload (sanitized) for each event. Use CSV for downstream tooling, SIEM ingestion, spreadsheets, scripted analysis, and any case where an auditor wants to recompute the row HMAC themselves.
+- **PDF** is the printable summary. It shows timestamp, actor, event, resource, status, and the first 16 hex characters of the HMAC for each row — enough to identify and corroborate an entry against the database, but not the full payload. Use PDF for formal reports, signed archival, and submissions to regulators who expect a paginated document.
+
+If a stakeholder needs the full event payload in a printable format, generate the CSV and let them produce a PDF from there with their preferred tooling — the PDF view in Pinchy is intentionally summary-only.
+
+### Known limitation: non-Latin characters in PDF
+
+The PDF renderer uses PDFKit's built-in Helvetica font, which covers Latin-1 only. Actor or agent names written in scripts outside Latin-1 (Cyrillic, CJK, Arabic, Devanagari, etc.) will render as boxes or empty space in the PDF output. The CSV export is unaffected — it is UTF-8 throughout. If you need a PDF with non-Latin names, export as CSV and convert on the client side, or [open an issue](https://github.com/heypinchy/pinchy/issues) so we can prioritize bundling a Unicode font.
 
 ## Immutability guarantees
 

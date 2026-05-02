@@ -46,7 +46,8 @@ export type AuditEventType =
   | "user.role_updated"
   | "channel.created"
   | "channel.deleted"
-  | "chat.retry_triggered";
+  | "chat.retry_triggered"
+  | "audit.exported";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -173,6 +174,10 @@ export type AuditLogEntry =
   | (AuditLogBase & {
       eventType: `chat.${string}`;
       detail?: Record<string, unknown>;
+    })
+  | (AuditLogBase & {
+      eventType: "audit.exported";
+      detail: { format: "csv" | "pdf"; filterSummary: string; rowCount: number };
     });
 
 export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {

@@ -567,16 +567,41 @@ export async function regenerateOpenClawConfig() {
     };
   }
 
-  // Build the allow list from: (1) plugins we have entries for, and (2)
-  // OpenClaw-managed plugins (e.g. "telegram") that were already in the list.
+  // Build the allow list. Two requirements:
+  //   1. Include every plugin we have entries for (pinchy-*) and every
+  //      OpenClaw-managed plugin (e.g. "telegram") already in the list.
+  //   2. Preserve the existing positional order. OpenClaw treats
+  //      `plugins.allow` as restart-required: a reorder triggers a full
+  //      gateway restart even when the SET of plugins is unchanged. The
+  //      previous implementation rebuilt allow as
+  //      `[...existing-non-pinchy, ...our-pinchy-in-insertion-order]`,
+  //      which reshuffles the array whenever OpenClaw appended one of its
+  //      managed plugins after Pinchy's first write (e.g. `telegram` after
+  //      `connectBot`). The next regenerate then moved telegram to position 0
+  //      and re-ordered pinchy-* entries — same set, restart cascade. See #237.
   // We must NOT include Pinchy plugins without entries — OpenClaw validates
   // their config schema and rejects missing required fields like "agents".
   const existingAllow = ((existing.plugins as Record<string, unknown>)?.allow as string[]) || [];
   const ourPlugins = new Set(Object.keys(entries));
   const pinchyPluginPrefixes = ["pinchy-"];
   const isPinchyPlugin = (p: string) => pinchyPluginPrefixes.some((prefix) => p.startsWith(prefix));
-  const openClawPlugins = existingAllow.filter((p) => !isPinchyPlugin(p));
-  const allowedPlugins = [...new Set([...openClawPlugins, ...ourPlugins])];
+  const isWanted = (p: string) => !isPinchyPlugin(p) || ourPlugins.has(p);
+  // Keep existing entries (in their current positions) that we still want.
+  // Drops stale pinchy-* entries we no longer emit; preserves OpenClaw-
+  // managed plugins as-is.
+  const preservedOrder: string[] = [];
+  const seen = new Set<string>();
+  for (const plugin of existingAllow) {
+    if (isWanted(plugin) && !seen.has(plugin)) {
+      preservedOrder.push(plugin);
+      seen.add(plugin);
+    }
+  }
+  // Append any pinchy-* plugin newly added since the last write. New
+  // additions go at the end so the positions of pre-existing entries stay
+  // stable (no spurious diff for unrelated plugins).
+  const newAdditions = [...ourPlugins].filter((p) => !seen.has(p));
+  const allowedPlugins = [...preservedOrder, ...newAdditions];
 
   // Preserve OpenClaw-managed plugin entries that we don't write ourselves.
   // OpenClaw auto-enables each configured provider (anthropic, openai, google,
