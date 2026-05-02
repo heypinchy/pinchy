@@ -3,6 +3,7 @@ import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 import security from "eslint-plugin-security";
 import requireAuditLog from "./eslint-rules/require-audit-log.js";
+import noDirectSession from "./eslint-rules/no-direct-session.js";
 
 const eslintConfig = defineConfig([
   ...nextVitals,
@@ -25,18 +26,26 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-explicit-any": "off",
     },
   },
-  // Require appendAuditLog() in API route mutation handlers
+  // Pinchy custom rules for API route handlers:
+  // - require-audit-log: every state-changing handler must call appendAuditLog
+  //   (or set a // audit-exempt: <reason> file comment)
+  // - no-direct-session: every protected route must use the centralized
+  //   helpers in @/lib/api-auth (withAuth / withAdmin / requireAdmin) instead
+  //   of calling getSession or auth.api.getSession directly
+  //   (opt out with a // auth-direct: <reason> file comment)
   {
     files: ["src/app/api/**/route.ts"],
     plugins: {
       pinchy: {
         rules: {
           "require-audit-log": requireAuditLog,
+          "no-direct-session": noDirectSession,
         },
       },
     },
     rules: {
       "pinchy/require-audit-log": "error",
+      "pinchy/no-direct-session": "error",
     },
   },
   // Override default ignores of eslint-config-next.

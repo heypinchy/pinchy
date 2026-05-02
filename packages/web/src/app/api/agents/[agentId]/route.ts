@@ -3,7 +3,7 @@ import { revalidatePath } from "next/cache";
 import { eq, inArray } from "drizzle-orm";
 import { updateAgent, deleteAgent, AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
 import { withAuth, withAdmin } from "@/lib/api-auth";
-import { getAgentWithAccess, assertAgentWriteAccess } from "@/lib/agent-access";
+import { getAgentWithAccess, requireAgentWriteAccess } from "@/lib/agent-access";
 import { appendAuditLog } from "@/lib/audit";
 import type { UpdateDetail } from "@/lib/audit";
 import { isEnterprise } from "@/lib/enterprise";
@@ -39,11 +39,8 @@ export const PATCH = withAuth<RouteContext>(async (request, { params }, session)
   const existingAgent = existingAgentOrError;
 
   // Only admins or personal agent owners can modify agents
-  try {
-    assertAgentWriteAccess(existingAgent, session.user.id!, session.user.role);
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const denied = requireAgentWriteAccess(existingAgent, session.user.id!, session.user.role);
+  if (denied) return denied;
 
   const body = await request.json();
 
