@@ -138,7 +138,7 @@ Every admin action that changes state MUST be logged via `appendAuditLog()`. The
 - **Use added/removed diffs for membership changes.** Don't just log the final count — log who/what was added and removed with `{ id, name }` pairs.
 - **Include the resource name in the detail** for delete events (the resource itself won't be queryable after deletion).
 - **Keep detail under 2048 bytes** (larger payloads are auto-truncated with `_truncated: true`). For bulk operations with many items, summarize if needed.
-- **Never write plaintext email addresses (or other PII) into `detail`.** The audit log is HMAC-signed and append-only — once an email lands in detail, GDPR Art. 17 erasure conflicts with row integrity. For events that need to identify a recipient/login attempt, spread `redactEmail(email)` from `@/lib/audit` (gives an `emailHash` + masked `emailPreview`). For `user.deleted` and similar events where the userId is already in `resource`, log only the display name.
+- **Never write plaintext email addresses (or other PII) into `detail`.** The audit log is HMAC-signed and append-only — once an email lands in detail, GDPR Art. 17 erasure conflicts with row integrity. For events that need to identify a recipient/login attempt, spread `redactEmail(email)` from `@/lib/audit` (gives an `emailHash` + masked `emailPreview`). For `user.deleted` and similar events where the userId is already in `resource`, log only the display name. The ESLint rule `pinchy/no-pii-in-audit-detail` flags `email:` / `emailAddress:` keys inside `appendAuditLog(...)` at lint time as a regression guard. For multi-instance deployments, the same `AUDIT_HMAC_SECRET` must be shared across instances or `emailHash` will diverge between them.
 
 Example patterns:
 ```jsonc

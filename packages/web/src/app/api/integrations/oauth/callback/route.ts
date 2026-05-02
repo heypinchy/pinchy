@@ -9,7 +9,7 @@ import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { encrypt } from "@/lib/encryption";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, redactEmail } from "@/lib/audit";
 import { eq, and } from "drizzle-orm";
 
 function errorRedirect(origin: string, error: string) {
@@ -185,6 +185,11 @@ export async function GET(request: Request) {
   }
 
   // 9. Audit log
+  // GDPR Art. 17: never record the plaintext Gmail address. The audit row
+  // is HMAC-signed, so we cannot redact later. redactEmail() gives us a
+  // keyed hash + masked preview; the connectionId in `resource` is enough
+  // to look up the live mailbox name from the integrations table while it
+  // exists.
   appendAuditLog({
     actorType: "user",
     actorId: session.user.id!,
@@ -193,8 +198,7 @@ export async function GET(request: Request) {
     detail: {
       action: "integration_created",
       type: "google",
-      name: emailAddress,
-      emailAddress,
+      ...redactEmail(emailAddress),
     },
     outcome: "success",
   }).catch(console.error);

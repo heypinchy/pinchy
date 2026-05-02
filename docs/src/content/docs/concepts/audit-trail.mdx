@@ -142,9 +142,13 @@ Email addresses are personal data under GDPR. Because the audit log is HMAC-sign
 Pinchy avoids this by **never recording plaintext email addresses in `detail`**. Instead, events that need to identify an inviter, login attempt, or invited recipient store two derived fields:
 
 - **`emailHash`** — keyed HMAC-SHA256 of the lowercased+trimmed email, using the same `audit_hmac_secret` that signs each row. An admin holding a known address can recompute the hash and match against the log; a leaked log on its own does not yield the addresses back.
-- **`emailPreview`** — short masked form, e.g. `cl…lm@devcraft.academy` (first 2 + last 2 characters of the local part, plus the full domain). Enough for a human auditor to recognise an address they already know, not enough for bulk re-identification.
+- **`emailPreview`** — short masked form, e.g. `cl…lm@devcraft.academy` (first 2 + last 2 characters of the local part, plus the full domain). Enough for a human auditor to recognise an address they already know, not enough for bulk re-identification. For very short local parts (≤4 characters), the preview equals the address — there is nothing useful to mask. The hash still provides one-way protection in that case.
 
 `user.deleted` events go further: they record only the user's display name. The `userId` is already in the `resource` field, and the audit log is not the right place to keep a deactivated user's contact details.
+
+#### Multi-instance deployments
+
+Hash determinism depends on every Pinchy instance using the **same** `audit_hmac_secret`. The default behaviour — auto-generate a secret file under `/app/secrets/.audit_hmac_secret` on first start — produces a different secret per instance. If you run more than one Pinchy instance against a shared Postgres (HA, blue/green, multiple replicas), set `AUDIT_HMAC_SECRET` explicitly via env var or mount the same secret file on every instance. Without this, the same email address will hash to different values on different instances, and an admin will not be able to look up its history from one place. The same prerequisite applies to row HMAC verification.
 
 ## How HMAC signing works
 

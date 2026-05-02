@@ -52,7 +52,7 @@ export async function PATCH(
   }
 
   // Update role
-  const [updated] = await db.update(users).set({ role }).where(eq(users.id, userId)).returning();
+  await db.update(users).set({ role }).where(eq(users.id, userId));
 
   after(() =>
     appendAuditLog({
