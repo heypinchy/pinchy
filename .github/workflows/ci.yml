@@ -1023,6 +1023,13 @@ jobs:
       - name: Show logs on failure
         if: failure()
         run: |
+          # Container state first — if a container has restarted or exited, the
+          # log tails below tell a confusing story (truncated at the wrong end).
+          # In run 25261606990 OpenClaw stopped emitting logs ~3 min before the
+          # test 10 timeout: docker compose ps reveals whether that was a crash,
+          # a restart loop, or just a quiet healthy process.
+          echo "=== Container state ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml ps --all 2>&1 || true
           # Mock telegram is the primary diagnostic for the known flake:
           # we need to see every bot token that ever polled, not just the last
           # 30 lines. Each bot pings getUpdates every ≤30s, so a 7-test suite
