@@ -265,17 +265,19 @@ Rate limiting is **enabled in production only** (`NODE_ENV === "production"`). I
 
 ### Per-path thresholds (per IP)
 
-| Endpoint                   | Window | Max | Threat addressed                                     |
-| -------------------------- | ------ | --- | ---------------------------------------------------- |
-| `/sign-in/email`           | 60s    | 5   | Credential stuffing, brute force                     |
-| `/sign-up/email`           | 5 min  | 3   | Account-creation spam                                |
-| `/forget-password`         | 10 min | 3   | Password-reset email spam (DOS against user inboxes) |
-| `/reset-password`          | 10 min | 5   | Reset-token brute force                              |
-| `/request-password-reset`  | 10 min | 3   | Reset email spam                                     |
-| `/send-verification-email` | 10 min | 3   | Verification email spam                              |
-| `/change-password`         | 10 min | 5   | Post-auth abuse (stolen session)                     |
-| `/change-email`            | 10 min | 3   | Account takeover via email change (stolen session)   |
-| All other auth endpoints   | 10s    | 100 | Generic flood protection                             |
+| Endpoint                      | Window | Max | Threat addressed                                     |
+| ----------------------------- | ------ | --- | ---------------------------------------------------- |
+| `/sign-in/*` (incl. `/email`) | 60s    | 5   | Credential stuffing, brute force                     |
+| `/sign-up/*` (incl. `/email`) | 5 min  | 3   | Account-creation spam                                |
+| `/forget-password[/*]`        | 10 min | 3   | Password-reset email spam (DOS against user inboxes) |
+| `/reset-password[/*]`         | 10 min | 5   | Reset-token brute force                              |
+| `/request-password-reset`     | 10 min | 3   | Reset email spam                                     |
+| `/send-verification-email`    | 10 min | 3   | Verification email spam                              |
+| `/change-password`            | 10 min | 5   | Post-auth abuse (stolen session)                     |
+| `/change-email`               | 10 min | 3   | Account takeover via email change (stolen session)   |
+| All other auth endpoints      | 10s    | 100 | Generic flood protection                             |
+
+The `/sign-in/*` and `/sign-up/*` wildcard entries cover any future sub-path (OAuth callbacks, magic-link, passkey) so a new sign-in mechanism added in a later release inherits the hardened threshold instead of falling back to Better Auth's weaker `/sign-in/*` default.
 
 ### What this protects against
 
