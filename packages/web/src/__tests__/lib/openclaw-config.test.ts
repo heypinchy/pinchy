@@ -2381,6 +2381,217 @@ describe("restart-state integration", () => {
     expect(config.plugins.entries.anthropic).toEqual({ enabled: true });
   });
 
+  it("preserves the order of plugins.allow from the existing config (#193 follow-up)", async () => {
+    // OpenClaw's reload subsystem treats `plugins.allow` as a no-hot-reload
+    // path: any diff there triggers a full gateway restart. The naive
+    // "openClawPlugins ++ ourPlugins" composition produces a different order
+    // than what OpenClaw writes back after auto-enable (typically
+    // alphabetical or insertion-order from OpenClaw's perspective), so a
+    // round-trip changes the array even though the *set* is identical.
+    //
+    // Concrete failure observed in CI run 25222971253:
+    //   existing:  ["pinchy-audit", "pinchy-context", "pinchy-docs", "telegram"]
+    //   produced:  ["telegram", "pinchy-audit", "pinchy-context", "pinchy-docs"]
+    //   -> OpenClaw: "[reload] config change requires gateway restart (plugins.allow)"
+    //
+    // Fix: walk existingAllow in order, keep entries that still apply,
+    // append only genuinely new pinchy plugins at the end.
+    //
+    // No-client mode: regenerate must produce stable order via the
+    // file-write path alone. Avoiding config.apply here also stops async
+    // RPC promises from leaking into the next test (mocks are cleared but
+    // implementations persist across tests in this describe block).
+    mockGetClient.mockImplementation(() => {
+      throw new Error("OpenClaw client not initialized");
+    });
+
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "secret" } },
+      plugins: {
+        allow: ["pinchy-audit", "telegram"],
+        entries: {
+          telegram: { enabled: true },
+          "pinchy-audit": { enabled: true, config: {} },
+        },
+      },
+      channels: {
+        telegram: {
+          dmPolicy: "pairing",
+          enabled: true,
+          accounts: { "agent-1": { botToken: "123456:ABC-token" } },
+        },
+      },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    // Order must match the existing file exactly. Anything else - even with
+    // identical contents - triggers a full gateway restart.
+    expect(config.plugins.allow).toEqual(["pinchy-audit", "telegram"]);
+  });
+
+  it("appends new pinchy plugins at the end of plugins.allow (#193 follow-up)", async () => {
+    // Order-preservation must not break the "newly-needed plugin gets
+    // enabled" path. New pinchy plugins (i.e. ones with entries that the
+    // existing config didn't list) should still end up in allow, just at
+    // the tail - so the existing prefix stays byte-identical and only the
+    // new entry shows up as a diff.
+    mockGetClient.mockImplementation(() => {
+      throw new Error("OpenClaw client not initialized");
+    });
+
+    const existingConfig = {
+      gateway: { mode: "local", bind: "lan", auth: { token: "secret" } },
+      plugins: {
+        allow: ["telegram"],
+        entries: { telegram: { enabled: true } },
+      },
+      channels: {
+        telegram: {
+          dmPolicy: "pairing",
+          enabled: true,
+          accounts: { "agent-1": { botToken: "123456:ABC-token" } },
+        },
+      },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig));
+
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(written![1] as string);
+
+    // Existing entry stays first; the newly-needed pinchy-audit lands at the
+    // end, not interleaved.
+    expect(config.plugins.allow[0]).toBe("telegram");
+    expect(config.plugins.allow).toContain("pinchy-audit");
+  });
+
+  it("plugins.allow is byte-stable across an OpenClaw mid-flight reorder (#193 follow-up)", async () => {
+    // The production cascade isn't just "Pinchy round-trips its own
+    // output" - it's "Pinchy writes, OpenClaw boots and rewrites with a
+    // different order on auto-enable, Pinchy regenerates against the
+    // rewritten file." Order-preservation must survive that handoff:
+    // whatever OpenClaw wrote becomes the new baseline, and the next
+    // Pinchy regenerate must NOT churn it back.
+    //
+    // Without this property, the cascade is: Pinchy write A -> OpenClaw
+    // rewrites as B -> Pinchy regenerate produces A -> diff -> restart
+    // -> OpenClaw rewrites as B -> ... ad infinitum.
+    mockGetClient.mockImplementation(() => {
+      throw new Error("OpenClaw client not initialized");
+    });
+
+    // Step 1: Pinchy's first generate (cold start, no existing file).
+    // Use a personal agent with context tools so the cold-start config
+    // emits 3+ plugins (pinchy-audit + pinchy-docs + pinchy-context),
+    // making the order-reversal in step 2 actually meaningful.
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          isPersonal: true,
+          ownerId: "user-1",
+          allowedTools: ["pinchy_save_user_context"],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+    const firstWrite = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(firstWrite).toBeDefined();
+    const firstContent = firstWrite![1] as string;
+    const firstConfig = JSON.parse(firstContent);
+
+    // Step 2: simulate OpenClaw boot rewriting plugins.allow with a
+    // different (but set-equivalent) order. This is the canonical bug
+    // trigger - OpenClaw's auto-enable doesn't preserve Pinchy's order.
+    const reorderedAllow = [...firstConfig.plugins.allow].reverse();
+    expect(reorderedAllow).not.toEqual(firstConfig.plugins.allow);
+
+    const openClawRewritten = {
+      ...firstConfig,
+      plugins: {
+        ...firstConfig.plugins,
+        allow: reorderedAllow,
+      },
+    };
+
+    // Step 3: Pinchy regenerates against OpenClaw's reordered file.
+    mockedWriteFileSync.mockClear();
+    mockedReadFileSync.mockReturnValue(JSON.stringify(openClawRewritten, null, 2));
+
+    await regenerateOpenClawConfig();
+    const secondWrite = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+
+    // Two acceptable outcomes: (a) early-return because content is byte-
+    // identical (best case, no restart trigger at all), or (b) a write
+    // whose plugins.allow matches OpenClaw's reordered version exactly.
+    // The bad outcome - which my fix prevents - would be a write that
+    // restored Pinchy's original order, restarting the cascade.
+    if (secondWrite) {
+      const secondConfig = JSON.parse(secondWrite[1] as string);
+      expect(secondConfig.plugins.allow).toEqual(reorderedAllow);
+    }
+    // If no second write, the early-return path has already proven byte
+    // stability - no further assertion needed.
+  });
+
   it("skips file write and config.apply RPC when only meta.lastTouchedAt differs (#193, openclaw#75534)", async () => {
     // OpenClaw stamps `meta.lastTouchedAt = now()` on every write it
     // performs (config.apply RPC, internal restart-bookkeeping). Pinchy

@@ -1,7 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { getSession } from "@/lib/auth";
+import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
@@ -24,15 +23,7 @@ const credentialSchemas: Record<string, z.ZodType> = {
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
-export async function GET(request: NextRequest, { params }: RouteContext) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
   const { connectionId } = await params;
   const [connection] = await db
     .select()
@@ -47,17 +38,9 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
     ...connection,
     credentials: maskConnectionCredentials(connection.type, connection.credentials, decrypt),
   });
-}
+});
 
-export async function PATCH(request: NextRequest, { params }: RouteContext) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const PATCH = withAdmin<RouteContext>(async (request, { params }, session) => {
   const { connectionId } = await params;
 
   // Load existing connection
@@ -149,17 +132,9 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
     ...updated,
     credentials: maskConnectionCredentials(updated.type, updated.credentials, decrypt),
   });
-}
+});
 
-export async function DELETE(request: NextRequest, { params }: RouteContext) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) => {
   const { connectionId } = await params;
 
   // Load connection for audit log (need name + type before deletion)
@@ -195,4 +170,4 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
   }).catch(console.error);
 
   return NextResponse.json({ success: true });
-}
+});

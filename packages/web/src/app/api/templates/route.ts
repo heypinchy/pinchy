@@ -1,7 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { auth } from "@/lib/auth";
+import { withAuth } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
@@ -11,12 +10,7 @@ import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
 import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
 
-export async function GET(request: NextRequest) {
-  const session = await auth.api.getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const GET = withAuth(async () => {
   const odooConnections = await db
     .select({ id: integrationConnections.id })
     .from(integrationConnections)
@@ -91,4 +85,4 @@ export async function GET(request: NextRequest) {
   );
 
   return NextResponse.json({ templates });
-}
+});

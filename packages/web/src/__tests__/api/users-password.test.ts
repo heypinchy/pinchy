@@ -11,6 +11,11 @@ vi.mock("@/lib/auth", () => {
   const mockGetSession = vi.fn();
   const mockChangePassword = vi.fn();
   return {
+    // `getSession` is the standalone helper used by `withAuth` from `@/lib/api-auth`.
+    // `auth.api.getSession` is the underlying Better Auth method, kept for tests
+    // that exercise the route directly. Both share the same mock so `mockResolvedValueOnce`
+    // calls applied via either alias continue to work.
+    getSession: mockGetSession,
     auth: {
       api: {
         getSession: mockGetSession,

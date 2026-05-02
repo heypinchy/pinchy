@@ -1,4 +1,7 @@
-FROM node:22-slim
+# Pull node:22-slim via Google's Docker Hub mirror to avoid Docker Hub
+# anonymous-pull rate limits in CI. mirror.gcr.io is a free, no-auth
+# pull-through cache for `library/*` images on Docker Hub.
+FROM mirror.gcr.io/library/node:22-slim
 
 # Cache pnpm in a shared location so the non-root pinchy user can use it
 # without re-downloading on every container start.

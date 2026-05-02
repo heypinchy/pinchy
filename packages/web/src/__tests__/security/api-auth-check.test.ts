@@ -8,6 +8,7 @@ import { resolve, relative } from "path";
  * Every API route must use either:
  * - getSession() from @/lib/auth
  * - requireAdmin() from @/lib/api-auth
+ * - withAuth()/withAdmin() from @/lib/api-auth
  * - requireAuth() from @/lib/require-auth
  *
  * Routes that are intentionally public must be listed in PUBLIC_ROUTES.
@@ -17,6 +18,8 @@ const AUTH_PATTERNS = [
   /\bauth\.api\.getSession\(/,
   /\bgetSession\(/,
   /\brequireAdmin\(\)/,
+  /\bwithAuth\b/,
+  /\bwithAdmin\b/,
   /\brequireAuth\(\)/,
   /\bgetAgentWithAccess\(/,
   /\bvalidateGatewayToken\(/,

@@ -1,15 +1,9 @@
 import { NextResponse } from "next/server";
-import { headers } from "next/headers";
-import { getSession } from "@/lib/auth";
+import { withAuth } from "@/lib/api-auth";
 import { getSetting } from "@/lib/settings";
 import { db } from "@/db";
 
-export async function GET() {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const GET = withAuth(async () => {
   // No visibility filtering — this endpoint answers "which Telegram bots exist?"
   // for the pairing UI. All authenticated users need to see available bots to
   // link their Telegram account, regardless of agent access permissions.
@@ -36,4 +30,4 @@ export async function GET() {
   bots.sort((a, b) => (a.isPersonal === b.isPersonal ? 0 : a.isPersonal ? -1 : 1));
 
   return NextResponse.json({ bots });
-}
+});

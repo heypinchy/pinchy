@@ -1,27 +1,20 @@
 // audit-exempt: users editing their own context is a self-service action
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
-import { getSession } from "@/lib/auth";
+import { NextResponse } from "next/server";
+import { withAuth } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { syncUserContextToWorkspaces } from "@/lib/context-sync";
 
-export async function GET() {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
+export const GET = withAuth(async (_req, _ctx, session) => {
   const user = await db.query.users.findFirst({
     where: eq(users.id, session.user.id),
   });
 
   return NextResponse.json({ content: user?.context ?? "" });
-}
+});
 
-export async function PUT(request: NextRequest) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
+export const PUT = withAuth(async (request, _ctx, session) => {
   const { content } = await request.json();
 
   if (typeof content !== "string") {
@@ -33,4 +26,4 @@ export async function PUT(request: NextRequest) {
   await syncUserContextToWorkspaces(session.user.id);
 
   return NextResponse.json({ success: true });
-}
+});

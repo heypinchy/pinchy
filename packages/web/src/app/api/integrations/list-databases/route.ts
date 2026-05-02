@@ -1,23 +1,14 @@
 // audit-exempt: read-only database list, no state changes
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { z } from "zod";
-import { getSession } from "@/lib/auth";
+import { withAdmin } from "@/lib/api-auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 
 const listDatabasesSchema = z.object({
   url: z.string().url(),
 });
 
-export async function POST(request: NextRequest) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const POST = withAdmin(async (request) => {
   const body = await request.json();
   const parsed = listDatabasesSchema.safeParse(body);
   if (!parsed.success) {
@@ -50,4 +41,4 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ success: false, error: "Could not list databases" });
   }
-}
+});
