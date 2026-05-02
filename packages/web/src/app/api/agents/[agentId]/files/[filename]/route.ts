@@ -2,7 +2,7 @@
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/api-auth";
 import { readWorkspaceFile, writeWorkspaceFile } from "@/lib/workspace";
-import { getAgentWithAccess, assertAgentWriteAccess } from "@/lib/agent-access";
+import { getAgentWithAccess, requireAgentWriteAccess } from "@/lib/agent-access";
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
@@ -28,11 +28,8 @@ export const PUT = withAuth<Params>(async (request, { params }, session) => {
   if (agentOrError instanceof NextResponse) return agentOrError;
 
   // Only admins or personal agent owners can modify agent files
-  try {
-    assertAgentWriteAccess(agentOrError, session.user.id!, session.user.role);
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const denied = requireAgentWriteAccess(agentOrError, session.user.id!, session.user.role);
+  if (denied) return denied;
 
   const { content } = await request.json();
 
