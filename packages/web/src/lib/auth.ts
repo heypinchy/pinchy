@@ -1,4 +1,4 @@
-import { betterAuth } from "better-auth";
+import { betterAuth, type BetterAuthRateLimitOptions } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { createAuthMiddleware } from "better-auth/api";
 import { admin } from "better-auth/plugins";
@@ -6,7 +6,7 @@ import { verifyPassword as verifyScrypt } from "better-auth/crypto";
 import bcrypt from "bcryptjs";
 import { db } from "@/db";
 import * as schema from "@/db/schema";
-import { appendAuditLog } from "@/lib/audit";
+import { appendAuditLog, redactEmail } from "@/lib/audit";
 import { getCachedDomain } from "@/lib/domain";
 
 /**
@@ -28,7 +28,10 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
           actorType: "user",
           actorId: newSession.user.id,
           eventType: "auth.login",
-          detail: { email },
+          // GDPR Art. 17: never log plaintext email — the audit row is
+          // HMAC-signed and cannot be redacted later. redactEmail()
+          // gives us a keyed hash + masked preview instead.
+          detail: redactEmail(email),
           outcome: "success",
         });
       } catch {
@@ -41,7 +44,7 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
           actorType: "system",
           actorId: "system",
           eventType: "auth.failed",
-          detail: { email, reason: "invalid_credentials" },
+          detail: { ...redactEmail(email), reason: "invalid_credentials" },
           outcome: "failure",
           error: { message: "Invalid credentials" },
         });
@@ -70,29 +73,69 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
 });
 
 /**
- * Decide whether to override Better Auth's default rate limiting.
+ * Hardened rate-limit config for Better Auth (see issue #239).
  *
- * Default: returns `undefined` so Better Auth uses its own behaviour
- * (`enabled: NODE_ENV === "production"`, with a /sign-in/* limit of
- * 3 req / 10s per IP).
+ * Better Auth's defaults (3 req / 10s per IP on `/sign-in/*`) are too weak
+ * for an enterprise target — 18 attempts/min × cheap residential proxy
+ * pools defeats brute-force protection trivially. We set explicit values
+ * here so a future Better Auth upgrade can't silently weaken us.
  *
- * `PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT=1` disables it. We set this in
- * `docker-compose.e2e.yml` so Playwright form-login flows can exercise
- * the production image without the test runner locking itself out
- * after a few `loginViaUI` calls. Production deployments never set
- * this env var, and `auth-config-consistency.test.ts` blocks anyone
- * from accidentally adding it to `docker-compose.yml`.
+ * `enabled` is left to Better Auth's own default: `NODE_ENV === "production"`
+ * (off in dev/test). The E2E env-var disable below short-circuits this for
+ * Playwright runs against the production image.
+ *
+ * `PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT=1` returns `{ enabled: false }`. We
+ * set this in `docker-compose.e2e.yml` so Playwright form-login flows
+ * don't lock themselves out after a few `loginViaUI` calls. Production
+ * deployments never set this env var, and
+ * `auth-config-consistency.test.ts` blocks anyone from accidentally
+ * adding it to `docker-compose.yml`.
  *
  * Evaluated once at module load (when `auth` is constructed). Changing
  * the env var at runtime has no effect on the live `auth` instance —
  * the container restarts whenever the value changes, which is fine
  * because Docker injects env at process start.
+ *
+ * Storage is in-memory (Better Auth default). Resets on container restart;
+ * acceptable for single-replica self-hosted deployments. If/when we run
+ * multiple replicas, switch `storage` to `secondary-storage` (Redis).
  */
-export function getAuthRateLimitConfig(): { enabled: false } | undefined {
+export function getAuthRateLimitConfig(): BetterAuthRateLimitOptions {
   if (process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT === "1") {
     return { enabled: false };
   }
-  return undefined;
+  return {
+    // Global fallback for non-auth Better Auth endpoints. 100 req / 10s
+    // matches Better Auth's own default global so we don't accidentally
+    // throttle benign session checks.
+    window: 10,
+    max: 100,
+    // Per-path hardening for credential-handling endpoints. All windows
+    // chosen so a single legitimate user (slow typing, retries) won't
+    // hit them but a brute-force / credential-stuffing attacker will.
+    //
+    // Better Auth's customRules resolver iterates Object.keys() in insertion
+    // order, so exact paths are listed BEFORE their corresponding wildcard
+    // entries — `/sign-in/email` matches first; the `/sign-in/*` fallback
+    // covers any future sub-path (OAuth, magic-link, passkey) we add.
+    customRules: {
+      // Pre-auth — brute-force / credential-stuffing protection
+      "/sign-in/email": { window: 60, max: 5 }, // was 3/10s = 18/min
+      "/sign-in/*": { window: 60, max: 5 },
+      "/sign-up/email": { window: 300, max: 3 },
+      "/sign-up/*": { window: 300, max: 3 },
+      // Reset flow — also a spam-DOS vector against user inboxes
+      "/forget-password": { window: 600, max: 3 },
+      "/forget-password/*": { window: 600, max: 3 },
+      "/reset-password": { window: 600, max: 5 },
+      "/reset-password/*": { window: 600, max: 5 },
+      "/request-password-reset": { window: 600, max: 3 },
+      "/send-verification-email": { window: 600, max: 3 },
+      // Post-auth — account takeover risk if a session is stolen
+      "/change-password": { window: 600, max: 5 },
+      "/change-email": { window: 600, max: 3 },
+    },
+  };
 }
 
 export const auth = betterAuth({

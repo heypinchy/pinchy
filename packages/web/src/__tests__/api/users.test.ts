@@ -293,7 +293,9 @@ describe("DELETE /api/users/[userId]", () => {
     const mockUpdate = {
       set: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: "user-1", email: "u@test.com" }]),
+        returning: vi
+          .fn()
+          .mockResolvedValue([{ id: "user-1", name: "Test User", email: "u@test.com" }]),
       }),
     };
     vi.mocked(db.update).mockReturnValueOnce(mockUpdate as never);
@@ -308,8 +310,44 @@ describe("DELETE /api/users/[userId]", () => {
     );
     expect(db.delete).not.toHaveBeenCalled();
     expect(appendAuditLog).toHaveBeenCalledWith(
-      expect.objectContaining({ eventType: "user.deleted" })
+      expect.objectContaining({
+        eventType: "user.deleted",
+        detail: { name: "Test User" },
+      })
     );
+  });
+
+  it("does not record the user's email in the user.deleted audit detail (GDPR Art. 17)", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as never);
+
+    vi.mocked(db.select).mockReturnValueOnce({
+      from: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]),
+      }),
+    } as never);
+
+    vi.mocked(db.update).mockReturnValueOnce({
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockReturnValue({
+        returning: vi
+          .fn()
+          .mockResolvedValue([{ id: "user-1", name: "Test User", email: "secret@example.com" }]),
+      }),
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/users/user-1", { method: "DELETE" });
+    await DELETE(request, { params: Promise.resolve({ userId: "user-1" }) });
+
+    const call = vi
+      .mocked(appendAuditLog)
+      .mock.calls.find(([entry]) => entry.eventType === "user.deleted");
+    expect(call).toBeDefined();
+    const detail = call![0].detail as Record<string, unknown>;
+    expect(detail).not.toHaveProperty("email");
+    expect(JSON.stringify(detail)).not.toContain("secret@example.com");
   });
 
   it("returns 404 when user not found", async () => {

@@ -13,7 +13,11 @@ export default defineConfig({
       "../plugins/pinchy-odoo/**/*.{test,spec}.?(c|m)[jt]s?(x)",
       "../plugins/pinchy-docs/**/*.{test,spec}.?(c|m)[jt]s?(x)",
     ],
-    exclude: ["node_modules", "e2e"],
+    // Integration tests run against a real PostgreSQL database via
+    // vitest.integration.config.ts (`pnpm test:db`). Excluded here so
+    // `pnpm test` stays fast and Docker-free. Convention: any file named
+    // *.integration.test.ts opts into the DB-backed runner.
+    exclude: ["node_modules", "e2e", "**/*.integration.test.{ts,tsx,js,jsx}"],
   },
   resolve: {
     alias: {

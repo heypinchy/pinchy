@@ -56,9 +56,13 @@ vi.mock("@/lib/encryption", () => ({
   getOrCreateSecret: vi.fn().mockReturnValue(Buffer.alloc(32)),
 }));
 
-vi.mock("@/lib/audit", () => ({
-  appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
-}));
+vi.mock("@/lib/audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/audit")>();
+  return {
+    ...actual,
+    appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
+  };
+});
 
 const mockConnection = {
   id: "conn-new-123",
@@ -399,7 +403,8 @@ describe("GET /api/integrations/oauth/callback", () => {
       );
     });
 
-    it("calls appendAuditLog with correct payload", async () => {
+    it("calls appendAuditLog with redacted email (no plaintext PII per GDPR Art. 17)", async () => {
+      vi.stubEnv("AUDIT_HMAC_SECRET", "f".repeat(64));
       await GET(
         makeRequest({ code: "auth-code-123", state: VALID_STATE }, `oauth_state=${VALID_STATE}`)
       );
@@ -412,11 +417,19 @@ describe("GET /api/integrations/oauth/callback", () => {
         detail: {
           action: "integration_created",
           type: "google",
-          name: "user@gmail.com",
-          emailAddress: "user@gmail.com",
+          emailHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+          emailPreview: "user@gmail.com",
         },
         outcome: "success",
       });
+
+      // The fields that previously carried plaintext PII must not exist.
+      // Note: for short local parts (≤4 chars) the emailPreview legitimately
+      // equals the raw address per redactEmail's spec — the hash still
+      // provides one-way protection. See docs/concepts/audit-trail.mdx.
+      const detail = mockAppendAuditLog.mock.calls[0][0].detail;
+      expect(detail).not.toHaveProperty("emailAddress");
+      expect(detail).not.toHaveProperty("name");
     });
 
     it("deletes oauth_state cookie", async () => {

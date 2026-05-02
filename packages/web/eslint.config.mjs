@@ -4,6 +4,15 @@ import nextTs from "eslint-config-next/typescript";
 import security from "eslint-plugin-security";
 import requireAuditLog from "./eslint-rules/require-audit-log.js";
 import noDirectSession from "./eslint-rules/no-direct-session.js";
+import noPiiInAuditDetail from "./eslint-rules/no-pii-in-audit-detail.js";
+
+const pinchyPlugin = {
+  rules: {
+    "require-audit-log": requireAuditLog,
+    "no-direct-session": noDirectSession,
+    "no-pii-in-audit-detail": noPiiInAuditDetail,
+  },
+};
 
 const eslintConfig = defineConfig([
   ...nextVitals,
@@ -26,7 +35,19 @@ const eslintConfig = defineConfig([
       "@typescript-eslint/no-explicit-any": "off",
     },
   },
-  // Pinchy custom rules for API route handlers:
+  // Pinchy custom rules — broad scope.
+  // - no-pii-in-audit-detail: forbid plaintext `email:` / `emailAddress:`
+  //   keys inside appendAuditLog(...) detail (GDPR Art. 17 — see #238).
+  //   Applies to API routes, lib/, and server/ because appendAuditLog is
+  //   also called from helpers (e.g. lib/auth.ts, server/client-router.ts).
+  {
+    files: ["src/app/api/**/route.ts", "src/lib/**/*.ts", "src/server/**/*.ts"],
+    plugins: { pinchy: pinchyPlugin },
+    rules: {
+      "pinchy/no-pii-in-audit-detail": "error",
+    },
+  },
+  // Pinchy custom rules — API route handlers only:
   // - require-audit-log: every state-changing handler must call appendAuditLog
   //   (or set a // audit-exempt: <reason> file comment)
   // - no-direct-session: every protected route must use the centralized
@@ -35,14 +56,6 @@ const eslintConfig = defineConfig([
   //   (opt out with a // auth-direct: <reason> file comment)
   {
     files: ["src/app/api/**/route.ts"],
-    plugins: {
-      pinchy: {
-        rules: {
-          "require-audit-log": requireAuditLog,
-          "no-direct-session": noDirectSession,
-        },
-      },
-    },
     rules: {
       "pinchy/require-audit-log": "error",
       "pinchy/no-direct-session": "error",

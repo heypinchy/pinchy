@@ -1,28 +1,43 @@
 import { NextResponse } from "next/server";
 import { withAuth } from "@/lib/api-auth";
 import { getSetting } from "@/lib/settings";
-import { db } from "@/db";
+import { getVisibleAgents } from "@/lib/visible-agents";
+import { getOrgPairingSmithers, type PairingCandidate } from "@/lib/pairing-candidates";
 
-export const GET = withAuth(async () => {
-  // No visibility filtering — this endpoint answers "which Telegram bots exist?"
-  // for the pairing UI. All authenticated users need to see available bots to
-  // link their Telegram account, regardless of agent access permissions.
-  // Access control happens via allow-from stores, not here.
-  const allAgents = await db.query.agents.findMany();
+export const GET = withAuth(async (_req, _ctx, session) => {
+  const visibleAgents = await getVisibleAgents(session.user.id!, session.user.role ?? "member");
+  const visibleIds = new Set(visibleAgents.map((a) => a.id));
+  const orgPairing = await getOrgPairingSmithers(visibleIds);
 
-  const bots: { agentId: string; agentName: string; botUsername: string; isPersonal: boolean }[] =
-    [];
-  for (const agent of allAgents) {
-    const botUsername = await getSetting(`telegram_bot_username:${agent.id}`);
-    if (botUsername) {
-      bots.push({
-        agentId: agent.id,
-        agentName: agent.name,
-        botUsername,
-        isPersonal: agent.isPersonal,
-      });
-    }
-  }
+  const candidates: PairingCandidate[] = [
+    ...visibleAgents.map((a) => ({
+      realId: a.id,
+      publicId: a.id,
+      publicName: a.name,
+      isPersonal: a.isPersonal,
+    })),
+    ...orgPairing,
+  ];
+
+  const resolved = await Promise.all(
+    candidates.map(async (c) => ({
+      candidate: c,
+      botUsername: await getSetting(`telegram_bot_username:${c.realId}`),
+    }))
+  );
+
+  const bots = resolved.flatMap(({ candidate, botUsername }) =>
+    botUsername
+      ? [
+          {
+            agentId: candidate.publicId,
+            agentName: candidate.publicName,
+            botUsername,
+            isPersonal: candidate.isPersonal,
+          },
+        ]
+      : []
+  );
 
   // Sort personal agents (Smithers) first — the pairing UI uses bots[0] as
   // the primary bot for the QR code. Users should always pair via Smithers

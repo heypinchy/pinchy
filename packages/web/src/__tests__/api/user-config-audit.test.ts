@@ -3,9 +3,13 @@ import { NextRequest, NextResponse } from "next/server";
 
 // ── Mocks ────────────────────────────────────────────────────────────────
 
-vi.mock("@/lib/audit", () => ({
-  appendAuditLog: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/audit")>();
+  return {
+    ...actual,
+    appendAuditLog: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 vi.mock("@/lib/api-auth", () => ({
   requireAdmin: vi.fn(),
@@ -145,7 +149,8 @@ describe("audit: POST /api/users/invite", () => {
     POST = mod.POST;
   });
 
-  it("logs user.invited audit event on successful invite", async () => {
+  it("logs user.invited audit event with redacted email (no plaintext PII)", async () => {
+    vi.stubEnv("AUDIT_HMAC_SECRET", "f".repeat(64));
     const request = new NextRequest("http://localhost:7777/api/users/invite", {
       method: "POST",
       body: JSON.stringify({ email: "newuser@test.com", role: "member" }),
@@ -159,7 +164,11 @@ describe("audit: POST /api/users/invite", () => {
       actorId: "admin-1",
       eventType: "user.invited",
       outcome: "success",
-      detail: { email: "newuser@test.com", role: "member" },
+      detail: {
+        emailHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        emailPreview: "ne…er@test.com",
+        role: "member",
+      },
     });
   });
 
@@ -199,11 +208,14 @@ describe("audit: DELETE /api/users/[userId]", () => {
       }),
     } as never);
 
-    // Mock: update returns the deactivated user with email
+    // Mock: update returns the deactivated user (name only — email must NOT
+    // surface in audit detail per GDPR Art. 17).
     vi.mocked(db.update).mockReturnValueOnce({
       set: vi.fn().mockReturnThis(),
       where: vi.fn().mockReturnValue({
-        returning: vi.fn().mockResolvedValue([{ id: "user-1", email: "deleted@test.com" }]),
+        returning: vi
+          .fn()
+          .mockResolvedValue([{ id: "user-1", name: "Deleted User", email: "deleted@test.com" }]),
       }),
     } as never);
 
@@ -220,7 +232,7 @@ describe("audit: DELETE /api/users/[userId]", () => {
       eventType: "user.deleted",
       resource: "user:user-1",
       outcome: "success",
-      detail: { email: "deleted@test.com" },
+      detail: { name: "Deleted User" },
     });
   });
 

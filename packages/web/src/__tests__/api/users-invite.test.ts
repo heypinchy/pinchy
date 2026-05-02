@@ -15,9 +15,13 @@ vi.mock("@/lib/invites", () => ({
   createInvite: vi.fn(),
 }));
 
-vi.mock("@/lib/audit", () => ({
-  appendAuditLog: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/audit")>();
+  return {
+    ...actual,
+    appendAuditLog: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 vi.mock("@/lib/enterprise", () => ({
   getLicenseStatus: vi.fn(),
@@ -114,6 +118,7 @@ describe("POST /api/users/invite — seat cap", () => {
       activeUsers: 5,
       pendingInvites: 0,
     });
+    vi.stubEnv("AUDIT_HMAC_SECRET", "f".repeat(64));
     await POST(makeRequest({ email: "new@test.com", role: "member" }));
     // after() runs synchronously in tests (see test-setup.ts)
     expect(appendAuditLog).toHaveBeenCalledWith(
@@ -124,7 +129,8 @@ describe("POST /api/users/invite — seat cap", () => {
         outcome: "failure",
         error: { message: "Seat cap reached" },
         detail: expect.objectContaining({
-          email: "new@test.com",
+          emailHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+          emailPreview: "new@test.com",
           role: "member",
           reason: "seat_cap",
           seatsUsed: 5,
@@ -132,6 +138,12 @@ describe("POST /api/users/invite — seat cap", () => {
         }),
       })
     );
+
+    const call = vi
+      .mocked(appendAuditLog)
+      .mock.calls.find(([entry]) => entry.eventType === "user.invite_blocked");
+    const detail = call![0].detail as Record<string, unknown>;
+    expect(detail).not.toHaveProperty("email");
   });
 
   it("creates the invite when below the cap", async () => {
@@ -152,6 +164,36 @@ describe("POST /api/users/invite — seat cap", () => {
     const res = await POST(makeRequest({ email: "new@test.com", role: "member" }));
     expect(res.status).toBe(201);
     expect(createInvite).toHaveBeenCalled();
+  });
+
+  it("logs user.invited with redacted email (GDPR Art. 17 — no plaintext PII in audit detail)", async () => {
+    vi.stubEnv("AUDIT_HMAC_SECRET", "f".repeat(64));
+    vi.mocked(getLicenseStatus).mockResolvedValue({
+      active: false,
+      ver: 1,
+      maxUsers: 0,
+      features: [],
+    });
+    await POST(makeRequest({ email: "alice.example@company.com", role: "member" }));
+
+    expect(appendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "user.invited",
+        outcome: "success",
+        detail: expect.objectContaining({
+          emailHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+          emailPreview: "al…le@company.com",
+          role: "member",
+        }),
+      })
+    );
+
+    const call = vi
+      .mocked(appendAuditLog)
+      .mock.calls.find(([entry]) => entry.eventType === "user.invited");
+    const detail = call![0].detail as Record<string, unknown>;
+    expect(detail).not.toHaveProperty("email");
+    expect(JSON.stringify(detail)).not.toContain("alice.example@company.com");
   });
 
   it("does not check seat usage when license is unlimited", async () => {
