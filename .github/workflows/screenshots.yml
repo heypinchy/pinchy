@@ -49,6 +49,8 @@ jobs:
             --org "Acme Corp (Screenshots)" --type trial --days 14)
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
 
+      - uses: ./.github/actions/docker-mirror
+
       - name: Build production images locally
         run: |
           docker build -t ghcr.io/heypinchy/pinchy:latest -f Dockerfile.pinchy .

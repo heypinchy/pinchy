@@ -19,7 +19,7 @@ import { isOrphaned as computeIsOrphaned } from "./orphan-detector";
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 
-interface WsMessage {
+export interface WsMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
@@ -182,18 +182,8 @@ export function useWsRuntime(agentId: string): {
     setKnownEmptyHistory(false);
   }
 
-  /**
-   * Dispatch a reducer action against the messages state.
-   * The hook's WsMessage is a superset of the reducer's WsMessage shape —
-   * we cast here so the pure reducer can operate on the shared `id` and
-   * `status` fields without needing to know about `images`, `error`, etc.
-   */
   const dispatchMessages = useCallback((action: Action) => {
-    setMessages(
-      (prev) =>
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        reduceMessages(prev as any, action) as unknown as WsMessage[]
-    );
+    setMessages((prev) => reduceMessages(prev, action));
   }, []);
 
   useEffect(() => {

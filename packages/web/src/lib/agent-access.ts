@@ -79,6 +79,31 @@ export function assertAgentWriteAccess(
   throw new Error("Access denied");
 }
 
+/**
+ * Same as `assertAgentWriteAccess` but built for API route handlers: returns
+ * `null` when the user may write, or a standardized 403 `NextResponse` when
+ * they may not. Lets handlers do
+ *
+ *   const denied = requireAgentWriteAccess(agent, userId, role);
+ *   if (denied) return denied;
+ *
+ * instead of repeating the `try { assertAgentWriteAccess(...) } catch { return 403 }`
+ * boilerplate. Mirrors the `getAgentWithAccess` shape (returns
+ * `NextResponse | T`).
+ */
+export function requireAgentWriteAccess(
+  agent: AgentForAccess,
+  userId: string,
+  userRole: string
+): NextResponse | null {
+  try {
+    assertAgentWriteAccess(agent, userId, userRole);
+    return null;
+  } catch {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+}
+
 export async function getAgentWithAccess(agentId: string, userId: string, userRole: string) {
   const rows = await db.select().from(activeAgents).where(eq(activeAgents.id, agentId));
   const agent = rows[0];

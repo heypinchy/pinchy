@@ -1,10 +1,9 @@
-import { NextRequest, NextResponse, after } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse, after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { eq, inArray } from "drizzle-orm";
 import { updateAgent, deleteAgent, AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
-import { getSession } from "@/lib/auth";
-import { getAgentWithAccess, assertAgentWriteAccess } from "@/lib/agent-access";
+import { withAuth, withAdmin } from "@/lib/api-auth";
+import { getAgentWithAccess, requireAgentWriteAccess } from "@/lib/agent-access";
 import { appendAuditLog } from "@/lib/audit";
 import type { UpdateDetail } from "@/lib/audit";
 import { isEnterprise } from "@/lib/enterprise";
@@ -15,15 +14,9 @@ import { getAgentGroupIds } from "@/lib/groups";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { validatePinchyWebConfig } from "@/lib/domain-validation";
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ agentId: string }> }
-) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+type RouteContext = { params: Promise<{ agentId: string }> };
 
+export const GET = withAuth<RouteContext>(async (_req, { params }, session) => {
   const { agentId } = await params;
 
   const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
@@ -32,17 +25,9 @@ export async function GET(
 
   const groupIds = await getAgentGroupIds(agentId);
   return NextResponse.json({ ...agent, groupIds });
-}
+});
 
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: Promise<{ agentId: string }> }
-) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const PATCH = withAuth<RouteContext>(async (request, { params }, session) => {
   const { agentId } = await params;
 
   const existingAgentOrError = await getAgentWithAccess(
@@ -54,11 +39,8 @@ export async function PATCH(
   const existingAgent = existingAgentOrError;
 
   // Only admins or personal agent owners can modify agents
-  try {
-    assertAgentWriteAccess(existingAgent, session.user.id!, session.user.role);
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const denied = requireAgentWriteAccess(existingAgent, session.user.id!, session.user.role);
+  if (denied) return denied;
 
   const body = await request.json();
 
@@ -250,20 +232,9 @@ export async function PATCH(
   }
 
   return NextResponse.json(agent);
-}
+});
 
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ agentId: string }> }
-) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-
+export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) => {
   const { agentId } = await params;
 
   const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
@@ -290,4 +261,4 @@ export async function DELETE(
   revalidatePath("/", "layout");
 
   return NextResponse.json({ success: true });
-}
+});

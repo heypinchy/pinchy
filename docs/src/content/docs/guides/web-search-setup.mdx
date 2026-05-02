@@ -121,9 +121,7 @@ Pinchy's web fetch module blocks agents from directly requesting — or being re
 
 Every redirect hop is re-resolved and re-checked, so an attacker-controlled public site cannot smuggle the agent onto a private address via a 302.
 
-:::caution[Known limitation — DNS rebinding]
-The SSRF guard resolves the hostname before the request and relies on Node's built-in `fetch` to honour that resolution. A fully attacker-controlled DNS server could still return a public IP to the pre-check and a private IP to the actual request (classic TOCTOU). For Pinchy's typical threat model — admins configuring agents that browse the public web — this is a low-risk edge case, but don't point an agent with web-fetch at a host you don't trust to resolve honestly. Tracked for hardening in a future release.
-:::
+The pre-check and the actual request use the **same** resolved address: Pinchy resolves the hostname once, verifies it against the private-range list, then pins that address as the connection target via undici's custom `lookup` hook. An attacker-controlled DNS server cannot return a public IP to the guard and a private IP to the connection — the second resolution never happens.
 
 ### Credential handling
 

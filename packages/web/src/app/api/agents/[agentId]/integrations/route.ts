@@ -1,28 +1,18 @@
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { eq, and } from "drizzle-orm";
-import { getSession } from "@/lib/auth";
+import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
+
+type RouteContext = { params: Promise<{ agentId: string }> };
 
 /**
  * GET /api/agents/[agentId]/integrations
  *
  * Returns current integration permissions for this agent, grouped by connection.
  */
-export async function GET(
-  _request: NextRequest,
-  { params }: { params: Promise<{ agentId: string }> }
-) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
   const { agentId } = await params;
 
   // Join permissions with connections
@@ -72,25 +62,14 @@ export async function GET(
   }
 
   return NextResponse.json(Array.from(grouped.values()));
-}
+});
 
 /**
  * PUT /api/agents/[agentId]/integrations
  *
  * Replace all permissions for this agent on a given connection.
  */
-export async function PUT(
-  request: NextRequest,
-  { params }: { params: Promise<{ agentId: string }> }
-) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const PUT = withAdmin<RouteContext>(async (request, { params }, session) => {
   const { agentId } = await params;
 
   let body: Record<string, unknown>;
@@ -196,25 +175,14 @@ export async function PUT(
     const message = err instanceof Error ? err.message : "Internal server error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
-}
+});
 
 /**
  * DELETE /api/agents/[agentId]/integrations
  *
  * Remove ALL integration permissions for this agent (used when connection is cleared).
  */
-export async function DELETE(
-  _request: NextRequest,
-  { params }: { params: Promise<{ agentId: string }> }
-) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) => {
   const { agentId } = await params;
 
   // Get existing permissions for audit log
@@ -247,4 +215,4 @@ export async function DELETE(
   }).catch(console.error);
 
   return NextResponse.json({ success: true });
-}
+});

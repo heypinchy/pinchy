@@ -1,3 +1,7 @@
+// auth-direct: browser-flow callback. The user has just bounced through
+// Google's OAuth consent screen; on auth failure we render a redirect to
+// /settings, not a JSON 401, so they don't dead-end on raw JSON. The
+// withAuth/withAdmin wrappers always return JSON, which doesn't fit here.
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";

@@ -1,11 +1,16 @@
 export type MessageStatus = "sending" | "sent" | "failed";
 
-export type WsMessage = {
+/**
+ * Structural constraint for the reducer's input. The reducer only reads `id`
+ * and `content` and only writes `status` — anything else on the message is
+ * preserved verbatim. Generic over the caller's actual message shape so the
+ * reducer can operate on hook-side supersets (with `images`, `error`, etc.)
+ * without `as any` casts at the dispatch site (#227).
+ */
+type ReducerMessage = {
   id: string;
-  role: string;
   content: string;
-  status: MessageStatus;
-  timestamp: number;
+  status?: MessageStatus;
 };
 
 type HistoryEntry = {
@@ -14,17 +19,13 @@ type HistoryEntry = {
 };
 
 export type Action =
-  | { type: "user-send"; message: Omit<WsMessage, "status"> }
   | { type: "ack"; clientMessageId: string }
   | { type: "timeout"; clientMessageId: string }
   | { type: "history-reconcile"; history: HistoryEntry[] }
   | { type: "retry-resend"; clientMessageId: string };
 
-export function reduceMessages(messages: WsMessage[], action: Action): WsMessage[] {
+export function reduceMessages<M extends ReducerMessage>(messages: M[], action: Action): M[] {
   switch (action.type) {
-    case "user-send":
-      return [...messages, { ...action.message, status: "sending" }];
-
     case "ack":
       return messages.map((msg) =>
         msg.id === action.clientMessageId && msg.status === "sending"

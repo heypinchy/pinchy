@@ -1,15 +1,9 @@
 import { NextResponse } from "next/server";
-import { headers } from "next/headers";
-import { getSession } from "@/lib/auth";
+import { withAuth } from "@/lib/api-auth";
 import { getLicenseStatus, isKeyFromEnv } from "@/lib/enterprise";
 import { getSeatUsage } from "@/lib/seat-usage";
 
-export async function GET() {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const GET = withAuth(async () => {
   const status = await getLicenseStatus();
   const usage = status.active ? await getSeatUsage(status) : null;
   return NextResponse.json({
@@ -22,4 +16,4 @@ export async function GET() {
     seatsUsed: usage?.used ?? 0,
     maxUsers: status.maxUsers,
   });
-}
+});
