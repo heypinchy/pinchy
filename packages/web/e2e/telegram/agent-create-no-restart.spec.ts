@@ -51,7 +51,20 @@ import {
   pinchyPost,
 } from "./helpers";
 
-const BOT_TOKEN = "123456:ABC-no-restart-cascade";
+// Same bot token as telegram-flow.spec.ts. The Telegram E2E suites share Smithers
+// across spec files, and this one runs first (alphabetical). If we connected with
+// a *different* token here, telegram-flow's test 3 connectBot would rotate the
+// token on the same agent — and OpenClaw's targeted-write inotify path doesn't
+// reliably restart the channel on token-rotation, so the second polling provider
+// never picks up the new token. The bot reply for test 4 then queues under one
+// token while the live polling runner is on the other (#flake-test-4-test-10).
+//
+// Sharing the literal here is the simplest defense: test 3's connectBot sees
+// "same token already configured", file-write is a no-op (current === newContent),
+// nothing destabilizes the running poller. The /api/agents endpoint we actually
+// exercise here doesn't care about the token text — it only needs *some* main
+// Telegram bot configured to satisfy hasMainTelegramBot().
+const BOT_TOKEN = "123456:ABC-test-token-for-e2e";
 
 // docker compose must run from the repo root where the compose files live.
 // Playwright's cwd is `packages/web/`, so resolve up two levels. Also set

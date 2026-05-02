@@ -1023,7 +1023,7 @@ jobs:
       - name: Show logs on failure
         if: failure()
         run: |
-          # Mock telegram is the primary diagnostic for the known flake (#TBD):
+          # Mock telegram is the primary diagnostic for the known flake:
           # we need to see every bot token that ever polled, not just the last
           # 30 lines. Each bot pings getUpdates every ≤30s, so a 7-test suite
           # easily logs hundreds of lines. tail -2000 covers a full run.
@@ -1031,6 +1031,16 @@ jobs:
           curl -sf http://localhost:9001/control/health | jq . || echo "health endpoint unreachable"
           echo "=== Mock Telegram all bot responses ==="
           curl -sf 'http://localhost:9001/control/responses' | jq . || echo "responses endpoint unreachable"
+          # Definitive answer to "what token does OpenClaw think is configured?":
+          # the openclaw.json file Pinchy writes and OpenClaw reads. If this
+          # disagrees with the DB-side telegram_bot_token settings (also dumped
+          # below), the targeted-write race in updateTelegramChannelConfig is
+          # the culprit. If they agree but mock polls a stale token, OpenClaw's
+          # channel restart isn't picking up the file change.
+          echo "=== Pinchy openclaw.json (from Pinchy container — same bind mount as OpenClaw) ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml exec -T pinchy cat /openclaw-config/openclaw.json 2>/dev/null | jq '{bindings, channels: .channels, sessionScope: .session.dmScope, agents: (.agents.list | length)}' || echo "openclaw.json not readable"
+          echo "=== Pinchy DB telegram_bot_token settings ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml exec -T db psql -U pinchy -d pinchy -c "SELECT key, LEFT(value, 30) AS value_preview, encrypted FROM settings WHERE key LIKE 'telegram_%' ORDER BY key;" 2>/dev/null || echo "db not readable"
           echo "=== Mock Telegram logs (full) ==="
           docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs telegram-mock 2>&1 | tail -2000
           # OpenClaw: 3000 because tail -500 only covered the initial setup
