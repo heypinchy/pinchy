@@ -95,7 +95,7 @@ All new features require tests. We practice TDD — write the failing test first
 PINCHY_VERSION=dev docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d db
 ```
 
-To target a different Postgres, set `VITEST_INTEGRATION_DB_URL` (e.g. `postgresql://pinchy:pinchy_dev@localhost:5432/pinchy_test_vitest` for a host-installed Postgres). CI uses this same path against the Ubuntu runner's pre-installed cluster — see `.github/workflows/ci.yml`.
+To target a different Postgres, override `VITEST_INTEGRATION_DB_URL` (e.g. when running against a containerised PG 17 on port 5436, as CI does — see `.github/workflows/ci.yml`).
 
 #### When to mock the database vs. use the real one
 

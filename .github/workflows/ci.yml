@@ -97,20 +97,25 @@ jobs:
     # browser stack) and `integration` (OpenClaw + fake Ollama via
     # docker-compose.integration.yml). Just Postgres + Drizzle migrations +
     # the route handlers under test.
-    #
-    # Note: we use the runner's pre-installed PostgreSQL service (started
-    # below) instead of GitHub Actions `services: postgres: image: …`. The
-    # services block forces a Docker Hub pull on job start, which the
-    # docker-mirror action can't intercept (services run before any user
-    # steps), so this job otherwise inherits the org-wide Docker Hub
-    # rate-limit fragility that has been flaking the e2e jobs. Ubuntu
-    # runners ship Postgres pre-installed and ready, so no pull required.
-    #
-    # Version skew: ubuntu-24.04 ships Postgres 16; the dev/prod stack runs
-    # 17. PG-17-only features (e.g. some MERGE shapes) would pass here and
-    # fail in production. If a query starts depending on PG-17 syntax,
-    # either add a runner-side `apt install postgresql-17` step or move
-    # this job to a containerised PG 17 set up via Docker (mirror.gcr.io).
+    services:
+      postgres:
+        # Pulled from mirror.gcr.io to bypass docker.io's rate limit (same
+        # pattern as the e2e job above). Pinned to 17 so the test DB matches
+        # docker-compose.yml's `db` service — drift would risk masking
+        # version-specific bugs (parser, planner, locking).
+        image: mirror.gcr.io/library/postgres:17
+        env:
+          POSTGRES_DB: pinchy
+          POSTGRES_USER: pinchy
+          POSTGRES_PASSWORD: pinchy_dev
+        ports:
+          - 5436:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
     steps:
       - uses: actions/checkout@v4
 
@@ -123,19 +128,10 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Start runner Postgres and create pinchy role
-        run: |
-          sudo systemctl start postgresql.service
-          sudo -u postgres psql -v ON_ERROR_STOP=1 <<'SQL'
-          CREATE USER pinchy WITH PASSWORD 'pinchy_dev' SUPERUSER;
-          SQL
-          # Default cluster listens on 5432; surface it on the URL the
-          # global-setup expects.
-
       - name: Run vitest integration tests
         run: pnpm -C packages/web test:db
         env:
-          VITEST_INTEGRATION_DB_URL: postgresql://pinchy:pinchy_dev@localhost:5432/pinchy_test_vitest
+          VITEST_INTEGRATION_DB_URL: postgresql://pinchy:pinchy_dev@localhost:5436/pinchy_test_vitest
 
   e2e:
     name: E2E Tests
