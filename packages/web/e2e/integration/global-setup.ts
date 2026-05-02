@@ -120,7 +120,14 @@ export default async function globalSetup() {
   console.log("[integration-setup] Running setup wizard...");
   const setupRes = await fetch("http://localhost:7779/api/setup", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      // Issue #235: state-changing API requests need a same-origin source.
+      // Without this, the CSRF gate returns 403 and the setup wizard runs
+      // again later from the test itself — triggering a config rewrite +
+      // OpenClaw restart cascade right when the test sends its message.
+      Origin: "http://localhost:7779",
+    },
     body: JSON.stringify({
       name: "Integration Admin",
       email: "admin@integration.local",
