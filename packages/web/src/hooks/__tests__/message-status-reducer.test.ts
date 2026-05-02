@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { reduceMessages, type MessageStatus } from "../message-status-reducer";
+import { reduceMessages } from "../message-status-reducer";
+import type { WsMessage } from "../use-ws-runtime";
 
 describe("reduceMessages", () => {
   it("transitions sending → sent on matching ack", () => {
@@ -56,17 +57,7 @@ describe("reduceMessages", () => {
   // images / error / retryable). The reducer must preserve all extra fields
   // verbatim — the type-level guarantee lives in message-status-reducer.test-d.ts.
   it("preserves hook-shaped extra fields when transitioning status", () => {
-    type HookWsMessage = {
-      id: string;
-      role: "user" | "assistant";
-      content: string;
-      images?: string[];
-      timestamp?: string;
-      status?: MessageStatus;
-      retryable?: boolean;
-    };
-
-    const initial: HookWsMessage[] = [
+    const initial: WsMessage[] = [
       {
         id: "1",
         role: "user",
