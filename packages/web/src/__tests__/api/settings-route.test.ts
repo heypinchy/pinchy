@@ -157,6 +157,116 @@ describe("POST /api/settings", () => {
     expect(setSetting).toHaveBeenCalledWith("default_provider", "openai", false);
   });
 
+  it("returns 400 on missing key (no longer crashes with 500)", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const { setSetting } = await import("@/lib/settings");
+
+    const request = new NextRequest("http://localhost/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ value: "anything" }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.key).toBeDefined();
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 on non-string key", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const { setSetting } = await import("@/lib/settings");
+
+    const request = new NextRequest("http://localhost/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: 42, value: "x" }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 on empty key", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const { setSetting } = await import("@/lib/settings");
+
+    const request = new NextRequest("http://localhost/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "", value: "x" }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 on missing value", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const { setSetting } = await import("@/lib/settings");
+
+    const request = new NextRequest("http://localhost/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "some_key" }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    expect(setSetting).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 on malformed JSON", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const request = new NextRequest("http://localhost/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{not valid json",
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("Invalid JSON body");
+  });
+
+  it("flags api_key fields as encrypted", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const { setSetting } = await import("@/lib/settings");
+
+    const request = new NextRequest("http://localhost/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "anthropic_api_key", value: "sk-ant-..." }),
+    });
+    const response = await POST(request);
+    expect(response.status).toBe(200);
+    expect(setSetting).toHaveBeenCalledWith("anthropic_api_key", "sk-ant-...", true);
+  });
+
   it("schedules the audit log write via after() instead of fire-and-forget", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "admin-1", role: "admin" },

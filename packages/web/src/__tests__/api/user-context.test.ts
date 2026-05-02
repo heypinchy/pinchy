@@ -137,7 +137,8 @@ describe("PUT /api/users/me/context", () => {
 
     expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.error).toBe("content must be a string");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.content).toBeDefined();
   });
 
   it("should return 400 when content is missing", async () => {
@@ -145,6 +146,7 @@ describe("PUT /api/users/me/context", () => {
 
     expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.error).toBe("content must be a string");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.content).toBeDefined();
   });
 });

@@ -92,7 +92,8 @@ describe("PATCH /api/agents/[agentId] — pluginConfig validation", () => {
     const res = await PATCH(req, { params: Promise.resolve({ agentId: "agent-1" }) });
     expect(res.status).toBe(400);
     const body = await res.json();
-    expect(body.error).toMatch(/pluginConfig/i);
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.pluginConfig).toBeDefined();
   });
 
   it("rejects invalid domains in pluginConfig['pinchy-web'].allowedDomains", async () => {
@@ -149,6 +150,77 @@ describe("PATCH /api/agents/[agentId] — pluginConfig validation", () => {
 
     const res = await PATCH(req, { params: Promise.resolve({ agentId: "agent-1" }) });
     expect(res.status).toBe(200);
+  });
+
+  it("rejects pinchy-files.allowed_paths that is not a string array", async () => {
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Test Agent", model: "m", isPersonal: false, ownerId: null });
+
+    const req = new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({
+        pluginConfig: { "pinchy-files": { allowed_paths: 42 } },
+      }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const res = await PATCH(req, { params: Promise.resolve({ agentId: "agent-1" }) });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.pluginConfig).toBeDefined();
+  });
+
+  it("rejects pinchy-files.allowed_paths with non-string entries", async () => {
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Test Agent", model: "m", isPersonal: false, ownerId: null });
+
+    const req = new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/", 123] } },
+      }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const res = await PATCH(req, { params: Promise.resolve({ agentId: "agent-1" }) });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("Validation failed");
+  });
+
+  it("rejects empty-string name on PATCH", async () => {
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Test Agent", model: "m", isPersonal: false, ownerId: null });
+
+    const req = new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const res = await PATCH(req, { params: Promise.resolve({ agentId: "agent-1" }) });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.name).toBeDefined();
+  });
+
+  it("rejects whitespace-only name on PATCH", async () => {
+    adminSession();
+    mockAgent({ id: "agent-1", name: "Test Agent", model: "m", isPersonal: false, ownerId: null });
+
+    const req = new NextRequest("http://localhost/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ name: "   " }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const res = await PATCH(req, { params: Promise.resolve({ agentId: "agent-1" }) });
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.name).toBeDefined();
   });
 
   it("accepts null pluginConfig (clears config)", async () => {

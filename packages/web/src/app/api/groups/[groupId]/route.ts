@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
@@ -6,6 +7,12 @@ import { groups } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { appendAuditLog, type UpdateDetail } from "@/lib/audit";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const updateGroupSchema = z.object({
+  name: z.string().optional(),
+  description: z.string().nullish(),
+});
 
 export async function PATCH(
   request: NextRequest,
@@ -20,7 +27,9 @@ export async function PATCH(
   }
 
   const { groupId } = await params;
-  const { name, description } = await request.json();
+  const parsed = await parseRequestBody(updateGroupSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { name, description } = parsed.data;
 
   const data: { name?: string; description?: string | null; updatedAt?: Date } = {
     updatedAt: new Date(),

@@ -1,16 +1,25 @@
 // audit-exempt: users changing their own password is a self-service action
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
+import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { withAuth } from "@/lib/api-auth";
+import { parseRequestBody } from "@/lib/api-validation";
 import { validatePassword } from "@/lib/validate-password";
 
-export const POST = withAuth(async (request) => {
-  const { currentPassword, newPassword } = await request.json();
+// Shape only — length/breach-list policy is enforced post-parse via
+// validatePassword() so the same rules apply to setup, invite-claim, and
+// password-change without drifting between routes.
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string(),
+});
 
-  if (!currentPassword) {
-    return NextResponse.json({ error: "Current password is required" }, { status: 400 });
-  }
+export const POST = withAuth(async (request) => {
+  const parsed = await parseRequestBody(changePasswordSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { currentPassword, newPassword } = parsed.data;
+
   const passwordError = validatePassword(newPassword);
   if (passwordError) {
     return NextResponse.json({ error: passwordError }, { status: 400 });

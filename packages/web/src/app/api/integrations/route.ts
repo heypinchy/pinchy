@@ -9,6 +9,7 @@ import { deferAuditLog } from "@/lib/audit-deferred";
 import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrations/odoo-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
+import { parseRequestBody } from "@/lib/api-validation";
 
 const createIntegrationSchema = z.discriminatedUnion("type", [
   z.object({
@@ -65,15 +66,8 @@ export const GET = withAdmin(async () => {
 });
 
 export const POST = withAdmin(async (request, _ctx, session) => {
-  const body = await request.json();
-  const parsed = createIntegrationSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      { status: 400 }
-    );
-  }
-
+  const parsed = await parseRequestBody(createIntegrationSchema, request);
+  if ("error" in parsed) return parsed.error;
   const { type, name, description, credentials } = parsed.data;
 
   // Singleton types: only one connection of this type allowed

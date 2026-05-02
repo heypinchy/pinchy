@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { getAllSettings, setSetting } from "@/lib/settings";
 import { appendAuditLog } from "@/lib/audit";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const setSettingSchema = z.object({
+  key: z.string().min(1),
+  value: z.string(),
+});
 
 export async function GET() {
   const sessionOrError = await requireAdmin();
@@ -19,7 +26,10 @@ export async function POST(request: NextRequest) {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
-  const { key, value } = await request.json();
+  const parsed = await parseRequestBody(setSettingSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { key, value } = parsed.data;
+
   await setSetting(key, value, key.includes("api_key"));
 
   after(() =>

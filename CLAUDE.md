@@ -160,14 +160,15 @@ Example patterns:
 
 ### Checklist for API Routes with State Changes
 When creating or modifying any POST/PUT/PATCH/DELETE endpoint:
-1. `appendAuditLog()` or `deferAuditLog()` call present? If not needed: add `// audit-exempt: <reason>` comment
-2. Pattern matches the action shape — `await appendAuditLog` for idempotent ops, `deferAuditLog` for non-rollbackable side effects? (See "Never fire-and-forget" above.)
-3. Event type uses a valid `AuditResource` prefix (agent, group, user, settings, config)?
-4. Detail payload uses the correct base type (`UpdateDetail` for `*.updated`, `DeleteDetail` for `*.deleted`, `MembershipDetail` for `*.members_updated`)?
-5. All referenced entities snapshotted as `{ id, name }` pairs (`EntityRef`)?
-6. Test exists that verifies the `appendAuditLog` call with correct payload?
-7. `outcome` field set correctly? `'success'` for the happy path (default), `'failure'` for error paths that still deserve an audit entry?
-8. No plaintext email or other PII in `detail`? If you need to identify an email, use `redactEmail()` from `@/lib/audit`. If the resource already encodes the userId, log the display name only.
+1. **Body validation via `parseRequestBody(schema, request)`** from `@/lib/api-validation`? Never call `await request.json()` directly — that throws 500 on malformed JSON, and ad-hoc `typeof` checks drift across routes. Define a Zod schema at the top of the route, then `const parsed = await parseRequestBody(schema, request); if ("error" in parsed) return parsed.error;`. Validation failures return `{ error: "Validation failed", details: <flatten> }` with status 400 — clients can read `details.fieldErrors.<name>` to render inline errors. Routes that take no body (e.g. DELETE on a path-param resource) are exempt.
+2. `appendAuditLog()` or `deferAuditLog()` call present? If not needed: add `// audit-exempt: <reason>` comment
+3. Pattern matches the action shape — `await appendAuditLog` for idempotent ops, `deferAuditLog` for non-rollbackable side effects? (See "Never fire-and-forget" above.)
+4. Event type uses a valid `AuditResource` prefix (agent, group, user, settings, config)?
+5. Detail payload uses the correct base type (`UpdateDetail` for `*.updated`, `DeleteDetail` for `*.deleted`, `MembershipDetail` for `*.members_updated`)?
+6. All referenced entities snapshotted as `{ id, name }` pairs (`EntityRef`)?
+7. Test exists that verifies the `appendAuditLog` call with correct payload?
+8. `outcome` field set correctly? `'success'` for the happy path (default), `'failure'` for error paths that still deserve an audit entry?
+9. No plaintext email or other PII in `detail`? If you need to identify an email, use `redactEmail()` from `@/lib/audit`. If the resource already encodes the userId, log the display name only.
 
 ### Error & Notification Display Policy
 User feedback (errors, success confirmations) must use the correct display pattern. Using the wrong one creates inconsistent UX.

@@ -1,11 +1,15 @@
 // audit-exempt: internal endpoint called by OpenClaw plugin (Smithers), not a user-facing action
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { db } from "@/db";
 import { users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { syncUserContextToWorkspaces } from "@/lib/context-sync";
 import { getSetting } from "@/lib/settings";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const internalUserContextSchema = z.object({ content: z.string() });
 
 export async function PUT(
   request: NextRequest,
@@ -16,11 +20,9 @@ export async function PUT(
   }
 
   const { userId } = await params;
-  const { content } = await request.json();
-
-  if (typeof content !== "string") {
-    return NextResponse.json({ error: "content must be a string" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(internalUserContextSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { content } = parsed.data;
 
   await db.update(users).set({ context: content }).where(eq(users.id, userId));
   await syncUserContextToWorkspaces(userId);

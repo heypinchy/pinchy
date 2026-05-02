@@ -136,7 +136,8 @@ describe("POST /api/users/invite", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("Role must be 'admin' or 'member'");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.role).toBeDefined();
   });
 
   it("returns 400 when role is invalid", async () => {
@@ -154,7 +155,8 @@ describe("POST /api/users/invite", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("Role must be 'admin' or 'member'");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.role).toBeDefined();
   });
 
   it("returns 201 with invite data on success", async () => {

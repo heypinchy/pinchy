@@ -3,6 +3,7 @@ import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 import security from "eslint-plugin-security";
 import requireAuditLog from "./eslint-rules/require-audit-log.js";
+import requireParseRequestBody from "./eslint-rules/require-parse-request-body.js";
 import noDirectSession from "./eslint-rules/no-direct-session.js";
 import noPiiInAuditDetail from "./eslint-rules/no-pii-in-audit-detail.js";
 
@@ -11,6 +12,7 @@ const pinchyPlugin = {
     "require-audit-log": requireAuditLog,
     "no-direct-session": noDirectSession,
     "no-pii-in-audit-detail": noPiiInAuditDetail,
+    "require-parse-request-body": requireParseRequestBody,
   },
 };
 
@@ -68,11 +70,15 @@ const eslintConfig = defineConfig([
   //   helpers in @/lib/api-auth (withAuth / withAdmin / requireAdmin) instead
   //   of calling getSession or auth.api.getSession directly
   //   (opt out with a // auth-direct: <reason> file comment)
+  // - require-parse-request-body: every state-mutating handler must use
+  //   parseRequestBody() from @/lib/api-validation instead of calling
+  //   request.json() directly
   {
     files: ["src/app/api/**/route.ts"],
     plugins: { pinchy: pinchyPlugin },
     rules: {
       "pinchy/no-direct-session": "error",
+      "pinchy/require-parse-request-body": "error",
     },
   },
   // Override default ignores of eslint-config-next.

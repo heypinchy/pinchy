@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import {
   getOAuthSettings,
@@ -6,6 +7,7 @@ import {
   GOOGLE_OAUTH_SETTINGS_KEY,
 } from "@/lib/integrations/oauth-settings";
 import { appendAuditLog } from "@/lib/audit";
+import { parseRequestBody } from "@/lib/api-validation";
 
 const SUPPORTED_PROVIDERS = ["google"] as const;
 type SupportedProvider = (typeof SUPPORTED_PROVIDERS)[number];
@@ -13,6 +15,12 @@ type SupportedProvider = (typeof SUPPORTED_PROVIDERS)[number];
 function isSupportedProvider(value: unknown): value is SupportedProvider {
   return typeof value === "string" && SUPPORTED_PROVIDERS.includes(value as SupportedProvider);
 }
+
+const saveOAuthSchema = z.object({
+  provider: z.enum(SUPPORTED_PROVIDERS),
+  clientId: z.string().min(1),
+  clientSecret: z.string().min(1),
+});
 
 export async function GET(request: NextRequest) {
   const sessionOrError = await requireAdmin();
@@ -38,20 +46,9 @@ export async function POST(request: NextRequest) {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
-  const body = await request.json();
-  const { provider, clientId, clientSecret } = body;
-
-  if (!provider || !isSupportedProvider(provider)) {
-    return NextResponse.json({ error: "Invalid or missing provider" }, { status: 400 });
-  }
-
-  if (!clientId || typeof clientId !== "string") {
-    return NextResponse.json({ error: "Client ID is required" }, { status: 400 });
-  }
-
-  if (!clientSecret || typeof clientSecret !== "string") {
-    return NextResponse.json({ error: "Client Secret is required" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(saveOAuthSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { provider, clientId, clientSecret } = parsed.data;
 
   await saveOAuthSettings(provider, { clientId, clientSecret });
 

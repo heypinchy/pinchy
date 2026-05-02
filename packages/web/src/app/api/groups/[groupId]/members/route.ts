@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
@@ -6,6 +7,11 @@ import { groups, userGroups, users } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const setMembersSchema = z.object({
+  userIds: z.array(z.string()),
+});
 
 async function groupExists(groupId: string): Promise<boolean> {
   const rows = await db.select({ id: groups.id }).from(groups).where(eq(groups.id, groupId));
@@ -50,15 +56,9 @@ export async function PUT(
   }
 
   const { groupId } = await params;
-  const { userIds } = await request.json();
-
-  if (!Array.isArray(userIds)) {
-    return NextResponse.json({ error: "userIds must be an array" }, { status: 400 });
-  }
-
-  if (!userIds.every((id) => typeof id === "string")) {
-    return NextResponse.json({ error: "userIds must be an array of strings" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(setMembersSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { userIds } = parsed.data;
 
   if (!(await groupExists(groupId))) {
     return NextResponse.json({ error: "Group not found" }, { status: 404 });

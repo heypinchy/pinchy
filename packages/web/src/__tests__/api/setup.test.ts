@@ -181,7 +181,8 @@ describe("POST /api/setup", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data.error).toBe("Name is required");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.name).toBeDefined();
   });
 
   it("should return 400 when name is empty whitespace", async () => {
@@ -194,7 +195,8 @@ describe("POST /api/setup", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data.error).toBe("Name is required");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.name).toBeDefined();
   });
 
   it("should return 400 when email is invalid", async () => {
@@ -207,7 +209,8 @@ describe("POST /api/setup", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data.error).toBe("A valid email address is required");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.email).toBeDefined();
   });
 
   it("should return 400 when password is too short", async () => {

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { createInvite } from "@/lib/invites";
 import { appendAuditLog, redactEmail } from "@/lib/audit";
@@ -7,17 +8,22 @@ import { getSeatUsage } from "@/lib/seat-usage";
 import { db } from "@/db";
 import { groups } from "@/db/schema";
 import { inArray } from "drizzle-orm";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const inviteUserSchema = z.object({
+  email: z.string().email().optional(),
+  role: z.enum(["admin", "member"]),
+  groupIds: z.array(z.string()).optional(),
+});
 
 export async function POST(request: NextRequest) {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
   const session = sessionOrError;
 
-  const { email, role, groupIds } = await request.json();
-
-  if (!role || !["admin", "member"].includes(role)) {
-    return NextResponse.json({ error: "Role must be 'admin' or 'member'" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(inviteUserSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { email, role, groupIds } = parsed.data;
 
   const license = await getLicenseStatus();
   if (license.active && license.maxUsers > 0) {
@@ -29,7 +35,7 @@ export async function POST(request: NextRequest) {
           actorId: session.user.id!,
           eventType: "user.invite_blocked",
           detail: {
-            ...redactEmail(email),
+            ...(email ? redactEmail(email) : {}),
             role,
             reason: "seat_cap",
             seatsUsed: usage.used,
@@ -54,7 +60,7 @@ export async function POST(request: NextRequest) {
   const invite = await createInvite({ email, role, createdBy: session.user.id, groupIds });
 
   let auditGroups: Array<{ id: string; name: string }> = [];
-  if (groupIds?.length > 0) {
+  if (groupIds && groupIds.length > 0) {
     const groupRows = await db
       .select({ id: groups.id, name: groups.name })
       .from(groups)
@@ -69,7 +75,7 @@ export async function POST(request: NextRequest) {
       actorId: session.user.id!,
       eventType: "user.invited",
       detail: {
-        ...redactEmail(email),
+        ...(email ? redactEmail(email) : {}),
         role,
         ...(auditGroups.length > 0 ? { groups: auditGroups } : {}),
       },

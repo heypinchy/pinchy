@@ -10,11 +10,15 @@ import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { deleteOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { z } from "zod";
+import { parseRequestBody, formatValidationError } from "@/lib/api-validation";
 
-const baseUpdateSchema = z.object({
-  name: z.string().min(1).max(100).optional(),
-  description: z.string().max(500).optional(),
-});
+const updateConnectionSchema = z
+  .object({
+    name: z.string().min(1).max(100).optional(),
+    description: z.string().max(500).optional(),
+    credentials: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
 
 const credentialSchemas: Record<string, z.ZodType> = {
   odoo: odooCredentialsSchema,
@@ -53,16 +57,9 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
     return NextResponse.json({ error: "Connection not found" }, { status: 404 });
   }
 
-  const body = await request.json();
-
-  // Validate base fields (name, description)
-  const baseParsed = baseUpdateSchema.safeParse(body);
-  if (!baseParsed.success) {
-    return NextResponse.json(
-      { error: "Validation failed", details: baseParsed.error.flatten() },
-      { status: 400 }
-    );
-  }
+  const parsed = await parseRequestBody(updateConnectionSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const body = parsed.data;
 
   // Validate credentials based on connection type
   const rawCredentials = body.credentials;
@@ -77,10 +74,7 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
     }
     const credResult = credSchema.safeParse(rawCredentials);
     if (!credResult.success) {
-      return NextResponse.json(
-        { error: "Validation failed", details: credResult.error.flatten() },
-        { status: 400 }
-      );
+      return formatValidationError(credResult.error);
     }
     parsedCredentials = credResult.data as Record<string, unknown>;
   }
@@ -88,16 +82,16 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
   const updateData: Record<string, unknown> = { updatedAt: new Date() };
   const changes: Record<string, { from: unknown; to: unknown }> = {};
 
-  if (baseParsed.data.name !== undefined) {
-    updateData.name = baseParsed.data.name;
-    if (baseParsed.data.name !== existing.name) {
-      changes.name = { from: existing.name, to: baseParsed.data.name };
+  if (body.name !== undefined) {
+    updateData.name = body.name;
+    if (body.name !== existing.name) {
+      changes.name = { from: existing.name, to: body.name };
     }
   }
-  if (baseParsed.data.description !== undefined) {
-    updateData.description = baseParsed.data.description;
-    if (baseParsed.data.description !== existing.description) {
-      changes.description = { from: existing.description, to: baseParsed.data.description };
+  if (body.description !== undefined) {
+    updateData.description = body.description;
+    if (body.description !== existing.description) {
+      changes.description = { from: existing.description, to: body.description };
     }
   }
   if (parsedCredentials !== undefined) {

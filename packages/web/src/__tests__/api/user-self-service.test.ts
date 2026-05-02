@@ -79,7 +79,8 @@ describe("PATCH /api/users/me", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("Name is required");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.name).toBeDefined();
   });
 
   it("returns 400 when name is whitespace only", async () => {
@@ -94,7 +95,8 @@ describe("PATCH /api/users/me", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("Name is required");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.name).toBeDefined();
   });
 
   it("returns 200 and updates user name on success", async () => {
