@@ -1,10 +1,21 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
 import { groups, userGroups } from "@/db/schema";
 import { eq, count } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const createGroupSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .transform((v) => v.trim())
+    .refine((v) => v.length > 0, "Name is required"),
+  description: z.string().optional(),
+});
 
 export async function GET() {
   const sessionOrError = await requireAdmin();
@@ -39,15 +50,13 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
   }
 
-  const { name, description } = await request.json();
-
-  if (!name || typeof name !== "string" || !name.trim()) {
-    return NextResponse.json({ error: "Name is required" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(createGroupSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { name, description } = parsed.data;
 
   const [group] = await db
     .insert(groups)
-    .values({ name: name.trim(), description: description?.trim() || null })
+    .values({ name, description: description?.trim() || null })
     .returning();
 
   after(() =>

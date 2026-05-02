@@ -1,5 +1,6 @@
 // audit-exempt: invite claim is a self-service action by the invited user, not an admin action
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { auth } from "@/lib/auth";
 import { db } from "@/db";
 import { users, userGroups } from "@/db/schema";
@@ -8,13 +9,19 @@ import { validateInviteToken, claimInvite, getInviteGroupIds } from "@/lib/invit
 import { seedPersonalAgent } from "@/lib/personal-agent";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { validatePassword } from "@/lib/validate-password";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const claimInviteSchema = z.object({
+  token: z.string().min(1),
+  name: z.string().optional(),
+  password: z.string(),
+});
 
 export async function POST(request: NextRequest) {
-  const { token, name, password } = await request.json();
+  const parsed = await parseRequestBody(claimInviteSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { token, name, password } = parsed.data;
 
-  if (!token) {
-    return NextResponse.json({ error: "Token is required" }, { status: 400 });
-  }
   const passwordError = validatePassword(password);
   if (passwordError) {
     return NextResponse.json({ error: passwordError }, { status: 400 });

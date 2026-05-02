@@ -3,21 +3,15 @@ import { NextResponse } from "next/server";
 import { z } from "zod";
 import { withAdmin } from "@/lib/api-auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { parseRequestBody } from "@/lib/api-validation";
 
 const listDatabasesSchema = z.object({
   url: z.string().url(),
 });
 
 export const POST = withAdmin(async (request) => {
-  const body = await request.json();
-  const parsed = listDatabasesSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      { status: 400 }
-    );
-  }
-
+  const parsed = await parseRequestBody(listDatabasesSchema, request);
+  if ("error" in parsed) return parsed.error;
   const { url } = parsed.data;
 
   const urlCheck = validateExternalUrl(url);

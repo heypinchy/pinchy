@@ -4,6 +4,7 @@ import { z } from "zod";
 import { withAdmin } from "@/lib/api-auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
+import { parseRequestBody } from "@/lib/api-validation";
 
 const syncPreviewSchema = z.object({
   type: z.literal("odoo"),
@@ -17,15 +18,8 @@ const syncPreviewSchema = z.object({
 });
 
 export const POST = withAdmin(async (request) => {
-  const body = await request.json();
-  const parsed = syncPreviewSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      { status: 400 }
-    );
-  }
-
+  const parsed = await parseRequestBody(syncPreviewSchema, request);
+  if ("error" in parsed) return parsed.error;
   const { credentials } = parsed.data;
 
   const urlCheck = validateExternalUrl(credentials.url);

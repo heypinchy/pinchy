@@ -4,6 +4,7 @@ import { z } from "zod";
 import { OdooClient } from "odoo-node";
 import { withAdmin } from "@/lib/api-auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { parseRequestBody } from "@/lib/api-validation";
 
 const testCredentialsSchema = z.discriminatedUnion("type", [
   z.object({
@@ -24,14 +25,8 @@ const testCredentialsSchema = z.discriminatedUnion("type", [
 ]);
 
 export const POST = withAdmin(async (request) => {
-  const body = await request.json();
-  const parsed = testCredentialsSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      { status: 400 }
-    );
-  }
+  const parsed = await parseRequestBody(testCredentialsSchema, request);
+  if ("error" in parsed) return parsed.error;
 
   if (parsed.data.type === "web-search") {
     try {

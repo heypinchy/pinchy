@@ -67,10 +67,13 @@ describe("POST /api/users/me/password", () => {
     const response = await POST(makePostRequest({ newPassword: "Br1ghtNova!2" }));
     expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.error).toBe("Current password is required");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.currentPassword).toBeDefined();
   });
 
   it("should return 400 when newPassword is too short", async () => {
+    // "short" is a valid string (passes Zod), then validatePassword() rejects
+    // it post-parse — that's where the freeform 12-char message comes from.
     const response = await POST(
       makePostRequest({ currentPassword: "oldpass1234567", newPassword: "short" })
     );
@@ -116,10 +119,12 @@ describe("POST /api/users/me/password", () => {
   });
 
   it("should return 400 when newPassword is missing", async () => {
+    // newPassword absent → caught by Zod (parseRequestBody) before validatePassword runs.
     const response = await POST(makePostRequest({ currentPassword: "oldpass1234567" }));
     expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.error).toBe("Password must be at least 12 characters");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.newPassword).toBeDefined();
   });
 
   it("should return 403 when current password is incorrect", async () => {

@@ -1,4 +1,5 @@
 import { NextResponse, after } from "next/server";
+import { z } from "zod";
 import { withAuth, withAdmin } from "@/lib/api-auth";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
@@ -8,8 +9,13 @@ import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { parseRequestBody } from "@/lib/api-validation";
 
 const VALID_PROVIDERS = Object.keys(PROVIDERS) as ProviderName[];
+
+const deleteProviderSchema = z.object({
+  provider: z.enum(VALID_PROVIDERS as [ProviderName, ...ProviderName[]]),
+});
 
 export const GET = withAuth(async (_req, _ctx, session) => {
   const isAdmin = session.user.role === "admin";
@@ -30,12 +36,9 @@ export const GET = withAuth(async (_req, _ctx, session) => {
 });
 
 export const DELETE = withAdmin(async (request, _ctx, session) => {
-  const body = await request.json();
-  const provider = body.provider as ProviderName;
-
-  if (!VALID_PROVIDERS.includes(provider)) {
-    return NextResponse.json({ error: "Invalid provider" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(deleteProviderSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { provider } = parsed.data;
 
   const config = PROVIDERS[provider];
 

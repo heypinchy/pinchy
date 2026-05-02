@@ -1,8 +1,12 @@
 // audit-exempt: knowledge base file edits are per-agent content changes, not admin actions
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { withAuth } from "@/lib/api-auth";
 import { readWorkspaceFile, writeWorkspaceFile } from "@/lib/workspace";
 import { getAgentWithAccess, requireAgentWriteAccess } from "@/lib/agent-access";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const writeFileSchema = z.object({ content: z.string() });
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
@@ -31,11 +35,9 @@ export const PUT = withAuth<Params>(async (request, { params }, session) => {
   const denied = requireAgentWriteAccess(agentOrError, session.user.id!, session.user.role);
   if (denied) return denied;
 
-  const { content } = await request.json();
-
-  if (typeof content !== "string") {
-    return NextResponse.json({ error: "content must be a string" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(writeFileSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { content } = parsed.data;
 
   try {
     writeWorkspaceFile(agentId, filename, content);

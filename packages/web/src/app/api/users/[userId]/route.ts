@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { users, agents } from "@/db/schema";
@@ -7,6 +8,11 @@ import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { deleteWorkspace } from "@/lib/workspace";
 import { appendAuditLog } from "@/lib/audit";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const updateUserSchema = z.object({
+  role: z.enum(["admin", "member"]),
+});
 
 export async function PATCH(
   request: NextRequest,
@@ -17,12 +23,9 @@ export async function PATCH(
   const session = sessionOrError;
 
   const { userId } = await params;
-  const { role } = await request.json();
-
-  // Validate role value
-  if (role !== "admin" && role !== "member") {
-    return NextResponse.json({ error: "Role must be 'admin' or 'member'" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(updateUserSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { role } = parsed.data;
 
   // Cannot change own role
   if (userId === session.user.id) {

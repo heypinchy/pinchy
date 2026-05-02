@@ -1,5 +1,6 @@
 // audit-exempt: User self-service action (linking own Telegram account), not an admin operation
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { withAuth } from "@/lib/api-auth";
 import { resolvePairingCode } from "@/lib/telegram-pairing";
 import { updateIdentityLinks } from "@/lib/openclaw-config";
@@ -7,6 +8,9 @@ import { recalculateTelegramAllowStores, removePairingRequest } from "@/lib/tele
 import { db } from "@/db";
 import { channelLinks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const linkTelegramSchema = z.object({ code: z.string().min(1) });
 
 /**
  * Build identityLinks map from all telegram channel links in DB.
@@ -38,10 +42,9 @@ export const GET = withAuth(async (_req, _ctx, session) => {
 });
 
 export const POST = withAuth(async (req, _ctx, session) => {
-  const { code } = await req.json();
-  if (!code || typeof code !== "string") {
-    return NextResponse.json({ error: "Pairing code is required" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(linkTelegramSchema, req);
+  if ("error" in parsed) return parsed.error;
+  const { code } = parsed.data;
 
   // Resolve pairing code to Telegram user ID by reading OpenClaw's pairing file
   const pairing = resolvePairingCode(code);

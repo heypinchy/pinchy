@@ -63,13 +63,19 @@ describe("POST /api/invite/claim (integration)", () => {
   it("returns 400 when token is missing", async () => {
     const response = await POST(makeRequest({ name: "Test User", password: "Br1ghtNova!2" }));
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "Token is required" });
+    const body = await response.json();
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.token).toBeDefined();
   });
 
   it("returns 400 when password is missing", async () => {
     const response = await POST(makeRequest({ token: "valid-token", name: "Test User" }));
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "Password must be at least 12 characters" });
+    const body = await response.json();
+    // password is now schema-required (parseRequestBody catches the missing
+    // field before validatePassword() runs).
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.password).toBeDefined();
   });
 
   it("returns 400 when password is too short", async () => {
@@ -77,6 +83,8 @@ describe("POST /api/invite/claim (integration)", () => {
       makeRequest({ token: "valid-token", name: "Test User", password: "short" })
     );
     expect(response.status).toBe(400);
+    // Length is enforced post-parse by validatePassword(), so the freeform
+    // error string is preserved here (12-char policy from #234).
     expect(await response.json()).toEqual({ error: "Password must be at least 12 characters" });
   });
 
@@ -139,6 +147,9 @@ describe("POST /api/invite/claim (integration)", () => {
 
     const response = await POST(makeRequest({ token, password: "Br1ghtNova!2" }));
     expect(response.status).toBe(400);
+    // Name-required is enforced post-parse only when the invite type is
+    // "invite" (resets don't require it), so the legacy freeform error
+    // string is preserved here.
     expect(await response.json()).toEqual({ error: "Name is required" });
   });
 

@@ -238,7 +238,8 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data.error).toBe("Bot token is required");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.botToken).toBeDefined();
   });
 
   it("returns 404 for non-existent agent", async () => {

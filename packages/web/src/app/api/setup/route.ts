@@ -1,27 +1,33 @@
 // audit-exempt: initial setup runs before any users exist, no actor to audit
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { createAdmin } from "@/lib/setup";
 import { validatePassword } from "@/lib/validate-password";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const setupSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .transform((v) => v.trim())
+    .refine((v) => v.length > 0, "Name is required"),
+  email: z.string().email("A valid email address is required"),
+  password: z.string(),
+});
 
 export async function POST(request: NextRequest) {
   try {
-    const { name, email, password } = await request.json();
+    const parsed = await parseRequestBody(setupSchema, request);
+    if ("error" in parsed) return parsed.error;
+    const { name, email, password } = parsed.data;
 
-    if (!name || typeof name !== "string" || !name.trim()) {
-      return NextResponse.json({ error: "Name is required" }, { status: 400 });
-    }
-
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!email || !emailRegex.test(email)) {
-      return NextResponse.json({ error: "A valid email address is required" }, { status: 400 });
-    }
     const passwordError = validatePassword(password);
     if (passwordError) {
       return NextResponse.json({ error: passwordError }, { status: 400 });
     }
 
-    const user = await createAdmin(name.trim(), email, password);
+    const user = await createAdmin(name, email, password);
     // Write OpenClaw config with the newly created Smithers agent so OpenClaw
     // knows about it when the container restarts or the file watcher picks it up.
     await regenerateOpenClawConfig().catch((err) => {

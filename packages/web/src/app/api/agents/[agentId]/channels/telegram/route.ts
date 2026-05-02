@@ -1,4 +1,5 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { validateTelegramBotToken, hasMainTelegramBot } from "@/lib/telegram";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
@@ -11,6 +12,11 @@ import {
 import { db } from "@/db";
 import { agents, settings } from "@/db/schema";
 import { eq, like } from "drizzle-orm";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const setBotTokenSchema = z.object({
+  botToken: z.string().min(1),
+});
 
 export async function GET(req: Request, { params }: { params: Promise<{ agentId: string }> }) {
   const admin = await requireAdmin();
@@ -39,15 +45,13 @@ export async function GET(req: Request, { params }: { params: Promise<{ agentId:
   return NextResponse.json({ configured: true, hint, mainBotConfigured });
 }
 
-export async function POST(req: Request, { params }: { params: Promise<{ agentId: string }> }) {
+export async function POST(req: NextRequest, { params }: { params: Promise<{ agentId: string }> }) {
   const admin = await requireAdmin();
   if (admin instanceof NextResponse) return admin;
   const { agentId } = await params;
-  const { botToken } = await req.json();
-
-  if (!botToken || typeof botToken !== "string") {
-    return NextResponse.json({ error: "Bot token is required" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(setBotTokenSchema, req);
+  if ("error" in parsed) return parsed.error;
+  const { botToken } = parsed.data;
 
   const agent = await db.query.agents.findFirst({
     where: eq(agents.id, agentId),

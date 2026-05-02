@@ -256,7 +256,8 @@ describe("DELETE /api/settings/providers", () => {
 
     expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.error).toBe("Invalid provider");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.provider).toBeDefined();
   });
 
   it("should return 400 when trying to delete the last configured provider", async () => {

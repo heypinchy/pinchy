@@ -1,9 +1,16 @@
 import { NextResponse } from "next/server";
+import { z } from "zod";
 import { eq, and } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const setAgentIntegrationsSchema = z.object({
+  connectionId: z.string().min(1),
+  permissions: z.array(z.object({ model: z.string().min(1), operation: z.string().min(1) })),
+});
 
 type RouteContext = { params: Promise<{ agentId: string }> };
 
@@ -72,27 +79,16 @@ export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
 export const PUT = withAdmin<RouteContext>(async (request, { params }, session) => {
   const { agentId } = await params;
 
-  let body: Record<string, unknown>;
-  try {
-    body = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  const { connectionId, permissions } = body;
-  if (!connectionId) {
-    return NextResponse.json({ error: "connectionId is required" }, { status: 400 });
-  }
-  if (!Array.isArray(permissions)) {
-    return NextResponse.json({ error: "permissions must be an array" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(setAgentIntegrationsSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { connectionId, permissions } = parsed.data;
 
   try {
     // Validate connection exists
     const connRows = await db
       .select()
       .from(integrationConnections)
-      .where(eq(integrationConnections.id, connectionId as string));
+      .where(eq(integrationConnections.id, connectionId));
     if (connRows.length === 0) {
       return NextResponse.json({ error: "Connection not found" }, { status: 404 });
     }
@@ -107,7 +103,7 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
         .where(
           and(
             eq(agentConnectionPermissions.agentId, agentId),
-            eq(agentConnectionPermissions.connectionId, connectionId as string)
+            eq(agentConnectionPermissions.connectionId, connectionId)
           )
         );
 
@@ -116,7 +112,7 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
         .where(
           and(
             eq(agentConnectionPermissions.agentId, agentId),
-            eq(agentConnectionPermissions.connectionId, connectionId as string)
+            eq(agentConnectionPermissions.connectionId, connectionId)
           )
         );
 
@@ -124,7 +120,7 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
         await tx.insert(agentConnectionPermissions).values(
           permissions.map((p: { model: string; operation: string }) => ({
             agentId,
-            connectionId: connectionId as string,
+            connectionId: connectionId,
             model: p.model,
             operation: p.operation,
           }))

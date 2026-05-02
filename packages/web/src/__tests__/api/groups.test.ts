@@ -184,7 +184,8 @@ describe("POST /api/groups", () => {
     const response = await POST(request);
     expect(response.status).toBe(400);
     const body = await response.json();
-    expect(body.error).toBe("Name is required");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.name).toBeDefined();
   });
 
   it("rejects empty name", async () => {
@@ -201,7 +202,8 @@ describe("POST /api/groups", () => {
     const response = await POST(request);
     expect(response.status).toBe(400);
     const body = await response.json();
-    expect(body.error).toBe("Name is required");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.name).toBeDefined();
   });
 
   it("rejects non-admin", async () => {
@@ -620,7 +622,8 @@ describe("PUT /api/groups/[groupId]/members", () => {
     });
     expect(response.status).toBe(400);
     const body = await response.json();
-    expect(body.error).toBe("userIds must be an array of strings");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors).toBeDefined();
   });
 
   it("returns 404 when group does not exist", async () => {
@@ -661,7 +664,8 @@ describe("PUT /api/groups/[groupId]/members", () => {
     });
     expect(response.status).toBe(400);
     const body = await response.json();
-    expect(body.error).toBe("userIds must be an array");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.userIds).toBeDefined();
   });
 
   it("returns 403 for non-admin", async () => {
