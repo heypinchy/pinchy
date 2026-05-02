@@ -1,10 +1,10 @@
-// audit-exempt: provider removal is a settings change, audit logging planned for a future PR
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { withAuth, withAdmin } from "@/lib/api-auth";
 import { getSetting, setSetting, deleteSetting } from "@/lib/settings";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache } from "@/lib/provider-models";
+import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -29,7 +29,7 @@ export const GET = withAuth(async (_req, _ctx, session) => {
   return NextResponse.json({ defaultProvider, providers });
 });
 
-export const DELETE = withAdmin(async (request) => {
+export const DELETE = withAdmin(async (request, _ctx, session) => {
   const body = await request.json();
   const provider = body.provider as ProviderName;
 
@@ -63,6 +63,16 @@ export const DELETE = withAdmin(async (request) => {
   await deleteSetting(config.settingsKey);
   resetCache();
 
+  const migratedAgents: {
+    id: string;
+    name: string;
+    fromModel: string;
+    toModel: string;
+  }[] = [];
+  let newDefault: ProviderName | undefined;
+  const previousDefault = await getSetting("default_provider");
+  const wasDefault = previousDefault === provider;
+
   const remaining = configuredProviders.find((p) => p.name !== provider);
   if (remaining) {
     // Migrate all agents using the removed provider to the remaining provider's default model
@@ -76,19 +86,57 @@ export const DELETE = withAdmin(async (request) => {
           .update(agents)
           .set({ model: remaining.config.defaultModel })
           .where(eq(agents.id, agent.id));
+        migratedAgents.push({
+          id: agent.id,
+          name: agent.name,
+          fromModel: agent.model,
+          toModel: remaining.config.defaultModel,
+        });
       }
     }
 
     // If this was the default provider, switch to a remaining one
-    const currentDefault = await getSetting("default_provider");
-    if (currentDefault === provider) {
+    if (wasDefault) {
       await setSetting("default_provider", remaining.name, false);
+      newDefault = remaining.name;
     }
   }
 
   // Regenerate config to reflect removed provider key and migrated agent models.
   // regenerateOpenClawConfig reads all state from DB and skips writing if unchanged.
   await regenerateOpenClawConfig();
+
+  // audit's truncateDetail (lib/audit.ts) replaces the entire detail with an
+  // opaque {_truncated, summary} object once over 2KB. With ~150 bytes per
+  // migratedAgents entry, that triggers around 12 agents — and would silently
+  // shred agentCount / wasDefault / newDefault along with it. Cap the inline
+  // list at MAX_INLINE_MIGRATED so structured fields always survive in the
+  // enterprise scenarios this audit exists for.
+  const MAX_INLINE_MIGRATED = 10;
+  const truncated = migratedAgents.length > MAX_INLINE_MIGRATED;
+  const inlineMigrated = truncated ? migratedAgents.slice(0, MAX_INLINE_MIGRATED) : migratedAgents;
+
+  // Fire audit via after() — same pattern as the sibling settings/domain route.
+  // The state mutation is already complete; an audit DB blip should not turn
+  // a successful provider removal into a 500 the user sees.
+  after(() =>
+    appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "settings.deleted",
+      resource: `settings:provider:${provider}`,
+      outcome: "success",
+      detail: {
+        name: config.name,
+        provider,
+        wasDefault,
+        ...(newDefault !== undefined ? { newDefault } : {}),
+        agentCount: migratedAgents.length,
+        migratedAgents: inlineMigrated,
+        ...(truncated ? { migratedAgentsTruncated: true } : {}),
+      },
+    })
+  );
 
   return NextResponse.json({ success: true });
 });
