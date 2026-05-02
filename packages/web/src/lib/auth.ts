@@ -1,4 +1,4 @@
-import { betterAuth } from "better-auth";
+import { betterAuth, type BetterAuthRateLimitOptions } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { createAuthMiddleware } from "better-auth/api";
 import { admin } from "better-auth/plugins";
@@ -97,15 +97,7 @@ export const auditAfterHook = createAuthMiddleware(async (ctx) => {
  * acceptable for single-replica self-hosted deployments. If/when we run
  * multiple replicas, switch `storage` to `secondary-storage` (Redis).
  */
-type AuthRateLimitRule = { window: number; max: number };
-type AuthRateLimitConfig = {
-  enabled?: boolean;
-  window?: number;
-  max?: number;
-  customRules?: Record<string, AuthRateLimitRule>;
-};
-
-export function getAuthRateLimitConfig(): AuthRateLimitConfig {
+export function getAuthRateLimitConfig(): BetterAuthRateLimitOptions {
   if (process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT === "1") {
     return { enabled: false };
   }
@@ -118,10 +110,17 @@ export function getAuthRateLimitConfig(): AuthRateLimitConfig {
     // Per-path hardening for credential-handling endpoints. All windows
     // chosen so a single legitimate user (slow typing, retries) won't
     // hit them but a brute-force / credential-stuffing attacker will.
+    //
+    // Better Auth's customRules resolver iterates Object.keys() in insertion
+    // order, so exact paths are listed BEFORE their corresponding wildcard
+    // entries — `/sign-in/email` matches first; the `/sign-in/*` fallback
+    // covers any future sub-path (OAuth, magic-link, passkey) we add.
     customRules: {
       // Pre-auth — brute-force / credential-stuffing protection
       "/sign-in/email": { window: 60, max: 5 }, // was 3/10s = 18/min
+      "/sign-in/*": { window: 60, max: 5 },
       "/sign-up/email": { window: 300, max: 3 },
+      "/sign-up/*": { window: 300, max: 3 },
       // Reset flow — also a spam-DOS vector against user inboxes
       "/forget-password": { window: 600, max: 3 },
       "/forget-password/*": { window: 600, max: 3 },

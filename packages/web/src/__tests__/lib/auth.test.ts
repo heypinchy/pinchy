@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
+import { betterAuth } from "better-auth";
 
 // Use vi.hoisted so the mock object is available during vi.mock hoisting
 const { mockAuth } = vi.hoisted(() => ({
@@ -54,6 +55,18 @@ describe("auth configuration", () => {
     expect(auth.api).toBeDefined();
     expect(typeof auth.api.getSession).toBe("function");
   });
+
+  it("constructs the auth instance with the result of getAuthRateLimitConfig() — guards against future refactors that wire the wrong config object into betterAuth", () => {
+    // Module-load side effect: betterAuth() was already called when @/lib/auth
+    // was imported above. The first call's first arg holds the options.
+    const calls = vi.mocked(betterAuth).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    const options = calls[0][0] as { rateLimit?: unknown };
+    expect(options.rateLimit).toBeDefined();
+    // Compare structurally — getAuthRateLimitConfig() may be re-evaluated, but
+    // its return value at module-load time MUST be what was wired in.
+    expect(options.rateLimit).toEqual(getAuthRateLimitConfig());
+  });
 });
 
 describe("getAuthRateLimitConfig", () => {
@@ -73,11 +86,16 @@ describe("getAuthRateLimitConfig", () => {
     withEnv(undefined, () => {
       const config = getAuthRateLimitConfig();
       expect(config).toBeDefined();
-      // Global window/max set explicitly
-      expect(config?.window).toBe(10);
-      expect(config?.max).toBe(100);
       // customRules MUST be defined — this is the brute-force protection
       expect(config?.customRules).toBeDefined();
+    });
+  });
+
+  it("pins the global rate-limit fallback at 100 req / 10s per IP — matches Better Auth's own default so we don't accidentally throttle benign session checks", () => {
+    withEnv(undefined, () => {
+      const config = getAuthRateLimitConfig();
+      expect(config?.window).toBe(10);
+      expect(config?.max).toBe(100);
     });
   });
 
@@ -127,8 +145,18 @@ describe("getAuthRateLimitConfig", () => {
       expect(rule).toEqual({ window: 60, max: 5 });
     });
 
+    it("hardens /sign-in/* (wildcard) — covers OAuth callbacks, magic-link, passkey, etc. that Pinchy may add later, so they don't fall back to Better Auth's weaker 3/10s default", () => {
+      const rule = getCustomRules()["/sign-in/*"];
+      expect(rule).toEqual({ window: 60, max: 5 });
+    });
+
     it("hardens /sign-up/email — at most 3 sign-ups per 5 minutes per IP", () => {
       const rule = getCustomRules()["/sign-up/email"];
+      expect(rule).toEqual({ window: 300, max: 3 });
+    });
+
+    it("hardens /sign-up/* (wildcard) — same reason as /sign-in/*: future sub-paths inherit the hardened threshold", () => {
+      const rule = getCustomRules()["/sign-up/*"];
       expect(rule).toEqual({ window: 300, max: 3 });
     });
 
