@@ -19,7 +19,7 @@ import { isOrphaned as computeIsOrphaned } from "./orphan-detector";
 
 const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
 
-interface WsMessage {
+export interface WsMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
