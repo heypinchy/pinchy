@@ -105,6 +105,12 @@ jobs:
     # steps), so this job otherwise inherits the org-wide Docker Hub
     # rate-limit fragility that has been flaking the e2e jobs. Ubuntu
     # runners ship Postgres pre-installed and ready, so no pull required.
+    #
+    # Version skew: ubuntu-24.04 ships Postgres 16; the dev/prod stack runs
+    # 17. PG-17-only features (e.g. some MERGE shapes) would pass here and
+    # fail in production. If a query starts depending on PG-17 syntax,
+    # either add a runner-side `apt install postgresql-17` step or move
+    # this job to a containerised PG 17 set up via Docker (mirror.gcr.io).
     steps:
       - uses: actions/checkout@v4
 
