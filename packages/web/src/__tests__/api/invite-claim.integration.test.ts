@@ -61,7 +61,7 @@ describe("POST /api/invite/claim (integration)", () => {
   // ── Validation ──────────────────────────────────────────────────────
 
   it("returns 400 when token is missing", async () => {
-    const response = await POST(makeRequest({ name: "Test User", password: "password123" }));
+    const response = await POST(makeRequest({ name: "Test User", password: "Br1ghtNova!2" }));
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "Token is required" });
   });
@@ -69,7 +69,7 @@ describe("POST /api/invite/claim (integration)", () => {
   it("returns 400 when password is missing", async () => {
     const response = await POST(makeRequest({ token: "valid-token", name: "Test User" }));
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "Password must be at least 8 characters" });
+    expect(await response.json()).toEqual({ error: "Password must be at least 12 characters" });
   });
 
   it("returns 400 when password is too short", async () => {
@@ -77,12 +77,12 @@ describe("POST /api/invite/claim (integration)", () => {
       makeRequest({ token: "valid-token", name: "Test User", password: "short" })
     );
     expect(response.status).toBe(400);
-    expect(await response.json()).toEqual({ error: "Password must be at least 8 characters" });
+    expect(await response.json()).toEqual({ error: "Password must be at least 12 characters" });
   });
 
   it("returns 410 when token is invalid", async () => {
     const response = await POST(
-      makeRequest({ token: "bad-token", name: "Test User", password: "password123" })
+      makeRequest({ token: "bad-token", name: "Test User", password: "Br1ghtNova!2" })
     );
     expect(response.status).toBe(410);
     expect(await response.json()).toEqual({ error: "Invalid or expired invite link" });
@@ -98,11 +98,13 @@ describe("POST /api/invite/claim (integration)", () => {
     });
 
     // First claim succeeds
-    const first = await POST(makeRequest({ token, name: "First User", password: "password123" }));
+    const first = await POST(makeRequest({ token, name: "First User", password: "Br1ghtNova!2" }));
     expect(first.status).toBe(201);
 
     // Second claim with same token fails
-    const second = await POST(makeRequest({ token, name: "Second User", password: "password123" }));
+    const second = await POST(
+      makeRequest({ token, name: "Second User", password: "Br1ghtNova!2" })
+    );
     expect(second.status).toBe(410);
   });
 
@@ -120,7 +122,9 @@ describe("POST /api/invite/claim (integration)", () => {
       .set({ expiresAt: new Date(Date.now() - 60_000) })
       .where(eq(invites.tokenHash, tokenHash));
 
-    const response = await POST(makeRequest({ token, name: "Late User", password: "password123" }));
+    const response = await POST(
+      makeRequest({ token, name: "Late User", password: "Br1ghtNova!2" })
+    );
     expect(response.status).toBe(410);
   });
 
@@ -133,7 +137,7 @@ describe("POST /api/invite/claim (integration)", () => {
       createdBy: adminId,
     });
 
-    const response = await POST(makeRequest({ token, password: "password123" }));
+    const response = await POST(makeRequest({ token, password: "Br1ghtNova!2" }));
     expect(response.status).toBe(400);
     expect(await response.json()).toEqual({ error: "Name is required" });
   });
@@ -149,7 +153,7 @@ describe("POST /api/invite/claim (integration)", () => {
       createdBy: adminId,
     });
 
-    const response = await POST(makeRequest({ token, name: "New User", password: "password123" }));
+    const response = await POST(makeRequest({ token, name: "New User", password: "Br1ghtNova!2" }));
     expect(response.status).toBe(201);
     expect(await response.json()).toEqual({ success: true });
 
@@ -176,7 +180,7 @@ describe("POST /api/invite/claim (integration)", () => {
       createdBy: adminId,
     });
 
-    await POST(makeRequest({ token, name: "Agent User", password: "password123" }));
+    await POST(makeRequest({ token, name: "Agent User", password: "Br1ghtNova!2" }));
 
     const user = await db.query.users.findFirst({
       where: eq(users.email, "agent-user@test.local"),
@@ -194,7 +198,9 @@ describe("POST /api/invite/claim (integration)", () => {
       createdBy: adminId,
     });
 
-    const response = await POST(makeRequest({ token, name: "New Admin", password: "password123" }));
+    const response = await POST(
+      makeRequest({ token, name: "New Admin", password: "Br1ghtNova!2" })
+    );
     expect(response.status).toBe(201);
 
     const newAdmin = await db.query.users.findFirst({
@@ -221,7 +227,7 @@ describe("POST /api/invite/claim (integration)", () => {
     });
 
     const response = await POST(
-      makeRequest({ token, name: "Grouped User", password: "password123" })
+      makeRequest({ token, name: "Grouped User", password: "Br1ghtNova!2" })
     );
     expect(response.status).toBe(201);
 
@@ -244,7 +250,7 @@ describe("POST /api/invite/claim (integration)", () => {
       createdBy: adminId,
     });
 
-    await POST(makeRequest({ token, name: "Groupless User", password: "password123" }));
+    await POST(makeRequest({ token, name: "Groupless User", password: "Br1ghtNova!2" }));
 
     const newUser = await db.query.users.findFirst({
       where: eq(users.email, "groupless@test.local"),
