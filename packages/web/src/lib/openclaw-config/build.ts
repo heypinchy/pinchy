@@ -1,5 +1,5 @@
 import { readFileSync } from "fs";
-import { writeSecretsFile, readSecretsFile, secretRef } from "@/lib/openclaw-secrets";
+import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
@@ -16,12 +16,15 @@ import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
-import type { SecretsBundle } from "@/lib/openclaw-secrets";
 
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { writeConfigAtomic, readExistingConfig, pushConfigInBackground } from "./write";
-import { buildSecretsBundle } from "./secrets-bundle";
+import {
+  buildSecretsBundle,
+  collectProviderSecrets,
+  readGatewayTokenFromConfig,
+} from "./secrets-bundle";
 
 function deepMerge(
   target: Record<string, unknown>,
@@ -60,10 +63,7 @@ export async function regenerateOpenClawConfig() {
   // does not resolve SecretRef objects in the gateway.auth block.
   // The same token is also written to secrets.json so Pinchy can read it.
   const existingGateway = (existing.gateway as Record<string, unknown>) || {};
-  const existingAuth = (existingGateway.auth as Record<string, unknown>) || {};
-  // Extract gateway token: prefer plain string from existing config, fall back to secrets.json
-  const gatewayTokenValue =
-    typeof existingAuth.token === "string" ? existingAuth.token : readSecretsFile().gateway?.token;
+  const gatewayTokenValue = readGatewayTokenFromConfig(existing);
   if (!gatewayTokenValue) {
     // Either ensure-gateway-token.js hasn't run yet (first start), or the
     // OpenClaw container is broken. Logging instead of throwing so a fresh
@@ -88,26 +88,16 @@ export async function regenerateOpenClawConfig() {
   // Read all agents from DB
   const allAgents = await db.select().from(agents);
 
-  // Read provider API keys from settings. Pinchy writes a ${VAR} template
-  // string into env.* and the real key into secrets.json. start-openclaw.sh
-  // exports the secret as a process env var on container start, so OpenClaw
-  // resolves the template at runtime against its own process env.
-  //
-  // We can't use a SecretRef object in env.* — OpenClaw's config validator
-  // rejects it ("Invalid input: expected string, received object"). The
-  // ${VAR} string passes validation, and OpenClaw treats it as an env-source
-  // SecretRef when resolving (see openclaw types.secrets parseEnvTemplateSecretRef).
-  const env: Record<string, string> = {};
-  const providerSecrets: Record<string, { apiKey: string }> = {};
-  const envSecrets: Record<string, string> = {};
-  for (const [providerKey, providerConfig] of Object.entries(PROVIDERS)) {
-    const apiKey = await getSetting(providerConfig.settingsKey);
-    if (apiKey && providerConfig.envVar) {
-      env[providerConfig.envVar] = `\${${providerConfig.envVar}}`;
-      providerSecrets[providerKey] = { apiKey };
-      envSecrets[providerConfig.envVar] = apiKey;
-    }
-  }
+  // Pattern A from CLAUDE.md "Secrets Handling": env-template + secret pair
+  // for each LLM provider with a configured apiKey. Helper returns fresh
+  // mutable maps; ollama-cloud is spliced into providerSecrets later
+  // (it uses SecretRef, not an env template, and is therefore handled
+  // at the model-providers call site).
+  const {
+    envTemplates: env,
+    providers: providerSecrets,
+    envSecrets,
+  } = await collectProviderSecrets();
 
   // Only set defaults.model — nothing else. OpenClaw enriches agents.defaults
   // with heartbeat, models, contextPruning, compaction at runtime. If Pinchy
