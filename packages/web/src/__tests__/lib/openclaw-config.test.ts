@@ -144,6 +144,21 @@ function mockFrom(data: unknown[] = []) {
   );
 }
 
+/**
+ * Drain `regenerateOpenClawConfig`'s fire-and-forget background coroutine
+ * (see `pushConfigInBackground` in openclaw-config.ts) before continuing.
+ *
+ * Two `setImmediate` rounds are enough for the success path: round 1 lets
+ * the dynamic `import()` resolve; round 2 lets the `await client.config.get`
+ * → `await client.config.apply` → `return` chain settle. Without this
+ * drain, an unsettled continuation can call into mocks that the *next*
+ * test's `beforeEach` has already reconfigured (cross-test pollution).
+ */
+async function drainBackgroundCoroutine(): Promise<void> {
+  await new Promise((r) => setImmediate(r));
+  await new Promise((r) => setImmediate(r));
+}
+
 describe("regenerateOpenClawConfig", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1165,14 +1180,11 @@ describe("regenerateOpenClawConfig", () => {
       await regenerateOpenClawConfig();
 
       // The push is fire-and-forget — wait for the background coroutine
-      // to reach config.apply rather than spinning on real time.
+      // to reach config.apply rather than spinning on real time, then
+      // drain the remaining continuation so it doesn't bleed into the
+      // next test (see drainBackgroundCoroutine docs).
       await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledOnce());
-      // Drain remaining microtasks so the coroutine's final `return`
-      // executes before the next test's beforeEach runs — otherwise an
-      // unsettled continuation can call into mocks that the next test
-      // has already reconfigured (cross-test pollution).
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setImmediate(r));
+      await drainBackgroundCoroutine();
 
       expect(mockConfigApply).toHaveBeenCalledOnce();
       const applyArgs = mockConfigApply.mock.calls[0];
@@ -1198,10 +1210,9 @@ describe("regenerateOpenClawConfig", () => {
       // path. We must still write the file (verified above) but must NOT
       // attempt the RPC.
       await regenerateOpenClawConfig();
-      // Background coroutine bails immediately when client unavailable —
-      // flush microtasks so the bail path completes, no real wait needed.
-      await new Promise((r) => setImmediate(r));
-      await new Promise((r) => setImmediate(r));
+      // Background coroutine bails immediately when client unavailable;
+      // drain to confirm no microtask-deferred RPC slipped through.
+      await drainBackgroundCoroutine();
 
       expect(mockConfigGet).not.toHaveBeenCalled();
       expect(mockConfigApply).not.toHaveBeenCalled();
@@ -2440,8 +2451,7 @@ describe("restart-state integration", () => {
 
     // Drain the first generate's background coroutine. Without this, its
     // delayed config.apply call would race with the post-test assertion.
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
+    await drainBackgroundCoroutine();
     const applyCallsBeforeSecondGenerate = mockConfigApply.mock.calls.length;
 
     // Now simulate OpenClaw having stamped a NEW lastTouchedAt onto the file
@@ -2456,8 +2466,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
     // Drain any background work the second generate might have scheduled.
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
+    await drainBackgroundCoroutine();
 
     // No openclaw.json write (the only diff was OpenClaw-managed metadata).
     const secondConfigWrite = mockedWriteFileSync.mock.calls.find(
@@ -2529,8 +2538,7 @@ describe("restart-state integration", () => {
 
     await regenerateOpenClawConfig();
     // Drain background coroutine.
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
+    await drainBackgroundCoroutine();
 
     expect(mockConfigApply).toHaveBeenCalledTimes(1);
     const [payload] = mockConfigApply.mock.calls[0];
@@ -2573,8 +2581,7 @@ describe("restart-state integration", () => {
     });
 
     await regenerateOpenClawConfig();
-    await new Promise((r) => setImmediate(r));
-    await new Promise((r) => setImmediate(r));
+    await drainBackgroundCoroutine();
 
     expect(mockConfigApply).toHaveBeenCalledTimes(1);
     const [payload] = mockConfigApply.mock.calls[0];

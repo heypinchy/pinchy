@@ -196,10 +196,13 @@ describe("EnterpriseBanner", () => {
 
       // Flush any microtasks the visibility handler may have scheduled —
       // a stray re-fetch would land on the microtask queue, not after a
-      // real wall-clock delay.
-      await act(async () => {
-        await Promise.resolve();
-      });
+      // real wall-clock delay. Several rounds in case the handler chains
+      // multiple awaits before reaching `fetch(...)`.
+      for (let i = 0; i < 5; i++) {
+        await act(async () => {
+          await Promise.resolve();
+        });
+      }
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
 
