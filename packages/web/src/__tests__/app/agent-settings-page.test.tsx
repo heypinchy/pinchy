@@ -428,6 +428,12 @@ describe("AgentSettingsPage", () => {
         await integrationPutPending;
         integrationPutResolved = true;
       } else if (urlStr.includes("/api/agents/agent-1") && method === "PATCH") {
+        // Invariant: this branch must run synchronously up to `return` —
+        // no `await` before the flag check. The detection logic relies on
+        // the PATCH mock body executing fully in the same synchronous
+        // invocation as the fetch call, so that "PATCH in parallel with
+        // PUT" produces a deterministic flag set before the test code
+        // resumes after the `waitFor(PUT was called)` below.
         if (!integrationPutResolved) {
           patchStartedBeforePutResolved = true;
         }
