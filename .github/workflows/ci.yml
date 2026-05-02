@@ -1033,10 +1033,16 @@ jobs:
           curl -sf 'http://localhost:9001/control/responses' | jq . || echo "responses endpoint unreachable"
           echo "=== Mock Telegram logs (full) ==="
           docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs telegram-mock 2>&1 | tail -2000
+          # OpenClaw: 3000 because tail -500 only covered the initial setup
+          # (~90s) and missed Test 10's failure window — see PR-CI run
+          # 25260750434, where OpenClaw activity after 20:16:50 (Multi-Bot
+          # connectBot) was truncated. We need the full restart trace post-
+          # connect to confirm whether the second account's provider ever
+          # starts.
           echo "=== OpenClaw logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs openclaw 2>&1 | tail -500
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs openclaw 2>&1 | tail -3000
           echo "=== Pinchy logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy 2>&1 | tail -200
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy 2>&1 | tail -500
 
       - name: Tear down
         if: always()
