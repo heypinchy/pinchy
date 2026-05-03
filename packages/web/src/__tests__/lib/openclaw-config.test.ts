@@ -1537,6 +1537,40 @@ describe("regenerateOpenClawConfig", () => {
       expect(appliedPayload).toContain('"NEW"');
       expect(appliedPayload).not.toContain('"OLD"');
     });
+
+    it("skips config.apply when OC in-memory config and file both lack meta (missing-meta-before-write cascade guard)", async () => {
+      // Scenario: OC just restarted (in-memory config has no meta) AND the
+      // previous config.apply already wrote a meta-less file. Neither source
+      // can supply meta, so supplementation leaves the payload without it.
+      // Sending that payload via config.apply triggers OC's
+      // "missing-meta-before-write" anomaly → SIGUSR1 restart cascade.
+      //
+      // The guard must detect this and return early, relying on inotify
+      // (from the writeConfigAtomic call above) instead of config.apply.
+      // The guard only fires when current.config IS defined (OC is running
+      // and has a config) — cold-start (current.config absent) still proceeds.
+      const ocConfigWithoutMeta = {
+        gateway: { mode: "local" },
+        plugins: { allow: ["anthropic"], entries: { anthropic: { enabled: true } } },
+      };
+      mockConfigGet.mockResolvedValue({ hash: "h1", config: ocConfigWithoutMeta });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+      // File also has no meta (written by a previous meta-less config.apply)
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({
+          gateway: { mode: "local" },
+        }) as unknown as Buffer
+      );
+
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
+
+      // config.apply must NOT be called — guard returns early when payload lacks meta
+      expect(mockConfigApply).not.toHaveBeenCalled();
+    });
   });
 });
 
