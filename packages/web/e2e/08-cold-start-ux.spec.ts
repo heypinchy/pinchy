@@ -92,11 +92,15 @@ test.describe("cold-start UX — indicator sequence", () => {
             return new RealWebSocket(url) as unknown as MockWebSocket;
           }
 
-          // Simulate a 100ms WS handshake — realistic but well within the 2s hysteresis
+          // Simulate a 1 500ms WS handshake. The delay must be long enough that
+          // CI's slow navigation to /chat/ still lands inside the "Starting..."
+          // window (CI page load can exceed 100ms), but short enough that the
+          // full starting → connected transition completes well within the 2s
+          // hysteresis window and the 30s test timeout.
           setTimeout(() => {
             this.readyState = 1; // OPEN
             this.onopen?.();
-          }, 100);
+          }, 1500);
         }
 
         addEventListener() {

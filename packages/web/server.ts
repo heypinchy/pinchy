@@ -69,9 +69,8 @@ if (process.env.NODE_ENV === "production") {
 }
 
 app.prepare().then(async () => {
-  const { bootInits } = await import("./src/lib/boot-inits");
-  await bootInits();
-
+  // Import request-handling modules before the server starts — these don't
+  // depend on bootInits having run (domain cache starts empty and fills lazily).
   const { isHostAllowed } = await import("./src/server/host-check");
   const { getCachedDomain } = await import("./src/lib/domain-cache");
   const { applyCsrfGate } = await import("./src/server/csrf-check");
@@ -222,9 +221,13 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   });
 
   const port = parseInt(process.env.PORT || "7777", 10);
-  server.listen(port, () => {
-    console.log(`Pinchy ready on http://localhost:${port}`);
-  });
+
+  // Start listening BEFORE bootInits so the Docker Compose healthcheck can
+  // reach /api/internal/openclaw-config-ready immediately. The endpoint returns
+  // 503 until bootInits calls markOpenClawConfigReady(), at which point the
+  // healthcheck passes and the openclaw container is allowed to start.
+  await new Promise<void>((resolve) => server.listen(port, resolve));
+  console.log(`Pinchy ready on http://localhost:${port}`);
 
   // Graceful shutdown: stop the usage poller interval so Node can exit,
   // then close the HTTP server. Without this, a SIGTERM (e.g. from Docker
@@ -238,8 +241,14 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       }),
   ]);
 
-  // Connect to OpenClaw AFTER the server is listening so health checks pass
-  // immediately and the setup wizard is available without waiting for OpenClaw.
+  // Run boot initializations AFTER the server is listening. The healthcheck
+  // endpoint returns 503 until markOpenClawConfigReady() is called inside
+  // bootInits(), at which point Docker Compose marks the container healthy.
+  const { bootInits } = await import("./src/lib/boot-inits");
+  await bootInits();
+
+  // Connect to OpenClaw AFTER bootInits so the gateway token and config are
+  // ready. The server has been listening since above, so health checks pass.
   if (OPENCLAW_WS_URL) {
     const gatewayToken = await waitForGatewayToken();
     openclawClient = new OpenClawClient({

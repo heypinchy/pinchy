@@ -21,7 +21,7 @@ export default defineConfig({
   globalTeardown: "./e2e/global-teardown.ts",
   webServer: {
     command:
-      "DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5433/pinchy_test BETTER_AUTH_SECRET=test-secret-for-e2e-at-least-32chars ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000001 AUDIT_HMAC_SECRET=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef WORKSPACE_BASE_PATH=/tmp/pinchy-test-workspaces PORT=7778 node -r ./server-preload.cjs --import tsx server.ts",
+      "DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5433/pinchy_test BETTER_AUTH_SECRET=test-secret-for-e2e-at-least-32chars ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000001 AUDIT_HMAC_SECRET=deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef WORKSPACE_BASE_PATH=/tmp/pinchy-test-workspaces OPENCLAW_SECRETS_PATH=/tmp/pinchy-e2e-secrets/secrets.json PORT=7778 node -r ./server-preload.cjs --import tsx server.ts",
     port: 7778,
     reuseExistingServer: false,
     stdout: "pipe",
