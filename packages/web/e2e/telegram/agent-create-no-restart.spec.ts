@@ -94,11 +94,17 @@ function openClawLogsSince(sinceIso: string): string {
  *   - `[gateway] received SIGUSR1; restarting`
  *   - `[reload] config change requires gateway restart`
  *   - `[gateway] received SIGTERM; shutting down` (start-openclaw.sh kill)
- *   - `[gateway] ready (` — included intentionally even though it's the
+ *   - `[gateway] ready` — included intentionally even though it's the
  *     trailing edge of a restart, not the leading edge: every cold-start
  *     stack emits at least one of these. By treating it as a marker we
  *     correctly wait `quietMs` after the gateway becomes operational, not
  *     just after the SIGUSR1 fires.
+ *
+ * Liveness guard: if the log window is completely empty (no output at all),
+ * OpenClaw's Node.js event loop may be blocked (seen in CI: up to 32 s of
+ * zero log output with eventLoopDelayMaxMs=6526 ms). An empty window looks
+ * identical to "quiet" without the guard. We require at least one log line
+ * in the last 10 s before declaring quiet.
  */
 async function waitForOpenClawQuiet(quietMs = 30000, timeout = 240000): Promise<void> {
   const start = Date.now();
@@ -107,10 +113,20 @@ async function waitForOpenClawQuiet(quietMs = 30000, timeout = 240000): Promise<
     const restartMarkers = logs
       .split("\n")
       .filter((l) =>
-        /received SIGUSR1|received SIGTERM|requires gateway restart|\[gateway\] ready \(/.test(l)
+        /received SIGUSR1|received SIGTERM|requires gateway restart|\[gateway\] ready/.test(l)
       );
     if (restartMarkers.length === 0) {
-      // No restart-related events in the look-back window → gateway is quiet.
+      // No restart-related events in the look-back window. Before declaring quiet,
+      // verify OpenClaw is actually alive: under extreme CI load the Node.js event
+      // loop can block for 30+ seconds producing zero log output. An empty log
+      // window is indistinguishable from "quiet" otherwise — so we require at
+      // least one log line in the last 10 s as a liveness signal.
+      const liveness = openClawLogsSince(new Date(Date.now() - 10000).toISOString());
+      if (!liveness.trim()) {
+        // No logs at all → event loop probably blocked. Keep waiting.
+        await new Promise((r) => setTimeout(r, 1000));
+        continue;
+      }
       return;
     }
     await new Promise((r) => setTimeout(r, 1000));
