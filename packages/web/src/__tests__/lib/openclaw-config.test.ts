@@ -111,6 +111,7 @@ import {
   sanitizeOpenClawConfig,
   updateTelegramChannelConfig,
 } from "@/lib/openclaw-config";
+import { pushConfigInBackground, _resetPushGeneration } from "@/lib/openclaw-config/write";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
 
@@ -162,6 +163,7 @@ async function drainBackgroundCoroutine(): Promise<void> {
 describe("regenerateOpenClawConfig", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    _resetPushGeneration();
     mockedExistsSync.mockReturnValue(true);
     mockedReadFileSync.mockImplementation(() => {
       throw new Error("ENOENT: no such file or directory");
@@ -1419,6 +1421,45 @@ describe("regenerateOpenClawConfig", () => {
 
       expect(mockConfigGet).not.toHaveBeenCalled();
       expect(mockConfigApply).not.toHaveBeenCalled();
+    });
+
+    it("cancels pending retries when a newer pushConfigInBackground call starts", async () => {
+      // Scenario: two pushConfigInBackground calls start back-to-back.
+      // Only the SECOND (newer) call's payload must reach OpenClaw —
+      // the first call must be cancelled by the generation counter before
+      // it can fire config.apply with a stale payload.
+      //
+      // This prevents the production race where a slow-retry loop carrying
+      // env.ANTHROPIC_API_KEY (from an initial setup call) fires simultaneously
+      // with a later agents-only call, triggering a spurious restart (#193).
+      mockConfigGet.mockResolvedValue({ hash: "h1" });
+      mockConfigApply.mockResolvedValue(undefined); // always succeeds
+      mockGetClient.mockImplementation(() => ({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      }));
+
+      // Start first push with "old" payload.
+      pushConfigInBackground(JSON.stringify({ env: { OLD: "1" } }));
+      // Immediately start second push with "new" payload — increments the
+      // generation counter, cancelling the first call's retry loop.
+      pushConfigInBackground(JSON.stringify({ env: { NEW: "2" } }));
+
+      // With the static import (no await import()), the OLD IIFE exits
+      // synchronously at the generation check (1 ≠ 2 → return). The NEW
+      // IIFE runs synchronously to its first real await (config.get()).
+      // One drain round is enough to let config.get + config.apply settle.
+      await drainBackgroundCoroutine();
+
+      // Exactly ONE config.apply call — the first call was cancelled before
+      // it could reach apply.
+      expect(mockConfigApply).toHaveBeenCalledTimes(1);
+
+      // Exactly ONE config.apply call — the first call was cancelled before
+      // it could reach apply.
+      expect(mockConfigApply).toHaveBeenCalledTimes(1);
+      const appliedPayload = String(mockConfigApply.mock.calls[0][0]);
+      expect(appliedPayload).toContain('"NEW"');
+      expect(appliedPayload).not.toContain('"OLD"');
     });
   });
 });
