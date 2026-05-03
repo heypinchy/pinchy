@@ -137,6 +137,8 @@ app.prepare().then(async () => {
     if (await isSetupComplete()) {
       const { regenerateOpenClawConfig } = await import("./src/lib/openclaw-config");
       await regenerateOpenClawConfig();
+      const { markOpenClawConfigReady } = await import("./src/lib/openclaw-config-ready");
+      markOpenClawConfigReady();
       console.log("[pinchy] OpenClaw config regenerated from DB state");
     }
   } catch (err) {
