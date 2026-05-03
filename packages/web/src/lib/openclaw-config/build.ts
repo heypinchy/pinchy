@@ -114,9 +114,9 @@ export async function regenerateOpenClawConfig() {
   const allAgents = await db.select().from(agents);
 
   // Pattern A from CLAUDE.md "Secrets Handling": secret pair for each LLM
-  // provider with a configured apiKey. Helper returns fresh mutable maps;
+  // provider with a configured apiKey. Helper returns a fresh mutable map;
   // ollama-cloud is spliced into providerSecrets at the model-providers call site.
-  const { providers: providerSecrets, envSecrets } = await collectProviderSecrets();
+  const { providers: providerSecrets } = await collectProviderSecrets();
 
   // Only set defaults.model — nothing else. OpenClaw enriches agents.defaults
   // with heartbeat, models, contextPruning, compaction at runtime. If Pinchy
@@ -753,7 +753,6 @@ export async function regenerateOpenClawConfig() {
     gateway: gatewaySecret,
     providers: providerSecrets,
     integrations: integrationSecrets,
-    env: envSecrets,
   });
   writeSecretsFile(secretsBundle);
 

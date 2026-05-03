@@ -3449,7 +3449,7 @@ describe("regenerateOpenClawConfig — env secrets", () => {
     expect(secretsArg.providers?.anthropic?.apiKey).toBe("sk-ant-the-real-key");
   });
 
-  it("writes the same key into secrets.env.<envVar> for start-openclaw.sh to load", async () => {
+  it("does NOT write secrets.env (env-export bash loop removed in Phase 2.4)", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-the-real-key";
       if (key === "openai_api_key") return "sk-openai-real-key";
@@ -3459,11 +3459,9 @@ describe("regenerateOpenClawConfig — env secrets", () => {
     await regenerateOpenClawConfig();
 
     const secretsArg = mockWriteSecretsFile.mock.calls[0][0];
-    // The env block in secrets.json holds the real values that start-openclaw.sh
-    // exports as process env vars before launching openclaw. The openclaw.json
-    // env block has only ${VAR} templates that resolve against this process env.
-    expect(secretsArg.env?.ANTHROPIC_API_KEY).toBe("sk-ant-the-real-key");
-    expect(secretsArg.env?.OPENAI_API_KEY).toBe("sk-openai-real-key");
+    // Provider keys are now resolved live from secrets.providers.* via SecretRef.
+    // start-openclaw.sh no longer exports process env vars — secrets.env is gone.
+    expect(secretsArg.env).toBeUndefined();
   });
 
   it("writes secrets.json BEFORE openclaw.json", async () => {

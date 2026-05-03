@@ -29,37 +29,29 @@ import { getSetting } from "@/lib/settings";
 export interface ProviderSecretsCollection {
   /** Per-provider apiKey for `secrets.json#/providers`. */
   providers: Record<string, { apiKey: string }>;
-  /** Resolved env-var values for `secrets.json#/env`. */
-  envSecrets: Record<string, string>;
 }
 
 /**
  * Walk PROVIDERS for configured API keys and produce the secrets-bundle
  * pair (Pattern A from CLAUDE.md "Secrets Handling").
  *
- * For each provider with an apiKey set in settings AND an `envVar`
- * declared in PROVIDERS, emits:
+ * For each provider with an apiKey set in settings, emits:
  *   - providers.<providerKey> = { apiKey }   (into secrets.json — resolved
  *     live via SecretRef in models.providers.<name>.apiKey)
- *   - env.<envVar> = <apiKey>      (into secrets.json — kept for
- *     start-openclaw.sh backward-compat until Phase 2.4 removes the
- *     bash watch loop)
  *
- * Returns fresh, mutable maps owned by the caller. The caller may
+ * Returns a fresh, mutable map owned by the caller. The caller may
  * splice in additional entries (e.g. ollama-cloud, handled at the
  * model-providers call site in build.ts).
  */
 export async function collectProviderSecrets(): Promise<ProviderSecretsCollection> {
   const providers: Record<string, { apiKey: string }> = {};
-  const envSecrets: Record<string, string> = {};
   for (const [providerKey, providerConfig] of Object.entries(PROVIDERS)) {
     const apiKey = await getSetting(providerConfig.settingsKey);
-    if (apiKey && providerConfig.envVar) {
+    if (apiKey) {
       providers[providerKey] = { apiKey };
-      envSecrets[providerConfig.envVar] = apiKey;
     }
   }
-  return { providers, envSecrets };
+  return { providers };
 }
 
 /**
@@ -105,12 +97,10 @@ export function buildSecretsBundle(parts: {
   gateway: SecretsBundle["gateway"];
   providers: SecretsBundle["providers"];
   integrations: SecretsBundle["integrations"];
-  env: SecretsBundle["env"];
 }): SecretsBundle {
   return {
     gateway: parts.gateway,
     providers: parts.providers,
     integrations: parts.integrations,
-    env: parts.env,
   };
 }
