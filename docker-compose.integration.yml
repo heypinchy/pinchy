@@ -5,6 +5,10 @@
 services:
   openclaw:
     image: ghcr.io/heypinchy/pinchy-openclaw:latest
+    # Image is published amd64-only. Pin platform so Mac/arm64 dev machines
+    # pull and run the amd64 variant under Rosetta instead of failing with
+    # "no matching manifest for linux/arm64/v8".
+    platform: linux/amd64
     ports:
       - "18790:18789"
     environment:
