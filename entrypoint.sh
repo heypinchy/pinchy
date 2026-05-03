@@ -6,6 +6,16 @@ set -e
 # to update openclaw.json when providers or agents change.
 chown -R pinchy:pinchy /openclaw-config
 
+# Seed a minimal openclaw.json if the volume doesn't have one yet.
+# On main, openclaw started first and Docker copied the seed from the image.
+# Now that pinchy starts first (healthcheck dependency), pinchy mounts the
+# volume before openclaw does — Docker won't copy the image files into an
+# already-mounted volume, so openclaw.json would be missing and OpenClaw
+# would say "Missing config" in a restart loop.
+if [ ! -f /openclaw-config/openclaw.json ]; then
+  printf '{"gateway":{"mode":"local","bind":"lan"}}\n' > /openclaw-config/openclaw.json
+fi
+
 # Give pinchy user ownership of the secrets tmpfs so it can read/write
 # secrets.json. The tmpfs is initially owned by root (or uid=1000 per the
 # volume driver opts); ensure the pinchy user is the directory owner so

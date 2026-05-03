@@ -232,9 +232,17 @@ jobs:
 
       - name: Wait for health (production)
         run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:7777/api/health; then
-              echo "Production stack healthy"
+          # Poll the openclaw-config-ready endpoint (not /api/health) so we
+          # wait until bootInits() has completed. /api/health returns 200 as
+          # soon as the HTTP server starts — before migrations and
+          # markOpenClawConfigReady() run — which would let "Verify
+          # infrastructure ready" start before OpenClaw has been allowed to
+          # start (it depends on the Docker healthcheck, which polls this
+          # same endpoint). The 60×2s=120s window matches the Docker
+          # healthcheck's own timeout (start_period 5s + retries 30 × 2s).
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7777/api/internal/openclaw-config-ready; then
+              echo "Production stack ready (bootInits complete)"
               exit 0
             fi
             echo "Attempt $i: not ready yet"
@@ -377,9 +385,9 @@ jobs:
 
       - name: Wait for health after recreate
         run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:7777/api/health; then
-              echo "Stack healthy after recreate"
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7777/api/internal/openclaw-config-ready; then
+              echo "Stack ready after recreate (bootInits complete)"
               exit 0
             fi
             sleep 2
@@ -430,9 +438,9 @@ jobs:
 
       - name: Wait for health (dev)
         run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:7777/api/health; then
-              echo "Dev stack healthy"
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7777/api/internal/openclaw-config-ready; then
+              echo "Dev stack ready (bootInits complete)"
               exit 0
             fi
             echo "Attempt $i: not ready yet"

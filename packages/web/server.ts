@@ -248,14 +248,13 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   await bootInits();
 
   // Connect to OpenClaw AFTER bootInits so the gateway token and config are
-  // ready. bootInits() has already run regenerateOpenClawConfig() (if setup is
-  // complete), so the token is available NOW or will never be (fresh install).
-  // Reading immediately avoids the 30-second wait that was delaying the
-  // connection and causing the smoke-test openclaw=unreachable failure.
-  // The OpenClawClient's autoReconnect handles the case where OpenClaw isn't
-  // ready yet — it retries every second with no upper bound.
+  // ready. On a completed install, bootInits() has already run
+  // regenerateOpenClawConfig() which writes the token — waitForGatewayToken
+  // returns immediately. On a fresh install (no setup yet), we poll until
+  // the setup wizard writes the token (typically within a few seconds).
+  // The HTTP server is already running so health/infra checks are not blocked.
   if (OPENCLAW_WS_URL) {
-    const gatewayToken = readGatewayToken();
+    const gatewayToken = await waitForGatewayToken();
     openclawClient = new OpenClawClient({
       url: OPENCLAW_WS_URL,
       token: gatewayToken,
