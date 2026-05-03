@@ -91,9 +91,12 @@ if (!config.secrets) {
 //
 // Pinchy's regenerateOpenClawConfig() writes these same fields on every
 // regenerate as an idempotent backstop, so they stay off across rewrites.
+// Use `=== undefined` for all four guards so a deliberate `mode: "off"` or
+// `enabled: false` set externally isn't re-overwritten on subsequent boots —
+// only fill in the field when it's truly absent.
 if (!config.discovery) config.discovery = {};
 if (!config.discovery.mdns) config.discovery.mdns = {};
-if (!config.discovery.mdns.mode) config.discovery.mdns.mode = "off";
+if (config.discovery.mdns.mode === undefined) config.discovery.mdns.mode = "off";
 
 if (!config.update) config.update = {};
 if (config.update.checkOnStart === undefined) config.update.checkOnStart = false;

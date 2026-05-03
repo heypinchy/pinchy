@@ -179,6 +179,18 @@ export async function regenerateOpenClawConfig() {
   // (contextPruning, heartbeat, models, compaction) that may not yet be
   // in the config file right after a full restart.
   const existingAgents = (existing.agents as Record<string, unknown>) || {};
+
+  // Spread existing.<field> for each top-level we touch so OpenClaw-enriched
+  // sub-fields survive the regenerate. Without this, Pinchy strips whatever
+  // OpenClaw stamps under these paths (lastAnnouncedAt, lastCheckedAt,
+  // boundPort, peer lists, etc.), the diff classifier flags it as a change,
+  // and we get exactly the cascade this PR is meant to close (#193, #237).
+  // Same shape as the `existingControlUi` spread on the gateway block above.
+  const existingDiscovery = (existing.discovery as Record<string, unknown>) || {};
+  const existingMdns = (existingDiscovery.mdns as Record<string, unknown>) || {};
+  const existingUpdate = (existing.update as Record<string, unknown>) || {};
+  const existingCanvasHost = (existing.canvasHost as Record<string, unknown>) || {};
+
   const config: Record<string, unknown> = {
     gateway,
     // Disable OpenClaw's mDNS announcer. Pinchy always runs OpenClaw inside
@@ -190,15 +202,15 @@ export async function regenerateOpenClawConfig() {
     // entries `[bonjour] restarting advertiser (service stuck in announcing)`).
     // We connect via OPENCLAW_WS_URL on the bridge network and never need
     // mDNS, so turning it off is safe.
-    discovery: { mdns: { mode: "off" } },
+    discovery: { ...existingDiscovery, mdns: { ...existingMdns, mode: "off" } },
     // Skip the npm "update available" check on every gateway boot.
     // Pinchy controls the OpenClaw version via the Docker image tag and
     // ignores the notice; the network call is wasted I/O at startup.
-    update: { checkOnStart: false },
+    update: { ...existingUpdate, checkOnStart: false },
     // OpenClaw's "canvas" artifact host. Pinchy doesn't render OpenClaw
     // canvases anywhere in its UI; per schema: "Keep disabled when canvas
     // workflows are inactive to reduce exposed local services."
-    canvasHost: { enabled: false },
+    canvasHost: { ...existingCanvasHost, enabled: false },
     env,
     secrets: {
       providers: {
