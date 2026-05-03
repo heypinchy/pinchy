@@ -732,15 +732,27 @@ export async function regenerateOpenClawConfig() {
   // which is the latency `pushConfigInBackground` exists to hide.
   writeConfigAtomic(newContent);
 
-  // Write per-agent auth-profiles.json for every agent.
-  // Required by OpenClaw ≥ 4.15: each agent directory must contain
-  // agents/<id>/agent/auth-profiles.json listing which LLM provider
-  // API keys it may use. We write one profile per currently-configured
-  // provider so agents aren't restricted to a subset of what's available.
-  // Phase-3 will add per-agent restrictions; for now all agents get all
-  // configured providers (safe: providers are still gated by allowedTools).
+  // Write per-agent auth-profiles.json for agents that use API-key-based
+  // providers. Required by OpenClaw ≥ 4.15: each agent directory must
+  // contain agents/<id>/agent/auth-profiles.json. We scope each agent to
+  // only the provider that matches its own model prefix — writing a profile
+  // for a provider the agent doesn't use causes hasAnyAuthProfileStoreSource
+  // to return TRUE, which enables strict auth mode and blocks unrelated
+  // providers (e.g. ollama-local falls through to an anthropic key check and
+  // fails when no anthropic profile exists).
   //
-  // Mapping: PROVIDERS uses "google" as key, AuthProfilesProvider uses "gemini".
+  // Mapping: model prefix (first "/" segment) → AuthProfilesProvider.
+  // "ollama" (local) is intentionally absent: URL-based, no API key needed.
+  // If an agent would get 0 profiles, writeAgentAuthProfiles removes any
+  // existing file to prevent spurious strict-mode activation.
+  const MODEL_PREFIX_TO_AUTH_PROFILE: Partial<Record<string, AuthProfilesProvider>> = {
+    anthropic: "anthropic",
+    openai: "openai",
+    google: "gemini",
+    "ollama-cloud": "ollama-cloud",
+    // "ollama" intentionally absent — local Ollama is URL-based, no API key
+  };
+  // Providers that actually have credentials configured right now.
   const PROVIDER_KEY_TO_AUTH_PROFILE: Partial<Record<string, AuthProfilesProvider>> = {
     anthropic: "anthropic",
     openai: "openai",
@@ -748,16 +760,24 @@ export async function regenerateOpenClawConfig() {
     "ollama-cloud": "ollama-cloud",
     "ollama-local": "ollama-local",
   };
-  const configuredAuthProviders: AuthProfilesProvider[] = Object.keys(providerSecrets)
-    .map((k) => PROVIDER_KEY_TO_AUTH_PROFILE[k])
-    .filter((p): p is AuthProfilesProvider => p !== undefined);
+  const configuredAuthProviders = new Set<AuthProfilesProvider>(
+    Object.keys(providerSecrets)
+      .map((k) => PROVIDER_KEY_TO_AUTH_PROFILE[k])
+      .filter((p): p is AuthProfilesProvider => p !== undefined)
+  );
 
   const configRoot = dirname(CONFIG_PATH);
   for (const agent of allAgents) {
+    const modelPrefix = agent.model?.split("/")[0] ?? "";
+    const agentProfileProvider = MODEL_PREFIX_TO_AUTH_PROFILE[modelPrefix];
+    const agentProviders: AuthProfilesProvider[] =
+      agentProfileProvider && configuredAuthProviders.has(agentProfileProvider)
+        ? [agentProfileProvider]
+        : [];
     await writeAgentAuthProfiles({
       configRoot,
       agentId: agent.id,
-      providers: configuredAuthProviders,
+      providers: agentProviders,
     });
   }
 

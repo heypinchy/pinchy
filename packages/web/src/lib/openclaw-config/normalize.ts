@@ -77,7 +77,11 @@ export function redactUnchangedEnvForApply(newContent: string): string {
     const existingEnv = (existingCfg.env as Record<string, string>) ?? {};
     const redactedEnv: Record<string, string> = {};
     for (const [key, val] of Object.entries(newEnv)) {
-      if (key in existingEnv && existingEnv[key] === val) {
+      if (key in existingEnv) {
+        // Key is already known to OpenClaw (possibly as a resolved value after
+        // OpenClaw expanded "${ENV_VAR}" → "sk-ant-..."). Send the sentinel so
+        // OpenClaw restores its current resolved value and diffConfigPaths sees
+        // no env change — preventing the spurious env.* restart (openclaw#75534).
         redactedEnv[key] = OPENCLAW_REDACTED_SENTINEL;
       } else {
         redactedEnv[key] = val;

@@ -211,7 +211,12 @@ test.describe.serial("Agent create — no gateway restart cascade (#193)", () =>
     //     for reload. Without this, we'd be testing nothing — the config
     //     push silently failing would also satisfy (b) but means our fix
     //     is being bypassed.
-    expect(logs, logs).toMatch(/\[reload\] config change detected.*agents\.list/);
+    // Note: OpenClaw ≥ 4.27 changed the log format from
+    //   "config change detected.*agents.list"
+    // to
+    //   "config change detected; evaluating reload (env, agents, ...)"
+    // so we match the common prefix + "agents" to cover both formats.
+    expect(logs, logs).toMatch(/\[reload\] config change detected.*agents/);
 
     // (b) The bug fingerprint. With the bug present, OpenClaw logs:
     //     "[reload] config change requires gateway restart (...)"

@@ -102,4 +102,21 @@ describe("writeAgentAuthProfiles", () => {
     const stat = fs.statSync(path.join(tmpDir, "agents", "a", "agent", "auth-profiles.json"));
     expect(stat.mode & 0o777).toBe(0o600);
   });
+
+  it("empty providers — removes existing auth-profiles.json to prevent strict auth mode", async () => {
+    const agentDir = path.join(tmpDir, "agents", "a", "agent");
+    fs.mkdirSync(agentDir, { recursive: true });
+    const filePath = path.join(agentDir, "auth-profiles.json");
+    fs.writeFileSync(filePath, JSON.stringify({ profiles: { "anthropic-default": {} } }));
+
+    await writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "a", providers: [] });
+
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  it("empty providers — no-op when auth-profiles.json does not exist", async () => {
+    await expect(
+      writeAgentAuthProfiles({ configRoot: tmpDir, agentId: "no-file-agent", providers: [] })
+    ).resolves.toBeUndefined();
+  });
 });

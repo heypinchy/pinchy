@@ -1139,7 +1139,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.allow).toContain("pinchy-docs");
   });
 
-  it("writes per-agent auth-profiles.json for every configured agent", async () => {
+  it("writes per-agent auth-profiles.json scoped to each agent's model provider", async () => {
     const agentsData = [
       {
         id: "agent-alpha",
@@ -1171,27 +1171,57 @@ describe("regenerateOpenClawConfig", () => {
     await regenerateOpenClawConfig();
 
     // auth-profiles.json is written atomically via writeFileSync → renameSync.
-    // The writeFileSync call uses a .tmp-<pid> path; renameSync (mocked) finishes the swap.
     // CONFIG_PATH is /openclaw-config/openclaw.json so configRoot = /openclaw-config.
-    // The temp file is written to configRoot/agents/<agentId>/agent/auth-profiles.json.tmp-<pid>.
     const authProfileCalls = mockedWriteFileSync.mock.calls.filter((call) =>
       String(call[0]).includes("auth-profiles.json")
     );
     expect(authProfileCalls.length).toBe(2);
 
-    const writtenAgentIds = authProfileCalls.map((call) => {
-      const parts = String(call[0]).split("/");
-      const agentsIdx = parts.indexOf("agents");
-      return parts[agentsIdx + 1];
-    });
-    expect(writtenAgentIds).toContain("agent-alpha");
-    expect(writtenAgentIds).toContain("agent-beta");
+    // agent-alpha uses anthropic model → only anthropic-default profile
+    const alphaCall = authProfileCalls.find((call) => String(call[0]).includes("agent-alpha"))!;
+    expect(alphaCall).toBeDefined();
+    const alphaContent = JSON.parse(String(alphaCall[1]));
+    expect(Object.keys(alphaContent.profiles)).toEqual(["anthropic-default"]);
+    expect(Object.keys(alphaContent.profiles)).not.toContain("openai-default");
 
-    for (const call of authProfileCalls) {
-      const content = JSON.parse(String(call[1]));
-      expect(Object.keys(content.profiles)).toContain("anthropic-default");
-      expect(Object.keys(content.profiles)).toContain("openai-default");
-    }
+    // agent-beta uses openai model → only openai-default profile
+    const betaCall = authProfileCalls.find((call) => String(call[0]).includes("agent-beta"))!;
+    expect(betaCall).toBeDefined();
+    const betaContent = JSON.parse(String(betaCall[1]));
+    expect(Object.keys(betaContent.profiles)).toEqual(["openai-default"]);
+    expect(Object.keys(betaContent.profiles)).not.toContain("anthropic-default");
+  });
+
+  it("does not write auth-profiles.json for ollama-local agents (URL-based, no API key)", async () => {
+    const agentsData = [
+      {
+        id: "agent-llama",
+        name: "Llama",
+        model: "ollama/llama3.1:8b",
+        allowedTools: [],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(agentsData),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    // unlinkSync is called (not writeFileSync) because providers=[]; the mock
+    // fs.unlinkSync is the real implementation (from actual fs mock) and will
+    // throw ENOENT since the tmp dir doesn't exist — that error is swallowed.
+    // What matters: no auth-profiles.json writeFileSync call for this agent.
+    const authProfileCalls = mockedWriteFileSync.mock.calls.filter((call) =>
+      String(call[0]).includes("auth-profiles.json")
+    );
+    expect(authProfileCalls.length).toBe(0);
   });
 
   describe("config propagation to OpenClaw runtime (#200)", () => {
