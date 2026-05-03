@@ -1139,6 +1139,61 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.allow).toContain("pinchy-docs");
   });
 
+  it("writes per-agent auth-profiles.json for every configured agent", async () => {
+    const agentsData = [
+      {
+        id: "agent-alpha",
+        name: "Smithers",
+        model: "anthropic/claude-sonnet-4-6",
+        allowedTools: [],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+      {
+        id: "agent-beta",
+        name: "Jeeves",
+        model: "openai/gpt-5.4",
+        allowedTools: [],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(agentsData),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      if (key === "openai_api_key") return "sk-openai-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    // auth-profiles.json is written atomically via writeFileSync → renameSync.
+    // The writeFileSync call uses a .tmp-<pid> path; renameSync (mocked) finishes the swap.
+    // CONFIG_PATH is /openclaw-config/openclaw.json so configRoot = /openclaw-config.
+    // The temp file is written to configRoot/agents/<agentId>/agent/auth-profiles.json.tmp-<pid>.
+    const authProfileCalls = mockedWriteFileSync.mock.calls.filter((call) =>
+      String(call[0]).includes("auth-profiles.json")
+    );
+    expect(authProfileCalls.length).toBe(2);
+
+    const writtenAgentIds = authProfileCalls.map((call) => {
+      const parts = String(call[0]).split("/");
+      const agentsIdx = parts.indexOf("agents");
+      return parts[agentsIdx + 1];
+    });
+    expect(writtenAgentIds).toContain("agent-alpha");
+    expect(writtenAgentIds).toContain("agent-beta");
+
+    for (const call of authProfileCalls) {
+      const content = JSON.parse(String(call[1]));
+      expect(Object.keys(content.profiles)).toContain("anthropic-default");
+      expect(Object.keys(content.profiles)).toContain("openai-default");
+    }
+  });
+
   describe("config propagation to OpenClaw runtime (#200)", () => {
     // Pinchy must push config changes to OpenClaw's *runtime*, not just
     // disk. The original bug: writing openclaw.json relied on OpenClaw's
@@ -1815,7 +1870,7 @@ describe("pinchy-odoo config size", () => {
 
     await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
 
-    const written = mockedWriteFileSync.mock.calls.at(-1)?.[1] as string;
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
     const odooAgents = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents ?? {};
 
