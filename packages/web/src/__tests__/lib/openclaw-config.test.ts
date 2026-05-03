@@ -1350,6 +1350,37 @@ describe("regenerateOpenClawConfig", () => {
       expect(mockConfigApply).not.toHaveBeenCalled();
     });
 
+    it("supplements meta from file when OC in-memory config lacks it (post-restart race)", async () => {
+      // Scenario: OC has just restarted and config.get() returns an in-memory
+      // config that has not yet had meta stamped (missing-meta-before-write
+      // anomaly). The file from the PREVIOUS run still has meta. The fallback
+      // must pick it up so config.apply doesn't trigger a cascade restart.
+      const ocConfigWithoutMeta = {
+        gateway: { mode: "local" },
+        plugins: { allow: ["anthropic"], entries: { anthropic: { enabled: true } } },
+      };
+      mockConfigGet.mockResolvedValue({ hash: "h1", config: ocConfigWithoutMeta });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+      // File from previous run has meta
+      const metaBlock = { version: "4.27.0", lastTouchedAt: "2025-01-01T00:00:00Z" };
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({
+          meta: metaBlock,
+          gateway: { mode: "local" },
+        }) as unknown as Buffer
+      );
+
+      await regenerateOpenClawConfig();
+      await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledOnce());
+      await drainBackgroundCoroutine();
+
+      const appliedPayload = JSON.parse(String(mockConfigApply.mock.calls[0][0]));
+      expect(appliedPayload.meta).toEqual(metaBlock);
+    });
+
     it("cancels pending retries when a newer pushConfigInBackground call starts", async () => {
       // Scenario: two pushConfigInBackground calls start back-to-back.
       // Only the SECOND (newer) call's payload must reach OpenClaw —
