@@ -206,33 +206,32 @@ test.describe("regenerateOpenClawConfig — cold-start & idempotency contract", 
     const after = readFileSync(CONFIG_PATH, "utf-8");
     const logs = openClawLogsSince(beforeMark);
 
-    // (a) Semantic equality, ignoring `meta.lastTouchedAt`. OpenClaw stamps
-    //     that timestamp on every write *it* performs (config.apply RPC,
-    //     internal restart bookkeeping) — independent of any Pinchy or
-    //     user action — so a strict byte-equality assertion here would be
-    //     racy: between our `before` and `after` reads, OpenClaw could have
-    //     re-stamped the file as part of routine reload-subsystem work even
-    //     when Pinchy itself wrote nothing. We instead diff the JSON modulo
-    //     that single field, mirroring `configsAreEquivalentUpToOpenClawMetadata`
-    //     in `packages/web/src/lib/openclaw-config/normalize.ts` (the same
-    //     workaround Pinchy applies to short-circuit redundant writes;
-    //     openclaw#75534).
+    // (a) Semantic equality, ignoring the entire `meta` block. OpenClaw
+    //     stamps `meta.lastTouchedAt`, `meta.lastTouchedVersion`, and
+    //     potentially other meta fields on every write IT performs
+    //     (config.apply RPC, internal restart bookkeeping) — independent
+    //     of any Pinchy or user action — so a strict byte-equality
+    //     assertion here would be racy: between our `before` and `after`
+    //     reads, OpenClaw could have re-stamped the file as part of
+    //     routine reload-subsystem work even when Pinchy itself wrote
+    //     nothing. Pinchy never writes `meta` (only preserves it from
+    //     existing), so the entire block is OpenClaw-owned and outside
+    //     our semantic contract here. Stripping the whole block is more
+    //     robust than enumerating individual stamp fields and avoids
+    //     false failures whenever upstream adds another stamp.
     //
     //     If THIS fails, Pinchy's regenerate produced a different file
     //     even though the user-level state didn't change — Pinchy is
     //     missing a preserve-list entry for an OpenClaw-enriched field
     //     (the kind of bug that produced #193, #200, #237). The diff
     //     localizes which field.
-    const stripMetaTimestamp = (raw: string): string => {
-      const parsed = JSON.parse(raw) as { meta?: Record<string, unknown> };
-      if (parsed.meta && typeof parsed.meta === "object") {
-        delete parsed.meta.lastTouchedAt;
-        if (Object.keys(parsed.meta).length === 0) delete parsed.meta;
-      }
+    const stripMeta = (raw: string): string => {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      delete parsed.meta;
       return JSON.stringify(parsed);
     };
-    const beforeNorm = stripMetaTimestamp(before);
-    const afterNorm = stripMetaTimestamp(after);
+    const beforeNorm = stripMeta(before);
+    const afterNorm = stripMeta(after);
     if (beforeNorm !== afterNorm) {
       // Compact diff for fast triage. Avoids dumping 20 KB of JSON.
       const diff = execSync(
