@@ -171,6 +171,16 @@ export async function regenerateOpenClawConfig() {
   const existingAgents = (existing.agents as Record<string, unknown>) || {};
   const config: Record<string, unknown> = {
     gateway,
+    // Disable OpenClaw's mDNS announcer. Pinchy always runs OpenClaw inside
+    // a container; multicast doesn't route out of Docker bridge networks,
+    // so the announcer hangs in `state=announcing`. After ~16 s OpenClaw's
+    // internal Bonjour watchdog declares the service stuck and SIGTERMs the
+    // gateway, costing ~30 s of "Reconnecting to the agent…" downtime per
+    // cold start (observed staging 2026-05-03; see openclaw-integration.log
+    // entries `[bonjour] restarting advertiser (service stuck in announcing)`).
+    // We connect via OPENCLAW_WS_URL on the bridge network and never need
+    // mDNS, so turning it off is safe.
+    discovery: { mdns: { mode: "off" } },
     env,
     secrets: {
       providers: {

@@ -212,6 +212,31 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.agents.defaults?.heartbeat).toBeUndefined();
   });
 
+  it("should disable mDNS discovery so the Bonjour watchdog can't kill the gateway", async () => {
+    // Rationale: OpenClaw's gateway tries to advertise itself via mDNS
+    // (Bonjour) on startup. In Docker bridge networks multicast doesn't
+    // route out of the container, so OpenClaw's announcer hangs in
+    // `state=announcing`. After 16 s its internal watchdog raises a
+    // SIGTERM ("[bonjour] restarting advertiser (service stuck in
+    // announcing for 16622ms)") and forces a full gateway restart —
+    // costing ~30 s of "Reconnecting to the agent…" downtime per cold
+    // start (observed on staging 2026-05-03).
+    //
+    // Pinchy always runs OpenClaw inside a container, so mDNS is never
+    // useful for us — we connect via OPENCLAW_WS_URL on the bridge
+    // network. Writing `discovery.mdns.mode = "off"` into the config
+    // disables the announcer up-front, the watchdog never fires, no
+    // restart cascade.
+    //
+    // Schema reference (openclaw 2026.4.x):
+    //   discovery.mdns.mode: "off" | "minimal" | "full"
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written) as { discovery?: { mdns?: { mode?: string } } };
+    expect(config.discovery?.mdns?.mode).toBe("off");
+  });
+
   it("should write agents.list with all agents from DB", async () => {
     const agentsData = [
       {

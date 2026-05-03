@@ -60,4 +60,16 @@ if (!config.secrets) {
     },
   };
 }
+// Disable mDNS announcer before the gateway boots. In Docker bridge networks
+// multicast doesn't route out of the container; OpenClaw's Bonjour announcer
+// hangs in `state=announcing` and after ~16 s the internal watchdog SIGTERMs
+// the gateway, costing ~30 s of "Reconnecting to the agent…" downtime
+// (observed staging 2026-05-03). We connect Pinchy → OpenClaw via
+// OPENCLAW_WS_URL on the bridge network and never need mDNS, so turning it
+// off in this bootstrap pass is safe and prevents the watchdog from ever
+// firing. Pinchy's regenerateOpenClawConfig() also writes this field, so it
+// stays off across config rewrites.
+if (!config.discovery) config.discovery = {};
+if (!config.discovery.mdns) config.discovery.mdns = {};
+if (!config.discovery.mdns.mode) config.discovery.mdns.mode = "off";
 writeAtomic(configPath, JSON.stringify(config, null, 2), 0o644);
