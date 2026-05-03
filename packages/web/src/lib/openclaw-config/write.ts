@@ -140,6 +140,28 @@ export function pushConfigInBackground(newContent: string): void {
         // hot-reloadable path (agents.list, bindings) actually changed.
         // Removable when openclaw#75534 lands; tracked in #215.
         const payload = redactUnchangedEnvForApply(supplemented);
+        // Safety guard: if the final payload still lacks meta and OC already has
+        // an in-memory config, skip config.apply. The config.apply path triggers
+        // OC's "missing-meta-before-write" anomaly when meta is absent (seen after
+        // an in-process restart where both OC memory and the previous file lack
+        // meta). inotify (from writeConfigAtomic above) does not trigger the
+        // anomaly — let it pick up the file change instead.
+        // Only applies when current.config is defined (OC is running); on cold
+        // start (config.get returns no config) we still push to populate OC's
+        // runtime config immediately.
+        if (current.config) {
+          try {
+            const payloadObj = JSON.parse(payload) as Record<string, unknown>;
+            if (!("meta" in payloadObj)) {
+              console.warn(
+                "[openclaw-config] Skipping config.apply: meta absent from payload — relying on inotify"
+              );
+              return;
+            }
+          } catch {
+            // malformed payload — fall through and let config.apply fail naturally
+          }
+        }
         await client.config.apply(payload, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
         });

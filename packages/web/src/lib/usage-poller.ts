@@ -122,13 +122,6 @@ let pollInterval: ReturnType<typeof setInterval> | null = null;
 export function startUsagePoller(openclawClient: OpenClawClient): void {
   if (pollInterval) return;
 
-  // Immediate first poll to seed watermarks from current OpenClaw state
-  // before any user activity can create a gap between compaction baseline
-  // and the first interval tick.
-  pollAllSessions(openclawClient).catch((err) => {
-    console.error("[usage-poller] Initial poll failed:", err);
-  });
-
   pollInterval = setInterval(() => {
     pollAllSessions(openclawClient).catch((err) => {
       console.error("[usage-poller] Unexpected error:", err);
