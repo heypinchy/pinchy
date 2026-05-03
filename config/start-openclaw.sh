@@ -107,6 +107,12 @@ fix_config_permissions() {
         chown root:root "$SECRETS_FILE" 2>/dev/null || true
         chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
     fi
+    # Per-agent auth-profiles.json files written by Pinchy (uid 999).
+    # OpenClaw (root) can read uid-999-owned files directly — no chown needed.
+    # The agents/ directory must stay writable by Pinchy (uid 999) so new
+    # agent subdirectories can be created. Only secure the files themselves.
+    chown 999:999 /root/.openclaw/agents 2>/dev/null || true
+    find /root/.openclaw/agents -name "auth-profiles.json" -type f -exec chmod 0600 {} \; 2>/dev/null || true
 }
 fix_config_permissions
 

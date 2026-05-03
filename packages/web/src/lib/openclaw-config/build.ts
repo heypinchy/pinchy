@@ -16,6 +16,7 @@ import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
+import { dirname } from "path";
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { writeConfigAtomic, readExistingConfig, pushConfigInBackground } from "./write";
@@ -24,6 +25,7 @@ import {
   collectProviderSecrets,
   readGatewayTokenFromConfig,
 } from "./secrets-bundle";
+import { writeAgentAuthProfiles, type AuthProfilesProvider } from "./agent-auth-profiles";
 
 function deepMerge(
   target: Record<string, unknown>,
@@ -51,7 +53,19 @@ function deepMerge(
 }
 
 export async function regenerateOpenClawConfig() {
-  const existing = readExistingConfig();
+  let existing = readExistingConfig();
+
+  // If readExistingConfig returned empty it may be a transient EACCES hit:
+  // OpenClaw's in-process SIGUSR1 restart rewrites openclaw.json as root:0600
+  // before start-openclaw.sh's chmod loop restores 0666. Under CI load the
+  // chmod may not run within readExistingConfig()'s 5×100ms budget → returns
+  // {} → meta absent → config.apply sends meta-less payload → OpenClaw 4.27
+  // "missing-meta-before-write" anomaly → sentinel restoration broken →
+  // spurious full gateway restart. 300ms covers one chmod-loop tick worst case.
+  if (Object.keys(existing).length === 0) {
+    await new Promise((r) => setTimeout(r, 300));
+    existing = readExistingConfig();
+  }
 
   // Build the gateway block. mode and bind are always set. auth.token is written
   // as a plain string — OpenClaw requires a literal string for gateway auth and
@@ -690,22 +704,22 @@ export async function regenerateOpenClawConfig() {
       }
     }
 
-    // Preserve OpenClaw-enriched channel fields (groupPolicy, streaming, enabled).
-    // Use an explicit allow-list instead of spread to prevent unknown/legacy
-    // fields (including potential legacy secrets) from leaking into the config.
-    // `enabled` is on the list because OpenClaw writes back `"enabled": true`
-    // whenever Telegram is auto-enabled at gateway startup. Without it on the
-    // list, the next regenerate strips the field, OpenClaw treats that as a
-    // config diff and triggers a full gateway restart, the restart re-runs
-    // auto-enable and re-adds the field — endless ping-pong loop where every
-    // settings save costs 15-30 s of "Agent runtime is not available"
-    // downtime (#193).
+    // Preserve OpenClaw-enriched channel fields. Use a denylist instead of an
+    // allowlist: OC 4.27+ writes additional fields to channels.telegram
+    // (e.g. pollingMode) that Pinchy doesn't know about. An allowlist strips
+    // those fields → config.apply or inotify sees a channels diff → spurious
+    // full gateway restart even for agents-only changes. The denylist preserves
+    // all OC-managed fields regardless of OC version. Pinchy-owned fields
+    // (enabled, dmPolicy, accounts) are always written fresh below and take
+    // precedence over any value in the file.
     const existingTelegram =
       ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
-    const ENRICHED_TELEGRAM_FIELDS = ["groupPolicy", "streaming"] as const;
+    const PINCHY_OWNED_TELEGRAM_FIELDS = new Set(["enabled", "dmPolicy", "accounts"]);
     const preservedTelegram: Record<string, unknown> = {};
-    for (const f of ENRICHED_TELEGRAM_FIELDS) {
-      if (f in existingTelegram) preservedTelegram[f] = existingTelegram[f];
+    for (const [k, v] of Object.entries(existingTelegram)) {
+      if (!PINCHY_OWNED_TELEGRAM_FIELDS.has(k)) {
+        preservedTelegram[k] = v;
+      }
     }
     // Defense in depth: write `enabled: true` actively when we emit the
     // telegram block at all. Pinchy's source of truth is "telegram has
@@ -766,6 +780,55 @@ export async function regenerateOpenClawConfig() {
   // will eventually pick it up — slowly on production volumes (~60 s),
   // which is the latency `pushConfigInBackground` exists to hide.
   writeConfigAtomic(newContent);
+
+  // Write per-agent auth-profiles.json for agents that use API-key-based
+  // providers. Required by OpenClaw ≥ 4.15: each agent directory must
+  // contain agents/<id>/agent/auth-profiles.json. We scope each agent to
+  // only the provider that matches its own model prefix — writing a profile
+  // for a provider the agent doesn't use causes hasAnyAuthProfileStoreSource
+  // to return TRUE, which enables strict auth mode and blocks unrelated
+  // providers (e.g. ollama-local falls through to an anthropic key check and
+  // fails when no anthropic profile exists).
+  //
+  // Mapping: model prefix (first "/" segment) → AuthProfilesProvider.
+  // "ollama" (local) is intentionally absent: URL-based, no API key needed.
+  // If an agent would get 0 profiles, writeAgentAuthProfiles removes any
+  // existing file to prevent spurious strict-mode activation.
+  const MODEL_PREFIX_TO_AUTH_PROFILE: Partial<Record<string, AuthProfilesProvider>> = {
+    anthropic: "anthropic",
+    openai: "openai",
+    google: "gemini",
+    "ollama-cloud": "ollama-cloud",
+    // "ollama" intentionally absent — local Ollama is URL-based, no API key
+  };
+  // Providers that actually have credentials configured right now.
+  const PROVIDER_KEY_TO_AUTH_PROFILE: Partial<Record<string, AuthProfilesProvider>> = {
+    anthropic: "anthropic",
+    openai: "openai",
+    google: "gemini",
+    "ollama-cloud": "ollama-cloud",
+    "ollama-local": "ollama-local",
+  };
+  const configuredAuthProviders = new Set<AuthProfilesProvider>(
+    Object.keys(providerSecrets)
+      .map((k) => PROVIDER_KEY_TO_AUTH_PROFILE[k])
+      .filter((p): p is AuthProfilesProvider => p !== undefined)
+  );
+
+  const configRoot = dirname(CONFIG_PATH);
+  for (const agent of allAgents) {
+    const modelPrefix = agent.model?.split("/")[0] ?? "";
+    const agentProfileProvider = MODEL_PREFIX_TO_AUTH_PROFILE[modelPrefix];
+    const agentProviders: AuthProfilesProvider[] =
+      agentProfileProvider && configuredAuthProviders.has(agentProfileProvider)
+        ? [agentProfileProvider]
+        : [];
+    await writeAgentAuthProfiles({
+      configRoot,
+      agentId: agent.id,
+      providers: agentProviders,
+    });
+  }
 
   // Best-effort RPC push for faster runtime propagation. Fire-and-forget:
   // the user-visible POST that triggered this regenerate must return as

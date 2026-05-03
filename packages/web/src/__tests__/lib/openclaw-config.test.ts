@@ -115,6 +115,7 @@ import {
   sanitizeOpenClawConfig,
   updateTelegramChannelConfig,
 } from "@/lib/openclaw-config";
+import { pushConfigInBackground, _resetPushGeneration } from "@/lib/openclaw-config/write";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
 
@@ -167,6 +168,7 @@ describe("regenerateOpenClawConfig", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockedGetOrCreateGatewayToken.mockResolvedValue("test-gateway-token");
+    _resetPushGeneration();
     mockedExistsSync.mockReturnValue(true);
     mockedReadFileSync.mockImplementation(() => {
       throw new Error("ENOENT: no such file or directory");
@@ -1294,6 +1296,136 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.allow).toContain("pinchy-docs");
   });
 
+  it("writes per-agent auth-profiles.json scoped to each agent's model provider", async () => {
+    const agentsData = [
+      {
+        id: "agent-alpha",
+        name: "Smithers",
+        model: "anthropic/claude-sonnet-4-6",
+        allowedTools: [],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+      {
+        id: "agent-beta",
+        name: "Jeeves",
+        model: "openai/gpt-5.4",
+        allowedTools: [],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(agentsData),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      if (key === "openai_api_key") return "sk-openai-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    // auth-profiles.json is written atomically via writeFileSync → renameSync.
+    // CONFIG_PATH is /openclaw-config/openclaw.json so configRoot = /openclaw-config.
+    const authProfileCalls = mockedWriteFileSync.mock.calls.filter((call) =>
+      String(call[0]).includes("auth-profiles.json")
+    );
+    expect(authProfileCalls.length).toBe(2);
+
+    // agent-alpha uses anthropic model → only anthropic-default profile
+    const alphaCall = authProfileCalls.find((call) => String(call[0]).includes("agent-alpha"))!;
+    expect(alphaCall).toBeDefined();
+    const alphaContent = JSON.parse(String(alphaCall[1]));
+    expect(Object.keys(alphaContent.profiles)).toEqual(["anthropic-default"]);
+    expect(Object.keys(alphaContent.profiles)).not.toContain("openai-default");
+
+    // agent-beta uses openai model → only openai-default profile
+    const betaCall = authProfileCalls.find((call) => String(call[0]).includes("agent-beta"))!;
+    expect(betaCall).toBeDefined();
+    const betaContent = JSON.parse(String(betaCall[1]));
+    expect(Object.keys(betaContent.profiles)).toEqual(["openai-default"]);
+    expect(Object.keys(betaContent.profiles)).not.toContain("anthropic-default");
+  });
+
+  it("does not write auth-profiles.json for ollama-local agents (URL-based, no API key)", async () => {
+    const agentsData = [
+      {
+        id: "agent-llama",
+        name: "Llama",
+        model: "ollama/llama3.1:8b",
+        allowedTools: [],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(agentsData),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    // unlinkSync is called (not writeFileSync) because providers=[]; the mock
+    // fs.unlinkSync is the real implementation (from actual fs mock) and will
+    // throw ENOENT since the tmp dir doesn't exist — that error is swallowed.
+    // What matters: no auth-profiles.json writeFileSync call for this agent.
+    const authProfileCalls = mockedWriteFileSync.mock.calls.filter((call) =>
+      String(call[0]).includes("auth-profiles.json")
+    );
+    expect(authProfileCalls.length).toBe(0);
+  });
+
+  it("retries readExistingConfig after 300 ms when it returns empty (EACCES/transient race)", async () => {
+    // Scenario: OpenClaw's in-process SIGUSR1 restart rewrites openclaw.json
+    // as root:0600 before start-openclaw.sh's chmod loop restores 0666.
+    // Under CI load the chmod may not run within readExistingConfig()'s
+    // 5×100ms budget → returns {} → meta absent → config.apply sends
+    // meta-less payload → OpenClaw 4.27 "missing-meta-before-write" anomaly
+    // → sentinel restoration broken → spurious full gateway restart (#193).
+    // The fix is a single 300ms async retry: if the first read returns empty,
+    // wait one chmod-loop tick and try again.
+    vi.useFakeTimers();
+    try {
+      let configReadCount = 0;
+      const existingWithMeta = {
+        gateway: { mode: "local", bind: "lan", auth: { token: "tok-eacces-retry" } },
+        meta: { version: "4.27.0", generatedAt: "2025-01-01T00:00:00Z" },
+      };
+      mockedReadFileSync.mockImplementation((path) => {
+        if (String(path).includes("openclaw.json")) {
+          configReadCount++;
+          if (configReadCount === 1) {
+            // Simulate readExistingConfig() returning {} (ENOENT or exhausted EACCES retries)
+            throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+          }
+          // Retry (count 2) and later file-comparison read (count 3+): return valid config
+          return JSON.stringify(existingWithMeta);
+        }
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      });
+
+      const promise = regenerateOpenClawConfig();
+      await vi.advanceTimersByTimeAsync(300);
+      await promise;
+
+      const openclaw = mockedWriteFileSync.mock.calls.find(
+        (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+      );
+      expect(openclaw).toBeDefined();
+      const config = JSON.parse(openclaw![1] as string);
+      // meta must be preserved from the retry read, not absent due to empty first read
+      expect(config.meta).toEqual({ version: "4.27.0", generatedAt: "2025-01-01T00:00:00Z" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   describe("config propagation to OpenClaw runtime (#200)", () => {
     // Pinchy must push config changes to OpenClaw's *runtime*, not just
     // disk. The original bug: writing openclaw.json relied on OpenClaw's
@@ -1370,6 +1502,151 @@ describe("regenerateOpenClawConfig", () => {
       await drainBackgroundCoroutine();
 
       expect(mockConfigGet).not.toHaveBeenCalled();
+      expect(mockConfigApply).not.toHaveBeenCalled();
+    });
+
+    it("supplements meta from file when OC in-memory config lacks it (post-restart race)", async () => {
+      // Scenario: OC has just restarted and config.get() returns an in-memory
+      // config that has not yet had meta stamped (missing-meta-before-write
+      // anomaly). The file from the PREVIOUS run still has meta. The fallback
+      // must pick it up so config.apply doesn't trigger a cascade restart.
+      const ocConfigWithoutMeta = {
+        gateway: { mode: "local" },
+        plugins: { allow: ["anthropic"], entries: { anthropic: { enabled: true } } },
+      };
+      mockConfigGet.mockResolvedValue({ hash: "h1", config: ocConfigWithoutMeta });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+      // File from previous run has meta
+      const metaBlock = { version: "4.27.0", lastTouchedAt: "2025-01-01T00:00:00Z" };
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({
+          meta: metaBlock,
+          gateway: { mode: "local" },
+        }) as unknown as Buffer
+      );
+
+      await regenerateOpenClawConfig();
+      await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledOnce());
+      await drainBackgroundCoroutine();
+
+      const appliedPayload = JSON.parse(String(mockConfigApply.mock.calls[0][0]));
+      expect(appliedPayload.meta).toEqual(metaBlock);
+    });
+
+    it("cancels pending retries when a newer pushConfigInBackground call starts", async () => {
+      // Scenario: two pushConfigInBackground calls start back-to-back.
+      // Only the SECOND (newer) call's payload must reach OpenClaw —
+      // the first call must be cancelled by the generation counter before
+      // it can fire config.apply with a stale payload.
+      //
+      // This prevents the production race where a slow-retry loop carrying
+      // env.ANTHROPIC_API_KEY (from an initial setup call) fires simultaneously
+      // with a later agents-only call, triggering a spurious restart (#193).
+      mockConfigGet.mockResolvedValue({ hash: "h1" });
+      mockConfigApply.mockResolvedValue(undefined); // always succeeds
+      mockGetClient.mockImplementation(() => ({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      }));
+
+      // Start first push with "old" payload.
+      pushConfigInBackground(JSON.stringify({ env: { OLD: "1" } }));
+      // Immediately start second push with "new" payload — increments the
+      // generation counter, cancelling the first call's retry loop.
+      pushConfigInBackground(JSON.stringify({ env: { NEW: "2" } }));
+
+      // With the static import (no await import()), the OLD IIFE exits
+      // synchronously at the generation check (1 ≠ 2 → return). The NEW
+      // IIFE runs synchronously to its first real await (config.get()).
+      // One drain round is enough to let config.get + config.apply settle.
+      await drainBackgroundCoroutine();
+
+      // Exactly ONE config.apply call — the first call was cancelled before
+      // it could reach apply.
+      expect(mockConfigApply).toHaveBeenCalledTimes(1);
+
+      // Exactly ONE config.apply call — the first call was cancelled before
+      // it could reach apply.
+      expect(mockConfigApply).toHaveBeenCalledTimes(1);
+      const appliedPayload = String(mockConfigApply.mock.calls[0][0]);
+      expect(appliedPayload).toContain('"NEW"');
+      expect(appliedPayload).not.toContain('"OLD"');
+    });
+
+    it("supplements channels.telegram fields absent from payload from OC in-memory config (OC 4.27+ channel diff prevention)", async () => {
+      // OC 4.27 writes additional fields to channels.telegram in-memory
+      // (e.g. pollingMode, or other new OC-managed fields). Pinchy's payload
+      // omits these fields. Without supplement, config.apply sees a channels
+      // diff → full gateway restart even for agents-only changes.
+      const ocConfig = {
+        meta: { version: "4.27.0", lastTouchedAt: "2025-01-01T00:00:00Z" },
+        channels: {
+          telegram: {
+            enabled: true,
+            dmPolicy: "pairing",
+            accounts: { a1: { botToken: "tok" } },
+            pollingMode: "long_poll", // OC-managed field Pinchy doesn't emit
+          },
+        },
+      };
+      mockConfigGet.mockResolvedValue({ hash: "h1", config: ocConfig });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+
+      // Pinchy's payload has channels.telegram WITHOUT pollingMode
+      const pinchyPayload = JSON.stringify({
+        meta: { version: "4.27.0" },
+        channels: {
+          telegram: {
+            enabled: true,
+            dmPolicy: "pairing",
+            accounts: { a1: { botToken: "tok" } },
+          },
+        },
+      });
+
+      pushConfigInBackground(pinchyPayload);
+      await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledOnce());
+
+      const applied = JSON.parse(String(mockConfigApply.mock.calls[0][0]));
+      expect(applied.channels?.telegram?.pollingMode).toBe("long_poll");
+    });
+
+    it("skips config.apply when OC in-memory config and file both lack meta (missing-meta-before-write cascade guard)", async () => {
+      // Scenario: OC just restarted (in-memory config has no meta) AND the
+      // previous config.apply already wrote a meta-less file. Neither source
+      // can supply meta, so supplementation leaves the payload without it.
+      // Sending that payload via config.apply triggers OC's
+      // "missing-meta-before-write" anomaly → SIGUSR1 restart cascade.
+      //
+      // The guard must detect this and return early, relying on inotify
+      // (from the writeConfigAtomic call above) instead of config.apply.
+      // The guard only fires when current.config IS defined (OC is running
+      // and has a config) — cold-start (current.config absent) still proceeds.
+      const ocConfigWithoutMeta = {
+        gateway: { mode: "local" },
+        plugins: { allow: ["anthropic"], entries: { anthropic: { enabled: true } } },
+      };
+      mockConfigGet.mockResolvedValue({ hash: "h1", config: ocConfigWithoutMeta });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+      // File also has no meta (written by a previous meta-less config.apply)
+      mockedReadFileSync.mockReturnValue(
+        JSON.stringify({
+          gateway: { mode: "local" },
+        }) as unknown as Buffer
+      );
+
+      await regenerateOpenClawConfig();
+      await drainBackgroundCoroutine();
+
+      // config.apply must NOT be called — guard returns early when payload lacks meta
       expect(mockConfigApply).not.toHaveBeenCalled();
     });
   });
@@ -1899,8 +2176,11 @@ describe("pinchy-odoo config size", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
-    const config = JSON.parse(written);
+    const writtenCall = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(writtenCall).toBeDefined();
+    const config = JSON.parse(writtenCall![1] as string);
 
     const odooConfig = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents?.["odoo-agent"];
     expect(odooConfig).toBeDefined();
@@ -1912,7 +2192,7 @@ describe("pinchy-odoo config size", () => {
     expect(odooConfig.schema).toBeUndefined();
 
     // Config should be small (no field definitions bloating it)
-    const configSize = written.length;
+    const configSize = writtenCall![1]!.toString().length;
     expect(configSize).toBeLessThan(5000); // Without schema: ~2-3KB. With schema it would be 100KB+
   });
 
@@ -1970,8 +2250,11 @@ describe("pinchy-odoo config size", () => {
 
     await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
 
-    const written = mockedWriteFileSync.mock.calls.at(-1)?.[1] as string;
-    const config = JSON.parse(written);
+    const writtenCall = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(writtenCall).toBeDefined();
+    const config = JSON.parse(writtenCall![1] as string);
     const odooAgents = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents ?? {};
 
     expect(odooAgents["odoo-agent"]).toBeDefined();
@@ -2370,16 +2653,20 @@ describe("restart-state integration", () => {
     });
   });
 
-  it("drops unknown fields from existingTelegram on regenerate", async () => {
-    // Seed openclaw.json with channels.telegram containing a known field (groupPolicy)
-    // and an unknown legacy field (weirdLegacyField)
+  it("preserves all non-Pinchy-owned fields from existingTelegram on regenerate", async () => {
+    // OC 4.27 writes new fields to channels.telegram that Pinchy doesn't know
+    // about (e.g. pollingMode). Using an allowlist (like the old ENRICHED_TELEGRAM_FIELDS)
+    // caused those fields to be stripped → channels diff on every config.apply →
+    // spurious full gateway restart even for agents-only changes.
+    // Using a denylist (preserve everything except Pinchy-owned fields) is
+    // robust to future OC additions.
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "secret" } },
       channels: {
         telegram: {
           dmPolicy: "pairing",
           groupPolicy: "allow",
-          weirdLegacyField: "foo",
+          pollingMode: "long_poll", // OC 4.27-managed field
           accounts: {},
         },
       },
@@ -2411,10 +2698,12 @@ describe("restart-state integration", () => {
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
-    // Known field is preserved
+    // All non-Pinchy-owned fields from the existing file are preserved
     expect(config.channels.telegram.groupPolicy).toBe("allow");
-    // Unknown legacy field is dropped
-    expect(config.channels.telegram.weirdLegacyField).toBeUndefined();
+    expect(config.channels.telegram.pollingMode).toBe("long_poll");
+    // Pinchy-owned fields are written fresh (not taken from existing)
+    expect(config.channels.telegram.enabled).toBe(true);
+    expect(config.channels.telegram.dmPolicy).toBe("pairing");
   });
 
   it("preserves channels.telegram.enabled when OpenClaw set it on auto-enable (#193)", async () => {

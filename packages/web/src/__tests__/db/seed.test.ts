@@ -19,6 +19,12 @@ vi.mock("@/lib/personal-agent", () => ({
   createSmithersAgent: (...args: unknown[]) => createSmithersAgentMock(...args),
 }));
 
+// ── Mock @/lib/settings ──────────────────────────────────────────────────────
+const getSettingMock = vi.fn();
+vi.mock("@/lib/settings", () => ({
+  getSetting: (...args: unknown[]) => getSettingMock(...args),
+}));
+
 describe("seedDefaultAgent", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -35,8 +41,9 @@ describe("seedDefaultAgent", () => {
     expect(createSmithersAgentMock).not.toHaveBeenCalled();
   });
 
-  it("creates a new agent when none exists", async () => {
+  it("falls back to anthropic/claude-sonnet-4-6 when no default_provider is configured", async () => {
     findFirstMock.mockResolvedValue(undefined);
+    getSettingMock.mockResolvedValue(null);
     const fakeAgent = {
       id: "agent-new",
       name: "Smithers",
@@ -59,8 +66,30 @@ describe("seedDefaultAgent", () => {
     });
   });
 
+  it("uses the configured default_provider's default model", async () => {
+    findFirstMock.mockResolvedValue(undefined);
+    getSettingMock.mockResolvedValue("ollama-local");
+    const fakeAgent = {
+      id: "agent-new",
+      name: "Smithers",
+      model: "ollama/llama3.2",
+      ownerId: null,
+      isPersonal: false,
+      createdAt: new Date(),
+    };
+    createSmithersAgentMock.mockResolvedValue(fakeAgent);
+
+    const { seedDefaultAgent } = await import("@/db/seed");
+    await seedDefaultAgent();
+
+    expect(createSmithersAgentMock).toHaveBeenCalledWith(
+      expect.objectContaining({ model: "ollama/llama3.2" })
+    );
+  });
+
   it("passes ownerId and isPersonal when ownerId is provided", async () => {
     findFirstMock.mockResolvedValue(undefined);
+    getSettingMock.mockResolvedValue(null);
     const fakeAgent = {
       id: "agent-owned",
       name: "Smithers",
