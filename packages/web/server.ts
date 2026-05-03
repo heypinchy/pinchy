@@ -102,6 +102,19 @@ app.prepare().then(async () => {
     );
   }
 
+  // One-time migration: copy gateway token from openclaw.json → settings DB.
+  // Must run before regenerateOpenClawConfig() so the token is available when
+  // build.ts calls getOrCreateGatewayToken(). Idempotent; DB wins if set.
+  try {
+    const { migrateGatewayTokenToDb } = await import("./src/lib/migrate-gateway-token");
+    await migrateGatewayTokenToDb();
+  } catch (err) {
+    console.error(
+      "[pinchy] Failed to migrate gateway token to DB:",
+      err instanceof Error ? err.message : err
+    );
+  }
+
   // Sanitize OpenClaw config before anything else — remove stale plugin entries
   // from the allow list that would prevent OpenClaw from starting. This runs
   // even before setup is complete (no DB access needed).
