@@ -96,6 +96,59 @@ Pinchy started when an AI agent sent a WhatsApp message it shouldn't have — le
 
 Read the full story on [heypinchy.com](https://heypinchy.com/blog/building-pinchy-in-public).
 
+
+## ❓ FAQ
+
+### General
+
+**What is Pinchy?**
+Pinchy is an enterprise layer on top of [OpenClaw](https://github.com/openclaw/openclaw) — adding permissions, audit trails, user management, and governance to make AI agents safe for teams and companies.
+
+**How is Pinchy different from OpenClaw?**
+OpenClaw is a powerful AI agent runtime for individual power users. Pinchy adds the enterprise features missing from OpenClaw: role-based access control, audit trails, multi-user support, plugin architecture, and cross-channel workflows.
+
+**Why not use Dust, Glean, or Copilot Studio?**
+Those are cloud platforms that send your data to external servers. Pinchy is fully self-hosted — your data never leaves your infrastructure, making it suitable for regulated industries and privacy-conscious teams.
+
+### Setup & Configuration
+
+**How do I install Pinchy?**
+See the [Installation Guide](https://docs.heypinchy.com/installation/) for detailed instructions. The quickest way is Docker Compose: a single command runs the full stack (Pinchy, PostgreSQL, OpenClaw Gateway).
+
+**What are the system requirements?**
+Pinchy runs on any machine that can run Docker. We recommend at least 4GB RAM and 2 CPU cores. For production use with multiple concurrent users, 8GB+ RAM is recommended.
+
+**Can I use Pinchy offline?**
+Yes! Pinchy is designed for offline operation. As long as your LLM provider (e.g., Ollama for local models) is accessible on your network, Pinchy works without internet access.
+
+### Agents & Permissions
+
+**What can Pinchy agents do?**
+Agents get scoped tools through a plugin architecture — a "Create Jira Ticket" plugin instead of raw shell access. This provides safe and powerful tool access without exposing dangerous capabilities.
+
+**How does role-based access control work?**
+Pinchy supports admin and user roles. Admins can manage agents, users, and providers. Users can access agents they're permitted to use. Future releases will add team-scoped permissions for more granular control.
+
+**What are Knowledge Base agents?**
+Knowledge Base agents have scoped read-only access to specific directories on your server. They can answer questions based on your documents without being able to modify them.
+
+### LLM Providers
+
+**Which LLM providers does Pinchy support?**
+Pinchy is model-agnostic. You can configure API keys for Anthropic (Claude), OpenAI (GPT), Google (Gemini), and local models via Ollama. Provider management is handled through the admin settings.
+
+### Troubleshooting
+
+**Pinchy can't connect to my LLM provider**
+Check that your API keys are correctly configured in Provider Settings. For local models, ensure Ollama is running and accessible from the Pinchy container network.
+
+**Users can't see certain agents**
+Agent visibility is controlled by permissions. Admins need to explicitly allow users to access specific agents. Check the Agent Permissions settings.
+
+**Audit trail entries seem incomplete**
+Audit logging captures every agent action. If entries are missing, check that the PostgreSQL database is healthy and the audit logging service is running. CSV export is available from the admin dashboard.
+
+
 ## Philosophy
 
 We care about how Pinchy _feels_, not just what it does. Security + Ease is our core tension — enterprise-grade protection that feels light, not intimidating. Smart defaults everywhere, personality templates instead of blank slates, zero-config setup, and full customization when you need it.
