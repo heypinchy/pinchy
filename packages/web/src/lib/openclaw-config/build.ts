@@ -14,6 +14,7 @@ import { getSetting } from "@/lib/settings";
 import { computeDeniedGroups } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
+import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
@@ -225,7 +226,10 @@ export async function regenerateOpenClawConfig() {
     // canvases anywhere in its UI; per schema: "Keep disabled when canvas
     // workflows are inactive to reduce exposed local services."
     canvasHost: { ...existingCanvasHost, enabled: false },
-    env,
+    // env block only emitted when non-empty. Provider API keys now use
+    // SecretRef in models.providers.* — no env-templates needed. Remaining
+    // callers (e.g. future custom env vars) can add to envTemplates.
+    ...(Object.keys(env).length > 0 && { env }),
     secrets: {
       providers: {
         pinchy: {
@@ -587,11 +591,23 @@ export async function regenerateOpenClawConfig() {
     config.plugins = { allow: allowedPlugins, entries };
   }
 
-  // Build models.providers block for Ollama providers
+  // Build models.providers block — built-in providers + Ollama providers.
+  // Built-in providers (anthropic, openai, google) use SecretRef for apiKey
+  // so OpenClaw resolves the key live from secrets.json without a restart.
   const ollamaCloudKey = await getSetting(PROVIDERS["ollama-cloud"].settingsKey);
   const ollamaLocalUrl = await getSetting(PROVIDERS["ollama-local"].settingsKey);
 
   const modelProviders: Record<string, unknown> = {};
+
+  for (const providerName of ["anthropic", "openai", "google"] as const) {
+    const apiKey = await getSetting(PROVIDERS[providerName].settingsKey);
+    if (apiKey) {
+      modelProviders[providerName] = {
+        apiKey: secretRef(`/providers/${providerName}/apiKey`),
+        models: getModelCatalogForProvider(providerName),
+      };
+    }
+  }
 
   if (ollamaCloudKey) {
     providerSecrets["ollama-cloud"] = { apiKey: ollamaCloudKey };

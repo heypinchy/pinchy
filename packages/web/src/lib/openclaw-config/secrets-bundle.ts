@@ -37,25 +37,25 @@ export interface ProviderSecretsCollection {
 }
 
 /**
- * Walk PROVIDERS for configured API keys and produce the env-template
- * + secret-bundle pair (Pattern A from CLAUDE.md "Secrets Handling").
+ * Walk PROVIDERS for configured API keys and produce the secrets-bundle
+ * pair (Pattern A from CLAUDE.md "Secrets Handling").
  *
  * For each provider with an apiKey set in settings AND an `envVar`
  * declared in PROVIDERS, emits:
- *   - env.<envVar> = "${envVar}"   (template string into openclaw.json)
  *   - providers.<providerKey> = { apiKey }   (into secrets.json)
- *   - env.<envVar> = <apiKey>      (resolved value into secrets.json)
+ *   - env.<envVar> = <apiKey>      (into secrets.json — kept for
+ *     start-openclaw.sh backward-compat until Phase 2.4 removes the
+ *     bash watch loop)
  *
- * start-openclaw.sh exports each `secrets.json#/env` entry as a real
- * process env var, so OpenClaw resolves the `${VAR}` template at
- * runtime. Using a SecretRef OBJECT in `env.*` is rejected by OpenClaw's
- * config validator with "expected string, received object" — the
- * `${VAR}` STRING is the only shape that round-trips.
+ * NOTE: envTemplates is intentionally empty. Provider API keys now use
+ * SecretRef in models.providers.<name>.apiKey (build.ts) instead of
+ * `${VAR}` templates in openclaw.json's env block. The env-template
+ * approach required shell `export` + process restart on key rotation;
+ * SecretRef resolves live from secrets.json without a restart.
  *
  * Returns fresh, mutable maps owned by the caller. The caller may
- * splice in additional entries (e.g. ollama-cloud, which has SecretRef
- * + no env template and is therefore handled at the model-providers
- * call site).
+ * splice in additional entries (e.g. ollama-cloud, handled at the
+ * model-providers call site in build.ts).
  */
 export async function collectProviderSecrets(): Promise<ProviderSecretsCollection> {
   const envTemplates: Record<string, string> = {};
@@ -64,7 +64,6 @@ export async function collectProviderSecrets(): Promise<ProviderSecretsCollectio
   for (const [providerKey, providerConfig] of Object.entries(PROVIDERS)) {
     const apiKey = await getSetting(providerConfig.settingsKey);
     if (apiKey && providerConfig.envVar) {
-      envTemplates[providerConfig.envVar] = `\${${providerConfig.envVar}}`;
       providers[providerKey] = { apiKey };
       envSecrets[providerConfig.envVar] = apiKey;
     }

@@ -411,7 +411,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.gateway.bind).toBe("lan");
   });
 
-  it("should include provider env vars from settings as SecretRefs", async () => {
+  it("should include provider API keys as SecretRefs in models.providers.*", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-decrypted";
       if (key === "openai_api_key") return "sk-openai-decrypted";
@@ -424,12 +424,22 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    // env.* must be string templates (not SecretRef objects) — OpenClaw's
-    // config validator rejects objects in env.*. The actual key is loaded by
-    // start-openclaw.sh from secrets.json into the OpenClaw process env.
-    expect(config.env.ANTHROPIC_API_KEY).toBe("${ANTHROPIC_API_KEY}");
-    expect(config.env.OPENAI_API_KEY).toBe("${OPENAI_API_KEY}");
-    expect(config.env.GEMINI_API_KEY).toBeUndefined();
+    // Provider API keys now use SecretRef in models.providers.* — not env-templates.
+    // OpenClaw resolves the SecretRef live from secrets.json without a restart.
+    expect(config?.models?.providers?.anthropic?.apiKey).toMatchObject({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/anthropic/apiKey",
+    });
+    expect(config?.models?.providers?.openai?.apiKey).toMatchObject({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/openai/apiKey",
+    });
+    // No env block for provider keys
+    expect(config?.env?.ANTHROPIC_API_KEY).toBeUndefined();
+    expect(config?.env?.OPENAI_API_KEY).toBeUndefined();
+    expect(config?.env?.GEMINI_API_KEY).toBeUndefined();
   });
 
   it("should set defaults.model from default provider", async () => {
@@ -468,7 +478,8 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.env).toEqual({});
+    // No env block when no provider keys are configured
+    expect(config.env).toBeUndefined();
     expect(config.agents.defaults).toEqual({});
   });
 
@@ -620,8 +631,12 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.env.ANTHROPIC_API_KEY).toBe("${ANTHROPIC_API_KEY}");
-    expect(config.env.OPENAI_API_KEY).toBeUndefined();
+    // Provider keys now use SecretRef in models.providers.* — no env block
+    expect(config?.models?.providers?.anthropic?.apiKey).toMatchObject({
+      source: "file",
+      provider: "pinchy",
+    });
+    expect(config.env).toBeUndefined();
     // gateway.auth.token is preserved as plain string (OpenClaw requires literal string)
     expect(config.gateway.auth.token).toBe("existing-token");
   });
@@ -1133,7 +1148,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama"].baseUrl).toBe("http://host.docker.internal:11434");
   });
 
-  it("should not add empty env var for ollama-local provider", async () => {
+  it("should not add env block for ollama-local provider (URL-based, no API key)", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "ollama_local_url") return "http://host.docker.internal:11434";
       return null;
@@ -1144,8 +1159,9 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    // ollama-local has envVar: "" — should not appear as empty key in env
-    expect(config.env[""]).toBeUndefined();
+    // ollama-local is URL-based — no env block and no models.providers.anthropic
+    expect(config.env).toBeUndefined();
+    expect(config?.models?.providers?.anthropic).toBeUndefined();
   });
 
   it("should omit pinchy-context and pinchy-files when no agents use them", async () => {
@@ -3099,27 +3115,17 @@ describe("restart-state integration", () => {
     expect(mockConfigApply.mock.calls.length).toBe(applyCallsBeforeSecondGenerate);
   });
 
-  it("redacts unchanged env values to OpenClaw sentinel in config.apply payload (#193, openclaw#75534)", async () => {
-    // OpenClaw's diffConfigPaths compares snapshot.config (env values
-    // RESOLVED to actual secrets like "sk-ant-...") against parsed.config
-    // (Pinchy's "${ANTHROPIC_API_KEY}" template). They never match, so
-    // env.* always appears in changedPaths, and env.* has no rule in
-    // BASE_RELOAD_RULES — triggers a full gateway restart on every
-    // settings save (#193 dominant cause after the channels.telegram and
-    // plugins.entries fixes).
-    //
-    // Workaround: send "__OPENCLAW_REDACTED__" for env keys whose template
-    // is unchanged from existing. OpenClaw's parseValidateConfigFromRawOrRespond
-    // calls restoreRedactedValues BEFORE diffConfigPaths, so the sentinel
-    // gets replaced with snapshot.config's resolved value → no env diff →
-    // no spurious restart.
+  it("config.apply payload has no env block after SecretRef migration (env-templates gone)", async () => {
+    // After Phase 2, provider API keys use SecretRef in models.providers.* — no
+    // env-templates in openclaw.json. The redactUnchangedEnvForApply workaround
+    // (openclaw#75534) is therefore a no-op: there are no env keys to redact.
     mockGetClient.mockReturnValue({
       config: { get: mockConfigGet, apply: mockConfigApply },
     });
     mockConfigGet.mockResolvedValue({ hash: "h-existing" });
     mockConfigApply.mockResolvedValue(undefined);
 
-    // Existing on disk: env contains the template (Pinchy's prior write).
+    // Existing on disk may have an env block from before the migration.
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "t" } },
       env: { ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}" },
@@ -3129,7 +3135,6 @@ describe("restart-state integration", () => {
     };
     mockedReadFileSync.mockReturnValue(JSON.stringify(existingConfig, null, 2));
 
-    // Pinchy's regenerate adds a new agent; env stays the same.
     mockedDb.select.mockReturnValue({
       from: mockFrom([
         {
@@ -3155,33 +3160,29 @@ describe("restart-state integration", () => {
     });
 
     await regenerateOpenClawConfig();
-    // Drain background coroutine.
     await drainBackgroundCoroutine();
 
     expect(mockConfigApply).toHaveBeenCalledTimes(1);
     const [payload] = mockConfigApply.mock.calls[0];
     const sent = JSON.parse(payload as string) as Record<string, unknown>;
-    const sentEnv = sent.env as Record<string, string>;
 
-    // ANTHROPIC_API_KEY was already in existing with the same template
-    // value → must be sentinel-redacted.
-    expect(sentEnv.ANTHROPIC_API_KEY).toBe("__OPENCLAW_REDACTED__");
+    // No env block — provider API keys are in models.providers.* now.
+    expect(sent.env).toBeUndefined();
+    // API key is a SecretRef in models.providers.anthropic
+    expect((sent as Record<string, unknown>)?.models).toBeDefined();
   });
 
-  it("keeps templates for new env keys not in existing config (#193)", async () => {
-    // When a new provider is configured (e.g. user adds OpenAI key for the
-    // first time), Pinchy emits a new env key. We CAN'T sentinel-redact it —
-    // OpenClaw has no snapshot value to restore from. The template form
-    // stays, OpenClaw resolves at runtime, and the resulting restart is
-    // legitimate (provider env truly changed). Test guards against
-    // accidentally over-redacting.
+  it("new provider config sends SecretRef (not env-template) in config.apply payload", async () => {
+    // After Phase 2, adding a new provider (e.g. user adds OpenAI key for the
+    // first time) emits a SecretRef in models.providers.openai — no env-template.
+    // No env diff → no spurious restart for env.* paths.
     mockGetClient.mockReturnValue({
       config: { get: mockConfigGet, apply: mockConfigApply },
     });
     mockConfigGet.mockResolvedValue({ hash: "h-existing" });
     mockConfigApply.mockResolvedValue(undefined);
 
-    // Existing has only ANTHROPIC_API_KEY.
+    // Existing has only Anthropic (from before the migration).
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "t" } },
       env: { ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}" },
@@ -3204,12 +3205,13 @@ describe("restart-state integration", () => {
     expect(mockConfigApply).toHaveBeenCalledTimes(1);
     const [payload] = mockConfigApply.mock.calls[0];
     const sent = JSON.parse(payload as string) as Record<string, unknown>;
-    const sentEnv = sent.env as Record<string, string>;
 
-    // Existing key → sentinel.
-    expect(sentEnv.ANTHROPIC_API_KEY).toBe("__OPENCLAW_REDACTED__");
-    // New key → template (so OpenClaw can resolve and bootstrap it).
-    expect(sentEnv.OPENAI_API_KEY).toBe("${OPENAI_API_KEY}");
+    // No env block — both providers use SecretRef in models.providers.*
+    expect(sent.env).toBeUndefined();
+    const models = sent.models as Record<string, unknown> | undefined;
+    const providers = (models?.providers as Record<string, unknown>) ?? {};
+    expect(providers.anthropic).toBeDefined();
+    expect(providers.openai).toBeDefined();
   });
 
   it("regenerateOpenClawConfig is byte-idempotent against its own previous output (#193)", async () => {
@@ -3363,11 +3365,9 @@ describe("writeConfigAtomic plaintext secret guard", () => {
     mockedGetSetting.mockResolvedValue(null);
   });
 
-  it("does NOT throw when provider keys are configured — they are written as ${VAR} env templates, never plaintext", async () => {
-    // OpenClaw's config validator rejects SecretRef objects in env.* (only strings).
-    // We work around this by writing ${VAR} env-template strings; start-openclaw.sh
-    // exports the real key from secrets.json into the OpenClaw process env at startup.
-    // The openclaw.json on disk contains only the template string, no plaintext.
+  it("does NOT throw when provider keys are configured — written as SecretRef, never plaintext", async () => {
+    // Provider API keys use SecretRef in models.providers.* — no plaintext in openclaw.json.
+    // OpenClaw resolves the SecretRef from secrets.json at runtime.
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-leaked-plaintext-key-abc123";
       if (key === "default_provider") return "anthropic";
@@ -3376,13 +3376,17 @@ describe("writeConfigAtomic plaintext secret guard", () => {
 
     await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
 
-    // Template string written to openclaw.json (via writeFileSync)
     const written = mockedWriteFileSync.mock.calls.find(
       (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
     );
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
-    expect(config.env.ANTHROPIC_API_KEY).toBe("${ANTHROPIC_API_KEY}");
+    // SecretRef (not plaintext, not env-template) written to openclaw.json
+    expect(config?.models?.providers?.anthropic?.apiKey).toMatchObject({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/anthropic/apiKey",
+    });
     // Actual key is in secrets.json via writeSecretsFile, never in openclaw.json
     expect(mockWriteSecretsFile).toHaveBeenCalled();
     expect(mockWriteSecretsFile.mock.calls[0][0].providers?.anthropic?.apiKey).toBe(
@@ -3409,7 +3413,7 @@ describe("regenerateOpenClawConfig — env secrets", () => {
     delete process.env.OPENCLAW_SECRETS_PATH;
   });
 
-  it("writes env.ANTHROPIC_API_KEY as a ${VAR} template string, not plaintext", async () => {
+  it("writes anthropic apiKey as SecretRef in models.providers.anthropic, not as env-template", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-the-real-key";
       return null;
@@ -3423,9 +3427,13 @@ describe("regenerateOpenClawConfig — env secrets", () => {
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
-    // OpenClaw's config validator rejects SecretRef objects in env.* (must be string).
-    // ${VAR} templates are valid strings; OpenClaw resolves them from process.env at runtime.
-    expect(config.env.ANTHROPIC_API_KEY).toBe("${ANTHROPIC_API_KEY}");
+    // Provider API keys use SecretRef — OpenClaw resolves from secrets.json live.
+    expect(config?.models?.providers?.anthropic?.apiKey).toMatchObject({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/anthropic/apiKey",
+    });
+    expect(config?.env?.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
   it("writes the actual plaintext key to secrets.json under /providers/anthropic/apiKey", async () => {
