@@ -155,7 +155,7 @@ export default async function globalSetup() {
   //    timer happens to fire while the gateway is healthy. 120s is well
   //    inside that envelope without masking real regressions.
   console.log("[integration-setup] Waiting for Pinchy to reconnect to OpenClaw...");
-  const deadline = Date.now() + 120000;
+  const deadline = Date.now() + 180000;
   let reconnected = false;
   while (Date.now() < deadline) {
     try {

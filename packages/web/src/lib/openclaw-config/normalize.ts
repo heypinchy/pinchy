@@ -63,6 +63,89 @@ export const OPENCLAW_REDACTED_SENTINEL = "__OPENCLAW_REDACTED__";
  * This is the workaround for openclaw#75534: see comment on the sentinel
  * constant above. Removable when upstream lands the writer-level fix.
  */
+/**
+ * Supplement a Pinchy-generated `config.apply` payload with OpenClaw-auto-
+ * configured fields from the current file on disk. Prevents spurious gateway
+ * restarts caused by a race between payload computation and OpenClaw's
+ * post-restart auto-enable side-effects.
+ *
+ * After every gateway restart, OpenClaw writes back auto-enabled plugin entries
+ * (`plugins.entries.anthropic`, `plugins.entries.telegram`, …) and gateway
+ * control-UI settings (`gateway.controlUi.allowedOrigins`) to openclaw.json.
+ * If Pinchy's payload was computed BEFORE those writes landed, the payload
+ * lacks those fields. `config.apply` then diffs against OpenClaw's in-memory
+ * state (which already has them), reports them as changedPaths, and triggers
+ * another full restart — cascade loop.
+ *
+ * Fields supplemented (file wins only for keys absent from payload):
+ *   - `plugins.allow`: non-pinchy-* entries appended at end
+ *   - `plugins.entries.*`: non-pinchy-* entries not already in payload
+ *   - `gateway.controlUi.*`: fields not already in payload gateway.controlUi
+ *
+ * Pinchy-owned fields (`pinchy-*` plugins, all other gateway/agent paths)
+ * are NEVER overwritten by file values — payload is the source of truth.
+ */
+export function supplementPayloadWithFileFields(payload: string): string {
+  let fileContent: string;
+  try {
+    fileContent = readFileSync(CONFIG_PATH, "utf-8");
+  } catch {
+    return payload;
+  }
+  try {
+    const payloadObj = JSON.parse(payload) as Record<string, unknown>;
+    const fileObj = JSON.parse(fileContent) as Record<string, unknown>;
+    const isPinchyPlugin = (id: string) => id.startsWith("pinchy-");
+    let changed = false;
+
+    const payloadPlugins = (payloadObj.plugins as Record<string, unknown>) ?? {};
+    const filePlugins = (fileObj.plugins as Record<string, unknown>) ?? {};
+
+    // Supplement plugins.allow: append non-pinchy file entries not in payload
+    const payloadAllow = (payloadPlugins.allow as string[]) ?? [];
+    const fileAllow = (filePlugins.allow as string[]) ?? [];
+    const payloadAllowSet = new Set(payloadAllow);
+    const toAdd = fileAllow.filter((p) => !isPinchyPlugin(p) && !payloadAllowSet.has(p));
+    if (toAdd.length > 0) {
+      payloadPlugins.allow = [...payloadAllow, ...toAdd];
+      payloadObj.plugins = payloadPlugins;
+      changed = true;
+    }
+
+    // Supplement plugins.entries: add non-pinchy file entries absent from payload
+    const payloadEntries = (payloadPlugins.entries as Record<string, unknown>) ?? {};
+    const fileEntries = (filePlugins.entries as Record<string, unknown>) ?? {};
+    for (const [id, entry] of Object.entries(fileEntries)) {
+      if (!isPinchyPlugin(id) && !(id in payloadEntries)) {
+        payloadEntries[id] = entry;
+        payloadPlugins.entries = payloadEntries;
+        payloadObj.plugins = payloadPlugins;
+        changed = true;
+      }
+    }
+
+    // Supplement gateway.controlUi: add file fields absent from payload
+    const payloadGateway = (payloadObj.gateway as Record<string, unknown>) ?? {};
+    const fileGateway = (fileObj.gateway as Record<string, unknown>) ?? {};
+    const fileControlUi = fileGateway.controlUi as Record<string, unknown> | undefined;
+    if (fileControlUi) {
+      const payloadControlUi = (payloadGateway.controlUi as Record<string, unknown>) ?? {};
+      for (const [k, v] of Object.entries(fileControlUi)) {
+        if (!(k in payloadControlUi)) {
+          payloadControlUi[k] = v;
+          payloadGateway.controlUi = payloadControlUi;
+          payloadObj.gateway = payloadGateway;
+          changed = true;
+        }
+      }
+    }
+
+    return changed ? JSON.stringify(payloadObj, null, 2) : payload;
+  } catch {
+    return payload;
+  }
+}
+
 export function redactUnchangedEnvForApply(newContent: string): string {
   let existingContent: string;
   try {
