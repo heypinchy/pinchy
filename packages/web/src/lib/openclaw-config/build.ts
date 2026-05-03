@@ -17,6 +17,7 @@ import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollam
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 
+import { dirname } from "path";
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { writeConfigAtomic, readExistingConfig, pushConfigInBackground } from "./write";
@@ -25,6 +26,7 @@ import {
   collectProviderSecrets,
   readGatewayTokenFromConfig,
 } from "./secrets-bundle";
+import { writeAgentAuthProfiles, type AuthProfilesProvider } from "./agent-auth-profiles";
 
 function deepMerge(
   target: Record<string, unknown>,
@@ -769,6 +771,35 @@ export async function regenerateOpenClawConfig() {
   // will eventually pick it up — slowly on production volumes (~60 s),
   // which is the latency `pushConfigInBackground` exists to hide.
   writeConfigAtomic(newContent);
+
+  // Write per-agent auth-profiles.json for every agent.
+  // Required by OpenClaw ≥ 4.15: each agent directory must contain
+  // agents/<id>/agent/auth-profiles.json listing which LLM provider
+  // API keys it may use. We write one profile per currently-configured
+  // provider so agents aren't restricted to a subset of what's available.
+  // Phase-3 will add per-agent restrictions; for now all agents get all
+  // configured providers (safe: providers are still gated by allowedTools).
+  //
+  // Mapping: PROVIDERS uses "google" as key, AuthProfilesProvider uses "gemini".
+  const PROVIDER_KEY_TO_AUTH_PROFILE: Partial<Record<string, AuthProfilesProvider>> = {
+    anthropic: "anthropic",
+    openai: "openai",
+    google: "gemini",
+    "ollama-cloud": "ollama-cloud",
+    "ollama-local": "ollama-local",
+  };
+  const configuredAuthProviders: AuthProfilesProvider[] = Object.keys(providerSecrets)
+    .map((k) => PROVIDER_KEY_TO_AUTH_PROFILE[k])
+    .filter((p): p is AuthProfilesProvider => p !== undefined);
+
+  const configRoot = dirname(CONFIG_PATH);
+  for (const agent of allAgents) {
+    await writeAgentAuthProfiles({
+      configRoot,
+      agentId: agent.id,
+      providers: configuredAuthProviders,
+    });
+  }
 
   // Best-effort RPC push for faster runtime propagation. Fire-and-forget:
   // the user-visible POST that triggered this regenerate must return as
