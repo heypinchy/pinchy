@@ -1,7 +1,28 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import * as fs from "fs";
+// @vitest-environment node
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import * as path from "path";
 import * as os from "os";
+
+// Hoist the real renameSync before mocking so we can use it as the default implementation.
+const { realRenameSync } = vi.hoisted(() => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const realFs = require("fs") as typeof import("fs");
+  return { realRenameSync: realFs.renameSync.bind(realFs) };
+});
+
+// Mock fs so renameSync can be intercepted per-test. All other methods call
+// through to the real implementation so tmpDir creation and assertions work.
+vi.mock("fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("fs")>();
+  const renameSyncMock = vi.fn(realRenameSync);
+  return {
+    ...actual,
+    default: { ...actual, renameSync: renameSyncMock },
+    renameSync: renameSyncMock,
+  };
+});
+
+import * as fs from "fs";
 import { writeAgentAuthProfiles } from "@/lib/openclaw-config/agent-auth-profiles";
 
 describe("writeAgentAuthProfiles", () => {
@@ -9,10 +30,12 @@ describe("writeAgentAuthProfiles", () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-auth-test-"));
+    vi.mocked(fs.renameSync).mockImplementation(realRenameSync);
   });
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.mocked(fs.renameSync).mockReset();
   });
 
   it("writes auth-profiles.json with one profile per configured provider", async () => {
@@ -41,21 +64,16 @@ describe("writeAgentAuthProfiles", () => {
   it("writes atomically — no partial files visible at the destination path", async () => {
     // Implementation must call fs.renameSync (namespace form, not destructured) for this spy to work.
     // The plan's Task 3 implementation uses fs.renameSync(...) — that assumption is load-bearing here.
-    const originalRename = fs.renameSync;
-    fs.renameSync = () => {
+    vi.mocked(fs.renameSync).mockImplementationOnce(() => {
       throw new Error("rename failed");
-    };
-    try {
-      await expect(
-        writeAgentAuthProfiles({
-          configRoot: tmpDir,
-          agentId: "a",
-          providers: ["anthropic"],
-        })
-      ).rejects.toThrow("rename failed");
-    } finally {
-      fs.renameSync = originalRename;
-    }
+    });
+    await expect(
+      writeAgentAuthProfiles({
+        configRoot: tmpDir,
+        agentId: "a",
+        providers: ["anthropic"],
+      })
+    ).rejects.toThrow("rename failed");
     const destPath = path.join(tmpDir, "agents", "a", "agent", "auth-profiles.json");
     expect(fs.existsSync(destPath)).toBe(false);
   });
