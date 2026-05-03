@@ -245,12 +245,10 @@ describe("regenerateOpenClawConfig", () => {
     //     in its UI; the schema says "Keep disabled when canvas workflows
     //     are inactive to reduce exposed local services."
     //
-    // All three are written in the bootstrap (ensure-gateway-token.js) so
-    // they're in place BEFORE the first gateway boot — disabling them
-    // there avoids the restart that would happen if Pinchy's later
-    // regenerate were the first writer (these paths are restart-classified
-    // by OpenClaw). regenerateOpenClawConfig() emits the same values as an
-    // idempotent backstop.
+    // All three are written by regenerateOpenClawConfig() BEFORE the first
+    // gateway boot (OpenClaw's depends_on Pinchy's healthcheck ensures this).
+    // The paths are restart-classified by OpenClaw, so writing them once at
+    // startup avoids any SIGUSR1 on the first Pinchy regenerate.
     await regenerateOpenClawConfig();
 
     const written = mockedWriteFileSync.mock.calls[0][1] as string;

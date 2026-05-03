@@ -74,12 +74,10 @@ describe("readGatewayToken", () => {
   });
 
   it("regression: even when secrets.json is unreadable (mode 0600 root-owned), token from openclaw.json wins", async () => {
-    // Reproduces the v0.5.0 staging cold-start race: ensure-gateway-token.js
-    // writes openclaw.json with the token. start-openclaw.sh's chmod 0600
-    // (added to satisfy OpenClaw's strict secrets-mode check) prevents Pinchy
-    // (uid 999) from reading secrets.json. Without this fallback path,
-    // readGatewayToken would return "" and Pinchy would connect to OpenClaw
-    // unauthenticated, then never recover.
+    // Regression: openclaw.json token wins even when secrets.json is root-only.
+    // start-openclaw.sh's chmod 0600 prevents Pinchy (uid 999) from reading
+    // secrets.json. Without the openclaw.json fallback, readGatewayToken would
+    // return "" and Pinchy would connect unauthenticated, then never recover.
     writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "the-real-token" } } }));
     // Make secrets.json effectively unreadable. We can't chmod 0600 to root in
     // tests (we're not root), so we simulate by deleting the file — same end

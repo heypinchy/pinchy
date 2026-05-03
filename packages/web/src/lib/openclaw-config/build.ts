@@ -80,12 +80,10 @@ export async function regenerateOpenClawConfig() {
   const existingGateway = (existing.gateway as Record<string, unknown>) || {};
   const gatewayTokenValue = await readGatewayTokenFromConfig(existing);
   if (!gatewayTokenValue) {
-    // Either ensure-gateway-token.js hasn't run yet (first start), or the
-    // OpenClaw container is broken. Logging instead of throwing so a fresh
-    // setup can recover once the token appears in secrets.json on the next
-    // regenerateOpenClawConfig() pass.
+    // DB unavailable and no existing config — log and continue. Token will be
+    // provisioned on the next regenerateOpenClawConfig() pass once the DB is ready.
     console.warn(
-      "[openclaw-config] No gateway token found in existing config or secrets.json. " +
+      "[openclaw-config] No gateway token found. " +
         "Writing empty token — OpenClaw auth will reject requests until the token is provisioned."
     );
   }
