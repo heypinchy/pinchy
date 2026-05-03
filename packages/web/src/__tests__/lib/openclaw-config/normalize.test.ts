@@ -10,6 +10,7 @@ import * as fs from "fs";
 import {
   redactUnchangedEnvForApply,
   supplementPayloadWithFileFields,
+  supplementPayloadWithOcConfig,
   OPENCLAW_REDACTED_SENTINEL,
 } from "@/lib/openclaw-config/normalize";
 
@@ -195,5 +196,61 @@ describe("supplementPayloadWithFileFields", () => {
     // Should be identical string when nothing changes
     const result = supplementPayloadWithFileFields(payload);
     expect(JSON.parse(result)).toEqual(JSON.parse(payload));
+  });
+});
+
+describe("supplementPayloadWithOcConfig", () => {
+  it("adds meta from OC config when absent from payload — prevents missing-meta-before-write", () => {
+    // Simulates the case where readExistingConfig() returned {} (EACCES race),
+    // so build.ts omitted meta from the payload. Without meta the payload triggers
+    // OpenClaw's missing-meta-before-write anomaly → cascading restarts.
+    const ocConfig = {
+      hash: "abc123",
+      meta: { version: "4.27.0", generatedAt: "2025-01-01T00:00:00Z", lastTouchedAt: "T2" },
+      gateway: { mode: "local", controlUi: { allowedOrigins: ["http://localhost:18789"] } },
+    };
+    const payload = JSON.stringify({ gateway: { mode: "local", auth: { token: "tok" } } });
+    const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
+
+    expect(result.meta).toEqual(ocConfig.meta);
+    expect(result.gateway.auth).toEqual({ token: "tok" }); // Pinchy field untouched
+  });
+
+  it("does NOT overwrite existing meta in payload", () => {
+    const ocConfig = { hash: "x", meta: { version: "4.27.0", lastTouchedAt: "T2" } };
+    const payload = JSON.stringify({ meta: { version: "4.27.0", lastTouchedAt: "T1" } });
+    const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
+
+    expect(result.meta.lastTouchedAt).toBe("T1"); // payload wins
+  });
+
+  it("adds gateway.controlUi from OC config (avoids file-read race for controlUi)", () => {
+    const ocConfig = {
+      hash: "x",
+      gateway: { controlUi: { allowedOrigins: ["http://localhost:18789"] } },
+    };
+    const payload = JSON.stringify({ gateway: { mode: "local" } });
+    const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
+
+    expect(result.gateway.controlUi).toEqual({ allowedOrigins: ["http://localhost:18789"] });
+  });
+
+  it("adds non-pinchy plugins.entries from OC config", () => {
+    const ocConfig = {
+      hash: "x",
+      plugins: { allow: ["anthropic"], entries: { anthropic: { enabled: true } } },
+    };
+    const payload = JSON.stringify({ plugins: { allow: ["pinchy-audit"], entries: {} } });
+    const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
+
+    expect(result.plugins.entries.anthropic).toEqual({ enabled: true });
+  });
+
+  it("adds non-pinchy plugins.allow entries from OC config", () => {
+    const ocConfig = { hash: "x", plugins: { allow: ["pinchy-audit", "anthropic"] } };
+    const payload = JSON.stringify({ plugins: { allow: ["pinchy-audit"] } });
+    const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
+
+    expect(result.plugins.allow).toContain("anthropic");
   });
 });

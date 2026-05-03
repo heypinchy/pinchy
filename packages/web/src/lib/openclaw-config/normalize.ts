@@ -63,59 +63,52 @@ export const OPENCLAW_REDACTED_SENTINEL = "__OPENCLAW_REDACTED__";
  * This is the workaround for openclaw#75534: see comment on the sentinel
  * constant above. Removable when upstream lands the writer-level fix.
  */
+const isPinchyPlugin = (id: string) => id.startsWith("pinchy-");
+
 /**
- * Supplement a Pinchy-generated `config.apply` payload with OpenClaw-auto-
- * configured fields from the current file on disk. Prevents spurious gateway
- * restarts caused by a race between payload computation and OpenClaw's
- * post-restart auto-enable side-effects.
+ * Core supplement logic — merges OpenClaw-auto-configured fields from `source`
+ * into `payload`. `source` is either the parsed file content or the parsed
+ * OC in-memory config returned by `config.get()`.
  *
- * After every gateway restart, OpenClaw writes back auto-enabled plugin entries
- * (`plugins.entries.anthropic`, `plugins.entries.telegram`, …) and gateway
- * control-UI settings (`gateway.controlUi.allowedOrigins`) to openclaw.json.
- * If Pinchy's payload was computed BEFORE those writes landed, the payload
- * lacks those fields. `config.apply` then diffs against OpenClaw's in-memory
- * state (which already has them), reports them as changedPaths, and triggers
- * another full restart — cascade loop.
- *
- * Fields supplemented (file wins only for keys absent from payload):
+ * Fields supplemented (source wins only for keys absent from payload):
+ *   - `meta`: entire block (absent when readExistingConfig returns {} on EACCES)
  *   - `plugins.allow`: non-pinchy-* entries appended at end
  *   - `plugins.entries.*`: non-pinchy-* entries not already in payload
  *   - `gateway.controlUi.*`: fields not already in payload gateway.controlUi
  *
- * Pinchy-owned fields (`pinchy-*` plugins, all other gateway/agent paths)
- * are NEVER overwritten by file values — payload is the source of truth.
+ * Pinchy-owned fields are NEVER overwritten — payload is the source of truth.
  */
-export function supplementPayloadWithFileFields(payload: string): string {
-  let fileContent: string;
-  try {
-    fileContent = readFileSync(CONFIG_PATH, "utf-8");
-  } catch {
-    return payload;
-  }
+function supplementFromSource(payload: string, source: Record<string, unknown>): string {
   try {
     const payloadObj = JSON.parse(payload) as Record<string, unknown>;
-    const fileObj = JSON.parse(fileContent) as Record<string, unknown>;
-    const isPinchyPlugin = (id: string) => id.startsWith("pinchy-");
     let changed = false;
 
-    const payloadPlugins = (payloadObj.plugins as Record<string, unknown>) ?? {};
-    const filePlugins = (fileObj.plugins as Record<string, unknown>) ?? {};
+    // Supplement meta: prevents OpenClaw's missing-meta-before-write anomaly
+    // that triggers the inotify diff cascade (env, plugins, channels all appear
+    // changed because baseline comparison fails without meta present).
+    if (!("meta" in payloadObj) && "meta" in source) {
+      payloadObj.meta = source.meta;
+      changed = true;
+    }
 
-    // Supplement plugins.allow: append non-pinchy file entries not in payload
+    const payloadPlugins = (payloadObj.plugins as Record<string, unknown>) ?? {};
+    const sourcePlugins = (source.plugins as Record<string, unknown>) ?? {};
+
+    // Supplement plugins.allow: append non-pinchy source entries not in payload
     const payloadAllow = (payloadPlugins.allow as string[]) ?? [];
-    const fileAllow = (filePlugins.allow as string[]) ?? [];
+    const sourceAllow = (sourcePlugins.allow as string[]) ?? [];
     const payloadAllowSet = new Set(payloadAllow);
-    const toAdd = fileAllow.filter((p) => !isPinchyPlugin(p) && !payloadAllowSet.has(p));
+    const toAdd = sourceAllow.filter((p) => !isPinchyPlugin(p) && !payloadAllowSet.has(p));
     if (toAdd.length > 0) {
       payloadPlugins.allow = [...payloadAllow, ...toAdd];
       payloadObj.plugins = payloadPlugins;
       changed = true;
     }
 
-    // Supplement plugins.entries: add non-pinchy file entries absent from payload
+    // Supplement plugins.entries: add non-pinchy source entries absent from payload
     const payloadEntries = (payloadPlugins.entries as Record<string, unknown>) ?? {};
-    const fileEntries = (filePlugins.entries as Record<string, unknown>) ?? {};
-    for (const [id, entry] of Object.entries(fileEntries)) {
+    const sourceEntries = (sourcePlugins.entries as Record<string, unknown>) ?? {};
+    for (const [id, entry] of Object.entries(sourceEntries)) {
       if (!isPinchyPlugin(id) && !(id in payloadEntries)) {
         payloadEntries[id] = entry;
         payloadPlugins.entries = payloadEntries;
@@ -124,13 +117,13 @@ export function supplementPayloadWithFileFields(payload: string): string {
       }
     }
 
-    // Supplement gateway.controlUi: add file fields absent from payload
+    // Supplement gateway.controlUi: add source fields absent from payload
     const payloadGateway = (payloadObj.gateway as Record<string, unknown>) ?? {};
-    const fileGateway = (fileObj.gateway as Record<string, unknown>) ?? {};
-    const fileControlUi = fileGateway.controlUi as Record<string, unknown> | undefined;
-    if (fileControlUi) {
+    const sourceGateway = (source.gateway as Record<string, unknown>) ?? {};
+    const sourceControlUi = sourceGateway.controlUi as Record<string, unknown> | undefined;
+    if (sourceControlUi) {
       const payloadControlUi = (payloadGateway.controlUi as Record<string, unknown>) ?? {};
-      for (const [k, v] of Object.entries(fileControlUi)) {
+      for (const [k, v] of Object.entries(sourceControlUi)) {
         if (!(k in payloadControlUi)) {
           payloadControlUi[k] = v;
           payloadGateway.controlUi = payloadControlUi;
@@ -141,6 +134,37 @@ export function supplementPayloadWithFileFields(payload: string): string {
     }
 
     return changed ? JSON.stringify(payloadObj, null, 2) : payload;
+  } catch {
+    return payload;
+  }
+}
+
+/**
+ * Supplement using OpenClaw's in-memory config returned by `config.get()`.
+ * Preferred over `supplementPayloadWithFileFields` because the in-memory state
+ * is always up-to-date — no file-write race conditions after a restart.
+ */
+export function supplementPayloadWithOcConfig(
+  payload: string,
+  ocConfig: Record<string, unknown>
+): string {
+  return supplementFromSource(payload, ocConfig);
+}
+
+/**
+ * Supplement using the current file on disk. Fallback when the OC in-memory
+ * config is unavailable (e.g. no WS client configured).
+ */
+export function supplementPayloadWithFileFields(payload: string): string {
+  let fileContent: string;
+  try {
+    fileContent = readFileSync(CONFIG_PATH, "utf-8");
+  } catch {
+    return payload;
+  }
+  try {
+    const fileObj = JSON.parse(fileContent) as Record<string, unknown>;
+    return supplementFromSource(payload, fileObj);
   } catch {
     return payload;
   }

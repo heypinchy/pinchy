@@ -3,7 +3,11 @@ import { dirname } from "path";
 import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { CONFIG_PATH } from "./paths";
-import { redactUnchangedEnvForApply, supplementPayloadWithFileFields } from "./normalize";
+import {
+  redactUnchangedEnvForApply,
+  supplementPayloadWithFileFields,
+  supplementPayloadWithOcConfig,
+} from "./normalize";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
 export function writeConfigAtomic(content: string) {
@@ -95,16 +99,26 @@ export function pushConfigInBackground(newContent: string): void {
       // may have started while we were sleeping.
       if (generation !== _pushGeneration) return;
       try {
-        const current = (await client.config.get()) as { hash: string };
+        const current = (await client.config.get()) as {
+          hash: string;
+          config?: Record<string, unknown>;
+        };
         if (generation !== _pushGeneration) return; // check after each await
         // Re-supplement on every attempt (including retries after a restart).
         // Between payload computation and now, OpenClaw may have auto-enabled
-        // plugins (e.g. anthropic, telegram) and written their entries to the
-        // file. Without supplementing, config.apply sees those fields removed
-        // and triggers another full restart — cascade loop. Supplement first,
-        // then env-redact (order matters: supplement adds file values, redact
-        // replaces env keys with the sentinel for openclaw#75534).
-        const supplemented = supplementPayloadWithFileFields(newContent);
+        // plugins (e.g. anthropic, telegram) and written their entries back to
+        // openclaw.json. Without supplementing, config.apply sees those fields
+        // removed and triggers another full restart — cascade loop.
+        //
+        // Prefer the in-memory OC config (from config.get) over reading the
+        // file: the in-memory state is authoritative and has no file-write
+        // race conditions. Fall back to file supplement when config is absent.
+        // Supplement first, then env-redact (order matters: supplement adds
+        // OC-managed values, redact replaces env keys with the sentinel for
+        // openclaw#75534).
+        const supplemented = current.config
+          ? supplementPayloadWithOcConfig(newContent, current.config)
+          : supplementPayloadWithFileFields(newContent);
         // Workaround for openclaw#75534: replace unchanged env values with
         // OpenClaw's REDACTED sentinel before sending. Without this, every
         // config.apply payload trips OpenClaw's resolved-vs-template diff for
