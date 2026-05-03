@@ -45,6 +45,12 @@ const COMPOSE_FILE = "-f docker-compose.integration.yml";
 const CONFIG_PATH = "/tmp/pinchy-integration-openclaw/openclaw.json";
 const PINCHY_URL = "http://localhost:7779";
 
+function stripMeta(raw: string): string {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  delete parsed.meta;
+  return JSON.stringify(parsed);
+}
+
 function openClawLogsSince(sinceIso: string): string {
   return execSync(`docker compose ${COMPOSE_FILE} logs openclaw --since "${sinceIso}" 2>&1`, {
     encoding: "utf-8",
@@ -225,11 +231,6 @@ test.describe("regenerateOpenClawConfig — cold-start & idempotency contract", 
     //     missing a preserve-list entry for an OpenClaw-enriched field
     //     (the kind of bug that produced #193, #200, #237). The diff
     //     localizes which field.
-    const stripMeta = (raw: string): string => {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      delete parsed.meta;
-      return JSON.stringify(parsed);
-    };
     const beforeNorm = stripMeta(before);
     const afterNorm = stripMeta(after);
     if (beforeNorm !== afterNorm) {
@@ -262,5 +263,68 @@ test.describe("regenerateOpenClawConfig — cold-start & idempotency contract", 
     expect(logs, logs).not.toMatch(/requires gateway restart/);
     expect(logs, logs).not.toMatch(/received SIGUSR1/);
     expect(logs, logs).not.toMatch(/full process restart/);
+  });
+
+  /**
+   * Stress idempotency: 5 consecutive no-op regenerates must not drift the
+   * config or trigger a restart on any iteration.
+   *
+   * This catches a class of bugs where a single regenerate is stable but a
+   * sequence diverges — e.g. a field that is preserved on iteration 1 but
+   * re-emitted differently on iteration 2 once it is already present in the
+   * file that Pinchy reads back.
+   *
+   * Each iteration: PATCH agent with same name → wait 5 s → assert byte-equal
+   * (minus meta) → assert no restart markers.
+   */
+  test("idempotency stress: 5 consecutive no-op regenerates produce no openclaw.json drift", async () => {
+    test.setTimeout(300000); // 5 × ~45 s max each
+
+    await login();
+    const smithersId = await getSmithersId();
+
+    // Wait for the system to fully settle before starting the stress loop.
+    await waitForOpenClawQuiet();
+
+    for (let i = 1; i <= 5; i++) {
+      const snapshot = readFileSync(CONFIG_PATH, "utf-8");
+      const beforeMark = new Date(Date.now() - 1000).toISOString();
+
+      const patchRes = await fetch(`${PINCHY_URL}/api/agents/${smithersId}`, {
+        method: "PATCH",
+        headers: authHeaders(),
+        body: JSON.stringify({ name: "Smithers" }),
+      });
+      expect(patchRes.status, `iteration ${i}: PATCH failed`).toBeLessThan(300);
+
+      // Allow enough time for the write + any potential restart to surface.
+      await new Promise((r) => setTimeout(r, 5000));
+
+      const after = readFileSync(CONFIG_PATH, "utf-8");
+      const logs = openClawLogsSince(beforeMark);
+
+      if (stripMeta(snapshot) !== stripMeta(after)) {
+        const { writeFileSync: write, mkdtempSync } = await import("fs");
+        const { tmpdir } = await import("os");
+        const { join } = await import("path");
+        const dir = mkdtempSync(join(tmpdir(), "pinchy-stress-"));
+        write(join(dir, "before.json"), snapshot);
+        write(join(dir, "after.json"), after);
+        const diff = execSync(
+          `diff "${join(dir, "before.json")}" "${join(dir, "after.json")}" || true`,
+          { encoding: "utf-8" }
+        );
+        throw new Error(
+          `Stress iteration ${i}: openclaw.json drifted — preserve-list incomplete.\n` +
+            `Diff (before → after):\n${diff}`
+        );
+      }
+
+      expect(logs, `iteration ${i}: requires gateway restart`).not.toMatch(
+        /requires gateway restart/
+      );
+      expect(logs, `iteration ${i}: received SIGUSR1`).not.toMatch(/received SIGUSR1/);
+      expect(logs, `iteration ${i}: full process restart`).not.toMatch(/full process restart/);
+    }
   });
 });
