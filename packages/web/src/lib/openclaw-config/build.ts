@@ -16,8 +16,6 @@ import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
-import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
-
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { writeConfigAtomic, readExistingConfig, pushConfigInBackground } from "./write";
@@ -53,10 +51,6 @@ function deepMerge(
 }
 
 export async function regenerateOpenClawConfig() {
-  // Migrate existing Smithers agents first, so their updated allowedTools
-  // are reflected in the config we're about to generate.
-  await migrateExistingSmithers();
-
   const existing = readExistingConfig();
 
   // Build the gateway block. mode and bind are always set. auth.token is written

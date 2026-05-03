@@ -65,10 +65,6 @@ vi.mock("@/server/restart-state", () => ({
   restartState: { notifyRestart: vi.fn() },
 }));
 
-vi.mock("@/lib/migrate-onboarding", () => ({
-  migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
-}));
-
 vi.mock("@/lib/provider-models", () => ({
   getDefaultModel: vi.fn().mockResolvedValue("anthropic/claude-haiku-4-5-20251001"),
 }));
