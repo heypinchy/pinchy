@@ -68,7 +68,8 @@ test.describe.serial("Cold-start ordering — OpenClaw boots after Pinchy config
       "Pinchy must log '[pinchy] boot complete: OpenClaw container may now start' with a timestamp"
     ).not.toBeNull();
 
-    const gatewayReadyAt = findFirstTimestamp(openclawLogs, "[gateway] ready (");
+    // OC 4.27 logs "[gateway] ready" without trailing parentheses.
+    const gatewayReadyAt = findFirstTimestamp(openclawLogs, "[gateway] ready");
     expect(gatewayReadyAt, "OpenClaw must log '[gateway] ready' with a timestamp").not.toBeNull();
 
     expect(

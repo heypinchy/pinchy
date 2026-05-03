@@ -36,6 +36,10 @@ services:
   pinchy:
     environment:
       - TELEGRAM_API_URL=http://telegram-mock:9001
+      # OC 4.27+ requires baseUrl in config.apply when this env var is set on
+      # the OpenClaw container. Pinchy must know it too so regenerateOpenClawConfig
+      # can include baseUrl in both the file write and config.apply payload.
+      - ANTHROPIC_BASE_URL=https://172.28.0.10
 
 networks:
   default:

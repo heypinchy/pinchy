@@ -571,10 +571,18 @@ export async function regenerateOpenClawConfig() {
   for (const providerName of ["anthropic", "openai", "google"] as const) {
     const apiKey = await getSetting(PROVIDERS[providerName].settingsKey);
     if (apiKey) {
-      modelProviders[providerName] = {
+      const providerConfig: Record<string, unknown> = {
         apiKey: secretRef(`/providers/${providerName}/apiKey`),
         models: getModelCatalogForProvider(providerName),
       };
+      // OC 4.27+ with ANTHROPIC_BASE_URL requires baseUrl in config.apply
+      // payloads — if the env var is set (e.g. for an Anthropic API proxy),
+      // pass it through so both the file write and config.apply pass schema
+      // validation. Tracked in #270.
+      if (providerName === "anthropic" && process.env.ANTHROPIC_BASE_URL) {
+        providerConfig.baseUrl = process.env.ANTHROPIC_BASE_URL;
+      }
+      modelProviders[providerName] = providerConfig;
     }
   }
 

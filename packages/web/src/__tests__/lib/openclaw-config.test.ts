@@ -462,6 +462,42 @@ describe("regenerateOpenClawConfig", () => {
     expect(config?.env?.GEMINI_API_KEY).toBeUndefined();
   });
 
+  it("should include baseUrl in anthropic provider config when ANTHROPIC_BASE_URL env var is set", async () => {
+    // OC 4.27+ with ANTHROPIC_BASE_URL env var requires baseUrl in config.apply payloads.
+    // Pinchy must pass it through so both the file write and config.apply succeed.
+    process.env.ANTHROPIC_BASE_URL = "https://custom-proxy.example.com:443";
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    try {
+      await regenerateOpenClawConfig();
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written);
+      expect(config?.models?.providers?.anthropic?.baseUrl).toBe(
+        "https://custom-proxy.example.com:443"
+      );
+    } finally {
+      delete process.env.ANTHROPIC_BASE_URL;
+    }
+  });
+
+  it("should NOT include baseUrl in anthropic provider config when ANTHROPIC_BASE_URL is not set", async () => {
+    delete process.env.ANTHROPIC_BASE_URL;
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    expect(config?.models?.providers?.anthropic?.baseUrl).toBeUndefined();
+  });
+
   it("should set defaults.model from default provider", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "default_provider") return "openai";
