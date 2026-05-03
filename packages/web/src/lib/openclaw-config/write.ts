@@ -116,9 +116,23 @@ export function pushConfigInBackground(newContent: string): void {
         // Supplement first, then env-redact (order matters: supplement adds
         // OC-managed values, redact replaces env keys with the sentinel for
         // openclaw#75534).
-        const supplemented = current.config
+        let supplemented = current.config
           ? supplementPayloadWithOcConfig(newContent, current.config)
           : supplementPayloadWithFileFields(newContent);
+
+        // OC in-memory config may lack `meta` right after a restart (before
+        // its first file write stamps the block). Without meta, config.apply
+        // triggers the missing-meta-before-write anomaly → full restart
+        // cascade (openclaw#75534). Fall back to the file: the previous
+        // run's meta survives there until OC overwrites it.
+        if (current.config) {
+          try {
+            const p = JSON.parse(supplemented) as Record<string, unknown>;
+            if (!("meta" in p)) supplemented = supplementPayloadWithFileFields(supplemented);
+          } catch {
+            // unparseable payload — leave supplemented as-is
+          }
+        }
         // Workaround for openclaw#75534: replace unchanged env values with
         // OpenClaw's REDACTED sentinel before sending. Without this, every
         // config.apply payload trips OpenClaw's resolved-vs-template diff for

@@ -148,14 +148,15 @@ export default async function globalSetup() {
     stdio: "inherit",
   });
 
-  // 8. Wait for Pinchy to reconnect to OpenClaw (up to 120s).
+  // 8. Wait for Pinchy to reconnect to OpenClaw (up to 300s).
   //    openclaw-node's exponential backoff (1s → 2s → 4s → … → 30s cap, plus
   //    the lib double-fires reconnect on every error+close pair) means a
   //    reconnect after a full container restart can take 45-90s before a
-  //    timer happens to fire while the gateway is healthy. 120s is well
-  //    inside that envelope without masking real regressions.
+  //    timer happens to fire while the gateway is healthy. 300s covers the
+  //    worst-case CI scenario where backoff and device-approval together
+  //    push the total past 180s.
   console.log("[integration-setup] Waiting for Pinchy to reconnect to OpenClaw...");
-  const deadline = Date.now() + 180000;
+  const deadline = Date.now() + 300000;
   let reconnected = false;
   while (Date.now() < deadline) {
     try {
@@ -171,7 +172,7 @@ export default async function globalSetup() {
     await new Promise((r) => setTimeout(r, 500));
   }
   if (!reconnected) {
-    throw new Error("[integration-setup] Pinchy did not reconnect to OpenClaw within 120s");
+    throw new Error("[integration-setup] Pinchy did not reconnect to OpenClaw within 300s");
   }
   console.log("[integration-setup] Pinchy reconnected to OpenClaw — integration stack ready");
 }
