@@ -117,7 +117,7 @@ describe("SecretRef roundtrip — regenerateOpenClawConfig()", () => {
     expect(raw).not.toContain("sk-ant-api03-TESTKEY1234567890abcdef");
   });
 
-  it("replaces provider API key with a ${VAR} env template in openclaw.json", async () => {
+  it("writes anthropic apiKey as SecretRef in models.providers.anthropic (not env-template)", async () => {
     const { getSetting } = await import("@/lib/settings");
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-api03-TESTKEY1234567890abcdef";
@@ -130,9 +130,15 @@ describe("SecretRef roundtrip — regenerateOpenClawConfig()", () => {
 
     const config = JSON.parse(readFileSync(process.env.OPENCLAW_CONFIG_PATH!, "utf-8"));
 
-    // OpenClaw rejects SecretRef objects in env.* — must be a string.
-    // start-openclaw.sh exports the real key from secrets.json into process env.
-    expect(config.env.ANTHROPIC_API_KEY).toBe("${ANTHROPIC_API_KEY}");
+    // Provider API keys now use SecretRef in models.providers.* — not env-templates.
+    // OpenClaw resolves the SecretRef live from secrets.json without a process restart.
+    expect(config?.models?.providers?.anthropic?.apiKey).toMatchObject({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/anthropic/apiKey",
+    });
+    // No env-template for the key
+    expect(config?.env?.ANTHROPIC_API_KEY).toBeUndefined();
   });
 
   it("writes the secrets.providers.pinchy block into openclaw.json", async () => {
