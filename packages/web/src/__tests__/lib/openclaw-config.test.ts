@@ -1344,6 +1344,51 @@ describe("regenerateOpenClawConfig", () => {
     expect(authProfileCalls.length).toBe(0);
   });
 
+  it("retries readExistingConfig after 300 ms when it returns empty (EACCES/transient race)", async () => {
+    // Scenario: OpenClaw's in-process SIGUSR1 restart rewrites openclaw.json
+    // as root:0600 before start-openclaw.sh's chmod loop restores 0666.
+    // Under CI load the chmod may not run within readExistingConfig()'s
+    // 5×100ms budget → returns {} → meta absent → config.apply sends
+    // meta-less payload → OpenClaw 4.27 "missing-meta-before-write" anomaly
+    // → sentinel restoration broken → spurious full gateway restart (#193).
+    // The fix is a single 300ms async retry: if the first read returns empty,
+    // wait one chmod-loop tick and try again.
+    vi.useFakeTimers();
+    try {
+      let configReadCount = 0;
+      const existingWithMeta = {
+        gateway: { mode: "local", bind: "lan", auth: { token: "tok-eacces-retry" } },
+        meta: { version: "4.27.0", generatedAt: "2025-01-01T00:00:00Z" },
+      };
+      mockedReadFileSync.mockImplementation((path) => {
+        if (String(path).includes("openclaw.json")) {
+          configReadCount++;
+          if (configReadCount === 1) {
+            // Simulate readExistingConfig() returning {} (ENOENT or exhausted EACCES retries)
+            throw Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" });
+          }
+          // Retry (count 2) and later file-comparison read (count 3+): return valid config
+          return JSON.stringify(existingWithMeta);
+        }
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      });
+
+      const promise = regenerateOpenClawConfig();
+      await vi.advanceTimersByTimeAsync(300);
+      await promise;
+
+      const openclaw = mockedWriteFileSync.mock.calls.find(
+        (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+      );
+      expect(openclaw).toBeDefined();
+      const config = JSON.parse(openclaw![1] as string);
+      // meta must be preserved from the retry read, not absent due to empty first read
+      expect(config.meta).toEqual({ version: "4.27.0", generatedAt: "2025-01-01T00:00:00Z" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   describe("config propagation to OpenClaw runtime (#200)", () => {
     // Pinchy must push config changes to OpenClaw's *runtime*, not just
     // disk. The original bug: writing openclaw.json relied on OpenClaw's
