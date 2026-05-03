@@ -1799,8 +1799,11 @@ describe("pinchy-odoo config size", () => {
 
     await regenerateOpenClawConfig();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
-    const config = JSON.parse(written);
+    const writtenCall = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(writtenCall).toBeDefined();
+    const config = JSON.parse(writtenCall![1] as string);
 
     const odooConfig = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents?.["odoo-agent"];
     expect(odooConfig).toBeDefined();
@@ -1812,7 +1815,7 @@ describe("pinchy-odoo config size", () => {
     expect(odooConfig.schema).toBeUndefined();
 
     // Config should be small (no field definitions bloating it)
-    const configSize = written.length;
+    const configSize = writtenCall![1]!.toString().length;
     expect(configSize).toBeLessThan(5000); // Without schema: ~2-3KB. With schema it would be 100KB+
   });
 
@@ -1870,8 +1873,11 @@ describe("pinchy-odoo config size", () => {
 
     await expect(regenerateOpenClawConfig()).resolves.toBeUndefined();
 
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
-    const config = JSON.parse(written);
+    const writtenCall = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+    );
+    expect(writtenCall).toBeDefined();
+    const config = JSON.parse(writtenCall![1] as string);
     const odooAgents = config.plugins?.entries?.["pinchy-odoo"]?.config?.agents ?? {};
 
     expect(odooAgents["odoo-agent"]).toBeDefined();
