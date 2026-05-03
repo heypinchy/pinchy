@@ -90,7 +90,13 @@ export default async function globalSetup() {
   }
 
   // 5. Seed Ollama URL, default provider, and a fake Ollama-Cloud key.
-  //    host.docker.internal reaches the fake Ollama from inside the OpenClaw container.
+  //
+  //    We must NOT use 'host.docker.internal' as the Ollama base URL. OpenClaw 4.27+
+  //    checks isLocalOllamaBaseUrl() before providing synthetic auth (no API key
+  //    needed). 'host.docker.internal' has dots → isIpv4PrivateRange/isLoopback both
+  //    return false → OC throws "No API key found for provider 'ollama'". A private
+  //    IPv4 (172.x.x.x, 192.168.x.x) passes the check. We resolve the container's
+  //    default gateway, which is the host IP on Docker's bridge network.
   //
   //    The Ollama-Cloud key is intentionally a dummy value — fake Ollama doesn't need
   //    auth. We seed it so Pinchy's regenerateOpenClawConfig() writes the
@@ -101,11 +107,26 @@ export default async function globalSetup() {
   //    architecture would otherwise leave untested. Without this seed, the integration
   //    stack passes even when secrets ownership is misconfigured, because no SecretRef
   //    reference ever forces OpenClaw to read secrets.json.
+  let ollamaHostIp = "172.17.0.1"; // Docker default Linux bridge gateway fallback
+  try {
+    const gwOutput = execSync(
+      `docker compose -f docker-compose.integration.yml exec openclaw sh -c "ip route show default 2>/dev/null | awk '/default/ { print \\$3; exit }'"`,
+      { cwd: PROJECT_ROOT, encoding: "utf8", stdio: "pipe" }
+    ).trim();
+    if (/^\d+\.\d+\.\d+\.\d+$/.test(gwOutput)) {
+      ollamaHostIp = gwOutput;
+    }
+  } catch {
+    // Use the 172.17.0.1 fallback
+  }
+  const ollamaLocalUrl = `http://${ollamaHostIp}:${FAKE_OLLAMA_PORT}`;
+  console.log(`[integration-setup] Resolved Ollama host IP: ${ollamaHostIp} → ${ollamaLocalUrl}`);
+
   const postgres = (await import("postgres")).default;
   const sql = postgres(INTEGRATION_DB_URL);
   await sql.unsafe(`
     INSERT INTO settings (key, value, encrypted) VALUES
-      ('ollama_local_url', 'http://host.docker.internal:11435', false),
+      ('ollama_local_url', '${ollamaLocalUrl}', false),
       ('default_provider', 'ollama-local', false),
       ('ollama_cloud_api_key', 'dummy-integration-test-key', false)
     ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, encrypted = false
