@@ -69,84 +69,8 @@ if (process.env.NODE_ENV === "production") {
 }
 
 app.prepare().then(async () => {
-  // Migrate session keys from old format (user-<id>) to new (direct:<id>)
-  try {
-    const { migrateSessionKeys } = await import("./src/lib/session-migration");
-    const openclawDataPath = process.env.OPENCLAW_DATA_PATH || "/openclaw-config";
-    migrateSessionKeys(openclawDataPath);
-  } catch {
-    // Non-critical — old sessions will just start fresh
-  }
-
-  // Load domain cache before first request so auth config has the domain available.
-  try {
-    const { loadDomainCache } = await import("./src/lib/domain");
-    await loadDomainCache();
-  } catch (err) {
-    console.error(
-      "[pinchy] Failed to load domain cache:",
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  // One-time migration: delete legacy openclaw.json.bak (may contain plaintext secrets).
-  // Runs before any config read/write so the .bak file never gets a chance to be used.
-  try {
-    const { migrateToSecretRef } = await import("./src/lib/openclaw-migration");
-    const configPath = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
-    migrateToSecretRef(configPath);
-  } catch (err) {
-    console.error(
-      "[pinchy] Failed to run secret-ref migration:",
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  // One-time migration: copy gateway token from openclaw.json → settings DB.
-  // Must run before regenerateOpenClawConfig() so the token is available when
-  // build.ts calls getOrCreateGatewayToken(). Idempotent; DB wins if set.
-  try {
-    const { migrateGatewayTokenToDb } = await import("./src/lib/migrate-gateway-token");
-    await migrateGatewayTokenToDb();
-  } catch (err) {
-    console.error(
-      "[pinchy] Failed to migrate gateway token to DB:",
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  // Sanitize OpenClaw config before anything else — remove stale plugin entries
-  // from the allow list that would prevent OpenClaw from starting. This runs
-  // even before setup is complete (no DB access needed).
-  try {
-    const { sanitizeOpenClawConfig } = await import("./src/lib/openclaw-config");
-    if (sanitizeOpenClawConfig()) {
-      console.log("[pinchy] Sanitized OpenClaw config (removed stale plugin allow entries)");
-    }
-  } catch (err) {
-    console.error(
-      "[pinchy] Failed to sanitize OpenClaw config:",
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  // Regenerate OpenClaw config on startup to ensure it's in sync with code changes.
-  // This handles cases like new plugin configs or changed config structure after updates.
-  try {
-    const { isSetupComplete } = await import("./src/lib/setup");
-    if (await isSetupComplete()) {
-      const { regenerateOpenClawConfig } = await import("./src/lib/openclaw-config");
-      await regenerateOpenClawConfig();
-      const { markOpenClawConfigReady } = await import("./src/lib/openclaw-config-ready");
-      markOpenClawConfigReady();
-      console.log("[pinchy] OpenClaw config regenerated from DB state");
-    }
-  } catch (err) {
-    console.error(
-      "[pinchy] Failed to regenerate OpenClaw config on startup:",
-      err instanceof Error ? err.message : err
-    );
-  }
+  const { bootInits } = await import("./src/lib/boot-inits");
+  await bootInits();
 
   const { isHostAllowed } = await import("./src/server/host-check");
   const { getCachedDomain } = await import("./src/lib/domain-cache");

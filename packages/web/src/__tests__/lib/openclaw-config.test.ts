@@ -63,10 +63,6 @@ vi.mock("@/server/restart-state", () => ({
   restartState: { notifyRestart: vi.fn() },
 }));
 
-vi.mock("@/lib/migrate-onboarding", () => ({
-  migrateExistingSmithers: vi.fn().mockResolvedValue(undefined),
-}));
-
 const { mockedGetOrCreateGatewayToken } = vi.hoisted(() => ({
   mockedGetOrCreateGatewayToken: vi.fn().mockResolvedValue("test-gateway-token"),
 }));

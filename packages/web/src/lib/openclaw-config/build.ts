@@ -16,9 +16,6 @@ import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
 import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
-import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
-
-import { dirname } from "path";
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { writeConfigAtomic, readExistingConfig, pushConfigInBackground } from "./write";
@@ -55,23 +52,7 @@ function deepMerge(
 }
 
 export async function regenerateOpenClawConfig() {
-  // Migrate existing Smithers agents first, so their updated allowedTools
-  // are reflected in the config we're about to generate.
-  await migrateExistingSmithers();
-
-  let existing = readExistingConfig();
-
-  // If readExistingConfig returned empty it may be a transient EACCES hit:
-  // OpenClaw's in-process SIGUSR1 restart rewrites openclaw.json as root:0600
-  // before start-openclaw.sh's chmod loop restores 0666. Under CI load the
-  // chmod may not run within readExistingConfig()'s 5×100ms budget → returns
-  // {} → meta absent → config.apply sends meta-less payload → OpenClaw 4.27
-  // "missing-meta-before-write" anomaly → sentinel restoration broken →
-  // spurious full gateway restart. 300ms covers one chmod-loop tick worst case.
-  if (Object.keys(existing).length === 0) {
-    await new Promise((r) => setTimeout(r, 300));
-    existing = readExistingConfig();
-  }
+  const existing = readExistingConfig();
 
   // Build the gateway block. mode and bind are always set. auth.token is written
   // as a plain string — OpenClaw requires a literal string for gateway auth and
