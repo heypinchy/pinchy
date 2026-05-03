@@ -53,10 +53,19 @@ Companies want AI agents but face a trilemma:
 
 ### Core Concepts (planned and implemented)
 
-- **Plugin Architecture** (partially implemented): Agents get scoped tools, not raw shell access. Two plugins implemented: `pinchy-files` (read-only file access for Knowledge Base agents) and `pinchy-context` (saves user/org context during Smithers onboarding interview). Plugin marketplace is planned.
+- **Plugin Architecture** (partially implemented): Agents get scoped tools, not raw shell access. Seven plugins implemented in `packages/plugins/`:
+  - `pinchy-files` — read-only file access for Knowledge Base agents
+  - `pinchy-context` — saves user/org context during Smithers onboarding
+  - `pinchy-docs` — on-demand access to platform documentation (used by Smithers)
+  - `pinchy-audit` — source-level tool execution audit logging for all OpenClaw tools
+  - `pinchy-email` — Gmail integration (send/read)
+  - `pinchy-odoo` — Odoo CRM integration
+  - `pinchy-web` — web search (Brave) and web fetch
+
+  Plugin marketplace is planned.
 - **Agent Permissions** (implemented): Allow-list model — agents start with zero tools, admins grant specific capabilities. Safe tools (list/read approved dirs) vs. powerful tools (shell, write, web).
 - **RBAC** (partially implemented): Admin/user roles with agent access control (admins see all, users see shared + personal agents). Granular per-team/per-role RBAC is planned.
-- **Audit Trail** (implemented): Every admin action logged — who, what, when. HMAC-SHA256 signed rows, integrity verification, CSV export. Compliance-ready.
+- **Audit Trail** (implemented): Captures admin state changes, authentication events (`auth.login`/`auth.failed`/`auth.logout`/`auth.csrf_blocked`), agent tool executions and denials (`tool.<name>`/`tool.denied`, written by the `pinchy-audit` plugin via `/api/internal/audit/tool-use`), chat events (`chat.retry_triggered`), and audit exports (`audit.exported`). HMAC-SHA256 signed rows, integrity verification, CSV export. Compliance-ready.
 - **User Management** (implemented): Invite system with token-based onboarding, admin and user roles, password management.
 - **Knowledge Base Agents** (implemented): Scoped read-only access to specific directories. Template-based creation.
 - **Smithers Onboarding** (implemented): New users get an onboarding interview — Smithers learns about them through conversation and saves their context via plugin tools. Admins are additionally asked about their organization.
@@ -94,13 +103,23 @@ pinchy/
 │   │   │   └── server/    # WebSocket bridge (client-router, ws-auth)
 │   │   ├── e2e/           # Playwright E2E tests
 │   │   └── drizzle/       # Generated migrations
-│   └── plugins/
-│       └── pinchy-files/  # Knowledge base file-access plugin for OpenClaw
+│   └── plugins/           # OpenClaw plugins (each with openclaw.plugin.json)
+│       ├── pinchy-files/  # Knowledge base file access (read-only)
+│       ├── pinchy-context/# Saves user/org context during Smithers onboarding
+│       ├── pinchy-docs/   # On-demand docs lookup (Smithers reads docs at runtime)
+│       ├── pinchy-audit/  # Tool-execution audit logging (calls Pinchy API)
+│       ├── pinchy-email/  # Gmail send/read
+│       ├── pinchy-odoo/   # Odoo CRM
+│       └── pinchy-web/    # Brave search + web fetch
 ├── config/                # OpenClaw config & startup script
 ├── sample-data/           # Sample docs for dev/testing (mounted at /data/)
 ├── docs/                  # Documentation (Astro Starlight, standalone)
-├── docker-compose.yml     # Full stack definition (production)
-├── docker-compose.dev.yml # Dev override (hot reload, exposed DB port)
+├── docker-compose.yml         # Full stack definition (production)
+├── docker-compose.dev.yml     # Dev override (hot reload, exposed DB port)
+├── docker-compose.test.yml    # Unit/component test stack
+├── docker-compose.integration.yml # Integration test stack
+├── docker-compose.e2e.yml     # Playwright E2E stack
+├── docker-compose.odoo-test.yml   # Mock Odoo for pinchy-odoo integration tests
 ├── Dockerfile.pinchy      # Production image
 ├── Dockerfile.pinchy.dev  # Dev image (no build step, runs pnpm dev)
 ├── Dockerfile.openclaw    # OpenClaw runtime image
@@ -130,7 +149,9 @@ pinchy/
 - **Self-hosted** — no phone-home, no telemetry unless opt-in
 
 ### Audit Trail Guidelines
-Every admin action that changes state MUST be logged via `appendAuditLog()`. The `detail` JSON field must follow these rules:
+The audit log captures more than just admin state changes — it also records auth events, agent tool calls (written by the `pinchy-audit` OpenClaw plugin via `POST /api/internal/audit/tool-use`), chat retries, and audit exports. The full event-type union lives in `AuditEventType` in `@/lib/audit`.
+
+Every state-changing API route MUST log via `appendAuditLog()` (or one of the variants below). The `detail` JSON field must follow these rules:
 
 - **Never fire-and-forget.** `appendAuditLog(...).catch(console.error)` is forbidden by ESLint (`pinchy/require-audit-log` rule, see #231) — silently swallowed audit failures break the compliance contract. Pick one of three patterns:
   - `await appendAuditLog(...)` — preferred for **idempotent** state changes (PUT/PATCH/DELETE on existing resources). If the audit write fails, the route returns 500 and the client retries — same end state.
@@ -163,7 +184,7 @@ When creating or modifying any POST/PUT/PATCH/DELETE endpoint:
 1. **Body validation via `parseRequestBody(schema, request)`** from `@/lib/api-validation`? Never call `await request.json()` directly — that throws 500 on malformed JSON, and ad-hoc `typeof` checks drift across routes. Define a Zod schema at the top of the route, then `const parsed = await parseRequestBody(schema, request); if ("error" in parsed) return parsed.error;`. Validation failures return `{ error: "Validation failed", details: <flatten> }` with status 400 — clients can read `details.fieldErrors.<name>` to render inline errors. Routes that take no body (e.g. DELETE on a path-param resource) are exempt.
 2. `appendAuditLog()` or `deferAuditLog()` call present? If not needed: add `// audit-exempt: <reason>` comment
 3. Pattern matches the action shape — `await appendAuditLog` for idempotent ops, `deferAuditLog` for non-rollbackable side effects? (See "Never fire-and-forget" above.)
-4. Event type uses a valid `AuditResource` prefix (agent, group, user, settings, config)?
+4. Event type uses a valid `AuditResource` prefix (agent, group, user, settings, config, channel, chat) or one of the non-resource event families (`auth.*`, `tool.*`, `audit.exported`)?
 5. Detail payload uses the correct base type (`UpdateDetail` for `*.updated`, `DeleteDetail` for `*.deleted`, `MembershipDetail` for `*.members_updated`)?
 6. All referenced entities snapshotted as `{ id, name }` pairs (`EntityRef`)?
 7. Test exists that verifies the `appendAuditLog` call with correct payload?
