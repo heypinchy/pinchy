@@ -60,16 +60,48 @@ if (!config.secrets) {
     },
   };
 }
-// Disable mDNS announcer before the gateway boots. In Docker bridge networks
-// multicast doesn't route out of the container; OpenClaw's Bonjour announcer
-// hangs in `state=announcing` and after ~16 s the internal watchdog SIGTERMs
-// the gateway, costing ~30 s of "Reconnecting to the agent…" downtime
-// (observed staging 2026-05-03). We connect Pinchy → OpenClaw via
-// OPENCLAW_WS_URL on the bridge network and never need mDNS, so turning it
-// off in this bootstrap pass is safe and prevents the watchdog from ever
-// firing. Pinchy's regenerateOpenClawConfig() also writes this field, so it
-// stays off across config rewrites.
+// Disable OpenClaw features that have no purpose in the Pinchy stack
+// BEFORE the gateway boots, so the gateway starts already-tuned and
+// no restart-classified config changes get triggered later.
+//
+// Each of these is restart-kind in OpenClaw's reload classifier, so
+// writing them in the bootstrap (this file, before `openclaw gateway`
+// runs) avoids the SIGUSR1 that would fire if Pinchy's later
+// regenerate were the first writer.
+//
+//   - discovery.mdns.mode=off — Bonjour announcer hangs in
+//     state=announcing inside Docker bridge networks (no multicast
+//     routing); the watchdog SIGTERMs the gateway after ~16 s, costing
+//     ~30 s of "Reconnecting to the agent…" downtime per cold start
+//     (observed staging 2026-05-03). Pinchy connects via OPENCLAW_WS_URL
+//     on the bridge and never needs mDNS.
+//
+//   - update.checkOnStart=false — Pinchy controls the OpenClaw version
+//     via the Docker image tag; the npm-version check on every gateway
+//     boot is wasted I/O.
+//
+//   - gateway.controlUi.enabled=false — Pinchy is the external control
+//     surface (running its own UI on port 7777); OpenClaw's
+//     `/__openclaw__/control/*` routes on port 18789 are unused, cost
+//     memory, and add an attack surface we don't need.
+//
+//   - canvasHost.enabled=false — Pinchy doesn't render OpenClaw canvases
+//     anywhere in its UI; keep the canvas host server off to reduce
+//     exposed local services.
+//
+// Pinchy's regenerateOpenClawConfig() writes these same fields on every
+// regenerate as an idempotent backstop, so they stay off across rewrites.
 if (!config.discovery) config.discovery = {};
 if (!config.discovery.mdns) config.discovery.mdns = {};
 if (!config.discovery.mdns.mode) config.discovery.mdns.mode = "off";
+
+if (!config.update) config.update = {};
+if (config.update.checkOnStart === undefined) config.update.checkOnStart = false;
+
+if (!config.gateway.controlUi) config.gateway.controlUi = {};
+if (config.gateway.controlUi.enabled === undefined) config.gateway.controlUi.enabled = false;
+
+if (!config.canvasHost) config.canvasHost = {};
+if (config.canvasHost.enabled === undefined) config.canvasHost.enabled = false;
+
 writeAtomic(configPath, JSON.stringify(config, null, 2), 0o644);

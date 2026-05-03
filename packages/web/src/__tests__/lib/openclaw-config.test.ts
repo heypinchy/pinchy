@@ -212,6 +212,48 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.agents.defaults?.heartbeat).toBeUndefined();
   });
 
+  it("should disable OpenClaw features that have no purpose in a containerized Pinchy deployment", async () => {
+    // Three OpenClaw features serve no purpose in the Pinchy server stack
+    // (Pinchy is the user-facing UI on port 7777 and the only operator
+    // surface; OpenClaw runs inside a Docker container with no human ever
+    // hitting its HTTP port directly):
+    //
+    //   - update.checkOnStart=true (default): runs `npm view openclaw versions`
+    //     on every gateway boot to surface "update available" log lines.
+    //     Pinchy controls the OpenClaw version through the Docker image tag
+    //     and ignores the notice; the network call is wasted I/O at startup.
+    //
+    //   - gateway.controlUi.enabled=true (default): exposes OpenClaw's own
+    //     web UI under /__openclaw__/control/* on the gateway HTTP port.
+    //     Pinchy IS the external control surface (per the schema's own
+    //     guidance: "disable when an external control surface replaces it").
+    //     Disabling cuts memory + reduces the attack surface — and makes
+    //     the controlUi.dangerously* sub-toggles moot.
+    //
+    //   - canvasHost.enabled=true (default): hosts OpenClaw's "canvas"
+    //     artifact server. Pinchy doesn't render OpenClaw canvases anywhere
+    //     in its UI; the schema says "Keep disabled when canvas workflows
+    //     are inactive to reduce exposed local services."
+    //
+    // All three are written in the bootstrap (ensure-gateway-token.js) so
+    // they're in place BEFORE the first gateway boot — disabling them
+    // there avoids the restart that would happen if Pinchy's later
+    // regenerate were the first writer (these paths are restart-classified
+    // by OpenClaw). regenerateOpenClawConfig() emits the same values as an
+    // idempotent backstop.
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written) as {
+      update?: { checkOnStart?: boolean };
+      gateway?: { controlUi?: { enabled?: boolean } };
+      canvasHost?: { enabled?: boolean };
+    };
+    expect(config.update?.checkOnStart).toBe(false);
+    expect(config.gateway?.controlUi?.enabled).toBe(false);
+    expect(config.canvasHost?.enabled).toBe(false);
+  });
+
   it("should disable mDNS discovery so the Bonjour watchdog can't kill the gateway", async () => {
     // Rationale: OpenClaw's gateway tries to advertise itself via mDNS
     // (Bonjour) on startup. In Docker bridge networks multicast doesn't

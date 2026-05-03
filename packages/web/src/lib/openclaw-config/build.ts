@@ -75,6 +75,12 @@ export async function regenerateOpenClawConfig() {
     );
   }
 
+  // Disable OpenClaw's built-in Control UI. Pinchy IS the external control
+  // surface (running its own UI on port 7777); OpenClaw's `/__openclaw__/control/*`
+  // routes on port 18789 are unused, cost memory, and add an attack surface
+  // we don't need. Per OpenClaw's own schema guidance: "disable when an
+  // external control surface replaces it."
+  const existingControlUi = (existingGateway.controlUi as Record<string, unknown>) || {};
   const gateway: Record<string, unknown> = {
     ...existingGateway,
     mode: "local",
@@ -82,6 +88,10 @@ export async function regenerateOpenClawConfig() {
     auth: {
       mode: "token",
       token: gatewayTokenValue || "",
+    },
+    controlUi: {
+      ...existingControlUi,
+      enabled: false,
     },
   };
 
@@ -181,6 +191,14 @@ export async function regenerateOpenClawConfig() {
     // We connect via OPENCLAW_WS_URL on the bridge network and never need
     // mDNS, so turning it off is safe.
     discovery: { mdns: { mode: "off" } },
+    // Skip the npm "update available" check on every gateway boot.
+    // Pinchy controls the OpenClaw version via the Docker image tag and
+    // ignores the notice; the network call is wasted I/O at startup.
+    update: { checkOnStart: false },
+    // OpenClaw's "canvas" artifact host. Pinchy doesn't render OpenClaw
+    // canvases anywhere in its UI; per schema: "Keep disabled when canvas
+    // workflows are inactive to reduce exposed local services."
+    canvasHost: { enabled: false },
     env,
     secrets: {
       providers: {
