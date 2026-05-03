@@ -4,6 +4,7 @@ import { z } from "zod";
 import { createAdmin } from "@/lib/setup";
 import { validatePassword } from "@/lib/validate-password";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { markOpenClawConfigReady } from "@/lib/openclaw-config-ready";
 import { parseRequestBody } from "@/lib/api-validation";
 
 const setupSchema = z.object({
@@ -33,6 +34,7 @@ export async function POST(request: NextRequest) {
     await regenerateOpenClawConfig().catch((err) => {
       console.error("[setup] Failed to regenerate OpenClaw config:", err);
     });
+    markOpenClawConfigReady();
     return NextResponse.json(user, { status: 201 });
   } catch (error) {
     if (error instanceof Error && error.message === "Setup already complete") {

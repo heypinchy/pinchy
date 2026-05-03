@@ -19,8 +19,16 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      openclaw:
-        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"require('http').get('http://localhost:7777/api/internal/openclaw-config-ready', r => process.exit(r.statusCode === 200 ? 0 : 1))\"",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
 
   openclaw:
     image: ghcr.io/heypinchy/pinchy-openclaw:${PINCHY_VERSION:?set PINCHY_VERSION in .env (e.g. PINCHY_VERSION=v0.5.0)}
@@ -34,6 +42,9 @@ services:
       - pinchy-data:/data
       - pinchy-pdf-cache:/var/cache/pinchy-files
     restart: unless-stopped
+    depends_on:
+      pinchy:
+        condition: service_healthy
 
   db:
     image: postgres:17
