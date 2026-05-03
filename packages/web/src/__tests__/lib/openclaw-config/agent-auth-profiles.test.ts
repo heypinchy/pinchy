@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";
@@ -9,6 +9,10 @@ describe("writeAgentAuthProfiles", () => {
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-auth-test-"));
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   it("writes auth-profiles.json with one profile per configured provider", async () => {
@@ -35,8 +39,8 @@ describe("writeAgentAuthProfiles", () => {
   });
 
   it("writes atomically — no partial files visible at the destination path", async () => {
-    // Monkey-patch fs.renameSync to throw, dann assert dass das destination
-    // file nicht angelegt wurde (nur das tmp file).
+    // Implementation must call fs.renameSync (namespace form, not destructured) for this spy to work.
+    // The plan's Task 3 implementation uses fs.renameSync(...) — that assumption is load-bearing here.
     const originalRename = fs.renameSync;
     fs.renameSync = () => {
       throw new Error("rename failed");
