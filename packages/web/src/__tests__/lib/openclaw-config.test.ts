@@ -1420,6 +1420,47 @@ describe("regenerateOpenClawConfig", () => {
       expect(appliedPayload).not.toContain('"OLD"');
     });
 
+    it("supplements channels.telegram fields absent from payload from OC in-memory config (OC 4.27+ channel diff prevention)", async () => {
+      // OC 4.27 writes additional fields to channels.telegram in-memory
+      // (e.g. pollingMode, or other new OC-managed fields). Pinchy's payload
+      // omits these fields. Without supplement, config.apply sees a channels
+      // diff → full gateway restart even for agents-only changes.
+      const ocConfig = {
+        meta: { version: "4.27.0", lastTouchedAt: "2025-01-01T00:00:00Z" },
+        channels: {
+          telegram: {
+            enabled: true,
+            dmPolicy: "pairing",
+            accounts: { a1: { botToken: "tok" } },
+            pollingMode: "long_poll", // OC-managed field Pinchy doesn't emit
+          },
+        },
+      };
+      mockConfigGet.mockResolvedValue({ hash: "h1", config: ocConfig });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+
+      // Pinchy's payload has channels.telegram WITHOUT pollingMode
+      const pinchyPayload = JSON.stringify({
+        meta: { version: "4.27.0" },
+        channels: {
+          telegram: {
+            enabled: true,
+            dmPolicy: "pairing",
+            accounts: { a1: { botToken: "tok" } },
+          },
+        },
+      });
+
+      pushConfigInBackground(pinchyPayload);
+      await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledOnce());
+
+      const applied = JSON.parse(String(mockConfigApply.mock.calls[0][0]));
+      expect(applied.channels?.telegram?.pollingMode).toBe("long_poll");
+    });
+
     it("skips config.apply when OC in-memory config and file both lack meta (missing-meta-before-write cascade guard)", async () => {
       // Scenario: OC just restarted (in-memory config has no meta) AND the
       // previous config.apply already wrote a meta-less file. Neither source
@@ -2457,16 +2498,20 @@ describe("restart-state integration", () => {
     });
   });
 
-  it("drops unknown fields from existingTelegram on regenerate", async () => {
-    // Seed openclaw.json with channels.telegram containing a known field (groupPolicy)
-    // and an unknown legacy field (weirdLegacyField)
+  it("preserves all non-Pinchy-owned fields from existingTelegram on regenerate", async () => {
+    // OC 4.27 writes new fields to channels.telegram that Pinchy doesn't know
+    // about (e.g. pollingMode). Using an allowlist (like the old ENRICHED_TELEGRAM_FIELDS)
+    // caused those fields to be stripped → channels diff on every config.apply →
+    // spurious full gateway restart even for agents-only changes.
+    // Using a denylist (preserve everything except Pinchy-owned fields) is
+    // robust to future OC additions.
     const existingConfig = {
       gateway: { mode: "local", bind: "lan", auth: { token: "secret" } },
       channels: {
         telegram: {
           dmPolicy: "pairing",
           groupPolicy: "allow",
-          weirdLegacyField: "foo",
+          pollingMode: "long_poll", // OC 4.27-managed field
           accounts: {},
         },
       },
@@ -2498,10 +2543,12 @@ describe("restart-state integration", () => {
     expect(written).toBeDefined();
     const config = JSON.parse(written![1] as string);
 
-    // Known field is preserved
+    // All non-Pinchy-owned fields from the existing file are preserved
     expect(config.channels.telegram.groupPolicy).toBe("allow");
-    // Unknown legacy field is dropped
-    expect(config.channels.telegram.weirdLegacyField).toBeUndefined();
+    expect(config.channels.telegram.pollingMode).toBe("long_poll");
+    // Pinchy-owned fields are written fresh (not taken from existing)
+    expect(config.channels.telegram.enabled).toBe(true);
+    expect(config.channels.telegram.dmPolicy).toBe("pairing");
   });
 
   it("preserves channels.telegram.enabled when OpenClaw set it on auto-enable (#193)", async () => {

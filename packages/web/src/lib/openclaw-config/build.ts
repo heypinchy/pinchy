@@ -666,22 +666,22 @@ export async function regenerateOpenClawConfig() {
       }
     }
 
-    // Preserve OpenClaw-enriched channel fields (groupPolicy, streaming, enabled).
-    // Use an explicit allow-list instead of spread to prevent unknown/legacy
-    // fields (including potential legacy secrets) from leaking into the config.
-    // `enabled` is on the list because OpenClaw writes back `"enabled": true`
-    // whenever Telegram is auto-enabled at gateway startup. Without it on the
-    // list, the next regenerate strips the field, OpenClaw treats that as a
-    // config diff and triggers a full gateway restart, the restart re-runs
-    // auto-enable and re-adds the field — endless ping-pong loop where every
-    // settings save costs 15-30 s of "Agent runtime is not available"
-    // downtime (#193).
+    // Preserve OpenClaw-enriched channel fields. Use a denylist instead of an
+    // allowlist: OC 4.27+ writes additional fields to channels.telegram
+    // (e.g. pollingMode) that Pinchy doesn't know about. An allowlist strips
+    // those fields → config.apply or inotify sees a channels diff → spurious
+    // full gateway restart even for agents-only changes. The denylist preserves
+    // all OC-managed fields regardless of OC version. Pinchy-owned fields
+    // (enabled, dmPolicy, accounts) are always written fresh below and take
+    // precedence over any value in the file.
     const existingTelegram =
       ((existing.channels as Record<string, unknown>)?.telegram as Record<string, unknown>) || {};
-    const ENRICHED_TELEGRAM_FIELDS = ["groupPolicy", "streaming"] as const;
+    const PINCHY_OWNED_TELEGRAM_FIELDS = new Set(["enabled", "dmPolicy", "accounts"]);
     const preservedTelegram: Record<string, unknown> = {};
-    for (const f of ENRICHED_TELEGRAM_FIELDS) {
-      if (f in existingTelegram) preservedTelegram[f] = existingTelegram[f];
+    for (const [k, v] of Object.entries(existingTelegram)) {
+      if (!PINCHY_OWNED_TELEGRAM_FIELDS.has(k)) {
+        preservedTelegram[k] = v;
+      }
     }
     // Defense in depth: write `enabled: true` actively when we emit the
     // telegram block at all. Pinchy's source of truth is "telegram has

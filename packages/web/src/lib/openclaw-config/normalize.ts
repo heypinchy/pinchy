@@ -133,6 +133,23 @@ function supplementFromSource(payload: string, source: Record<string, unknown>):
       }
     }
 
+    // Supplement channels.telegram: add source fields absent from payload.
+    // OC 4.27+ writes additional fields to channels.telegram in-memory (beyond
+    // what Pinchy emits). Without this, config.apply sees a channels diff and
+    // triggers a full gateway restart even for agents-only changes.
+    const payloadChannels = payloadObj.channels as Record<string, unknown> | undefined;
+    const sourceChannels = source.channels as Record<string, unknown> | undefined;
+    if (payloadChannels?.telegram && sourceChannels?.telegram) {
+      const payloadTelegram = payloadChannels.telegram as Record<string, unknown>;
+      const sourceTelegram = sourceChannels.telegram as Record<string, unknown>;
+      for (const [k, v] of Object.entries(sourceTelegram)) {
+        if (!(k in payloadTelegram)) {
+          payloadTelegram[k] = v;
+          changed = true;
+        }
+      }
+    }
+
     return changed ? JSON.stringify(payloadObj, null, 2) : payload;
   } catch {
     return payload;
