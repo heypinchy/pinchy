@@ -76,20 +76,6 @@ if [ -d /root/.openclaw/extensions ]; then
     chown -R root:root /root/.openclaw/extensions 2>/dev/null || true
 fi
 
-# Ensure gateway auth token exists before starting (prevents crash loop
-# when no token is configured yet, e.g. on first startup before setup wizard)
-node /ensure-gateway-token.js
-
-# Write gateway token to a separate world-readable file for Pinchy (non-root).
-# Pinchy reads this as a fallback when openclaw.json is briefly unavailable.
-node -e "
-  const fs = require('fs');
-  try {
-    const config = JSON.parse(fs.readFileSync('/root/.openclaw/openclaw.json', 'utf8'));
-    const token = config.gateway.auth.token;
-    fs.writeFileSync('/root/.openclaw/gateway-token', token, { mode: 0o644 });
-  } catch {}
-"
 
 # Make OpenClaw config writable by Pinchy (non-root).
 # OpenClaw creates openclaw.json with 600 (root-only). Pinchy needs write access

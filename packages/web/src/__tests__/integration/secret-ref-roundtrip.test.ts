@@ -179,7 +179,7 @@ describe("SecretRef roundtrip — regenerateOpenClawConfig()", () => {
     const { getSetting } = await import("@/lib/settings");
     vi.mocked(getSetting).mockResolvedValue(null);
 
-    // Simulate an existing config with a plaintext token (e.g. written by ensure-gateway-token.js)
+    // Simulate an existing config with a plaintext token (e.g. from a previous regenerateOpenClawConfig)
     const existingConfig = {
       gateway: {
         mode: "local",
