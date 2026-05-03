@@ -1,6 +1,7 @@
 import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "fs";
 import { dirname } from "path";
 import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
+import { getOpenClawClient } from "@/server/openclaw-client";
 import { CONFIG_PATH } from "./paths";
 import { redactUnchangedEnvForApply } from "./normalize";
 
@@ -54,16 +55,36 @@ export function readExistingConfig(): Record<string, unknown> {
   return {};
 }
 
+// Monotonically-increasing counter that lets each pushConfigInBackground call
+// cancel any pending retries from an older call. Because regenerateOpenClawConfig
+// can be triggered concurrently (e.g. setup → connectBot → warmup agent create →
+// actual agent create all in quick succession with a slow CI event loop), the
+// retry window of an early call can extend into a later one's territory. Without
+// this guard, a stale payload that includes `env.ANTHROPIC_API_KEY` (from the
+// initial setup where the key was first seen) can arrive at OpenClaw alongside
+// a fresh payload that has only `agents.list` changed — the stale env diff
+// triggers a full restart that kills the hot-reload the test is asserting on.
+let _pushGeneration = 0;
+
+/** Exposed only for unit-testing the cancellation path; do not call in app code. */
+export function _resetPushGeneration() {
+  _pushGeneration = 0;
+}
+
 export function pushConfigInBackground(newContent: string): void {
+  const generation = ++_pushGeneration;
+
   void (async () => {
     let client;
     try {
-      const { getOpenClawClient } = await import("@/server/openclaw-client");
       client = getOpenClawClient();
     } catch {
       // No client — file write + inotify is the only path here.
       return;
     }
+
+    // Bail early if a newer push has already superseded this call.
+    if (generation !== _pushGeneration) return;
 
     // Workaround for openclaw#75534: replace unchanged env values with
     // OpenClaw's REDACTED sentinel before sending. Without this, every
@@ -78,8 +99,12 @@ export function pushConfigInBackground(newContent: string): void {
     // up; no point keeping a background coroutine alive longer.
     const backoffsMs = [100, 250, 500, 1000, 2000];
     for (let i = 0; i < backoffsMs.length; i++) {
+      // Check before each attempt — a newer pushConfigInBackground call
+      // may have started while we were sleeping.
+      if (generation !== _pushGeneration) return;
       try {
         const current = (await client.config.get()) as { hash: string };
+        if (generation !== _pushGeneration) return; // check after each await
         await client.config.apply(payload, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
         });
