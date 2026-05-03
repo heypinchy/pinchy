@@ -78,7 +78,7 @@ export async function regenerateOpenClawConfig() {
   // does not resolve SecretRef objects in the gateway.auth block.
   // The same token is also written to secrets.json so Pinchy can read it.
   const existingGateway = (existing.gateway as Record<string, unknown>) || {};
-  const gatewayTokenValue = readGatewayTokenFromConfig(existing);
+  const gatewayTokenValue = await readGatewayTokenFromConfig(existing);
   if (!gatewayTokenValue) {
     // Either ensure-gateway-token.js hasn't run yet (first start), or the
     // OpenClaw container is broken. Logging instead of throwing so a fresh
