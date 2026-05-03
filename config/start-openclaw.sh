@@ -136,8 +136,6 @@ scan_data_directories() {
 # Running this loop continuously kills Telegram polling because each CLI
 # invocation loads the full plugin system.
 auto_approve_devices() {
-    local token
-    token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8')).gateway.auth.token)}catch{}")
     # Remove stale signal file from previous run
     rm -f /root/.openclaw/pinchy-device-approved
     sleep 5
@@ -147,6 +145,18 @@ auto_approve_devices() {
         if [ -f /root/.openclaw/pinchy-device-approved ]; then
             echo "auto_approve_devices: Pinchy connected, stopping"
             return 0
+        fi
+        # Re-read the token on every iteration: the gateway generates its own
+        # token at first startup when the config has no token (e.g. our minimal
+        # seed config), so the token doesn't exist yet when this function starts.
+        # Reading once at the top missed this write and left `token` empty for
+        # the entire loop, causing every `openclaw devices approve` call to fail.
+        local token
+        token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8')).gateway.auth.token)}catch{}")
+        if [ -z "$token" ]; then
+            elapsed=$((elapsed + 5))
+            sleep 5
+            continue
         fi
         # `openclaw devices approve --latest` is preview-only since 2026.4.10.
         # It prints the requestId but exits with code 1 without approving.
