@@ -7,10 +7,9 @@ import { getSetting } from "@/lib/settings";
 // CLAUDE.md "Secrets Handling":
 //
 //   Pattern A — OpenClaw built-in resolves SecretRef
-//     LLM provider apiKey, env-template `${VAR}` strings.
+//     LLM provider apiKey via SecretRef in models.providers.<name>.apiKey.
 //     `collectProviderSecrets()` walks PROVIDERS for configured keys
-//     and produces all three sides of the link in one place
-//     (env.* template, providers.* secret, env.* resolved value).
+//     and writes provider secrets + env values (backward-compat) to secrets.json.
 //
 //   Pattern B — Pinchy plugins fetch via API
 //     Per-integration credentials (Odoo, web-search, email).
@@ -28,8 +27,6 @@ import { getSetting } from "@/lib/settings";
 // patterns belongs in this file.
 
 export interface ProviderSecretsCollection {
-  /** `${VAR}` templates for `env.*` in openclaw.json. */
-  envTemplates: Record<string, string>;
   /** Per-provider apiKey for `secrets.json#/providers`. */
   providers: Record<string, { apiKey: string }>;
   /** Resolved env-var values for `secrets.json#/env`. */
@@ -42,23 +39,17 @@ export interface ProviderSecretsCollection {
  *
  * For each provider with an apiKey set in settings AND an `envVar`
  * declared in PROVIDERS, emits:
- *   - providers.<providerKey> = { apiKey }   (into secrets.json)
+ *   - providers.<providerKey> = { apiKey }   (into secrets.json — resolved
+ *     live via SecretRef in models.providers.<name>.apiKey)
  *   - env.<envVar> = <apiKey>      (into secrets.json — kept for
  *     start-openclaw.sh backward-compat until Phase 2.4 removes the
  *     bash watch loop)
- *
- * NOTE: envTemplates is intentionally empty. Provider API keys now use
- * SecretRef in models.providers.<name>.apiKey (build.ts) instead of
- * `${VAR}` templates in openclaw.json's env block. The env-template
- * approach required shell `export` + process restart on key rotation;
- * SecretRef resolves live from secrets.json without a restart.
  *
  * Returns fresh, mutable maps owned by the caller. The caller may
  * splice in additional entries (e.g. ollama-cloud, handled at the
  * model-providers call site in build.ts).
  */
 export async function collectProviderSecrets(): Promise<ProviderSecretsCollection> {
-  const envTemplates: Record<string, string> = {};
   const providers: Record<string, { apiKey: string }> = {};
   const envSecrets: Record<string, string> = {};
   for (const [providerKey, providerConfig] of Object.entries(PROVIDERS)) {
@@ -68,7 +59,7 @@ export async function collectProviderSecrets(): Promise<ProviderSecretsCollectio
       envSecrets[providerConfig.envVar] = apiKey;
     }
   }
-  return { envTemplates, providers, envSecrets };
+  return { providers, envSecrets };
 }
 
 /**

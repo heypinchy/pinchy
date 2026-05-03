@@ -2,7 +2,6 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "
 import { dirname } from "path";
 import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
 import { CONFIG_PATH } from "./paths";
-import { redactUnchangedEnvForApply } from "./normalize";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
 export function writeConfigAtomic(content: string) {
@@ -65,14 +64,6 @@ export function pushConfigInBackground(newContent: string): void {
       return;
     }
 
-    // Workaround for openclaw#75534: replace unchanged env values with
-    // OpenClaw's REDACTED sentinel before sending. Without this, every
-    // config.apply payload trips OpenClaw's resolved-vs-template diff for
-    // env.* paths and triggers a full gateway restart even when only a
-    // hot-reloadable path (agents.list, bindings) actually changed.
-    // Removable when openclaw#75534 lands; tracked in #215.
-    const payload = redactUnchangedEnvForApply(newContent);
-
     // Brief retry across transient WS disconnects. Beyond ~3.5 s the WS is
     // probably down due to the cold-start cascade, and inotify will catch
     // up; no point keeping a background coroutine alive longer.
@@ -80,7 +71,7 @@ export function pushConfigInBackground(newContent: string): void {
     for (let i = 0; i < backoffsMs.length; i++) {
       try {
         const current = (await client.config.get()) as { hash: string };
-        await client.config.apply(payload, current.hash, {
+        await client.config.apply(newContent, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
         });
         return;
