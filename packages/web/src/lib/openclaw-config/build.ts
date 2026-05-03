@@ -113,16 +113,10 @@ export async function regenerateOpenClawConfig() {
   // Read all agents from DB
   const allAgents = await db.select().from(agents);
 
-  // Pattern A from CLAUDE.md "Secrets Handling": env-template + secret pair
-  // for each LLM provider with a configured apiKey. Helper returns fresh
-  // mutable maps; ollama-cloud is spliced into providerSecrets later
-  // (it uses SecretRef, not an env template, and is therefore handled
-  // at the model-providers call site).
-  const {
-    envTemplates: env,
-    providers: providerSecrets,
-    envSecrets,
-  } = await collectProviderSecrets();
+  // Pattern A from CLAUDE.md "Secrets Handling": secret pair for each LLM
+  // provider with a configured apiKey. Helper returns fresh mutable maps;
+  // ollama-cloud is spliced into providerSecrets at the model-providers call site.
+  const { providers: providerSecrets, envSecrets } = await collectProviderSecrets();
 
   // Only set defaults.model — nothing else. OpenClaw enriches agents.defaults
   // with heartbeat, models, contextPruning, compaction at runtime. If Pinchy
@@ -226,10 +220,6 @@ export async function regenerateOpenClawConfig() {
     // canvases anywhere in its UI; per schema: "Keep disabled when canvas
     // workflows are inactive to reduce exposed local services."
     canvasHost: { ...existingCanvasHost, enabled: false },
-    // env block only emitted when non-empty. Provider API keys now use
-    // SecretRef in models.providers.* — no env-templates needed. Remaining
-    // callers (e.g. future custom env vars) can add to envTemplates.
-    ...(Object.keys(env).length > 0 && { env }),
     secrets: {
       providers: {
         pinchy: {

@@ -3,11 +3,6 @@ import { dirname } from "path";
 import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
 import { getOpenClawClient } from "@/server/openclaw-client";
 import { CONFIG_PATH } from "./paths";
-import {
-  redactUnchangedEnvForApply,
-  supplementPayloadWithFileFields,
-  supplementPayloadWithOcConfig,
-} from "./normalize";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
 export function writeConfigAtomic(content: string) {
@@ -87,9 +82,6 @@ export function pushConfigInBackground(newContent: string): void {
       return;
     }
 
-    // Bail early if a newer push has already superseded this call.
-    if (generation !== _pushGeneration) return;
-
     // Brief retry across transient WS disconnects. Beyond ~3.5 s the WS is
     // probably down due to the cold-start cascade, and inotify will catch
     // up; no point keeping a background coroutine alive longer.
@@ -99,70 +91,8 @@ export function pushConfigInBackground(newContent: string): void {
       // may have started while we were sleeping.
       if (generation !== _pushGeneration) return;
       try {
-        const current = (await client.config.get()) as {
-          hash: string;
-          config?: Record<string, unknown>;
-        };
-        if (generation !== _pushGeneration) return; // check after each await
-        // Re-supplement on every attempt (including retries after a restart).
-        // Between payload computation and now, OpenClaw may have auto-enabled
-        // plugins (e.g. anthropic, telegram) and written their entries back to
-        // openclaw.json. Without supplementing, config.apply sees those fields
-        // removed and triggers another full restart — cascade loop.
-        //
-        // Prefer the in-memory OC config (from config.get) over reading the
-        // file: the in-memory state is authoritative and has no file-write
-        // race conditions. Fall back to file supplement when config is absent.
-        // Supplement first, then env-redact (order matters: supplement adds
-        // OC-managed values, redact replaces env keys with the sentinel for
-        // openclaw#75534).
-        let supplemented = current.config
-          ? supplementPayloadWithOcConfig(newContent, current.config)
-          : supplementPayloadWithFileFields(newContent);
-
-        // OC in-memory config may lack `meta` right after a restart (before
-        // its first file write stamps the block). Without meta, config.apply
-        // triggers the missing-meta-before-write anomaly → full restart
-        // cascade (openclaw#75534). Fall back to the file: the previous
-        // run's meta survives there until OC overwrites it.
-        if (current.config) {
-          try {
-            const p = JSON.parse(supplemented) as Record<string, unknown>;
-            if (!("meta" in p)) supplemented = supplementPayloadWithFileFields(supplemented);
-          } catch {
-            // unparseable payload — leave supplemented as-is
-          }
-        }
-        // Workaround for openclaw#75534: replace unchanged env values with
-        // OpenClaw's REDACTED sentinel before sending. Without this, every
-        // config.apply payload trips OpenClaw's resolved-vs-template diff for
-        // env.* paths and triggers a full gateway restart even when only a
-        // hot-reloadable path (agents.list, bindings) actually changed.
-        // Removable when openclaw#75534 lands; tracked in #215.
-        const payload = redactUnchangedEnvForApply(supplemented);
-        // Safety guard: if the final payload still lacks meta and OC already has
-        // an in-memory config, skip config.apply. The config.apply path triggers
-        // OC's "missing-meta-before-write" anomaly when meta is absent (seen after
-        // an in-process restart where both OC memory and the previous file lack
-        // meta). inotify (from writeConfigAtomic above) does not trigger the
-        // anomaly — let it pick up the file change instead.
-        // Only applies when current.config is defined (OC is running); on cold
-        // start (config.get returns no config) we still push to populate OC's
-        // runtime config immediately.
-        if (current.config) {
-          try {
-            const payloadObj = JSON.parse(payload) as Record<string, unknown>;
-            if (!("meta" in payloadObj)) {
-              console.warn(
-                "[openclaw-config] Skipping config.apply: meta absent from payload — relying on inotify"
-              );
-              return;
-            }
-          } catch {
-            // malformed payload — fall through and let config.apply fail naturally
-          }
-        }
-        await client.config.apply(payload, current.hash, {
+        const current = (await client.config.get()) as { hash: string };
+        await client.config.apply(newContent, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
         });
         return;
