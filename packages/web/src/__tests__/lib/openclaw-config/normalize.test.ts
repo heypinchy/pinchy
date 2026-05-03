@@ -253,4 +253,67 @@ describe("supplementPayloadWithOcConfig", () => {
 
     expect(result.plugins.allow).toContain("anthropic");
   });
+
+  it("adds models.providers.* baseUrl from OC config when absent from payload", () => {
+    // OC 4.27 with ANTHROPIC_BASE_URL env var: OC sets baseUrl in its in-memory config.
+    // Pinchy's payload omits baseUrl (it only writes apiKey + models). Without
+    // supplementing, config.apply fails with
+    // "anthropic.baseUrl: Invalid input: expected string, received undefined".
+    const ocConfig = {
+      hash: "x",
+      models: {
+        providers: {
+          anthropic: { baseUrl: "https://mock.api:443", apiKey: "sk-ant-resolved" },
+        },
+      },
+    };
+    const payload = JSON.stringify({
+      models: {
+        providers: {
+          anthropic: {
+            apiKey: { $secretRef: "/providers/anthropic/apiKey" },
+            models: [],
+          },
+        },
+      },
+    });
+    const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
+
+    expect(result.models.providers.anthropic.baseUrl).toBe("https://mock.api:443");
+    expect(result.models.providers.anthropic.apiKey).toEqual({
+      $secretRef: "/providers/anthropic/apiKey",
+    });
+  });
+
+  it("does NOT overwrite existing models.providers.* baseUrl in payload", () => {
+    const ocConfig = {
+      hash: "x",
+      models: { providers: { anthropic: { baseUrl: "https://oc-api.anthropic.com" } } },
+    };
+    const payload = JSON.stringify({
+      models: { providers: { anthropic: { baseUrl: "https://custom.proxy" } } },
+    });
+    const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
+
+    expect(result.models.providers.anthropic.baseUrl).toBe("https://custom.proxy");
+  });
+
+  it("adds baseUrl via supplementPayloadWithFileFields as well", () => {
+    // Same scenario but sourced from the file on disk (fallback path).
+    const file = JSON.stringify({
+      models: {
+        providers: { anthropic: { baseUrl: "https://mock.api:443", apiKey: "sk-ant-resolved" } },
+      },
+    });
+    mockedReadFileSync.mockReturnValue(file as unknown as Buffer);
+
+    const payload = JSON.stringify({
+      models: {
+        providers: { anthropic: { apiKey: { $secretRef: "/providers/anthropic/apiKey" } } },
+      },
+    });
+    const result = JSON.parse(supplementPayloadWithFileFields(payload));
+
+    expect(result.models.providers.anthropic.baseUrl).toBe("https://mock.api:443");
+  });
 });

@@ -51,17 +51,21 @@ test.describe.serial("Cold-start ordering — OpenClaw boots after Pinchy config
     await waitForPinchy();
   });
 
-  test("OpenClaw [gateway] ready appears after Pinchy config regenerated", async () => {
+  test("OpenClaw [gateway] ready appears after Pinchy signals boot complete", async () => {
     const pinchyLogs = getLogsWithTimestamps("pinchy");
     const openclawLogs = getLogsWithTimestamps("openclaw");
 
-    const configRegenAt = findFirstTimestamp(
+    // Pinchy logs this unconditionally at the end of bootInits(), immediately
+    // before markOpenClawConfigReady() is called. Because openclaw depends on
+    // pinchy's healthcheck (which polls /api/internal/openclaw-config-ready),
+    // OpenClaw cannot start until after this log line is emitted.
+    const bootCompleteAt = findFirstTimestamp(
       pinchyLogs,
-      "OpenClaw config regenerated from DB state"
+      "[pinchy] boot complete: OpenClaw container may now start"
     );
     expect(
-      configRegenAt,
-      "Pinchy must log 'OpenClaw config regenerated from DB state' with a timestamp"
+      bootCompleteAt,
+      "Pinchy must log '[pinchy] boot complete: OpenClaw container may now start' with a timestamp"
     ).not.toBeNull();
 
     const gatewayReadyAt = findFirstTimestamp(openclawLogs, "[gateway] ready (");
@@ -70,9 +74,9 @@ test.describe.serial("Cold-start ordering — OpenClaw boots after Pinchy config
     expect(
       gatewayReadyAt!.getTime(),
       `OpenClaw reported ready at ${gatewayReadyAt!.toISOString()} but ` +
-        `Pinchy wrote config at ${configRegenAt!.toISOString()}. ` +
-        `OpenClaw must not become ready before Pinchy has written the final config. ` +
+        `Pinchy signaled boot complete at ${bootCompleteAt!.toISOString()}. ` +
+        `OpenClaw must not become ready before Pinchy has signaled it may start. ` +
         `Check that docker-compose.yml has openclaw.depends_on.pinchy.condition: service_healthy.`
-    ).toBeGreaterThanOrEqual(configRegenAt!.getTime());
+    ).toBeGreaterThanOrEqual(bootCompleteAt!.getTime());
   });
 });

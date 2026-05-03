@@ -81,6 +81,7 @@ export async function bootInits(): Promise<boolean> {
   // healthcheck passes even on fresh installs (no setup yet) or when config
   // regeneration fails — OpenClaw will start with whatever config is on disk
   // and hot-reload via inotify when the setup wizard writes a new one.
+  console.log("[pinchy] boot complete: OpenClaw container may now start");
   markOpenClawConfigReady();
 
   return setupWasComplete;
