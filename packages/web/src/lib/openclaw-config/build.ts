@@ -14,9 +14,8 @@ import { getSetting } from "@/lib/settings";
 import { computeDeniedGroups } from "@/lib/tool-registry";
 import type { AgentPluginConfig } from "@/db/schema";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODELS, OLLAMA_CLOUD_COST } from "@/lib/ollama-cloud-models";
+import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
-import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
-
 import { dirname } from "path";
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
@@ -54,10 +53,6 @@ function deepMerge(
 }
 
 export async function regenerateOpenClawConfig() {
-  // Migrate existing Smithers agents first, so their updated allowedTools
-  // are reflected in the config we're about to generate.
-  await migrateExistingSmithers();
-
   let existing = readExistingConfig();
 
   // If readExistingConfig returned empty it may be a transient EACCES hit:
@@ -77,14 +72,12 @@ export async function regenerateOpenClawConfig() {
   // does not resolve SecretRef objects in the gateway.auth block.
   // The same token is also written to secrets.json so Pinchy can read it.
   const existingGateway = (existing.gateway as Record<string, unknown>) || {};
-  const gatewayTokenValue = readGatewayTokenFromConfig(existing);
+  const gatewayTokenValue = await readGatewayTokenFromConfig(existing);
   if (!gatewayTokenValue) {
-    // Either ensure-gateway-token.js hasn't run yet (first start), or the
-    // OpenClaw container is broken. Logging instead of throwing so a fresh
-    // setup can recover once the token appears in secrets.json on the next
-    // regenerateOpenClawConfig() pass.
+    // DB unavailable and no existing config — log and continue. Token will be
+    // provisioned on the next regenerateOpenClawConfig() pass once the DB is ready.
     console.warn(
-      "[openclaw-config] No gateway token found in existing config or secrets.json. " +
+      "[openclaw-config] No gateway token found. " +
         "Writing empty token — OpenClaw auth will reject requests until the token is provisioned."
     );
   }
@@ -112,16 +105,10 @@ export async function regenerateOpenClawConfig() {
   // Read all agents from DB
   const allAgents = await db.select().from(agents);
 
-  // Pattern A from CLAUDE.md "Secrets Handling": env-template + secret pair
-  // for each LLM provider with a configured apiKey. Helper returns fresh
-  // mutable maps; ollama-cloud is spliced into providerSecrets later
-  // (it uses SecretRef, not an env template, and is therefore handled
-  // at the model-providers call site).
-  const {
-    envTemplates: env,
-    providers: providerSecrets,
-    envSecrets,
-  } = await collectProviderSecrets();
+  // Pattern A from CLAUDE.md "Secrets Handling": secret pair for each LLM
+  // provider with a configured apiKey. Helper returns a fresh mutable map;
+  // ollama-cloud is spliced into providerSecrets at the model-providers call site.
+  const { providers: providerSecrets } = await collectProviderSecrets();
 
   // Only set defaults.model — nothing else. OpenClaw enriches agents.defaults
   // with heartbeat, models, contextPruning, compaction at runtime. If Pinchy
@@ -225,7 +212,6 @@ export async function regenerateOpenClawConfig() {
     // canvases anywhere in its UI; per schema: "Keep disabled when canvas
     // workflows are inactive to reduce exposed local services."
     canvasHost: { ...existingCanvasHost, enabled: false },
-    env,
     secrets: {
       providers: {
         pinchy: {
@@ -587,11 +573,23 @@ export async function regenerateOpenClawConfig() {
     config.plugins = { allow: allowedPlugins, entries };
   }
 
-  // Build models.providers block for Ollama providers
+  // Build models.providers block — built-in providers + Ollama providers.
+  // Built-in providers (anthropic, openai, google) use SecretRef for apiKey
+  // so OpenClaw resolves the key live from secrets.json without a restart.
   const ollamaCloudKey = await getSetting(PROVIDERS["ollama-cloud"].settingsKey);
   const ollamaLocalUrl = await getSetting(PROVIDERS["ollama-local"].settingsKey);
 
   const modelProviders: Record<string, unknown> = {};
+
+  for (const providerName of ["anthropic", "openai", "google"] as const) {
+    const apiKey = await getSetting(PROVIDERS[providerName].settingsKey);
+    if (apiKey) {
+      modelProviders[providerName] = {
+        apiKey: secretRef(`/providers/${providerName}/apiKey`),
+        models: getModelCatalogForProvider(providerName),
+      };
+    }
+  }
 
   if (ollamaCloudKey) {
     providerSecrets["ollama-cloud"] = { apiKey: ollamaCloudKey };
@@ -747,7 +745,6 @@ export async function regenerateOpenClawConfig() {
     gateway: gatewaySecret,
     providers: providerSecrets,
     integrations: integrationSecrets,
-    env: envSecrets,
   });
   writeSecretsFile(secretsBundle);
 

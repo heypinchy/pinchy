@@ -78,6 +78,11 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/openclaw-config-ready", () => ({
+  markOpenClawConfigReady: vi.fn(),
+  isOpenClawConfigReady: vi.fn(),
+}));
+
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
 }));
@@ -93,6 +98,7 @@ vi.mock("@/lib/provider-models", () => ({
 import { ensureWorkspace } from "@/lib/workspace";
 import { auth } from "@/lib/auth";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { markOpenClawConfigReady } from "@/lib/openclaw-config-ready";
 
 import { db } from "@/db";
 
@@ -238,6 +244,20 @@ describe("POST /api/setup", () => {
     await POST(request as any);
 
     expect(regenerateOpenClawConfig).toHaveBeenCalledOnce();
+  });
+
+  it("should call markOpenClawConfigReady after setup completes", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+    vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
+
+    const request = makeRequest({
+      name: "Admin User",
+      email: "admin@test.com",
+      password: "Br1ghtNova!2",
+    });
+    await POST(request as any);
+
+    expect(markOpenClawConfigReady).toHaveBeenCalledOnce();
   });
 
   it("should return 403 when setup is already complete", async () => {

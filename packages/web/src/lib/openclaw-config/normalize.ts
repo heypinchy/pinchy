@@ -1,12 +1,6 @@
 import { readFileSync } from "fs";
 import { CONFIG_PATH } from "./paths";
 
-// Workarounds for openclaw#75534 — see #193 for the cascade these prevent and
-// #215 for the removal plan once the upstream OpenClaw fix lands. When the
-// upstream fix is in our base image, this whole file can be deleted: drop the
-// imports + early-return calls in `build.ts` and `write.ts`, then remove this
-// module. Behaviour is byte-for-byte identical to the pre-split version.
-
 /**
  * Compare two openclaw.json strings for semantic equivalence, ignoring
  * fields that OpenClaw stamps onto the file independently of any user
