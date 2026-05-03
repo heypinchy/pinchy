@@ -206,11 +206,34 @@ test.describe("regenerateOpenClawConfig — cold-start & idempotency contract", 
     const after = readFileSync(CONFIG_PATH, "utf-8");
     const logs = openClawLogsSince(beforeMark);
 
-    // (a) Byte equality. If this fails, Pinchy's regenerate produced a
-    //     different file even though the user-level state didn't change —
-    //     Pinchy is missing a preserve-list entry for an OpenClaw-enriched
-    //     field. The diff between `before` and `after` localizes which one.
-    if (after !== before) {
+    // (a) Semantic equality, ignoring `meta.lastTouchedAt`. OpenClaw stamps
+    //     that timestamp on every write *it* performs (config.apply RPC,
+    //     internal restart bookkeeping) — independent of any Pinchy or
+    //     user action — so a strict byte-equality assertion here would be
+    //     racy: between our `before` and `after` reads, OpenClaw could have
+    //     re-stamped the file as part of routine reload-subsystem work even
+    //     when Pinchy itself wrote nothing. We instead diff the JSON modulo
+    //     that single field, mirroring `configsAreEquivalentUpToOpenClawMetadata`
+    //     in `packages/web/src/lib/openclaw-config/normalize.ts` (the same
+    //     workaround Pinchy applies to short-circuit redundant writes;
+    //     openclaw#75534).
+    //
+    //     If THIS fails, Pinchy's regenerate produced a different file
+    //     even though the user-level state didn't change — Pinchy is
+    //     missing a preserve-list entry for an OpenClaw-enriched field
+    //     (the kind of bug that produced #193, #200, #237). The diff
+    //     localizes which field.
+    const stripMetaTimestamp = (raw: string): string => {
+      const parsed = JSON.parse(raw) as { meta?: Record<string, unknown> };
+      if (parsed.meta && typeof parsed.meta === "object") {
+        delete parsed.meta.lastTouchedAt;
+        if (Object.keys(parsed.meta).length === 0) delete parsed.meta;
+      }
+      return JSON.stringify(parsed);
+    };
+    const beforeNorm = stripMetaTimestamp(before);
+    const afterNorm = stripMetaTimestamp(after);
+    if (beforeNorm !== afterNorm) {
       // Compact diff for fast triage. Avoids dumping 20 KB of JSON.
       const diff = execSync(
         `diff <(printf %s ${JSON.stringify(before)}) <(printf %s ${JSON.stringify(after)}) || true`,
