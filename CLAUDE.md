@@ -53,7 +53,7 @@ Companies want AI agents but face a trilemma:
 
 ### Core Concepts (planned and implemented)
 
-- **Plugin Architecture** (partially implemented): Agents get scoped tools, not raw shell access. Seven plugins implemented in `packages/plugins/`:
+- **Plugin Architecture** (partially implemented): Agents get scoped tools, not raw shell access. Seven plugins live in `packages/plugins/` today (plugin marketplace planned):
   - `pinchy-files` — read-only file access for Knowledge Base agents
   - `pinchy-context` — saves user/org context during Smithers onboarding
   - `pinchy-docs` — on-demand access to platform documentation (used by Smithers)
@@ -61,8 +61,6 @@ Companies want AI agents but face a trilemma:
   - `pinchy-email` — Gmail integration (send/read)
   - `pinchy-odoo` — Odoo CRM integration
   - `pinchy-web` — web search (Brave) and web fetch
-
-  Plugin marketplace is planned.
 - **Agent Permissions** (implemented): Allow-list model — agents start with zero tools, admins grant specific capabilities. Safe tools (list/read approved dirs) vs. powerful tools (shell, write, web).
 - **RBAC** (partially implemented): Admin/user roles with agent access control (admins see all, users see shared + personal agents). Granular per-team/per-role RBAC is planned.
 - **Audit Trail** (implemented): Captures admin state changes, authentication events (`auth.login`/`auth.failed`/`auth.logout`/`auth.csrf_blocked`), agent tool executions and denials (`tool.<name>`/`tool.denied`, written by the `pinchy-audit` plugin via `/api/internal/audit/tool-use`), chat events (`chat.retry_triggered`), and audit exports (`audit.exported`). HMAC-SHA256 signed rows, integrity verification, CSV export. Compliance-ready.
@@ -103,32 +101,32 @@ pinchy/
 │   │   │   └── server/    # WebSocket bridge (client-router, ws-auth)
 │   │   ├── e2e/           # Playwright E2E tests
 │   │   └── drizzle/       # Generated migrations
-│   └── plugins/           # OpenClaw plugins (each with openclaw.plugin.json)
-│       ├── pinchy-files/  # Knowledge base file access (read-only)
-│       ├── pinchy-context/# Saves user/org context during Smithers onboarding
-│       ├── pinchy-docs/   # On-demand docs lookup (Smithers reads docs at runtime)
-│       ├── pinchy-audit/  # Tool-execution audit logging (calls Pinchy API)
-│       ├── pinchy-email/  # Gmail send/read
-│       ├── pinchy-odoo/   # Odoo CRM
-│       └── pinchy-web/    # Brave search + web fetch
-├── config/                # OpenClaw config & startup script
-├── sample-data/           # Sample docs for dev/testing (mounted at /data/)
-├── docs/                  # Documentation (Astro Starlight, standalone)
-├── docker-compose.yml         # Full stack definition (production)
-├── docker-compose.dev.yml     # Dev override (hot reload, exposed DB port)
-├── docker-compose.test.yml    # Unit/component test stack
-├── docker-compose.integration.yml # Integration test stack
-├── docker-compose.e2e.yml     # Playwright E2E stack
-├── docker-compose.odoo-test.yml   # Mock Odoo for pinchy-odoo integration tests
-├── Dockerfile.pinchy      # Production image
-├── Dockerfile.pinchy.dev  # Dev image (no build step, runs pnpm dev)
-├── Dockerfile.openclaw    # OpenClaw runtime image
-├── .github/workflows/     # CI, docs deployment, SBOM generation
-├── CLAUDE.md              # ← You are here
-├── PERSONALITY.md         # Brand voice & tone guide (read before writing UI text)
-├── CONTRIBUTING.md        # Contribution guidelines
-├── SECURITY.md            # Security policy & vulnerability reporting
-└── README.md              # Public-facing project description
+│   └── plugins/                    # OpenClaw plugins (each with openclaw.plugin.json)
+│       ├── pinchy-files/           # Knowledge base file access (read-only)
+│       ├── pinchy-context/         # Saves user/org context during Smithers onboarding
+│       ├── pinchy-docs/            # On-demand docs lookup (Smithers reads docs at runtime)
+│       ├── pinchy-audit/           # Tool-execution audit logging (calls Pinchy API)
+│       ├── pinchy-email/           # Gmail send/read
+│       ├── pinchy-odoo/            # Odoo CRM
+│       └── pinchy-web/             # Brave search + web fetch
+├── config/                         # OpenClaw config & startup script
+├── sample-data/                    # Sample docs for dev/testing (mounted at /data/)
+├── docs/                           # Documentation (Astro Starlight, standalone)
+├── docker-compose.yml              # Full stack definition (production)
+├── docker-compose.dev.yml          # Dev override (hot reload, exposed DB port)
+├── docker-compose.test.yml         # Unit/component test stack
+├── docker-compose.integration.yml  # Integration test stack
+├── docker-compose.e2e.yml          # Playwright E2E stack
+├── docker-compose.odoo-test.yml    # Mock Odoo for pinchy-odoo integration tests
+├── Dockerfile.pinchy               # Production image
+├── Dockerfile.pinchy.dev           # Dev image (no build step, runs pnpm dev)
+├── Dockerfile.openclaw             # OpenClaw runtime image
+├── .github/workflows/              # CI, docs deployment, SBOM generation
+├── CLAUDE.md                       # ← You are here
+├── PERSONALITY.md                  # Brand voice & tone guide (read before writing UI text)
+├── CONTRIBUTING.md                 # Contribution guidelines
+├── SECURITY.md                     # Security policy & vulnerability reporting
+└── README.md                       # Public-facing project description
 ```
 
 ## Development Guidelines
@@ -151,7 +149,7 @@ pinchy/
 ### Audit Trail Guidelines
 The audit log captures more than just admin state changes — it also records auth events, agent tool calls (written by the `pinchy-audit` OpenClaw plugin via `POST /api/internal/audit/tool-use`), chat retries, and audit exports. The full event-type union lives in `AuditEventType` in `@/lib/audit`.
 
-Every state-changing API route MUST log via `appendAuditLog()` (or one of the variants below). The `detail` JSON field must follow these rules:
+Every state-changing API route MUST log via `appendAuditLog()` (or one of the variants below) unless explicitly marked `// audit-exempt: <reason>`. The `detail` JSON field must follow these rules:
 
 - **Never fire-and-forget.** `appendAuditLog(...).catch(console.error)` is forbidden by ESLint (`pinchy/require-audit-log` rule, see #231) — silently swallowed audit failures break the compliance contract. Pick one of three patterns:
   - `await appendAuditLog(...)` — preferred for **idempotent** state changes (PUT/PATCH/DELETE on existing resources). If the audit write fails, the route returns 500 and the client retries — same end state.
