@@ -78,7 +78,10 @@ describe("bootInits", () => {
     expect(mocks.regenerateOpenClawConfig).toHaveBeenCalledTimes(1);
   });
 
-  it("returns false and skips regenerate when setup is incomplete", async () => {
+  it("returns false and skips regenerate when setup is incomplete, but still marks ready", async () => {
+    // markOpenClawConfigReady() must be called unconditionally so that the
+    // Docker Compose healthcheck can pass and OpenClaw can start even on a
+    // fresh install that hasn't run setup yet.
     mocks.isSetupComplete.mockResolvedValue(false);
 
     const { bootInits } = await import("@/lib/boot-inits");
@@ -87,7 +90,17 @@ describe("bootInits", () => {
     expect(result).toBe(false);
     expect(mocks.migrateExistingSmithers).not.toHaveBeenCalled();
     expect(mocks.regenerateOpenClawConfig).not.toHaveBeenCalled();
-    expect(mocks.markOpenClawConfigReady).not.toHaveBeenCalled();
+    expect(mocks.markOpenClawConfigReady).toHaveBeenCalledOnce();
+  });
+
+  it("still calls markOpenClawConfigReady when regenerateOpenClawConfig throws", async () => {
+    mocks.regenerateOpenClawConfig.mockRejectedValue(new Error("EACCES: permission denied"));
+
+    const { bootInits } = await import("@/lib/boot-inits");
+    const result = await bootInits();
+
+    expect(result).toBe(false);
+    expect(mocks.markOpenClawConfigReady).toHaveBeenCalledOnce();
   });
 
   it("still runs non-critical migrations when setup is incomplete", async () => {

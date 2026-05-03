@@ -61,13 +61,13 @@ export async function bootInits(): Promise<boolean> {
     );
   }
 
+  let setupWasComplete = false;
   try {
     if (await isSetupComplete()) {
       await migrateExistingSmithers();
       await regenerateOpenClawConfig();
-      markOpenClawConfigReady();
       console.log("[pinchy] OpenClaw config regenerated from DB state");
-      return true;
+      setupWasComplete = true;
     }
   } catch (err) {
     console.error(
@@ -76,5 +76,12 @@ export async function bootInits(): Promise<boolean> {
     );
   }
 
-  return false;
+  // Signal the Docker Compose healthcheck that Pinchy has finished its startup
+  // sequence. OpenClaw depends on this to start. Called unconditionally so the
+  // healthcheck passes even on fresh installs (no setup yet) or when config
+  // regeneration fails — OpenClaw will start with whatever config is on disk
+  // and hot-reload via inotify when the setup wizard writes a new one.
+  markOpenClawConfigReady();
+
+  return setupWasComplete;
 }
