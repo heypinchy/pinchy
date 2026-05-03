@@ -233,10 +233,21 @@ test.describe("regenerateOpenClawConfig — cold-start & idempotency contract", 
     const beforeNorm = stripMeta(before);
     const afterNorm = stripMeta(after);
     if (beforeNorm !== afterNorm) {
-      // Compact diff for fast triage. Avoids dumping 20 KB of JSON.
+      // Compact diff for fast triage. Write both snapshots to tmp files and
+      // diff them — passing the whole config inline via `printf %s ...` would
+      // hit ARG_MAX (~256 KB on macOS) once telegram bindings + many users
+      // grow the config, silently producing an empty diff message instead.
+      const { writeFileSync: write, mkdtempSync } = await import("fs");
+      const { tmpdir } = await import("os");
+      const { join } = await import("path");
+      const dir = mkdtempSync(join(tmpdir(), "pinchy-idempotency-"));
+      write(join(dir, "before.json"), before);
+      write(join(dir, "after.json"), after);
       const diff = execSync(
-        `diff <(printf %s ${JSON.stringify(before)}) <(printf %s ${JSON.stringify(after)}) || true`,
-        { encoding: "utf-8", shell: "/bin/bash" }
+        `diff "${join(dir, "before.json")}" "${join(dir, "after.json")}" || true`,
+        {
+          encoding: "utf-8",
+        }
       );
       throw new Error(
         `openclaw.json changed despite no DB change — preserve-list incomplete.\n` +

@@ -254,6 +254,57 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.canvasHost?.enabled).toBe(false);
   });
 
+  it("preserves OpenClaw-enriched sub-fields under discovery, update, canvasHost across regenerate (C1)", async () => {
+    // Regression guard for review feedback on PR #269: writing
+    // `discovery`, `update`, `canvasHost` as fresh objects without
+    // spreading `existing.<field>` first re-introduces the same bug
+    // class this PR is meant to close (#193, #237). If OpenClaw enriches
+    // a sub-field under any of these three new top-level paths and we
+    // strip it on the next regenerate, OpenClaw re-stamps it on the
+    // following reload — endless restart cascade.
+    //
+    // We seed `existing` with one OpenClaw-style enrichment under each
+    // path and assert it survives Pinchy's regenerate.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
+        discovery: {
+          mdns: { mode: "minimal", lastAnnouncedAt: "2026-05-03T00:00:00Z" },
+          lan: { discoveredPeers: ["peer-1"] },
+        },
+        update: { lastCheckedAt: "2026-05-03T00:00:00Z", channel: "stable" },
+        canvasHost: { enabled: true, boundPort: 18792 },
+      })
+    );
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written) as {
+      discovery?: {
+        mdns?: { mode?: string; lastAnnouncedAt?: string };
+        lan?: { discoveredPeers?: string[] };
+      };
+      update?: { checkOnStart?: boolean; lastCheckedAt?: string; channel?: string };
+      canvasHost?: { enabled?: boolean; boundPort?: number };
+    };
+
+    // Pinchy's intent: mode=off, checkOnStart=false, enabled=false (the
+    // disables this PR adds).
+    expect(config.discovery?.mdns?.mode).toBe("off");
+    expect(config.update?.checkOnStart).toBe(false);
+    expect(config.canvasHost?.enabled).toBe(false);
+
+    // OpenClaw's enrichments must survive byte-for-byte. If any of these
+    // assertions fail, regenerate is stripping them and the cascade is
+    // back.
+    expect(config.discovery?.mdns?.lastAnnouncedAt).toBe("2026-05-03T00:00:00Z");
+    expect(config.discovery?.lan?.discoveredPeers).toEqual(["peer-1"]);
+    expect(config.update?.lastCheckedAt).toBe("2026-05-03T00:00:00Z");
+    expect(config.update?.channel).toBe("stable");
+    expect(config.canvasHost?.boundPort).toBe(18792);
+  });
+
   it("should disable mDNS discovery so the Bonjour watchdog can't kill the gateway", async () => {
     // Rationale: OpenClaw's gateway tries to advertise itself via mDNS
     // (Bonjour) on startup. In Docker bridge networks multicast doesn't
