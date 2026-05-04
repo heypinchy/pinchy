@@ -18,6 +18,32 @@ export const KNOWN_PINCHY_PLUGINS = [
 
 export type KnownPinchyPlugin = (typeof KNOWN_PINCHY_PLUGINS)[number];
 
+export const EXTERNAL_INTEGRATION_PLUGINS = [
+  "pinchy-web",
+  "pinchy-email",
+  "pinchy-odoo",
+] as const satisfies readonly KnownPinchyPlugin[];
+
+export const INTERNAL_PLUGINS = [
+  "pinchy-files",
+  "pinchy-context",
+  "pinchy-docs",
+  "pinchy-audit",
+] as const satisfies readonly KnownPinchyPlugin[];
+
+// Compile-time exhaustiveness check: every known plugin must appear in exactly
+// one of the two buckets above. If a new plugin is added to KNOWN_PINCHY_PLUGINS
+// without a classification, this assignment fails to type-check.
+type _ExhaustiveCheck =
+  | (typeof EXTERNAL_INTEGRATION_PLUGINS)[number]
+  | (typeof INTERNAL_PLUGINS)[number];
+const _assertCovers: KnownPinchyPlugin extends _ExhaustiveCheck
+  ? _ExhaustiveCheck extends KnownPinchyPlugin
+    ? true
+    : never
+  : never = true;
+void _assertCovers;
+
 export interface PluginManifest {
   id: KnownPinchyPlugin;
   name: string;
