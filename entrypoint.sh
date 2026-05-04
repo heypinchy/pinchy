@@ -27,6 +27,26 @@ fi
 # it can enter the directory and rename files atomically.
 chown pinchy:pinchy /openclaw-secrets 2>/dev/null || true
 
+# Verify every Pinchy plugin shipped in the image lands in the shared
+# extensions volume. If a Dockerfile.pinchy COPY line is missing, OpenClaw
+# silently logs "plugin not found" and the agent's tools vanish at runtime —
+# we fail loud here instead. List MUST stay in sync with KNOWN_PINCHY_PLUGINS
+# in packages/web/src/lib/openclaw-config/plugin-manifest-loader.ts; drift is
+# caught by entrypoint-runtime-check.test.ts.
+EXPECTED_PLUGINS="pinchy-files pinchy-context pinchy-audit pinchy-docs pinchy-email pinchy-odoo pinchy-web"
+MISSING=""
+for plugin in $EXPECTED_PLUGINS; do
+  if [ ! -d "/openclaw-extensions/$plugin" ]; then
+    MISSING="$MISSING $plugin"
+  fi
+done
+if [ -n "$MISSING" ]; then
+  echo "[entrypoint] FATAL: missing plugin directories in /openclaw-extensions/:$MISSING"
+  echo "[entrypoint] check Dockerfile.pinchy COPY lines and the shared volume mount"
+  exit 1
+fi
+echo "[entrypoint] all Pinchy plugins present in /openclaw-extensions/"
+
 echo '[pinchy] Running database migrations...'
 su -s /bin/sh pinchy -c 'cd /app/packages/web && pnpm db:migrate'
 
