@@ -29,10 +29,22 @@ chown pinchy:pinchy /openclaw-secrets 2>/dev/null || true
 
 # Refresh plugin directories on every startup. The named Docker volume
 # (openclaw-extensions) is only initialised from the image on first creation;
-# subsequent upgrades leave stale content from the previous image. Copying
-# explicitly here ensures the running container always uses the current plugins.
-cp -r /app/pinchy-plugins/. /openclaw-extensions/
-echo "[entrypoint] refreshed plugins from image into /openclaw-extensions/"
+# subsequent upgrades leave stale content from the previous image.
+#
+# Critically idempotent: we only re-copy a plugin if its directory is missing
+# or differs from the image. Untouched files mean no spurious inotify events
+# for OpenClaw's plugin watcher (which would otherwise cause it to re-init the
+# plugin runtime on every container start, blocking the event loop for tens
+# of seconds — see Telegram E2E investigation for the failure mode).
+for plugin_src in /app/pinchy-plugins/*/; do
+  plugin_name=$(basename "$plugin_src")
+  plugin_dst="/openclaw-extensions/$plugin_name"
+  if [ ! -d "$plugin_dst" ] || ! diff -rq "$plugin_src" "$plugin_dst" >/dev/null 2>&1; then
+    rm -rf "$plugin_dst"
+    cp -r "$plugin_src" "$plugin_dst"
+    echo "[entrypoint] synced plugin: $plugin_name"
+  fi
+done
 
 # Verify every Pinchy plugin shipped in the image landed in the shared
 # extensions volume. If a Dockerfile.pinchy COPY line is missing, OpenClaw

@@ -2,7 +2,16 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
-  testIgnore: ["**/telegram/**", "**/odoo/**", "**/integration/**", "**/web/**", "**/email/**"],
+  // testIgnore is matched against absolute file paths. The bare patterns
+  // `**/web/**` and `**/email/**` would erroneously match every spec under
+  // `packages/web/...`, so we anchor them to `e2e/<suffix>/**`.
+  testIgnore: [
+    "**/telegram/**",
+    "**/odoo/**",
+    "**/integration/**",
+    "**/e2e/web/**",
+    "**/e2e/email/**",
+  ],
   fullyParallel: false,
   retries: 0,
   workers: 1,

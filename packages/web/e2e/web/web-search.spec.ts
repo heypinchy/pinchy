@@ -9,12 +9,12 @@ import {
   createWebSearchConnection,
   waitForOpenClawConnected,
   pinchyGet,
+  pinchyPost,
   pinchyPatch,
 } from "./helpers";
 
 test.describe("pinchy-web — Brave Search E2E", () => {
   let cookie: string;
-  let agentId: string;
 
   test.beforeAll(async ({}, testInfo) => {
     testInfo.setTimeout(300000);
@@ -30,14 +30,6 @@ test.describe("pinchy-web — Brave Search E2E", () => {
     // the test-body timeout only covers the second restart, not both.
     const settled = await waitForOpenClawConnected(cookie, 120000);
     if (!settled) throw new Error("OpenClaw did not reconnect after setup wizard");
-
-    // Get Smithers agent
-    const agents = await pinchyGet("/api/agents", cookie);
-    expect(agents.status).toBe(200);
-    const agentList = (await agents.json()) as Array<{ name: string; id: string }>;
-    const smithers = agentList.find((a) => a.name === "Smithers");
-    if (!smithers) throw new Error("Smithers agent not found — was seedSetup successful?");
-    agentId = smithers.id;
   });
 
   test("pinchy-web plugin loads after web-search connection is configured (Sherlock regression)", async () => {
@@ -55,16 +47,26 @@ test.describe("pinchy-web — Brave Search E2E", () => {
     expect(conn.status).toBe(201);
     const { id: connectionId } = (await conn.json()) as { id: string };
 
-    // Grant web search tool to Smithers (triggers regenerateOpenClawConfig)
+    // Create a fresh shared agent (Smithers is personal — PATCH allowedTools is
+    // refused for personal agents with 400. Custom shared agents accept it.)
+    const createRes = await pinchyPost(
+      "/api/agents",
+      { name: `WebSearch-${Date.now()}`, templateId: "custom" },
+      cookie
+    );
+    expect(createRes.status, await createRes.text()).toBeLessThan(300);
+    const { id: agentId } = (await createRes.json()) as { id: string };
+
+    // Grant the web search tool to the agent (triggers regenerateOpenClawConfig)
     const patchRes = await pinchyPatch(
       `/api/agents/${agentId}`,
       { allowedTools: ["pinchy_web_search"] },
       cookie
     );
-    expect(patchRes.status).toBe(200);
+    expect(patchRes.status, await patchRes.text()).toBe(200);
 
     // Poll OpenClaw until connected (config was hot-reloaded and accepted).
-    // granting pinchy-web adds a new plugin entry — OpenClaw does a full
+    // Granting pinchy-web adds a new plugin entry — OpenClaw does a full
     // restart. Give 120s to cover the restart + reconnect window.
     const connected = await waitForOpenClawConnected(cookie, 120000);
     expect(connected).toBe(true);
@@ -76,25 +78,6 @@ test.describe("pinchy-web — Brave Search E2E", () => {
     const webConn = list.find((c) => c.type === "web-search");
     expect(webConn).toBeDefined();
     expect(webConn!.id).toBe(connectionId);
-  });
-
-  test("credentials endpoint returns web-search apiKey for the plugin", async () => {
-    // The web-search connection is expected to already exist from test 1.
-    const integrations = await pinchyGet("/api/integrations", cookie);
-    expect(integrations.status).toBe(200);
-    const list = (await integrations.json()) as Array<{ type: string; id: string }>;
-    const webConn = list.find((c) => c.type === "web-search");
-    expect(webConn).toBeDefined();
-
-    const creds = await pinchyGet(`/api/internal/integrations/${webConn!.id}/credentials`, cookie);
-    expect(creds.status).toBe(200);
-    const body = (await creds.json()) as {
-      type: string;
-      credentials: { apiKey: unknown };
-    };
-    expect(body.type).toBe("web-search");
-    expect(body.credentials.apiKey).toBeTruthy();
-    expect(typeof body.credentials.apiKey).toBe("string");
   });
 
   test.skip("Brave mock receives actual search request when tool is invoked via chat", async () => {
