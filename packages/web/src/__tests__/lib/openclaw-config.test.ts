@@ -338,6 +338,91 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.discovery?.mdns?.mode).toBe("off");
   });
 
+  it("should disable bundled OpenClaw plugins that Pinchy never uses", async () => {
+    // OpenClaw 2026.4.x ships seven plugins enabledByDefault:
+    //   acpx, bonjour, browser, device-pair, memory-core, phone-control, talk-voice
+    //
+    // Pinchy uses none of acpx, bonjour, device-pair, phone-control:
+    //   - acpx: Agent Client Protocol for desktop chat clients (Claude.app,
+    //     Zed Codex). Pinchy talks to OpenClaw via its WebSocket gateway
+    //     (openclaw-node), not ACP — the plugin is dead weight.
+    //   - bonjour: mDNS service advertising for the gateway. Pinchy reaches
+    //     OpenClaw on the Docker bridge via OPENCLAW_WS_URL; multicast
+    //     doesn't route there. discovery.mdns.mode=off already silences
+    //     the watchdog, but the plugin itself still loads ~1MB of
+    //     @homebridge/ciao deps and starts an announcer.
+    //   - device-pair: QR-code pairing flow. Pinchy auto-approves devices
+    //     via gateway-token auth in start-openclaw.sh.
+    //   - phone-control: phone-node high-risk command arming. Pinchy has
+    //     no phone integration.
+    //
+    // Disabling them shrinks the bundled runtime-deps install from ~48s on
+    // a cold container start (observed on 2-vCPU staging) to ~10–15s, and
+    // cuts a few hundred MB from /root/.openclaw/plugin-runtime-deps.
+    //
+    // browser, memory-core, talk-voice stay enabled: browser is a planned
+    // feature (and gated by Pinchy's tool-registry deny-list anyway),
+    // memory-core has activation.onStartup=false (zero startup cost),
+    // talk-voice is a leaf TTS picker we may want for future voice work.
+    //
+    // Disable mechanism: plugins.allow is a hard whitelist
+    // ("when set, only listed plugins are eligible to load") — the unwanted
+    // plugin IDs must never appear there. plugins.entries.<id>.enabled=false
+    // is added as defense-in-depth in case some bundled-channel side path
+    // re-injects them.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
+        plugins: {
+          // Simulate OpenClaw having auto-populated allow with all bundled
+          // plugins after a previous boot; Pinchy must filter the four out.
+          allow: [
+            "acpx",
+            "bonjour",
+            "browser",
+            "device-pair",
+            "memory-core",
+            "phone-control",
+            "talk-voice",
+          ],
+          entries: {
+            acpx: { enabled: true },
+            bonjour: { enabled: true },
+            "device-pair": { enabled: true },
+            "phone-control": { enabled: true },
+          },
+        },
+      })
+    );
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written) as {
+      plugins?: {
+        allow?: string[];
+        entries?: Record<string, { enabled?: boolean }>;
+      };
+    };
+
+    const allow = config.plugins?.allow ?? [];
+    expect(allow).not.toContain("acpx");
+    expect(allow).not.toContain("bonjour");
+    expect(allow).not.toContain("device-pair");
+    expect(allow).not.toContain("phone-control");
+
+    // browser, memory-core, talk-voice must stay — they're either planned
+    // features or zero-cost lazily-activated plugins.
+    expect(allow).toContain("browser");
+    expect(allow).toContain("memory-core");
+    expect(allow).toContain("talk-voice");
+
+    expect(config.plugins?.entries?.acpx?.enabled).toBe(false);
+    expect(config.plugins?.entries?.bonjour?.enabled).toBe(false);
+    expect(config.plugins?.entries?.["device-pair"]?.enabled).toBe(false);
+    expect(config.plugins?.entries?.["phone-control"]?.enabled).toBe(false);
+  });
+
   it("should write agents.list with all agents from DB", async () => {
     const agentsData = [
       {

@@ -534,7 +534,34 @@ export async function regenerateOpenClawConfig() {
   const ourPlugins = new Set(Object.keys(entries));
   const pinchyPluginPrefixes = ["pinchy-"];
   const isPinchyPlugin = (p: string) => pinchyPluginPrefixes.some((prefix) => p.startsWith(prefix));
-  const isWanted = (p: string) => !isPinchyPlugin(p) || ourPlugins.has(p);
+  // OpenClaw 2026.4.x ships several plugins enabledByDefault that Pinchy
+  // never uses but whose runtime deps still get installed on the first
+  // gateway boot (~48s on a 2-vCPU host, observed staging 2026-05-04).
+  // Keeping them out of `plugins.allow` (a hard whitelist per the schema)
+  // prevents the install entirely; the explicit `enabled: false` entries
+  // added below are defense-in-depth for any bundled-channel side path.
+  //
+  // Why each is safe to disable:
+  //   - acpx: Agent Client Protocol bridge for desktop chat clients
+  //     (Claude.app, Zed Codex). Pinchy talks to OpenClaw via openclaw-node
+  //     over its WebSocket gateway, never via ACP.
+  //   - bonjour: mDNS gateway advertiser. Pinchy reaches OpenClaw on the
+  //     Docker bridge via OPENCLAW_WS_URL; multicast doesn't route there.
+  //     `discovery.mdns.mode = "off"` already silences the watchdog but
+  //     still loads ~1MB @homebridge/ciao deps and starts an announcer.
+  //   - device-pair: QR-code device pairing UX. Pinchy auto-approves
+  //     devices with the gateway token in start-openclaw.sh.
+  //   - phone-control: arms/disarms phone-node high-risk commands. Pinchy
+  //     has no phone integration.
+  //
+  // Plugins we keep on (despite Pinchy not using them yet):
+  //   - browser: planned feature; gated by tool-registry deny-list anyway
+  //     so users can't reach it without admin opt-in.
+  //   - memory-core: activation.onStartup=false; lazy and free at startup.
+  //   - talk-voice: leaf TTS-voice picker; tiny, future voice work.
+  const DISABLED_OPENCLAW_PLUGINS = new Set(["acpx", "bonjour", "device-pair", "phone-control"]);
+  const isWanted = (p: string) =>
+    !DISABLED_OPENCLAW_PLUGINS.has(p) && (!isPinchyPlugin(p) || ourPlugins.has(p));
   // Keep existing entries (in their current positions) that we still want.
   // Drops stale pinchy-* entries we no longer emit; preserves OpenClaw-
   // managed plugins as-is.
@@ -564,9 +591,20 @@ export async function regenerateOpenClawConfig() {
   const existingEntries =
     ((existing.plugins as Record<string, unknown>)?.entries as Record<string, unknown>) || {};
   for (const [pluginId, entry] of Object.entries(existingEntries)) {
-    if (!isPinchyPlugin(pluginId) && !(pluginId in entries)) {
+    if (
+      !isPinchyPlugin(pluginId) &&
+      !(pluginId in entries) &&
+      !DISABLED_OPENCLAW_PLUGINS.has(pluginId)
+    ) {
       entries[pluginId] = entry;
     }
+  }
+
+  // Defense-in-depth: stamp `enabled: false` for the plugins we left out of
+  // the allowlist. If a future OpenClaw version adds a side path that
+  // injects bundled plugins past `plugins.allow`, this still blocks them.
+  for (const pluginId of DISABLED_OPENCLAW_PLUGINS) {
+    entries[pluginId] = { enabled: false };
   }
 
   if (allowedPlugins.length > 0 || Object.keys(entries).length > 0) {
