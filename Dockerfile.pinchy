@@ -40,8 +40,10 @@ WORKDIR /app/packages/web
 COPY packages/plugins/pinchy-files /openclaw-extensions/pinchy-files
 COPY packages/plugins/pinchy-context /openclaw-extensions/pinchy-context
 COPY packages/plugins/pinchy-audit /openclaw-extensions/pinchy-audit
-COPY packages/plugins/pinchy-odoo /openclaw-extensions/pinchy-odoo
 COPY packages/plugins/pinchy-docs /openclaw-extensions/pinchy-docs
+COPY packages/plugins/pinchy-odoo /openclaw-extensions/pinchy-odoo
+COPY packages/plugins/pinchy-web /openclaw-extensions/pinchy-web
+COPY packages/plugins/pinchy-email /openclaw-extensions/pinchy-email
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://localhost:7777/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
