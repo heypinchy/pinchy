@@ -131,6 +131,48 @@ test.describe("Odoo Agent Chat", () => {
     });
   });
 
+  test("OpenClaw accepts the regenerated config when an Odoo agent gets permissions and tools", async () => {
+    // This is the regression guard for the staging block (2026-05-04).
+    // Pre-fix: setting Odoo permissions caused regenerateOpenClawConfig() to write a
+    // config that OpenClaw rejected with INVALID_CONFIG (manifest required 'connection'
+    // object, build.ts wrote 'connectionId' string since the API-callback migration).
+    // Post-fix: the manifest matches the emitted shape; OpenClaw accepts the config.
+
+    // Grant permissions — triggers regenerateOpenClawConfig() on the server.
+    const putRes = await setAgentPermissions(cookie, agentId, connectionId, [
+      { model: "crm.lead", operation: "read" },
+    ]);
+    expect(putRes.status).toBe(200);
+
+    // Grant Odoo tools — a second config regen, this time plugins.entries["pinchy-odoo"] is emitted.
+    const patchRes = await pinchyPatch(
+      `/api/agents/${agentId}`,
+      { allowedTools: ["odoo_schema", "odoo_read", "odoo_count"] },
+      cookie
+    );
+    expect(patchRes.status).toBe(200);
+
+    // Give OpenClaw time to pick up the hot-reload via inotify and re-validate the config.
+    await new Promise((r) => setTimeout(r, 3000));
+
+    // Verify the gateway is still connected. If the old broken manifest was in place,
+    // OpenClaw would log INVALID_CONFIG and may disconnect from the Pinchy WebSocket bridge.
+    const healthRes = await pinchyGet("/api/health/openclaw", cookie);
+    expect(healthRes.status).toBe(200);
+    const health = await healthRes.json();
+    expect(health.connected).toBe(true);
+
+    // Double-check: the integration data has the connectionId shape (not legacy 'connection' object).
+    const intRes = await pinchyGet(`/api/agents/${agentId}/integrations`, cookie);
+    expect(intRes.status).toBe(200);
+    const integrations = await intRes.json();
+    const odooInt = integrations.find(
+      (i: { connectionId: string }) => i.connectionId === connectionId
+    );
+    expect(odooInt).toBeTruthy();
+    expect(typeof odooInt.connectionId).toBe("string");
+  });
+
   test("audit trail records tool usage via internal endpoint", async () => {
     // The tool-use audit endpoint requires a gateway token. We call it
     // directly with an Authorization header to verify the endpoint works.
