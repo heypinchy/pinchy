@@ -58,6 +58,25 @@ describe("validateBuiltConfig", () => {
     expect(validateBuiltConfig({ plugins: { allow: [], entries: {} } }).ok).toBe(true);
   });
 
+  it("returns ok=false when a known plugin entry has no config block (build.ts regression)", () => {
+    // If build.ts accidentally omits the config block for a known plugin, the guard
+    // must catch it — not silently pass it through to OpenClaw.
+    const config = {
+      plugins: {
+        allow: ["pinchy-audit"],
+        entries: {
+          "pinchy-audit": { enabled: true },
+          // no `config` key at all
+        },
+      },
+    };
+    const result = validateBuiltConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.join("\n")).toMatch(/pinchy-audit/);
+    }
+  });
+
   it("validates every Pinchy plugin entry, not just the first failing one", () => {
     const config = {
       plugins: {

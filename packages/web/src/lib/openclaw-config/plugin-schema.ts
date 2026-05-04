@@ -1,17 +1,18 @@
 import Ajv, { type ErrorObject } from "ajv";
 
-interface PluginManifest {
-  id: string;
-  configSchema: Record<string, unknown>;
-}
-
 export type ValidationResult = { ok: true } | { ok: false; errors: string[] };
 
+// strict: false suppresses Ajv warnings about unknown keywords that appear in
+// OpenClaw plugin manifests (e.g. vendor extensions). Without it, every
+// compilation emits noisy console warnings.
 const ajv = new Ajv({ allErrors: true, strict: false });
 
 const compiledByPluginId = new Map<string, ReturnType<typeof ajv.compile>>();
 
-export function validatePluginEntry(manifest: PluginManifest, config: unknown): ValidationResult {
+export function validatePluginEntry(
+  manifest: { id: string; configSchema: Record<string, unknown> },
+  config: unknown
+): ValidationResult {
   let validate = compiledByPluginId.get(manifest.id);
   if (!validate) {
     validate = ajv.compile(manifest.configSchema);

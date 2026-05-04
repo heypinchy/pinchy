@@ -1,3 +1,15 @@
+/**
+ * Validates that the pinchy-files plugin configSchema declares all fields
+ * that Pinchy's regenerateOpenClawConfig() writes into it.
+ *
+ * OpenClaw rejects config reloads when the config contains properties not
+ * declared in the plugin schema (additionalProperties: false). When that
+ * happens, agents created after the last successful reload are unknown to
+ * OpenClaw — they can't receive messages.
+ *
+ * This test catches schema/config divergence at CI time rather than at
+ * runtime, where it would silently block all config hot-reloads.
+ */
 import { describe, it, expect } from "vitest";
 import { validatePluginEntry } from "../../web/src/lib/openclaw-config/plugin-schema";
 import { loadPluginManifest } from "../../web/src/lib/openclaw-config/plugin-manifest-loader";

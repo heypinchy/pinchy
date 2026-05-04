@@ -14,6 +14,20 @@ import {
 
 const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
 
+/** Poll /api/health/openclaw until `connected` is true or the timeout elapses. */
+async function pollUntilOpenClawConnected(cookie: string, maxMs: number): Promise<boolean> {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    const res = await pinchyGet("/api/health/openclaw", cookie);
+    if (res.ok) {
+      const body = (await res.json()) as { connected?: boolean };
+      if (body.connected) return true;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
 test.describe("Odoo Agent Chat", () => {
   let cookie: string;
   let connectionId: string;
@@ -152,15 +166,12 @@ test.describe("Odoo Agent Chat", () => {
     );
     expect(patchRes.status).toBe(200);
 
-    // Give OpenClaw time to pick up the hot-reload via inotify and re-validate the config.
-    await new Promise((r) => setTimeout(r, 3000));
-
-    // Verify the gateway is still connected. If the old broken manifest was in place,
-    // OpenClaw would log INVALID_CONFIG and may disconnect from the Pinchy WebSocket bridge.
-    const healthRes = await pinchyGet("/api/health/openclaw", cookie);
-    expect(healthRes.status).toBe(200);
-    const health = await healthRes.json();
-    expect(health.connected).toBe(true);
+    // Poll /api/health/openclaw until OpenClaw reports connected=true after the
+    // inotify hot-reload, with a generous timeout for slow CI environments.
+    // The inotifywait grace period in start-openclaw.sh is 30 s; 10 s is enough
+    // in practice (reload happens within ~1–2 s after the file write).
+    const connected = await pollUntilOpenClawConnected(cookie, 10_000);
+    expect(connected).toBe(true);
 
     // Double-check: the integration data has the connectionId shape (not legacy 'connection' object).
     const intRes = await pinchyGet(`/api/agents/${agentId}/integrations`, cookie);

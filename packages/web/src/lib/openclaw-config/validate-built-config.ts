@@ -20,7 +20,10 @@ export function validateBuiltConfig(config: unknown): BuiltConfigValidationResul
   for (const [pluginId, rawEntry] of Object.entries(entries)) {
     if (!KNOWN.has(pluginId)) continue;
     const entry = rawEntry as { config?: unknown } | undefined;
-    if (!entry || entry.config === undefined) continue;
+    if (!entry) continue;
+    // entry.config may be undefined if build.ts accidentally omits the config block.
+    // Pass it through to validatePluginEntry — the schema (type: "object", required: [...])
+    // will reject it, so the guard catches the regression rather than silently skipping it.
     const manifest = loadPluginManifest(pluginId as KnownPinchyPlugin);
     const result = validatePluginEntry(manifest, entry.config);
     if (!result.ok) {

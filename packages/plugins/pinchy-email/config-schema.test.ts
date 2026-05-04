@@ -23,8 +23,14 @@ describe("pinchy-email manifest contract", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("requires apiBaseUrl, gatewayToken, agents at the top level", () => {
+  it("requires apiBaseUrl and gatewayToken (missing either fails)", () => {
     expect(validatePluginEntry(manifest, { agents: {} }).ok).toBe(false);
+  });
+
+  it("requires agents at the top level (missing agents fails)", () => {
+    expect(
+      validatePluginEntry(manifest, { apiBaseUrl: "http://x", gatewayToken: "t" }).ok,
+    ).toBe(false);
   });
 
   it("requires connectionId and permissions per agent", () => {
