@@ -255,6 +255,18 @@ Instead:
      `packages/plugins/pinchy-odoo/__tests__/integration.test.ts` for
      the canonical example.
    - Manual on staging.
+6. **Manifest contract:** every Pinchy plugin's `openclaw.plugin.json#configSchema`
+   must declare every field `regenerateOpenClawConfig()` writes (including
+   top-level `apiBaseUrl`, `gatewayToken`, and any per-agent fields), and use
+   `additionalProperties: false`. A contract test
+   (`packages/plugins/<plugin>/config-schema.test.ts`) validates a representative
+   emitted config against the manifest using Ajv. The build-time validator
+   `validateBuiltConfig()` in `packages/web/src/lib/openclaw-config/validate-built-config.ts`
+   enforces this at runtime — `regenerateOpenClawConfig()` refuses to write a config
+   that doesn't match every plugin's manifest. When onboarding a new plugin, update:
+   - `KNOWN_PINCHY_PLUGINS` in `plugin-manifest-loader.ts`
+   - The plugin's `openclaw.plugin.json#configSchema`
+   - A new `config-schema.test.ts` in the plugin directory
 
 #### Pattern C — Bootstrap credentials (plaintext, single source)
 
@@ -272,6 +284,15 @@ restarting OpenClaw.
 `sk-ant-…`, OpenAI `sk-…`, Gemini `AIza…`, etc.). Add a pattern there
 when you onboard any new provider whose secret has a recognisable
 prefix — even if you're following Pattern B.
+
+`packages/web/src/lib/openclaw-config/validate-built-config.ts`
+validates every emitted plugin entry against its manifest before
+`regenerateOpenClawConfig()` writes the config. This catches manifest /
+build.ts drift at startup so it can't surface as a silent `INVALID_CONFIG`
+rejection at OpenClaw hot-reload time (see staging incident 2026-05-04 —
+the pinchy-odoo staging block). Update the manifest, the `KNOWN_PINCHY_PLUGINS`
+list in `plugin-manifest-loader.ts`, and the contract test together when
+adding a new plugin.
 
 ### Documentation
 - **Docs site**: `docs/` directory, built with Astro Starlight. Deployed to [docs.heypinchy.com](https://docs.heypinchy.com).
