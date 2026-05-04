@@ -44,8 +44,9 @@ test.describe("pinchy-web — Brave Search E2E", () => {
 
     // Create web-search connection
     const conn = await createWebSearchConnection(cookie);
-    expect(conn.status).toBe(201);
-    const { id: connectionId } = (await conn.json()) as { id: string };
+    const connBody = await conn.text();
+    expect(conn.status, connBody).toBe(201);
+    const { id: connectionId } = JSON.parse(connBody) as { id: string };
 
     // Create a fresh shared agent (Smithers is personal — PATCH allowedTools is
     // refused for personal agents with 400. Custom shared agents accept it.)
@@ -54,8 +55,9 @@ test.describe("pinchy-web — Brave Search E2E", () => {
       { name: `WebSearch-${Date.now()}`, templateId: "custom" },
       cookie
     );
-    expect(createRes.status, await createRes.text()).toBeLessThan(300);
-    const { id: agentId } = (await createRes.json()) as { id: string };
+    const createBody = await createRes.text();
+    expect(createRes.status, createBody).toBeLessThan(300);
+    const { id: agentId } = JSON.parse(createBody) as { id: string };
 
     // Grant the web search tool to the agent (triggers regenerateOpenClawConfig)
     const patchRes = await pinchyPatch(
@@ -63,7 +65,8 @@ test.describe("pinchy-web — Brave Search E2E", () => {
       { allowedTools: ["pinchy_web_search"] },
       cookie
     );
-    expect(patchRes.status, await patchRes.text()).toBe(200);
+    const patchBody = await patchRes.text();
+    expect(patchRes.status, patchBody).toBe(200);
 
     // Poll OpenClaw until connected (config was hot-reloaded and accepted).
     // Granting pinchy-web adds a new plugin entry — OpenClaw does a full

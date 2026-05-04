@@ -180,11 +180,20 @@ test.describe.serial("Agent create — no gateway restart cascade (#193)", () =>
     });
     expect(warmupRes.status, await warmupRes.text()).toBeLessThan(300);
 
-    // The warmup's config.apply propagates async (fire-and-forget). Sleep
-    // long enough for any restart cascade to start showing in the OpenClaw
-    // logs — without this, the immediately-following waitForOpenClawQuiet
-    // can scan logs BEFORE the restart marker appears and return false-quiet.
-    await new Promise((r) => setTimeout(r, 5000));
+    // The warmup's config.apply propagates async (fire-and-forget). Wait
+    // until OpenClaw has actually OBSERVED the warmup before doing anything
+    // else. A bare 5s sleep + waitForOpenClawQuiet can return false-quiet
+    // when OpenClaw's event loop is blocked (no logs at all in the lookback
+    // window even though config.apply work is queued). Polling for the
+    // warmup's reload-detected line guarantees the cascade — if any —
+    // happens here, not during the test assertion below.
+    const warmupDeadline = Date.now() + 90000;
+    while (Date.now() < warmupDeadline) {
+      const logs = openClawLogsSince(warmupMark);
+      if (/\[reload\] config change detected.*agents/.test(logs)) break;
+      await new Promise((r) => setTimeout(r, 1000));
+    }
+    // Then absorb any restart cascade triggered by the warmup before continuing.
     await waitForOpenClawQuiet();
 
     // Localize failures: if the warmup itself triggered a restart, the
