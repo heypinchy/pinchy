@@ -146,11 +146,11 @@ auto_approve_devices() {
             echo "auto_approve_devices: Pinchy connected, stopping"
             return 0
         fi
-        # Re-read the token on every iteration: the gateway generates its own
-        # token at first startup when the config has no token (e.g. our minimal
-        # seed config), so the token doesn't exist yet when this function starts.
-        # Reading once at the top missed this write and left `token` empty for
-        # the entire loop, causing every `openclaw devices approve` call to fail.
+        # Re-read the token on every iteration. With Pinchy-first ordering
+        # (openclaw depends_on: pinchy: condition: service_healthy) the token is
+        # already in openclaw.json by the time this loop runs — the bootstrap
+        # path where OpenClaw self-generates the token no longer exists. Re-read
+        # is kept defensively in case OpenClaw rewrites the file.
         local token
         token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8')).gateway.auth.token)}catch{}")
         if [ -z "$token" ]; then

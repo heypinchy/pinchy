@@ -3177,8 +3177,7 @@ describe("restart-state integration", () => {
 
   it("config.apply payload has no env block after SecretRef migration (env-templates gone)", async () => {
     // After Phase 2, provider API keys use SecretRef in models.providers.* — no
-    // env-templates in openclaw.json. The redactUnchangedEnvForApply workaround
-    // (openclaw#75534) is therefore a no-op: there are no env keys to redact.
+    // env-templates in openclaw.json.
     mockGetClient.mockReturnValue({
       config: { get: mockConfigGet, apply: mockConfigApply },
     });

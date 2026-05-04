@@ -2,11 +2,7 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "
 import { dirname } from "path";
 import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
 import { getOpenClawClient } from "@/server/openclaw-client";
-import {
-  supplementPayloadWithOcConfig,
-  supplementPayloadWithFileFields,
-  redactUnchangedEnvForApply,
-} from "./normalize";
+import { supplementPayloadWithOcConfig, supplementPayloadWithFileFields } from "./normalize";
 import { CONFIG_PATH } from "./paths";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
@@ -63,11 +59,13 @@ export function readExistingConfig(): Record<string, unknown> {
 // cancel any pending retries from an older call. Because regenerateOpenClawConfig
 // can be triggered concurrently (e.g. setup → connectBot → warmup agent create →
 // actual agent create all in quick succession with a slow CI event loop), the
-// retry window of an early call can extend into a later one's territory. Without
-// this guard, a stale payload that includes `env.ANTHROPIC_API_KEY` (from the
-// initial setup where the key was first seen) can arrive at OpenClaw alongside
-// a fresh payload that has only `agents.list` changed — the stale env diff
-// triggers a full restart that kills the hot-reload the test is asserting on.
+// retry window of an early call can extend into a later one's territory.
+//
+// Cancellation scope: the counter is checked between awaits in the retry loop
+// and again right before client.config.apply(). It does NOT cancel an in-flight
+// apply() RPC — once that call starts, it runs to completion. That is fine
+// because writeConfigAtomic ran synchronously before pushConfigInBackground, so
+// the file is the canonical source: a newer call's payload simply overwrites.
 let _pushGeneration = 0;
 
 /** Exposed only for unit-testing the cancellation path; do not call in app code. */
@@ -132,11 +130,13 @@ export function pushConfigInBackground(newContent: string): void {
           }
         }
 
-        const payload = redactUnchangedEnvForApply(supplemented);
-
-        await client.config.apply(payload, current.hash, {
+        await client.config.apply(supplemented, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
         });
+        // Note: there is no generation guard here. An in-flight apply() from a
+        // stale call cannot be cancelled at this point — but the file write
+        // (writeConfigAtomic) ran synchronously before pushConfigInBackground,
+        // so it is the canonical state. A newer call's payload will overwrite.
         return;
       } catch (err) {
         if (i === backoffsMs.length - 1) {

@@ -260,6 +260,26 @@ describe("POST /api/setup", () => {
     expect(markOpenClawConfigReady).toHaveBeenCalledOnce();
   });
 
+  it("should return 500 and not mark ready when regenerateOpenClawConfig fails", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+    vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(
+      new Error("disk full: cannot write openclaw.json")
+    );
+
+    const request = makeRequest({
+      name: "Admin User",
+      email: "admin@test.com",
+      password: "Br1ghtNova!2",
+    });
+    const response = await POST(request as any);
+    const data = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(data.error).toMatch(/openclaw config/i);
+    expect(markOpenClawConfigReady).not.toHaveBeenCalled();
+  });
+
   it("should return 403 when setup is already complete", async () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValue({
       id: "1",

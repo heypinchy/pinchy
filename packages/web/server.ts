@@ -48,15 +48,14 @@ const handle = app.getRequestHandler();
 
 const OPENCLAW_WS_URL = process.env.OPENCLAW_WS_URL;
 
-async function waitForGatewayToken(maxWaitMs = 30000): Promise<string> {
+async function waitForGatewayToken(maxWaitMs = 30000): Promise<string | null> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     const token = readGatewayToken();
     if (token) return token;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  console.warn("[pinchy] Gateway token not available after waiting, connecting without token");
-  return "";
+  return null;
 }
 
 if (process.env.NODE_ENV === "production") {
@@ -245,7 +244,7 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   // endpoint returns 503 until markOpenClawConfigReady() is called inside
   // bootInits(), at which point Docker Compose marks the container healthy.
   const { bootInits } = await import("./src/lib/boot-inits");
-  await bootInits();
+  const setupWasComplete = await bootInits();
 
   // Connect to OpenClaw AFTER bootInits so the gateway token and config are
   // ready. On a completed install, bootInits() has already run
@@ -255,9 +254,28 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   // The HTTP server is already running so health/infra checks are not blocked.
   if (OPENCLAW_WS_URL) {
     const gatewayToken = await waitForGatewayToken();
+    if (gatewayToken === null) {
+      if (setupWasComplete) {
+        // Setup is complete but the token is missing — that's a real bug
+        // (DB corruption, deleted secret, file-system issue). Exit so Docker
+        // restarts the container with a clean attempt rather than silently
+        // running with a broken OpenClaw connection.
+        console.error(
+          "[pinchy] Gateway token missing after setup-complete boot; exiting for restart"
+        );
+        process.exit(1);
+      }
+      // Fresh install: setup wizard hasn't run yet. Skip the OpenClaw
+      // connection — the wizard will write the token and trigger
+      // regenerateOpenClawConfig, after which a Docker restart (or the next
+      // boot) will pick up the connection.
+      console.warn(
+        "[pinchy] Gateway token not available — setup wizard required before OpenClaw connects"
+      );
+    }
     openclawClient = new OpenClawClient({
       url: OPENCLAW_WS_URL,
-      token: gatewayToken,
+      token: gatewayToken ?? "",
       clientId: "gateway-client",
       clientVersion: "0.1.0",
       scopes: ["operator.admin"],

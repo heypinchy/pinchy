@@ -31,9 +31,17 @@ export async function POST(request: NextRequest) {
     const user = await createAdmin(name, email, password);
     // Write OpenClaw config with the newly created Smithers agent so OpenClaw
     // knows about it when the container restarts or the file watcher picks it up.
-    await regenerateOpenClawConfig().catch((err) => {
+    // If this fails, surface the error: the admin record was created, but the
+    // user would otherwise see a confusing "agent unavailable" screen next.
+    try {
+      await regenerateOpenClawConfig();
+    } catch (err) {
       console.error("[setup] Failed to regenerate OpenClaw config:", err);
-    });
+      return NextResponse.json(
+        { error: "OpenClaw config write failed; check server logs and retry setup." },
+        { status: 500 }
+      );
+    }
     markOpenClawConfigReady();
     return NextResponse.json(user, { status: 201 });
   } catch (error) {
