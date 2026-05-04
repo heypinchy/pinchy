@@ -17,6 +17,16 @@ RUN pnpm install --frozen-lockfile
 
 COPY packages/web packages/web
 
+# plugin-manifest-loader.ts imports these JSON manifests at Next.js build time
+# (static imports bundled by Turbopack). They must be present before `pnpm build`.
+COPY packages/plugins/pinchy-files/openclaw.plugin.json packages/plugins/pinchy-files/
+COPY packages/plugins/pinchy-context/openclaw.plugin.json packages/plugins/pinchy-context/
+COPY packages/plugins/pinchy-audit/openclaw.plugin.json packages/plugins/pinchy-audit/
+COPY packages/plugins/pinchy-docs/openclaw.plugin.json packages/plugins/pinchy-docs/
+COPY packages/plugins/pinchy-email/openclaw.plugin.json packages/plugins/pinchy-email/
+COPY packages/plugins/pinchy-odoo/openclaw.plugin.json packages/plugins/pinchy-odoo/
+COPY packages/plugins/pinchy-web/openclaw.plugin.json packages/plugins/pinchy-web/
+
 RUN cd packages/web && pnpm build
 
 EXPOSE 7777

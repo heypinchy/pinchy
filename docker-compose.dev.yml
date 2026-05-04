@@ -11,6 +11,10 @@ services:
       - ./packages/web:/app/packages/web
       - /app/packages/web/node_modules
       - /app/packages/web/.next
+      # plugin-manifest-loader.ts resolves openclaw.plugin.json files at
+      # ../../../../plugins/<name>/ relative to web/src/lib/openclaw-config/.
+      # Mount read-only so the dev server can import them without a rebuild.
+      - ./packages/plugins:/app/packages/plugins:ro
   openclaw:
     build:
       context: .
