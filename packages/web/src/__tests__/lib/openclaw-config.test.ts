@@ -183,6 +183,10 @@ describe("regenerateOpenClawConfig", () => {
     mockGetClient.mockImplementation(() => {
       throw new Error("OpenClaw client not initialized");
     });
+    // Reset the push-generation counter so stale background coroutines from a
+    // previous test's pushConfigInBackground retry loop cannot sneak past the
+    // generation check during the 300ms readExistingConfig async retry window.
+    _resetPushGeneration();
   });
 
   it("should write config with restrictive file permissions", async () => {

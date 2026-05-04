@@ -1,3 +1,6 @@
+import { readFileSync } from "fs";
+import { CONFIG_PATH } from "./paths";
+
 /**
  * Compare two openclaw.json strings for semantic equivalence, ignoring
  * fields that OpenClaw stamps onto the file independently of any user

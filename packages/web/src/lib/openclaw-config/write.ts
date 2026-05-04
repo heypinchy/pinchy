@@ -2,6 +2,11 @@ import { writeFileSync, readFileSync, existsSync, mkdirSync, renameSync } from "
 import { dirname } from "path";
 import { assertNoPlaintextSecrets } from "@/lib/openclaw-plaintext-scanner";
 import { getOpenClawClient } from "@/server/openclaw-client";
+import {
+  supplementPayloadWithOcConfig,
+  supplementPayloadWithFileFields,
+  redactUnchangedEnvForApply,
+} from "./normalize";
 import { CONFIG_PATH } from "./paths";
 
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
@@ -91,8 +96,45 @@ export function pushConfigInBackground(newContent: string): void {
       // may have started while we were sleeping.
       if (generation !== _pushGeneration) return;
       try {
-        const current = (await client.config.get()) as { hash: string };
-        await client.config.apply(newContent, current.hash, {
+        const current = (await client.config.get()) as {
+          hash: string;
+          config?: Record<string, unknown>;
+        };
+
+        // Newer call started while we were awaiting config.get()
+        if (generation !== _pushGeneration) return;
+
+        // Supplement OC-managed fields (meta, non-pinchy plugins, controlUi,
+        // channels.telegram OC-specific fields, models.providers baseUrl).
+        // Prefer the live in-memory config (avoids file-write races after restart).
+        let supplemented = current.config
+          ? supplementPayloadWithOcConfig(newContent, current.config)
+          : supplementPayloadWithFileFields(newContent);
+
+        // Meta-fallback: OC's in-memory config may lack meta immediately after a
+        // SIGUSR1 restart (before OC stamps it). The previous file still has meta;
+        // read it as a fallback so config.apply doesn't trigger a cascade restart.
+        if (current.config) {
+          const parsed = JSON.parse(supplemented) as Record<string, unknown>;
+          if (!("meta" in parsed)) {
+            supplemented = supplementPayloadWithFileFields(supplemented);
+          }
+        }
+
+        // Meta-guard: if OC is running (current.config defined) but neither the
+        // in-memory config nor the file could supply meta, skip config.apply.
+        // A meta-less payload triggers OC's "missing-meta-before-write" anomaly
+        // → SIGUSR1 restart cascade. inotify picks up the file write instead.
+        if (current.config) {
+          const parsed = JSON.parse(supplemented) as Record<string, unknown>;
+          if (!("meta" in parsed)) {
+            return;
+          }
+        }
+
+        const payload = redactUnchangedEnvForApply(supplemented);
+
+        await client.config.apply(payload, current.hash, {
           note: "pinchy: regenerateOpenClawConfig",
         });
         return;

@@ -1,4 +1,5 @@
 import { readFileSync } from "fs";
+import { dirname } from "path";
 import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel } from "@/lib/provider-models";
@@ -52,7 +53,19 @@ function deepMerge(
 }
 
 export async function regenerateOpenClawConfig() {
-  const existing = readExistingConfig();
+  let existing = readExistingConfig();
+
+  // If readExistingConfig returned empty it may be a transient EACCES hit:
+  // OpenClaw's in-process SIGUSR1 restart rewrites openclaw.json as root:0600
+  // before start-openclaw.sh's chmod loop restores 0666. Under CI load the
+  // chmod may not run within readExistingConfig()'s 5×100ms budget → returns
+  // {} → meta absent → config.apply sends meta-less payload → OpenClaw 4.27
+  // "missing-meta-before-write" anomaly → sentinel restoration broken →
+  // spurious full gateway restart. 300ms covers one chmod-loop tick worst case.
+  if (Object.keys(existing).length === 0) {
+    await new Promise((r) => setTimeout(r, 300));
+    existing = readExistingConfig();
+  }
 
   // Build the gateway block. mode and bind are always set. auth.token is written
   // as a plain string — OpenClaw requires a literal string for gateway auth and
