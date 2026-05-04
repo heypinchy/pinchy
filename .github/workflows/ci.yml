@@ -932,6 +932,103 @@ jobs:
         if: always()
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml down -v
 
+  web-e2e:
+    name: Web Search E2E Tests
+    runs-on: ubuntu-latest
+
+    env:
+      PINCHY_VERSION: latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/docker-mirror
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Start test stack with mock Brave
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml up --build -d
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Wait for services
+        run: |
+          echo "Waiting for Pinchy..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7777/api/health >/dev/null 2>&1; then
+              echo "Pinchy healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy not healthy after 120s"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs pinchy
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for mock Brave..."
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:9003/control/health >/dev/null 2>&1; then
+              echo "Mock Brave healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "::error::Mock Brave not healthy after 30s"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs brave-mock
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for OpenClaw connection..."
+          for i in $(seq 1 60); do
+            if docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
+              echo "OpenClaw connected (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy never connected to OpenClaw"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs pinchy openclaw
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Install Playwright browsers
+        run: pnpm -C packages/web exec playwright install --with-deps chromium
+
+      - name: Run Web Search E2E tests
+        run: pnpm -C packages/web test:e2e:web
+        env:
+          CI: true
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Pinchy logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs pinchy 2>&1 | tail -50
+          echo "=== OpenClaw logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs openclaw 2>&1 | tail -50
+          echo "=== Mock Brave logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs brave-mock 2>&1 | tail -30
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml down -v
+
   telegram-e2e:
     name: Telegram E2E Tests
     runs-on: ubuntu-latest

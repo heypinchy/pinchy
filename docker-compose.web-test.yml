@@ -1,7 +1,7 @@
-# docker-compose.brave-test.yml
-# Test overlay: adds mock Brave Search server.
+# docker-compose.web-test.yml
+# Test overlay: adds mock Brave Search server for pinchy-web E2E tests.
 # Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.brave-test.yml up --build -d
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml up --build -d
 
 services:
   brave-mock:
