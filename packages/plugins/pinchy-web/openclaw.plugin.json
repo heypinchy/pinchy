@@ -1,28 +1,26 @@
 {
   "id": "pinchy-web",
   "name": "Pinchy Web",
-  "description": "Web search and page fetching with domain filtering.",
+  "description": "Web search and page fetching with domain filtering. Credentials are fetched at runtime from Pinchy's internal credentials API — never stored in this config.",
   "configSchema": {
     "type": "object",
+    "additionalProperties": false,
     "properties": {
-      "braveApiKey": { "type": "string" },
+      "apiBaseUrl": { "type": "string" },
+      "gatewayToken": { "type": "string" },
+      "connectionId": { "type": "string" },
       "agents": {
         "type": "object",
         "additionalProperties": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "tools": {
               "type": "array",
               "items": { "type": "string" }
             },
-            "allowedDomains": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
-            "excludedDomains": {
-              "type": "array",
-              "items": { "type": "string" }
-            },
+            "allowedDomains": { "type": "array", "items": { "type": "string" } },
+            "excludedDomains": { "type": "array", "items": { "type": "string" } },
             "language": { "type": "string" },
             "country": { "type": "string" },
             "freshness": { "type": "string" }
@@ -31,6 +29,6 @@
         }
       }
     },
-    "required": ["braveApiKey", "agents"]
+    "required": ["apiBaseUrl", "gatewayToken", "connectionId", "agents"]
   }
 }
