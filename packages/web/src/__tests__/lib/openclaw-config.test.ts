@@ -423,6 +423,55 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins?.entries?.["phone-control"]?.enabled).toBe(false);
   });
 
+  it("should keep disabled bundled plugins at their existing position in plugins.entries", async () => {
+    // Regression guard for #272 CI failures: an earlier draft of the
+    // disable logic appended acpx/bonjour/device-pair/phone-control at
+    // the end of `entries` even when they already existed at an earlier
+    // position. OpenClaw classifies any `plugins.entries` reorder as a
+    // config diff and reacts with a full SIGUSR1 gateway restart (caught
+    // by agent-create-no-restart.spec.ts), and the idempotency contract
+    // test (00-config-idempotency.spec.ts) reports the resulting
+    // openclaw.json drift directly. Both must stay green: writing
+    // { enabled: false } for a disabled plugin must overwrite in place,
+    // not move the key.
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
+        plugins: {
+          allow: ["acpx", "bonjour", "ollama", "telegram"],
+          entries: {
+            acpx: { enabled: true },
+            bonjour: { enabled: true },
+            ollama: { enabled: true },
+            telegram: { enabled: true },
+          },
+        },
+      })
+    );
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written) as {
+      plugins?: { entries?: Record<string, unknown> };
+    };
+
+    const entryKeys = Object.keys(config.plugins?.entries ?? {});
+    const acpxIdx = entryKeys.indexOf("acpx");
+    const bonjourIdx = entryKeys.indexOf("bonjour");
+    const ollamaIdx = entryKeys.indexOf("ollama");
+    const telegramIdx = entryKeys.indexOf("telegram");
+
+    expect(acpxIdx).toBeGreaterThanOrEqual(0);
+    expect(bonjourIdx).toBeGreaterThanOrEqual(0);
+    // acpx and bonjour must stay before ollama and telegram (their
+    // original positions in the existing config), not get pushed after.
+    expect(acpxIdx).toBeLessThan(ollamaIdx);
+    expect(bonjourIdx).toBeLessThan(ollamaIdx);
+    expect(acpxIdx).toBeLessThan(telegramIdx);
+    expect(bonjourIdx).toBeLessThan(telegramIdx);
+  });
+
   it("should write agents.list with all agents from DB", async () => {
     const agentsData = [
       {

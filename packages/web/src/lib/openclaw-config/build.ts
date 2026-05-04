@@ -591,20 +591,25 @@ export async function regenerateOpenClawConfig() {
   const existingEntries =
     ((existing.plugins as Record<string, unknown>)?.entries as Record<string, unknown>) || {};
   for (const [pluginId, entry] of Object.entries(existingEntries)) {
-    if (
-      !isPinchyPlugin(pluginId) &&
-      !(pluginId in entries) &&
-      !DISABLED_OPENCLAW_PLUGINS.has(pluginId)
-    ) {
-      entries[pluginId] = entry;
-    }
+    if (isPinchyPlugin(pluginId) || pluginId in entries) continue;
+    // For disabled bundled plugins, overwrite the value but keep the key in
+    // its original insertion position. Appending these at the end of `entries`
+    // would shuffle ollama/telegram/etc. earlier on every regenerate, which
+    // OpenClaw classifies as a config diff and reacts to with a full SIGUSR1
+    // gateway restart (caught by the agent-create-no-restart e2e test) and
+    // also drives the idempotency test's openclaw.json drift assertion.
+    entries[pluginId] = DISABLED_OPENCLAW_PLUGINS.has(pluginId) ? { enabled: false } : entry;
   }
 
-  // Defense-in-depth: stamp `enabled: false` for the plugins we left out of
-  // the allowlist. If a future OpenClaw version adds a side path that
-  // injects bundled plugins past `plugins.allow`, this still blocks them.
+  // First-time case: when the existing config has no entry for a disabled
+  // plugin yet (e.g. fresh install, or a plugin OpenClaw hasn't auto-injected
+  // because allow filtered it out from the start), append it. Defense-in-
+  // depth: if a future OpenClaw version adds a side path that injects
+  // bundled plugins past `plugins.allow`, this still blocks them.
   for (const pluginId of DISABLED_OPENCLAW_PLUGINS) {
-    entries[pluginId] = { enabled: false };
+    if (!(pluginId in entries)) {
+      entries[pluginId] = { enabled: false };
+    }
   }
 
   if (allowedPlugins.length > 0 || Object.keys(entries).length > 0) {
