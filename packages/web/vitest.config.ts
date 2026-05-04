@@ -10,13 +10,16 @@ export default defineConfig({
     globals: true,
     include: [
       "src/**/*.{test,spec}.?(c|m)[jt]s?(x)",
-      "../plugins/pinchy-audit/**/*.{test,spec}.?(c|m)[jt]s?(x)",
-      "../plugins/pinchy-context/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      // Contract tests for all Pinchy plugins — validate the emitted config shape
+      // against each plugin's openclaw.plugin.json manifest. These files only import
+      // from @pinchy/web helpers and have no heavy plugin-specific native deps.
+      "../plugins/pinchy-audit/config-schema.test.ts",
+      "../plugins/pinchy-context/config-schema.test.ts",
       "../plugins/pinchy-docs/**/*.{test,spec}.?(c|m)[jt]s?(x)",
-      "../plugins/pinchy-email/**/*.{test,spec}.?(c|m)[jt]s?(x)",
-      "../plugins/pinchy-files/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      "../plugins/pinchy-email/config-schema.test.ts",
+      "../plugins/pinchy-files/config-schema.test.ts",
       "../plugins/pinchy-odoo/**/*.{test,spec}.?(c|m)[jt]s?(x)",
-      "../plugins/pinchy-web/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      "../plugins/pinchy-web/config-schema.test.ts",
     ],
     // Integration tests run against a real PostgreSQL database via
     // vitest.integration.config.ts (`pnpm test:db`). Excluded here so
