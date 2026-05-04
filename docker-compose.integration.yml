@@ -25,6 +25,8 @@ services:
       - ./packages/plugins/pinchy-audit:/root/.openclaw/extensions/pinchy-audit
       - ./packages/plugins/pinchy-docs:/root/.openclaw/extensions/pinchy-docs
       - ./packages/plugins/pinchy-odoo:/root/.openclaw/extensions/pinchy-odoo
+      - ./packages/plugins/pinchy-web:/root/.openclaw/extensions/pinchy-web
+      - ./packages/plugins/pinchy-email:/root/.openclaw/extensions/pinchy-email
     # Allow OpenClaw to reach host services (fake Ollama) on Linux
     extra_hosts:
       - "host.docker.internal:host-gateway"
