@@ -537,9 +537,18 @@ export async function regenerateOpenClawConfig() {
   // OpenClaw 2026.4.x ships several plugins enabledByDefault that Pinchy
   // never uses but whose runtime deps still get installed on the first
   // gateway boot (~48s on a 2-vCPU host, observed staging 2026-05-04).
-  // Keeping them out of `plugins.allow` (a hard whitelist per the schema)
-  // prevents the install entirely; the explicit `enabled: false` entries
-  // added below are defense-in-depth for any bundled-channel side path.
+  // `plugins.allow` is a hard whitelist per the OpenClaw schema:
+  // "when set, only listed plugins are eligible to load". Keeping these
+  // four IDs out of `allow` blocks load and the dep install entirely.
+  //
+  // We deliberately do NOT also stamp `plugins.entries.<id>.enabled = false`.
+  // OpenClaw enriches `plugins.entries.*` at runtime (sibling fields like
+  // hooks/subagent state); writing our own value over the existing entry
+  // would either drop those enrichments (-> next regenerate diffs `plugins`
+  // -> full SIGUSR1 gateway restart, caught by agent-create-no-restart.
+  // spec.ts:207) or write a new entry that wasn't there before (-> first
+  // regenerate diffs `plugins` -> restart). The allowlist alone is the
+  // correct mechanism here.
   //
   // Why each is safe to disable:
   //   - acpx: Agent Client Protocol bridge for desktop chat clients
@@ -590,25 +599,14 @@ export async function regenerateOpenClawConfig() {
   // the plugins.entries.* surface.
   const existingEntries =
     ((existing.plugins as Record<string, unknown>)?.entries as Record<string, unknown>) || {};
+  // Preserve all existing non-pinchy entries — including ones for plugins
+  // we've filtered out of `plugins.allow` (acpx/bonjour/...). Stripping
+  // them would diff `plugins` and OpenClaw classifies that as restart-
+  // required (caught by agent-create-no-restart.spec.ts:207). The allow
+  // whitelist alone keeps them from loading, so leftover entries are inert.
   for (const [pluginId, entry] of Object.entries(existingEntries)) {
-    if (isPinchyPlugin(pluginId) || pluginId in entries) continue;
-    // For disabled bundled plugins, overwrite the value but keep the key in
-    // its original insertion position. Appending these at the end of `entries`
-    // would shuffle ollama/telegram/etc. earlier on every regenerate, which
-    // OpenClaw classifies as a config diff and reacts to with a full SIGUSR1
-    // gateway restart (caught by the agent-create-no-restart e2e test) and
-    // also drives the idempotency test's openclaw.json drift assertion.
-    entries[pluginId] = DISABLED_OPENCLAW_PLUGINS.has(pluginId) ? { enabled: false } : entry;
-  }
-
-  // First-time case: when the existing config has no entry for a disabled
-  // plugin yet (e.g. fresh install, or a plugin OpenClaw hasn't auto-injected
-  // because allow filtered it out from the start), append it. Defense-in-
-  // depth: if a future OpenClaw version adds a side path that injects
-  // bundled plugins past `plugins.allow`, this still blocks them.
-  for (const pluginId of DISABLED_OPENCLAW_PLUGINS) {
-    if (!(pluginId in entries)) {
-      entries[pluginId] = { enabled: false };
+    if (!isPinchyPlugin(pluginId) && !(pluginId in entries)) {
+      entries[pluginId] = entry;
     }
   }
 

@@ -338,44 +338,46 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.discovery?.mdns?.mode).toBe("off");
   });
 
-  it("should disable bundled OpenClaw plugins that Pinchy never uses", async () => {
+  it("should keep bundled OpenClaw plugins Pinchy never uses out of plugins.allow without touching plugins.entries", async () => {
     // OpenClaw 2026.4.x ships seven plugins enabledByDefault:
     //   acpx, bonjour, browser, device-pair, memory-core, phone-control, talk-voice
     //
     // Pinchy uses none of acpx, bonjour, device-pair, phone-control:
-    //   - acpx: Agent Client Protocol for desktop chat clients (Claude.app,
-    //     Zed Codex). Pinchy talks to OpenClaw via its WebSocket gateway
-    //     (openclaw-node), not ACP — the plugin is dead weight.
-    //   - bonjour: mDNS service advertising for the gateway. Pinchy reaches
-    //     OpenClaw on the Docker bridge via OPENCLAW_WS_URL; multicast
-    //     doesn't route there. discovery.mdns.mode=off already silences
-    //     the watchdog, but the plugin itself still loads ~1MB of
-    //     @homebridge/ciao deps and starts an announcer.
+    //   - acpx: Agent Client Protocol bridge for desktop chat clients
+    //     (Claude.app, Zed Codex). Pinchy talks to OpenClaw via openclaw-
+    //     node over its WebSocket gateway, never via ACP.
+    //   - bonjour: mDNS gateway advertiser. Pinchy reaches OpenClaw on the
+    //     Docker bridge via OPENCLAW_WS_URL; multicast doesn't route there.
+    //     `discovery.mdns.mode=off` already silences the watchdog but
+    //     ~1 MB of @homebridge/ciao deps still load and an announcer starts.
     //   - device-pair: QR-code pairing flow. Pinchy auto-approves devices
-    //     via gateway-token auth in start-openclaw.sh.
+    //     with the gateway token in start-openclaw.sh.
     //   - phone-control: phone-node high-risk command arming. Pinchy has
     //     no phone integration.
-    //
-    // Disabling them shrinks the bundled runtime-deps install from ~48s on
-    // a cold container start (observed on 2-vCPU staging) to ~10–15s, and
-    // cuts a few hundred MB from /root/.openclaw/plugin-runtime-deps.
     //
     // browser, memory-core, talk-voice stay enabled: browser is a planned
     // feature (and gated by Pinchy's tool-registry deny-list anyway),
     // memory-core has activation.onStartup=false (zero startup cost),
-    // talk-voice is a leaf TTS picker we may want for future voice work.
+    // talk-voice is a tiny TTS picker.
     //
-    // Disable mechanism: plugins.allow is a hard whitelist
-    // ("when set, only listed plugins are eligible to load") — the unwanted
-    // plugin IDs must never appear there. plugins.entries.<id>.enabled=false
-    // is added as defense-in-depth in case some bundled-channel side path
-    // re-injects them.
+    // Disable mechanism: `plugins.allow` is a hard whitelist per the
+    // OpenClaw schema — "when set, only listed plugins are eligible to
+    // load". Filtering the four IDs out of `allow` blocks them entirely.
+    //
+    // We deliberately do NOT also stamp `plugins.entries.<id>.enabled =
+    // false`. OpenClaw enriches `plugins.entries.*` at runtime (e.g.
+    // sibling `hooks` blocks), and overwriting/removing entries surfaces
+    // as a `plugins` config-diff classification → full SIGUSR1 gateway
+    // restart (caught by agent-create-no-restart.spec.ts:207). Existing
+    // entries for disabled plugins are preserved byte-for-byte; the
+    // allowlist alone keeps them from loading and leftover entries are
+    // inert.
     mockedReadFileSync.mockReturnValue(
       JSON.stringify({
         gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
         plugins: {
           // Simulate OpenClaw having auto-populated allow with all bundled
-          // plugins after a previous boot; Pinchy must filter the four out.
+          // plugins after a previous boot.
           allow: [
             "acpx",
             "bonjour",
@@ -386,10 +388,11 @@ describe("regenerateOpenClawConfig", () => {
             "talk-voice",
           ],
           entries: {
-            acpx: { enabled: true },
+            // OpenClaw-side enrichment with a sibling field — Pinchy must
+            // NOT strip this on regenerate (would trigger the
+            // agent-create-no-restart fingerprint).
+            acpx: { enabled: true, hooks: { allowPromptInjection: true } },
             bonjour: { enabled: true },
-            "device-pair": { enabled: true },
-            "phone-control": { enabled: true },
           },
         },
       })
@@ -401,7 +404,7 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written) as {
       plugins?: {
         allow?: string[];
-        entries?: Record<string, { enabled?: boolean }>;
+        entries?: Record<string, unknown>;
       };
     };
 
@@ -417,59 +420,14 @@ describe("regenerateOpenClawConfig", () => {
     expect(allow).toContain("memory-core");
     expect(allow).toContain("talk-voice");
 
-    expect(config.plugins?.entries?.acpx?.enabled).toBe(false);
-    expect(config.plugins?.entries?.bonjour?.enabled).toBe(false);
-    expect(config.plugins?.entries?.["device-pair"]?.enabled).toBe(false);
-    expect(config.plugins?.entries?.["phone-control"]?.enabled).toBe(false);
-  });
-
-  it("should keep disabled bundled plugins at their existing position in plugins.entries", async () => {
-    // Regression guard for #272 CI failures: an earlier draft of the
-    // disable logic appended acpx/bonjour/device-pair/phone-control at
-    // the end of `entries` even when they already existed at an earlier
-    // position. OpenClaw classifies any `plugins.entries` reorder as a
-    // config diff and reacts with a full SIGUSR1 gateway restart (caught
-    // by agent-create-no-restart.spec.ts), and the idempotency contract
-    // test (00-config-idempotency.spec.ts) reports the resulting
-    // openclaw.json drift directly. Both must stay green: writing
-    // { enabled: false } for a disabled plugin must overwrite in place,
-    // not move the key.
-    mockedReadFileSync.mockReturnValue(
-      JSON.stringify({
-        gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
-        plugins: {
-          allow: ["acpx", "bonjour", "ollama", "telegram"],
-          entries: {
-            acpx: { enabled: true },
-            bonjour: { enabled: true },
-            ollama: { enabled: true },
-            telegram: { enabled: true },
-          },
-        },
-      })
-    );
-
-    await regenerateOpenClawConfig();
-
-    const written = mockedWriteFileSync.mock.calls[0][1] as string;
-    const config = JSON.parse(written) as {
-      plugins?: { entries?: Record<string, unknown> };
-    };
-
-    const entryKeys = Object.keys(config.plugins?.entries ?? {});
-    const acpxIdx = entryKeys.indexOf("acpx");
-    const bonjourIdx = entryKeys.indexOf("bonjour");
-    const ollamaIdx = entryKeys.indexOf("ollama");
-    const telegramIdx = entryKeys.indexOf("telegram");
-
-    expect(acpxIdx).toBeGreaterThanOrEqual(0);
-    expect(bonjourIdx).toBeGreaterThanOrEqual(0);
-    // acpx and bonjour must stay before ollama and telegram (their
-    // original positions in the existing config), not get pushed after.
-    expect(acpxIdx).toBeLessThan(ollamaIdx);
-    expect(bonjourIdx).toBeLessThan(ollamaIdx);
-    expect(acpxIdx).toBeLessThan(telegramIdx);
-    expect(bonjourIdx).toBeLessThan(telegramIdx);
+    // Existing entries for disabled plugins are preserved byte-for-byte
+    // (including OpenClaw's sibling enrichments). Removing them would diff
+    // `plugins` and OpenClaw classifies that as restart-required.
+    expect(config.plugins?.entries?.acpx).toEqual({
+      enabled: true,
+      hooks: { allowPromptInjection: true },
+    });
+    expect(config.plugins?.entries?.bonjour).toEqual({ enabled: true });
   });
 
   it("should write agents.list with all agents from DB", async () => {
