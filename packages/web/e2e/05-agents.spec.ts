@@ -17,9 +17,11 @@ test.describe("Agent management", () => {
 
     await expect(page).toHaveURL(/\/agents\/new/, { timeout: 5000 });
 
-    // Template selection is shown
+    // Template selection is shown.
+    // The "Knowledge Base" template creates agents that use pinchy-files for
+    // scoped read-only access to a directory of documents.
     await expect(page.getByText(/start from scratch/i)).toBeVisible();
-    await expect(page.getByText(/knowledge base/i)).toBeVisible();
+    await expect(page.getByText(/knowledge base/i)).toBeVisible(); // exercises pinchy-files
   });
 
   test("new agent form shows name input after selecting template", async ({ page }) => {

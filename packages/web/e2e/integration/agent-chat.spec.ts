@@ -23,6 +23,12 @@ test.describe("Agent chat — full integration", () => {
     // 3. Use Smithers (created during setup) — already in OpenClaw config at startup,
     // no hot-reload required. Testing hot-reload reliability is an infrastructure
     // concern; the config-schema unit test ensures the schema stays valid.
+    //
+    // Smithers is the Pinchy onboarding agent. Its config wires up three internal plugins:
+    //   - pinchy-context: saves user/org context gathered during the onboarding interview
+    //   - pinchy-docs: reads platform documentation on demand so Smithers answers
+    //                  questions about Pinchy from the live docs
+    //   - pinchy-audit: logs every tool execution to the Pinchy audit trail
     const agentsRes = await page.request.get("/api/agents");
     expect(agentsRes.status()).toBe(200);
     const agents = await agentsRes.json();
