@@ -82,6 +82,15 @@ export function _resetPushGeneration() {
   _pushGeneration = 0;
 }
 
+// OC's explicit recovery hint when the file-watcher reloaded openclaw.json
+// between our config.get and config.apply: the hash we sent is no longer
+// the latest. Refetch the hash and retry IMMEDIATELY — going through the
+// generic 100/250/500ms backoff stacks the retry window into the next
+// pushConfigInBackground call's territory and the apply never lands
+// (#193, agent-create-no-restart.spec.ts CI flake).
+const STALE_HASH_ERROR_FRAGMENT = "config changed since last load";
+const MAX_STALE_HASH_RETRIES = 3;
+
 export function pushConfigInBackground(newContent: string): void {
   const generation = ++_pushGeneration;
 
@@ -98,6 +107,7 @@ export function pushConfigInBackground(newContent: string): void {
     // probably down due to the cold-start cascade, and inotify will catch
     // up; no point keeping a background coroutine alive longer.
     const backoffsMs = [100, 250, 500, 1000, 2000];
+    let staleHashAttempts = 0;
     for (let i = 0; i < backoffsMs.length; i++) {
       // Check before each attempt — a newer pushConfigInBackground call
       // may have started while we were sleeping.
@@ -148,8 +158,22 @@ export function pushConfigInBackground(newContent: string): void {
         // so it is the canonical state. A newer call's payload will overwrite.
         return;
       } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+
+        // Stale-hash bypass: OC explicitly tells us "re-run config.get and
+        // retry". Don't sleep on backoff — a fresh get+apply on the next
+        // iteration is the entire fix. Cap the budget so a genuinely-stuck
+        // gateway doesn't hot-loop; inotify is the safety net.
+        if (
+          message.includes(STALE_HASH_ERROR_FRAGMENT) &&
+          staleHashAttempts < MAX_STALE_HASH_RETRIES
+        ) {
+          staleHashAttempts++;
+          i--; // don't consume a backoff slot for OC's recovery hint
+          continue;
+        }
+
         if (i === backoffsMs.length - 1) {
-          const message = err instanceof Error ? err.message : String(err);
           console.warn(
             "[openclaw-config] background config.apply failed; relying on inotify:",
             message

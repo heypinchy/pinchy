@@ -1800,6 +1800,119 @@ describe("regenerateOpenClawConfig", () => {
       // config.apply must NOT be called — guard returns early when payload lacks meta
       expect(mockConfigApply).not.toHaveBeenCalled();
     });
+
+    it("retries config.apply IMMEDIATELY (no backoff) when OC reports stale hash", async () => {
+      // Scenario: OpenClaw's file-watcher reloaded `openclaw.json` between
+      // our config.get and config.apply, so the hash we sent is stale.
+      // OC rejects with `INVALID_REQUEST: config changed since last load;
+      // re-run config.get and retry`. This is OC's explicit recovery hint —
+      // not a transient network error. Pinchy must refetch the hash and
+      // retry the apply WITHOUT waiting through the generic 100/250/500/...ms
+      // backoff ladder, otherwise under CI load (slow event loop, blocking
+      // sessions.list) the next backoff window can stack with another
+      // pushConfigInBackground call and the retry never completes.
+      //
+      // Test guarantees: with the immediate-retry path, the second apply
+      // call happens before any setTimeout fires — we drain microtasks only,
+      // never advance fake timers, and still see two apply calls.
+      vi.useFakeTimers();
+      try {
+        mockConfigGet
+          .mockResolvedValueOnce({ hash: "h-stale" })
+          .mockResolvedValueOnce({ hash: "h-fresh" });
+        mockConfigApply
+          .mockRejectedValueOnce(
+            new Error("config changed since last load; re-run config.get and retry")
+          )
+          .mockResolvedValueOnce(undefined);
+        mockGetClient.mockReturnValue({
+          config: { get: mockConfigGet, apply: mockConfigApply },
+        });
+
+        pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
+
+        // Drain microtasks repeatedly without advancing timers. With the
+        // immediate-retry fix, the chain config.get → config.apply (fail) →
+        // refetch get → retry apply (success) settles entirely in microtasks.
+        // Without the fix, the retry path hits `setTimeout(100ms)` and the
+        // second apply never happens until we advance timers.
+        for (let i = 0; i < 10; i++) {
+          await vi.advanceTimersByTimeAsync(0);
+        }
+
+        expect(mockConfigApply).toHaveBeenCalledTimes(2);
+        expect(mockConfigApply.mock.calls[1][1]).toBe("h-fresh");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("limits stale-hash immediate retries to a small budget (no infinite loop)", async () => {
+      // If OpenClaw is genuinely stuck (every config.get → apply round-trip
+      // races a file-watcher reload), Pinchy must NOT spin forever. Cap the
+      // immediate-retry budget at 3 so the function returns within tens of
+      // milliseconds and inotify takes over as the safety net.
+      vi.useFakeTimers();
+      try {
+        mockConfigGet.mockResolvedValue({ hash: "h-stale" });
+        mockConfigApply.mockRejectedValue(
+          new Error("config changed since last load; re-run config.get and retry")
+        );
+        mockGetClient.mockReturnValue({
+          config: { get: mockConfigGet, apply: mockConfigApply },
+        });
+
+        pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
+
+        // Drain microtasks without advancing timers (so generic backoff
+        // does NOT contribute). All immediate retries should fire here.
+        for (let i = 0; i < 20; i++) {
+          await vi.advanceTimersByTimeAsync(0);
+        }
+
+        // Cap: at most 3 immediate retries on the stale-hash error before
+        // bailing out (so 1 initial + 3 retries = 4 calls, max).
+        expect(mockConfigApply.mock.calls.length).toBeLessThanOrEqual(4);
+        expect(mockConfigApply.mock.calls.length).toBeGreaterThanOrEqual(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("uses generic backoff (not the stale-hash bypass) for unrelated config.apply errors", async () => {
+      // Regression guard: only the OC-specific "config changed since last
+      // load" message gets the immediate-refetch path. Any other error
+      // (transient WS, INTERNAL_ERROR, generic network failure) must keep
+      // going through the existing exponential-backoff loop, otherwise we
+      // risk hammering OC during real outages.
+      vi.useFakeTimers();
+      try {
+        mockConfigGet.mockResolvedValue({ hash: "h1" });
+        mockConfigApply
+          .mockRejectedValueOnce(new Error("WebSocket disconnected"))
+          .mockResolvedValueOnce(undefined);
+        mockGetClient.mockReturnValue({
+          config: { get: mockConfigGet, apply: mockConfigApply },
+        });
+
+        pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
+
+        // Drain microtasks first — initial apply fires and rejects.
+        for (let i = 0; i < 5; i++) {
+          await vi.advanceTimersByTimeAsync(0);
+        }
+        expect(mockConfigApply).toHaveBeenCalledTimes(1);
+
+        // Without timer advance, the second apply MUST NOT fire — the
+        // generic-error path waits backoffsMs[0] = 100ms.
+        // Now advance past the first backoff and the retry happens.
+        await vi.advanceTimersByTimeAsync(150);
+
+        expect(mockConfigApply).toHaveBeenCalledTimes(2);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
 
