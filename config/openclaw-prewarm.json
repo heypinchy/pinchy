@@ -19,12 +19,6 @@
     "enabled": false
   },
   "plugins": {
-    "allow": ["browser", "memory-core", "talk-voice"],
-    "entries": {
-      "acpx": { "enabled": false },
-      "bonjour": { "enabled": false },
-      "device-pair": { "enabled": false },
-      "phone-control": { "enabled": false }
-    }
+    "allow": ["browser", "memory-core", "talk-voice"]
   }
 }

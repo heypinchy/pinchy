@@ -45,58 +45,17 @@ RUN cd /tmp/pinchy-email && npm install --omit=dev && \
     cp -r /tmp/pinchy-email/node_modules /opt/pinchy-email-deps/ && \
     rm -rf /tmp/pinchy-email
 
-# Pre-warm the bundled-plugin runtime-deps cache so the first container
-# start doesn't spend ~48 s in `[plugins] staging bundled runtime deps`
-# (observed on 2-vCPU staging — blocks the gateway HTTP listener and
-# stalls Pinchy's first sessions.list/chat.history calls). We boot the
-# gateway once with a minimal config that disables the four plugins
-# Pinchy never uses (acpx, bonjour, device-pair, phone-control), so
-# OpenClaw materializes only the deps we actually need under
-# /root/.openclaw/plugin-runtime-deps/<openclaw-version>-<hash>/. After
-# the cache is built we kill the gateway and strip every other build-
-# artefact under /root/.openclaw — only plugin-runtime-deps survives
-# into the image. On first user start, Docker populates the openclaw-
-# config named volume from this image (volumes inherit image contents
-# only when empty), giving the warm cache to fresh installs without
-# leaking the prewarm gateway-token, devices/, or agents/ state.
+# Pre-warm the bundled-plugin runtime-deps cache. Rationale and full
+# behaviour live in config/prewarm-openclaw.sh; in short: boot the
+# gateway once at build time so the npm install of ~15 plugin runtime
+# deps lands in /root/.openclaw/plugin-runtime-deps/ before any user
+# starts the container. Saves ~48s of `[plugins] staging bundled
+# runtime deps` on first boot, observed on 2-vCPU staging.
 COPY config/openclaw-prewarm.json /tmp/openclaw-prewarm.json
-# bash explicit because we use `/dev/tcp/...` to wait for the gateway
-# port; on debian-slim `RUN` uses dash by default, which has no
-# /dev/tcp emulation and would silently never see the port open.
-RUN bash -c '\
-    set -euo pipefail; \
-    mkdir -p /root/.openclaw; \
-    cp /tmp/openclaw-prewarm.json /root/.openclaw/openclaw.json; \
-    openclaw gateway --port 18789 >/tmp/prewarm.log 2>&1 & \
-    gw_pid=$!; \
-    ready=0; \
-    for i in $(seq 1 180); do \
-      if (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then \
-        ready=1; \
-        echo "[prewarm] gateway ready after ${i}s"; \
-        break; \
-      fi; \
-      sleep 1; \
-    done; \
-    if [ "$ready" = "0" ]; then \
-      echo "[prewarm] gateway did not come up in 180s; log tail:"; \
-      tail -60 /tmp/prewarm.log; \
-      kill $gw_pid 2>/dev/null || true; \
-      exit 1; \
-    fi; \
-    sleep 2; \
-    kill $gw_pid 2>/dev/null || true; \
-    wait $gw_pid 2>/dev/null || true; \
-    echo "[prewarm] gateway stopped"; \
-    find /root/.openclaw -mindepth 1 -maxdepth 1 \
-      ! -name plugin-runtime-deps -exec rm -rf {} +; \
-    rm -f /tmp/openclaw-prewarm.json /tmp/prewarm.log; \
-    if ! ls -d /root/.openclaw/plugin-runtime-deps/openclaw-* >/dev/null 2>&1; then \
-      echo "[prewarm] FATAL: plugin-runtime-deps cache was not produced"; \
-      exit 1; \
-    fi; \
-    du -sh /root/.openclaw/plugin-runtime-deps/openclaw-*/ \
-'
+COPY config/prewarm-openclaw.sh /tmp/prewarm-openclaw.sh
+RUN chmod +x /tmp/prewarm-openclaw.sh && \
+    /tmp/prewarm-openclaw.sh /tmp/openclaw-prewarm.json && \
+    rm -f /tmp/prewarm-openclaw.sh /tmp/openclaw-prewarm.json
 
 COPY config/openclaw.json /root/.openclaw/openclaw.json
 COPY config/start-openclaw.sh /start-openclaw.sh

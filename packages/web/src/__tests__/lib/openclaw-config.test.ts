@@ -428,6 +428,18 @@ describe("regenerateOpenClawConfig", () => {
       hooks: { allowPromptInjection: true },
     });
     expect(config.plugins?.entries?.bonjour).toEqual({ enabled: true });
+
+    // Insertion order matters too: a future refactor that sorted entries
+    // alphabetically (or otherwise reordered them) would still pass the
+    // byte-for-byte equality above but would surface as a `plugins` diff
+    // at runtime and trigger the SIGUSR1 cascade. Lock the order
+    // explicitly: existing non-pinchy keys keep their original positions
+    // after the (currently empty) pinchy-* prefix block.
+    const entryKeys = Object.keys(config.plugins?.entries ?? {});
+    const acpxIdx = entryKeys.indexOf("acpx");
+    const bonjourIdx = entryKeys.indexOf("bonjour");
+    expect(acpxIdx).toBeGreaterThanOrEqual(0);
+    expect(bonjourIdx).toBe(acpxIdx + 1);
   });
 
   it("should write agents.list with all agents from DB", async () => {
