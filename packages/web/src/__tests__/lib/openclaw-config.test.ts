@@ -63,6 +63,14 @@ vi.mock("@/server/restart-state", () => ({
   restartState: { notifyRestart: vi.fn() },
 }));
 
+const { mockValidateBuiltConfig } = vi.hoisted(() => ({
+  mockValidateBuiltConfig: vi.fn().mockReturnValue({ ok: true }),
+}));
+
+vi.mock("@/lib/openclaw-config/validate-built-config", () => ({
+  validateBuiltConfig: mockValidateBuiltConfig,
+}));
+
 const { mockedGetOrCreateGatewayToken } = vi.hoisted(() => ({
   mockedGetOrCreateGatewayToken: vi.fn().mockResolvedValue("test-gateway-token"),
 }));
@@ -4003,5 +4011,22 @@ describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support Se
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
     expect(config.channels.telegram.accounts["agent-99"].botToken).toBe("tg-secret-token");
+  });
+});
+
+describe("regenerateOpenClawConfig validation guard", () => {
+  beforeEach(() => {
+    mockValidateBuiltConfig.mockReturnValue({ ok: true });
+    mockedReadFileSync.mockReturnValue("");
+  });
+
+  it("throws when validateBuiltConfig reports an invalid plugin config", async () => {
+    mockValidateBuiltConfig.mockReturnValueOnce({
+      ok: false,
+      errors: ["pinchy-odoo: agents: injected test error"],
+    });
+    await expect(regenerateOpenClawConfig()).rejects.toThrow(
+      /Refusing to write invalid plugin config/
+    );
   });
 });

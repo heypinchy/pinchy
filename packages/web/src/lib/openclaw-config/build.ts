@@ -26,6 +26,7 @@ import {
   readGatewayTokenFromConfig,
 } from "./secrets-bundle";
 import { writeAgentAuthProfiles, type AuthProfilesProvider } from "./agent-auth-profiles";
+import { validateBuiltConfig } from "./validate-built-config";
 
 function deepMerge(
   target: Record<string, unknown>,
@@ -755,6 +756,18 @@ export async function regenerateOpenClawConfig() {
     integrations: integrationSecrets,
   });
   writeSecretsFile(secretsBundle);
+
+  // Defense in depth: validate every emitted Pinchy plugin entry against its
+  // manifest before writing. Catches manifest/build.ts drift at startup rather
+  // than letting OpenClaw silently reject the config at hot-reload time.
+  const validation = validateBuiltConfig(config);
+  if (!validation.ok) {
+    throw new Error(
+      "[openclaw-config] Refusing to write invalid plugin config:\n  - " +
+        validation.errors.join("\n  - ") +
+        "\nFix the plugin manifest or what build.ts emits."
+    );
+  }
 
   // Only write if content actually changed — prevents unnecessary OpenClaw restarts.
   // Format must match what OpenClaw's writeConfigFile produces (trimEnd + "\n")
