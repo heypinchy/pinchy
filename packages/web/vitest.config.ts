@@ -10,8 +10,13 @@ export default defineConfig({
     globals: true,
     include: [
       "src/**/*.{test,spec}.?(c|m)[jt]s?(x)",
-      "../plugins/pinchy-odoo/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      "../plugins/pinchy-audit/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      "../plugins/pinchy-context/**/*.{test,spec}.?(c|m)[jt]s?(x)",
       "../plugins/pinchy-docs/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      "../plugins/pinchy-email/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      "../plugins/pinchy-files/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      "../plugins/pinchy-odoo/**/*.{test,spec}.?(c|m)[jt]s?(x)",
+      "../plugins/pinchy-web/**/*.{test,spec}.?(c|m)[jt]s?(x)",
     ],
     // Integration tests run against a real PostgreSQL database via
     // vitest.integration.config.ts (`pnpm test:db`). Excluded here so
