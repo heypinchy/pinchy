@@ -16,12 +16,20 @@ test.describe("pinchy-web — Brave Search E2E", () => {
   let cookie: string;
   let agentId: string;
 
-  test.beforeAll(async () => {
+  test.beforeAll(async ({}, testInfo) => {
+    testInfo.setTimeout(300000);
     await seedSetup();
     await waitForPinchy();
     await waitForBraveMock();
     await resetBraveMock();
     cookie = await login();
+
+    // Wait for OpenClaw to settle after the setup wizard restart before running
+    // tests. The setup wizard triggers a full gateway restart (plugins/agents
+    // changed); granting tools in the tests triggers another. We wait here so
+    // the test-body timeout only covers the second restart, not both.
+    const settled = await waitForOpenClawConnected(cookie, 120000);
+    if (!settled) throw new Error("OpenClaw did not reconnect after setup wizard");
 
     // Get Smithers agent
     const agents = await pinchyGet("/api/agents", cookie);
@@ -55,8 +63,10 @@ test.describe("pinchy-web — Brave Search E2E", () => {
     );
     expect(patchRes.status).toBe(200);
 
-    // Poll OpenClaw until connected (config was hot-reloaded and accepted)
-    const connected = await waitForOpenClawConnected(cookie);
+    // Poll OpenClaw until connected (config was hot-reloaded and accepted).
+    // granting pinchy-web adds a new plugin entry — OpenClaw does a full
+    // restart. Give 120s to cover the restart + reconnect window.
+    const connected = await waitForOpenClawConnected(cookie, 120000);
     expect(connected).toBe(true);
 
     // The web-search connection is visible in the integrations list

@@ -1,4 +1,4 @@
-import { createCipheriv, randomBytes } from "crypto";
+import { createCipheriv, randomBytes, randomUUID } from "crypto";
 
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const GMAIL_MOCK_URL = process.env.GMAIL_MOCK_URL || "http://localhost:9004";
@@ -114,9 +114,10 @@ export async function createGoogleConnectionInDb(
 
   const encryptedCredentials = encryptCredentials(JSON.stringify(credentials));
 
+  const id = randomUUID();
   const [row] = await sql`
-    INSERT INTO integration_connections (type, name, description, credentials, status)
-    VALUES ('google', ${name}, 'Test Gmail connection for E2E', ${encryptedCredentials}, 'active')
+    INSERT INTO integration_connections (id, type, name, description, credentials, status)
+    VALUES (${id}, 'google', ${name}, 'Test Gmail connection for E2E', ${encryptedCredentials}, 'active')
     RETURNING id, type, name
   `;
 

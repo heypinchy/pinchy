@@ -7,8 +7,8 @@ const REPO_ROOT = resolve(__dirname, "../../../../../..");
 const DOCKERFILE = readFileSync(resolve(REPO_ROOT, "Dockerfile.pinchy"), "utf8");
 
 describe("Dockerfile.pinchy plugin coverage", () => {
-  it.each(KNOWN_PINCHY_PLUGINS)("copies %s into /openclaw-extensions/", (plugin) => {
-    const expected = `COPY packages/plugins/${plugin} /openclaw-extensions/${plugin}`;
+  it.each(KNOWN_PINCHY_PLUGINS)("copies %s into /app/pinchy-plugins/", (plugin) => {
+    const expected = `COPY packages/plugins/${plugin} /app/pinchy-plugins/${plugin}`;
     expect(DOCKERFILE).toContain(expected);
   });
 

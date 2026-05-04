@@ -36,14 +36,17 @@ ENV NODE_ENV=production
 
 WORKDIR /app/packages/web
 
-# Copy Pinchy plugins to OpenClaw extensions directory
-COPY packages/plugins/pinchy-files /openclaw-extensions/pinchy-files
-COPY packages/plugins/pinchy-context /openclaw-extensions/pinchy-context
-COPY packages/plugins/pinchy-audit /openclaw-extensions/pinchy-audit
-COPY packages/plugins/pinchy-docs /openclaw-extensions/pinchy-docs
-COPY packages/plugins/pinchy-odoo /openclaw-extensions/pinchy-odoo
-COPY packages/plugins/pinchy-web /openclaw-extensions/pinchy-web
-COPY packages/plugins/pinchy-email /openclaw-extensions/pinchy-email
+# Copy Pinchy plugins to /app/pinchy-plugins/ (NOT directly to the named volume).
+# Docker only initialises a named volume from the image on first creation; upgrades
+# leave stale content from the previous image. entrypoint.sh copies from here to
+# /openclaw-extensions/ on every startup, guaranteeing upgrades see the latest plugins.
+COPY packages/plugins/pinchy-files /app/pinchy-plugins/pinchy-files
+COPY packages/plugins/pinchy-context /app/pinchy-plugins/pinchy-context
+COPY packages/plugins/pinchy-audit /app/pinchy-plugins/pinchy-audit
+COPY packages/plugins/pinchy-docs /app/pinchy-plugins/pinchy-docs
+COPY packages/plugins/pinchy-odoo /app/pinchy-plugins/pinchy-odoo
+COPY packages/plugins/pinchy-web /app/pinchy-plugins/pinchy-web
+COPY packages/plugins/pinchy-email /app/pinchy-plugins/pinchy-email
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://localhost:7777/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"

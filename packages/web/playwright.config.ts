@@ -2,7 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
-  testIgnore: ["**/telegram/**", "**/odoo/**", "**/integration/**"],
+  testIgnore: ["**/telegram/**", "**/odoo/**", "**/integration/**", "**/web/**", "**/email/**"],
   fullyParallel: false,
   retries: 0,
   workers: 1,
