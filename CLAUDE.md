@@ -268,6 +268,47 @@ Instead:
    - The plugin's `openclaw.plugin.json#configSchema`
    - A new `config-schema.test.ts` in the plugin directory
 
+### Plugin Integration Test Contract
+
+Every plugin in `KNOWN_PINCHY_PLUGINS`
+(`packages/web/src/lib/openclaw-config/plugin-manifest-loader.ts`) must be
+classified as **external** or **internal**, and the surrounding plumbing must
+exist. Drift from this contract is caught at five layers; tampering with one
+without the others fails the build.
+
+**External-integration plugins** (talk to a third-party service: Brave, Gmail,
+Odoo, future Pipedrive/Salesforce/Stripe):
+
+- Listed in `EXTERNAL_INTEGRATION_PLUGINS` (compile-time check enforces
+  classification).
+- Mock server in `config/<suffix>-mock/` exposing both the third party's API
+  surface and a `/control/{health,reset,seed,...}` plane.
+- `docker-compose.<suffix>-test.yml` overlay starting the mock and pointing
+  Pinchy at it.
+- Playwright config at `packages/web/playwright.<suffix>.config.ts`.
+- Spec at `packages/web/e2e/<suffix>/<suffix>.spec.ts` covering at minimum:
+  (1) plugin loads in OpenClaw, (2) at least one tool round-trip end-to-end,
+  (3) audit log has `tool.<name>` entries, (4) any permission/filter feature
+  is exercised.
+- `pnpm test:e2e:<suffix>` script in `packages/web/package.json`.
+- `<suffix>-e2e` job in `.github/workflows/ci.yml` running against the
+  production `Dockerfile.pinchy` image (mirrors the `odoo-e2e` job).
+
+**Internal plugins** (no third-party service: pinchy-files, pinchy-context,
+pinchy-docs, pinchy-audit):
+
+- Listed in `INTERNAL_PLUGINS`.
+- Exercised by `packages/web/e2e/integration/agent-chat.spec.ts` (or another
+  e2e spec that mentions the plugin id in an assertion comment).
+
+**Why this isn't optional.** On 2026-05-04 a `Dockerfile.pinchy` regression
+left two plugins unloaded in Production while the UI still let admins enable
+them. The `odoo-e2e` job didn't catch it because there was no equivalent for
+the affected plugins. The static checks in
+`packages/web/src/__tests__/lib/openclaw-config/` and the runtime check in
+`entrypoint.sh` enforce this contract going forward — adding a plugin without
+its E2E plumbing will fail CI before merge.
+
 #### Pattern C — Bootstrap credentials (plaintext, single source)
 
 `gateway.auth.token` and `plugins.entries.pinchy-*.config.gatewayToken`
