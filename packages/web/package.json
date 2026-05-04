@@ -19,6 +19,7 @@
     "test:e2e:telegram": "playwright test --config playwright.telegram.config.ts",
     "test:e2e:odoo": "playwright test --config playwright.odoo.config.ts",
     "test:e2e:web": "playwright test --config playwright.web.config.ts",
+    "test:e2e:email": "playwright test --config playwright.email.config.ts",
     "test:integration": "playwright test --config playwright.integration.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
