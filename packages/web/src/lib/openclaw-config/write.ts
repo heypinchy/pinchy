@@ -8,8 +8,17 @@ import { CONFIG_PATH } from "./paths";
 /** Atomic write: tmp file + rename to prevent OpenClaw reading a truncated config */
 export function writeConfigAtomic(content: string) {
   const dir = dirname(CONFIG_PATH);
+  // existsSync returns false for both "doesn't exist" and "stat failed because
+  // of permissions on the parent". On the production image the directory is a
+  // mounted volume and always exists; only attempt mkdir when the parent is
+  // actually missing, and treat EACCES/EEXIST as "directory is there, proceed".
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+    try {
+      mkdirSync(dir, { recursive: true });
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== "EEXIST" && code !== "EACCES") throw err;
+    }
   }
   // Defense-in-depth: never let a plaintext secret land in openclaw.json.
   assertNoPlaintextSecrets(JSON.parse(content));
