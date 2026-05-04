@@ -1,0 +1,20 @@
+# docker-compose.brave-test.yml
+# Test overlay: adds mock Brave Search server.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.brave-test.yml up --build -d
+
+services:
+  brave-mock:
+    build:
+      context: config/brave-mock
+    ports:
+      - "9003:9003"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:9003/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  openclaw:
+    environment:
+      - BRAVE_API_BASE_URL=http://brave-mock:9003
