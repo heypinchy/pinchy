@@ -9,6 +9,13 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
 
 ## Standard upgrade
 
+<Aside type="note">
+  This is the upgrade flow **between %%PINCHY_VERSION%%+ releases**. If you're
+  still on v0.4.x, complete the **Upgrading from v0.4.4 to %%PINCHY_VERSION%%**
+  section below first — that one-time migration adds the `PINCHY_VERSION` pin
+  you'll bump from here on.
+</Aside>
+
 <Steps>
 
 1. **Back up your database**
@@ -19,13 +26,20 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
    docker compose exec db pg_dump -U pinchy pinchy > backup-$(date +%Y%m%d).sql
    ```
 
-2. **Pull the new version**
+2. **Bump the version pin**
+
+   Edit `/opt/pinchy/.env` and update `PINCHY_VERSION` to the new release tag (e.g. `PINCHY_VERSION=%%PINCHY_VERSION%%`), then pull the matching images:
 
    ```bash
    cd /opt/pinchy
-   curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
    docker compose pull
    ```
+
+   <Aside type="tip">
+     Release notes will tell you if `docker-compose.yml` itself needs to be
+     re-fetched — that only happens when a release adds new services or volumes,
+     which is rare.
+   </Aside>
 
 3. **Restart**
 
@@ -56,7 +70,7 @@ You don't need to worry about these — Pinchy handles them on every startup:
 ## What you might need to check
 
 - **New environment variables** — Check the release notes for any new variables. Pinchy won't crash if they're missing (features may just be disabled), but review them in your `.env` file.
-- **Docker Compose changes** — The `curl` command in step 2 downloads the latest `docker-compose.yml`. If new volumes or services were added, they're created automatically on first start.
+- **Docker Compose changes** — Most releases reuse the existing `docker-compose.yml` and only require bumping `PINCHY_VERSION` in `.env`. When a release does need a new compose file (new services or volumes), the release notes spell out the extra `curl` step. New volumes and services are then created automatically on first start.
 
 ## Restoring from backup
 

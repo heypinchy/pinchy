@@ -79,7 +79,7 @@ test.describe("Feature screenshots", () => {
     // flips to "Connected" once useChatStatus reaches `ready`, and every
     // agent's greetingMessage renders a `[data-role="assistant"]` bubble
     // immediately after that.
-    await page.locator('[aria-label="Connected"]').waitFor({ timeout: 30000 });
+    await page.getByRole("button", { name: "Connected" }).waitFor({ timeout: 30000 });
     await page
       .locator('[data-role="assistant"]')
       .first()
@@ -207,23 +207,6 @@ test.describe("Feature screenshots", () => {
     await page.goto(`${BASE_URL}/usage`);
     await page.waitForTimeout(2500);
     await screenshot(page, "usage-dashboard.png");
-  });
-
-  test("provider settings", async ({ page }) => {
-    await page.goto(`${BASE_URL}/settings`);
-    await page.waitForTimeout(1500);
-    const providerTab = page.getByRole("tab", { name: /provider/i });
-    if (await providerTab.isVisible({ timeout: 3000 }).catch(() => false)) {
-      await providerTab.click();
-      await page.waitForTimeout(1000);
-    }
-    // Click on the Anthropic provider card to expand it
-    const anthropicCard = page.locator("text=Anthropic").first();
-    if (await anthropicCard.isVisible({ timeout: 2000 }).catch(() => false)) {
-      await anthropicCard.click();
-      await page.waitForTimeout(1000);
-    }
-    await screenshot(page, "provider-settings.png");
   });
 
   test("agent settings - telegram", async ({ page }) => {
