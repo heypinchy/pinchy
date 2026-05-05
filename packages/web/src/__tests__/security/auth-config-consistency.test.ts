@@ -25,7 +25,6 @@ const LEGACY_PATTERNS = [
   { pattern: /NEXTAUTH_URL/g, replacement: "N/A (configure domain via Settings → Security)" },
   { pattern: /AUTH_TRUST_HOST/g, replacement: "N/A (not needed by Better Auth)" },
   { pattern: /(?<![A-Z_])AUTH_SECRET(?![A-Z_])/g, replacement: "BETTER_AUTH_SECRET" },
-  { pattern: /BETTER_AUTH_URL/g, replacement: "N/A (configure domain via Settings → Security)" },
 ];
 
 describe("auth config consistency", () => {
@@ -62,6 +61,21 @@ describe("auth config consistency", () => {
   it("docker-compose.dev.yml should set BETTER_AUTH_SECRET", () => {
     const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.dev.yml"), "utf-8");
     expect(content).toContain("BETTER_AUTH_SECRET");
+  });
+
+  it("docker-compose.yml should pass BETTER_AUTH_URL through when configured", () => {
+    const content = readFileSync(resolve(PROJECT_ROOT, "docker-compose.yml"), "utf-8");
+    expect(content).toContain("BETTER_AUTH_URL=${BETTER_AUTH_URL:-}");
+  });
+
+  it(".env.example should document BETTER_AUTH_URL", () => {
+    const content = readFileSync(resolve(PROJECT_ROOT, ".env.example"), "utf-8");
+    expect(content).toContain("BETTER_AUTH_URL=");
+  });
+
+  it("server.ts should not warn that BETTER_AUTH_URL is unused", () => {
+    const content = readFileSync(resolve(PROJECT_ROOT, "packages/web/server.ts"), "utf-8");
+    expect(content).not.toContain("BETTER_AUTH_URL is set but no longer used");
   });
 
   it("auth.ts should configure trustedOrigins for dynamic origin detection", () => {

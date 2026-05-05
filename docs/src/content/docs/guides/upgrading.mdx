@@ -153,6 +153,16 @@ Without this, OpenClaw starts but cannot read its secrets, and every agent reque
 
 If you skip step 3, `docker compose up` fails loudly with a clear message telling you exactly what to add — this is by design, so a forgotten pin can't silently pull the wrong version.
 
+#### Recommended: set BETTER_AUTH_URL on HTTPS deployments
+
+If Pinchy is available on a public HTTPS domain, add the canonical URL to `/opt/pinchy/.env` before restarting:
+
+```bash
+BETTER_AUTH_URL=https://pinchy.example.com
+```
+
+The new `docker-compose.yml` passes this through to the Pinchy container. Better Auth uses it to generate absolute links for password resets, OAuth callbacks, and Telegram pairing redirects. Use the same hostname you lock in **Settings → Security**, without a trailing slash.
+
 #### Telegram: brief downtime on first start
 
 OpenClaw detects the new SecretRef config format and hot-reloads. Telegram channels may be unresponsive for roughly 30 seconds during this reload. They recover automatically — no restart or re-configuration needed.

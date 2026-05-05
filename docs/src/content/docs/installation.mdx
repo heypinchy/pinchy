@@ -65,6 +65,9 @@ DB_PASSWORD=your-secure-password
 # Better Auth session secret (auto-generated if omitted)
 BETTER_AUTH_SECRET=your-random-secret
 
+# Public HTTPS origin for generated auth links/callbacks (set after HTTPS is live)
+BETTER_AUTH_URL=https://pinchy.example.com
+
 # Encryption key for API keys — 64 hex characters (auto-generated if omitted)
 ENCRYPTION_KEY=
 
@@ -78,6 +81,8 @@ PINCHY_ENTERPRISE_KEY=
 **`DB_PASSWORD`** — Password for the PostgreSQL `pinchy` user. Defaults to `pinchy_dev` in Docker Compose.
 
 **`BETTER_AUTH_SECRET`** — Used by Better Auth for session security. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
+
+**`BETTER_AUTH_URL`** — Public HTTPS origin for generated auth links and callbacks. Set this on production deployments behind a reverse proxy once HTTPS is live, using the same hostname you lock in **Settings → Security**.
 
 **`ENCRYPTION_KEY`** — Used to encrypt provider API keys at rest (AES-256-GCM). Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
 

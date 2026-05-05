@@ -229,6 +229,16 @@ Save the file (Ctrl+O, Enter, Ctrl+X) and reload Caddy:
 systemctl reload caddy
 ```
 
+Tell Pinchy its public HTTPS URL so auth callbacks and redirects are generated with your real domain. Use the same domain you put in the Caddyfile, including `https://` and no trailing slash:
+
+```bash
+cd /opt/pinchy
+grep -q '^BETTER_AUTH_URL=' .env \
+  && sed -i 's|^BETTER_AUTH_URL=.*|BETTER_AUTH_URL=https://pinchy.example.com|' .env \
+  || echo 'BETTER_AUTH_URL=https://pinchy.example.com' >> .env
+docker compose up -d pinchy
+```
+
 After a few seconds, visit `https://pinchy.example.com` — Caddy automatically provisions a Let's Encrypt certificate. The loading-page fallback on `:9999` stays unchanged so users still see a friendly page if Pinchy ever becomes unreachable during an upgrade or restart.
 
 <Aside type="tip">
@@ -240,7 +250,7 @@ After a few seconds, visit `https://pinchy.example.com` — Caddy automatically 
 
 Once HTTPS is working, open **Settings → Security** in the Pinchy web UI and enter your domain (e.g. `pinchy.example.com`).
 
-After saving, Pinchy will reject requests from any other origin with a 403 error — including access via the raw server IP address.
+After saving, Pinchy will reject requests from any other origin with a 403 error — including access via the raw server IP address. The domain lock should match the hostname in `BETTER_AUTH_URL`; together they keep security checks and generated callback URLs on the same public origin.
 
 <Aside type="note">
   Secrets (database password, session secret, encryption key) were automatically

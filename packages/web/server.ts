@@ -23,13 +23,6 @@ import { readGatewayToken } from "./src/lib/gateway-token-reader";
 
 logCapture.install();
 
-if (process.env.BETTER_AUTH_URL) {
-  console.warn(
-    "⚠ BETTER_AUTH_URL is set but no longer used. " +
-      "Go to Settings → Security to lock your domain."
-  );
-}
-
 if (process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT === "1") {
   // Surface this loud at startup. Production deployments must NEVER set this
   // — it disables Better Auth's brute-force protection on /sign-in/*. The

@@ -561,6 +561,7 @@ jobs:
           {
             echo "PINCHY_VERSION=test-${SHORT_SHA}"
             echo "DB_PASSWORD=$(openssl rand -hex 32)"
+            echo "BETTER_AUTH_URL=https://pinchy.example.test"
           } > .env
           # BETTER_AUTH_SECRET + ENCRYPTION_KEY remain unset on purpose —
           # tests Pinchy's auto-generation path (used by end-users who
@@ -590,6 +591,16 @@ jobs:
           docker compose ps
           docker compose logs
           exit 1
+
+      - name: Verify BETTER_AUTH_URL reaches Pinchy container
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          ACTUAL=$(docker compose exec -T pinchy printenv BETTER_AUTH_URL)
+          if [ "$ACTUAL" != "https://pinchy.example.test" ]; then
+            echo "::error::BETTER_AUTH_URL was not passed through to the Pinchy container. Expected https://pinchy.example.test, got '${ACTUAL:-<unset>}'."
+            docker compose config
+            exit 1
+          fi
 
       - name: Assert all services running
         working-directory: ${{ steps.install-dir.outputs.path }}

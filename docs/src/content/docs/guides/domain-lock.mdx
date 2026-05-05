@@ -54,6 +54,29 @@ Caddy automatically provisions Let's Encrypt certificates for your domain. After
   default `127.0.0.1:7777` binding so only Caddy can reach Pinchy.
 </Aside>
 
+### Set the public auth URL
+
+For production domains, set `BETTER_AUTH_URL` to the same HTTPS origin users visit. Better Auth uses it when it needs to build absolute links, including password resets, OAuth callbacks, and Telegram pairing redirects.
+
+Edit your Pinchy `.env` file:
+
+```bash
+nano /opt/pinchy/.env
+```
+
+Add your public URL, including `https://` and no trailing slash:
+
+```bash
+BETTER_AUTH_URL=https://pinchy.example.com
+```
+
+Restart the Pinchy container so Docker Compose passes the updated value through:
+
+```bash
+cd /opt/pinchy
+docker compose up -d pinchy
+```
+
 <details>
 <summary>What's a reverse proxy and why do I need one?</summary>
 
@@ -93,7 +116,7 @@ You don't have to configure any of these individually — locking the domain fli
 
 </Steps>
 
-From this point on, only the locked domain can reach the app.
+From this point on, only the locked domain can reach the app. Use the same hostname for the lock and for `BETTER_AUTH_URL`; the lock controls which host Pinchy accepts, while `BETTER_AUTH_URL` controls the absolute URLs Better Auth generates.
 
 ## Remove the lock
 
