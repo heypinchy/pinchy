@@ -125,6 +125,14 @@ You don't have to configure any of these individually — locking the domain fli
 
 From this point on, only the locked domain can reach the app. Use the same hostname for the lock and for `BETTER_AUTH_URL`; the lock controls which host Pinchy accepts, while `BETTER_AUTH_URL` controls the absolute URLs Better Auth generates.
 
+<Aside type="note">
+  Domain Lock and `BETTER_AUTH_URL` are related but separate. Domain Lock
+  rejects requests for the wrong host. `BETTER_AUTH_URL` tells Better Auth which
+  public HTTPS origin to use when it builds callback and redirect URLs. In
+  production, set `BETTER_AUTH_URL=https://pinchy.example.com` in your `.env`
+  and restart Pinchy.
+</Aside>
+
 ## Remove the lock
 
 If the business needs change (different domain, temporary maintenance URL, etc.):

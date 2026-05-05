@@ -20,8 +20,12 @@ import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
+import { getBetterAuthUrlStartupWarning } from "./src/lib/auth-env-warning";
 
 logCapture.install();
+
+const betterAuthUrlWarning = getBetterAuthUrlStartupWarning();
+if (betterAuthUrlWarning) console.warn(betterAuthUrlWarning);
 
 if (process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT === "1") {
   // Surface this loud at startup. Production deployments must NEVER set this

@@ -100,7 +100,7 @@ Read the full story on [heypinchy.com](https://heypinchy.com/blog/building-pinch
 
 We care about how Pinchy _feels_, not just what it does. Security + Ease is our core tension — enterprise-grade protection that feels light, not intimidating. Smart defaults everywhere, personality templates instead of blank slates, zero-config setup, and full customization when you need it.
 
-Read more in our [Philosophy docs](https://docs.heypinchy.com/concepts/philosophy) and [`PERSONALITY.md`](PERSONALITY.md).
+Read more in our [Philosophy docs](https://docs.heypinchy.com/concepts/philosophy/) and [`PERSONALITY.md`](PERSONALITY.md).
 
 ## Contributing
 

@@ -253,6 +253,16 @@ After a few seconds, visit `https://pinchy.example.com` — Caddy automatically 
   point from the internet. No `PINCHY_PORT` changes needed.
 </Aside>
 
+Set the public Better Auth callback origin to the same HTTPS domain:
+
+```bash
+cd /opt/pinchy
+printf '\nBETTER_AUTH_URL=https://pinchy.example.com\n' >> .env
+docker compose up -d
+```
+
+`BETTER_AUTH_URL` is separate from Domain Lock. It is used for absolute callback and redirect URLs such as password reset, OAuth, and Telegram pairing.
+
 ### Lock your domain
 
 Once HTTPS is working, open **Settings → Security** in the Pinchy web UI and enter your domain (e.g. `pinchy.example.com`).
