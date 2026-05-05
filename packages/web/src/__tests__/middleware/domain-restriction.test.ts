@@ -46,16 +46,37 @@ describe("domain restriction host check", () => {
     expect(isHostAllowed("evil.example.com", "/api/setup/status")).toBe(true);
   });
 
-  it("always allows the internal OpenClaw config healthcheck regardless of host", () => {
+  it("allows pinchy-audit hook calls from Docker-internal hostnames", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
-    expect(isHostAllowed("localhost:7777", "/api/internal/openclaw-config-ready")).toBe(true);
+    expect(isHostAllowed("pinchy:7777", "/api/internal/audit/tool-use")).toBe(true);
   });
 
-  it("always allows internal service callbacks regardless of host", () => {
+  it("allows gateway-token-protected internal plugin routes regardless of host", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(isHostAllowed("pinchy:7777", "/api/internal/settings/context")).toBe(true);
+    expect(isHostAllowed("pinchy:7777", "/api/internal/usage/record")).toBe(true);
+    expect(isHostAllowed("pinchy:7777", "/api/internal/users/user-123/context")).toBe(true);
     expect(
-      isHostAllowed("localhost:7777", "/api/internal/integrations/connection-1/credentials")
+      isHostAllowed("pinchy:7777", "/api/internal/integrations/connection-123/credentials")
     ).toBe(true);
+  });
+
+  it("allows unauthenticated internal readiness only for loopback healthchecks", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(isHostAllowed("localhost:7777", "/api/internal/openclaw-config-ready")).toBe(true);
+    expect(isHostAllowed("127.0.0.1:7777", "/api/internal/openclaw-config-ready")).toBe(true);
+    expect(isHostAllowed("pinchy:7777", "/api/internal/openclaw-config-ready")).toBe(false);
+    expect(isHostAllowed("evil.example.com", "/api/internal/openclaw-config-ready")).toBe(false);
+  });
+
+  it("does not exempt lookalike internal API paths", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(isHostAllowed("pinchy:7777", "/api/internality/audit/tool-use")).toBe(false);
+  });
+
+  it("still blocks browser-facing API routes from Docker-internal hostnames", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(isHostAllowed("pinchy:7777", "/api/settings/domain")).toBe(false);
   });
 
   it("allows when host has default port 443 and domain does not", () => {
