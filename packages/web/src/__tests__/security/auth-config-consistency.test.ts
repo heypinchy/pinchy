@@ -73,6 +73,18 @@ describe("auth config consistency", () => {
     expect(content).toContain("BETTER_AUTH_URL=");
   });
 
+  it("installation docs should scope BETTER_AUTH_URL when the guide is pinned to older compose files", () => {
+    const content = readFileSync(
+      resolve(PROJECT_ROOT, "docs/src/content/docs/installation.mdx"),
+      "utf-8"
+    );
+    if (!content.includes("v0.4.4") || !content.includes("BETTER_AUTH_URL")) return;
+
+    expect(content).toMatch(
+      /The v0\.4\.4 `docker-compose\.yml` shown above does not pass `BETTER_AUTH_URL`\s+through/
+    );
+  });
+
   it("server.ts should not warn that BETTER_AUTH_URL is unused", () => {
     const content = readFileSync(resolve(PROJECT_ROOT, "packages/web/server.ts"), "utf-8");
     expect(content).not.toContain("BETTER_AUTH_URL is set but no longer used");

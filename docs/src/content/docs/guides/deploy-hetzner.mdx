@@ -231,6 +231,13 @@ systemctl reload caddy
 
 Tell Pinchy its public HTTPS URL so auth callbacks and redirects are generated with your real domain. Use the same domain you put in the Caddyfile, including `https://` and no trailing slash:
 
+<Aside type="caution">
+  This only works when your `docker-compose.yml` passes `BETTER_AUTH_URL`
+  through to the `pinchy` service. If your server was installed with an older
+  compose file that does not include it, fetch a newer compose file or add the
+  environment variable via `docker-compose.override.yml` before restarting.
+</Aside>
+
 ```bash
 cd /opt/pinchy
 grep -q '^BETTER_AUTH_URL=' .env \

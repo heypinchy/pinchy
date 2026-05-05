@@ -84,6 +84,14 @@ PINCHY_ENTERPRISE_KEY=
 
 **`BETTER_AUTH_URL`** — Public HTTPS origin for generated auth links and callbacks. Set this on production deployments behind a reverse proxy once HTTPS is live, using the same hostname you lock in **Settings → Security**.
 
+<Aside type="caution">
+  The v0.4.4 `docker-compose.yml` shown above does not pass `BETTER_AUTH_URL`
+  through. If your compose file does not include
+  `BETTER_AUTH_URL=${BETTER_AUTH_URL:-}` under the `pinchy` service
+  `environment:` block, upgrade to a newer compose file or add it via
+  `docker-compose.override.yml`.
+</Aside>
+
 **`ENCRYPTION_KEY`** — Used to encrypt provider API keys at rest (AES-256-GCM). Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
 
 **`AUDIT_HMAC_SECRET`** — Used to sign audit trail entries with HMAC-SHA256. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. Set explicitly if you need consistent signatures across deployments.

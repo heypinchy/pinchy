@@ -70,6 +70,13 @@ Add your public URL, including `https://` and no trailing slash:
 BETTER_AUTH_URL=https://pinchy.example.com
 ```
 
+<Aside type="caution">
+  This setting only takes effect if your `docker-compose.yml` passes
+  `BETTER_AUTH_URL` through to the `pinchy` service. Older compose files may
+  need to be updated, or you can add the variable via
+  `docker-compose.override.yml`.
+</Aside>
+
 Restart the Pinchy container so Docker Compose passes the updated value through:
 
 ```bash
