@@ -72,7 +72,19 @@ test.describe("Feature screenshots", () => {
     if (smithersId) {
       await page.goto(`${BASE_URL}/chat/${smithersId}`);
     }
-    await page.waitForTimeout(2000);
+
+    // Wait for the chat to actually be ready before screenshotting — otherwise
+    // we capture either the "Reconnecting to the agent..." overlay or the
+    // initial yellow "Starting..." dot. The connection indicator's aria-label
+    // flips to "Connected" once useChatStatus reaches `ready`, and every
+    // agent's greetingMessage renders a `[data-role="assistant"]` bubble
+    // immediately after that.
+    await page.locator('[aria-label="Connected"]').waitFor({ timeout: 30000 });
+    await page
+      .locator('[data-role="assistant"]')
+      .first()
+      .waitFor({ timeout: 10000 })
+      .catch(() => {});
 
     // Type something in the input field to make it look dynamic
     const input = page.locator('textarea, input[placeholder*="message" i], [contenteditable]').first();

@@ -6,7 +6,7 @@ description: Environment variables, Docker services, and development setup.
 import { Aside } from "@astrojs/starlight/components";
 
 <Aside type="note">
-  This guide covers Pinchy v0.4.4. Check the [Releases
+  This guide covers Pinchy %%PINCHY_VERSION%%. Check the [Releases
   page](https://github.com/heypinchy/pinchy/releases) for newer versions.
   Upgrading from v0.1.0? See the [Upgrade Guide](/guides/upgrading/).
 </Aside>
@@ -29,7 +29,7 @@ The simplest way to run Pinchy. One command starts the full stack.
 
 ```bash
 mkdir -p pinchy && cd pinchy
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.4/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
