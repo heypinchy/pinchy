@@ -676,11 +676,16 @@ export async function regenerateOpenClawConfig() {
   }
 
   if (ollamaLocalUrl) {
-    modelProviders["ollama"] = {
+    const providerConfig: Record<string, unknown> = {
       baseUrl: ollamaLocalUrl.replace(/\/$/, ""),
       api: "ollama",
       models: [], // Empty array — OpenClaw requires it for config validation, auto-discovers models at runtime
     };
+    if (process.env.PINCHY_E2E_OLLAMA_LOCAL_API_KEY === "1") {
+      providerSecrets["ollama-local"] = { apiKey: "dummy-integration-test-key" };
+      providerConfig.apiKey = secretRef("/providers/ollama-local/apiKey");
+    }
+    modelProviders["ollama"] = providerConfig;
   }
 
   if (Object.keys(modelProviders).length > 0) {
@@ -863,6 +868,9 @@ export async function regenerateOpenClawConfig() {
     "ollama-cloud": "ollama-cloud",
     // "ollama" intentionally absent — local Ollama is URL-based, no API key
   };
+  if (process.env.PINCHY_E2E_OLLAMA_LOCAL_API_KEY === "1") {
+    MODEL_PREFIX_TO_AUTH_PROFILE.ollama = "ollama-local";
+  }
   // Providers that actually have credentials configured right now.
   const PROVIDER_KEY_TO_AUTH_PROFILE: Partial<Record<string, AuthProfilesProvider>> = {
     anthropic: "anthropic",

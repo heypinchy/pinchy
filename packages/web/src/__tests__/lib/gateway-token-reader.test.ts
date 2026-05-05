@@ -11,6 +11,7 @@ let configPath: string;
 let secretsPath: string;
 const origConfigPath = process.env.OPENCLAW_CONFIG_PATH;
 const origSecretsPath = process.env.OPENCLAW_SECRETS_PATH;
+const origE2eGatewayToken = process.env.PINCHY_E2E_GATEWAY_TOKEN;
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "pinchy-gtoken-"));
@@ -18,6 +19,7 @@ beforeEach(() => {
   secretsPath = join(tmpDir, "secrets.json");
   process.env.OPENCLAW_CONFIG_PATH = configPath;
   process.env.OPENCLAW_SECRETS_PATH = secretsPath;
+  delete process.env.PINCHY_E2E_GATEWAY_TOKEN;
   vi.resetModules();
 });
 
@@ -27,9 +29,21 @@ afterEach(() => {
   else delete process.env.OPENCLAW_CONFIG_PATH;
   if (origSecretsPath !== undefined) process.env.OPENCLAW_SECRETS_PATH = origSecretsPath;
   else delete process.env.OPENCLAW_SECRETS_PATH;
+  if (origE2eGatewayToken !== undefined) process.env.PINCHY_E2E_GATEWAY_TOKEN = origE2eGatewayToken;
+  else delete process.env.PINCHY_E2E_GATEWAY_TOKEN;
 });
 
 describe("readGatewayToken", () => {
+  it("uses the E2E gateway token when set", async () => {
+    process.env.PINCHY_E2E_GATEWAY_TOKEN = "e2e-gateway-token";
+    writeFileSync(
+      configPath,
+      JSON.stringify({ gateway: { auth: { token: "abc-from-openclaw-json" } } })
+    );
+    const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+    expect(readGatewayToken()).toBe("e2e-gateway-token");
+  });
+
   it("returns token from openclaw.json when set", async () => {
     writeFileSync(
       configPath,

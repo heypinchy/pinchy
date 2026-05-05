@@ -1,15 +1,33 @@
 // packages/web/e2e/integration/global-teardown.ts
 import path from "path";
 import { execSync } from "child_process";
-import { stopFakeOllama } from "./fake-ollama-server";
+import { existsSync, readFileSync, unlinkSync } from "fs";
 
 const ADMIN_DB_URL = "postgresql://pinchy:pinchy_dev@localhost:5435/pinchy";
 const INTEGRATION_DB = "pinchy_integration_test";
 const PROJECT_ROOT = path.resolve(__dirname, "../../../..");
+const FAKE_OLLAMA_PID_PATH = "/tmp/pinchy-fake-ollama.pid";
+
+function stopFakeOllamaProcess() {
+  if (!existsSync(FAKE_OLLAMA_PID_PATH)) return;
+  const pid = Number(readFileSync(FAKE_OLLAMA_PID_PATH, "utf8"));
+  if (Number.isInteger(pid) && pid > 0) {
+    try {
+      process.kill(pid, "SIGTERM");
+    } catch {
+      // Process is already gone.
+    }
+  }
+  try {
+    unlinkSync(FAKE_OLLAMA_PID_PATH);
+  } catch {
+    // Best-effort cleanup.
+  }
+}
 
 export default async function globalTeardown() {
   // 1. Stop fake Ollama
-  await stopFakeOllama();
+  stopFakeOllamaProcess();
   console.log("[integration-teardown] fake Ollama stopped");
 
   // 2. Drop test DB

@@ -16,6 +16,10 @@ import { readSecretsFile } from "@/lib/openclaw-secrets";
  *      Fallback in case openclaw.json is briefly unavailable.
  */
 export function readGatewayToken(): string {
+  if (process.env.PINCHY_E2E_GATEWAY_TOKEN) {
+    return process.env.PINCHY_E2E_GATEWAY_TOKEN;
+  }
+
   try {
     const configPath = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
     const config = JSON.parse(readFileSync(configPath, "utf-8")) as {

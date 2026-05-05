@@ -185,6 +185,7 @@ describe("regenerateOpenClawConfig", () => {
       from: mockFrom(),
     } as never);
     mockedGetSetting.mockResolvedValue(null);
+    delete process.env.PINCHY_E2E_OLLAMA_LOCAL_API_KEY;
     // Default: no OpenClaw client connected — exercises the cold-start path
     // that falls back to writing the file directly. Individual tests can
     // override mockGetClient to return a connected client.
@@ -1530,6 +1531,60 @@ describe("regenerateOpenClawConfig", () => {
       String(call[0]).includes("auth-profiles.json")
     );
     expect(authProfileCalls.length).toBe(0);
+  });
+
+  it("can write an E2E-only auth profile for ollama-local when Docker Desktop requires it", async () => {
+    process.env.PINCHY_E2E_OLLAMA_LOCAL_API_KEY = "1";
+    const agentsData = [
+      {
+        id: "agent-llama",
+        name: "Llama",
+        model: "ollama/llama3.1:8b",
+        allowedTools: [],
+        pluginConfig: null,
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({
+      from: mockFrom(agentsData),
+    } as never);
+
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11435";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("openclaw.json")
+    );
+    expect(written).toBeDefined();
+    const config = JSON.parse(String(written![1]));
+    expect(config.models.providers.ollama.apiKey).toEqual({
+      source: "file",
+      provider: "pinchy",
+      id: "/providers/ollama-local/apiKey",
+    });
+
+    expect(mockWriteSecretsFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providers: expect.objectContaining({
+          "ollama-local": { apiKey: "dummy-integration-test-key" },
+        }),
+      })
+    );
+
+    const authProfileCall = mockedWriteFileSync.mock.calls.find((call) =>
+      String(call[0]).includes("agents/agent-llama/agent/auth-profiles.json")
+    );
+    expect(authProfileCall).toBeDefined();
+    const authProfile = JSON.parse(String(authProfileCall![1]));
+    expect(authProfile.profiles["ollama-local-default"]).toEqual({
+      type: "api_key",
+      provider: "ollama-local",
+      keyRef: { kind: "secret", path: "providers.ollama-local.apiKey" },
+    });
   });
 
   it("retries readExistingConfig after 300 ms when it returns empty (EACCES/transient race)", async () => {
