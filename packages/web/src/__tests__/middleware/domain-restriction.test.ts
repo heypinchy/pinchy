@@ -46,6 +46,18 @@ describe("domain restriction host check", () => {
     expect(isHostAllowed("evil.example.com", "/api/setup/status")).toBe(true);
   });
 
+  it("always allows the internal OpenClaw config healthcheck regardless of host", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(isHostAllowed("localhost:7777", "/api/internal/openclaw-config-ready")).toBe(true);
+  });
+
+  it("always allows internal service callbacks regardless of host", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(
+      isHostAllowed("localhost:7777", "/api/internal/integrations/connection-1/credentials")
+    ).toBe(true);
+  });
+
   it("allows when host has default port 443 and domain does not", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
     expect(isHostAllowed("pinchy.example.com:443", "/dashboard")).toBe(true);
