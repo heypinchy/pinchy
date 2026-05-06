@@ -12,12 +12,7 @@ test.describe.serial("Groups CRUD", () => {
     const page = await browser.newPage();
     await loginAsAdmin(page);
 
-    // Enable enterprise mode so group routes are accessible
-    await page.request.post("/api/dev/enterprise-toggle").catch(() => {
-      // If already enabled, toggle off then on would be wrong — only enable once
-    });
-
-    // Check current enterprise status and enable if not already enabled
+    // Enable enterprise mode so group routes are accessible (idempotent: only toggle if not already enabled)
     const status = await page.request.get("/api/enterprise/status");
     const statusJson = await status.json();
     if (!statusJson.enterprise) {
