@@ -61,6 +61,16 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     }
     agentId = agentData.id;
 
+    // Set initial visibility to "all" so tests 1+2 can verify non-admin access
+    const patchRes = await page.context().request.patch(`/api/agents/${agentId}`, {
+      data: { visibility: "all" },
+    });
+    if (!patchRes.ok()) {
+      throw new Error(
+        `Failed to set agent visibility: ${patchRes.status()} ${await patchRes.text()}`
+      );
+    }
+
     await page.close();
   });
 
