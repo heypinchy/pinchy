@@ -544,6 +544,36 @@ describe("DELETE /api/agents/[agentId]", () => {
     expect(body.error).toBe("Forbidden");
   });
 
+  it("returns 400 when admin tries to delete their own personal agent", async () => {
+    // Owner === actor: assertAgentAccess passes (admin owns this personal agent),
+    // then the route's isPersonal guard fires with a clear product message.
+    // This is the documented "personal agents cannot be deleted" rule and must
+    // remain reachable after the security fix that put the privacy check first.
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Personal Agent",
+      isPersonal: true,
+      ownerId: "admin-1",
+    });
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "DELETE",
+    });
+
+    const response = await DELETE(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(400);
+
+    const body = await response.json();
+    expect(body.error).toBe("Personal agents cannot be deleted");
+  });
+
   it("returns 403 when admin tries to delete another user's personal agent", async () => {
     // After the security fix: admins cannot access personal agents owned by other users.
     // The isPersonal privacy check runs before the admin fast-path, so the route
