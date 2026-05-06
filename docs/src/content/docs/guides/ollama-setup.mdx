@@ -56,7 +56,9 @@ http://host.docker.internal:11434
 <Aside type="tip">
   `host.docker.internal` is how Docker containers reach services running on the
   host machine. It works on macOS, Windows, and modern Linux Docker versions out
-  of the box.
+  of the box. Pinchy auto-rewrites this to `ollama.local` (mapped to the same
+  host gateway) when emitting the OpenClaw config so the agent runtime
+  recognizes it as a local provider — no extra config on your end.
 </Aside>
 
 ### B. Ollama as a Docker service
@@ -232,6 +234,17 @@ agents) with cloud providers (interactive agents).
 - Check that Ollama is running: `ollama list` should show your models
 - Verify the URL matches your deployment option (see above)
 - If Ollama runs on the host and Pinchy in Docker, use `http://host.docker.internal:11434` — not `http://localhost:11434`
+
+**Agents reply with "No API key found for provider 'ollama'"**
+
+- This indicates the agent runtime didn't recognize your URL as a local
+  endpoint. Make sure you're on Pinchy v0.5.2 or later — earlier versions
+  had a bug ([#280](https://github.com/heypinchy/pinchy/issues/280)) where
+  `host.docker.internal` was rejected by the local-provider auth path.
+- For non-default URLs, the URL host must be one of: `localhost`,
+  `127.0.0.1`, a `*.local` mDNS name, an RFC-1918 private IPv4
+  (`192.168.*`, `10.*`, `172.16-31.*`), or one of Docker's host aliases
+  (`host.docker.internal`, `gateway.docker.internal`).
 
 **No models appear after connecting**
 
