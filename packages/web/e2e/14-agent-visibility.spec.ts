@@ -118,6 +118,10 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     );
     expect(adminSeesSecondSmithers).toBe(false);
 
+    // Direct fetch should also return 403 (not just absent from list)
+    const directRes = await page.context().request.get(`/api/agents/${secondUserSmithersId}`);
+    expect(directRes.status()).toBe(403);
+
     // UI: second user's Smithers link must not be present in admin's sidebar
     await page.goto("/chat");
     const secondSmithersLink = page.locator(`a[href*="${secondUserSmithersId}"]`);
