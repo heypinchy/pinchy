@@ -96,7 +96,5 @@ describe("openclaw.json emitted by Pinchy validates under OpenClaw's own loader"
     // string, received undefined" — exactly the customer's error.
     const { loadConfig } = await import("openclaw");
     expect(() => loadConfig()).not.toThrow();
-  }, // openclaw ESM import is slow in a cold full-suite run; 10s ceiling avoids
-  // false-positive timeouts while still catching genuine hangs.
-  10_000);
+  }, 10_000); // false-positive timeouts while still catching genuine hangs. // openclaw ESM import is slow in a cold full-suite run; 10s ceiling avoids
 });
