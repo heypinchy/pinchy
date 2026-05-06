@@ -46,7 +46,9 @@ test.describe.serial("Audit log", () => {
     await expect(
       page.getByRole("dialog").getByRole("heading", { name: "New Group" })
     ).toBeVisible();
-    await page.getByLabel("Name").fill(AUDIT_TEST_GROUP);
+    // Scope to dialog: the settings page also has a profile-form "Name" input
+    // (kept in DOM via Tabs keepMounted) → strict-mode violation otherwise.
+    await page.getByRole("dialog").getByLabel("Name").fill(AUDIT_TEST_GROUP);
     await page.getByRole("dialog").getByRole("button", { name: "Create" }).click();
     await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: 5000 });
 

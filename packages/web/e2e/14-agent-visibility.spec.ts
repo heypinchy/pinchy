@@ -93,7 +93,10 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
 
     // Sidebar: admin's Smithers link must not be present
     // Both users have a Smithers agent, so we check by agentId in the href
-    await page.goto("/chat");
+    // /chat is not a route on its own — only /chat/[agentId]. Use /agents
+    // which redirects to /chat/<first-visible-agent> on desktop, ensuring the
+    // app layout (and the sidebar) is rendered.
+    await page.goto("/agents");
     const adminSmithersLink = page.locator(`a[href*="${adminSmithersId}"]`);
     await expect(adminSmithersLink).not.toBeVisible({ timeout: 10000 });
   });
@@ -125,7 +128,10 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     expect(directRes.status()).toBe(403);
 
     // UI: second user's Smithers link must not be present in admin's sidebar
-    await page.goto("/chat");
+    // /chat is not a route on its own — only /chat/[agentId]. Use /agents
+    // which redirects to /chat/<first-visible-agent> on desktop, ensuring the
+    // app layout (and the sidebar) is rendered.
+    await page.goto("/agents");
     const secondSmithersLink = page.locator(`a[href*="${secondUserSmithersId}"]`);
     await expect(secondSmithersLink).not.toBeVisible({ timeout: 10000 });
   });

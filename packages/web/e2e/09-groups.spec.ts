@@ -50,7 +50,10 @@ test.describe.serial("Groups CRUD", () => {
     ).toBeVisible();
 
     // Fill in name only
-    await page.getByLabel("Name").fill("Engineering");
+    // Scope to the dialog: the settings page also has a "Name" field for the
+    // user's profile (kept in DOM via Tabs keepMounted), causing strict-mode
+    // violations on a page-wide getByLabel("Name").
+    await page.getByRole("dialog").getByLabel("Name").fill("Engineering");
 
     // Click Create
     await page.getByRole("dialog").getByRole("button", { name: "Create" }).click();
@@ -78,8 +81,8 @@ test.describe.serial("Groups CRUD", () => {
       page.getByRole("dialog").getByRole("heading", { name: "New Group" })
     ).toBeVisible();
 
-    await page.getByLabel("Name").fill("Design");
-    await page.getByLabel("Description").fill("Design team");
+    await page.getByRole("dialog").getByLabel("Name").fill("Design");
+    await page.getByRole("dialog").getByLabel("Description").fill("Design team");
 
     // Check the second user's checkbox using aria-label
     await page.getByRole("checkbox", { name: SECOND_USER.name }).click();
@@ -112,8 +115,8 @@ test.describe.serial("Groups CRUD", () => {
     ).toBeVisible();
 
     // Clear name and type new name
-    await page.getByLabel("Name").clear();
-    await page.getByLabel("Name").fill("Engineering Updated");
+    await page.getByRole("dialog").getByLabel("Name").clear();
+    await page.getByRole("dialog").getByLabel("Name").fill("Engineering Updated");
 
     await page.getByRole("dialog").getByRole("button", { name: "Save" }).click();
 
@@ -177,7 +180,7 @@ test.describe.serial("Groups CRUD", () => {
     ).toBeVisible();
 
     // Fill in name
-    await page.getByLabel("Name").fill("Bad Group");
+    await page.getByRole("dialog").getByLabel("Name").fill("Bad Group");
 
     // Click Create
     await page.getByRole("dialog").getByRole("button", { name: "Create" }).click();
@@ -192,6 +195,6 @@ test.describe.serial("Groups CRUD", () => {
     await expect(
       page.getByRole("dialog").getByRole("heading", { name: "New Group" })
     ).toBeVisible();
-    await expect(page.getByLabel("Name")).toBeVisible();
+    await expect(page.getByRole("dialog").getByLabel("Name")).toBeVisible();
   });
 });
