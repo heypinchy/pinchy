@@ -4,6 +4,20 @@ import type { ModelHint } from "@/lib/model-resolver/types";
 
 export type OdooOperation = "read" | "create" | "write" | "delete";
 
+/**
+ * A single tool wish-list entry for a template. At instantiation time the
+ * system looks for an active MCP connection of `preset` and checks whether
+ * `tool` appears in its discovered tool list. Missing tools are silently
+ * skipped (§4.3 — templates never fail because a provider renamed a tool);
+ * the caller receives the skip list to surface as a non-blocking toast.
+ */
+export type RecommendedTool = {
+  /** Phase-1 MCP preset id that provides this tool. */
+  preset: "github" | "notion" | "linear" | "generic";
+  /** Exact tool name as advertised by the MCP server. */
+  tool: string;
+};
+
 export interface OdooTemplateConfig {
   accessLevel: "read-only" | "read-write" | "full";
   requiredModels: Array<{
@@ -41,6 +55,13 @@ export interface AgentTemplate {
   iconName?: TemplateIconName;
   /** Per-template LLM hint used by the model resolver at agent-creation time. */
   modelHint?: ModelHint;
+  /**
+   * Optional MCP tool wish-list. At instantiation time the system attempts to
+   * grant each listed tool from an active connection of the matching preset.
+   * Tools whose preset has no active connection, or whose name isn't in the
+   * connection's discovered tool list, are silently skipped (§4.3).
+   */
+  recommendedTools?: RecommendedTool[];
 }
 
 /**
