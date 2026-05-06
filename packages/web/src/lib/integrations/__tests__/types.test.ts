@@ -9,7 +9,7 @@ describe("IntegrationData (MCP variant)", () => {
       transport: "http",
       url: "https://api.githubcopilot.com/mcp/",
       tools: [{ name: "create_issue", description: "Open an issue", inputSchema: {} }],
-      lastSyncedAt: new Date().toISOString(),
+      lastSyncAt: new Date().toISOString(),
     };
     const widened: IntegrationData = value;
     expect(widened.type).toBe("mcp");

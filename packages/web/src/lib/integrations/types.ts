@@ -10,7 +10,7 @@ export type McpIntegrationData = {
   transport: "http" | "sse";
   url: string;
   tools: McpTool[];
-  lastSyncedAt: string; // ISO 8601
+  lastSyncAt: string; // ISO 8601
 };
 
 export type IntegrationData = McpIntegrationData;
