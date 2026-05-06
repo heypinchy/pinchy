@@ -2,7 +2,7 @@ import { readFileSync } from "fs";
 import { dirname } from "path";
 import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
-import { getDefaultModel } from "@/lib/provider-models";
+import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { eq, ne } from "drizzle-orm";
 import { db } from "@/db";
 import {
@@ -686,10 +686,21 @@ export async function regenerateOpenClawConfig() {
   }
 
   if (ollamaLocalUrl) {
+    const ollamaModels = await fetchOllamaLocalModelsFromUrl(ollamaLocalUrl);
     const providerConfig: Record<string, unknown> = {
       baseUrl: ollamaLocalUrl.replace(/\/$/, ""),
       api: "ollama",
-      models: [], // Empty array — OpenClaw requires it for config validation, auto-discovers models at runtime
+      // OpenClaw 2026.4.27 requires models.length > 0 for the synthetic-local-key
+      // path (model-auth-CsyLGY9m.js:130-132). Without at least one entry, OpenClaw
+      // falls through to "No API key found for provider 'ollama'".
+      models: ollamaModels.map((m) => ({
+        id: m.id.replace(/^ollama\//, ""),
+        name: m.id.replace(/^ollama\//, ""),
+        input: m.capabilities.vision ? ["text", "image"] : ["text"],
+        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+        contextWindow: 32_768,
+        maxTokens: 8_192,
+      })),
     };
     if (process.env.PINCHY_E2E_OLLAMA_LOCAL_API_KEY === "1") {
       providerSecrets["ollama-local"] = { apiKey: "dummy-integration-test-key" };

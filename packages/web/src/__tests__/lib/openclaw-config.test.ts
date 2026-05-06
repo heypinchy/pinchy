@@ -103,6 +103,7 @@ vi.mock("@/lib/provider-models", () => {
   };
   return {
     getDefaultModel: vi.fn(async (provider: string) => defaults[provider] ?? ""),
+    fetchOllamaLocalModelsFromUrl: vi.fn().mockResolvedValue([]),
   };
 });
 
@@ -126,6 +127,7 @@ import {
 import { pushConfigInBackground, _resetPushGeneration } from "@/lib/openclaw-config/write";
 import { db } from "@/db";
 import { getSetting } from "@/lib/settings";
+import { fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 
 const mockedWriteFileSync = vi.mocked(writeFileSync);
 const mockedReadFileSync = vi.mocked(readFileSync);
@@ -1323,6 +1325,22 @@ describe("regenerateOpenClawConfig", () => {
   });
 
   it("should include local ollama provider config when ollama_local_url is set", async () => {
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b (7B)",
+        parameterSize: "7B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+      {
+        id: "ollama/llama3.2-vision:11b",
+        name: "llama3.2-vision:11b (11B)",
+        parameterSize: "11B",
+        compatible: true,
+        capabilities: { tools: true, vision: true, completion: true, thinking: false },
+      },
+    ]);
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "ollama_local_url") return "http://host.docker.internal:11434";
       return null;
@@ -1334,12 +1352,33 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written);
 
     expect(config.models.providers["ollama"]).toBeDefined();
-    expect(config.models.providers["ollama"].baseUrl).toBe("http://host.docker.internal:11434");
     expect(config.models.providers["ollama"].api).toBe("ollama");
-    expect(config.models.providers["ollama"].models).toEqual([]);
+    expect(config.models.providers["ollama"].models).toHaveLength(2);
+    expect(config.models.providers["ollama"].models[0]).toMatchObject({
+      id: "qwen2.5:7b",
+      name: "qwen2.5:7b",
+      input: ["text"],
+      cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+    });
+    expect(config.models.providers["ollama"].models[1]).toMatchObject({
+      id: "llama3.2-vision:11b",
+      input: ["text", "image"],
+    });
+    // contextWindow + maxTokens present and numeric
+    expect(typeof config.models.providers["ollama"].models[0].contextWindow).toBe("number");
+    expect(typeof config.models.providers["ollama"].models[0].maxTokens).toBe("number");
   });
 
   it("should include both ollama providers when both are configured", async () => {
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b",
+        parameterSize: "7B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ]);
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "ollama_cloud_api_key") return "sk-ollama-cloud";
       if (key === "ollama_local_url") return "http://localhost:11434";
@@ -1356,6 +1395,15 @@ describe("regenerateOpenClawConfig", () => {
   });
 
   it("should strip trailing slash from ollama local URL", async () => {
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b",
+        parameterSize: "7B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ]);
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "ollama_local_url") return "http://host.docker.internal:11434/";
       return null;
@@ -1370,6 +1418,15 @@ describe("regenerateOpenClawConfig", () => {
   });
 
   it("should not add env block for ollama-local provider (URL-based, no API key)", async () => {
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b",
+        parameterSize: "7B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ]);
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "ollama_local_url") return "http://host.docker.internal:11434";
       return null;
