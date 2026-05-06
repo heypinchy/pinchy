@@ -970,9 +970,171 @@ describe("vision capability detection", () => {
   });
 });
 
+describe("fetchOllamaLocalModelsFromUrl contextLength extraction", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCache();
+  });
+
+  it("extracts <arch>.context_length from /api/show model_info into contextLength", async () => {
+    // Ollama's /api/show response carries a `model_info` map keyed by
+    // architecture, e.g. { "qwen2.context_length": 32768, ... }. We surface
+    // this as a top-level `contextLength` so build.ts can emit a real
+    // contextWindow per model rather than a hardcoded fallback.
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(JSON.stringify({ models: [{ name: "qwen2.5:7b" }] }), { status: 200 });
+      }
+      if (urlStr.endsWith("/api/show")) {
+        return new Response(
+          JSON.stringify({
+            capabilities: ["completion", "tools"],
+            details: { parameter_size: "7B" },
+            model_info: {
+              "qwen2.context_length": 32_768,
+              "qwen2.embedding_length": 3584,
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+
+    const result = await fetchOllamaLocalModelsFromUrl("http://localhost:11434");
+    expect(result).toHaveLength(1);
+    expect(result[0].contextLength).toBe(32_768);
+  });
+
+  it("leaves contextLength undefined when model_info is absent (older Ollama)", async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(JSON.stringify({ models: [{ name: "qwen2.5:7b" }] }), { status: 200 });
+      }
+      if (urlStr.endsWith("/api/show")) {
+        return new Response(
+          JSON.stringify({
+            capabilities: ["completion", "tools"],
+            // model_info absent
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+
+    const result = await fetchOllamaLocalModelsFromUrl("http://localhost:11434");
+    expect(result).toHaveLength(1);
+    expect(result[0].contextLength).toBeUndefined();
+  });
+
+  it("leaves contextLength undefined when no <arch>.context_length key is found", async () => {
+    // Different architectures use different prefixes; if none match the
+    // *.context_length pattern we shouldn't crash, just leave the value out.
+    vi.mocked(fetch).mockImplementation(async (url) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(JSON.stringify({ models: [{ name: "weirdarch:7b" }] }), {
+          status: 200,
+        });
+      }
+      if (urlStr.endsWith("/api/show")) {
+        return new Response(
+          JSON.stringify({
+            capabilities: ["completion", "tools"],
+            model_info: {
+              "weirdarch.embedding_length": 1024,
+              // no *.context_length
+            },
+          }),
+          { status: 200 }
+        );
+      }
+      return new Response("{}", { status: 404 });
+    });
+
+    const result = await fetchOllamaLocalModelsFromUrl("http://localhost:11434");
+    expect(result[0].contextLength).toBeUndefined();
+  });
+});
+
+describe("fetchOllamaLocalModelsFromUrl caching", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetCache();
+  });
+
+  it("caches results per URL so back-to-back calls within the TTL skip the network", async () => {
+    // regenerateOpenClawConfig() runs on every settings change. Without a
+    // cache, a quick burst of saves triggers N+1 HTTP calls per save —
+    // 5 s timeout per /api/show call when Ollama is down. A short in-process
+    // TTL absorbs the burst without making the data stale beyond a few seconds.
+    const fetchMock = vi.mocked(fetch).mockImplementation(async (url) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(JSON.stringify({ models: [{ name: "qwen2.5:7b" }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ capabilities: ["completion", "tools"] }), {
+        status: 200,
+      });
+    });
+
+    await fetchOllamaLocalModelsFromUrl("http://localhost:11434");
+    const callsAfterFirst = fetchMock.mock.calls.length;
+    expect(callsAfterFirst).toBeGreaterThan(0);
+
+    // Second call immediately after — must NOT hit the network again.
+    await fetchOllamaLocalModelsFromUrl("http://localhost:11434");
+    expect(fetchMock.mock.calls.length).toBe(callsAfterFirst);
+  });
+
+  it("uses a separate cache entry per URL", async () => {
+    // A cache keyed only by call-site (and not by URL) would return cached
+    // results for the wrong URL after the user changes it in settings.
+    const fetchMock = vi.mocked(fetch).mockImplementation(async (url) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(JSON.stringify({ models: [{ name: "qwen2.5:7b" }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ capabilities: ["completion", "tools"] }), {
+        status: 200,
+      });
+    });
+
+    await fetchOllamaLocalModelsFromUrl("http://localhost:11434");
+    const callsAfterFirstUrl = fetchMock.mock.calls.length;
+
+    await fetchOllamaLocalModelsFromUrl("http://192.168.1.50:11434");
+    // Different URL must trigger a fresh fetch — at least the /api/tags call.
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterFirstUrl);
+  });
+
+  it("resetCache() invalidates the cache so the next call re-fetches", async () => {
+    const fetchMock = vi.mocked(fetch).mockImplementation(async (url) => {
+      const urlStr = typeof url === "string" ? url : url.toString();
+      if (urlStr.endsWith("/api/tags")) {
+        return new Response(JSON.stringify({ models: [{ name: "qwen2.5:7b" }] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ capabilities: ["completion", "tools"] }), {
+        status: 200,
+      });
+    });
+
+    await fetchOllamaLocalModelsFromUrl("http://localhost:11434");
+    const callsAfterFirst = fetchMock.mock.calls.length;
+
+    resetCache();
+    await fetchOllamaLocalModelsFromUrl("http://localhost:11434");
+    expect(fetchMock.mock.calls.length).toBeGreaterThan(callsAfterFirst);
+  });
+});
+
 describe("fetchOllamaLocalModelsFromUrl timeout behavior", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetCache();
   });
 
   it("passes an AbortSignal to every fetch call so a hanging Ollama instance cannot wedge the request", async () => {

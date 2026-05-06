@@ -10,9 +10,20 @@ let cachedResult: ProviderModels[] | null = null;
 let cachedAt: number = 0;
 const CACHE_TTL_MS = 60 * 60 * 1000; // 1 hour
 
+// Per-URL cache for fetchOllamaLocalModelsFromUrl. regenerateOpenClawConfig()
+// runs on every settings change and would otherwise issue 1 + N HTTP calls
+// per regen (one /api/tags + one /api/show per model). A short TTL absorbs
+// rapid back-to-back regens without making the data noticeably stale.
+//
+// The TTL is intentionally short: the model list is also displayed live in
+// the setup wizard, and a long TTL would leak stale data into that surface.
+const OLLAMA_LOCAL_CACHE_TTL_MS = 10_000;
+const ollamaLocalCache = new Map<string, { fetchedAt: number; result: OllamaLocalModelInfo[] }>();
+
 export function resetCache() {
   cachedResult = null;
   cachedAt = 0;
+  ollamaLocalCache.clear();
 }
 
 export interface ModelInfo {
@@ -32,6 +43,13 @@ export interface OllamaModelCapabilities {
 export interface OllamaLocalModelInfo extends ModelInfo {
   parameterSize: string;
   capabilities: OllamaModelCapabilities;
+  /**
+   * Real context window (in tokens) reported by Ollama's /api/show under
+   * `model_info.<arch>.context_length`. Optional because older Ollama
+   * versions omit `model_info` entirely. Consumers should fall back to a
+   * sane default when undefined rather than blocking on this.
+   */
+  contextLength?: number;
 }
 
 export interface ProviderModels {
@@ -218,10 +236,42 @@ function ollamaFetchSignal(): AbortSignal {
   return AbortSignal.timeout(OLLAMA_FETCH_TIMEOUT_MS);
 }
 
+/**
+ * Pulls the architecture-prefixed `*.context_length` value out of Ollama's
+ * `/api/show` `model_info` payload. Different model architectures use
+ * different prefixes (`qwen2.context_length`, `llama.context_length`,
+ * `phi3.context_length`, ...), so we scan for any key with that suffix.
+ *
+ * Returns `undefined` when:
+ * - `model_info` is absent (older Ollama versions before model_info shipped)
+ * - No matching key exists (unknown / unsupported architecture)
+ * - The value isn't a positive number
+ *
+ * Callers should fall back to a sane default rather than treating a missing
+ * value as an error — the rest of the model entry is still useful.
+ */
+function extractOllamaContextLength(showData: Record<string, unknown>): number | undefined {
+  const modelInfo = showData.model_info;
+  if (!modelInfo || typeof modelInfo !== "object") return undefined;
+  for (const [key, value] of Object.entries(modelInfo as Record<string, unknown>)) {
+    if (key.endsWith(".context_length") && typeof value === "number" && value > 0) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 export async function fetchOllamaLocalModelsFromUrl(
   baseUrl: string
 ): Promise<OllamaLocalModelInfo[]> {
   const url = baseUrl.replace(/\/$/, "");
+
+  // Cache lookup — see OLLAMA_LOCAL_CACHE_TTL_MS doc-comment for rationale.
+  const cached = ollamaLocalCache.get(url);
+  if (cached && Date.now() - cached.fetchedAt < OLLAMA_LOCAL_CACHE_TTL_MS) {
+    return cached.result;
+  }
+
   let tagsResponse: Response;
   try {
     tagsResponse = await fetch(`${url}/api/tags`, { signal: ollamaFetchSignal() });
@@ -260,6 +310,7 @@ export async function fetchOllamaLocalModelsFromUrl(
     const paramSize = showData.details?.parameter_size || model.details?.parameter_size || "";
     const displayName = paramSize ? `${model.name} (${paramSize})` : model.name;
     const hasTools = capabilities.includes("tools");
+    const contextLength = extractOllamaContextLength(showData);
 
     models.push({
       id: `ollama/${model.name}`,
@@ -273,8 +324,15 @@ export async function fetchOllamaLocalModelsFromUrl(
         completion: capabilities.includes("completion"),
         thinking: capabilities.includes("thinking"),
       },
+      ...(contextLength !== undefined ? { contextLength } : {}),
     });
   }
+
+  // Only cache successful results. An empty list from a failed /api/tags
+  // is already short-circuited above, but if /api/tags returned 200 with
+  // an empty model list we cache that too — the user just hasn't pulled
+  // anything yet, and we want to avoid hammering the endpoint.
+  ollamaLocalCache.set(url, { fetchedAt: Date.now(), result: models });
 
   return models;
 }

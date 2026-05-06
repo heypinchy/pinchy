@@ -1325,7 +1325,7 @@ describe("regenerateOpenClawConfig", () => {
   });
 
   it("should include local ollama provider config when ollama_local_url is set", async () => {
-    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
       {
         id: "ollama/qwen2.5:7b",
         name: "qwen2.5:7b (7B)",
@@ -1356,12 +1356,15 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama"].models).toHaveLength(2);
     expect(config.models.providers["ollama"].models[0]).toMatchObject({
       id: "qwen2.5:7b",
-      name: "qwen2.5:7b",
+      // Pinchy's display label ("<id> (<size>)") flows through to OpenClaw's
+      // model picker — same string the user saw at setup time.
+      name: "qwen2.5:7b (7B)",
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     });
     expect(config.models.providers["ollama"].models[1]).toMatchObject({
       id: "llama3.2-vision:11b",
+      name: "llama3.2-vision:11b (11B)",
       input: ["text", "image"],
     });
     // contextWindow + maxTokens present and numeric
@@ -1369,8 +1372,90 @@ describe("regenerateOpenClawConfig", () => {
     expect(typeof config.models.providers["ollama"].models[0].maxTokens).toBe("number");
   });
 
+  it("uses real contextLength from /api/show when present, with maxTokens capped to it", async () => {
+    // qwen2.5:7b reports a 32k context, llama3:8b reports 8k. The emitted
+    // OpenClaw config should reflect those real values, not a hardcoded
+    // default — otherwise every model claims the same window in OpenClaw's UI
+    // and small-context models hit ceiling errors below their advertised limit.
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b (7B)",
+        parameterSize: "7B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+        contextLength: 32_768,
+      },
+      {
+        id: "ollama/llama3:8b",
+        name: "llama3:8b (8B)",
+        parameterSize: "8B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+        contextLength: 8_192,
+      },
+      {
+        id: "ollama/qwen3.5:9b",
+        name: "qwen3.5:9b (9B)",
+        parameterSize: "9B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+        contextLength: 262_144,
+      },
+    ]);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const models = config.models.providers["ollama"].models;
+    // Real values flow through.
+    expect(models[0].contextWindow).toBe(32_768);
+    expect(models[1].contextWindow).toBe(8_192);
+    expect(models[2].contextWindow).toBe(262_144);
+    // maxTokens is capped to min(8192, contextLength) so output never exceeds context.
+    expect(models[0].maxTokens).toBe(8_192);
+    expect(models[1].maxTokens).toBe(8_192);
+    expect(models[2].maxTokens).toBe(8_192);
+  });
+
+  it("falls back to default contextWindow when contextLength is missing (older Ollama versions)", async () => {
+    // /api/show didn't always include model_info — older Ollama versions
+    // omit it. Ensure we still emit a sane default so chat doesn't break.
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b (7B)",
+        parameterSize: "7B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+        // contextLength intentionally absent
+      },
+    ]);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    const models = config.models.providers["ollama"].models;
+    expect(typeof models[0].contextWindow).toBe("number");
+    expect(models[0].contextWindow).toBeGreaterThan(0);
+    expect(typeof models[0].maxTokens).toBe("number");
+    expect(models[0].maxTokens).toBeGreaterThan(0);
+  });
+
   it("should include both ollama providers when both are configured", async () => {
-    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
       {
         id: "ollama/qwen2.5:7b",
         name: "qwen2.5:7b",
@@ -1395,7 +1480,7 @@ describe("regenerateOpenClawConfig", () => {
   });
 
   it("should strip trailing slash from ollama local URL", async () => {
-    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
       {
         id: "ollama/qwen2.5:7b",
         name: "qwen2.5:7b",
@@ -1418,7 +1503,7 @@ describe("regenerateOpenClawConfig", () => {
   });
 
   it("rewrites host.docker.internal to ollama.local in baseUrl (OpenClaw isLocalBaseUrl allowlist)", async () => {
-    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
       {
         id: "ollama/qwen2.5:7b",
         name: "qwen2.5:7b",
@@ -1440,8 +1525,45 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434/v1");
   });
 
+  it("rewrites all known Docker host aliases to ollama.local", async () => {
+    // Docker exposes the host under multiple aliases depending on platform
+    // and version: gateway.docker.internal (alternative), docker.for.mac.*
+    // (legacy Mac), docker.for.win.* (legacy Windows). All are Docker host
+    // aliases that must reach the host machine — none are in OpenClaw's
+    // isLocalBaseUrl allowlist, so all need the same ollama.local rewrite.
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b",
+        parameterSize: "7B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ]);
+
+    const aliases = [
+      "http://gateway.docker.internal:11434",
+      "http://docker.for.mac.host.internal:11434",
+      "http://docker.for.win.host.internal:11434",
+    ];
+
+    for (const url of aliases) {
+      mockedWriteFileSync.mockClear();
+      mockedGetSetting.mockImplementation(async (key: string) => {
+        if (key === "ollama_local_url") return url;
+        return null;
+      });
+
+      await regenerateOpenClawConfig();
+
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written);
+      expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434/v1");
+    }
+  });
+
   it("passes through private IPv4 baseUrl unchanged (already in isLocalBaseUrl allowlist)", async () => {
-    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
       {
         id: "ollama/qwen2.5:7b",
         name: "qwen2.5:7b",
@@ -1463,8 +1585,71 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama"].baseUrl).toBe("http://192.168.1.50:11434/v1");
   });
 
+  it("passes through localhost / 127.0.0.1 / *.local hostnames unchanged (already on allowlist)", async () => {
+    // These all pass OpenClaw's isLocalBaseUrl predicate. Rewriting to
+    // ollama.local would be wrong because the user explicitly chose a
+    // different host (e.g. mDNS name pointing at a LAN machine). We must
+    // preserve their intent.
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b",
+        parameterSize: "7B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ]);
+
+    const cases = [
+      { input: "http://localhost:11434", expected: "http://localhost:11434/v1" },
+      { input: "http://127.0.0.1:11434", expected: "http://127.0.0.1:11434/v1" },
+      { input: "http://gpu-box.local:11434", expected: "http://gpu-box.local:11434/v1" },
+    ];
+
+    for (const { input, expected } of cases) {
+      mockedWriteFileSync.mockClear();
+      mockedGetSetting.mockImplementation(async (key: string) => {
+        if (key === "ollama_local_url") return input;
+        return null;
+      });
+
+      await regenerateOpenClawConfig();
+
+      const written = mockedWriteFileSync.mock.calls[0][1] as string;
+      const config = JSON.parse(written);
+      expect(config.models.providers["ollama"].baseUrl).toBe(expected);
+    }
+  });
+
+  it("is idempotent when user-supplied URL already includes /v1 suffix", async () => {
+    // pi-ai's openai-completions provider appends /chat/completions, so the
+    // baseUrl must end in /v1 exactly once. If the user already typed /v1
+    // (or we re-run regen on an already-rewritten value), we must not
+    // double-suffix to /v1/v1.
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b",
+        parameterSize: "7B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ]);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434/v1";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434/v1");
+  });
+
   it("should not add env block for ollama-local provider (URL-based, no API key)", async () => {
-    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
       {
         id: "ollama/qwen2.5:7b",
         name: "qwen2.5:7b",
@@ -1495,7 +1680,7 @@ describe("regenerateOpenClawConfig", () => {
     // (OpenClaw 2026.4.27 requires models.length > 0 for the synthetic
     // local key). This test documents the current behavior rather than
     // silently regressing if a future guard is added.
-    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([]);
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([]);
     mockedGetSetting.mockImplementation(async (key: string) => {
       if (key === "ollama_local_url") return "http://host.docker.internal:11434";
       return null;

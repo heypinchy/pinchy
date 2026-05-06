@@ -44,6 +44,83 @@ const BUILTIN_PROVIDER_BASE_URL_ENV_VARS: Record<"anthropic" | "openai" | "googl
   google: "GOOGLE_BASE_URL",
 };
 
+/**
+ * Hostnames that all resolve to "the Docker host machine" — none of them are
+ * in OpenClaw's `isLocalBaseUrl` allowlist, so all need to be rewritten to
+ * `ollama.local` (which `*.local` matches). docker-compose maps `ollama.local`
+ * to `host-gateway`, preserving connectivity.
+ *
+ * Sourced from Docker docs:
+ * - `host.docker.internal` — Docker Desktop 18.03+ and modern Docker on Linux
+ *   (with `--add-host=host.docker.internal:host-gateway`)
+ * - `gateway.docker.internal` — Docker Desktop's bridge gateway alias
+ * - `docker.for.mac.host.internal` / `docker.for.win.host.internal` — legacy
+ *   aliases still emitted on older Docker Desktop installs
+ *
+ * Anything not in this set is left as-is. Public IPs and bare hostnames may
+ * still fail OpenClaw's allowlist, but rewriting them to `ollama.local`
+ * would silently misroute traffic — the user picked that host on purpose.
+ */
+const DOCKER_HOST_ALIASES: ReadonlySet<string> = new Set([
+  "host.docker.internal",
+  "gateway.docker.internal",
+  "docker.for.mac.host.internal",
+  "docker.for.win.host.internal",
+]);
+
+/**
+ * Rewrites the user-supplied Ollama URL so OpenClaw's `isLocalBaseUrl` check
+ * passes (see model-auth-CsyLGY9m.js:111 in OpenClaw 2026.4.27). Docker host
+ * aliases (see DOCKER_HOST_ALIASES) get rewritten to `ollama.local`; private
+ * IPv4, `*.local`, `localhost`, etc. are already on the allowlist and pass
+ * through unchanged.
+ *
+ * Also appends `/v1` so pi-ai's openai-completions provider hits Ollama's
+ * OpenAI-compatible endpoint at `/v1/chat/completions` (pi-ai appends
+ * `/chat/completions` to the configured baseUrl). Idempotent: a URL that
+ * already ends in `/v1` is left untouched.
+ *
+ * Exported for unit testing — the rewrite logic is pure and benefits from
+ * direct test coverage independent of the larger config-emission pipeline.
+ */
+export function rewriteOllamaHostForOpenClaw(rawUrl: string): string {
+  const trimmed = rawUrl.replace(/\/$/, "");
+  try {
+    const parsed = new URL(trimmed);
+    const host = parsed.hostname.toLowerCase();
+    if (DOCKER_HOST_ALIASES.has(host)) {
+      parsed.hostname = "ollama.local";
+    }
+    // Ollama's OpenAI-compatible API lives at /v1. pi-ai's openai-completions
+    // provider appends /chat/completions to the baseUrl, so we include /v1
+    // here so requests land at /v1/chat/completions (not /chat/completions).
+    const withV1 = parsed.toString().replace(/\/$/, "");
+    return withV1.endsWith("/v1") ? withV1 : `${withV1}/v1`;
+  } catch {
+    // Not a parseable URL — return as-is (validateProviderUrl already rejected garbage).
+    return trimmed;
+  }
+}
+
+/**
+ * Picks the per-model contextWindow we ship to OpenClaw. Real values come
+ * from Ollama's `/api/show` response (see fetchOllamaLocalModelsFromUrl);
+ * older Ollama versions omit `model_info` entirely, so we fall back to a
+ * safe 32k that the most common Ollama models (qwen2.5:7b, llama3:8b, ...)
+ * comfortably support.
+ */
+const OLLAMA_LOCAL_DEFAULT_CONTEXT_WINDOW = 32_768;
+
+/**
+ * pi-ai's openai-completions provider doesn't have a sensible default for
+ * max_tokens, so we cap it ourselves. 8k is enough for any tool-calling
+ * exchange we've seen in production while staying safely under every
+ * supported model's context window — including small-context models like
+ * `phi3:mini` (which has a 4k context but isn't tool-capable, so it never
+ * reaches OpenClaw anyway).
+ */
+const OLLAMA_LOCAL_MAX_TOKENS_CAP = 8_192;
+
 function deepMerge(
   target: Record<string, unknown>,
   source: Record<string, unknown>
@@ -631,40 +708,6 @@ export async function regenerateOpenClawConfig() {
     config.plugins = { allow: allowedPlugins, entries };
   }
 
-  /**
-   * Rewrites the user-supplied Ollama URL so OpenClaw's isLocalBaseUrl check
-   * passes. `host.docker.internal` (Docker Desktop) resolves to the host but is
-   * not in OpenClaw 2026.4.27's allowlist; `ollama.local` is (`*.local` matches).
-   * docker-compose maps `ollama.local` to `host-gateway` so connectivity is
-   * preserved. Private IPv4 and other *.local names are already in the allowlist
-   * and are returned unchanged.
-   *
-   * Also appends `/v1` so pi-ai's openai-completions provider hits Ollama's
-   * OpenAI-compatible endpoint at `/v1/chat/completions` (pi-ai appends
-   * `/chat/completions` to the configured baseUrl).
-   */
-  function rewriteOllamaHostForOpenClaw(rawUrl: string): string {
-    const trimmed = rawUrl.replace(/\/$/, "");
-    try {
-      const parsed = new URL(trimmed);
-      // OpenClaw's isLocalBaseUrl allowlist doesn't include the Docker
-      // Desktop hostname. ollama.local is wired to host-gateway in
-      // docker-compose so it resolves to the same place — and *.local
-      // passes the allowlist.
-      if (parsed.hostname === "host.docker.internal") {
-        parsed.hostname = "ollama.local";
-      }
-      // Ollama's OpenAI-compatible API lives at /v1. pi-ai's openai-completions
-      // provider appends /chat/completions to the baseUrl, so we include /v1
-      // here so requests land at /v1/chat/completions (not /chat/completions).
-      const withV1 = parsed.toString().replace(/\/$/, "");
-      return withV1.endsWith("/v1") ? withV1 : `${withV1}/v1`;
-    } catch {
-      // Not a parseable URL — return as-is (validateProviderUrl already rejected garbage)
-    }
-    return trimmed;
-  }
-
   // Build models.providers block — built-in providers + Ollama providers.
   // Built-in providers (anthropic, openai, google) use SecretRef for apiKey
   // so OpenClaw resolves the key live from secrets.json without a restart.
@@ -735,16 +778,26 @@ export async function regenerateOpenClawConfig() {
       // OpenClaw 2026.4.27 requires models.length > 0 for the synthetic-local-key
       // path (model-auth-CsyLGY9m.js:130-132). Without at least one entry, OpenClaw
       // falls through to "No API key found for provider 'ollama'".
-      models: ollamaModels.map((m) => ({
-        id: m.id.replace(/^ollama\//, ""),
-        // Use the bare model id as display name — OpenClaw shows this label
-        // in its UI. m.name ("qwen2.5:7b (7B)") is Pinchy's UI-only label.
-        name: m.id.replace(/^ollama\//, ""),
-        input: m.capabilities.vision ? ["text", "image"] : ["text"],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 32_768,
-        maxTokens: 8_192,
-      })),
+      models: ollamaModels.map((m) => {
+        // m.name is Pinchy's display label ("qwen2.5:7b (7B)") — same string
+        // the user saw at setup time. Surfacing it in OpenClaw's model picker
+        // keeps the two UIs consistent.
+        const displayName = m.name;
+        // Real context window when /api/show reported one (Ollama with model_info
+        // support); fall back to a safe default for older Ollama versions.
+        const contextWindow = m.contextLength ?? OLLAMA_LOCAL_DEFAULT_CONTEXT_WINDOW;
+        // Cap maxTokens at the model's context — small-context models would
+        // otherwise advertise more output than they can produce.
+        const maxTokens = Math.min(OLLAMA_LOCAL_MAX_TOKENS_CAP, contextWindow);
+        return {
+          id: m.id.replace(/^ollama\//, ""),
+          name: displayName,
+          input: m.capabilities.vision ? ["text", "image"] : ["text"],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow,
+          maxTokens,
+        };
+      }),
     };
     if (process.env.PINCHY_E2E_OLLAMA_LOCAL_API_KEY === "1") {
       providerSecrets["ollama-local"] = { apiKey: "dummy-integration-test-key" };
