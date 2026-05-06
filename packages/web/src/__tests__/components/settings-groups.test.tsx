@@ -221,6 +221,75 @@ describe("SettingsGroups", () => {
     ).toBeInTheDocument();
   });
 
+  it("on edit partial-failure (PATCH ok, PUT members fails), surfaces a specific toast and refreshes data", async () => {
+    // Edit applies two API calls: PATCH /api/groups/:id (rename/description)
+    // and PUT /api/groups/:id/members. If the second fails, the first has
+    // already mutated the server. The user must (a) be told which half
+    // failed and (b) see the refreshed truth so they don't think the rename
+    // also failed.
+    const user = userEvent.setup();
+    mockFetch();
+    render(<SettingsGroups />);
+
+    await waitFor(() => {
+      expect(screen.getAllByText("Engineering").length).toBeGreaterThanOrEqual(1);
+    });
+
+    // Open the edit dialog for Engineering
+    const table = screen.getByRole("table");
+    const row = within(table).getByText("Engineering").closest("tr")!;
+    await user.click(within(row).getByRole("button", { name: "Edit" }));
+
+    await waitFor(() => {
+      expect(
+        screen.getByText("Edit Group", { selector: "[data-slot='dialog-title']" })
+      ).toBeInTheDocument();
+    });
+
+    // Mock: members fetch (for opening edit dialog), PATCH ok, PUT fails, then
+    // refresh fetches succeed with the renamed group so UI reflects truth.
+    let refreshFetched = false;
+    vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+      const u = String(url);
+      if (u === "/api/groups/g1/members" && (!init || init.method === undefined)) {
+        return jsonResponse([]);
+      }
+      if (u === "/api/groups/g1" && init?.method === "PATCH") {
+        return jsonResponse({ id: "g1", name: "Engineering Updated", description: "Dev team" });
+      }
+      if (u === "/api/groups/g1/members" && init?.method === "PUT") {
+        return jsonResponse({ error: "Internal server error" }, { ok: false, status: 500 });
+      }
+      if (u === "/api/groups") {
+        refreshFetched = true;
+        return jsonResponse([
+          { id: "g1", name: "Engineering Updated", description: "Dev team", memberCount: 3 },
+          { id: "g2", name: "Design", description: null, memberCount: 1 },
+        ]);
+      }
+      if (u === "/api/users") {
+        return jsonResponse({ users: mockUsers });
+      }
+      return { ok: false, status: 404, json: async () => ({}), text: async () => "" } as Response;
+    });
+
+    // Toggle a member checkbox so a PUT is sent
+    await user.click(screen.getByRole("checkbox", { name: "Bob" }));
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    // The toast must specifically describe the partial-failure state, not
+    // the generic "Failed to update group". The user needs to know the rename
+    // landed but the membership update did not.
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(
+        expect.stringMatching(/renamed.*member|member.*not.*updat/i)
+      );
+    });
+
+    // Data must refresh so the rename is reflected in the table.
+    expect(refreshFetched).toBe(true);
+  });
+
   it("renders inline field error when API returns 400 with fieldErrors (no toast)", async () => {
     // Per the project error-display policy: form validation errors should be
     // rendered inline next to the offending field, NOT as toast notifications.

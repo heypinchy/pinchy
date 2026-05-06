@@ -156,37 +156,53 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
 
   async function handleCreate() {
     setFieldErrors({});
+    let newGroup: Group;
     try {
       const body: CreateGroupInput = { name: formName, description: formDescription || null };
-      const newGroup = await apiPost<Group>("/api/groups", body);
-      if (formMemberIds.length > 0) {
-        await apiPut(`/api/groups/${newGroup.id}/members`, { userIds: formMemberIds });
-      }
-      setCreateOpen(false);
-      fetchData();
+      newGroup = await apiPost<Group>("/api/groups", body);
     } catch (e) {
-      // Field-scoped validation errors render inline; everything else is a
-      // toast so the user always gets feedback.
       const fe = extractFieldErrors(e);
       if (fe) {
         setFieldErrors(fe);
         return;
       }
       toast.error(e instanceof ApiError ? e.message : "Failed to create group");
+      return;
     }
+
+    // Group exists from this point on — partial failure of the members PUT
+    // must NOT pretend the whole create flow failed.
+    if (formMemberIds.length > 0) {
+      try {
+        await apiPut(`/api/groups/${newGroup.id}/members`, { userIds: formMemberIds });
+      } catch (e) {
+        // Group was created but members couldn't be assigned. Close the dialog
+        // (the group is real) and tell the user precisely what happened so
+        // they can retry via Edit.
+        setCreateOpen(false);
+        fetchData();
+        toast.error(
+          e instanceof ApiError
+            ? `Group created, but members could not be assigned: ${e.message}`
+            : "Group created, but members could not be assigned. Edit the group to retry."
+        );
+        return;
+      }
+    }
+    setCreateOpen(false);
+    fetchData();
   }
 
   async function handleEdit() {
     if (!editGroup) return;
     setFieldErrors({});
+
+    // Step 1: rename / update description.
     try {
       await apiPatch(`/api/groups/${editGroup.id}`, {
         name: formName,
         description: formDescription || null,
       });
-      await apiPut(`/api/groups/${editGroup.id}/members`, { userIds: formMemberIds });
-      setEditGroup(null);
-      fetchData();
     } catch (e) {
       const fe = extractFieldErrors(e);
       if (fe) {
@@ -194,7 +210,26 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
         return;
       }
       toast.error(e instanceof ApiError ? e.message : "Failed to update group");
+      return;
     }
+
+    // Step 2: members. The rename is already persisted, so failure here is
+    // a partial-success state. Surface a specific message and refresh data
+    // so the table reflects the rename that did land.
+    try {
+      await apiPut(`/api/groups/${editGroup.id}/members`, { userIds: formMemberIds });
+    } catch (e) {
+      fetchData();
+      toast.error(
+        e instanceof ApiError
+          ? `Group renamed, but members could not be updated: ${e.message}`
+          : "Group renamed, but members could not be updated. Please retry."
+      );
+      return;
+    }
+
+    setEditGroup(null);
+    fetchData();
   }
 
   async function handleDelete(groupId: string) {
