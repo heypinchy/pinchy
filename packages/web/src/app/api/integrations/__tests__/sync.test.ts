@@ -158,6 +158,7 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
     mockGetSession.mockResolvedValue(adminSession);
     mockListMcpTools.mockResolvedValue([toolA, toolB]);
     mockSelectWhere.mockResolvedValue([baseMcpConnection]);
@@ -178,6 +179,10 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
 
     const mod = await import("@/app/api/integrations/[connectionId]/sync/route");
     POST = mod.POST;
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   // ── Test 1: no-change path ─────────────────────────────────────────────

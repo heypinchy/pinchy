@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 
 // ── Hoisted mocks ────────────────────────────────────────────────────────────
@@ -140,7 +140,12 @@ function makeRequest(url: string, options?: RequestInit) {
 describe("GET /api/agents/[agentId]/integrations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
     mockGetSession.mockResolvedValue(adminSession);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("returns empty permissions and no drift when agent has no permissions", async () => {
@@ -362,12 +367,17 @@ describe("GET /api/agents/[agentId]/integrations", () => {
 describe("PUT /api/agents/[agentId]/integrations", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
     mockGetSession.mockResolvedValue(adminSession);
 
     // Default: existing MCP state is empty (for diff)
     mockTxSelect.mockResolvedValue([]);
     mockTxDeleteWhere.mockResolvedValue(undefined);
     mockTxInsertValues.mockResolvedValue(undefined);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("pure-Odoo round-trip: deletes old Odoo, inserts new Odoo, audits, regenerates config", async () => {

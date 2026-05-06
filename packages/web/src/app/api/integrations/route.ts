@@ -12,6 +12,7 @@ import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { parseRequestBody } from "@/lib/api-validation";
 import { listMcpTools } from "@/lib/integrations/mcp-client";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { isMcpEnabled } from "@/lib/feature-flags";
 
 const mcpBodySchema = z.object({
   type: z.literal("mcp"),
@@ -84,6 +85,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
 
   // ── MCP branch ─────────────────────────────────────────────────────────────
   if (parsed.data.type === "mcp") {
+    if (!isMcpEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
     const { name, description, preset, transport, url, token } = parsed.data;
 
     // Discover tools synchronously — on failure, do NOT save and return 502

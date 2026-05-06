@@ -12,6 +12,10 @@ const nextConfig: NextConfig = {
   env: {
     NEXT_PUBLIC_PINCHY_VERSION: pkg.version,
     NEXT_PUBLIC_OPENCLAW_VERSION: openclawVersion,
+    // Forward server-side feature flags to the client bundle.
+    // PINCHY_MCP_ENABLED=1 gates MCP integrations on the server side;
+    // NEXT_PUBLIC_PINCHY_MCP_ENABLED propagates the same value to client components.
+    NEXT_PUBLIC_PINCHY_MCP_ENABLED: process.env.PINCHY_MCP_ENABLED ?? "0",
   },
   async headers() {
     return [

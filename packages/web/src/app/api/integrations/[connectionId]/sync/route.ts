@@ -10,6 +10,7 @@ import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { setIntegrationAuthFailed, clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 import type { McpTool } from "@/lib/integrations/types";
+import { isMcpEnabled } from "@/lib/feature-flags";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -29,6 +30,7 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
 
   const data = connection.data as Record<string, unknown> | null;
   if (data?.type === "mcp") {
+    if (!isMcpEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
     // Lazy-import MCP-specific modules so the Odoo path does not pull them in.
     const { listMcpTools } = await import("@/lib/integrations/mcp-client");
     const { diffMcpTools } = await import("@/lib/integrations/mcp-tool-diff");

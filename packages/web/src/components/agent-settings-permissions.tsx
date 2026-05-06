@@ -19,6 +19,7 @@ import {
 import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions";
 import type { AgentPluginConfig } from "@/db/schema";
 import type { McpIntegrationData } from "@/lib/integrations/types";
+import { isMcpEnabledClient } from "@/lib/feature-flags";
 
 /** Discriminated union format matching PUT /api/agents/[id]/integrations body. */
 type OdooIntegrationEntry = {
@@ -153,7 +154,7 @@ export function AgentSettingsPermissions({
   const showOdoo = odooConnections.length > 0;
   const showEmail = emailConnections.length > 0;
   const hasWebSearchApiKey = webSearchConnections.length > 0;
-  const showMcp = mcpConnections.length > 0;
+  const showMcp = mcpConnections.length > 0 && isMcpEnabledClient();
 
   // Compute the combined allowedTools array (KB tools + web tools + odoo tools + email tools)
   const computeAllowedTools = useCallback(

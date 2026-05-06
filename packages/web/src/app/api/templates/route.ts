@@ -4,11 +4,13 @@ import { withAuth } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
+import { MCP_TEMPLATES } from "@/lib/agent-templates/data/mcp-agents";
 import { validateOdooTemplate } from "@/lib/integrations/odoo-template-validation";
 import { getConnectionModels } from "@/lib/integrations/odoo-connection-models";
 import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
 import { resolveModelForTemplate, TemplateCapabilityUnavailableError } from "@/lib/model-resolver";
+import { isMcpEnabled } from "@/lib/feature-flags";
 
 export const GET = withAuth(async () => {
   const odooConnections = await db
@@ -33,9 +35,16 @@ export const GET = withAuth(async () => {
   // Determine active provider for capability-based template filtering
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
 
+  // Filter out MCP templates when the feature flag is off
+  const mcpEnabled = isMcpEnabled();
+  const mcpTemplateIds = new Set(Object.keys(MCP_TEMPLATES));
+  const visibleTemplates = mcpEnabled
+    ? Object.entries(AGENT_TEMPLATES)
+    : Object.entries(AGENT_TEMPLATES).filter(([id]) => !mcpTemplateIds.has(id));
+
   // Build templates with both Odoo and capability availability
   const templates = await Promise.all(
-    Object.entries(AGENT_TEMPLATES).map(async ([id, template]) => {
+    visibleTemplates.map(async ([id, template]) => {
       let available = true;
       let unavailableReason: "no-connection" | "missing-modules" | null = null;
 

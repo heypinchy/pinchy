@@ -40,6 +40,7 @@ import { OdooIcon, GoogleIcon, BraveIcon } from "./integration-icons";
 import { docsUrl } from "./docs-link";
 import { MCP_PRESETS, getMcpPreset } from "@/lib/integrations/mcp-presets";
 import type { McpTool } from "@/lib/integrations/types";
+import { isMcpEnabledClient } from "@/lib/feature-flags";
 
 // Simple MCP plug icon
 function McpIcon({ className }: { className?: string }) {
@@ -623,6 +624,11 @@ export function AddIntegrationDialog({
 }: AddIntegrationDialogProps) {
   // Types that only allow one connection (singletons)
   const singletonTypes = new Set(["web-search"]);
+
+  // Hide MCP when the feature flag is off
+  const visibleIntegrationTypes = isMcpEnabledClient()
+    ? INTEGRATION_TYPES
+    : INTEGRATION_TYPES.filter((t) => t.id !== "mcp");
   const [step, setStep] = useState<WizardStep>(initialType ? "connect" : "type");
   const [selectedType, setSelectedType] = useState<string | null>(initialType ?? null);
 
@@ -1048,7 +1054,7 @@ export function AddIntegrationDialog({
             </DialogHeader>
 
             <div className="grid gap-3 pt-2">
-              {INTEGRATION_TYPES.map((type) => {
+              {visibleIntegrationTypes.map((type) => {
                 const Icon = type.icon;
                 const alreadyExists =
                   singletonTypes.has(type.id) && existingTypes.includes(type.id);
@@ -1148,8 +1154,8 @@ export function AddIntegrationDialog({
           </>
         )}
 
-        {/* Step 1: Connect (MCP) */}
-        {step === "connect" && selectedType === "mcp" && (
+        {/* Step 1: Connect (MCP) — hidden when MCP feature flag is off */}
+        {step === "connect" && selectedType === "mcp" && isMcpEnabledClient() && (
           <McpConnectStep
             form={mcpForm}
             connecting={connecting}

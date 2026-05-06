@@ -4,7 +4,7 @@
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { AddIntegrationDialog } from "@/components/add-integration-dialog";
 
 // ── Sonner mock (toasts) ────────────────────────────────────────────────────
@@ -42,6 +42,11 @@ function renderDialog(props: Partial<Parameters<typeof AddIntegrationDialog>[0]>
 describe("AddIntegrationDialog — MCP preset picker (Task 7.1)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("shows an 'MCP' option in the type picker", () => {
@@ -160,6 +165,11 @@ describe("AddIntegrationDialog — MCP preset picker (Task 7.1)", () => {
 describe("AddIntegrationDialog — Test connection button (Task 7.2)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("shows 'Test connection' button only for Generic MCP", async () => {

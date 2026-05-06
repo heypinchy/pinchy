@@ -73,8 +73,13 @@ const validBody = {
 describe("POST /api/integrations/test", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
     mockGetSession.mockResolvedValue(adminSession);
     mockListMcpTools.mockResolvedValue(mockTools);
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("returns 200 with tool list on success", async () => {

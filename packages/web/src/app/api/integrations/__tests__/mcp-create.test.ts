@@ -136,6 +136,7 @@ const mockTools = [
 describe("POST /api/integrations (type=mcp)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("PINCHY_MCP_ENABLED", "1");
     mockGetSession.mockResolvedValue(adminSession);
     mockListMcpTools.mockResolvedValue(mockTools);
     mockInsertValues.mockReturnValue({
@@ -148,6 +149,10 @@ describe("POST /api/integrations (type=mcp)", () => {
       result.where = vi.fn().mockResolvedValue([]);
       return result;
     });
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
   });
 
   it("happy path: creates MCP connection with discovered tools and returns 201", async () => {

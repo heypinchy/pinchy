@@ -12,6 +12,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import type { McpIntegrationData } from "@/lib/integrations/types";
+import { isMcpEnabled } from "@/lib/feature-flags";
 
 // ── Discriminated-union types ─────────────────────────────────────────────────
 
@@ -94,16 +95,7 @@ export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
     odooGrouped.get(conn.id)!.entries.push({ model: perm.model, operation: perm.operation });
   }
 
-  // ── MCP permissions ───────────────────────────────────────────────────────
-  const mcpRows = await db
-    .select()
-    .from(agentMcpToolPermissions)
-    .innerJoin(
-      integrationConnections,
-      eq(agentMcpToolPermissions.connectionId, integrationConnections.id)
-    )
-    .where(eq(agentMcpToolPermissions.agentId, agentId));
-
+  // ── MCP permissions (skipped when PINCHY_MCP_ENABLED is off) ─────────────
   const mcpGrouped = new Map<
     string,
     {
@@ -117,27 +109,38 @@ export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
 
   const drift: DriftEntry[] = [];
 
-  for (const row of mcpRows) {
-    const conn = row.integration_connections;
-    const perm = row.agent_mcp_tool_permissions;
-    const connData = conn.data as McpIntegrationData | null;
-    const availableNames = new Set((connData?.tools ?? []).map((t) => t.name));
+  if (isMcpEnabled()) {
+    const mcpRows = await db
+      .select()
+      .from(agentMcpToolPermissions)
+      .innerJoin(
+        integrationConnections,
+        eq(agentMcpToolPermissions.connectionId, integrationConnections.id)
+      )
+      .where(eq(agentMcpToolPermissions.agentId, agentId));
 
-    if (!mcpGrouped.has(conn.id)) {
-      mcpGrouped.set(conn.id, {
-        kind: "mcp",
-        connectionId: conn.id,
-        connectionName: conn.name,
-        availableTools: (connData?.tools ?? []).map((t) => t.name),
-        tools: [],
-      });
-    }
+    for (const row of mcpRows) {
+      const conn = row.integration_connections;
+      const perm = row.agent_mcp_tool_permissions;
+      const connData = conn.data as McpIntegrationData | null;
+      const availableNames = new Set((connData?.tools ?? []).map((t) => t.name));
 
-    // Drift detection: tool was granted but no longer available
-    if (!availableNames.has(perm.toolName)) {
-      drift.push({ connectionName: conn.name, removedTool: perm.toolName });
-    } else {
-      mcpGrouped.get(conn.id)!.tools.push(perm.toolName);
+      if (!mcpGrouped.has(conn.id)) {
+        mcpGrouped.set(conn.id, {
+          kind: "mcp",
+          connectionId: conn.id,
+          connectionName: conn.name,
+          availableTools: (connData?.tools ?? []).map((t) => t.name),
+          tools: [],
+        });
+      }
+
+      // Drift detection: tool was granted but no longer available
+      if (!availableNames.has(perm.toolName)) {
+        drift.push({ connectionName: conn.name, removedTool: perm.toolName });
+      } else {
+        mcpGrouped.get(conn.id)!.tools.push(perm.toolName);
+      }
     }
   }
 
@@ -170,6 +173,11 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
     const mcpEntries = body.filter(
       (e): e is Extract<IntegrationPermission, { kind: "mcp" }> => e.kind === "mcp"
     );
+
+    // Reject MCP entries when the feature flag is off
+    if (!isMcpEnabled() && mcpEntries.length > 0) {
+      return NextResponse.json({ error: "Not found" }, { status: 404 });
+    }
 
     // Load MCP connection data for all MCP entries (for validation + audit snapshot)
     const mcpConnectionMap = new Map<

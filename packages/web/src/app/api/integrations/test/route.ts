@@ -4,6 +4,7 @@ import { z } from "zod";
 import { withAdmin } from "@/lib/api-auth";
 import { parseRequestBody } from "@/lib/api-validation";
 import { listMcpTools } from "@/lib/integrations/mcp-client";
+import { isMcpEnabled } from "@/lib/feature-flags";
 
 const testMcpSchema = z.object({
   url: z.string().url(),
@@ -12,6 +13,8 @@ const testMcpSchema = z.object({
 });
 
 export const POST = withAdmin(async (request) => {
+  if (!isMcpEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
+
   const parsed = await parseRequestBody(testMcpSchema, request);
   if ("error" in parsed) return parsed.error;
 
