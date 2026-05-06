@@ -339,6 +339,28 @@ export const agentConnectionPermissions = pgTable(
   ]
 );
 
+export const agentMcpToolPermissions = pgTable(
+  "agent_mcp_tool_permissions",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    connectionId: text("connection_id")
+      .notNull()
+      .references(() => integrationConnections.id, { onDelete: "cascade" }),
+    toolName: text("tool_name").notNull(),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("uq_agent_mcp_tool").on(table.agentId, table.connectionId, table.toolName),
+    index("idx_agent_mcp_perms_agent").on(table.agentId),
+    index("idx_agent_mcp_perms_conn").on(table.connectionId),
+  ]
+);
+
 // ── Usage Tracking ───────────────────────────────────────────────────
 
 export const usageRecords = pgTable(
