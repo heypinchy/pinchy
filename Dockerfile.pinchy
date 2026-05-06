@@ -52,7 +52,7 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://localhost:7777/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
 # Create non-root user (entrypoint drops privileges after fixing volume permissions)
-RUN groupadd -r pinchy && useradd -r -g pinchy -d /app pinchy
+RUN groupadd -r -g 999 pinchy && useradd -r -u 999 -g pinchy -d /app pinchy
 RUN mkdir -p /app/secrets /openclaw-config/workspaces && chown -R pinchy:pinchy /app /app/secrets /openclaw-config/workspaces
 
 COPY entrypoint.sh /entrypoint.sh
