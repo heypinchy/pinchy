@@ -2497,5 +2497,32 @@ describe("ClientRouter", () => {
 
       expect(freshCache.has("agent:agent-1:direct:user-1")).toBe(true);
     });
+
+    it("does not send any frames to the browser WS after it has closed", async () => {
+      const clientWs = createMockClientWs();
+      mockChat.mockReturnValue(
+        steppedStream([
+          { type: "text" as const, text: "before-close" },
+          { type: "text" as const, text: "after-close-1" },
+          { type: "text" as const, text: "after-close-2" },
+          { type: "done" as const, text: "" },
+        ])
+      );
+
+      const handlePromise = router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      // Allow the first chunk to be forwarded
+      await new Promise((r) => setImmediate(r));
+      const sendCallsBeforeClose = clientWs.send.mock.calls.length;
+      clientWs.readyState = 3; // CLOSED
+
+      await handlePromise;
+
+      expect(clientWs.send.mock.calls.length).toBe(sendCallsBeforeClose);
+    });
   });
 });
