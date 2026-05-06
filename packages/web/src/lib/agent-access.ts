@@ -41,11 +41,13 @@ export function assertAgentAccess(
   agentGroupIds: string[] = [],
   enterprise: boolean = true
 ): void {
-  if (userRole === "admin") return;
+  // Personal agents are private to their owner — this applies to everyone,
+  // including admins. The admin fast-path must NOT bypass this check.
   if (agent.isPersonal) {
     if (agent.ownerId === userId) return;
     throw new Error("Access denied");
   }
+  if (userRole === "admin") return;
 
   // Shared agent — check visibility
   const visibility = effectiveVisibility(agent.visibility, enterprise);
