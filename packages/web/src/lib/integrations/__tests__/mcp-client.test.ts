@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type { McpMockServer } from "@/test-utils/mcp-mock-server";
 import { createMcpMockServer } from "@/test-utils/mcp-mock-server";
 import { listMcpTools, McpAuthError, McpServerError, McpSchemaError } from "../mcp-client";
@@ -6,7 +6,13 @@ import { listMcpTools, McpAuthError, McpServerError, McpSchemaError } from "../m
 describe("listMcpTools", () => {
   let mock: McpMockServer;
 
+  beforeEach(() => {
+    // Allow loopback URLs so the mock server (127.0.0.1) passes SSRF validation
+    vi.stubEnv("ALLOW_PRIVATE_URLS", "1");
+  });
+
   afterEach(async () => {
+    vi.unstubAllEnvs();
     if (mock) {
       await mock.close();
     }
@@ -81,7 +87,7 @@ describe("listMcpTools", () => {
           undefined,
           100 // override timeout to 100ms in tests instead of 10s
         )
-      ).rejects.toThrow();
+      ).rejects.toThrow("abort");
     }, 3000); // vitest test timeout: 3s is plenty for a 100ms abort
   });
 });
