@@ -1442,6 +1442,28 @@ describe("regenerateOpenClawConfig", () => {
     expect(config?.models?.providers?.anthropic).toBeUndefined();
   });
 
+  it("emits models: [] when fetchOllamaLocalModelsFromUrl returns empty (Ollama unreachable at config-regen time)", async () => {
+    // The setup wizard validates that ≥1 tool-capable model exists before
+    // saving the URL, so this state means Ollama went away after setup.
+    // The empty array leaves the provider block in a known-bad state
+    // (OpenClaw 2026.4.27 requires models.length > 0 for the synthetic
+    // local key). This test documents the current behavior rather than
+    // silently regressing if a future guard is added.
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([]);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.models.providers["ollama"]).toBeDefined();
+    expect(config.models.providers["ollama"].models).toEqual([]);
+  });
+
   it("should omit pinchy-context and pinchy-files when no agents use them", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([

@@ -695,6 +695,8 @@ export async function regenerateOpenClawConfig() {
       // falls through to "No API key found for provider 'ollama'".
       models: ollamaModels.map((m) => ({
         id: m.id.replace(/^ollama\//, ""),
+        // Use the bare model id as display name — OpenClaw shows this label
+        // in its UI. m.name ("qwen2.5:7b (7B)") is Pinchy's UI-only label.
         name: m.id.replace(/^ollama\//, ""),
         input: m.capabilities.vision ? ["text", "image"] : ["text"],
         cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
