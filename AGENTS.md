@@ -135,6 +135,14 @@ Checklist for state-changing routes:
 8. `outcome` is set correctly.
 9. No plaintext PII appears in audit `detail`.
 
+## Shared Schemas And Typed Client
+
+For state-changing API routes, define request schemas in `packages/web/src/lib/schemas/<feature>.ts` and import them from BOTH the route handler (for `parseRequestBody`) and the client component (for typed request bodies via `z.infer`).
+
+Use the typed helpers in `packages/web/src/lib/api-client.ts` (`apiPost`, `apiPatch`, `apiPut`, `apiDelete`, `apiGet`) instead of raw `fetch` in client components. They throw `ApiError` on non-2xx responses, which components catch and surface via `toast.error(e.message)`.
+
+This makes contract drift between client payload and server schema a compile-time error rather than a runtime 400.
+
 ## Error And Notification UI
 
 Use inline form errors when the error is tied to a field, the user can correct the input, and the form/dialog stays open.
