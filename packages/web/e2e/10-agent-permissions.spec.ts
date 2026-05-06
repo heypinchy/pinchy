@@ -76,22 +76,30 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
 
   test("admin sees the agent (visibility: all)", async ({ page }) => {
     await loginAsAdmin(page);
-    await page.goto("/chat");
 
-    // The agent should appear as a sidebar link
-    await expect(page.getByRole("link", { name: "Permissions Test Agent" })).toBeVisible({
-      timeout: 10000,
-    });
+    // API precheck: the agent must be in admin's /api/agents response.
+    // This separates "the agent isn't visible to admin" from "selector wrong".
+    const adminAgents = await page.context().request.get("/api/agents");
+    expect(adminAgents.ok()).toBeTruthy();
+    const list = (await adminAgents.json()) as Array<{ id: string }>;
+    expect(list.some((a) => a.id === agentId)).toBe(true);
+
+    // UI: match by href so we don't depend on accessible-name composition
+    // (the link's a11y name includes both agent.name and tagline).
+    await page.goto("/chat");
+    await expect(page.locator(`a[href*="${agentId}"]`)).toBeVisible({ timeout: 10000 });
   });
 
   test("non-admin sees the agent while visibility is all", async ({ page }) => {
     await loginAs(page, SECOND_USER.email, SECOND_USER.password);
-    await page.goto("/chat");
 
-    // The second user should also see the shared agent
-    await expect(page.getByRole("link", { name: "Permissions Test Agent" })).toBeVisible({
-      timeout: 10000,
-    });
+    const memberAgents = await page.context().request.get("/api/agents");
+    expect(memberAgents.ok()).toBeTruthy();
+    const list = (await memberAgents.json()) as Array<{ id: string }>;
+    expect(list.some((a) => a.id === agentId)).toBe(true);
+
+    await page.goto("/chat");
+    await expect(page.locator(`a[href*="${agentId}"]`)).toBeVisible({ timeout: 10000 });
   });
 
   test("admin restricts agent to a group the non-admin is NOT in", async ({ page }) => {
@@ -108,9 +116,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
 
     // Admin still sees the agent (admins bypass visibility filtering)
     await page.goto("/chat");
-    await expect(page.getByRole("link", { name: "Permissions Test Agent" })).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(page.locator(`a[href*="${agentId}"]`)).toBeVisible({ timeout: 10000 });
   });
 
   test("non-admin no longer sees the restricted agent", async ({ page }) => {
@@ -118,9 +124,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     await page.goto("/chat");
 
     // The agent should not appear in the sidebar for the non-member user
-    await expect(page.getByRole("link", { name: "Permissions Test Agent" })).not.toBeVisible({
-      timeout: 10000,
-    });
+    await expect(page.locator(`a[href*="${agentId}"]`)).not.toBeVisible({ timeout: 10000 });
   });
 
   test("admin adds non-admin to the group; non-admin sees agent again", async ({ page }) => {
@@ -136,8 +140,6 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     await loginAs(page, SECOND_USER.email, SECOND_USER.password);
     await page.goto("/chat");
 
-    await expect(page.getByRole("link", { name: "Permissions Test Agent" })).toBeVisible({
-      timeout: 10000,
-    });
+    await expect(page.locator(`a[href*="${agentId}"]`)).toBeVisible({ timeout: 10000 });
   });
 });

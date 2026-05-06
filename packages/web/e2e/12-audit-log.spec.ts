@@ -41,7 +41,11 @@ test.describe.serial("Audit log", () => {
     await page.goto("/settings?tab=groups");
     await expect(page.getByRole("button", { name: "New Group" })).toBeVisible({ timeout: 10000 });
     await page.getByRole("button", { name: "New Group" }).click();
-    await expect(page.getByRole("dialog").getByText("New Group")).toBeVisible();
+    // Heading role disambiguates from the description "Create a new group..."
+    // which contains "new group" as a substring.
+    await expect(
+      page.getByRole("dialog").getByRole("heading", { name: "New Group" })
+    ).toBeVisible();
     await page.getByLabel("Name").fill(AUDIT_TEST_GROUP);
     await page.getByRole("dialog").getByRole("button", { name: "Create" }).click();
     await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: 5000 });

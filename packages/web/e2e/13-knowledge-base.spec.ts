@@ -68,6 +68,15 @@ test.describe.serial("Knowledge base file editing", () => {
     // Navigate to the agent's personality settings tab
     await page.goto(`/chat/${agentId}/settings?tab=personality`);
 
+    // Hide the dev-only Enterprise/Community floating badge (DevToolbar) — it
+    // sits at fixed bottom-3 right-3 and intercepts pointer events on the Save
+    // button which lives in the page's sticky save bar at the same vertical
+    // position. The badge is decorative; the test doesn't need to interact
+    // with it.
+    await page.addStyleTag({
+      content: ".fixed.bottom-3.right-3 { display: none !important; }",
+    });
+
     // Wait for the page to finish loading
     await expect(page.getByRole("tab", { name: /personality/i })).toBeVisible({ timeout: 10000 });
 

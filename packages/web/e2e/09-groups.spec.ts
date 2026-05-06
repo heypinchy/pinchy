@@ -42,7 +42,12 @@ test.describe.serial("Groups CRUD", () => {
     await page.getByRole("button", { name: "New Group" }).click();
 
     // Dialog title appears
-    await expect(page.getByRole("dialog").getByText("New Group")).toBeVisible();
+    // Use heading role to disambiguate from the description "Create a new group..."
+    // which contains "new group" as a substring (Playwright getByText defaults to
+    // case-insensitive substring matching → strict-mode violation).
+    await expect(
+      page.getByRole("dialog").getByRole("heading", { name: "New Group" })
+    ).toBeVisible();
 
     // Fill in name only
     await page.getByLabel("Name").fill("Engineering");
@@ -66,7 +71,12 @@ test.describe.serial("Groups CRUD", () => {
     await expect(page.getByRole("button", { name: "New Group" })).toBeVisible({ timeout: 10000 });
     await page.getByRole("button", { name: "New Group" }).click();
 
-    await expect(page.getByRole("dialog").getByText("New Group")).toBeVisible();
+    // Use heading role to disambiguate from the description "Create a new group..."
+    // which contains "new group" as a substring (Playwright getByText defaults to
+    // case-insensitive substring matching → strict-mode violation).
+    await expect(
+      page.getByRole("dialog").getByRole("heading", { name: "New Group" })
+    ).toBeVisible();
 
     await page.getByLabel("Name").fill("Design");
     await page.getByLabel("Description").fill("Design team");
@@ -97,7 +107,9 @@ test.describe.serial("Groups CRUD", () => {
     await engineeringRow.getByRole("button", { name: "Edit" }).click();
 
     // Edit dialog opens
-    await expect(page.getByRole("dialog").getByText("Edit Group")).toBeVisible();
+    await expect(
+      page.getByRole("dialog").getByRole("heading", { name: "Edit Group" })
+    ).toBeVisible();
 
     // Clear name and type new name
     await page.getByLabel("Name").clear();
@@ -126,7 +138,9 @@ test.describe.serial("Groups CRUD", () => {
     await designRow.getByRole("button", { name: "Delete" }).click();
 
     // Confirmation dialog appears
-    await expect(page.getByRole("alertdialog").getByText("Delete Group")).toBeVisible();
+    await expect(
+      page.getByRole("alertdialog").getByRole("heading", { name: "Delete Group" })
+    ).toBeVisible();
 
     // Confirm deletion
     await page.getByRole("alertdialog").getByRole("button", { name: "Delete" }).click();
@@ -155,7 +169,12 @@ test.describe.serial("Groups CRUD", () => {
 
     // Open create dialog
     await page.getByRole("button", { name: "New Group" }).click();
-    await expect(page.getByRole("dialog").getByText("New Group")).toBeVisible();
+    // Use heading role to disambiguate from the description "Create a new group..."
+    // which contains "new group" as a substring (Playwright getByText defaults to
+    // case-insensitive substring matching → strict-mode violation).
+    await expect(
+      page.getByRole("dialog").getByRole("heading", { name: "New Group" })
+    ).toBeVisible();
 
     // Fill in name
     await page.getByLabel("Name").fill("Bad Group");
@@ -167,7 +186,12 @@ test.describe.serial("Groups CRUD", () => {
     await expect(page.getByText("Validation failed")).toBeVisible({ timeout: 5000 });
 
     // Dialog must still be open
-    await expect(page.getByRole("dialog").getByText("New Group")).toBeVisible();
+    // Use heading role to disambiguate from the description "Create a new group..."
+    // which contains "new group" as a substring (Playwright getByText defaults to
+    // case-insensitive substring matching → strict-mode violation).
+    await expect(
+      page.getByRole("dialog").getByRole("heading", { name: "New Group" })
+    ).toBeVisible();
     await expect(page.getByLabel("Name")).toBeVisible();
   });
 });
