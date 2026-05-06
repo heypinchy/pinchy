@@ -3,6 +3,7 @@ import {
   seedProviderConfig,
   loginAsAdmin,
   loginAs,
+  logout,
   createSecondUserViaInvite,
   SECOND_USER,
 } from "./helpers";
@@ -73,8 +74,10 @@ test.describe.serial("Knowledge base file editing", () => {
     // The SOUL.md editor is inside a collapsible — expand it via the "Customize" trigger
     await page.getByRole("button", { name: /customize/i }).click();
 
-    // The MarkdownEditor renders a <textarea> — fill it with our unique content
-    const editor = page.locator("textarea").first();
+    // The MarkdownEditor renders a <textarea> inside the open collapsible.
+    // Scope to [data-state="open"] to avoid matching other MarkdownEditor instances
+    // (e.g. the instructions tab which is keepMounted and may also have a textarea in DOM).
+    const editor = page.locator('[data-state="open"] textarea');
     await expect(editor).toBeVisible({ timeout: 5000 });
     await editor.fill(uniqueContent);
 
@@ -92,7 +95,8 @@ test.describe.serial("Knowledge base file editing", () => {
   });
 
   test("non-admin cannot write to a shared agent SOUL.md (403)", async ({ page }) => {
-    // Log in as the non-admin second user
+    // Log out the admin session (set by beforeEach), then log in as non-admin
+    await logout(page);
     await loginAs(page, SECOND_USER.email, SECOND_USER.password);
 
     // Attempt to PUT SOUL.md content as the non-admin member
