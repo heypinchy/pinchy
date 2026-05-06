@@ -119,10 +119,11 @@ function supplementFromSource(payload: string, source: Record<string, unknown>):
       }
     }
 
-    // Supplement models.providers.* baseUrl: OC 4.27+ with ANTHROPIC_BASE_URL env var
-    // auto-sets baseUrl in its in-memory config. Pinchy's payload only writes apiKey
-    // and models — omitting baseUrl. Without supplementing, config.apply fails schema
-    // validation: "anthropic.baseUrl: Invalid input: expected string, received undefined".
+    // Supplement models.providers.* baseUrl from the in-memory source if missing in
+    // the payload — guards against any path that builds a payload without baseUrl
+    // (e.g. targeted partial writes). The primary write path now always emits
+    // baseUrl (see build.ts BUILTIN_PROVIDER_DEFAULT_BASE_URLS), so this is
+    // defense-in-depth rather than the main fix.
     const payloadModels = payloadObj.models as Record<string, unknown> | undefined;
     const sourceModels = source.models as Record<string, unknown> | undefined;
     if (payloadModels?.providers && sourceModels?.providers) {
