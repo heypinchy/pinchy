@@ -44,12 +44,18 @@ describe("apiPost", () => {
     await expect(apiPost("/api/groups", { name: "" })).rejects.toThrow("Validation failed");
   });
 
-  it("throws ApiError with status fallback when body has no error field", async () => {
+  it("throws ApiError with friendly fallback message when body has no error field", async () => {
+    // The fallback message is what the user actually sees in toasts. It must
+    // read like a human sentence, not "Request failed: 500" (raw status).
+    // The numeric status stays available on ApiError.status for logging.
     vi.stubGlobal(
       "fetch",
       vi.fn().mockResolvedValue(mockResponse({ ok: false, status: 500, body: {} }))
     );
-    await expect(apiPost("/api/groups", {})).rejects.toMatchObject({ status: 500 });
+    await expect(apiPost("/api/groups", {})).rejects.toMatchObject({
+      status: 500,
+      message: "Something went wrong. Please try again.",
+    });
   });
 
   it("returns undefined for 204 No Content", async () => {

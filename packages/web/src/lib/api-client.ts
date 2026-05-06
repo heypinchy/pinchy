@@ -23,9 +23,12 @@ async function send<R>(url: string, method: string, body?: unknown): Promise<R> 
 
   if (!res.ok) {
     const errBody = (parsedBody ?? {}) as { error?: string; details?: unknown };
+    // The fallback message is surfaced to end users via toast. Keep it
+    // human-readable; the numeric status is still available on ApiError.status
+    // for logging and conditional handling.
     throw new ApiError(
       res.status,
-      errBody.error ?? `Request failed: ${res.status}`,
+      errBody.error ?? "Something went wrong. Please try again.",
       errBody.details
     );
   }

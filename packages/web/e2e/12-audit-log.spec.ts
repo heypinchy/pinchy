@@ -46,9 +46,13 @@ test.describe.serial("Audit log", () => {
     await page.getByRole("dialog").getByRole("button", { name: "Create" }).click();
     await expect(page.getByRole("dialog")).not.toBeVisible({ timeout: 5000 });
 
-    // Poll the audit API until the group.created entry appears (after() is async)
+    // Poll the audit API until the group.created entry appears.
+    // The audit write is deferred via after(), which runs after the response
+    // returns. Under CI load the deferred work can take several seconds, so the
+    // window is generous (20 × 500ms = 10s). Locally the loop almost always
+    // exits on the first or second attempt.
     let entry: Record<string, unknown> | undefined;
-    for (let attempt = 0; attempt < 10; attempt++) {
+    for (let attempt = 0; attempt < 20; attempt++) {
       const res = await page.context().request.get(`/api/audit?eventType=group.created&limit=100`);
       expect(res.ok()).toBe(true);
       const body = await res.json();

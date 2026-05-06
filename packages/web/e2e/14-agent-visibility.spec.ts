@@ -85,9 +85,11 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     );
     expect(secondSeesAdminsSmithers).toBe(false);
 
-    // UI: direct fetch of the agent resource should return 403/404
+    // Direct fetch of the agent resource must return 403 (Forbidden).
+    // Accepting 404 here would mask a regression where the privacy check
+    // silently degrades to a not-found path. Match the second test exactly.
     const directRes = await page.context().request.get(`/api/agents/${adminSmithersId}`);
-    expect([403, 404]).toContain(directRes.status());
+    expect(directRes.status()).toBe(403);
 
     // Sidebar: admin's Smithers link must not be present
     // Both users have a Smithers agent, so we check by agentId in the href
