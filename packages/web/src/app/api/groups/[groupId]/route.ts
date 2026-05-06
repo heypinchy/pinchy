@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse, after } from "next/server";
-import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
@@ -8,11 +7,7 @@ import { eq } from "drizzle-orm";
 import { appendAuditLog, type UpdateDetail } from "@/lib/audit";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const updateGroupSchema = z.object({
-  name: z.string().optional(),
-  description: z.string().nullish(),
-});
+import { updateGroupSchema } from "@/lib/schemas/groups";
 
 export async function PATCH(
   request: NextRequest,

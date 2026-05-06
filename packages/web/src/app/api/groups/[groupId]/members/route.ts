@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse, after } from "next/server";
-import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
@@ -8,10 +7,7 @@ import { eq, inArray } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const setMembersSchema = z.object({
-  userIds: z.array(z.string()),
-});
+import { setMembersSchema } from "@/lib/schemas/groups";
 
 async function groupExists(groupId: string): Promise<boolean> {
   const rows = await db.select({ id: groups.id }).from(groups).where(eq(groups.id, groupId));

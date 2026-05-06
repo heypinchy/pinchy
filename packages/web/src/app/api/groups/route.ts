@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse, after } from "next/server";
-import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
@@ -7,15 +6,7 @@ import { groups, userGroups } from "@/db/schema";
 import { eq, count } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
-
-const createGroupSchema = z.object({
-  name: z
-    .string()
-    .min(1)
-    .transform((v) => v.trim())
-    .refine((v) => v.length > 0, "Name is required"),
-  description: z.string().nullish(),
-});
+import { createGroupSchema } from "@/lib/schemas/groups";
 
 export async function GET() {
   const sessionOrError = await requireAdmin();
