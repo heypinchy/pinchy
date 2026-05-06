@@ -206,6 +206,34 @@ describe("POST /api/groups", () => {
     expect(body.details.fieldErrors.name).toBeDefined();
   });
 
+  it("accepts description: null from the client and creates the group", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "admin-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    const fakeGroup = {
+      id: "group-new",
+      name: "Engineering",
+      description: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    mockReturning.mockResolvedValueOnce([fakeGroup]);
+
+    const request = new NextRequest("http://localhost:7777/api/groups", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "Engineering", description: null }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(201);
+    const body = await response.json();
+    expect(body.name).toBe("Engineering");
+    expect(body.description).toBeNull();
+  });
+
   it("rejects non-admin", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "member" },
