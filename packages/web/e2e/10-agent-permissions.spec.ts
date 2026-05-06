@@ -3,6 +3,7 @@ import {
   seedProviderConfig,
   loginAsAdmin,
   loginAs,
+  logout,
   createSecondUserViaInvite,
   SECOND_USER,
 } from "./helpers";
@@ -91,6 +92,10 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
   });
 
   test("non-admin sees the agent while visibility is all", async ({ page }) => {
+    // beforeEach logged the admin in; switch to the non-admin via a clean
+    // logout first so Better Auth issues a fresh session cookie for the new
+    // user (sign-in alone does not always invalidate the existing cookie).
+    await logout(page);
     await loginAs(page, SECOND_USER.email, SECOND_USER.password);
 
     const memberAgents = await page.context().request.get("/api/agents");
@@ -120,10 +125,27 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
   });
 
   test("non-admin no longer sees the restricted agent", async ({ page }) => {
+    // Switch to the non-admin via a clean logout first so the prior admin
+    // session cookie (set by beforeEach) is fully cleared. Without this, the
+    // sign-in API call sometimes does not replace the existing session and
+    // the SSR layout re-fetches with admin's role.
+    await logout(page);
     await loginAs(page, SECOND_USER.email, SECOND_USER.password);
-    await page.goto("/agents");
 
-    // The agent should not appear in the sidebar for the non-member user
+    // API-level assertion first: verify the server agrees the agent is hidden
+    // from this user. If this fails, it's a server-side visibility bug rather
+    // than a client/UI rendering issue, and the next assertion just confirms
+    // the contract holds end-to-end.
+    const memberAgents = await page.context().request.get("/api/agents");
+    expect(memberAgents.ok()).toBeTruthy();
+    const list = (await memberAgents.json()) as Array<{ id: string }>;
+    expect(
+      list.some((a) => a.id === agentId),
+      `Restricted agent ${agentId} unexpectedly visible to non-member via /api/agents`
+    ).toBe(false);
+
+    // UI: the link must also not appear in the sidebar.
+    await page.goto("/agents");
     await expect(page.locator(`a[href*="${agentId}"]`)).not.toBeVisible({ timeout: 10000 });
   });
 
@@ -136,7 +158,9 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     });
     expect(membersRes.ok()).toBeTruthy();
 
-    // Now log in as second user and verify the agent reappears
+    // Now switch to second user with a clean logout (avoids session leakage
+    // from beforeEach's admin login) and verify the agent reappears.
+    await logout(page);
     await loginAs(page, SECOND_USER.email, SECOND_USER.password);
     await page.goto("/agents");
 

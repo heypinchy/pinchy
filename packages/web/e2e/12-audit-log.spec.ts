@@ -87,12 +87,20 @@ test.describe.serial("Audit log", () => {
       timeout: 10000,
     });
 
-    // The event type badge must be visible
-    await expect(page.getByText("group.created").first()).toBeVisible({ timeout: 10000 });
+    // The event type badge must be visible. The audit page renders the row in
+    // BOTH a mobile card layout (block lg:hidden) and a desktop table (hidden
+    // lg:block) — only one is visible at any viewport. .first() picks the
+    // mobile DOM node which is hidden under lg+ viewports, so scope to the
+    // table to consistently target the visible desktop variant.
+    await expect(page.getByRole("table").getByText("group.created").first()).toBeVisible({
+      timeout: 10000,
+    });
 
-    // The snapshotted group name must appear somewhere in the rendered page
-    // (surfaces in the resource column, detail text, or a detail sheet)
-    await expect(page.getByText(AUDIT_TEST_GROUP)).toBeVisible({ timeout: 10000 });
+    // The snapshotted group name must appear in the rendered table (same
+    // mobile/desktop dual-layout reasoning as above).
+    await expect(page.getByRole("table").getByText(AUDIT_TEST_GROUP)).toBeVisible({
+      timeout: 10000,
+    });
   });
 
   test("non-admin cannot access the audit log API", async ({ page }) => {
