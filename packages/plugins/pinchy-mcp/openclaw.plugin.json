@@ -1,0 +1,6 @@
+{
+  "id": "pinchy-mcp",
+  "name": "Pinchy MCP",
+  "description": "MCP (Model Context Protocol) server integration. Connects agents to external MCP servers, exposing their tools as native agent capabilities.",
+  "configSchema": {}
+}
