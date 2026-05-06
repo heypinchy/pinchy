@@ -2465,8 +2465,13 @@ describe("ClientRouter", () => {
     it("keeps draining the OpenClaw stream after the browser WS closes, so sessionCache records the completed turn", async () => {
       // Fresh cache so the test proves the add() actually happens here, not
       // pre-seeded by beforeEach.
-      const cache = new SessionCache();
-      const localRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", cache);
+      const freshCache = new SessionCache();
+      const localRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        freshCache
+      );
 
       const clientWs = createMockClientWs();
       mockChat.mockReturnValue(
@@ -2483,13 +2488,13 @@ describe("ClientRouter", () => {
         agentId: "agent-1",
       });
 
-      // Let the first chunk be consumed, then "the browser navigates away"
+      // Let at least one chunk be consumed, then "the browser navigates away"
       await new Promise((r) => setImmediate(r));
       clientWs.readyState = 3; // CLOSED
 
       await handlePromise;
 
-      expect(cache.has("agent:agent-1:direct:user-1")).toBe(true);
+      expect(freshCache.has("agent:agent-1:direct:user-1")).toBe(true);
     });
   });
 });
