@@ -5,10 +5,12 @@
   "type": "module",
   "license": "AGPL-3.0",
   "scripts": {
+    "build": "node --experimental-strip-types build.ts",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "devDependencies": {
+    "esbuild": "^0.28.0",
     "typescript": "^6.0.2",
     "vitest": "^4.1.4"
   }
