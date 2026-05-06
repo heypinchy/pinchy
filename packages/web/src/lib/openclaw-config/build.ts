@@ -631,6 +631,28 @@ export async function regenerateOpenClawConfig() {
     config.plugins = { allow: allowedPlugins, entries };
   }
 
+  /**
+   * Rewrites the user-supplied Ollama URL so OpenClaw's isLocalBaseUrl check
+   * passes. `host.docker.internal` (Docker Desktop) resolves to the host but is
+   * not in OpenClaw 2026.4.27's allowlist; `ollama.local` is (`*.local` matches).
+   * docker-compose maps `ollama.local` to `host-gateway` so connectivity is
+   * preserved. Private IPv4 and other *.local names are already in the allowlist
+   * and are returned unchanged.
+   */
+  function rewriteOllamaHostForOpenClaw(rawUrl: string): string {
+    const trimmed = rawUrl.replace(/\/$/, "");
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.hostname === "host.docker.internal") {
+        parsed.hostname = "ollama.local";
+        return parsed.toString().replace(/\/$/, "");
+      }
+    } catch {
+      // Not a parseable URL — return as-is (validateProviderUrl already rejected garbage)
+    }
+    return trimmed;
+  }
+
   // Build models.providers block — built-in providers + Ollama providers.
   // Built-in providers (anthropic, openai, google) use SecretRef for apiKey
   // so OpenClaw resolves the key live from secrets.json without a restart.
@@ -688,7 +710,7 @@ export async function regenerateOpenClawConfig() {
   if (ollamaLocalUrl) {
     const ollamaModels = await fetchOllamaLocalModelsFromUrl(ollamaLocalUrl);
     const providerConfig: Record<string, unknown> = {
-      baseUrl: ollamaLocalUrl.replace(/\/$/, ""),
+      baseUrl: rewriteOllamaHostForOpenClaw(ollamaLocalUrl),
       api: "ollama",
       // OpenClaw 2026.4.27 requires models.length > 0 for the synthetic-local-key
       // path (model-auth-CsyLGY9m.js:130-132). Without at least one entry, OpenClaw

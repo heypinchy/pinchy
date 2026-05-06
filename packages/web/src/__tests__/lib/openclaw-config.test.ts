@@ -1414,7 +1414,53 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.models.providers["ollama"].baseUrl).toBe("http://host.docker.internal:11434");
+    expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434");
+  });
+
+  it("rewrites host.docker.internal to ollama.local in baseUrl (OpenClaw isLocalBaseUrl allowlist)", async () => {
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b",
+        parameterSize: "7B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ]);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://host.docker.internal:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434");
+  });
+
+  it("passes through private IPv4 baseUrl unchanged (already in isLocalBaseUrl allowlist)", async () => {
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValueOnce([
+      {
+        id: "ollama/qwen2.5:7b",
+        name: "qwen2.5:7b",
+        parameterSize: "7B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ]);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://192.168.1.50:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+
+    expect(config.models.providers["ollama"].baseUrl).toBe("http://192.168.1.50:11434");
   });
 
   it("should not add env block for ollama-local provider (URL-based, no API key)", async () => {
