@@ -55,7 +55,7 @@ openclaw-secrets:
     o: "mode=0770,uid=999,gid=999"
 ```
 
-The directory is owned by uid 999 / gid 999 (the `pinchy` system user inside the Pinchy container) with mode `0770`. Pinchy writes `secrets.json` as the owner; OpenClaw runs as root in its own container and reads the file regardless of ownership. Inside, `secrets.json` is written with mode `0600` (owner read/write only) as defense-in-depth: even a same-uid process that obtained directory access cannot read another tenant's file.
+The directory is owned by uid/gid 999 (the `pinchy` system user inside the Pinchy container) with mode `0770`. Pinchy writes `secrets.json` as the owner; OpenClaw runs as root in its own container and reads the file regardless of ownership. Inside, `secrets.json` is written with mode `0600` (owner read/write only) as defense-in-depth: even a same-uid process that obtained directory access cannot read another tenant's file.
 
 ## What this protects against
 

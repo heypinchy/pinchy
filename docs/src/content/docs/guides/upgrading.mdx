@@ -143,7 +143,7 @@ volumes:
       o: "mode=0770,uid=999,gid=999"
 ```
 
-The volume must be mounted into both services: Pinchy writes `secrets.json` (and needs `uid=999` ownership to rewrite it atomically), OpenClaw reads it. The `uid=999` value matches the `pinchy` system user created in `Dockerfile.pinchy`. Without this, Pinchy cannot write the secrets file and every agent request fails with an authentication error.
+The volume must be mounted into both services: Pinchy writes and atomically replaces `secrets.json` (requires directory write permission — `uid=999` grants this as the `pinchy` system user); OpenClaw reads it. Without this, Pinchy cannot write the secrets file and every agent request fails with an authentication error.
 
 ### Upgrade notes
 

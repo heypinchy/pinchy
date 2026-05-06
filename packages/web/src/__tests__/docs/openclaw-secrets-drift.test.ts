@@ -12,13 +12,14 @@ const upgrading = readFileSync(upgradingPath, "utf-8");
 const secretsDoc = readFileSync(secretsDocPath, "utf-8");
 
 function extractTmpfsOptions(): string {
-  // Matches the `o: "mode=...,uid=...,gid=..."` line under the
-  // openclaw-secrets volume in docker-compose.yml.
-  const match = compose.match(/openclaw-secrets:\s*\n[\s\S]*?o:\s*"([^"]+)"/);
-  if (!match?.[1]) {
+  // Matches the `o:` line under the openclaw-secrets volume in docker-compose.yml.
+  // Handles both quoted (`o: "mode=..."`) and unquoted (`o: mode=...`) YAML values.
+  const match = compose.match(/openclaw-secrets:\s*\n[\s\S]*?o:\s*(?:"([^"]+)"|(\S+))/);
+  const options = match?.[1] ?? match?.[2];
+  if (!options) {
     throw new Error("Could not extract tmpfs options for openclaw-secrets from docker-compose.yml");
   }
-  return match[1];
+  return options;
 }
 
 describe("openclaw-secrets tmpfs documentation drift", () => {
@@ -55,7 +56,7 @@ describe("openclaw-secrets tmpfs documentation drift", () => {
     const uidMatch = options.match(/uid=(\d+)/);
     expect(uidMatch?.[1], "uid not found in compose options").toBeDefined();
     const uid = uidMatch![1]!;
-    expect(secretsDoc).toContain(`uid ${uid}`);
+    expect(secretsDoc).toMatch(new RegExp(`uid[^\\d]*${uid}\\b`));
     // And must NOT mention the previous, drifted value.
     expect(secretsDoc).not.toMatch(/uid 1000\b/);
   });
