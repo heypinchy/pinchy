@@ -21,6 +21,7 @@
     "test:e2e:setup-wizard": "playwright test --config playwright.setup-wizard.config.ts",
     "test:e2e:web": "playwright test --config playwright.web.config.ts",
     "test:e2e:email": "playwright test --config playwright.email.config.ts",
+    "test:e2e:mcp": "playwright test --config playwright.mcp.config.ts",
     "test:integration": "playwright test --config playwright.integration.config.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

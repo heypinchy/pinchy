@@ -1,0 +1,20 @@
+# docker-compose.mcp-test.yml
+# Test overlay: adds mock MCP server for pinchy-mcp E2E tests.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.mcp-test.yml up --build -d
+#
+# TODO: Implement mock MCP server in config/mcp-mock/ with the MCP HTTP
+# transport surface and /control/{health,reset,seed,...} endpoints per
+# AGENTS.md Plugin Integration Contract.
+
+services:
+  mcp-mock:
+    build:
+      context: config/mcp-mock
+    ports:
+      - "9005:9005"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:9005/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
