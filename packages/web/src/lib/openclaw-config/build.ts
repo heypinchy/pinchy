@@ -28,6 +28,22 @@ import {
 import { writeAgentAuthProfiles, type AuthProfilesProvider } from "./agent-auth-profiles";
 import { validateBuiltConfig } from "./validate-built-config";
 
+// OC 2026.4.27+ requires `baseUrl` in `models.providers.<name>` for every configured
+// built-in provider — startup config validation rejects the file otherwise. We write
+// SDK-canonical defaults; proxy/test deployments override via env-vars.
+// Verified against openclaw@2026.4.27 dist on 2026-05-06.
+const BUILTIN_PROVIDER_DEFAULT_BASE_URLS: Record<"anthropic" | "openai" | "google", string> = {
+  anthropic: "https://api.anthropic.com",
+  openai: "https://api.openai.com/v1",
+  google: "https://generativelanguage.googleapis.com/v1beta",
+};
+
+const BUILTIN_PROVIDER_BASE_URL_ENV_VARS: Record<"anthropic" | "openai" | "google", string> = {
+  anthropic: "ANTHROPIC_BASE_URL",
+  openai: "OPENAI_BASE_URL",
+  google: "GOOGLE_BASE_URL",
+};
+
 function deepMerge(
   target: Record<string, unknown>,
   source: Record<string, unknown>
@@ -626,18 +642,12 @@ export async function regenerateOpenClawConfig() {
   for (const providerName of ["anthropic", "openai", "google"] as const) {
     const apiKey = await getSetting(PROVIDERS[providerName].settingsKey);
     if (apiKey) {
-      const providerConfig: Record<string, unknown> = {
+      const envOverride = process.env[BUILTIN_PROVIDER_BASE_URL_ENV_VARS[providerName]];
+      modelProviders[providerName] = {
         apiKey: secretRef(`/providers/${providerName}/apiKey`),
+        baseUrl: envOverride ?? BUILTIN_PROVIDER_DEFAULT_BASE_URLS[providerName],
         models: getModelCatalogForProvider(providerName),
       };
-      // OC 4.27+ with ANTHROPIC_BASE_URL requires baseUrl in config.apply
-      // payloads — if the env var is set (e.g. for an Anthropic API proxy),
-      // pass it through so both the file write and config.apply pass schema
-      // validation. Tracked in #270.
-      if (providerName === "anthropic" && process.env.ANTHROPIC_BASE_URL) {
-        providerConfig.baseUrl = process.env.ANTHROPIC_BASE_URL;
-      }
-      modelProviders[providerName] = providerConfig;
     }
   }
 
