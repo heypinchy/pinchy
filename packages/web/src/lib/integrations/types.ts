@@ -1,3 +1,20 @@
+export type McpTool = {
+  name: string;
+  description?: string;
+  inputSchema: Record<string, unknown>;
+};
+
+export type McpIntegrationData = {
+  type: "mcp";
+  preset: "github" | "notion" | "linear" | "generic";
+  transport: "http" | "sse";
+  url: string;
+  tools: McpTool[];
+  lastSyncedAt: string; // ISO 8601
+};
+
+export type IntegrationData = McpIntegrationData;
+
 export interface IntegrationConnection {
   id: string;
   type: string;
