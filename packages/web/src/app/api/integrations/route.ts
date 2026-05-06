@@ -10,6 +10,18 @@ import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrati
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { parseRequestBody } from "@/lib/api-validation";
+import { listMcpTools } from "@/lib/integrations/mcp-client";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+
+const mcpBodySchema = z.object({
+  type: z.literal("mcp"),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  preset: z.enum(["github", "notion", "linear", "generic"]),
+  transport: z.enum(["http", "sse"]),
+  url: z.string().url(),
+  token: z.string().min(1),
+});
 
 const createIntegrationSchema = z.discriminatedUnion("type", [
   z.object({
@@ -25,6 +37,7 @@ const createIntegrationSchema = z.discriminatedUnion("type", [
     description: z.string().max(500).default(""),
     credentials: z.object({ apiKey: z.string().min(1) }),
   }),
+  mcpBodySchema,
 ]);
 
 export const GET = withAdmin(async () => {
@@ -68,6 +81,78 @@ export const GET = withAdmin(async () => {
 export const POST = withAdmin(async (request, _ctx, session) => {
   const parsed = await parseRequestBody(createIntegrationSchema, request);
   if ("error" in parsed) return parsed.error;
+
+  // ── MCP branch ─────────────────────────────────────────────────────────────
+  if (parsed.data.type === "mcp") {
+    const { name, description, preset, transport, url, token } = parsed.data;
+
+    // Discover tools synchronously — on failure, do NOT save and return 502
+    let tools: Awaited<ReturnType<typeof listMcpTools>>;
+    try {
+      tools = await listMcpTools({ url, transport, token });
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      deferAuditLog({
+        actorType: "user",
+        actorId: session.user.id!,
+        eventType: "config.changed",
+        resource: `integration:new`,
+        detail: {
+          action: "integration_created",
+          type: "mcp",
+          name,
+          mcp: { preset, transport, url },
+          error: errorMessage,
+        },
+        outcome: "failure",
+      });
+      return NextResponse.json(
+        { error: "MCP discovery failed", detail: errorMessage },
+        { status: 502 }
+      );
+    }
+
+    const encryptedCredentials = encrypt(JSON.stringify({ token }));
+    const data = {
+      type: "mcp" as const,
+      preset,
+      transport,
+      url,
+      tools,
+      lastSyncAt: new Date().toISOString(),
+    };
+
+    const [connection] = await db
+      .insert(integrationConnections)
+      .values({
+        type: "mcp",
+        name,
+        description: description ?? "",
+        credentials: encryptedCredentials,
+        data,
+      })
+      .returning();
+
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "config.changed",
+      resource: `integration:${connection.id}`,
+      detail: {
+        action: "integration_created",
+        type: "mcp",
+        name,
+        mcp: { preset, transport, url, toolCount: tools.length },
+      },
+      outcome: "success",
+    });
+
+    await regenerateOpenClawConfig();
+
+    return NextResponse.json(connection, { status: 201 });
+  }
+
+  // ── Odoo / web-search branch ───────────────────────────────────────────────
   const { type, name, description, credentials } = parsed.data;
 
   // Singleton types: only one connection of this type allowed
