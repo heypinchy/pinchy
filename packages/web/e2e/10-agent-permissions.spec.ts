@@ -46,8 +46,8 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     }
     groupId = groupData.id;
 
-    // Create a shared agent using the "custom" template (no extra config required).
-    // POST /api/agents always creates shared agents; visibility defaults to "all".
+    // Create an agent using the "custom" template (no extra config required).
+    // Note: the DB default for visibility is "restricted", so we explicitly PATCH to "all" below.
     const agentRes = await page.context().request.post("/api/agents", {
       data: {
         name: "Permissions Test Agent",
