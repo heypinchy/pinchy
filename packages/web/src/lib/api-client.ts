@@ -15,16 +15,29 @@ async function send<R>(url: string, method: string, body?: unknown): Promise<R> 
     headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
+
+  // Read the body as text so we can handle empty responses (204, or 2xx with no
+  // body) without forcing a JSON parse on an empty buffer.
+  const rawBody = await res.text().catch(() => "");
+  const parsedBody = rawBody.length > 0 ? safeParseJson(rawBody) : undefined;
+
   if (!res.ok) {
-    const errBody = await res.json().catch(() => ({}));
+    const errBody = (parsedBody ?? {}) as { error?: string; details?: unknown };
     throw new ApiError(
       res.status,
-      (errBody as { error?: string }).error ?? `Request failed: ${res.status}`,
-      (errBody as { details?: unknown }).details
+      errBody.error ?? `Request failed: ${res.status}`,
+      errBody.details
     );
   }
-  if (res.status === 204) return undefined as R;
-  return res.json() as Promise<R>;
+  return (parsedBody as R) ?? (undefined as R);
+}
+
+function safeParseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 export const apiPost = <R = unknown, B = unknown>(url: string, body: B): Promise<R> =>

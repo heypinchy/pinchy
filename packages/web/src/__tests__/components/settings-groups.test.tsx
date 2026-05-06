@@ -29,6 +29,21 @@ describe("SettingsGroups", () => {
     fetchSpy.mockRestore();
   });
 
+  /**
+   * Build a Response-shaped mock that exposes BOTH json() and text() so the test
+   * works regardless of which the consumer calls. The api-client helper reads
+   * via text() + JSON.parse; raw fetch in components reads via json().
+   */
+  function jsonResponse(body: unknown, init: { ok?: boolean; status?: number } = {}): Response {
+    const text = JSON.stringify(body);
+    return {
+      ok: init.ok ?? true,
+      status: init.status ?? 200,
+      json: async () => body,
+      text: async () => text,
+    } as unknown as Response;
+  }
+
   function mockFetch(
     groups: unknown[] = mockGroups,
     users: unknown[] = mockUsers,
@@ -36,15 +51,15 @@ describe("SettingsGroups", () => {
   ) {
     vi.mocked(global.fetch).mockImplementation(async (url) => {
       if (String(url) === "/api/enterprise/status") {
-        return { ok: true, json: async () => ({ enterprise }) } as Response;
+        return jsonResponse({ enterprise });
       }
       if (String(url) === "/api/groups") {
-        return { ok: true, json: async () => groups } as Response;
+        return jsonResponse(groups);
       }
       if (String(url) === "/api/users") {
-        return { ok: true, json: async () => ({ users }) } as Response;
+        return jsonResponse({ users });
       }
-      return { ok: false } as Response;
+      return { ok: false, status: 404, json: async () => ({}), text: async () => "" } as Response;
     });
   }
 
@@ -106,24 +121,18 @@ describe("SettingsGroups", () => {
 
     vi.mocked(global.fetch).mockImplementation(async (url, init) => {
       if (String(url) === "/api/groups" && init?.method === "POST") {
-        return {
-          ok: true,
-          json: async () => ({ id: "g3", name: "Marketing", description: "Marketing team" }),
-        } as Response;
+        return jsonResponse({ id: "g3", name: "Marketing", description: "Marketing team" });
       }
       if (String(url) === "/api/groups") {
-        return {
-          ok: true,
-          json: async () => [
-            ...mockGroups,
-            { id: "g3", name: "Marketing", description: "Marketing team", memberCount: 0 },
-          ],
-        } as Response;
+        return jsonResponse([
+          ...mockGroups,
+          { id: "g3", name: "Marketing", description: "Marketing team", memberCount: 0 },
+        ]);
       }
       if (String(url) === "/api/users") {
-        return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+        return jsonResponse({ users: mockUsers });
       }
-      return { ok: false } as Response;
+      return { ok: false, status: 404, json: async () => ({}), text: async () => "" } as Response;
     });
 
     await user.click(screen.getByRole("button", { name: "Create" }));
@@ -174,15 +183,15 @@ describe("SettingsGroups", () => {
 
     vi.mocked(global.fetch).mockImplementation(async (url, init) => {
       if (String(url) === "/api/groups/g1" && init?.method === "DELETE") {
-        return { ok: true, json: async () => ({ success: true }) } as Response;
+        return jsonResponse({ success: true });
       }
       if (String(url) === "/api/groups") {
-        return { ok: true, json: async () => [mockGroups[1]] } as Response;
+        return jsonResponse([mockGroups[1]]);
       }
       if (String(url) === "/api/users") {
-        return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+        return jsonResponse({ users: mockUsers });
       }
-      return { ok: false } as Response;
+      return { ok: false, status: 404, json: async () => ({}), text: async () => "" } as Response;
     });
 
     await user.click(screen.getByRole("button", { name: "Delete" }));
@@ -231,25 +240,24 @@ describe("SettingsGroups", () => {
 
     vi.mocked(global.fetch).mockImplementation(async (url, init) => {
       if (String(url) === "/api/groups" && init?.method === "POST") {
-        return {
-          ok: false,
-          status: 400,
-          json: async () => ({ error: "Validation failed" }),
-        } as Response;
+        return jsonResponse({ error: "Validation failed" }, { ok: false, status: 400 });
       }
       if (String(url) === "/api/groups") {
-        return { ok: true, json: async () => mockGroups } as Response;
+        return jsonResponse(mockGroups);
       }
       if (String(url) === "/api/users") {
-        return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+        return jsonResponse({ users: mockUsers });
       }
-      return { ok: false } as Response;
+      return { ok: false, status: 404, json: async () => ({}), text: async () => "" } as Response;
     });
 
     await user.click(screen.getByRole("button", { name: "Create" }));
 
+    // Strict: the toast must surface the server's exact error message,
+    // not a generic "Request failed: 400" fallback. This catches mock/contract
+    // drift where the helper silently loses the body.
     await waitFor(() => {
-      expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/failed|error/i));
+      expect(toast.error).toHaveBeenCalledWith("Validation failed");
     });
 
     // Dialog should remain open so the user can correct the input
