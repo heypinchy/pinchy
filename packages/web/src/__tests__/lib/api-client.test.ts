@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { apiPost, ApiError } from "@/lib/api-client";
+import { apiPost, apiDelete, apiGet, ApiError } from "@/lib/api-client";
 
 describe("apiPost", () => {
   beforeEach(() => {
@@ -41,5 +41,39 @@ describe("apiPost", () => {
       })
     );
     await expect(apiPost("/api/groups", {})).rejects.toMatchObject({ status: 500 });
+  });
+
+  it("returns undefined for 204 No Content", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 204,
+        json: async () => {
+          throw new Error("no body");
+        },
+      })
+    );
+    const res = await apiDelete("/api/groups/g1");
+    expect(res).toBeUndefined();
+  });
+
+  it("throws an ApiError instance on non-2xx (instanceof check)", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 403,
+        json: async () => ({ error: "Forbidden" }),
+      })
+    );
+    try {
+      await apiGet("/api/groups");
+      expect.fail("should have thrown");
+    } catch (e) {
+      expect(e).toBeInstanceOf(ApiError);
+      expect((e as ApiError).status).toBe(403);
+      expect((e as ApiError).message).toBe("Forbidden");
+    }
   });
 });
