@@ -120,17 +120,30 @@ If you need to roll back after an upgrade:
 
 None for the standard upgrade path — the new `docker-compose.yml` you download below already contains the `openclaw-secrets` tmpfs block needed by the new SecretRef architecture.
 
-If you maintain a **custom `docker-compose.yml`** (e.g. for a non-standard deployment, a different orchestrator profile, or a downstream fork), you must add this `tmpfs` block to the `openclaw` service definition before starting %%PINCHY_VERSION%%:
+If you maintain a **custom `docker-compose.yml`** (e.g. for a non-standard deployment, a different orchestrator profile, or a downstream fork), you must add a tmpfs-backed named volume for `/openclaw-secrets` and mount it into **both** the `pinchy` and `openclaw` services before starting %%PINCHY_VERSION%%:
 
 ```yaml
 services:
+  pinchy:
+    volumes:
+      - openclaw-secrets:/openclaw-secrets
+      # …rest of the pinchy volumes
+
   openclaw:
-    tmpfs:
-      - /openclaw-secrets:mode=0700,uid=1000,gid=1000
-    # …rest of the service definition
+    volumes:
+      - openclaw-secrets:/openclaw-secrets
+      # …rest of the openclaw volumes
+
+volumes:
+  openclaw-secrets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "mode=0770,uid=999,gid=999"
 ```
 
-Without this, OpenClaw starts but cannot read its secrets, and every agent request fails with an authentication error.
+The volume must be mounted into both services: Pinchy writes `secrets.json` (and needs `uid=999` ownership to rewrite it atomically), OpenClaw reads it. The `uid=999` value matches the `pinchy` system user created in `Dockerfile.pinchy`. Without this, Pinchy cannot write the secrets file and every agent request fails with an authentication error.
 
 ### Upgrade notes
 
