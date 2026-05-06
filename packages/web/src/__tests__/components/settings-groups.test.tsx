@@ -2,7 +2,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
+import { toast } from "sonner";
 import { SettingsGroups } from "@/components/settings-groups";
+
+vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 
 describe("SettingsGroups", () => {
   let fetchSpy: ReturnType<typeof vi.spyOn>;
@@ -206,6 +209,52 @@ describe("SettingsGroups", () => {
     expect(screen.getByText("Enterprise")).toBeInTheDocument();
     expect(
       screen.getByText(/Create groups to control which users can access which agents/)
+    ).toBeInTheDocument();
+  });
+
+  it("shows error toast and keeps dialog open when group creation fails", async () => {
+    const user = userEvent.setup();
+    mockFetch();
+    render(<SettingsGroups />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "New Group" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "New Group" }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Name")).toBeInTheDocument();
+    });
+
+    await user.type(screen.getByLabelText("Name"), "Bad Group");
+
+    vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+      if (String(url) === "/api/groups" && init?.method === "POST") {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({ error: "Validation failed" }),
+        } as Response;
+      }
+      if (String(url) === "/api/groups") {
+        return { ok: true, json: async () => mockGroups } as Response;
+      }
+      if (String(url) === "/api/users") {
+        return { ok: true, json: async () => ({ users: mockUsers }) } as Response;
+      }
+      return { ok: false } as Response;
+    });
+
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    await waitFor(() => {
+      expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/failed|error/i));
+    });
+
+    // Dialog should remain open so the user can correct the input
+    expect(
+      screen.getByText("New Group", { selector: "[data-slot='dialog-title']" })
     ).toBeInTheDocument();
   });
 });
