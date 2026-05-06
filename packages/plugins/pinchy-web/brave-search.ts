@@ -54,8 +54,11 @@ export async function braveSearch(
   if (config.language) params.set("search_lang", config.language);
   if (config.freshness) params.set("freshness", config.freshness);
 
+  const BRAVE_SEARCH_BASE_URL =
+    process.env.BRAVE_API_BASE_URL ?? "https://api.search.brave.com";
+
   const res = await fetch(
-    `https://api.search.brave.com/res/v1/web/search?${params}`,
+    `${BRAVE_SEARCH_BASE_URL}/res/v1/web/search?${params}`,
     {
       headers: {
         "X-Subscription-Token": config.apiKey,

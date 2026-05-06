@@ -1,3 +1,8 @@
+// auth-direct: Browser-driven OAuth entry point. The user clicks
+// "Connect Google" on /settings and Next.js navigates them here, so on auth
+// failure we must redirect (not return JSON) — symmetric with oauth/callback.
+// The api-auth wrappers always return JSON, so this route uses an inline
+// session check.
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { randomBytes } from "crypto";
@@ -14,18 +19,30 @@ const GOOGLE_OAUTH_SCOPES = [
   "https://www.googleapis.com/auth/userinfo.email",
 ].join(" ");
 
+function errorRedirect(origin: string, error: string) {
+  const url = new URL("/settings", origin);
+  url.searchParams.set("tab", "integrations");
+  url.searchParams.set("error", error);
+  return NextResponse.redirect(url.toString(), 302);
+}
+
 export async function GET(request: Request) {
+  const requestUrl = new URL(request.url);
+  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0].trim();
+  const forwardedHost = request.headers.get("x-forwarded-host") || request.headers.get("host");
+  const origin =
+    forwardedProto && forwardedHost ? `${forwardedProto}://${forwardedHost}` : requestUrl.origin;
+
+  // Validate admin session — render failures as redirects, not JSON, because
+  // this is reached via browser navigation.
   const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
+  if (!session?.user || session.user.role !== "admin") {
+    return errorRedirect(origin, "unauthorized");
   }
 
   const settings = await getOAuthSettings("google");
   if (!settings) {
-    return NextResponse.json({ error: "Google OAuth not configured" }, { status: 400 });
+    return errorRedirect(origin, "not_configured");
   }
 
   // Clean up the user's own previous pending record (if any) before starting a new flow.
@@ -61,11 +78,6 @@ export async function GET(request: Request) {
 
   const state = randomBytes(32).toString("hex");
 
-  const requestUrl = new URL(request.url);
-  const forwardedProto = request.headers.get("x-forwarded-proto")?.split(",")[0].trim();
-  const forwardedHost = request.headers.get("x-forwarded-host") || request.headers.get("host");
-  const origin =
-    forwardedProto && forwardedHost ? `${forwardedProto}://${forwardedHost}` : requestUrl.origin;
   const redirectUri = `${origin}/api/integrations/oauth/callback`;
 
   const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");

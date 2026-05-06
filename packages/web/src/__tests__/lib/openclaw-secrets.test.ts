@@ -55,19 +55,19 @@ describe("writeSecretsFile", () => {
     expect(existsSync(`${process.env.OPENCLAW_SECRETS_PATH!}.tmp`)).toBe(false);
   });
 
-  it("does not rewrite the file when content is unchanged (mtime preserved)", async () => {
+  it("does not rewrite the file when content is unchanged (inode preserved)", () => {
     // Without this, every regenerateOpenClawConfig() bumps secrets.json's
     // mtime, and the inotify watcher in start-openclaw.sh would uselessly
-    // restart the OpenClaw gateway on every Pinchy startup.
+    // restart the OpenClaw gateway on every Pinchy startup. We check the
+    // inode rather than mtime so we don't depend on filesystem mtime
+    // granularity (or wall-clock waits) to detect a rewrite — the atomic
+    // rename pattern always allocates a new inode when it does write.
     writeSecretsFile(bundle);
     const path = process.env.OPENCLAW_SECRETS_PATH!;
-    const mtimeBefore = statSync(path).mtimeMs;
-    // Sleep long enough that even coarse-granularity filesystems would record
-    // a different mtime if we did rewrite.
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    const inoBefore = statSync(path).ino;
     writeSecretsFile(bundle);
-    const mtimeAfter = statSync(path).mtimeMs;
-    expect(mtimeAfter).toBe(mtimeBefore);
+    const inoAfter = statSync(path).ino;
+    expect(inoAfter).toBe(inoBefore);
   });
 
   it("does rewrite the file when content changes", () => {

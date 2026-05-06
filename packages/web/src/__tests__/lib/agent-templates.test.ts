@@ -124,6 +124,29 @@ describe("agent-templates", () => {
     expect(AGENT_TEMPLATES["custom"].defaultAgentsMd).toBeNull();
   });
 
+  it("custom is positioned after document templates and before odoo templates", () => {
+    // The template selector grid renders templates in iteration order, so
+    // changing where "custom" appears in AGENT_TEMPLATES is a UX-visible
+    // change. Pin the position to catch accidental drift from the original
+    // single-file ordering.
+    const ids = Object.keys(AGENT_TEMPLATES);
+    const customIndex = ids.indexOf("custom");
+    const onboardingIndex = ids.indexOf("onboarding-guide");
+    const firstOdooIndex = ids.findIndex((id) => id.startsWith("odoo-"));
+    expect(customIndex).toBeGreaterThan(onboardingIndex);
+    expect(customIndex).toBeLessThan(firstOdooIndex);
+  });
+
+  it("every non-custom template has a valid modelHint with tier", () => {
+    for (const [id, tpl] of Object.entries(AGENT_TEMPLATES)) {
+      if (id === "custom") continue; // deliberately no hint — user-built agent
+      expect(tpl.modelHint, `template "${id}" missing modelHint`).toBeDefined();
+      expect(tpl.modelHint?.tier, `template "${id}" has invalid tier`).toMatch(
+        /^(fast|balanced|reasoning)$/
+      );
+    }
+  });
+
   describe("email templates", () => {
     const emailTemplateIds = [
       "email-assistant",

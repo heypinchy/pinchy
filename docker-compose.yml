@@ -6,6 +6,7 @@ services:
     environment:
       - DATABASE_URL=postgresql://pinchy:${DB_PASSWORD:-pinchy_dev}@db:5432/pinchy
       - BETTER_AUTH_SECRET=${BETTER_AUTH_SECRET:-}
+      - BETTER_AUTH_URL=${BETTER_AUTH_URL:-}
       - OPENCLAW_WS_URL=ws://openclaw:18789
       - ENCRYPTION_KEY=${ENCRYPTION_KEY:-}
       - PINCHY_ENTERPRISE_KEY=${PINCHY_ENTERPRISE_KEY:-}
@@ -19,13 +20,28 @@ services:
     depends_on:
       db:
         condition: service_healthy
-      openclaw:
-        condition: service_started
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "node -e \"require('http').get('http://localhost:7777/api/internal/openclaw-config-ready', r => process.exit(r.statusCode === 200 ? 0 : 1))\"",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
 
   openclaw:
     image: ghcr.io/heypinchy/pinchy-openclaw:${PINCHY_VERSION:?set PINCHY_VERSION in .env (e.g. PINCHY_VERSION=v0.5.0)}
     expose:
       - "18789"
+    extra_hosts:
+      # ollama.local is mapped to the Docker host gateway so the OpenClaw
+      # container can reach Ollama on the host. Pinchy's build.ts rewrites
+      # host.docker.internal -> ollama.local in the emitted config because
+      # host.docker.internal is not in OpenClaw 2026.4.27's isLocalBaseUrl
+      # allowlist (*.local is).
+      - "ollama.local:host-gateway"
     volumes:
       - openclaw-config:/root/.openclaw
       - openclaw-secrets:/openclaw-secrets
@@ -34,6 +50,9 @@ services:
       - pinchy-data:/data
       - pinchy-pdf-cache:/var/cache/pinchy-files
     restart: unless-stopped
+    depends_on:
+      pinchy:
+        condition: service_healthy
 
   db:
     image: postgres:17

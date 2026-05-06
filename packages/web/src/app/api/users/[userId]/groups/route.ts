@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { isEnterprise } from "@/lib/enterprise";
 import { db } from "@/db";
@@ -6,6 +7,11 @@ import { users, groups, userGroups } from "@/db/schema";
 import { eq, inArray } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
+import { parseRequestBody } from "@/lib/api-validation";
+
+const updateUserGroupsSchema = z.object({
+  groupIds: z.array(z.string()),
+});
 
 export async function PUT(
   request: NextRequest,
@@ -20,15 +26,9 @@ export async function PUT(
   }
 
   const { userId } = await params;
-  const { groupIds } = await request.json();
-
-  if (!Array.isArray(groupIds)) {
-    return NextResponse.json({ error: "groupIds must be an array" }, { status: 400 });
-  }
-
-  if (!groupIds.every((id) => typeof id === "string")) {
-    return NextResponse.json({ error: "groupIds must be an array of strings" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(updateUserGroupsSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { groupIds } = parsed.data;
 
   // 1. Fetch user (verify exists, get name for audit)
   const userRows = await db

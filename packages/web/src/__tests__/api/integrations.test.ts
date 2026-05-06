@@ -429,6 +429,43 @@ describe("POST /api/integrations", () => {
       })
     );
   });
+
+  it("still returns 201 and emits a structured failure signal when the deferred audit write fails (#231)", async () => {
+    const { POST } = await import("@/app/api/integrations/route");
+    const { getAuditWriteFailedCount, resetAuditWriteFailedCount } =
+      await import("@/lib/audit-deferred");
+    resetAuditWriteFailedCount();
+    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    mockAppendAuditLog.mockRejectedValueOnce(new Error("DB unreachable"));
+
+    const request = makeRequest("/api/integrations", {
+      method: "POST",
+      body: JSON.stringify({
+        type: "odoo",
+        name: "Prod Odoo",
+        credentials: validCredentials,
+      }),
+    });
+    const response = await POST(request);
+    // Flush the deferred after() callback's microtasks.
+    await new Promise((r) => setImmediate(r));
+
+    // The connection was created; audit failure must NOT roll that back.
+    expect(response.status).toBe(201);
+    // The structured failure signal must fire so alerts can hook into it.
+    expect(getAuditWriteFailedCount()).toBe(1);
+    const structured = consoleErrorSpy.mock.calls.find((call) => {
+      try {
+        return JSON.parse(call[0] as string).event === "audit_log_write_failed";
+      } catch {
+        return false;
+      }
+    });
+    expect(structured).toBeDefined();
+
+    consoleErrorSpy.mockRestore();
+    resetAuditWriteFailedCount();
+  });
 });
 
 describe("GET /api/integrations/[connectionId]", () => {

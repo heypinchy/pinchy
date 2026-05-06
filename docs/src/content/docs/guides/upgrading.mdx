@@ -9,6 +9,13 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
 
 ## Standard upgrade
 
+<Aside type="note">
+  This is the upgrade flow **between %%PINCHY_VERSION%%+ releases**. If you're
+  still on v0.4.x, complete the **Upgrading from v0.4.4 to %%PINCHY_VERSION%%**
+  section below first — that one-time migration adds the `PINCHY_VERSION` pin
+  you'll bump from here on.
+</Aside>
+
 <Steps>
 
 1. **Back up your database**
@@ -19,13 +26,20 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
    docker compose exec db pg_dump -U pinchy pinchy > backup-$(date +%Y%m%d).sql
    ```
 
-2. **Pull the new version**
+2. **Bump the version pin**
+
+   Edit `/opt/pinchy/.env` and update `PINCHY_VERSION` to the new release tag (e.g. `PINCHY_VERSION=%%PINCHY_VERSION%%`), then pull the matching images:
 
    ```bash
    cd /opt/pinchy
-   curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.0/docker-compose.yml -o docker-compose.yml
    docker compose pull
    ```
+
+   <Aside type="tip">
+     Release notes will tell you if `docker-compose.yml` itself needs to be
+     re-fetched — that only happens when a release adds new services or volumes,
+     which is rare.
+   </Aside>
 
 3. **Restart**
 
@@ -56,7 +70,7 @@ You don't need to worry about these — Pinchy handles them on every startup:
 ## What you might need to check
 
 - **New environment variables** — Check the release notes for any new variables. Pinchy won't crash if they're missing (features may just be disabled), but review them in your `.env` file.
-- **Docker Compose changes** — The `curl` command in step 2 downloads the latest `docker-compose.yml`. If new volumes or services were added, they're created automatically on first start.
+- **Docker Compose changes** — Most releases reuse the existing `docker-compose.yml` and only require bumping `PINCHY_VERSION` in `.env`. When a release does need a new compose file (new services or volumes), the release notes spell out the extra `curl` step. New volumes and services are then created automatically on first start.
 
 ## Restoring from backup
 
@@ -100,23 +114,58 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
+## Upgrading from v0.5.0 to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+None.
+
+### Upgrade notes
+
+%%PINCHY_VERSION%% is a hotfix release. It fixes a startup loop in OpenClaw caused by a missing `baseUrl` field in the generated `openclaw.json` for the Anthropic, OpenAI, and Google providers. Deployments of v0.5.0 that configured any of these providers without setting `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or `GOOGLE_BASE_URL` env-vars hit a `models.providers.<name>.baseUrl: expected string, received undefined` error and OpenClaw never came up.
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.5.0/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d
+```
+
+No database migration, no config-file change, and no env-var changes are required. Pinchy regenerates `openclaw.json` on first start with the correct default base URLs, and OpenClaw boots cleanly.
+
+If you previously set `ANTHROPIC_BASE_URL` (or the OpenAI/Google equivalents) for a proxy deployment, those env-vars continue to override the defaults — no action needed.
+
 ## Upgrading from v0.4.4 to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
 None for the standard upgrade path — the new `docker-compose.yml` you download below already contains the `openclaw-secrets` tmpfs block needed by the new SecretRef architecture.
 
-If you maintain a **custom `docker-compose.yml`** (e.g. for a non-standard deployment, a different orchestrator profile, or a downstream fork), you must add this `tmpfs` block to the `openclaw` service definition before starting %%PINCHY_VERSION%%:
+If you maintain a **custom `docker-compose.yml`** (e.g. for a non-standard deployment, a different orchestrator profile, or a downstream fork), you must add a tmpfs-backed named volume for `/openclaw-secrets` and mount it into **both** the `pinchy` and `openclaw` services before starting %%PINCHY_VERSION%%:
 
 ```yaml
 services:
+  pinchy:
+    volumes:
+      - openclaw-secrets:/openclaw-secrets
+      # …rest of the pinchy volumes
+
   openclaw:
-    tmpfs:
-      - /openclaw-secrets:mode=0700,uid=1000,gid=1000
-    # …rest of the service definition
+    volumes:
+      - openclaw-secrets:/openclaw-secrets
+      # …rest of the openclaw volumes
+
+volumes:
+  openclaw-secrets:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: "mode=0770,uid=999,gid=999"
 ```
 
-Without this, OpenClaw starts but cannot read its secrets, and every agent request fails with an authentication error.
+The volume must be mounted into both services: Pinchy writes and atomically replaces `secrets.json` (requires directory write permission — `uid=999` grants this as the `pinchy` system user); OpenClaw reads it. Without this, Pinchy cannot write the secrets file and every agent request fails with an authentication error.
 
 ### Upgrade notes
 
@@ -152,6 +201,16 @@ Without this, OpenClaw starts but cannot read its secrets, and every agent reque
 </Steps>
 
 If you skip step 3, `docker compose up` fails loudly with a clear message telling you exactly what to add — this is by design, so a forgotten pin can't silently pull the wrong version.
+
+#### Recommended: set BETTER_AUTH_URL on HTTPS deployments
+
+If Pinchy is available on a public HTTPS domain, add the canonical URL to `/opt/pinchy/.env` before restarting:
+
+```bash
+BETTER_AUTH_URL=https://pinchy.example.com
+```
+
+The new `docker-compose.yml` passes this through to the Pinchy container. Better Auth uses it to generate absolute links for password resets, OAuth callbacks, and Telegram pairing redirects. Use the same hostname you lock in **Settings → Security**, without a trailing slash.
 
 #### Telegram: brief downtime on first start
 
@@ -204,6 +263,8 @@ The `docker-compose.yml` only changes when we add new services or volumes, which
 - **Seat-cap enforcement for licensed deployments** — Settings → Users now shows current seat usage (active users + pending invites) against the licensed `maxUsers` cap. The Invite button is disabled when at the cap, and the invite endpoint refuses to issue new invitations with a `user.invite_blocked` audit entry. License expiry banner refreshes without a page reload.
 - **Integration delete with preflight** — deleting an integration now shows a dialog with the agent usage count up front. If agents are connected, you can detach-and-delete in one step instead of hunting through every agent. The state machine handles in-flight deletions cleanly so a failed delete doesn't leave orphaned references.
 - **Customizing your deployment** — new guide documents the supported customization surface: `docker-compose.override.yml`. Pinchy's `docker-compose.yml` is owned by the project and replaced on upgrade — overrides go into the override file, which Docker Compose merges automatically and upgrades never touch. See [Customizing Your Deployment](/guides/customizing-deployment/).
+
+- **OpenClaw runtime updated to 2026.4.27** — the underlying agent runtime gets a significant bump. Notably: spurious gateway restarts on agent-config changes are eliminated (Pinchy now supplements the OpenClaw-managed `channels.telegram` fields so the runtime sees no diff for Telegram-unrelated changes). The usage poller no longer runs immediately on connect, avoiding a CPU-bound `sessions.list` scan that was blocking the event loop during startup. No action required on upgrade.
 
 #### Heads-up: Google template-model realignment
 

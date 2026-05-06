@@ -4,6 +4,7 @@
   "description": "Email integration (Gmail, Outlook, IMAP) with per-agent permissions.",
   "configSchema": {
     "type": "object",
+    "additionalProperties": false,
     "properties": {
       "apiBaseUrl": { "type": "string" },
       "gatewayToken": { "type": "string" },
@@ -11,6 +12,7 @@
         "type": "object",
         "additionalProperties": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
             "connectionId": { "type": "string" },
             "permissions": { "type": "object" }

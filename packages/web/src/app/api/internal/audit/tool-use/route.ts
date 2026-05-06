@@ -1,21 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { validateGatewayToken } from "@/lib/gateway-auth";
 import { appendAuditLog } from "@/lib/audit";
 import { sanitizeDetail } from "@/lib/audit-sanitize";
-
-interface ToolAuditPayload {
-  phase: "start" | "end";
-  toolName: string;
-  agentId: string;
-  runId?: string;
-  toolCallId?: string;
-  sessionKey?: string;
-  sessionId?: string;
-  params?: unknown;
-  result?: unknown;
-  error?: string;
-  durationMs?: number;
-}
+import { parseRequestBody } from "@/lib/api-validation";
 
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -35,71 +23,63 @@ function extractFirstTextContent(result: Record<string, unknown>): string | null
   return typeof text === "string" && text.trim().length > 0 ? text : null;
 }
 
-function asNonEmptyString(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
-}
-
-function extractAgentIdFromSessionKey(sessionKey?: string): string | undefined {
+function extractAgentIdFromSessionKey(sessionKey: string | undefined): string | undefined {
   if (!sessionKey) return undefined;
-  const match = /^agent:([^:]+):/.exec(sessionKey);
-  return match?.[1];
+  return /^agent:([^:]+):/.exec(sessionKey)?.[1];
 }
 
-function extractUserIdFromSessionKey(sessionKey?: string): string | undefined {
+function extractUserIdFromSessionKey(sessionKey: string | undefined): string | undefined {
   if (!sessionKey) return undefined;
-  const match = /^agent:[^:]+:direct:(.+)$/.exec(sessionKey);
-  return match?.[1];
+  return /^agent:[^:]+:direct:(.+)$/.exec(sessionKey)?.[1];
 }
 
-function parsePayload(value: unknown): ToolAuditPayload | null {
-  if (!isObject(value)) return null;
+// Trim and reject blank strings; turns "" or "   " into undefined so optional
+// fields stay optional in a meaningful way.
+const trimmedOptional = z
+  .string()
+  .optional()
+  .transform((v) => {
+    if (v === undefined) return undefined;
+    const trimmed = v.trim();
+    return trimmed.length > 0 ? trimmed : undefined;
+  });
 
-  const phase = value.phase;
-  if (phase !== "start" && phase !== "end") return null;
-
-  const toolName = asNonEmptyString(value.toolName);
-  const sessionKey = asNonEmptyString(value.sessionKey);
-  const agentId =
-    asNonEmptyString(value.agentId) ?? extractAgentIdFromSessionKey(sessionKey) ?? "unknown-agent";
-  if (!toolName) return null;
-
-  const runId = asNonEmptyString(value.runId);
-  const toolCallId = asNonEmptyString(value.toolCallId);
-  const sessionId = asNonEmptyString(value.sessionId);
-  const error = asNonEmptyString(value.error);
-
-  const durationRaw = value.durationMs;
-  const durationMs =
-    typeof durationRaw === "number" && Number.isFinite(durationRaw) && durationRaw >= 0
-      ? durationRaw
-      : undefined;
-
-  return {
-    phase,
-    toolName,
-    agentId,
-    runId,
-    toolCallId,
-    sessionKey,
-    sessionId,
-    params: value.params,
-    result: value.result,
-    error,
-    durationMs,
-  };
-}
+const toolUsePayloadSchema = z
+  .object({
+    phase: z.enum(["start", "end"]),
+    toolName: z
+      .string()
+      .transform((v) => v.trim())
+      .refine((v) => v.length > 0, "toolName is required"),
+    agentId: trimmedOptional,
+    runId: trimmedOptional,
+    toolCallId: trimmedOptional,
+    sessionKey: trimmedOptional,
+    sessionId: trimmedOptional,
+    params: z.unknown().optional(),
+    result: z.unknown().optional(),
+    error: trimmedOptional,
+    durationMs: z
+      .number()
+      .nonnegative()
+      .finite()
+      .optional()
+      .transform((v) => (v === undefined ? undefined : v)),
+  })
+  .passthrough()
+  .transform((v) => ({
+    ...v,
+    agentId: v.agentId ?? extractAgentIdFromSessionKey(v.sessionKey) ?? "unknown-agent",
+  }));
 
 export async function POST(request: NextRequest) {
   if (!validateGatewayToken(request.headers)) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const payload = parsePayload(await request.json());
-  if (!payload) {
-    return NextResponse.json({ error: "Invalid payload" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(toolUsePayloadSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const payload = parsed.data;
 
   // Change 1: Only log end phase — start phase carries no result/duration, skip it
   if (payload.phase === "start") {

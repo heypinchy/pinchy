@@ -1,0 +1,21 @@
+# docker-compose.email-test.yml
+# Test overlay: adds mock Gmail server for pinchy-email E2E tests.
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml up --build -d
+
+services:
+  gmail-mock:
+    build:
+      context: config/gmail-mock
+    ports:
+      - "9004:9004"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:9004/control/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  openclaw:
+    environment:
+      - GMAIL_API_BASE_URL=http://gmail-mock:9004
+      - GMAIL_OAUTH_BASE_URL=http://gmail-mock:9004

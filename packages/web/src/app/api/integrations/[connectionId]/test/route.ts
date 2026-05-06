@@ -2,11 +2,10 @@
 // stored uid when the first successful authenticate returns a different value
 // (one-time bootstrap), which is intentional and not user-initiated state
 // change — no separate audit entry is written for that self-heal path.
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
 import { OdooClient } from "odoo-node";
-import { getSession } from "@/lib/auth";
+import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { decrypt, encrypt } from "@/lib/encryption";
@@ -14,15 +13,7 @@ import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
-export async function POST(request: NextRequest, { params }: RouteContext) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const POST = withAdmin<RouteContext>(async (_req, { params }) => {
   const { connectionId } = await params;
 
   const [connection] = await db
@@ -98,4 +89,4 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
     const message = error instanceof Error ? error.message : "Connection failed";
     return NextResponse.json({ success: false, error: message }, { status: 200 });
   }
-}
+});

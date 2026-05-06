@@ -1,22 +1,28 @@
 // audit-exempt: users changing their own password is a self-service action
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { headers } from "next/headers";
+import { z } from "zod";
 import { auth } from "@/lib/auth";
+import { withAuth } from "@/lib/api-auth";
+import { parseRequestBody } from "@/lib/api-validation";
+import { validatePassword } from "@/lib/validate-password";
 
-export async function POST(request: NextRequest) {
-  const session = await auth.api.getSession({ headers: await headers() });
-  if (!session?.user?.id) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+// Shape only — length/breach-list policy is enforced post-parse via
+// validatePassword() so the same rules apply to setup, invite-claim, and
+// password-change without drifting between routes.
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string(),
+});
 
-  const { currentPassword, newPassword } = await request.json();
+export const POST = withAuth(async (request) => {
+  const parsed = await parseRequestBody(changePasswordSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const { currentPassword, newPassword } = parsed.data;
 
-  if (!currentPassword) {
-    return NextResponse.json({ error: "Current password is required" }, { status: 400 });
-  }
-  if (!newPassword || newPassword.length < 8) {
-    return NextResponse.json(
-      { error: "New password must be at least 8 characters" },
-      { status: 400 }
-    );
+  const passwordError = validatePassword(newPassword);
+  if (passwordError) {
+    return NextResponse.json({ error: passwordError }, { status: 400 });
   }
 
   try {
@@ -32,4 +38,4 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: "Current password is incorrect" }, { status: 403 });
   }
-}
+});

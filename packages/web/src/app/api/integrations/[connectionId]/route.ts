@@ -1,7 +1,6 @@
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { getSession } from "@/lib/auth";
+import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
@@ -11,11 +10,15 @@ import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { deleteOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { z } from "zod";
+import { parseRequestBody, formatValidationError } from "@/lib/api-validation";
 
-const baseUpdateSchema = z.object({
-  name: z.string().min(1).max(100).optional(),
-  description: z.string().max(500).optional(),
-});
+const updateConnectionSchema = z
+  .object({
+    name: z.string().min(1).max(100).optional(),
+    description: z.string().max(500).optional(),
+    credentials: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
 
 const credentialSchemas: Record<string, z.ZodType> = {
   odoo: odooCredentialsSchema,
@@ -24,15 +27,7 @@ const credentialSchemas: Record<string, z.ZodType> = {
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
-export async function GET(request: NextRequest, { params }: RouteContext) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
   const { connectionId } = await params;
   const [connection] = await db
     .select()
@@ -47,17 +42,9 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
     ...connection,
     credentials: maskConnectionCredentials(connection.type, connection.credentials, decrypt),
   });
-}
+});
 
-export async function PATCH(request: NextRequest, { params }: RouteContext) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const PATCH = withAdmin<RouteContext>(async (request, { params }, session) => {
   const { connectionId } = await params;
 
   // Load existing connection
@@ -70,16 +57,9 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
     return NextResponse.json({ error: "Connection not found" }, { status: 404 });
   }
 
-  const body = await request.json();
-
-  // Validate base fields (name, description)
-  const baseParsed = baseUpdateSchema.safeParse(body);
-  if (!baseParsed.success) {
-    return NextResponse.json(
-      { error: "Validation failed", details: baseParsed.error.flatten() },
-      { status: 400 }
-    );
-  }
+  const parsed = await parseRequestBody(updateConnectionSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const body = parsed.data;
 
   // Validate credentials based on connection type
   const rawCredentials = body.credentials;
@@ -94,10 +74,7 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
     }
     const credResult = credSchema.safeParse(rawCredentials);
     if (!credResult.success) {
-      return NextResponse.json(
-        { error: "Validation failed", details: credResult.error.flatten() },
-        { status: 400 }
-      );
+      return formatValidationError(credResult.error);
     }
     parsedCredentials = credResult.data as Record<string, unknown>;
   }
@@ -105,16 +82,16 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
   const updateData: Record<string, unknown> = { updatedAt: new Date() };
   const changes: Record<string, { from: unknown; to: unknown }> = {};
 
-  if (baseParsed.data.name !== undefined) {
-    updateData.name = baseParsed.data.name;
-    if (baseParsed.data.name !== existing.name) {
-      changes.name = { from: existing.name, to: baseParsed.data.name };
+  if (body.name !== undefined) {
+    updateData.name = body.name;
+    if (body.name !== existing.name) {
+      changes.name = { from: existing.name, to: body.name };
     }
   }
-  if (baseParsed.data.description !== undefined) {
-    updateData.description = baseParsed.data.description;
-    if (baseParsed.data.description !== existing.description) {
-      changes.description = { from: existing.description, to: baseParsed.data.description };
+  if (body.description !== undefined) {
+    updateData.description = body.description;
+    if (body.description !== existing.description) {
+      changes.description = { from: existing.description, to: body.description };
     }
   }
   if (parsedCredentials !== undefined) {
@@ -135,31 +112,23 @@ export async function PATCH(request: NextRequest, { params }: RouteContext) {
     .returning();
 
   if (Object.keys(changes).length > 0) {
-    appendAuditLog({
+    await appendAuditLog({
       actorType: "user",
       actorId: session.user.id!,
       eventType: "config.changed",
       resource: `integration:${connectionId}`,
       detail: { action: "integration_updated", id: connectionId, changes },
       outcome: "success",
-    }).catch(console.error);
+    });
   }
 
   return NextResponse.json({
     ...updated,
     credentials: maskConnectionCredentials(updated.type, updated.credentials, decrypt),
   });
-}
+});
 
-export async function DELETE(request: NextRequest, { params }: RouteContext) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) => {
   const { connectionId } = await params;
 
   // Load connection for audit log (need name + type before deletion)
@@ -185,14 +154,14 @@ export async function DELETE(request: NextRequest, { params }: RouteContext) {
     }
   }
 
-  appendAuditLog({
+  await appendAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "config.changed",
     resource: `integration:${connectionId}`,
     detail: { action: "integration_deleted", type: existing.type, name: existing.name },
     outcome: "success",
-  }).catch(console.error);
+  });
 
   return NextResponse.json({ success: true });
-}
+});

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schemas.openclaw.ai/openclaw.json",
+  "gateway": {
+    "mode": "local",
+    "bind": "loopback",
+    "auth": {
+      "token": "prewarmprewarmprewarmprewarmprewarmprewarmprewarm12"
+    }
+  },
+  "discovery": {
+    "mdns": {
+      "mode": "off"
+    }
+  },
+  "update": {
+    "checkOnStart": false
+  },
+  "canvasHost": {
+    "enabled": false
+  },
+  "plugins": {
+    "allow": ["browser", "memory-core", "talk-voice"]
+  }
+}

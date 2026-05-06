@@ -1415,6 +1415,114 @@ describe("ClientRouter", () => {
     vi.useRealTimers();
   });
 
+  describe("empty-history invariant (issue #197)", () => {
+    // The browser uses `sessionKnown: true` to escape "starting" with an
+    // empty thread. If the server ever ships an empty history without that
+    // flag while OpenClaw is connected, the chat would sit in "starting"
+    // forever. These tests pin the invariant: any empty-history emission
+    // either carries `sessionKnown: true` OR happens with OpenClaw down.
+    it("emits sessionKnown:true when empty history comes back via cache fallback", async () => {
+      vi.useFakeTimers();
+      try {
+        const freshCache = new SessionCache();
+        const freshRouter = new ClientRouter(
+          mockOpenClawClient as any,
+          "user-1",
+          "member",
+          freshCache
+        );
+        const clientWs = createMockClientWs();
+        mockFindFirst.mockResolvedValue({
+          ...defaultAgent,
+          greetingMessage: "Hello!",
+        });
+        // Cache is empty; live sessions.list reveals the session does exist.
+        mockSessionsList.mockResolvedValue({
+          sessions: [{ key: "agent:agent-1:direct:user-1" }],
+        });
+        // Both fetches return empty — restart-race not yet resolved.
+        mockSessionsHistory.mockResolvedValue({ messages: [] });
+
+        const messagePromise = freshRouter.handleMessage(clientWs as any, {
+          type: "history",
+          agentId: "agent-1",
+        });
+        await vi.advanceTimersByTimeAsync(2100);
+        await messagePromise;
+
+        const sent = clientWs.sent.map((s) => JSON.parse(s));
+        expect(sent).toHaveLength(1);
+        expect(sent[0].messages).toEqual([]);
+        expect(sent[0].sessionKnown).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("never emits empty messages without sessionKnown when OpenClaw is connected", async () => {
+      // Brute-force regression guard: every code path that fires while
+      // OpenClaw is connected must either send messages or set sessionKnown.
+      // Three failure shapes that previously could land us in "empty no
+      // sessionKnown": throw on first fetch with cold cache, throw on retry
+      // with warm cache, and steady-state empty with warm cache.
+      vi.useFakeTimers();
+      try {
+        const cases: Array<() => void> = [
+          // Cold cache + history throws → must fall back to greeting (not empty).
+          () => {
+            sessionCache = new SessionCache();
+            mockSessionsHistory.mockRejectedValue(new Error("transient"));
+            mockSessionsList.mockResolvedValue({ sessions: [] });
+          },
+          // Warm cache + history throws on both attempts.
+          () => {
+            mockSessionsHistory
+              .mockRejectedValueOnce(new Error("fail 1"))
+              .mockRejectedValueOnce(new Error("fail 2"));
+          },
+          // Warm cache + history returns empty on both attempts.
+          () => {
+            mockSessionsHistory.mockResolvedValue({ messages: [] });
+          },
+        ];
+
+        for (const setup of cases) {
+          mockFindFirst.mockResolvedValue({ ...defaultAgent, greetingMessage: "Hi!" });
+          mockUserFindFirst.mockResolvedValue({ id: "user-1", context: null });
+          mockSessionsHistory.mockReset();
+          mockSessionsList.mockReset();
+          setup();
+
+          const localRouter = new ClientRouter(
+            mockOpenClawClient as any,
+            "user-1",
+            "member",
+            sessionCache
+          );
+          const clientWs = createMockClientWs();
+          const promise = localRouter.handleMessage(clientWs as any, {
+            type: "history",
+            agentId: "agent-1",
+          });
+          await vi.advanceTimersByTimeAsync(3000);
+          await promise;
+
+          const sent = clientWs.sent.map((s) => JSON.parse(s));
+          expect(sent).toHaveLength(1);
+          const frame = sent[0];
+          expect(frame.type).toBe("history");
+          // Either the chat has content, or we explicitly told the client
+          // it's a known-empty session — never the silent-empty shape.
+          const hasContent = (frame.messages?.length ?? 0) > 0;
+          const flaggedKnown = frame.sessionKnown === true;
+          expect(hasContent || flaggedKnown).toBe(true);
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("should log audit event when agent access is denied", async () => {
     const clientWs = createMockClientWs();
     mockFindFirst.mockResolvedValue({

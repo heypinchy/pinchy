@@ -53,6 +53,9 @@ jobs:
       - name: Test
         run: pnpm test
 
+      - name: Test (root scripts)
+        run: pnpm test:scripts
+
       - name: Build
         run: pnpm build
 
@@ -86,16 +89,67 @@ jobs:
             })();
           "
 
+  vitest-integration:
+    name: Vitest Integration Tests (real DB)
+    runs-on: ubuntu-latest
+
+    # Real-DB unit-style tests (#229). Distinct from `e2e` (full Playwright
+    # browser stack) and `integration` (OpenClaw + fake Ollama via
+    # docker-compose.integration.yml). Just Postgres + Drizzle migrations +
+    # the route handlers under test.
+    services:
+      postgres:
+        # Pulled from mirror.gcr.io to bypass docker.io's rate limit (same
+        # pattern as the e2e job above). Pinned to 17 so the test DB matches
+        # docker-compose.yml's `db` service — drift would risk masking
+        # version-specific bugs (parser, planner, locking).
+        image: mirror.gcr.io/library/postgres:17
+        env:
+          POSTGRES_DB: pinchy
+          POSTGRES_USER: pinchy
+          POSTGRES_PASSWORD: pinchy_dev
+        ports:
+          - 5436:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Run vitest integration tests
+        run: pnpm -C packages/web test:db
+        env:
+          VITEST_INTEGRATION_DB_URL: postgresql://pinchy:pinchy_dev@localhost:5436/pinchy_test_vitest
+
   e2e:
     name: E2E Tests
     runs-on: ubuntu-latest
 
     services:
       postgres:
-        image: postgres:16
-        credentials:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+        # Pull from mirror.gcr.io (Google's public Docker Hub mirror) instead of
+        # docker.io to bypass the 200/6h auth rate limit. Service containers are
+        # started by the GitHub Actions runner BEFORE any user step runs, so the
+        # docker-mirror composite action can't help here — the only way to
+        # avoid docker.io is to point the image reference at the mirror
+        # directly. mirror.gcr.io is anonymous, so no credentials are needed.
+        #
+        # Version pinned to 17 to match docker-compose.yml's `db` service.
+        # Drift between CI's test DB and production's DB risks masking
+        # version-specific bugs (different parser, planner, locking).
+        image: mirror.gcr.io/library/postgres:17
         env:
           POSTGRES_DB: pinchy
           POSTGRES_USER: pinchy
@@ -178,9 +232,17 @@ jobs:
 
       - name: Wait for health (production)
         run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:7777/api/health; then
-              echo "Production stack healthy"
+          # Poll the openclaw-config-ready endpoint (not /api/health) so we
+          # wait until bootInits() has completed. /api/health returns 200 as
+          # soon as the HTTP server starts — before migrations and
+          # markOpenClawConfigReady() run — which would let "Verify
+          # infrastructure ready" start before OpenClaw has been allowed to
+          # start (it depends on the Docker healthcheck, which polls this
+          # same endpoint). The 60×2s=120s window matches the Docker
+          # healthcheck's own timeout (start_period 5s + retries 30 × 2s).
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7777/api/internal/openclaw-config-ready; then
+              echo "Production stack ready (bootInits complete)"
               exit 0
             fi
             echo "Attempt $i: not ready yet"
@@ -218,6 +280,7 @@ jobs:
           STATUS=$(curl -s -o /tmp/setup-response.json -w "%{http_code}" \
             -X POST http://localhost:7777/api/setup \
             -H "Content-Type: application/json" \
+            -H "Origin: http://localhost:7777" \
             -d '{"name":"CI Admin","email":"ci@test.local","password":"CiTestPass123!"}')
           echo "Setup response (HTTP $STATUS):"
           cat /tmp/setup-response.json
@@ -322,9 +385,9 @@ jobs:
 
       - name: Wait for health after recreate
         run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:7777/api/health; then
-              echo "Stack healthy after recreate"
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7777/api/internal/openclaw-config-ready; then
+              echo "Stack ready after recreate (bootInits complete)"
               exit 0
             fi
             sleep 2
@@ -375,9 +438,9 @@ jobs:
 
       - name: Wait for health (dev)
         run: |
-          for i in $(seq 1 30); do
-            if curl -sf http://localhost:7777/api/health; then
-              echo "Dev stack healthy"
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7777/api/internal/openclaw-config-ready; then
+              echo "Dev stack ready (bootInits complete)"
               exit 0
             fi
             echo "Attempt $i: not ready yet"
@@ -414,6 +477,7 @@ jobs:
           STATUS=$(curl -s -o /tmp/setup-response.json -w "%{http_code}" \
             -X POST http://localhost:7777/api/setup \
             -H "Content-Type: application/json" \
+            -H "Origin: http://localhost:7777" \
             -d '{"name":"CI Admin","email":"ci@test.local","password":"CiTestPass123!"}')
           echo "Setup response (HTTP $STATUS):"
           cat /tmp/setup-response.json
@@ -497,6 +561,7 @@ jobs:
           {
             echo "PINCHY_VERSION=test-${SHORT_SHA}"
             echo "DB_PASSWORD=$(openssl rand -hex 32)"
+            echo "BETTER_AUTH_URL=https://pinchy.example.test"
           } > .env
           # BETTER_AUTH_SECRET + ENCRYPTION_KEY remain unset on purpose —
           # tests Pinchy's auto-generation path (used by end-users who
@@ -526,6 +591,16 @@ jobs:
           docker compose ps
           docker compose logs
           exit 1
+
+      - name: Verify BETTER_AUTH_URL reaches Pinchy container
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
+          ACTUAL=$(docker compose exec -T pinchy printenv BETTER_AUTH_URL)
+          if [ "$ACTUAL" != "https://pinchy.example.test" ]; then
+            echo "::error::BETTER_AUTH_URL was not passed through to the Pinchy container. Expected https://pinchy.example.test, got '${ACTUAL:-<unset>}'."
+            docker compose config
+            exit 1
+          fi
 
       - name: Assert all services running
         working-directory: ${{ steps.install-dir.outputs.path }}
@@ -661,11 +736,47 @@ jobs:
             echo "DB_PASSWORD=${{ steps.shared.outputs.db_password }}"
           } > .env
 
-      - name: Phase 1 — start previous version and wait healthy
+      - name: Phase 1 — pull previous version's images
+        id: pull-prev
         if: steps.prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: |
-          docker compose pull
+          # Capture pull output so we can distinguish failures we can do
+          # nothing about from real pull failures (network, registry down):
+          #   * Missing previous-version images (GHCR retention etc.) — see
+          #     PR #212 for the original incident.
+          #   * Docker Hub org-wide rate-limit exhaustion — pulls of
+          #     postgres:17 etc. through mirror.gcr.io fall back to Docker
+          #     Hub when the mirror has a miss, and the org's anonymous
+          #     bucket is regularly drained by parallel CI runs. Same
+          #     not-our-fault category as missing images, same response.
+          # Missing previous-version images make the upgrade test impossible
+          # to run, but they are not a regression in *this* PR — skip with a
+          # warning instead of failing.
+          set +e
+          docker compose pull 2>&1 | tee pull.log
+          status=${PIPESTATUS[0]}
+          set -e
+          if [ "$status" -ne 0 ]; then
+            if grep -qE "manifest unknown|not found" pull.log; then
+              echo "::warning::Previous release (${{ steps.prev.outputs.tag }}) images are no longer available in GHCR. Skipping upgrade test — this is not a regression in this PR. See issue #213 for the prune-mechanism rebuild that prevents this from recurring."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            if grep -qE "toomanyrequests|pull rate limit" pull.log; then
+              echo "::warning::Docker Hub rate-limit exhausted for the org during this run (mirror.gcr.io fell back to docker.io and was throttled). Skipping upgrade test — not a regression in this PR."
+              echo "skip=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::docker compose pull failed for an unexpected reason (not a missing-image or rate-limit condition). See pull.log above."
+            exit 1
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Phase 1 — start previous version and wait healthy
+        if: steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
+        working-directory: ${{ steps.install-dir.outputs.path }}
+        run: |
           docker compose up -d
           for i in $(seq 1 30); do
             if curl -sf http://localhost:7777/api/health; then
@@ -680,7 +791,7 @@ jobs:
           exit 1
 
       - name: Phase 2 — swap to this PR's compose file + images
-        if: steps.prev.outputs.skip == 'false'
+        if: steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: |
           SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
@@ -705,7 +816,7 @@ jobs:
           exit 1
 
       - name: Assert pinchy still binds to 127.0.0.1 after upgrade (not 0.0.0.0)
-        if: steps.prev.outputs.skip == 'false'
+        if: steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: |
           # Docker bypasses UFW — only 127.0.0.1 binding prevents external access.
@@ -720,7 +831,7 @@ jobs:
           fi
 
       - name: Tear down
-        if: always() && steps.prev.outputs.skip == 'false'
+        if: always() && steps.prev.outputs.skip == 'false' && steps.pull-prev.outputs.skip == 'false'
         working-directory: ${{ steps.install-dir.outputs.path }}
         run: docker compose down -v
 
@@ -728,9 +839,17 @@ jobs:
     name: Odoo E2E Tests
     runs-on: ubuntu-latest
 
-    # Dev-mode CI test: images are built by compose via docker-compose.dev.yml.
-    # Satisfy the compose fail-loud check on ${PINCHY_VERSION:?} — value is
-    # just the build tag, never pulled from a registry.
+    # Production-image CI test (Tier 2 of the dev/prod parity work, #196):
+    # images are built locally via docker-compose.e2e.yml using the
+    # production Dockerfile.pinchy (uid 999 demotion via entrypoint.sh),
+    # matching what end users actually run. Catches uid/permission
+    # mismatches between Pinchy (uid 999) and OpenClaw (root).
+    #
+    # The earlier attempt to land this (PR #195) reverted because Playwright's
+    # browser-form login flow hit Better Auth's NODE_ENV=production rate
+    # limit (3 sign-ins / 10s per IP) — the loginViaUI calls across odoo
+    # specs blew through it after 3-4 attempts. PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT=1
+    # in docker-compose.e2e.yml disables that limit only for this E2E stack.
     env:
       PINCHY_VERSION: latest
 
@@ -755,7 +874,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Start test stack with mock Odoo
-        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.odoo-test.yml up --build -d
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml up --build -d
         env:
           BETTER_AUTH_SECRET: ci-test-secret-not-for-production
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
@@ -770,7 +889,7 @@ jobs:
             fi
             if [ "$i" -eq 60 ]; then
               echo "::error::Pinchy not healthy after 120s"
-              docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.odoo-test.yml logs pinchy
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml logs pinchy
               exit 1
             fi
             sleep 2
@@ -783,20 +902,20 @@ jobs:
             fi
             if [ "$i" -eq 15 ]; then
               echo "::error::Mock Odoo not healthy after 30s"
-              docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.odoo-test.yml logs odoo-mock
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml logs odoo-mock
               exit 1
             fi
             sleep 2
           done
           echo "Waiting for OpenClaw connection..."
           for i in $(seq 1 60); do
-            if docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.odoo-test.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
+            if docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
               echo "OpenClaw connected (attempt $i)"
               break
             fi
             if [ "$i" -eq 60 ]; then
               echo "::error::Pinchy never connected to OpenClaw"
-              docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.odoo-test.yml logs pinchy openclaw
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml logs pinchy openclaw
               exit 1
             fi
             sleep 2
@@ -814,23 +933,20 @@ jobs:
         if: failure()
         run: |
           echo "=== Pinchy logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.odoo-test.yml logs pinchy 2>&1 | tail -50
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml logs pinchy 2>&1 | tail -50
           echo "=== OpenClaw logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.odoo-test.yml logs openclaw 2>&1 | tail -50
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml logs openclaw 2>&1 | tail -50
           echo "=== Mock Odoo logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.odoo-test.yml logs odoo-mock 2>&1 | tail -30
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml logs odoo-mock 2>&1 | tail -30
 
       - name: Tear down
         if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.odoo-test.yml down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml down -v
 
-  telegram-e2e:
-    name: Telegram E2E Tests
+  web-e2e:
+    name: Web Search E2E Tests
     runs-on: ubuntu-latest
 
-    # Dev-mode CI test: images are built by compose via docker-compose.dev.yml.
-    # Satisfy the compose fail-loud check on ${PINCHY_VERSION:?} — value is
-    # just the build tag, never pulled from a registry.
     env:
       PINCHY_VERSION: latest
 
@@ -854,8 +970,8 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: Start test stack with mock Telegram
-        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml up --build -d
+      - name: Start test stack with mock Brave
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml up --build -d
         env:
           BETTER_AUTH_SECRET: ci-test-secret-not-for-production
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
@@ -870,7 +986,218 @@ jobs:
             fi
             if [ "$i" -eq 60 ]; then
               echo "::error::Pinchy not healthy after 120s"
-              docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs pinchy
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs pinchy
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for mock Brave..."
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:9003/control/health >/dev/null 2>&1; then
+              echo "Mock Brave healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "::error::Mock Brave not healthy after 30s"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs brave-mock
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for OpenClaw connection..."
+          for i in $(seq 1 60); do
+            if docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
+              echo "OpenClaw connected (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy never connected to OpenClaw"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs pinchy openclaw
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Install Playwright browsers
+        run: pnpm -C packages/web exec playwright install --with-deps chromium
+
+      - name: Run Web Search E2E tests
+        run: pnpm -C packages/web test:e2e:web
+        env:
+          CI: true
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Pinchy logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs pinchy 2>&1 | tail -50
+          echo "=== OpenClaw logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs openclaw 2>&1 | tail -50
+          echo "=== Mock Brave logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml logs brave-mock 2>&1 | tail -30
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml down -v
+
+  email-e2e:
+    name: Email (Gmail) E2E Tests
+    runs-on: ubuntu-latest
+
+    env:
+      PINCHY_VERSION: latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/docker-mirror
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Start test stack with mock Gmail
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml up --build -d
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Wait for services
+        run: |
+          echo "Waiting for Pinchy..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7777/api/health >/dev/null 2>&1; then
+              echo "Pinchy healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy not healthy after 120s"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml logs pinchy
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for mock Gmail..."
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:9004/control/health >/dev/null 2>&1; then
+              echo "Mock Gmail healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 15 ]; then
+              echo "::error::Mock Gmail not healthy after 30s"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml logs gmail-mock
+              exit 1
+            fi
+            sleep 2
+          done
+          echo "Waiting for OpenClaw connection..."
+          for i in $(seq 1 60); do
+            if docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
+              echo "OpenClaw connected (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy never connected to OpenClaw"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml logs pinchy openclaw
+              exit 1
+            fi
+            sleep 2
+          done
+
+      - name: Install Playwright browsers
+        run: pnpm -C packages/web exec playwright install --with-deps chromium
+
+      - name: Run Email E2E tests
+        run: pnpm -C packages/web test:e2e:email
+        env:
+          CI: true
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          echo "=== Pinchy logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml logs pinchy 2>&1 | tail -50
+          echo "=== OpenClaw logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml logs openclaw 2>&1 | tail -50
+          echo "=== Mock Gmail logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml logs gmail-mock 2>&1 | tail -30
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml down -v
+
+  telegram-e2e:
+    name: Telegram E2E Tests
+    runs-on: ubuntu-latest
+
+    # Production-image CI test: images are built locally via
+    # docker-compose.e2e.yml using the production Dockerfile.pinchy
+    # (uid 999 demotion via entrypoint.sh), matching what end users
+    # actually run. Catches uid/permission mismatches between Pinchy
+    # (uid 999) and OpenClaw (root) — see e.g. PR #195's regression for
+    # the telegram-pairing.json mode 0600 case.
+    #
+    # ${PINCHY_VERSION:?} on docker-compose.yml's `image:` line is
+    # satisfied by any non-empty string; the build directive in
+    # docker-compose.e2e.yml takes precedence and tags with that name.
+    env:
+      PINCHY_VERSION: latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ./.github/actions/docker-mirror
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      # Chromium is needed by agent-hot-reload.spec.ts which drives the chat UI.
+      # The other Telegram tests are fetch-only, but Playwright still requires
+      # a browser binary present at config-load time.
+      - name: Install Playwright browsers
+        run: pnpm -C packages/web exec playwright install chromium --with-deps
+
+      - name: Start test stack with mock Telegram
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml up --build -d
+        env:
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Wait for services
+        run: |
+          echo "Waiting for Pinchy..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7777/api/health >/dev/null 2>&1; then
+              echo "Pinchy healthy (attempt $i)"
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy not healthy after 120s"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy
               exit 1
             fi
             sleep 2
@@ -883,20 +1210,20 @@ jobs:
             fi
             if [ "$i" -eq 15 ]; then
               echo "::error::Mock Telegram not healthy after 30s"
-              docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs telegram-mock
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs telegram-mock
               exit 1
             fi
             sleep 2
           done
           echo "Waiting for OpenClaw connection..."
           for i in $(seq 1 60); do
-            if docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
+            if docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy 2>&1 | grep -q "Connected to OpenClaw Gateway"; then
               echo "OpenClaw connected (attempt $i)"
               break
             fi
             if [ "$i" -eq 60 ]; then
               echo "::error::Pinchy never connected to OpenClaw"
-              docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs pinchy openclaw
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy openclaw
               exit 1
             fi
             sleep 2
@@ -910,16 +1237,47 @@ jobs:
       - name: Show logs on failure
         if: failure()
         run: |
-          echo "=== Pinchy logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs pinchy 2>&1 | tail -50
+          # Container state first — if a container has restarted or exited, the
+          # log tails below tell a confusing story (truncated at the wrong end).
+          # In run 25261606990 OpenClaw stopped emitting logs ~3 min before the
+          # test 10 timeout: docker compose ps reveals whether that was a crash,
+          # a restart loop, or just a quiet healthy process.
+          echo "=== Container state ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml ps --all 2>&1 || true
+          # Mock telegram is the primary diagnostic for the known flake:
+          # we need to see every bot token that ever polled, not just the last
+          # 30 lines. Each bot pings getUpdates every ≤30s, so a 7-test suite
+          # easily logs hundreds of lines. tail -2000 covers a full run.
+          echo "=== Mock Telegram health snapshot ==="
+          curl -sf http://localhost:9001/control/health | jq . || echo "health endpoint unreachable"
+          echo "=== Mock Telegram all bot responses ==="
+          curl -sf 'http://localhost:9001/control/responses' | jq . || echo "responses endpoint unreachable"
+          # Definitive answer to "what token does OpenClaw think is configured?":
+          # the openclaw.json file Pinchy writes and OpenClaw reads. If this
+          # disagrees with the DB-side telegram_bot_token settings (also dumped
+          # below), the targeted-write race in updateTelegramChannelConfig is
+          # the culprit. If they agree but mock polls a stale token, OpenClaw's
+          # channel restart isn't picking up the file change.
+          echo "=== Pinchy openclaw.json (from Pinchy container — same bind mount as OpenClaw) ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml exec -T pinchy cat /openclaw-config/openclaw.json 2>/dev/null | jq '{bindings, channels: .channels, sessionScope: .session.dmScope, agents: (.agents.list | length)}' || echo "openclaw.json not readable"
+          echo "=== Pinchy DB telegram_bot_token settings ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml exec -T db psql -U pinchy -d pinchy -c "SELECT key, LEFT(value, 30) AS value_preview, encrypted FROM settings WHERE key LIKE 'telegram_%' ORDER BY key;" 2>/dev/null || echo "db not readable"
+          echo "=== Mock Telegram logs (full) ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs telegram-mock 2>&1 | tail -2000
+          # OpenClaw: 3000 because tail -500 only covered the initial setup
+          # (~90s) and missed Test 10's failure window — see PR-CI run
+          # 25260750434, where OpenClaw activity after 20:16:50 (Multi-Bot
+          # connectBot) was truncated. We need the full restart trace post-
+          # connect to confirm whether the second account's provider ever
+          # starts.
           echo "=== OpenClaw logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs openclaw 2>&1 | tail -50
-          echo "=== Mock Telegram logs ==="
-          docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml logs telegram-mock 2>&1 | tail -30
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs openclaw 2>&1 | tail -3000
+          echo "=== Pinchy logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml logs pinchy 2>&1 | tail -500
 
       - name: Tear down
         if: always()
-        run: docker compose -f docker-compose.yml -f docker-compose.dev.yml -f docker-compose.test.yml down -v
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.test.yml down -v
 
   integration:
     name: Integration Tests (OpenClaw + Fake Ollama)
@@ -1064,6 +1422,7 @@ jobs:
     uses: "google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.5"
     with:
       scan-args: |-
+        --config=./osv-scanner.toml
         --lockfile=./pnpm-lock.yaml
         --lockfile=./docs/pnpm-lock.yaml
     permissions:

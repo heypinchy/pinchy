@@ -1,3 +1,7 @@
+// auth-direct: browser-flow callback. The user has just bounced through
+// Google's OAuth consent screen; on auth failure we render a redirect to
+// /settings, not a JSON 401, so they don't dead-end on raw JSON. The
+// withAuth/withAdmin wrappers always return JSON, which doesn't fit here.
 import { NextResponse } from "next/server";
 import { headers } from "next/headers";
 import { getSession } from "@/lib/auth";
@@ -5,7 +9,8 @@ import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
 import { encrypt } from "@/lib/encryption";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
-import { appendAuditLog } from "@/lib/audit";
+import { redactEmail } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { eq, and } from "drizzle-orm";
 
 function errorRedirect(origin: string, error: string) {
@@ -74,7 +79,7 @@ export async function GET(request: Request) {
   });
 
   if (!tokenResponse.ok) {
-    appendAuditLog({
+    deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
       eventType: "config.changed",
@@ -85,7 +90,7 @@ export async function GET(request: Request) {
         error: { message: "token_exchange_failed" },
       },
       outcome: "failure",
-    }).catch(console.error);
+    });
     return errorRedirect(origin, "token_exchange_failed");
   }
 
@@ -98,7 +103,7 @@ export async function GET(request: Request) {
   });
 
   if (!profileResponse.ok) {
-    appendAuditLog({
+    deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
       eventType: "config.changed",
@@ -109,7 +114,7 @@ export async function GET(request: Request) {
         error: { message: "profile_fetch_failed" },
       },
       outcome: "failure",
-    }).catch(console.error);
+    });
     return errorRedirect(origin, "profile_fetch_failed");
   }
 
@@ -181,7 +186,12 @@ export async function GET(request: Request) {
   }
 
   // 9. Audit log
-  appendAuditLog({
+  // GDPR Art. 17: never record the plaintext Gmail address. The audit row
+  // is HMAC-signed, so we cannot redact later. redactEmail() gives us a
+  // keyed hash + masked preview; the connectionId in `resource` is enough
+  // to look up the live mailbox name from the integrations table while it
+  // exists.
+  deferAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "config.changed",
@@ -189,11 +199,10 @@ export async function GET(request: Request) {
     detail: {
       action: "integration_created",
       type: "google",
-      name: emailAddress,
-      emailAddress,
+      ...redactEmail(emailAddress),
     },
     outcome: "success",
-  }).catch(console.error);
+  });
 
   // 10. Clean up cookies and redirect
   const successUrl = new URL("/settings", origin);

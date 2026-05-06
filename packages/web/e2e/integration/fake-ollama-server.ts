@@ -8,13 +8,69 @@
 //   POST /api/chat   → streaming NDJSON response
 import * as http from "http";
 
-const MODEL_NAME = "fake-model:latest";
+const MODEL_NAME = "llama3.2";
 // This string must appear in the test's expect() assertion
 const FAKE_RESPONSE = "Integration test response.";
+const DOMAIN_LOCK_TOOL_TRIGGER = "E2E_DOMAIN_LOCK_DOCS_TOOL";
+const DOMAIN_LOCK_TOOL_RESPONSE = "Domain lock docs tool call completed.";
 
-function handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
+function writeNdjson(res: http.ServerResponse, chunks: unknown[]) {
+  res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+  for (const chunk of chunks) {
+    res.write(JSON.stringify(chunk) + "\n");
+  }
+  res.end();
+}
+
+function streamTextResponse(res: http.ServerResponse, text: string) {
+  const chunks = text.split(" ").map((word, i, arr) => ({
+    model: MODEL_NAME,
+    created_at: new Date().toISOString(),
+    message: { role: "assistant", content: i === 0 ? word : " " + word },
+    done: i === arr.length - 1,
+    ...(i === arr.length - 1 && { done_reason: "stop", total_duration: 1000000 }),
+  }));
+  writeNdjson(res, chunks);
+}
+
+function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
+  return new Promise((resolve) => {
+    let body = "";
+    req.on("data", (chunk) => {
+      body += chunk.toString();
+    });
+    req.on("end", () => {
+      try {
+        resolve(JSON.parse(body) as Record<string, unknown>);
+      } catch {
+        resolve({});
+      }
+    });
+  });
+}
+
+function messageContent(message: unknown): string {
+  if (!message || typeof message !== "object") return "";
+  const content = (message as { content?: unknown }).content;
+  if (typeof content === "string") return content;
+  return "";
+}
+
+function hasToolRole(message: unknown): boolean {
+  return (
+    !!message && typeof message === "object" && (message as { role?: unknown }).role === "tool"
+  );
+}
+
+async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
   const url = req.url ?? "";
   const method = req.method ?? "";
+
+  if (method === "GET" && url === "/__pinchy_fake_ollama") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true, model: MODEL_NAME }));
+    return;
+  }
 
   if (method === "GET" && url === "/api/tags") {
     res.writeHead(200, { "Content-Type": "application/json" });
@@ -43,18 +99,41 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
   }
 
   if (method === "POST" && url === "/api/chat") {
-    res.writeHead(200, { "Content-Type": "application/x-ndjson" });
-    const chunks = FAKE_RESPONSE.split(" ").map((word, i, arr) => ({
-      model: MODEL_NAME,
-      created_at: new Date().toISOString(),
-      message: { role: "assistant", content: i === 0 ? word : " " + word },
-      done: i === arr.length - 1,
-      ...(i === arr.length - 1 && { done_reason: "stop", total_duration: 1000000 }),
-    }));
-    for (const chunk of chunks) {
-      res.write(JSON.stringify(chunk) + "\n");
+    const payload = await readJsonBody(req);
+    const messages = Array.isArray(payload.messages) ? payload.messages : [];
+    const lastUserMessage = [...messages]
+      .reverse()
+      .find((message) => (message as { role?: unknown })?.role === "user");
+    const isDomainLockToolPrompt =
+      messageContent(lastUserMessage).includes(DOMAIN_LOCK_TOOL_TRIGGER);
+    const hasToolResult = messages.some(hasToolRole);
+
+    if (isDomainLockToolPrompt && !hasToolResult) {
+      writeNdjson(res, [
+        {
+          model: MODEL_NAME,
+          created_at: new Date().toISOString(),
+          message: {
+            role: "assistant",
+            content: "",
+            tool_calls: [
+              {
+                function: {
+                  name: "docs_list",
+                  arguments: {},
+                },
+              },
+            ],
+          },
+          done: true,
+          done_reason: "stop",
+          total_duration: 1000000,
+        },
+      ]);
+      return;
     }
-    res.end();
+
+    streamTextResponse(res, isDomainLockToolPrompt ? DOMAIN_LOCK_TOOL_RESPONSE : FAKE_RESPONSE);
     return;
   }
 
@@ -66,6 +145,8 @@ function handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
 export const FAKE_OLLAMA_PORT = 11435;
 export const FAKE_OLLAMA_MODEL = `ollama/${MODEL_NAME}`;
 export const FAKE_OLLAMA_RESPONSE = FAKE_RESPONSE;
+export const FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER = DOMAIN_LOCK_TOOL_TRIGGER;
+export const FAKE_OLLAMA_DOMAIN_LOCK_TOOL_RESPONSE = DOMAIN_LOCK_TOOL_RESPONSE;
 
 let server: http.Server | null = null;
 

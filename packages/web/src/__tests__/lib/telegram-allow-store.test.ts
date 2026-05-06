@@ -80,9 +80,6 @@ vi.mock("@/lib/settings", () => ({
 }));
 
 import {
-  addToAllowStore,
-  removeFromAllowStore,
-  clearAllowStore,
   removePairingRequest,
   recalculateTelegramAllowStores,
   getStorePathForAccount,
@@ -90,112 +87,16 @@ import {
   clearAllAllowStores,
 } from "@/lib/telegram-allow-store";
 
+function makeEaccesError() {
+  const err = new Error("EACCES: permission denied, open '/openclaw-config/credentials/file.json'");
+  (err as NodeJS.ErrnoException).code = "EACCES";
+  return err;
+}
+
 describe("telegram-allow-store", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockExistsSync.mockReturnValue(true);
-  });
-
-  // ── Legacy single-store functions (backward compat) ───────────────
-
-  describe("addToAllowStore", () => {
-    it("creates store with user when file does not exist", () => {
-      mockReadFileSync.mockImplementation(() => {
-        throw new Error("ENOENT");
-      });
-
-      addToAllowStore("8754697762");
-
-      expect(mockWriteFileSync).toHaveBeenCalledOnce();
-      const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
-      expect(written).toEqual({ version: 1, allowFrom: ["8754697762"] });
-      // Atomic: writes tmp then renames
-      expect(mockRenameSync).toHaveBeenCalledOnce();
-    });
-
-    it("adds user to existing store", () => {
-      mockReadFileSync.mockReturnValue(JSON.stringify({ version: 1, allowFrom: ["111222333"] }));
-
-      addToAllowStore("8754697762");
-
-      expect(mockWriteFileSync).toHaveBeenCalledOnce();
-      const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
-      expect(written.allowFrom).toEqual(["111222333", "8754697762"]);
-    });
-
-    it("does not duplicate existing user", () => {
-      mockReadFileSync.mockReturnValue(JSON.stringify({ version: 1, allowFrom: ["8754697762"] }));
-
-      addToAllowStore("8754697762");
-
-      // Should not write if no change
-      expect(mockWriteFileSync).not.toHaveBeenCalled();
-    });
-
-    it("creates credentials directory if it does not exist", () => {
-      mockExistsSync.mockReturnValue(false);
-      mockReadFileSync.mockImplementation(() => {
-        throw new Error("ENOENT");
-      });
-
-      addToAllowStore("8754697762");
-
-      expect(mockMkdirSync).toHaveBeenCalledWith(expect.any(String), { recursive: true });
-    });
-  });
-
-  describe("removeFromAllowStore", () => {
-    it("removes user from store", () => {
-      mockReadFileSync.mockReturnValue(
-        JSON.stringify({ version: 1, allowFrom: ["8754697762", "111222333"] })
-      );
-
-      removeFromAllowStore("8754697762");
-
-      const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
-      expect(written.allowFrom).toEqual(["111222333"]);
-    });
-
-    it("does nothing if user not in store", () => {
-      mockReadFileSync.mockReturnValue(JSON.stringify({ version: 1, allowFrom: ["111222333"] }));
-
-      removeFromAllowStore("8754697762");
-
-      expect(mockWriteFileSync).not.toHaveBeenCalled();
-    });
-
-    it("does nothing if store does not exist", () => {
-      mockReadFileSync.mockImplementation(() => {
-        throw new Error("ENOENT");
-      });
-
-      removeFromAllowStore("8754697762");
-
-      expect(mockWriteFileSync).not.toHaveBeenCalled();
-    });
-  });
-
-  describe("clearAllowStore", () => {
-    it("writes empty allowFrom array", () => {
-      mockReadFileSync.mockReturnValue(
-        JSON.stringify({ version: 1, allowFrom: ["8754697762", "111222333"] })
-      );
-
-      clearAllowStore();
-
-      const written = JSON.parse(mockWriteFileSync.mock.calls[0][1] as string);
-      expect(written).toEqual({ version: 1, allowFrom: [] });
-    });
-
-    it("does nothing if store does not exist", () => {
-      mockReadFileSync.mockImplementation(() => {
-        throw new Error("ENOENT");
-      });
-
-      clearAllowStore();
-
-      expect(mockWriteFileSync).not.toHaveBeenCalled();
-    });
   });
 
   describe("removePairingRequest", () => {
@@ -236,6 +137,23 @@ describe("telegram-allow-store", () => {
 
       expect(mockWriteFileSync).not.toHaveBeenCalled();
     });
+
+    it("logs a warning and does nothing when pairing file is not readable due to EACCES", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      mockReadFileSync.mockImplementation(() => {
+        throw makeEaccesError();
+      });
+
+      removePairingRequest("8754697762");
+
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("[telegram-allow-store]"),
+        expect.any(String),
+        expect.stringContaining("EACCES")
+      );
+      warn.mockRestore();
+    });
   });
 
   // ── Per-account store functions ───────────────────────────────────
@@ -269,6 +187,23 @@ describe("telegram-allow-store", () => {
 
       expect(mockWriteFileSync).not.toHaveBeenCalled();
     });
+
+    it("logs a warning and does nothing when store is not readable due to EACCES", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      mockReadFileSync.mockImplementation(() => {
+        throw makeEaccesError();
+      });
+
+      clearAllowStoreForAccount("agent-1");
+
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("[telegram-allow-store]"),
+        expect.any(String),
+        expect.stringContaining("EACCES")
+      );
+      warn.mockRestore();
+    });
   });
 
   describe("clearAllAllowStores", () => {
@@ -299,6 +234,21 @@ describe("telegram-allow-store", () => {
 
       // Legacy + per-account = 2 writes
       expect(mockWriteFileSync).toHaveBeenCalledTimes(2);
+    });
+
+    it("logs a warning and does not throw when credentials dir is not readable due to EACCES", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      mockReaddirSync.mockImplementation(() => {
+        throw makeEaccesError();
+      });
+
+      expect(() => clearAllAllowStores()).not.toThrow();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("[telegram-allow-store]"),
+        expect.any(String),
+        expect.stringContaining("EACCES")
+      );
+      warn.mockRestore();
     });
   });
 

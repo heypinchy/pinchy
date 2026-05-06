@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { resolveModelForTemplate } from "..";
 import { AGENT_TEMPLATES } from "@/lib/agent-templates";
+import { TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS } from "@/lib/ollama-cloud-models";
 import type { ProviderName } from "@/lib/providers";
 
 vi.mock("@/lib/provider-models", () => ({
@@ -69,4 +70,32 @@ describe("template + provider resolves to expected model", () => {
       expect(result.model).toBe(expected);
     }
   );
+});
+
+/**
+ * Regression guard for the v0.5.0 staging bug where the CRM template's
+ * `tier=balanced + general` hint resolved to `ollama-cloud/llama3.3:70b`,
+ * a model that no longer exists on Ollama Cloud — surfacing as
+ * `HTTP 404: model "llama3.3:70b" not found` to the user.
+ *
+ * Walks every template that has a `modelHint`, resolves it under the
+ * Ollama Cloud provider, and asserts the resulting model ID is in the
+ * curated `TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS` list — the only IDs we
+ * know Ollama Cloud actually serves.
+ *
+ * The static type-level guard (OllamaCloudModelId in the resolver) catches
+ * this at compile time for a single resolver. This test catches it at
+ * runtime across every template-resolver pairing — a second line of
+ * defence that survives any future code path that bypasses the type.
+ */
+describe("every template resolves to an actually-existing Ollama Cloud model", () => {
+  const templatesWithHint = Object.entries(AGENT_TEMPLATES)
+    .filter(([, t]) => t.modelHint !== undefined)
+    .map(([id, t]) => ({ id, hint: t.modelHint! }));
+
+  it.each(templatesWithHint)("$id resolves to a curated Ollama Cloud model", async ({ hint }) => {
+    const result = await resolveModelForTemplate({ hint, provider: "ollama-cloud" });
+    const idWithoutPrefix = result.model.replace(/^ollama-cloud\//, "");
+    expect(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS).toContain(idWithoutPrefix);
+  });
 });

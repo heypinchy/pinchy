@@ -11,19 +11,31 @@ import { openClawConnectionState } from "./src/server/openclaw-connection-state"
 import { setOpenClawClient } from "./src/server/openclaw-client";
 import { WsRateLimiter } from "./src/server/ws-rate-limit";
 import { setupOpenClawDisconnectHandler } from "./src/server/openclaw-disconnect-handler";
-import { setupOpenClawStatusBroadcaster } from "./src/server/openclaw-status-broadcaster";
+import {
+  setupOpenClawStatusBroadcaster,
+  createColdStartStatusBroadcaster,
+} from "./src/server/openclaw-status-broadcaster";
 import { logCapture } from "./src/lib/log-capture";
 import { startUsagePoller, stopUsagePoller } from "./src/lib/usage-poller";
 import { registerShutdownHandlers } from "./src/lib/shutdown";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
+import { getBetterAuthUrlStartupWarning } from "./src/lib/auth-env-warning";
 
 logCapture.install();
 
-if (process.env.BETTER_AUTH_URL) {
+const betterAuthUrlWarning = getBetterAuthUrlStartupWarning();
+if (betterAuthUrlWarning) console.warn(betterAuthUrlWarning);
+
+if (process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT === "1") {
+  // Surface this loud at startup. Production deployments must NEVER set this
+  // — it disables Better Auth's brute-force protection on /sign-in/*. The
+  // only legitimate setter is docker-compose.e2e.yml, which is itself only
+  // ever layered on top of docker-compose.yml during CI E2E runs.
   console.warn(
-    "⚠ BETTER_AUTH_URL is set but no longer used. " +
-      "Go to Settings → Security to lock your domain."
+    "⚠ PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT=1 — auth rate limiting is OFF. " +
+      "This must only ever be set in E2E test stacks. If you see this in " +
+      "production logs, unset the env var and restart immediately."
   );
 }
 
@@ -33,15 +45,14 @@ const handle = app.getRequestHandler();
 
 const OPENCLAW_WS_URL = process.env.OPENCLAW_WS_URL;
 
-async function waitForGatewayToken(maxWaitMs = 30000): Promise<string> {
+async function waitForGatewayToken(maxWaitMs = 30000): Promise<string | null> {
   const start = Date.now();
   while (Date.now() - start < maxWaitMs) {
     const token = readGatewayToken();
     if (token) return token;
     await new Promise((resolve) => setTimeout(resolve, 1000));
   }
-  console.warn("[pinchy] Gateway token not available after waiting, connecting without token");
-  return "";
+  return null;
 }
 
 if (process.env.NODE_ENV === "production") {
@@ -54,74 +65,13 @@ if (process.env.NODE_ENV === "production") {
 }
 
 app.prepare().then(async () => {
-  // Migrate session keys from old format (user-<id>) to new (direct:<id>)
-  try {
-    const { migrateSessionKeys } = await import("./src/lib/session-migration");
-    const openclawDataPath = process.env.OPENCLAW_DATA_PATH || "/openclaw-config";
-    migrateSessionKeys(openclawDataPath);
-  } catch {
-    // Non-critical — old sessions will just start fresh
-  }
-
-  // Load domain cache before first request so auth config has the domain available.
-  try {
-    const { loadDomainCache } = await import("./src/lib/domain");
-    await loadDomainCache();
-  } catch (err) {
-    console.error(
-      "[pinchy] Failed to load domain cache:",
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  // One-time migration: delete legacy openclaw.json.bak (may contain plaintext secrets).
-  // Runs before any config read/write so the .bak file never gets a chance to be used.
-  try {
-    const { migrateToSecretRef } = await import("./src/lib/openclaw-migration");
-    const configPath = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
-    migrateToSecretRef(configPath);
-  } catch (err) {
-    console.error(
-      "[pinchy] Failed to run secret-ref migration:",
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  // Sanitize OpenClaw config before anything else — remove stale plugin entries
-  // from the allow list that would prevent OpenClaw from starting. This runs
-  // even before setup is complete (no DB access needed).
-  try {
-    const { sanitizeOpenClawConfig } = await import("./src/lib/openclaw-config");
-    if (sanitizeOpenClawConfig()) {
-      console.log("[pinchy] Sanitized OpenClaw config (removed stale plugin allow entries)");
-    }
-  } catch (err) {
-    console.error(
-      "[pinchy] Failed to sanitize OpenClaw config:",
-      err instanceof Error ? err.message : err
-    );
-  }
-
-  // Regenerate OpenClaw config on startup to ensure it's in sync with code changes.
-  // This handles cases like new plugin configs or changed config structure after updates.
-  try {
-    const { isSetupComplete } = await import("./src/lib/setup");
-    if (await isSetupComplete()) {
-      const { regenerateOpenClawConfig } = await import("./src/lib/openclaw-config");
-      await regenerateOpenClawConfig();
-      console.log("[pinchy] OpenClaw config regenerated from DB state");
-    }
-  } catch (err) {
-    console.error(
-      "[pinchy] Failed to regenerate OpenClaw config on startup:",
-      err instanceof Error ? err.message : err
-    );
-  }
-
+  // Import request-handling modules before the server starts — these don't
+  // depend on bootInits having run (domain cache starts empty and fills lazily).
   const { isHostAllowed } = await import("./src/server/host-check");
   const { getCachedDomain } = await import("./src/lib/domain-cache");
+  const { applyCsrfGate } = await import("./src/server/csrf-check");
 
-  const server = createServer((req, res) => {
+  const server = createServer(async (req, res) => {
     const { pathname } = parse(req.url!, true);
     const host = (req.headers["x-forwarded-host"] as string) || req.headers.host;
     if (!isHostAllowed(host, pathname)) {
@@ -147,11 +97,20 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       }
       return;
     }
+
+    if (await applyCsrfGate(req, res)) return;
+
     handle(req, res, parse(req.url!, true));
   });
 
   let openclawClient: OpenClawClient | null = null;
-  let statusBroadcaster: ReturnType<typeof setupOpenClawStatusBroadcaster> | null = null;
+  // Pre-construct a cold-start stand-in so the WS server always has a
+  // broadcaster to call. Belt-and-suspenders for issue #198: even if a
+  // future client change reintroduces an optimistic default, a browser
+  // connecting before the OpenClaw block has run still receives an
+  // honest `openclaw_status: false` frame.
+  let statusBroadcaster: ReturnType<typeof setupOpenClawStatusBroadcaster> =
+    createColdStartStatusBroadcaster();
 
   const sessionCache = new SessionCache();
 
@@ -223,7 +182,8 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
 
     // Push the current upstream OpenClaw status so the indicator reflects
     // reality even when this connection was opened during an OpenClaw outage.
-    statusBroadcaster?.sendInitialStatus(clientWs);
+    // The broadcaster is always defined — see the cold-start stand-in above.
+    statusBroadcaster.sendInitialStatus(clientWs);
 
     const router = openclawClient
       ? new ClientRouter(openclawClient, sessionInfo.userId, sessionInfo.userRole, sessionCache)
@@ -257,9 +217,13 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   });
 
   const port = parseInt(process.env.PORT || "7777", 10);
-  server.listen(port, () => {
-    console.log(`Pinchy ready on http://localhost:${port}`);
-  });
+
+  // Start listening BEFORE bootInits so the Docker Compose healthcheck can
+  // reach /api/internal/openclaw-config-ready immediately. The endpoint returns
+  // 503 until bootInits calls markOpenClawConfigReady(), at which point the
+  // healthcheck passes and the openclaw container is allowed to start.
+  await new Promise<void>((resolve) => server.listen(port, resolve));
+  console.log(`Pinchy ready on http://localhost:${port}`);
 
   // Graceful shutdown: stop the usage poller interval so Node can exit,
   // then close the HTTP server. Without this, a SIGTERM (e.g. from Docker
@@ -273,13 +237,42 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
       }),
   ]);
 
-  // Connect to OpenClaw AFTER the server is listening so health checks pass
-  // immediately and the setup wizard is available without waiting for OpenClaw.
+  // Run boot initializations AFTER the server is listening. The healthcheck
+  // endpoint returns 503 until markOpenClawConfigReady() is called inside
+  // bootInits(), at which point Docker Compose marks the container healthy.
+  const { bootInits } = await import("./src/lib/boot-inits");
+  const setupWasComplete = await bootInits();
+
+  // Connect to OpenClaw AFTER bootInits so the gateway token and config are
+  // ready. On a completed install, bootInits() has already run
+  // regenerateOpenClawConfig() which writes the token — waitForGatewayToken
+  // returns immediately. On a fresh install (no setup yet), we poll until
+  // the setup wizard writes the token (typically within a few seconds).
+  // The HTTP server is already running so health/infra checks are not blocked.
   if (OPENCLAW_WS_URL) {
     const gatewayToken = await waitForGatewayToken();
+    if (gatewayToken === null) {
+      if (setupWasComplete) {
+        // Setup is complete but the token is missing — that's a real bug
+        // (DB corruption, deleted secret, file-system issue). Exit so Docker
+        // restarts the container with a clean attempt rather than silently
+        // running with a broken OpenClaw connection.
+        console.error(
+          "[pinchy] Gateway token missing after setup-complete boot; exiting for restart"
+        );
+        process.exit(1);
+      }
+      // Fresh install: setup wizard hasn't run yet. Skip the OpenClaw
+      // connection — the wizard will write the token and trigger
+      // regenerateOpenClawConfig, after which a Docker restart (or the next
+      // boot) will pick up the connection.
+      console.warn(
+        "[pinchy] Gateway token not available — setup wizard required before OpenClaw connects"
+      );
+    }
     openclawClient = new OpenClawClient({
       url: OPENCLAW_WS_URL,
-      token: gatewayToken,
+      token: gatewayToken ?? "",
       clientId: "gateway-client",
       clientVersion: "0.1.0",
       scopes: ["operator.admin"],

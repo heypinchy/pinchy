@@ -1,3 +1,7 @@
+// auth-direct: public diagnostics endpoint — the session lookup is OPTIONAL,
+// used only to decide whether to include server logs in the response.
+// withAuth/withAdmin would force a 401 on unauthenticated requests, which
+// would break the public health-check use case.
 import { NextResponse } from "next/server";
 import { logCapture } from "@/lib/log-capture";
 import { getSession } from "@/lib/auth";

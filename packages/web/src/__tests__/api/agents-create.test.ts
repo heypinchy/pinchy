@@ -175,7 +175,6 @@ import {
   writeIdentityFile,
 } from "@/lib/workspace";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
-import { appendAuditLog } from "@/lib/audit";
 
 describe("POST /api/agents", () => {
   beforeEach(() => {
@@ -199,7 +198,7 @@ describe("POST /api/agents", () => {
     const response = await POST(request);
     expect(response.status).toBe(403);
     const body = await response.json();
-    expect(body.error).toBe("Admin access required");
+    expect(body.error).toBe("Forbidden");
   });
 
   it("should create an agent from a knowledge-base template", async () => {
@@ -268,6 +267,35 @@ describe("POST /api/agents", () => {
     );
   });
 
+  it("should reject whitespace-only name", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({ name: "   ", templateId: "custom" }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.name).toBeDefined();
+  });
+
+  it("should reject pinchy-files.allowed_paths with non-string entries", async () => {
+    const request = new NextRequest("http://localhost:7777/api/agents", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "Test",
+        templateId: "knowledge-base",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data/", 42] } },
+      }),
+    });
+
+    const response = await POST(request);
+    expect(response.status).toBe(400);
+    const body = await response.json();
+    expect(body.error).toBe("Validation failed");
+  });
+
   it("should reject name longer than 30 characters", async () => {
     const request = new NextRequest("http://localhost:7777/api/agents", {
       method: "POST",
@@ -280,7 +308,8 @@ describe("POST /api/agents", () => {
     const response = await POST(request);
     expect(response.status).toBe(400);
     const body = await response.json();
-    expect(body.error).toMatch(/name/i);
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.name).toBeDefined();
   });
 
   it("should accept name with exactly 30 characters", async () => {

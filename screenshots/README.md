@@ -35,7 +35,6 @@ npx playwright test screenshots/capture.ts
 | `audit-trail.png` | Cryptographic audit log |
 | `user-management.png` | User list & roles |
 | `groups.png` | Group-based access control |
-| `provider-settings.png` | AI provider configuration |
 
 ## Environment variables
 

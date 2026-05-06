@@ -1,21 +1,20 @@
 import { NextResponse } from "next/server";
-import { headers } from "next/headers";
-import { auth } from "@/lib/auth";
+import { withAuth } from "@/lib/api-auth";
 import { readFileSync } from "fs";
 
 const DATA_DIRECTORIES_JSON = "/openclaw-config/data-directories.json";
 
-export async function GET() {
-  const session = await auth.api.getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const GET = withAuth(async () => {
   try {
     const json = readFileSync(DATA_DIRECTORIES_JSON, "utf-8");
     const data = JSON.parse(json);
     return NextResponse.json({ directories: data.directories });
-  } catch {
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "ENOENT") {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[data-directories]", `failed to read ${DATA_DIRECTORIES_JSON}:`, message);
+    }
     return NextResponse.json({ directories: [] });
   }
-}
+});

@@ -14,6 +14,20 @@ import {
 
 const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
 
+/** Poll /api/health/openclaw until `connected` is true or the timeout elapses. */
+async function pollUntilOpenClawConnected(cookie: string, maxMs: number): Promise<boolean> {
+  const deadline = Date.now() + maxMs;
+  while (Date.now() < deadline) {
+    const res = await pinchyGet("/api/health/openclaw", cookie);
+    if (res.ok) {
+      const body = (await res.json()) as { connected?: boolean };
+      if (body.connected) return true;
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return false;
+}
+
 test.describe("Odoo Agent Chat", () => {
   let cookie: string;
   let connectionId: string;
@@ -129,6 +143,45 @@ test.describe("Odoo Agent Chat", () => {
       write: false,
       delete: false,
     });
+  });
+
+  test("OpenClaw accepts the regenerated config when an Odoo agent gets permissions and tools", async () => {
+    // This is the regression guard for the staging block (2026-05-04).
+    // Pre-fix: setting Odoo permissions caused regenerateOpenClawConfig() to write a
+    // config that OpenClaw rejected with INVALID_CONFIG (manifest required 'connection'
+    // object, build.ts wrote 'connectionId' string since the API-callback migration).
+    // Post-fix: the manifest matches the emitted shape; OpenClaw accepts the config.
+
+    // Grant permissions — triggers regenerateOpenClawConfig() on the server.
+    const putRes = await setAgentPermissions(cookie, agentId, connectionId, [
+      { model: "crm.lead", operation: "read" },
+    ]);
+    expect(putRes.status).toBe(200);
+
+    // Grant Odoo tools — a second config regen, this time plugins.entries["pinchy-odoo"] is emitted.
+    const patchRes = await pinchyPatch(
+      `/api/agents/${agentId}`,
+      { allowedTools: ["odoo_schema", "odoo_read", "odoo_count"] },
+      cookie
+    );
+    expect(patchRes.status).toBe(200);
+
+    // Poll /api/health/openclaw until OpenClaw reports connected=true after the
+    // inotify hot-reload, with a generous timeout for slow CI environments.
+    // The inotifywait grace period in start-openclaw.sh is 30 s; 10 s is enough
+    // in practice (reload happens within ~1–2 s after the file write).
+    const connected = await pollUntilOpenClawConnected(cookie, 10_000);
+    expect(connected).toBe(true);
+
+    // Double-check: the integration data has the connectionId shape (not legacy 'connection' object).
+    const intRes = await pinchyGet(`/api/agents/${agentId}/integrations`, cookie);
+    expect(intRes.status).toBe(200);
+    const integrations = await intRes.json();
+    const odooInt = integrations.find(
+      (i: { connectionId: string }) => i.connectionId === connectionId
+    );
+    expect(odooInt).toBeTruthy();
+    expect(typeof odooInt.connectionId).toBe("string");
   });
 
   test("audit trail records tool usage via internal endpoint", async () => {

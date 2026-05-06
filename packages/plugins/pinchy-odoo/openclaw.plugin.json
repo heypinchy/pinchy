@@ -1,23 +1,27 @@
 {
   "id": "pinchy-odoo",
   "name": "Pinchy Odoo",
-  "description": "Odoo ERP integration with model-level permissions.",
+  "description": "Odoo ERP integration with model-level permissions. Credentials are fetched at runtime from Pinchy's internal credentials API — never stored in this config.",
   "configSchema": {
     "type": "object",
+    "additionalProperties": false,
     "properties": {
+      "apiBaseUrl": { "type": "string" },
+      "gatewayToken": { "type": "string" },
       "agents": {
         "type": "object",
         "additionalProperties": {
           "type": "object",
+          "additionalProperties": false,
           "properties": {
-            "connection": { "type": "object" },
+            "connectionId": { "type": "string" },
             "permissions": { "type": "object" },
-            "schema": { "type": "object" }
+            "modelNames": { "type": "object" }
           },
-          "required": ["connection", "permissions"]
+          "required": ["connectionId", "permissions"]
         }
       }
     },
-    "required": ["agents"]
+    "required": ["apiBaseUrl", "gatewayToken", "agents"]
   }
 }

@@ -47,7 +47,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     authType: "url",
     settingsKey: "ollama_local_url",
     envVar: "",
-    defaultModel: "",
+    defaultModel: "ollama/llama3.2",
     placeholder: "http://host.docker.internal:11434",
   },
 };

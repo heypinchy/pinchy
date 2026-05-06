@@ -1,15 +1,15 @@
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import { eq } from "drizzle-orm";
-import { getSession } from "@/lib/auth";
+import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { encrypt, decrypt } from "@/lib/encryption";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { odooCredentialsSchema, odooConnectionDataSchema } from "@/lib/integrations/odoo-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
+import { parseRequestBody } from "@/lib/api-validation";
 
 const createIntegrationSchema = z.discriminatedUnion("type", [
   z.object({
@@ -27,15 +27,7 @@ const createIntegrationSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-export async function GET() {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const GET = withAdmin(async () => {
   const connections = await db.select().from(integrationConnections);
 
   // Decrypt per row and isolate failures: if ENCRYPTION_KEY changed (e.g. an
@@ -71,26 +63,11 @@ export async function GET() {
   });
 
   return NextResponse.json(masked);
-}
+});
 
-export async function POST(request: NextRequest) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
-  const body = await request.json();
-  const parsed = createIntegrationSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      { status: 400 }
-    );
-  }
-
+export const POST = withAdmin(async (request, _ctx, session) => {
+  const parsed = await parseRequestBody(createIntegrationSchema, request);
+  if ("error" in parsed) return parsed.error;
   const { type, name, description, credentials } = parsed.data;
 
   // Singleton types: only one connection of this type allowed
@@ -128,14 +105,14 @@ export async function POST(request: NextRequest) {
     })
     .returning();
 
-  appendAuditLog({
+  deferAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "config.changed",
     resource: `integration:${connection.id}`,
     detail: { action: "integration_created", type, name },
     outcome: "success",
-  }).catch(console.error);
+  });
 
   return NextResponse.json(
     {
@@ -144,4 +121,4 @@ export async function POST(request: NextRequest) {
     },
     { status: 201 }
   );
-}
+});

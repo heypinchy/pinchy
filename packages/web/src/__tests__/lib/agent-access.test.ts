@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import {
   assertAgentAccess,
   assertAgentWriteAccess,
+  requireAgentWriteAccess,
   getAgentWithAccess,
   effectiveVisibility,
 } from "@/lib/agent-access";
@@ -93,6 +94,34 @@ describe("assertAgentWriteAccess", () => {
   it("denies non-owner from modifying personal agent", () => {
     const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
     expect(() => assertAgentWriteAccess(agent, "other-user", "member")).toThrow("Access denied");
+  });
+});
+
+describe("requireAgentWriteAccess", () => {
+  it("returns null when admin modifies any agent (write allowed)", () => {
+    const agent = { id: "a1", ownerId: "other", isPersonal: false };
+    expect(requireAgentWriteAccess(agent, "admin-user", "admin")).toBeNull();
+  });
+
+  it("returns null when owner modifies their personal agent", () => {
+    const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
+    expect(requireAgentWriteAccess(agent, "user-1", "member")).toBeNull();
+  });
+
+  it("returns 403 'Forbidden' NextResponse when non-admin modifies shared agent", async () => {
+    const agent = { id: "a1", ownerId: null, isPersonal: false };
+    const result = requireAgentWriteAccess(agent, "user-1", "member");
+    expect(result).toBeInstanceOf(NextResponse);
+    expect((result as NextResponse).status).toBe(403);
+    expect(await (result as NextResponse).json()).toEqual({ error: "Forbidden" });
+  });
+
+  it("returns 403 'Forbidden' NextResponse when non-owner modifies personal agent", async () => {
+    const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
+    const result = requireAgentWriteAccess(agent, "other-user", "member");
+    expect(result).toBeInstanceOf(NextResponse);
+    expect((result as NextResponse).status).toBe(403);
+    expect(await (result as NextResponse).json()).toEqual({ error: "Forbidden" });
   });
 });
 

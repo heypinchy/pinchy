@@ -23,9 +23,13 @@ vi.mock("@/lib/invites", () => ({
   createInvite: vi.fn(),
 }));
 
-vi.mock("@/lib/audit", () => ({
-  appendAuditLog: vi.fn().mockResolvedValue(undefined),
-}));
+vi.mock("@/lib/audit", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/lib/audit")>();
+  return {
+    ...actual,
+    appendAuditLog: vi.fn().mockResolvedValue(undefined),
+  };
+});
 
 // Default to inactive license so existing tests are unaffected by seat-cap logic
 vi.mock("@/lib/enterprise", () => ({
@@ -79,6 +83,7 @@ describe("POST /api/users/invite", () => {
 
   beforeEach(async () => {
     vi.clearAllMocks();
+    vi.stubEnv("AUDIT_HMAC_SECRET", "f".repeat(64));
     const mod = await import("@/app/api/users/invite/route");
     POST = mod.POST;
   });
@@ -131,7 +136,8 @@ describe("POST /api/users/invite", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("Role must be 'admin' or 'member'");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.role).toBeDefined();
   });
 
   it("returns 400 when role is invalid", async () => {
@@ -149,7 +155,8 @@ describe("POST /api/users/invite", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("Role must be 'admin' or 'member'");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.role).toBeDefined();
   });
 
   it("returns 201 with invite data on success", async () => {
@@ -303,7 +310,8 @@ describe("POST /api/users/invite", () => {
       eventType: "user.invited",
       outcome: "success",
       detail: {
-        email: "grouped@test.com",
+        emailHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        emailPreview: "gr…ed@test.com",
         role: "member",
         groups: [
           { id: "group-1", name: "Engineering" },
@@ -347,7 +355,8 @@ describe("POST /api/users/invite", () => {
       eventType: "user.invited",
       outcome: "success",
       detail: {
-        email: "solo@test.com",
+        emailHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        emailPreview: "solo@test.com",
         role: "member",
       },
     });

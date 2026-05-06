@@ -78,6 +78,11 @@ vi.mock("@/lib/openclaw-config", () => ({
   regenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock("@/lib/openclaw-config-ready", () => ({
+  markOpenClawConfigReady: vi.fn(),
+  isOpenClawConfigReady: vi.fn(),
+}));
+
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
   setSetting: vi.fn().mockResolvedValue(undefined),
@@ -96,6 +101,7 @@ vi.mock("@/lib/provider-models", () => ({
 import { ensureWorkspace } from "@/lib/workspace";
 import { auth } from "@/lib/auth";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
+import { markOpenClawConfigReady } from "@/lib/openclaw-config-ready";
 
 import { db } from "@/db";
 
@@ -107,18 +113,18 @@ describe("createAdmin", () => {
   it("should create admin user via Better Auth signUpEmail", async () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
 
-    const result = await createAdmin("Admin User", "admin@test.com", "password123");
+    const result = await createAdmin("Admin User", "admin@test.com", "Br1ghtNova!2");
 
     expect(result).toEqual({ id: "1", email: "admin@test.com" });
     expect(auth.api.signUpEmail).toHaveBeenCalledWith({
-      body: { name: "Admin User", email: "admin@test.com", password: "password123" },
+      body: { name: "Admin User", email: "admin@test.com", password: "Br1ghtNova!2" },
     });
   });
 
   it("should set admin role after user creation", async () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
 
-    await createAdmin("Admin User", "admin@test.com", "password123");
+    await createAdmin("Admin User", "admin@test.com", "Br1ghtNova!2");
 
     expect(db.update).toHaveBeenCalled();
   });
@@ -127,7 +133,7 @@ describe("createAdmin", () => {
     vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
     vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
 
-    await createAdmin("Admin User", "admin@test.com", "password123");
+    await createAdmin("Admin User", "admin@test.com", "Br1ghtNova!2");
 
     // db.insert is called once for the agent (user creation is via auth API)
     expect(db.insert).toHaveBeenCalled();
@@ -166,7 +172,7 @@ describe("POST /api/setup", () => {
     const request = makeRequest({
       name: "Admin User",
       email: "admin@test.com",
-      password: "password123",
+      password: "Br1ghtNova!2",
     });
     const response = await POST(request as any);
     const data = await response.json();
@@ -178,39 +184,42 @@ describe("POST /api/setup", () => {
   it("should return 400 when name is missing", async () => {
     const request = makeRequest({
       email: "admin@test.com",
-      password: "password123",
+      password: "Br1ghtNova!2",
     });
     const response = await POST(request as any);
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data.error).toBe("Name is required");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.name).toBeDefined();
   });
 
   it("should return 400 when name is empty whitespace", async () => {
     const request = makeRequest({
       name: "   ",
       email: "admin@test.com",
-      password: "password123",
+      password: "Br1ghtNova!2",
     });
     const response = await POST(request as any);
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data.error).toBe("Name is required");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.name).toBeDefined();
   });
 
   it("should return 400 when email is invalid", async () => {
     const request = makeRequest({
       name: "Admin User",
       email: "not-an-email",
-      password: "password123",
+      password: "Br1ghtNova!2",
     });
     const response = await POST(request as any);
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data.error).toBe("A valid email address is required");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.email).toBeDefined();
   });
 
   it("should return 400 when password is too short", async () => {
@@ -223,7 +232,7 @@ describe("POST /api/setup", () => {
     const data = await response.json();
 
     expect(response.status).toBe(400);
-    expect(data.error).toBe("Password must be at least 8 characters");
+    expect(data.error).toBe("Password must be at least 12 characters");
   });
 
   it("should call regenerateOpenClawConfig after creating admin and agent", async () => {
@@ -233,11 +242,45 @@ describe("POST /api/setup", () => {
     const request = makeRequest({
       name: "Admin User",
       email: "admin@test.com",
-      password: "password123",
+      password: "Br1ghtNova!2",
     });
     await POST(request as any);
 
     expect(regenerateOpenClawConfig).toHaveBeenCalledOnce();
+  });
+
+  it("should call markOpenClawConfigReady after setup completes", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+    vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
+
+    const request = makeRequest({
+      name: "Admin User",
+      email: "admin@test.com",
+      password: "Br1ghtNova!2",
+    });
+    await POST(request as any);
+
+    expect(markOpenClawConfigReady).toHaveBeenCalledOnce();
+  });
+
+  it("should return 500 and not mark ready when regenerateOpenClawConfig fails", async () => {
+    vi.mocked(db.query.users.findFirst).mockResolvedValue(undefined);
+    vi.mocked(db.query.agents.findFirst).mockResolvedValue(undefined);
+    vi.mocked(regenerateOpenClawConfig).mockRejectedValueOnce(
+      new Error("disk full: cannot write openclaw.json")
+    );
+
+    const request = makeRequest({
+      name: "Admin User",
+      email: "admin@test.com",
+      password: "Br1ghtNova!2",
+    });
+    const response = await POST(request as any);
+    const data = await response.json();
+
+    expect(response.status).toBe(500);
+    expect(data.error).toMatch(/openclaw config/i);
+    expect(markOpenClawConfigReady).not.toHaveBeenCalled();
   });
 
   it("should return 403 when setup is already complete", async () => {
@@ -251,7 +294,7 @@ describe("POST /api/setup", () => {
     const request = makeRequest({
       name: "New User",
       email: "new@test.com",
-      password: "password123",
+      password: "Br1ghtNova!2",
     });
     const response = await POST(request as any);
     const data = await response.json();

@@ -1,0 +1,39 @@
+# E2E test overlay: builds Pinchy and OpenClaw from the PRODUCTION
+# Dockerfiles (matching what end users actually run, including the
+# uid 999 demotion via entrypoint.sh's `su -s /bin/sh pinchy`).
+#
+# Usage: docker compose -f docker-compose.yml \
+#                       -f docker-compose.e2e.yml \
+#                       -f docker-compose.test.yml up --build -d
+#
+# Why this exists separately from docker-compose.dev.yml:
+#   docker-compose.dev.yml runs Pinchy via `Dockerfile.pinchy.dev` which
+#   skips the user demotion. CI E2E ran under that image and missed the
+#   class of bugs where Pinchy (uid 999) can't read files OpenClaw writes
+#   as root (e.g. telegram-pairing.json mode 0600). Running E2E against
+#   the production image catches them. See docs/contributing or PR for
+#   detail.
+
+services:
+  pinchy:
+    build:
+      context: .
+      dockerfile: Dockerfile.pinchy
+    environment:
+      # Disable Better Auth's per-IP rate limit on /sign-in/* (3 req / 10s).
+      # The limit is on by default in NODE_ENV=production and locks Playwright
+      # form-login flows out after the third sign-in within the window. Only
+      # ever set in this E2E overlay; production deploys leave it unset and
+      # keep the rate limit enabled. `auth-config-consistency.test.ts` blocks
+      # this var from being added to `docker-compose.yml` or `.dev.yml`.
+      PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT: "1"
+  openclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile.openclaw
+  db:
+    # Expose Postgres to the host for direct seeding from Playwright helpers
+    # (seedSetup, createAgent). Production compose deliberately keeps the DB
+    # network-internal; tests need a back door.
+    ports:
+      - "5434:5432"

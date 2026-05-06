@@ -43,6 +43,8 @@ export async function login(
 function authHeaders(): Record<string, string> {
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
+    // Issue #235: state-changing requests must declare a same-origin source.
+    Origin: PINCHY_URL,
   };
   if (sessionCookie) {
     headers["Cookie"] = sessionCookie;
@@ -351,7 +353,12 @@ export async function waitForTelegramPolling(timeout = 30000): Promise<void> {
     try {
       const res = await fetch(`${MOCK_TELEGRAM_URL}/control/health`);
       const data = await res.json();
-      // Once bots > 0, OpenClaw has started polling (sent at least one getUpdates)
+      // `bots > 0` means at least one bot has been registered (called getMe).
+      // For most tests this is enough — the immediate next assertion
+      // (e.g. "send a message and expect a pairing response") has its own
+      // generous waitForBotResponse timeout that absorbs the brief gap
+      // between getMe and the first getUpdates. Multi-bot scenarios that
+      // need a SPECIFIC bot to be live should use waitForBotPolling instead.
       if (data.bots > 0) return;
     } catch {
       // Not ready yet
@@ -359,4 +366,26 @@ export async function waitForTelegramPolling(timeout = 30000): Promise<void> {
     await new Promise((r) => setTimeout(r, 1000));
   }
   throw new Error(`Telegram polling not started within ${timeout}ms`);
+}
+
+/**
+ * Wait for a specific bot token to start polling. Use this in multi-bot
+ * scenarios where a generic "any bot is polling" check would pass on the
+ * first bot while a newly-connected second bot is still spinning up — that
+ * race causes test #10 in the multi-bot suite to flake when OpenClaw is
+ * mid-restart from the channel-reload triggered by the bot connect.
+ */
+export async function waitForBotPolling(token: string, timeout = 120000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      const res = await fetch(`${MOCK_TELEGRAM_URL}/control/health`);
+      const data = await res.json();
+      if (Array.isArray(data.pollingTokens) && data.pollingTokens.includes(token)) return;
+    } catch {
+      // Not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`Bot ${token.slice(0, 6)}... did not start polling within ${timeout}ms`);
 }

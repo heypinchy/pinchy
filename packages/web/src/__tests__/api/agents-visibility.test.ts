@@ -222,7 +222,8 @@ describe("PATCH /api/agents/[agentId] visibility", () => {
     });
     expect(response.status).toBe(400);
     const body = await response.json();
-    expect(body.error).toBe("Invalid visibility value");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.visibility).toBeDefined();
   });
 
   it("cannot change visibility on personal agents (400)", async () => {

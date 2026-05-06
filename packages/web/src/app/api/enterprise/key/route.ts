@@ -1,10 +1,14 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import { setSetting, deleteSetting } from "@/lib/settings";
 import { clearLicenseCache, getLicenseStatus, isKeyFromEnv } from "@/lib/enterprise";
 import { appendAuditLog } from "@/lib/audit";
+import { parseRequestBody } from "@/lib/api-validation";
 
-export async function PUT(req: Request) {
+const setLicenseKeySchema = z.object({ key: z.string().min(1) });
+
+export async function PUT(req: NextRequest) {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
@@ -18,11 +22,9 @@ export async function PUT(req: Request) {
     );
   }
 
-  const body = await req.json();
-  const key = body.key;
-  if (!key || typeof key !== "string") {
-    return NextResponse.json({ error: "Missing key" }, { status: 400 });
-  }
+  const parsed = await parseRequestBody(setLicenseKeySchema, req);
+  if ("error" in parsed) return parsed.error;
+  const { key } = parsed.data;
 
   // Save the key encrypted, clear cache, then validate via production key path
   await setSetting("enterprise_key", key, true);

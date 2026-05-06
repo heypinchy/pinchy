@@ -22,12 +22,13 @@ vi.mock("@/lib/workspace", () => ({
   writeWorkspaceFile: vi.fn(),
 }));
 
-const { mockAssertAgentWriteAccess } = vi.hoisted(() => ({
-  mockAssertAgentWriteAccess: vi.fn(),
+const { mockRequireAgentWriteAccess } = vi.hoisted(() => ({
+  // Returns null when write is allowed; returns a NextResponse(403) when denied.
+  mockRequireAgentWriteAccess: vi.fn(),
 }));
 vi.mock("@/lib/agent-access", () => ({
   getAgentWithAccess: vi.fn(),
-  assertAgentWriteAccess: mockAssertAgentWriteAccess,
+  requireAgentWriteAccess: mockRequireAgentWriteAccess,
 }));
 
 import { auth } from "@/lib/auth";
@@ -190,6 +191,8 @@ describe("PUT /api/agents/[agentId]/files/[filename]", () => {
       user: { id: "1", email: "admin@test.com" },
     } as any);
     vi.mocked(getAgentWithAccess).mockResolvedValue(defaultAgent);
+    // Default: write is allowed. Individual tests override to simulate denial.
+    mockRequireAgentWriteAccess.mockReturnValue(null);
   });
 
   it("should write file content and return success", async () => {
@@ -305,14 +308,15 @@ describe("PUT /api/agents/[agentId]/files/[filename]", () => {
 
     expect(response.status).toBe(400);
     const data = await response.json();
-    expect(data.error).toBe("content must be a string");
+    expect(data.error).toBe("Validation failed");
+    expect(data.details.fieldErrors.content).toBeDefined();
     expect(writeWorkspaceFile).not.toHaveBeenCalled();
   });
 
   it("should return 403 when non-admin tries to modify shared agent files", async () => {
-    mockAssertAgentWriteAccess.mockImplementationOnce(() => {
-      throw new Error("Access denied");
-    });
+    mockRequireAgentWriteAccess.mockReturnValueOnce(
+      NextResponse.json({ error: "Forbidden" }, { status: 403 })
+    );
 
     const request = makePutRequest("agent-1", "AGENTS.md", {
       content: "# Hacked instructions",
@@ -325,8 +329,8 @@ describe("PUT /api/agents/[agentId]/files/[filename]", () => {
     expect(writeWorkspaceFile).not.toHaveBeenCalled();
   });
 
-  it("should allow write when assertAgentWriteAccess passes", async () => {
-    mockAssertAgentWriteAccess.mockImplementationOnce(() => {});
+  it("should allow write when requireAgentWriteAccess passes", async () => {
+    mockRequireAgentWriteAccess.mockReturnValueOnce(null);
 
     const request = makePutRequest("agent-1", "AGENTS.md", {
       content: "# Valid update",

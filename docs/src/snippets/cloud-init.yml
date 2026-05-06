@@ -1,5 +1,5 @@
 #cloud-config
-# Pinchy v0.4.4 — Automated VPS Setup
+# Pinchy %%PINCHY_VERSION%% — Automated VPS Setup
 # https://docs.heypinchy.com/guides/vps-deployment/
 #
 # This cloud-init script installs Caddy (reverse proxy), Docker, and Pinchy,
@@ -21,7 +21,7 @@ runcmd:
 
   # Stage loading page for Caddy's fallback upstream
   - mkdir -p /var/www/pinchy-loading
-  - curl -fsSL https://github.com/heypinchy/pinchy/releases/download/v0.4.4/installing.html -o /var/www/pinchy-loading/index.html
+  - curl -fsSL https://github.com/heypinchy/pinchy/releases/download/%%PINCHY_VERSION%%/installing.html -o /var/www/pinchy-loading/index.html
   - sed -i "s/INSTALL_START_TIME/$(date +%s)000/" /var/www/pinchy-loading/index.html
 
   # Write Caddyfile BEFORE installing caddy, so Caddy's first start uses our config
@@ -96,7 +96,7 @@ runcmd:
   - chmod 600 /opt/pinchy/.env
 
   # Download compose file and pull images (Caddy serves loading page throughout)
-  - curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.4/docker-compose.yml -o /opt/pinchy/docker-compose.yml
+  - curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o /opt/pinchy/docker-compose.yml
   - cd /opt/pinchy && docker compose pull
 
   # Start Pinchy — Caddy automatically swaps to the primary upstream within 5s

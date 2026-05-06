@@ -6,7 +6,7 @@ description: Environment variables, Docker services, and development setup.
 import { Aside } from "@astrojs/starlight/components";
 
 <Aside type="note">
-  This guide covers Pinchy v0.4.4. Check the [Releases
+  This guide covers Pinchy %%PINCHY_VERSION%%. Check the [Releases
   page](https://github.com/heypinchy/pinchy/releases) for newer versions.
   Upgrading from v0.1.0? See the [Upgrade Guide](/guides/upgrading/).
 </Aside>
@@ -29,7 +29,7 @@ The simplest way to run Pinchy. One command starts the full stack.
 
 ```bash
 mkdir -p pinchy && cd pinchy
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.4/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
 docker compose pull && docker compose up -d
 ```
 
@@ -65,6 +65,9 @@ DB_PASSWORD=your-secure-password
 # Better Auth session secret (auto-generated if omitted)
 BETTER_AUTH_SECRET=your-random-secret
 
+# Public HTTPS origin for Better Auth callback and redirect URLs
+BETTER_AUTH_URL=https://pinchy.example.com
+
 # Encryption key for API keys — 64 hex characters (auto-generated if omitted)
 ENCRYPTION_KEY=
 
@@ -78,6 +81,16 @@ PINCHY_ENTERPRISE_KEY=
 **`DB_PASSWORD`** — Password for the PostgreSQL `pinchy` user. Defaults to `pinchy_dev` in Docker Compose.
 
 **`BETTER_AUTH_SECRET`** — Used by Better Auth for session security. Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
+
+**`BETTER_AUTH_URL`** — Public HTTPS origin used by Better Auth to build callback and redirect URLs, for example password reset, OAuth, and Telegram pairing flows. Set this to the same origin users visit, such as `https://pinchy.example.com`. Domain Lock is configured separately in **Settings → Security**; when you lock a domain, use the same hostname here.
+
+<Aside type="caution">
+  The v0.4.4 `docker-compose.yml` shown above does not pass `BETTER_AUTH_URL`
+  through. If your compose file does not include
+  `BETTER_AUTH_URL=${BETTER_AUTH_URL:-}` under the `pinchy` service
+  `environment:` block, upgrade to a newer compose file or add it via
+  `docker-compose.override.yml`.
+</Aside>
 
 **`ENCRYPTION_KEY`** — Used to encrypt provider API keys at rest (AES-256-GCM). Auto-generated and persisted in the `pinchy-secrets` volume if omitted. For production, set explicitly with `openssl rand -hex 32`.
 

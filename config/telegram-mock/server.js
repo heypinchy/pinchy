@@ -38,6 +38,13 @@ const bots = new Map();
 // Pending updates for each bot (simulated incoming messages from users)
 const pendingUpdates = new Map(); // token -> update[]
 
+// Tokens whose bot has actually polled (called getUpdates at least once).
+// Distinct from `bots` (registered via getMe) — a registered bot may not
+// have started polling yet, especially during OpenClaw channel restarts
+// when adding a second bot account. Tests use this to wait for a SPECIFIC
+// bot to be live, instead of "any bot is registered".
+const pollingTokens = new Set();
+
 // ── Anthropic API mock (for model prewarm) ─────────────────────────────
 
 function handleAnthropicRequest(url, body) {
@@ -82,6 +89,11 @@ function notifyUpdateListeners(token) {
 
 // getUpdates is async (long-poll) — handled separately
 async function handleGetUpdates(token, body) {
+  // Mark this bot as actively polling. Tests rely on this to verify a
+  // specific bot's channel has come up, which is more reliable than the
+  // generic getMe-based registration count.
+  pollingTokens.add(token);
+
   const timeout = Math.min(parseInt(body?.timeout || "30", 10), 30);
   const offset = parseInt(body?.offset || "0", 10);
 
@@ -317,6 +329,7 @@ function startControlServer() {
         botResponses.length = 0;
         pendingUpdates.clear();
         bots.clear();
+        pollingTokens.clear();
         messageIdCounter = 1000;
         updateIdCounter = 100;
         res.writeHead(200);
@@ -332,6 +345,7 @@ function startControlServer() {
           JSON.stringify({
             ok: true,
             bots: [...bots.keys()].length,
+            pollingTokens: [...pollingTokens],
             pendingUpdates: [...pendingUpdates.values()].flat().length,
             responses: botResponses.length,
           })

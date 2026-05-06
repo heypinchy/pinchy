@@ -199,12 +199,13 @@ describe("pinchy-web config generation", () => {
     const config = JSON.parse(written);
 
     const webPluginConfig = config.plugins.entries["pinchy-web"].config;
-    // braveApiKey is a SecretRef — plaintext never lands in openclaw.json
-    expect(webPluginConfig.braveApiKey).toMatchObject({
-      source: "file",
-      provider: "pinchy",
-      id: expect.stringContaining("braveApiKey"),
-    });
+    // The braveApiKey is fetched on demand via Pinchy's credentials API —
+    // openclaw.json carries only the connectionId + bootstrap creds for
+    // the API call (#209).
+    expect(webPluginConfig.braveApiKey).toBeUndefined();
+    expect(typeof webPluginConfig.connectionId).toBe("string");
+    expect(typeof webPluginConfig.apiBaseUrl).toBe("string");
+    expect(typeof webPluginConfig.gatewayToken).toBe("string");
 
     const agentConfig = webPluginConfig.agents["ws-agent"];
     expect(agentConfig.tools).toEqual(["pinchy_web_search", "pinchy_web_fetch"]);
@@ -363,7 +364,12 @@ describe("pinchy-web config generation", () => {
     expect(config.plugins?.entries?.["pinchy-web"]).toBeUndefined();
   });
 
-  it("skips pinchy-web plugin when credentials cannot be decrypted", async () => {
+  it("does not decrypt web-search credentials at config-write time (#209)", async () => {
+    // Since #209: pinchy-web fetches braveApiKey lazily via the
+    // /api/internal/integrations/:id/credentials endpoint. Decryption
+    // happens at fetch time, not at config-write time. So a broken
+    // ENCRYPTION_KEY no longer prevents the plugin from being registered
+    // — the agent just sees a clear error on the first tool call.
     const agentsData = [
       {
         id: "ws-agent",
@@ -376,8 +382,10 @@ describe("pinchy-web config generation", () => {
     ];
     const webConn = makeWebSearchConnection();
 
+    // decrypt should NOT be called for web-search anymore. Make it throw
+    // to prove the new code path doesn't invoke it.
     mockDecrypt.mockImplementation(() => {
-      throw new Error("Decryption failed — key rotation");
+      throw new Error("decrypt should not be called for pinchy-web (#209)");
     });
 
     mockedDb.select.mockReturnValue({
@@ -398,7 +406,10 @@ describe("pinchy-web config generation", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.plugins?.entries?.["pinchy-web"]).toBeUndefined();
+    // Plugin IS registered with the connectionId — the failure surface
+    // moved from config-write time to credentials-fetch time.
+    expect(config.plugins?.entries?.["pinchy-web"]).toBeDefined();
+    expect(config.plugins?.entries?.["pinchy-web"]?.config?.connectionId).toBe(webConn.id);
   });
 
   it("skips pinchy-web plugin when no agents have web tools (even if connection exists)", async () => {

@@ -1,13 +1,13 @@
 {
   "name": "pinchy",
-  "version": "0.4.4",
+  "version": "0.5.1",
   "private": true,
   "description": "Enterprise AI agent platform built on OpenClaw",
   "scripts": {
     "dev": "pnpm --filter @pinchy/web dev",
     "build": "pnpm --filter @pinchy/web build",
     "test": "pnpm --filter @pinchy/web test",
-    "test:release": "node --test scripts/lib/release-logic.test.mjs",
+    "test:scripts": "node --test scripts/lib/*.test.mjs",
     "release": "node scripts/release.mjs",
     "docs:paths": "node scripts/generate-docs-paths.mjs",
     "prepare": "husky"

@@ -11,6 +11,7 @@ let configPath: string;
 let secretsPath: string;
 const origConfigPath = process.env.OPENCLAW_CONFIG_PATH;
 const origSecretsPath = process.env.OPENCLAW_SECRETS_PATH;
+const origE2eGatewayToken = process.env.PINCHY_E2E_GATEWAY_TOKEN;
 
 beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), "pinchy-gtoken-"));
@@ -18,6 +19,7 @@ beforeEach(() => {
   secretsPath = join(tmpDir, "secrets.json");
   process.env.OPENCLAW_CONFIG_PATH = configPath;
   process.env.OPENCLAW_SECRETS_PATH = secretsPath;
+  delete process.env.PINCHY_E2E_GATEWAY_TOKEN;
   vi.resetModules();
 });
 
@@ -27,9 +29,21 @@ afterEach(() => {
   else delete process.env.OPENCLAW_CONFIG_PATH;
   if (origSecretsPath !== undefined) process.env.OPENCLAW_SECRETS_PATH = origSecretsPath;
   else delete process.env.OPENCLAW_SECRETS_PATH;
+  if (origE2eGatewayToken !== undefined) process.env.PINCHY_E2E_GATEWAY_TOKEN = origE2eGatewayToken;
+  else delete process.env.PINCHY_E2E_GATEWAY_TOKEN;
 });
 
 describe("readGatewayToken", () => {
+  it("uses the E2E gateway token when set", async () => {
+    process.env.PINCHY_E2E_GATEWAY_TOKEN = "e2e-gateway-token";
+    writeFileSync(
+      configPath,
+      JSON.stringify({ gateway: { auth: { token: "abc-from-openclaw-json" } } })
+    );
+    const { readGatewayToken } = await import("@/lib/gateway-token-reader");
+    expect(readGatewayToken()).toBe("e2e-gateway-token");
+  });
+
   it("returns token from openclaw.json when set", async () => {
     writeFileSync(
       configPath,
@@ -74,12 +88,10 @@ describe("readGatewayToken", () => {
   });
 
   it("regression: even when secrets.json is unreadable (mode 0600 root-owned), token from openclaw.json wins", async () => {
-    // Reproduces the v0.5.0 staging cold-start race: ensure-gateway-token.js
-    // writes openclaw.json with the token. start-openclaw.sh's chmod 0600
-    // (added to satisfy OpenClaw's strict secrets-mode check) prevents Pinchy
-    // (uid 999) from reading secrets.json. Without this fallback path,
-    // readGatewayToken would return "" and Pinchy would connect to OpenClaw
-    // unauthenticated, then never recover.
+    // Regression: openclaw.json token wins even when secrets.json is root-only.
+    // start-openclaw.sh's chmod 0600 prevents Pinchy (uid 999) from reading
+    // secrets.json. Without the openclaw.json fallback, readGatewayToken would
+    // return "" and Pinchy would connect unauthenticated, then never recover.
     writeFileSync(configPath, JSON.stringify({ gateway: { auth: { token: "the-real-token" } } }));
     // Make secrets.json effectively unreadable. We can't chmod 0600 to root in
     // tests (we're not root), so we simulate by deleting the file — same end

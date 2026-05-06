@@ -7,43 +7,6 @@ echo "OpenClaw Gateway starting..."
 # Lives on tmpfs (volume mode 0770, file mode 0600).
 SECRETS_FILE="${OPENCLAW_SECRETS_PATH:-/openclaw-secrets/secrets.json}"
 
-# Load provider API keys from secrets.json into our process env so OpenClaw
-# can resolve ${VAR} templates in cfg.env.* and so its built-in providers
-# (anthropic, openai, gemini) find their auth via process.env.
-#
-# Why this exists: OpenClaw's config validator rejects SecretRef objects in
-# env.* (only strings allowed), and `${VAR}` templates resolve against the
-# OpenClaw process's env — not against any secrets provider. So Pinchy stores
-# the real values in secrets.env.<envVar>, this script exports them at start,
-# and the config writes ${envVar} placeholders that OpenClaw resolves at use.
-load_provider_env_vars() {
-    if [ ! -f "$SECRETS_FILE" ]; then
-        return 0
-    fi
-    # Generate `export VAR='value'` lines via node — safer than jq+eval because
-    # node handles JSON parsing and we control the shell-escaping ourselves.
-    local exports
-    exports=$(SECRETS_FILE="$SECRETS_FILE" node -e "
-        try {
-            const s = JSON.parse(require('fs').readFileSync(process.env.SECRETS_FILE, 'utf8'));
-            const env = s.env || {};
-            for (const [k, v] of Object.entries(env)) {
-                // Strict env-var name allowlist — defense against secrets.json tampering.
-                if (typeof v !== 'string' || !/^[A-Z][A-Z0-9_]*\$/.test(k)) continue;
-                const escaped = v.replace(/'/g, \"'\\\\''\");
-                process.stdout.write(\`export \${k}='\${escaped}'\n\`);
-            }
-        } catch {}
-    " 2>/dev/null || true)
-    if [ -n "$exports" ]; then
-        eval "$exports"
-    fi
-}
-
-get_secrets_mtime() {
-    [ -f "$SECRETS_FILE" ] && stat -c %Y "$SECRETS_FILE" 2>/dev/null || echo 0
-}
-
 # Pinchy writes secrets.json as a non-root user (uid 999 in production where
 # the pinchy container drops privileges, or the test runner's uid in CI
 # integration tests). OpenClaw's secrets-file resolver checks that the file's
@@ -84,26 +47,6 @@ ensure_secrets_root_owned() {
     echo "[secrets-fix] $SECRETS_FILE: $before -> $after"
 }
 
-# Returns 0 (truthy) if every key in secrets.json's env block already matches
-# the current process environment, 1 if any value differs. Lets the watch loop
-# skip an expensive gateway restart when Pinchy rewrites secrets.json without
-# actually changing any provider key (e.g. a Pinchy restart that regenerates
-# the same bundle, or any unrelated field flipping the file's mtime).
-provider_env_matches_current() {
-    [ ! -f "$SECRETS_FILE" ] && return 0
-    SECRETS_FILE="$SECRETS_FILE" node -e "
-        try {
-            const s = JSON.parse(require('fs').readFileSync(process.env.SECRETS_FILE, 'utf8'));
-            const env = s.env || {};
-            for (const [k, v] of Object.entries(env)) {
-                if (typeof v !== 'string' || !/^[A-Z][A-Z0-9_]*\$/.test(k)) continue;
-                if (process.env[k] !== v) process.exit(1);
-            }
-            process.exit(0);
-        } catch { process.exit(0); }
-    " 2>/dev/null
-}
-
 # Install pinchy-files plugin dependencies from the container image.
 # In dev mode, source files are volume-mounted from the host, but host
 # node_modules contain macOS native bindings that won't work in Linux.
@@ -133,26 +76,43 @@ if [ -d /root/.openclaw/extensions ]; then
     chown -R root:root /root/.openclaw/extensions 2>/dev/null || true
 fi
 
-# Ensure gateway auth token exists before starting (prevents crash loop
-# when no token is configured yet, e.g. on first startup before setup wizard)
-node /ensure-gateway-token.js
-
-# Write gateway token to a separate world-readable file for Pinchy (non-root).
-# Pinchy reads this as a fallback when openclaw.json is briefly unavailable.
-node -e "
-  const fs = require('fs');
-  try {
-    const config = JSON.parse(fs.readFileSync('/root/.openclaw/openclaw.json', 'utf8'));
-    const token = config.gateway.auth.token;
-    fs.writeFileSync('/root/.openclaw/gateway-token', token, { mode: 0o644 });
-  } catch {}
-"
 
 # Make OpenClaw config writable by Pinchy (non-root).
 # OpenClaw creates openclaw.json with 600 (root-only). Pinchy needs write access
 # to update provider keys and agent configuration via regenerateOpenClawConfig().
+#
+# Also fix the telegram-pairing.json file: OpenClaw 2026.4.12 writes it as
+# root:0600, but Pinchy (uid 999) needs to read it to look up Telegram user
+# IDs from pairing codes. Without this chmod, every linkTelegram POST returns
+# "Invalid or expired pairing code" because readFileSync throws EACCES inside
+# resolvePairingCode and the bare catch returns { found: false } silently.
 fix_config_permissions() {
     chmod 666 /root/.openclaw/openclaw.json 2>/dev/null || true
+    # Use a glob so we also catch any sibling credential files OpenClaw
+    # writes alongside the pairing file (allowFrom stores etc.) — they too
+    # are written by root and consumed by Pinchy.
+    # a+rX: r for all files, x only for directories (capital X) so uid 999
+    # can both enter the credentials/ dir (exec bit) and read files inside it.
+    chmod -R a+rX /root/.openclaw/credentials 2>/dev/null || true
+    # Re-take ownership of secrets.json. Pinchy writes it as uid 999 (the
+    # pinchy user inside its container); OpenClaw's secret-resolver requires
+    # owner == process uid (root) and refuses to reload otherwise. The 30 s
+    # mtime watch loop further down chowns it after a write, but the [reload]
+    # pipeline triggered by inotify on openclaw.json fires within ~100 ms of
+    # Pinchy's regenerateOpenClawConfig() — long before that loop wakes up.
+    # Without this fast tick, a freshly created agent surfaces as
+    # `unknown agent id` because the reload fails on secrets and the new
+    # agents.list never enters runtime. See issue #200.
+    if [ -f "$SECRETS_FILE" ]; then
+        chown root:root "$SECRETS_FILE" 2>/dev/null || true
+        chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
+    fi
+    # Per-agent auth-profiles.json files written by Pinchy (uid 999).
+    # OpenClaw (root) can read uid-999-owned files directly — no chown needed.
+    # The agents/ directory must stay writable by Pinchy (uid 999) so new
+    # agent subdirectories can be created. Only secure the files themselves.
+    chown 999:999 /root/.openclaw/agents 2>/dev/null || true
+    find /root/.openclaw/agents -name "auth-profiles.json" -type f -exec chmod 0600 {} \; 2>/dev/null || true
 }
 fix_config_permissions
 
@@ -176,8 +136,6 @@ scan_data_directories() {
 # Running this loop continuously kills Telegram polling because each CLI
 # invocation loads the full plugin system.
 auto_approve_devices() {
-    local token
-    token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8')).gateway.auth.token)}catch{}")
     # Remove stale signal file from previous run
     rm -f /root/.openclaw/pinchy-device-approved
     sleep 5
@@ -187,6 +145,18 @@ auto_approve_devices() {
         if [ -f /root/.openclaw/pinchy-device-approved ]; then
             echo "auto_approve_devices: Pinchy connected, stopping"
             return 0
+        fi
+        # Re-read the token on every iteration. With Pinchy-first ordering
+        # (openclaw depends_on: pinchy: condition: service_healthy) the token is
+        # already in openclaw.json by the time this loop runs — the bootstrap
+        # path where OpenClaw self-generates the token no longer exists. Re-read
+        # is kept defensively in case OpenClaw rewrites the file.
+        local token
+        token=$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('/root/.openclaw/openclaw.json','utf8')).gateway.auth.token)}catch{}")
+        if [ -z "$token" ]; then
+            elapsed=$((elapsed + 5))
+            sleep 5
+            continue
         fi
         # `openclaw devices approve --latest` is preview-only since 2026.4.10.
         # It prints the requestId but exits with code 1 without approving.
@@ -209,65 +179,62 @@ auto_approve_devices() {
 
 install_plugin_deps
 scan_data_directories
-load_provider_env_vars
-SECRETS_MTIME=$(get_secrets_mtime)
 
 # OpenClaw rewrites openclaw.json with root-only permissions on every startup
-# and internal restart. Run a background loop that keeps fixing permissions.
-(while true; do sleep 3; fix_config_permissions; done) &
+# and internal restart. Run a tight background loop that fixes permissions
+# faster than Pinchy can hit the EACCES window. 0.2s tick keeps the worst
+# case under 250ms — comfortably inside Pinchy's readExistingConfig retry
+# budget (5 × 100ms). Was 3s previously, which let Pinchy give up before
+# the chmod caught up and silently wrote a stripped config (see
+# fix(openclaw-config): guard targeted writes against EACCES read).
+(while true; do sleep 0.2; fix_config_permissions; done) &
+
+# Defense in depth for the secrets owner race (#200): the 0.2 s tick above
+# averages ~100 ms behind a Pinchy write, but OpenClaw's inotify-driven
+# reload pipeline also fires within ~50–100 ms — leaving a small window
+# where the reload sees uid 999 and bails with SECRETS_RELOADER_DEGRADED.
+# inotifywait reacts within a handful of milliseconds to Pinchy's atomic
+# rename, closing the window before any reload can pick up the bad owner.
+# Watches the directory (not the file) because Pinchy's writeSecretsFile
+# uses tmp+rename, which replaces the inode each time.
+#
+# Wrapped in a respawn loop: inotifywait can die if the kernel watch limit
+# (fs.inotify.max_user_watches) is exhausted or the binary OOMs. Without
+# this loop the secrets file would be defended only by the 0.2 s chmod
+# tick — still safer than nothing, but the tighter inotify response is the
+# primary guarantee. The 1 s sleep prevents a tight crash loop from
+# burning CPU if inotifywait fails to start at all.
+(while true; do
+    inotifywait -m -q -e close_write,moved_to "$(dirname "$SECRETS_FILE")" 2>/dev/null | \
+        while read -r _dir _events filename; do
+            # Only react to the secrets file itself, ignoring sibling .tmp writes
+            # and any other unrelated activity in the directory.
+            if [ "$filename" = "$(basename "$SECRETS_FILE")" ]; then
+                chown root:root "$SECRETS_FILE" 2>/dev/null || true
+                chmod 0600 "$SECRETS_FILE" 2>/dev/null || true
+            fi
+        done
+    echo "[secrets-watcher] inotifywait exited; respawning in 1s"
+    sleep 1
+done) &
 
 # Start auto-approver in background — stops when Pinchy signals connection
 # (writes pinchy-device-approved). Safety timeout: 5 minutes.
 auto_approve_devices &
 
-# Start gateway in the background so the watch loop below can run.
+# Start gateway in the background so the health-check loop below can run.
 # OpenClaw 2026.4.26 keeps `openclaw gateway` in the foreground (it does NOT
-# daemonize), so without `&` the script would block here and the secrets-mtime
-# watch loop would never run — provider-key updates wouldn't propagate.
+# daemonize), so without `&` the script would block here and the loop below
+# would never run — a crashed gateway would never get restarted.
 ensure_secrets_root_owned
 echo "Starting OpenClaw Gateway..."
 openclaw gateway --port 18789 &
 
 # Keep the container alive. Health-check restarts gateway if it crashes.
-# Also watches secrets.json mtime: when Pinchy rewrites it (provider key change),
-# we kill the gateway so the loop reloads provider env vars and re-execs it.
-# Without this, env updates would not propagate without a container restart.
+# Provider API keys are resolved live from secrets.json via SecretRef —
+# no env-export or gateway restart needed on key rotation.
 while true; do
     sleep 30
-
-    # Reload env + restart gateway when secrets.json env values actually change.
-    # Two cases that matter:
-    #   1) Cold start: secrets.json didn't exist when we launched OpenClaw,
-    #      then Pinchy wrote it. We need to load env vars AND restart the
-    #      running gateway (which has none) so it inherits them.
-    #   2) Provider key rotation: a value in secrets.env.* differs from what
-    #      our shell already exported.
-    # Mtime alone is not enough — Pinchy rewrites secrets.json on every
-    # startup and on settings saves that don't touch provider keys, and
-    # cascading gateway restarts kill Telegram polling (openclaw#47458).
-    # So gate the restart on actual provider-env divergence.
-    current_mtime=$(get_secrets_mtime)
-    if [ "$current_mtime" != "$SECRETS_MTIME" ] && [ "$current_mtime" != "0" ]; then
-        SECRETS_MTIME=$current_mtime
-        if provider_env_matches_current; then
-            echo "secrets.json mtime changed but provider env unchanged; skipping gateway restart"
-        else
-            if [ "$SECRETS_MTIME" = "0" ]; then
-                echo "secrets.json appeared (cold start), loading provider env vars and restarting gateway"
-            else
-                echo "secrets.json provider env changed, reloading and restarting gateway"
-            fi
-            load_provider_env_vars
-            ensure_secrets_root_owned
-            # Kill the gateway by process name (not saved PID). OpenClaw self-
-            # respawns on plugin/config changes (SIGUSR1 full process restart,
-            # see "[gateway] restart mode: full process restart"), which makes
-            # any saved PID stale. The kernel truncates /proc/<pid>/comm to 15
-            # chars, so "openclaw-gatewa" exactly matches the renamed worker.
-            pkill -TERM -x openclaw-gatewa 2>/dev/null || true
-            sleep 2
-        fi
-    fi
 
     if ! (echo > /dev/tcp/127.0.0.1/18789) 2>/dev/null; then
         # Port is down — wait 10s and check again (internal restart takes ~5s)
@@ -277,7 +244,6 @@ while true; do
             fix_config_permissions
             install_plugin_deps
             scan_data_directories
-            load_provider_env_vars
             ensure_secrets_root_owned
             openclaw gateway --port 18789 &
         fi

@@ -15,7 +15,13 @@ ADMIN_NAME="Monty Burns"
 rm -f "$COOKIE_JAR"
 
 api() {
-  curl -s -b "$COOKIE_JAR" -c "$COOKIE_JAR" -H "Content-Type: application/json" "$@"
+  # Origin is required by the CSRF gate added in PR #235 for every
+  # state-changing /api/* route. Setting it on every call (including GETs,
+  # where it's a no-op) keeps the wrapper a single source of truth.
+  curl -s -b "$COOKIE_JAR" -c "$COOKIE_JAR" \
+    -H "Content-Type: application/json" \
+    -H "Origin: $BASE_URL" \
+    "$@"
 }
 
 # =====================================================

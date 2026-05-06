@@ -18,20 +18,14 @@ export type SecretsBundle = {
   providers?: Record<string, { apiKey: string }>;
   integrations?: Record<string, Record<string, string>>;
   telegram?: Record<string, { botToken: string }>;
-  // env: real values that start-openclaw.sh exports as process env vars on
-  // container start. openclaw.json's env block holds only ${VAR} templates
-  // that resolve against this process env at runtime — see
-  // regenerateOpenClawConfig() for the full handshake.
-  env?: Record<string, string>;
 };
 
 export function writeSecretsFile(bundle: SecretsBundle): void {
   const path = process.env.OPENCLAW_SECRETS_PATH || DEFAULT_SECRETS_PATH;
   const newContent = JSON.stringify(bundle, null, 2);
 
-  // Skip the write when content is unchanged. Otherwise the mtime watcher
-  // in start-openclaw.sh would see a fresh mtime on every Pinchy startup and
-  // uselessly restart the OpenClaw gateway.
+  // Skip the write when content is unchanged to avoid a spurious inotify event
+  // that would trigger OpenClaw's secrets-file watcher unnecessarily.
   if (existsSync(path)) {
     try {
       if (readFileSync(path, "utf-8") === newContent) return;

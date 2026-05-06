@@ -1,16 +1,8 @@
 import { describe, it, expect } from "vitest";
 import { reduceMessages } from "../message-status-reducer";
+import type { WsMessage } from "../use-ws-runtime";
 
 describe("reduceMessages", () => {
-  it("appends a user message in 'sending' state", () => {
-    const next = reduceMessages([], {
-      type: "user-send",
-      message: { id: "1", role: "user", content: "hi", timestamp: 0 },
-    });
-    expect(next).toHaveLength(1);
-    expect(next[0].status).toBe("sending");
-  });
-
   it("transitions sending → sent on matching ack", () => {
     const initial = [
       { id: "1", role: "user", content: "hi", status: "sending" as const, timestamp: 0 },
@@ -58,6 +50,29 @@ describe("reduceMessages", () => {
     ];
     const next = reduceMessages(initial, { type: "retry-resend", clientMessageId: "1" });
     expect(next[0].status).toBe("sending");
+  });
+
+  // Regression for #227: the reducer is invoked from use-ws-runtime with the
+  // hook's superset WsMessage shape (optional status, string timestamp, plus
+  // images / error / retryable). The reducer must preserve all extra fields
+  // verbatim — the type-level guarantee lives in message-status-reducer.test-d.ts.
+  it("preserves hook-shaped extra fields when transitioning status", () => {
+    const initial: WsMessage[] = [
+      {
+        id: "1",
+        role: "user",
+        content: "hi",
+        status: "sending",
+        timestamp: "2026-05-01T00:00:00Z",
+        images: ["data:image/png;base64,AAA"],
+      },
+    ];
+
+    const next = reduceMessages(initial, { type: "ack", clientMessageId: "1" });
+
+    expect(next[0].status).toBe("sent");
+    expect(next[0].images).toEqual(["data:image/png;base64,AAA"]);
+    expect(next[0].timestamp).toBe("2026-05-01T00:00:00Z");
   });
 
   it("history-reconcile leaves already-sent and failed messages unchanged", () => {

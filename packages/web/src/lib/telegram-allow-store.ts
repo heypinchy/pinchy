@@ -31,9 +31,6 @@ import { getSetting } from "@/lib/settings";
 const CONFIG_PATH = process.env.OPENCLAW_CONFIG_PATH || "/openclaw-config/openclaw.json";
 const CREDENTIALS_DIR = join(dirname(CONFIG_PATH), "credentials");
 
-// Legacy single-store path (pre-multi-account)
-const LEGACY_STORE_PATH = join(CREDENTIALS_DIR, "telegram-allowFrom.json");
-
 interface AllowFromStore {
   version: 1;
   allowFrom: string[];
@@ -50,7 +47,12 @@ export function getStorePathForAccount(accountId: string): string {
 function readStoreAt(path: string): AllowFromStore | null {
   try {
     return JSON.parse(readFileSync(path, "utf-8"));
-  } catch {
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "ENOENT") {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("[telegram-allow-store]", `failed to read store at ${path}:`, message);
+    }
     return null;
   }
 }
@@ -66,29 +68,6 @@ function writeStoreAt(path: string, store: AllowFromStore) {
   renameSync(tmpPath, path);
 }
 
-// ── Legacy single-store functions (used by existing routes) ─────────
-
-export function addToAllowStore(telegramUserId: string) {
-  const store = readStoreAt(LEGACY_STORE_PATH) || { version: 1 as const, allowFrom: [] };
-  if (store.allowFrom.includes(telegramUserId)) return;
-  store.allowFrom.push(telegramUserId);
-  writeStoreAt(LEGACY_STORE_PATH, store);
-}
-
-export function removeFromAllowStore(telegramUserId: string) {
-  const store = readStoreAt(LEGACY_STORE_PATH);
-  if (!store) return;
-  const filtered = store.allowFrom.filter((id) => id !== telegramUserId);
-  if (filtered.length === store.allowFrom.length) return; // not found
-  writeStoreAt(LEGACY_STORE_PATH, { ...store, allowFrom: filtered });
-}
-
-export function clearAllowStore() {
-  const store = readStoreAt(LEGACY_STORE_PATH);
-  if (!store) return;
-  writeStoreAt(LEGACY_STORE_PATH, { ...store, allowFrom: [] });
-}
-
 // ── Per-account store functions ─────────────────────────────────────
 
 export function clearAllowStoreForAccount(accountId: string) {
@@ -100,7 +79,14 @@ export function clearAllowStoreForAccount(accountId: string) {
 
 export function clearAllAllowStores() {
   if (!existsSync(CREDENTIALS_DIR)) return;
-  const files = readdirSync(CREDENTIALS_DIR);
+  let files: string[];
+  try {
+    files = readdirSync(CREDENTIALS_DIR);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[telegram-allow-store]", "failed to read credentials dir:", message);
+    return;
+  }
   for (const file of files) {
     if (file.match(/^telegram-.*allowFrom\.json$/)) {
       const path = join(CREDENTIALS_DIR, file);
@@ -243,7 +229,14 @@ function cleanupOrphanedStoreFiles(activeAccountIds: string[]) {
   if (!existsSync(CREDENTIALS_DIR)) return;
 
   const activeFiles = new Set(activeAccountIds.map((id) => `telegram-${id}-allowFrom.json`));
-  const files = readdirSync(CREDENTIALS_DIR);
+  let files: string[];
+  try {
+    files = readdirSync(CREDENTIALS_DIR);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.warn("[telegram-allow-store]", "failed to read credentials dir:", message);
+    return;
+  }
 
   for (const file of files) {
     // Match per-account files and legacy file
@@ -276,7 +269,16 @@ interface PairingStore {
 function readPairingStore(): PairingStore | null {
   try {
     return JSON.parse(readFileSync(PAIRING_PATH, "utf-8"));
-  } catch {
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code !== "ENOENT") {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        "[telegram-allow-store]",
+        `failed to read pairing store at ${PAIRING_PATH}:`,
+        message
+      );
+    }
     return null;
   }
 }

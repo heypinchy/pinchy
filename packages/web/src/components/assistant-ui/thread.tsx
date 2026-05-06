@@ -269,19 +269,23 @@ const ComposerAction: FC = () => {
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-1 md:mb-2 flex items-center justify-between">
       <ComposerAddAttachment />
-      <ComposerPrimitive.Send asChild disabled={!sendAllowed}>
-        <TooltipIconButton
-          tooltip="Send message"
-          side="bottom"
-          type="submit"
-          variant="default"
-          size="icon"
-          className="aui-composer-send size-8 rounded-full"
-          aria-label="Send message"
-        >
-          <ArrowUpIcon className="aui-composer-send-icon size-4" />
-        </TooltipIconButton>
-      </ComposerPrimitive.Send>
+      {/* Send and Stop are mutually exclusive: rendering both at once
+          (one disabled, the other inert) produces the dead-end UI from #207. */}
+      <AuiIf condition={(s) => !s.thread.isRunning}>
+        <ComposerPrimitive.Send asChild disabled={!sendAllowed}>
+          <TooltipIconButton
+            tooltip="Send message"
+            side="bottom"
+            type="submit"
+            variant="default"
+            size="icon"
+            className="aui-composer-send size-8 rounded-full"
+            aria-label="Send message"
+          >
+            <ArrowUpIcon className="aui-composer-send-icon size-4" />
+          </TooltipIconButton>
+        </ComposerPrimitive.Send>
+      </AuiIf>
       <AuiIf condition={(s) => s.thread.isRunning}>
         <ComposerPrimitive.Cancel asChild>
           <Button

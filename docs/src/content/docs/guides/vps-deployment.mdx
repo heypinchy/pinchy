@@ -76,7 +76,7 @@ All three start together via Docker Compose. Only the `pinchy` container publish
 
    ```bash
    mkdir -p /opt/pinchy
-   curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.4/docker-compose.yml -o /opt/pinchy/docker-compose.yml
+   curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o /opt/pinchy/docker-compose.yml
    ```
 
 3. **Pin your secrets before first start**
@@ -303,7 +303,7 @@ The last line ensures swap is re-enabled after a server reboot.
 ```bash
 cd /opt/pinchy
 docker compose exec db pg_dump -U pinchy pinchy > backup-$(date +%Y%m%d).sql
-curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.4.4/docker-compose.yml -o docker-compose.yml
+curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
 docker compose pull
 docker compose up -d
 ```

@@ -38,6 +38,7 @@ export type AuditEventType =
   | "auth.login"
   | "auth.failed"
   | "auth.logout"
+  | "auth.csrf_blocked"
   | "agent.created"
   | "agent.updated"
   | "agent.deleted"
@@ -57,7 +58,8 @@ export type AuditEventType =
   | "chat.retry_triggered"
   | "briefing.created"
   | "briefing.updated"
-  | "briefing.deleted";
+  | "briefing.deleted"
+  | "audit.exported";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -131,6 +133,50 @@ export const ROW_HMAC_VERIFIERS: Record<
   2: (secret, fields) => computeRowHmacV2(secret, fields as HmacFieldsV2),
 };
 
+/**
+ * GDPR redaction for email addresses going into audit `detail` payloads.
+ *
+ * The audit log is HMAC-signed and append-only — once an email lands in
+ * detail, GDPR Art. 17 erasure conflicts with integrity. So we never
+ * write the raw address. Instead we derive:
+ *
+ * - `emailHash`: keyed HMAC-SHA256 of the lowercased+trimmed email,
+ *   so an admin holding a known address can match it against the log,
+ *   but a leaked log on its own does not yield the addresses back.
+ * - `emailPreview`: short masked form for human readability,
+ *   `cl…lm@devcraft.academy` (first 2 + last 2 of local + domain).
+ *
+ * For very short local parts (≤4 chars) the masking would reveal more
+ * than it hides, so we keep them intact.
+ */
+export type RedactedEmail = {
+  emailHash: string;
+  emailPreview: string;
+};
+
+export function redactEmail(email: string): RedactedEmail {
+  const normalized = email.trim().toLowerCase();
+  const secret = getOrCreateSecret("audit_hmac_secret");
+  const emailHash = createHmac("sha256", secret).update(normalized).digest("hex");
+
+  const atIndex = normalized.indexOf("@");
+  if (atIndex === -1) {
+    return { emailHash, emailPreview: normalized };
+  }
+
+  const local = normalized.slice(0, atIndex);
+  const domain = normalized.slice(atIndex + 1);
+
+  if (local.length <= 4) {
+    return { emailHash, emailPreview: `${local}@${domain}` };
+  }
+
+  return {
+    emailHash,
+    emailPreview: `${local.slice(0, 2)}…${local.slice(-2)}@${domain}`,
+  };
+}
+
 const MAX_DETAIL_BYTES = 2048;
 
 export function truncateDetail(detail: AuditDetail | null | undefined): AuditDetail | null {
@@ -184,6 +230,10 @@ export type AuditLogEntry =
   | (AuditLogBase & {
       eventType: `chat.${string}`;
       detail?: Record<string, unknown>;
+    })
+  | (AuditLogBase & {
+      eventType: "audit.exported";
+      detail: { format: "csv" | "pdf"; filterSummary: string; rowCount: number };
     });
 
 export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {

@@ -1,26 +1,17 @@
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { eq } from "drizzle-orm";
-import { getSession } from "@/lib/auth";
+import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { decrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
-import { appendAuditLog } from "@/lib/audit";
+import { deferAuditLog } from "@/lib/audit-deferred";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
-export async function POST(request: NextRequest, { params }: RouteContext) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
+export const POST = withAdmin<RouteContext>(async (_req, { params }, session) => {
   const { connectionId } = await params;
 
   const [connection] = await db
@@ -57,7 +48,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
       .set({ data: result.data, updatedAt: new Date() })
       .where(eq(integrationConnections.id, connectionId));
 
-    appendAuditLog({
+    deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
       eventType: "config.changed",
@@ -69,7 +60,7 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
         modelCount: result.models,
       },
       outcome: "success",
-    }).catch(console.error);
+    });
 
     return NextResponse.json({
       success: true,
@@ -80,4 +71,4 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
     const message = error instanceof Error ? error.message : "Sync failed";
     return NextResponse.json({ success: false, error: message }, { status: 200 });
   }
-}
+});

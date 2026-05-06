@@ -39,7 +39,10 @@ export class GmailAdapter {
   constructor(opts: { accessToken: string }) {
     const auth = new google.auth.OAuth2();
     auth.setCredentials({ access_token: opts.accessToken });
-    this.gmail = google.gmail({ version: "v1", auth });
+    // GMAIL_API_BASE_URL allows E2E tests to redirect gmail API calls to a
+    // local mock server instead of https://gmail.googleapis.com/
+    const rootUrl = process.env.GMAIL_API_BASE_URL;
+    this.gmail = google.gmail({ version: "v1", auth, ...(rootUrl ? { rootUrl } : {}) });
   }
 
   async list(opts: ListOptions): Promise<EmailSummary[]> {

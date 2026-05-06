@@ -1,19 +1,50 @@
 name: Configure Docker Hub mirror
 description: >
-  Points the runner's Docker daemon at mirror.gcr.io as a pull-through cache
-  for Docker Hub. Sidesteps the 200 pulls/6h rate limit that throttled CI
-  whenever several jobs built images in parallel (we hit it during the
-  v0.4.2 release prep). Google operates mirror.gcr.io as a public cache
-  with the same path layout as Docker Hub, so no Dockerfile changes are
-  needed — the daemon transparently fetches from the mirror and falls
-  back to Docker Hub on a miss.
+  Sidesteps Docker Hub's 200 pulls/6h authenticated rate limit (which CI hit
+  consistently as of 2026-05-01) by pulling the Docker Hub library images
+  Pinchy depends on directly from mirror.gcr.io and re-tagging them locally.
+  After this action runs, `docker compose pull` / `up` finds the images in
+  the local cache and never touches docker.io.
+
+  Why pre-pull beats `registry-mirrors` alone: a daemon-level mirror config
+  silently falls back to docker.io on any mirror miss / lookup hiccup. That
+  fallback still consumes rate-limit quota — verified in CI runs 25224536490
+  and 25222971253 where `db Error toomanyrequests` fired even with
+  registry-mirrors set. Pre-pulling makes the docker.io path literally
+  unreachable for the images we control.
 runs:
   using: composite
   steps:
-    - name: Configure Docker daemon registry mirror
+    - name: Configure Docker daemon registry mirror (defense-in-depth)
       shell: bash
       run: |
         sudo mkdir -p /etc/docker
         echo '{"registry-mirrors":["https://mirror.gcr.io"]}' | sudo tee /etc/docker/daemon.json >/dev/null
         sudo systemctl restart docker
         until docker info >/dev/null 2>&1; do sleep 1; done
+
+    - name: Pre-pull Docker Hub library images via mirror.gcr.io
+      shell: bash
+      run: |
+        # Auto-discover docker.io library images across all
+        # docker-compose*.yml so this stays correct when new services
+        # are added without anyone touching this action. The regex
+        # matches `image: <name>:<tag>` lines where <name> has no `/`
+        # (i.e. no registry prefix → defaults to docker.io/library/<name>)
+        # and no `${...}` interpolation. The daemon mirror is defense-
+        # in-depth for anything this discovery misses.
+        images=$(
+          grep -hE '^[[:space:]]+image:[[:space:]]+[a-z0-9_.-]+:[a-z0-9_.-]+[[:space:]]*$' docker-compose*.yml \
+            | awk '{print $NF}' \
+            | sort -u
+        )
+        if [ -z "$images" ]; then
+          echo "::warning::No docker.io library images discovered in docker-compose*.yml — pre-pull skipped. If your stack pulls library images, the daemon mirror is your only line of defense."
+          exit 0
+        fi
+        # shellcheck disable=SC2086 # word-splitting is intentional here
+        echo "Pre-pulling docker.io library image(s) via mirror.gcr.io:" $images
+        while IFS= read -r image; do
+          docker pull "mirror.gcr.io/library/${image}"
+          docker tag "mirror.gcr.io/library/${image}" "${image}"
+        done <<< "$images"

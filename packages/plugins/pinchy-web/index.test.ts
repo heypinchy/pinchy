@@ -43,9 +43,35 @@ function collectFactories(pluginConfig?: Record<string, unknown>) {
   return factories;
 }
 
+/**
+ * Plugin config that exercises the Pattern B credentials flow (see #209).
+ * Pinchy writes connectionId + bootstrap creds into the plugin config; the
+ * plugin fetches the per-tenant Brave apiKey from the Pinchy API on demand.
+ */
+function credentialsPluginConfig(agents: Record<string, unknown>) {
+  return {
+    apiBaseUrl: "https://pinchy.test",
+    gatewayToken: "gw-token",
+    connectionId: "conn-1",
+    agents,
+  };
+}
+
+function stubCredentialsFetch(apiKey: string) {
+  const fetchMock = vi.fn(async () => ({
+    ok: true,
+    status: 200,
+    statusText: "OK",
+    json: async () => ({ credentials: { apiKey } }),
+  }));
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
 describe("pinchy-web plugin", () => {
   beforeEach(() => {
     vi.resetAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("has correct plugin metadata", () => {
@@ -170,10 +196,10 @@ describe("pinchy-web plugin", () => {
         { title: "Result 1", url: "https://example.com", description: "Desc 1" },
       ];
       braveSearchMock.mockResolvedValue({ results: mockResults });
+      stubCredentialsFetch("brave-key-123");
 
-      const factories = collectFactories({
-        braveApiKey: "brave-key-123",
-        agents: {
+      const factories = collectFactories(
+        credentialsPluginConfig({
           "agent-1": {
             tools: ["pinchy_web_search"],
             allowedDomains: ["example.com"],
@@ -181,8 +207,8 @@ describe("pinchy-web plugin", () => {
             country: "US",
             freshness: "pw",
           },
-        },
-      });
+        }),
+      );
 
       const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
       const result = await tool.execute("call-1", { query: "test query" });
@@ -203,16 +229,16 @@ describe("pinchy-web plugin", () => {
 
     it("passes excludedDomains from agent config", async () => {
       braveSearchMock.mockResolvedValue({ results: [] });
+      stubCredentialsFetch("brave-key-123");
 
-      const factories = collectFactories({
-        braveApiKey: "key",
-        agents: {
+      const factories = collectFactories(
+        credentialsPluginConfig({
           "agent-1": {
             tools: ["pinchy_web_search"],
             excludedDomains: ["reddit.com", "pinterest.com"],
           },
-        },
-      });
+        }),
+      );
 
       const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
       await tool.execute("call-1", { query: "some query" });
@@ -222,7 +248,7 @@ describe("pinchy-web plugin", () => {
       }));
     });
 
-    it("returns isError when braveApiKey is missing", async () => {
+    it("returns isError when credentials config is missing", async () => {
       const factories = collectFactories({
         agents: {
           "agent-1": { tools: ["pinchy_web_search"] },
@@ -240,13 +266,13 @@ describe("pinchy-web plugin", () => {
 
     it("returns isError when braveSearch throws", async () => {
       braveSearchMock.mockRejectedValue(new Error("API rate limit"));
+      stubCredentialsFetch("brave-key-123");
 
-      const factories = collectFactories({
-        braveApiKey: "key",
-        agents: {
+      const factories = collectFactories(
+        credentialsPluginConfig({
           "agent-1": { tools: ["pinchy_web_search"] },
-        },
-      });
+        }),
+      );
 
       const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
       const result = await tool.execute("call-1", { query: "test" });
@@ -258,13 +284,13 @@ describe("pinchy-web plugin", () => {
 
     it("handles non-Error throws from braveSearch", async () => {
       braveSearchMock.mockRejectedValue("string error");
+      stubCredentialsFetch("brave-key-123");
 
-      const factories = collectFactories({
-        braveApiKey: "key",
-        agents: {
+      const factories = collectFactories(
+        credentialsPluginConfig({
           "agent-1": { tools: ["pinchy_web_search"] },
-        },
-      });
+        }),
+      );
 
       const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
       const result = await tool.execute("call-1", { query: "test" });

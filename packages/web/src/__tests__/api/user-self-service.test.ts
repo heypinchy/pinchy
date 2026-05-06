@@ -14,7 +14,6 @@ vi.mock("@/lib/auth", () => {
     auth: {
       api: {
         getSession: mockGetSession,
-        changePassword: vi.fn(),
       },
     },
   };
@@ -80,7 +79,8 @@ describe("PATCH /api/users/me", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("Name is required");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.name).toBeDefined();
   });
 
   it("returns 400 when name is whitespace only", async () => {
@@ -95,7 +95,8 @@ describe("PATCH /api/users/me", () => {
     expect(response.status).toBe(400);
 
     const body = await response.json();
-    expect(body.error).toBe("Name is required");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.name).toBeDefined();
   });
 
   it("returns 200 and updates user name on success", async () => {
@@ -133,144 +134,5 @@ describe("PATCH /api/users/me", () => {
   });
 });
 
-// ── POST /api/users/me/password ─────────────────────────────────────────
-
-describe("POST /api/users/me/password", () => {
-  let POST: typeof import("@/app/api/users/me/password/route").POST;
-
-  beforeEach(async () => {
-    vi.clearAllMocks();
-    const mod = await import("@/app/api/users/me/password/route");
-    POST = mod.POST;
-  });
-
-  function makeRequest(body: Record<string, unknown>) {
-    return new NextRequest("http://localhost:7777/api/users/me/password", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-  }
-
-  it("returns 401 when not authenticated", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce(null);
-
-    const request = makeRequest({
-      currentPassword: "old123456",
-      newPassword: "new123456",
-    });
-
-    const response = await POST(request);
-    expect(response.status).toBe(401);
-
-    const body = await response.json();
-    expect(body.error).toBe("Unauthorized");
-  });
-
-  it("returns 400 when currentPassword is missing", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "member" },
-      expires: "",
-    } as any);
-
-    const request = makeRequest({ newPassword: "new123456" });
-
-    const response = await POST(request);
-    expect(response.status).toBe(400);
-
-    const body = await response.json();
-    expect(body.error).toBe("Current password is required");
-  });
-
-  it("returns 400 when newPassword is too short (< 8)", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "member" },
-      expires: "",
-    } as any);
-
-    const request = makeRequest({
-      currentPassword: "old123456",
-      newPassword: "short",
-    });
-
-    const response = await POST(request);
-    expect(response.status).toBe(400);
-
-    const body = await response.json();
-    expect(body.error).toBe("New password must be at least 8 characters");
-  });
-
-  it("returns 403 when currentPassword is incorrect", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "member" },
-      expires: "",
-    } as any);
-
-    vi.mocked((auth.api as any).changePassword).mockRejectedValueOnce(
-      new Error("Invalid password")
-    );
-
-    const request = makeRequest({
-      currentPassword: "wrongpassword",
-      newPassword: "new123456",
-    });
-
-    const response = await POST(request);
-    expect(response.status).toBe(403);
-
-    const body = await response.json();
-    expect(body.error).toBe("Current password is incorrect");
-  });
-
-  it("returns 200 and updates password on success", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "member" },
-      expires: "",
-    } as any);
-
-    vi.mocked((auth.api as any).changePassword).mockResolvedValueOnce({});
-
-    const request = makeRequest({
-      currentPassword: "old123456",
-      newPassword: "new123456",
-    });
-
-    const response = await POST(request);
-    expect(response.status).toBe(200);
-
-    const body = await response.json();
-    expect(body.success).toBe(true);
-
-    // Verify auth.api.changePassword was called with the correct arguments
-    expect((auth.api as any).changePassword).toHaveBeenCalledWith(
-      expect.objectContaining({
-        body: {
-          currentPassword: "old123456",
-          newPassword: "new123456",
-          revokeOtherSessions: false,
-        },
-      })
-    );
-  });
-
-  it("returns 403 when changePassword throws (e.g., no password set)", async () => {
-    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
-      user: { id: "user-1", role: "member" },
-      expires: "",
-    } as any);
-
-    vi.mocked((auth.api as any).changePassword).mockRejectedValueOnce(
-      new Error("Password not set")
-    );
-
-    const request = makeRequest({
-      currentPassword: "old123456",
-      newPassword: "new123456",
-    });
-
-    const response = await POST(request);
-    expect(response.status).toBe(403);
-
-    const body = await response.json();
-    expect(body.error).toBe("Current password is incorrect");
-  });
-});
+// POST /api/users/me/password is covered in users-password.test.ts —
+// keeping that contract in one file avoids drift in the password policy.

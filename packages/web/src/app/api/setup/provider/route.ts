@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse, after } from "next/server";
+import { z } from "zod";
 import { requireAdmin } from "@/lib/api-auth";
 import {
   validateProviderKey,
@@ -13,26 +14,31 @@ import { db } from "@/db";
 import { agents } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { appendAuditLog } from "@/lib/audit";
+import { parseRequestBody } from "@/lib/api-validation";
 
 const VALID_PROVIDERS = Object.keys(PROVIDERS) as ProviderName[];
+
+const setupProviderSchema = z.object({
+  provider: z.enum(VALID_PROVIDERS as [ProviderName, ...ProviderName[]]),
+  url: z.string().min(1).optional(),
+  apiKey: z.string().min(1).optional(),
+});
 
 export async function POST(request: NextRequest) {
   const sessionOrError = await requireAdmin();
   if (sessionOrError instanceof NextResponse) return sessionOrError;
 
-  const body = await request.json();
+  const parsed = await parseRequestBody(setupProviderSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const body = parsed.data;
   const { provider } = body;
 
-  if (!provider || !VALID_PROVIDERS.includes(provider)) {
-    return NextResponse.json({ error: "Invalid provider" }, { status: 400 });
-  }
-
-  const config = PROVIDERS[provider as ProviderName];
+  const config = PROVIDERS[provider];
 
   if (config.authType === "url") {
     // URL-based provider (ollama-local)
     const { url } = body;
-    if (!url || typeof url !== "string") {
+    if (!url) {
       return NextResponse.json({ error: "URL is required" }, { status: 400 });
     }
 
@@ -73,7 +79,7 @@ export async function POST(request: NextRequest) {
   } else {
     // API-key-based provider (existing logic)
     const { apiKey } = body;
-    if (!apiKey || typeof apiKey !== "string") {
+    if (!apiKey) {
       return NextResponse.json({ error: "API key is required" }, { status: 400 });
     }
 
@@ -139,15 +145,14 @@ export async function POST(request: NextRequest) {
   // provider name alongside its id, and never log secrets. For URL-based
   // providers, log only the host:port (not the full URL) so internal
   // hostnames don't leak verbatim into the audit trail.
-  const providerName = provider as ProviderName;
   const detail: Record<string, unknown> = {
-    provider: { id: providerName, name: PROVIDERS[providerName].name },
+    provider: { id: provider, name: PROVIDERS[provider].name },
     authType: config.authType,
   };
-  if (config.authType === "url" && typeof body.url === "string") {
+  if (config.authType === "url" && body.url) {
     try {
-      const parsed = new URL(body.url);
-      detail.host = parsed.host;
+      const parsedUrl = new URL(body.url);
+      detail.host = parsedUrl.host;
     } catch {
       // Invalid URL — this would have been rejected by validateProviderUrl
       // already, so this branch is only reached in tests.

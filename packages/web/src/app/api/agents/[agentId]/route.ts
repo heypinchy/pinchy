@@ -1,10 +1,10 @@
-import { NextRequest, NextResponse, after } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse, after } from "next/server";
 import { revalidatePath } from "next/cache";
 import { eq, inArray } from "drizzle-orm";
+import { z } from "zod";
 import { updateAgent, deleteAgent, AGENT_NAME_MAX_LENGTH } from "@/lib/agents";
-import { getSession } from "@/lib/auth";
-import { getAgentWithAccess, assertAgentWriteAccess } from "@/lib/agent-access";
+import { withAuth, withAdmin } from "@/lib/api-auth";
+import { getAgentWithAccess, requireAgentWriteAccess } from "@/lib/agent-access";
 import { appendAuditLog } from "@/lib/audit";
 import type { UpdateDetail } from "@/lib/audit";
 import { isEnterprise } from "@/lib/enterprise";
@@ -13,17 +13,30 @@ import { db } from "@/db";
 import { agentGroups, groups, type AgentPluginConfig } from "@/db/schema";
 import { getAgentGroupIds } from "@/lib/groups";
 import { recalculateTelegramAllowStores } from "@/lib/telegram-allow-store";
-import { validatePinchyWebConfig } from "@/lib/domain-validation";
+import { validatePinchyWebConfig, pluginConfigSchema } from "@/lib/domain-validation";
+import { parseRequestBody } from "@/lib/api-validation";
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: Promise<{ agentId: string }> }
-) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
+const updateAgentSchema = z.object({
+  name: z
+    .string()
+    .min(1)
+    .max(AGENT_NAME_MAX_LENGTH)
+    .refine((v) => v.trim().length > 0, "Name is required")
+    .optional(),
+  model: z.string().optional(),
+  allowedTools: z.array(z.string()).optional(),
+  pluginConfig: pluginConfigSchema.nullable().optional(),
+  greetingMessage: z.string().min(1, "Greeting message cannot be empty").optional(),
+  tagline: z.string().nullable().optional(),
+  avatarSeed: z.string().nullable().optional(),
+  personalityPresetId: z.string().nullable().optional(),
+  visibility: z.enum(["all", "restricted"]).optional(),
+  groupIds: z.array(z.string()).optional(),
+});
 
+type RouteContext = { params: Promise<{ agentId: string }> };
+
+export const GET = withAuth<RouteContext>(async (_req, { params }, session) => {
   const { agentId } = await params;
 
   const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
@@ -32,17 +45,9 @@ export async function GET(
 
   const groupIds = await getAgentGroupIds(agentId);
   return NextResponse.json({ ...agent, groupIds });
-}
+});
 
-export async function PATCH(
-  request: NextRequest,
-  { params }: { params: Promise<{ agentId: string }> }
-) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const PATCH = withAuth<RouteContext>(async (request, { params }, session) => {
   const { agentId } = await params;
 
   const existingAgentOrError = await getAgentWithAccess(
@@ -54,29 +59,17 @@ export async function PATCH(
   const existingAgent = existingAgentOrError;
 
   // Only admins or personal agent owners can modify agents
-  try {
-    assertAgentWriteAccess(existingAgent, session.user.id!, session.user.role);
-  } catch {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
+  const denied = requireAgentWriteAccess(existingAgent, session.user.id!, session.user.role);
+  if (denied) return denied;
 
-  const body = await request.json();
+  const parsed = await parseRequestBody(updateAgentSchema, request);
+  if ("error" in parsed) return parsed.error;
+  const body = parsed.data;
 
-  // Validate pluginConfig structure if provided
+  // Validate pluginConfig structure if provided (semantic validation beyond shape)
   const pluginConfigError = validatePinchyWebConfig(body.pluginConfig);
   if (pluginConfigError) {
     return NextResponse.json({ error: pluginConfigError }, { status: 400 });
-  }
-
-  if (
-    body.name !== undefined &&
-    typeof body.name === "string" &&
-    body.name.length > AGENT_NAME_MAX_LENGTH
-  ) {
-    return NextResponse.json(
-      { error: `Name must be ${AGENT_NAME_MAX_LENGTH} characters or less` },
-      { status: 400 }
-    );
   }
 
   // Only admins can change permissions on shared agents
@@ -100,9 +93,6 @@ export async function PATCH(
     if (!(await isEnterprise())) {
       return NextResponse.json({ error: "Enterprise feature" }, { status: 403 });
     }
-    if (!["all", "restricted"].includes(body.visibility)) {
-      return NextResponse.json({ error: "Invalid visibility value" }, { status: 400 });
-    }
     if (existingAgent.isPersonal) {
       return NextResponse.json(
         { error: "Cannot change visibility for personal agents" },
@@ -111,11 +101,12 @@ export async function PATCH(
     }
   }
 
-  // greetingMessage is required at the schema level — reject attempts to clear it
+  // greetingMessage cannot be a whitespace-only string (zod min(1) catches empty,
+  // but " " passes shape validation — reject to keep the field meaningful).
   if (
     body.greetingMessage !== undefined &&
-    (body.greetingMessage === null ||
-      (typeof body.greetingMessage === "string" && body.greetingMessage.trim() === ""))
+    typeof body.greetingMessage === "string" &&
+    body.greetingMessage.trim() === ""
   ) {
     return NextResponse.json({ error: "Greeting message cannot be empty" }, { status: 400 });
   }
@@ -180,14 +171,8 @@ export async function PATCH(
       ? await getAgentGroupIds(agentId)
       : [];
 
-  // Update group assignments if provided
+  // Update group assignments if provided (zod already validated string[])
   if (body.groupIds !== undefined && session.user.role === "admin") {
-    if (
-      !Array.isArray(body.groupIds) ||
-      !body.groupIds.every((id: unknown) => typeof id === "string")
-    ) {
-      return NextResponse.json({ error: "groupIds must be an array of strings" }, { status: 400 });
-    }
     await db.delete(agentGroups).where(eq(agentGroups.agentId, agentId));
     if (body.groupIds.length > 0) {
       await db
@@ -212,8 +197,9 @@ export async function PATCH(
   } = { changes };
 
   if (body.groupIds !== undefined && session.user.role === "admin") {
-    const addedIds = body.groupIds.filter((id: string) => !oldGroupIds.includes(id));
-    const removedIds = oldGroupIds.filter((id: string) => !body.groupIds.includes(id));
+    const newIds = body.groupIds;
+    const addedIds = newIds.filter((id: string) => !oldGroupIds.includes(id));
+    const removedIds = oldGroupIds.filter((id: string) => !newIds.includes(id));
     if (addedIds.length > 0 || removedIds.length > 0) {
       const allGroupIds = [...new Set([...addedIds, ...removedIds])];
       const groupRows =
@@ -250,20 +236,9 @@ export async function PATCH(
   }
 
   return NextResponse.json(agent);
-}
+});
 
-export async function DELETE(
-  request: NextRequest,
-  { params }: { params: Promise<{ agentId: string }> }
-) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
-  }
-
+export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) => {
   const { agentId } = await params;
 
   const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
@@ -290,4 +265,4 @@ export async function DELETE(
   revalidatePath("/", "layout");
 
   return NextResponse.json({ success: true });
-}
+});

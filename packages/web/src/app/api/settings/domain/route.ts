@@ -41,11 +41,13 @@ export async function POST(req: Request) {
     })
   );
 
-  // Schedule a restart so useSecureCookies picks up the new domain
-  setTimeout(() => {
-    console.log("Restarting to apply domain lock security settings...");
-    process.exit(0);
-  }, 500);
+  if (process.env.PINCHY_E2E_DISABLE_DOMAIN_RESTART !== "1") {
+    // Schedule a restart so useSecureCookies picks up the new domain.
+    setTimeout(() => {
+      console.log("Restarting to apply domain lock security settings...");
+      process.exit(0);
+    }, 500);
+  }
 
   return NextResponse.json({ domain, restart: true });
 }
@@ -74,11 +76,13 @@ export async function DELETE(_req: Request) {
     })
   );
 
-  // Schedule a restart so useSecureCookies picks up the removed domain
-  setTimeout(() => {
-    console.log("Restarting to apply domain unlock security settings...");
-    process.exit(0);
-  }, 500);
+  if (process.env.PINCHY_E2E_DISABLE_DOMAIN_RESTART !== "1") {
+    // Schedule a restart so useSecureCookies picks up the removed domain.
+    setTimeout(() => {
+      console.log("Restarting to apply domain unlock security settings...");
+      process.exit(0);
+    }, 500);
+  }
 
   return NextResponse.json({ removed: true, restart: true });
 }

@@ -1,10 +1,10 @@
 // audit-exempt: read-only credential test, no state changes
-import { NextRequest, NextResponse } from "next/server";
-import { headers } from "next/headers";
+import { NextResponse } from "next/server";
 import { z } from "zod";
 import { OdooClient } from "odoo-node";
-import { getSession } from "@/lib/auth";
+import { withAdmin } from "@/lib/api-auth";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { parseRequestBody } from "@/lib/api-validation";
 
 const testCredentialsSchema = z.discriminatedUnion("type", [
   z.object({
@@ -24,23 +24,9 @@ const testCredentialsSchema = z.discriminatedUnion("type", [
   }),
 ]);
 
-export async function POST(request: NextRequest) {
-  const session = await getSession({ headers: await headers() });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  if (session.user.role !== "admin") {
-    return NextResponse.json({ error: "Admin access required" }, { status: 403 });
-  }
-
-  const body = await request.json();
-  const parsed = testCredentialsSchema.safeParse(body);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "Validation failed", details: parsed.error.flatten() },
-      { status: 400 }
-    );
-  }
+export const POST = withAdmin(async (request) => {
+  const parsed = await parseRequestBody(testCredentialsSchema, request);
+  if ("error" in parsed) return parsed.error;
 
   if (parsed.data.type === "web-search") {
     try {
@@ -89,4 +75,4 @@ export async function POST(request: NextRequest) {
     const message = error instanceof Error ? error.message : "Connection failed";
     return NextResponse.json({ success: false, error: message });
   }
-}
+});

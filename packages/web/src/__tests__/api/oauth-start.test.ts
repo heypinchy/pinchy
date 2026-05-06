@@ -76,25 +76,36 @@ describe("GET /api/integrations/oauth/start", () => {
     mockGetOAuthSettings.mockResolvedValue(oauthSettings);
   });
 
-  it("returns 401 when not authenticated", async () => {
+  it("redirects to /settings with unauthorized error when not authenticated", async () => {
+    // Browser-driven endpoint: auth failures must redirect, not return JSON,
+    // so the user lands somewhere meaningful instead of seeing raw JSON.
     mockGetSession.mockResolvedValueOnce(null);
     const { GET } = await import("@/app/api/integrations/oauth/start/route");
     const res = await GET(makeRequest());
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(302);
+    const location = res.headers.get("location") ?? "";
+    expect(location).toContain("/settings");
+    expect(location).toContain("error=unauthorized");
   });
 
-  it("returns 403 when not admin", async () => {
+  it("redirects to /settings with unauthorized error when not admin", async () => {
     mockGetSession.mockResolvedValueOnce({ user: { id: "user-2", role: "member" } });
     const { GET } = await import("@/app/api/integrations/oauth/start/route");
     const res = await GET(makeRequest());
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(302);
+    const location = res.headers.get("location") ?? "";
+    expect(location).toContain("/settings");
+    expect(location).toContain("error=unauthorized");
   });
 
-  it("returns 400 when OAuth not configured", async () => {
+  it("redirects to /settings with not_configured error when OAuth not configured", async () => {
     mockGetOAuthSettings.mockResolvedValueOnce(null);
     const { GET } = await import("@/app/api/integrations/oauth/start/route");
     const res = await GET(makeRequest());
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(302);
+    const location = res.headers.get("location") ?? "";
+    expect(location).toContain("/settings");
+    expect(location).toContain("error=not_configured");
   });
 
   it("deletes the user's previous pending record when oauth_pending_id cookie is present", async () => {

@@ -27,10 +27,19 @@ services:
       - NODE_TLS_REJECT_UNAUTHORIZED=0
       # Route LLM calls to mock server — Anthropic SDK respects ANTHROPIC_BASE_URL
       - ANTHROPIC_BASE_URL=https://172.28.0.10
+      # Fake API key for E2E test runs — matches the value used by seedSetup()
+      # (e2e/telegram/helpers.ts). OpenClaw reads the real key from secrets.json
+      # via SecretRef; this env var is set as a fallback in case OpenClaw falls
+      # back to environment for any reason during test setup.
+      - ANTHROPIC_API_KEY=sk-ant-fake-key-for-e2e-testing
 
   pinchy:
     environment:
       - TELEGRAM_API_URL=http://telegram-mock:9001
+      # OC 4.27+ requires baseUrl in config.apply when this env var is set on
+      # the OpenClaw container. Pinchy must know it too so regenerateOpenClawConfig
+      # can include baseUrl in both the file write and config.apply payload.
+      - ANTHROPIC_BASE_URL=https://172.28.0.10
 
 networks:
   default:

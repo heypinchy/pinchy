@@ -571,7 +571,8 @@ describe("PATCH /api/agents/[agentId] name length validation", () => {
     });
     expect(response.status).toBe(400);
     const body = await response.json();
-    expect(body.error).toMatch(/name/i);
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.name).toBeDefined();
   });
 
   it("should accept name with exactly 30 characters", async () => {

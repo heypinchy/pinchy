@@ -4,6 +4,7 @@ import { assertAgentAccess, effectiveVisibility } from "@/lib/agent-access";
 import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { isEnterprise } from "@/lib/enterprise";
 import { appendAuditLog } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
 import { SessionCache } from "@/server/session-cache";
 import { getErrorHint } from "@/server/error-hints";
 import { db } from "@/db";
@@ -90,17 +91,20 @@ export class ClientRouter {
     try {
       assertAgentAccess(agent, this.userId, this.userRole, userGroupIds, agentGroupIds, enterprise);
     } catch {
-      appendAuditLog({
-        actorType: "user",
+      this.sendToClient(clientWs, { type: "error", message: "Access denied" });
+      const auditEntry = {
+        actorType: "user" as const,
         actorId: this.userId,
-        eventType: "tool.denied",
+        eventType: "tool.denied" as const,
         resource: `agent:${message.agentId}`,
         detail: { reason: "access_denied" },
-        outcome: "failure",
-      }).catch((err) => {
-        console.error("Failed to write audit log for tool.denied:", err);
-      });
-      this.sendToClient(clientWs, { type: "error", message: "Access denied" });
+        outcome: "failure" as const,
+      };
+      try {
+        await appendAuditLog(auditEntry);
+      } catch (err) {
+        recordAuditFailure(err, auditEntry);
+      }
       return;
     }
 
@@ -176,18 +180,26 @@ export class ClientRouter {
         const reason: RetryReason = ALLOWED_RETRY_REASONS.has(message.retryReason ?? "")
           ? (message.retryReason as RetryReason)
           : "send_failure";
-        appendAuditLog({
-          actorType: "user",
+        // Best-effort audit: a transient DB failure must not fail the chat
+        // retry the user explicitly asked for. recordAuditFailure() emits
+        // the structured signal so the gap stays observable.
+        const auditEntry = {
+          actorType: "user" as const,
           actorId: this.userId,
-          eventType: "chat.retry_triggered",
+          eventType: "chat.retry_triggered" as const,
           resource: `agent:${message.agentId}`,
           detail: {
             agent: { id: agent.id, name: agent.name },
             sessionKey,
             reason,
           },
-          outcome: "success",
-        }).catch((err) => console.error("Failed to write audit log:", err));
+          outcome: "success" as const,
+        };
+        try {
+          await appendAuditLog(auditEntry);
+        } catch (err) {
+          recordAuditFailure(err, auditEntry);
+        }
       }
 
       const stream = this.openclawClient.chat(text, chatOptions);

@@ -1,4 +1,7 @@
-FROM node:22-slim
+# Pull node:22-slim via Google's Docker Hub mirror to avoid Docker Hub
+# anonymous-pull rate limits in CI. mirror.gcr.io is a free, no-auth
+# pull-through cache for `library/*` images on Docker Hub.
+FROM mirror.gcr.io/library/node:22-slim
 
 # Cache pnpm in a shared location so the non-root pinchy user can use it
 # without re-downloading on every container start.
@@ -14,6 +17,16 @@ RUN pnpm install --frozen-lockfile
 
 COPY packages/web packages/web
 
+# plugin-manifest-loader.ts imports these JSON manifests at Next.js build time
+# (static imports bundled by Turbopack). They must be present before `pnpm build`.
+COPY packages/plugins/pinchy-files/openclaw.plugin.json packages/plugins/pinchy-files/
+COPY packages/plugins/pinchy-context/openclaw.plugin.json packages/plugins/pinchy-context/
+COPY packages/plugins/pinchy-audit/openclaw.plugin.json packages/plugins/pinchy-audit/
+COPY packages/plugins/pinchy-docs/openclaw.plugin.json packages/plugins/pinchy-docs/
+COPY packages/plugins/pinchy-email/openclaw.plugin.json packages/plugins/pinchy-email/
+COPY packages/plugins/pinchy-odoo/openclaw.plugin.json packages/plugins/pinchy-odoo/
+COPY packages/plugins/pinchy-web/openclaw.plugin.json packages/plugins/pinchy-web/
+
 RUN cd packages/web && pnpm build
 
 EXPOSE 7777
@@ -23,18 +36,23 @@ ENV NODE_ENV=production
 
 WORKDIR /app/packages/web
 
-# Copy Pinchy plugins to OpenClaw extensions directory
-COPY packages/plugins/pinchy-files /openclaw-extensions/pinchy-files
-COPY packages/plugins/pinchy-context /openclaw-extensions/pinchy-context
-COPY packages/plugins/pinchy-audit /openclaw-extensions/pinchy-audit
-COPY packages/plugins/pinchy-odoo /openclaw-extensions/pinchy-odoo
-COPY packages/plugins/pinchy-docs /openclaw-extensions/pinchy-docs
+# Copy Pinchy plugins to /app/pinchy-plugins/ (NOT directly to the named volume).
+# Docker only initialises a named volume from the image on first creation; upgrades
+# leave stale content from the previous image. entrypoint.sh copies from here to
+# /openclaw-extensions/ on every startup, guaranteeing upgrades see the latest plugins.
+COPY packages/plugins/pinchy-files /app/pinchy-plugins/pinchy-files
+COPY packages/plugins/pinchy-context /app/pinchy-plugins/pinchy-context
+COPY packages/plugins/pinchy-audit /app/pinchy-plugins/pinchy-audit
+COPY packages/plugins/pinchy-docs /app/pinchy-plugins/pinchy-docs
+COPY packages/plugins/pinchy-odoo /app/pinchy-plugins/pinchy-odoo
+COPY packages/plugins/pinchy-web /app/pinchy-plugins/pinchy-web
+COPY packages/plugins/pinchy-email /app/pinchy-plugins/pinchy-email
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD node -e "fetch('http://localhost:7777/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
 
 # Create non-root user (entrypoint drops privileges after fixing volume permissions)
-RUN groupadd -r pinchy && useradd -r -g pinchy -d /app pinchy
+RUN groupadd -r -g 999 pinchy && useradd -r -u 999 -g pinchy -d /app pinchy
 RUN mkdir -p /app/secrets /openclaw-config/workspaces && chown -R pinchy:pinchy /app /app/secrets /openclaw-config/workspaces
 
 COPY entrypoint.sh /entrypoint.sh

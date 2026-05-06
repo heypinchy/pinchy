@@ -1,4 +1,8 @@
-const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+// GMAIL_OAUTH_BASE_URL allows E2E tests to redirect OAuth token refresh calls
+// to a local mock server instead of https://oauth2.googleapis.com/
+const TOKEN_ENDPOINT = process.env.GMAIL_OAUTH_BASE_URL
+  ? `${process.env.GMAIL_OAUTH_BASE_URL}/token`
+  : "https://oauth2.googleapis.com/token";
 const EXPIRY_BUFFER_MS = 5 * 60 * 1000; // Refresh 5 minutes before expiry
 
 export function isTokenExpired(expiresAt: string): boolean {

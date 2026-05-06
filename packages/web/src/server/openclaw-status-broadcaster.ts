@@ -3,6 +3,15 @@ import type { OpenClawClient } from "openclaw-node";
 
 const WS_OPEN = 1;
 
+export interface OpenClawStatusBroadcaster {
+  sendInitialStatus: (clientWs: WebSocket) => void;
+}
+
+function sendStatus(clientWs: WebSocket, connected: boolean): void {
+  if (clientWs.readyState !== WS_OPEN) return;
+  clientWs.send(JSON.stringify({ type: "openclaw_status", connected }));
+}
+
 /**
  * Broadcasts upstream OpenClaw connection state to browser clients so the chat
  * UI's connection indicator reflects the full path (browser↔Pinchy↔OpenClaw),
@@ -20,9 +29,7 @@ const WS_OPEN = 1;
 export function setupOpenClawStatusBroadcaster(
   openclawClient: Pick<OpenClawClient, "on" | "isConnected">,
   sessionMap: Map<WebSocket, unknown>
-): {
-  sendInitialStatus: (clientWs: WebSocket) => void;
-} {
+): OpenClawStatusBroadcaster {
   let isOpenClawConnected = openclawClient.isConnected;
 
   openclawClient.on("connected", () => {
@@ -43,9 +50,23 @@ export function setupOpenClawStatusBroadcaster(
   });
 
   return {
-    sendInitialStatus: (clientWs) => {
-      if (clientWs.readyState !== WS_OPEN) return;
-      clientWs.send(JSON.stringify({ type: "openclaw_status", connected: isOpenClawConnected }));
-    },
+    sendInitialStatus: (clientWs) => sendStatus(clientWs, isOpenClawConnected),
+  };
+}
+
+/**
+ * Cold-start stand-in used by server.ts before the real broadcaster has been
+ * wired up (i.e. before the `OPENCLAW_WS_URL` block runs, which is gated
+ * behind `await waitForGatewayToken()`). Always reports `connected: false`
+ * so a browser that connects during the cold-start window sees an honest
+ * red indicator instead of inheriting an optimistic client-side default.
+ *
+ * See issue #198 — the original `statusBroadcaster?.sendInitialStatus(ws)`
+ * was a no-op during this window, leaving the indicator green while
+ * OpenClaw was still booting.
+ */
+export function createColdStartStatusBroadcaster(): OpenClawStatusBroadcaster {
+  return {
+    sendInitialStatus: (clientWs) => sendStatus(clientWs, false),
   };
 }

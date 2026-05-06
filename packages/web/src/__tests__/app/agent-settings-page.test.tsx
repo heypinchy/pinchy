@@ -413,14 +413,27 @@ describe("AgentSettingsPage", () => {
     let integrationPutResolved = false;
     let patchStartedBeforePutResolved = false;
 
+    // Hold the PUT pending on a controllable deferred instead of a real
+    // wall-clock setTimeout — gives a deterministic window for detecting
+    // parallelism without slowing the suite or relying on CI scheduling.
+    let resolveIntegrationPut!: () => void;
+    const integrationPutPending = new Promise<void>((r) => {
+      resolveIntegrationPut = r;
+    });
+
     fetchSpy.mockImplementation(async (url, opts) => {
       const urlStr = typeof url === "string" ? url : url.toString();
       const method = (opts as RequestInit)?.method ?? "GET";
       if (urlStr.includes("/api/agents/agent-1/integrations") && method === "PUT") {
-        // Simulate async work to create a window for detecting parallelism
-        await new Promise((r) => setTimeout(r, 50));
+        await integrationPutPending;
         integrationPutResolved = true;
       } else if (urlStr.includes("/api/agents/agent-1") && method === "PATCH") {
+        // Invariant: this branch must run synchronously up to `return` —
+        // no `await` before the flag check. The detection logic relies on
+        // the PATCH mock body executing fully in the same synchronous
+        // invocation as the fetch call, so that "PATCH in parallel with
+        // PUT" produces a deterministic flag set before the test code
+        // resumes after the `waitFor(PUT was called)` below.
         if (!integrationPutResolved) {
           patchStartedBeforePutResolved = true;
         }
@@ -432,6 +445,19 @@ describe("AgentSettingsPage", () => {
     await waitFor(() => screen.getByText(/apply changes and restart/i));
     const confirmButtons = screen.getAllByRole("button", { name: /save & restart/i });
     await userEvent.click(confirmButtons[confirmButtons.length - 1]);
+
+    // Wait until the PUT has been dispatched (and is now suspended on the
+    // deferred). If the save handler dispatches in parallel, the PATCH
+    // would also have been called by this point and the flag would be set;
+    // sequential dispatch leaves PATCH unfired until we resolve the PUT.
+    await waitFor(() =>
+      expect(fetchSpy).toHaveBeenCalledWith(
+        expect.stringContaining("/api/agents/agent-1/integrations"),
+        expect.objectContaining({ method: "PUT" })
+      )
+    );
+
+    resolveIntegrationPut();
 
     await waitFor(() => {
       expect(integrationPutResolved).toBe(true);

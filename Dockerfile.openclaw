@@ -1,4 +1,7 @@
-FROM node:22-slim
+# Pull node:22-slim via Google's Docker Hub mirror to avoid Docker Hub
+# anonymous-pull rate limits in CI. mirror.gcr.io is a free, no-auth
+# pull-through cache for `library/*` images on Docker Hub.
+FROM mirror.gcr.io/library/node:22-slim
 
 # python3 + build-essential are needed for native npm modules (better-sqlite3
 # in pinchy-files) to compile from source when the prebuilt binary doesn't
@@ -12,7 +15,7 @@ RUN apt-get update && apt-get install -y \
       build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g openclaw@2026.4.12
+RUN npm install -g openclaw@2026.4.27
 
 # Install pinchy-files plugin dependencies (native modules must be built in the container)
 COPY packages/plugins/pinchy-files/package.json /tmp/pinchy-files/package.json
@@ -42,8 +45,19 @@ RUN cd /tmp/pinchy-email && npm install --omit=dev && \
     cp -r /tmp/pinchy-email/node_modules /opt/pinchy-email-deps/ && \
     rm -rf /tmp/pinchy-email
 
+# Pre-warm the bundled-plugin runtime-deps cache. Rationale and full
+# behaviour live in config/prewarm-openclaw.sh; in short: boot the
+# gateway once at build time so the npm install of ~15 plugin runtime
+# deps lands in /root/.openclaw/plugin-runtime-deps/ before any user
+# starts the container. Saves ~48s of `[plugins] staging bundled
+# runtime deps` on first boot, observed on 2-vCPU staging.
+COPY config/openclaw-prewarm.json /tmp/openclaw-prewarm.json
+COPY config/prewarm-openclaw.sh /tmp/prewarm-openclaw.sh
+RUN chmod +x /tmp/prewarm-openclaw.sh && \
+    /tmp/prewarm-openclaw.sh /tmp/openclaw-prewarm.json && \
+    rm -f /tmp/prewarm-openclaw.sh /tmp/openclaw-prewarm.json
+
 COPY config/openclaw.json /root/.openclaw/openclaw.json
-COPY config/ensure-gateway-token.js /ensure-gateway-token.js
 COPY config/start-openclaw.sh /start-openclaw.sh
 RUN chmod +x /start-openclaw.sh
 

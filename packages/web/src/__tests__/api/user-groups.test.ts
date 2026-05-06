@@ -144,7 +144,8 @@ describe("PUT /api/users/[userId]/groups", () => {
     });
     expect(response.status).toBe(400);
     const body = await response.json();
-    expect(body.error).toBe("groupIds must be an array");
+    expect(body.error).toBe("Validation failed");
+    expect(body.details.fieldErrors.groupIds).toBeDefined();
   });
 
   it("returns 404 when user not found", async () => {

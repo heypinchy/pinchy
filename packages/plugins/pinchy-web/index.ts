@@ -11,10 +11,7 @@ interface ContentBlock {
 }
 
 interface PluginApi {
-  pluginConfig?: {
-    braveApiKey?: string;
-    agents?: Record<string, AgentWebConfig>;
-  };
+  pluginConfig?: PluginConfig;
   registerTool: (
     factory: (ctx: PluginToolContext) => AgentTool | null,
     opts?: { name?: string },
@@ -33,6 +30,17 @@ interface AgentTool {
   ) => Promise<{ content: ContentBlock[]; isError?: boolean }>;
 }
 
+interface PluginConfig {
+  apiBaseUrl?: string;
+  gatewayToken?: string;
+  /** ID of the web-search integration connection in Pinchy. The Brave
+   * apiKey is fetched on-demand from Pinchy's internal credentials API
+   * — never written into openclaw.json. See #209 for the bug class
+   * that prompted this pattern. */
+  connectionId?: string;
+  agents?: Record<string, AgentWebConfig>;
+}
+
 interface AgentWebConfig {
   tools: string[];
   allowedDomains?: string[];
@@ -42,6 +50,43 @@ interface AgentWebConfig {
   freshness?: string;
 }
 
+interface BraveCredentials {
+  apiKey: string;
+}
+
+function assertBraveCredentialsShape(creds: unknown): asserts creds is BraveCredentials {
+  if (!creds || typeof creds !== "object") {
+    throw new Error(`pinchy-web: credentials must be an object, got ${typeof creds}`);
+  }
+  const obj = creds as Record<string, unknown>;
+  const actual = typeof obj.apiKey;
+  if (actual !== "string") {
+    throw new Error(
+      `pinchy-web: credentials.apiKey must be a string, got ${actual}` +
+        (actual === "object" ? " (looks like an unresolved SecretRef — see #209)" : ""),
+    );
+  }
+}
+
+async function fetchBraveCredentials(
+  apiBaseUrl: string,
+  gatewayToken: string,
+  connectionId: string,
+): Promise<BraveCredentials> {
+  const response = await fetch(
+    `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
+    { headers: { Authorization: `Bearer ${gatewayToken}` } },
+  );
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch Brave credentials: HTTP ${response.status} ${response.statusText}`,
+    );
+  }
+  const data = (await response.json()) as { credentials?: unknown };
+  assertBraveCredentialsShape(data.credentials);
+  return data.credentials;
+}
+
 const plugin = {
   id: "pinchy-web",
   name: "Pinchy Web",
@@ -49,8 +94,50 @@ const plugin = {
 
   register(api: PluginApi) {
     const config = api.pluginConfig;
-    const braveApiKey = config?.braveApiKey;
+    const apiBaseUrl = config?.apiBaseUrl ?? "";
+    const gatewayToken = config?.gatewayToken ?? "";
+    const connectionId = config?.connectionId ?? "";
     const agentConfigs = config?.agents ?? {};
+
+    // Cached Brave apiKey. Same TTL semantics as pinchy-odoo: fast
+    // first-call latency but fresh enough for credential rotation
+    // without an OpenClaw restart. On a 401 from Brave we invalidate
+    // and retry once.
+    const CREDENTIALS_TTL_MS = 5 * 60 * 1000;
+    let cached: { apiKey: string; expiresAt: number } | null = null;
+
+    async function getBraveApiKey(): Promise<string> {
+      if (cached && cached.expiresAt > Date.now()) return cached.apiKey;
+      if (!connectionId || !apiBaseUrl || !gatewayToken) {
+        throw new Error(
+          "pinchy-web: missing connectionId/apiBaseUrl/gatewayToken in plugin config",
+        );
+      }
+      const creds = await fetchBraveCredentials(apiBaseUrl, gatewayToken, connectionId);
+      cached = { apiKey: creds.apiKey, expiresAt: Date.now() + CREDENTIALS_TTL_MS };
+      return creds.apiKey;
+    }
+
+    function invalidateCache() {
+      cached = null;
+    }
+
+    async function withAuthRetry<T>(fn: (apiKey: string) => Promise<T>): Promise<T> {
+      const apiKey = await getBraveApiKey();
+      try {
+        return await fn(apiKey);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message.toLowerCase() : "";
+        if (!(msg.includes("401") || msg.includes("unauthor") || msg.includes("invalid api"))) {
+          throw err;
+        }
+        invalidateCache();
+        const fresh = await getBraveApiKey();
+        return fn(fresh);
+      }
+    }
+
+    const haveCredentialsConfig = Boolean(connectionId && apiBaseUrl && gatewayToken);
 
     // pinchy_web_search
     api.registerTool(
@@ -73,7 +160,7 @@ const plugin = {
             required: ["query"],
           },
           async execute(_toolCallId, params) {
-            if (!braveApiKey) {
+            if (!haveCredentialsConfig) {
               return {
                 isError: true,
                 content: [
@@ -85,18 +172,17 @@ const plugin = {
               };
             }
             try {
-              const searchConfig: BraveSearchConfig = {
-                apiKey: braveApiKey,
-                allowedDomains: agentConfig.allowedDomains,
-                excludedDomains: agentConfig.excludedDomains,
-                language: agentConfig.language,
-                country: agentConfig.country,
-                freshness: agentConfig.freshness,
-              };
-              const result = await braveSearch(
-                params.query as string,
-                searchConfig,
-              );
+              const result = await withAuthRetry((apiKey) => {
+                const searchConfig: BraveSearchConfig = {
+                  apiKey,
+                  allowedDomains: agentConfig.allowedDomains,
+                  excludedDomains: agentConfig.excludedDomains,
+                  language: agentConfig.language,
+                  country: agentConfig.country,
+                  freshness: agentConfig.freshness,
+                };
+                return braveSearch(params.query as string, searchConfig);
+              });
               return {
                 content: [
                   {
