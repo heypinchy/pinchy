@@ -114,6 +114,28 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
+## Upgrading from %%PINCHY_VERSION%% to %%PINCHY_VERSION%%
+
+### Breaking changes
+
+None.
+
+### Upgrade notes
+
+%%PINCHY_VERSION%% is a hotfix release. It fixes a startup loop in OpenClaw caused by a missing `baseUrl` field in the generated `openclaw.json` for the Anthropic, OpenAI, and Google providers. Deployments of %%PINCHY_VERSION%% that configured any of these providers without setting `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or `GOOGLE_BASE_URL` env-vars hit a `models.providers.<name>.baseUrl: expected string, received undefined` error and OpenClaw never came up.
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=%%PINCHY_VERSION%%/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d
+```
+
+No database migration, no config-file change, and no env-var changes are required. Pinchy regenerates `openclaw.json` on first start with the correct default base URLs, and OpenClaw boots cleanly.
+
+If you previously set `ANTHROPIC_BASE_URL` (or the OpenAI/Google equivalents) for a proxy deployment, those env-vars continue to override the defaults — no action needed.
+
 ## Upgrading from v0.4.4 to %%PINCHY_VERSION%%
 
 ### Breaking changes
