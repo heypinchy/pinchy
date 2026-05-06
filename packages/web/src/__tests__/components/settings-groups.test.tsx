@@ -221,6 +221,61 @@ describe("SettingsGroups", () => {
     ).toBeInTheDocument();
   });
 
+  it("renders inline field error when API returns 400 with fieldErrors (no toast)", async () => {
+    // Per the project error-display policy: form validation errors should be
+    // rendered inline next to the offending field, NOT as toast notifications.
+    // The server returns Zod's flatten() output under details.fieldErrors.
+    const user = userEvent.setup();
+    mockFetch();
+    render(<SettingsGroups />);
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "New Group" })).toBeInTheDocument();
+    });
+
+    await user.click(screen.getByRole("button", { name: "New Group" }));
+
+    await waitFor(() => {
+      expect(screen.getByLabelText("Name")).toBeInTheDocument();
+    });
+
+    // Type something so the Create button is enabled, then fail validation
+    // server-side (the client doesn't do its own length check).
+    await user.type(screen.getByLabelText("Name"), "x");
+
+    vi.mocked(global.fetch).mockImplementation(async (url, init) => {
+      if (String(url) === "/api/groups" && init?.method === "POST") {
+        return jsonResponse(
+          {
+            error: "Validation failed",
+            details: { fieldErrors: { name: ["Name is required"] }, formErrors: [] },
+          },
+          { ok: false, status: 400 }
+        );
+      }
+      if (String(url) === "/api/groups") {
+        return jsonResponse(mockGroups);
+      }
+      if (String(url) === "/api/users") {
+        return jsonResponse({ users: mockUsers });
+      }
+      return { ok: false, status: 404, json: async () => ({}), text: async () => "" } as Response;
+    });
+
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    // Inline error appears next to the Name field
+    await waitFor(() => {
+      expect(screen.getByText("Name is required")).toBeInTheDocument();
+    });
+
+    // Toast must NOT fire when the error is field-scoped
+    expect(toast.error).not.toHaveBeenCalled();
+
+    // Dialog stays open so the user can correct the input
+    expect(screen.getByLabelText(/^name$/i)).toBeInTheDocument();
+  });
+
   it("shows error toast and keeps dialog open when group creation fails", async () => {
     const user = userEvent.setup();
     mockFetch();

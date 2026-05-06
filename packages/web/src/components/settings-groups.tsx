@@ -74,6 +74,10 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
   const [formName, setFormName] = useState("");
   const [formDescription, setFormDescription] = useState("");
   const [formMemberIds, setFormMemberIds] = useState<string[]>([]);
+  // Field-scoped server validation errors. Populated when the API returns 400
+  // with `details.fieldErrors` (Zod flatten()). Cleared on dialog open and
+  // before each save attempt so stale errors never linger.
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetch("/api/enterprise/status")
@@ -109,12 +113,32 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
     setFormName("");
     setFormDescription("");
     setFormMemberIds([]);
+    setFieldErrors({});
     setCreateOpen(true);
+  }
+
+  /**
+   * Pulls Zod's flattened fieldErrors out of an ApiError (if present) and
+   * returns a flat `{ fieldName: message }` map. Returns null when the error
+   * is not a structured field-level validation failure — caller should fall
+   * back to a toast in that case.
+   */
+  function extractFieldErrors(e: unknown): Record<string, string> | null {
+    if (!(e instanceof ApiError) || !e.details) return null;
+    const details = e.details as { fieldErrors?: Record<string, string[]> };
+    const fe = details.fieldErrors;
+    if (!fe || typeof fe !== "object") return null;
+    const flat: Record<string, string> = {};
+    for (const [field, messages] of Object.entries(fe)) {
+      if (Array.isArray(messages) && messages.length > 0) flat[field] = messages[0];
+    }
+    return Object.keys(flat).length > 0 ? flat : null;
   }
 
   async function openEditDialog(group: Group) {
     setFormName(group.name);
     setFormDescription(group.description || "");
+    setFieldErrors({});
     // Fetch current members for this group
     try {
       const res = await fetch(`/api/groups/${group.id}/members`);
@@ -131,6 +155,7 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
   }
 
   async function handleCreate() {
+    setFieldErrors({});
     try {
       const body: CreateGroupInput = { name: formName, description: formDescription || null };
       const newGroup = await apiPost<Group>("/api/groups", body);
@@ -140,12 +165,20 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
       setCreateOpen(false);
       fetchData();
     } catch (e) {
+      // Field-scoped validation errors render inline; everything else is a
+      // toast so the user always gets feedback.
+      const fe = extractFieldErrors(e);
+      if (fe) {
+        setFieldErrors(fe);
+        return;
+      }
       toast.error(e instanceof ApiError ? e.message : "Failed to create group");
     }
   }
 
   async function handleEdit() {
     if (!editGroup) return;
+    setFieldErrors({});
     try {
       await apiPatch(`/api/groups/${editGroup.id}`, {
         name: formName,
@@ -155,6 +188,11 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
       setEditGroup(null);
       fetchData();
     } catch (e) {
+      const fe = extractFieldErrors(e);
+      if (fe) {
+        setFieldErrors(fe);
+        return;
+      }
       toast.error(e instanceof ApiError ? e.message : "Failed to update group");
     }
   }
@@ -199,7 +237,14 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
           value={formName}
           onChange={(e) => setFormName(e.target.value)}
           placeholder="e.g. Engineering"
+          aria-invalid={fieldErrors.name ? true : undefined}
+          aria-describedby={fieldErrors.name ? "group-name-error" : undefined}
         />
+        {fieldErrors.name && (
+          <p id="group-name-error" className="text-sm text-destructive">
+            {fieldErrors.name}
+          </p>
+        )}
       </div>
       <div className="space-y-2">
         <Label htmlFor="group-description">Description</Label>
@@ -208,7 +253,14 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
           value={formDescription}
           onChange={(e) => setFormDescription(e.target.value)}
           placeholder="Optional description"
+          aria-invalid={fieldErrors.description ? true : undefined}
+          aria-describedby={fieldErrors.description ? "group-description-error" : undefined}
         />
+        {fieldErrors.description && (
+          <p id="group-description-error" className="text-sm text-destructive">
+            {fieldErrors.description}
+          </p>
+        )}
       </div>
       <div className="space-y-2">
         <Label>Members</Label>
