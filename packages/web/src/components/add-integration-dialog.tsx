@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useForm } from "react-hook-form";
+import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
@@ -38,6 +38,28 @@ import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react"
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { OdooIcon, GoogleIcon, BraveIcon } from "./integration-icons";
 import { docsUrl } from "./docs-link";
+import { MCP_PRESETS, getMcpPreset } from "@/lib/integrations/mcp-presets";
+import type { McpTool } from "@/lib/integrations/types";
+
+// Simple MCP plug icon
+function McpIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      xmlns="http://www.w3.org/2000/svg"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+    >
+      <path d="M12 2L2 7l10 5 10-5-10-5z" />
+      <path d="M2 17l10 5 10-5" />
+      <path d="M2 12l10 5 10-5" />
+    </svg>
+  );
+}
 
 interface IntegrationType {
   id: string;
@@ -65,6 +87,12 @@ const INTEGRATION_TYPES: IntegrationType[] = [
     description: "Search the web and fetch pages via Brave Search API.",
     icon: BraveIcon,
   },
+  {
+    id: "mcp",
+    name: "Generic MCP",
+    description: "Connect any MCP-compatible server (GitHub, Notion, Linear, or custom).",
+    icon: McpIcon,
+  },
 ];
 
 // --- Wizard state ---
@@ -87,6 +115,16 @@ const webSearchFormSchema = z.object({
 });
 
 type WebSearchFormValues = z.infer<typeof webSearchFormSchema>;
+
+const mcpFormSchema = z.object({
+  preset: z.enum(["github", "notion", "linear", "generic"]),
+  url: z.string().url("Must be a valid URL"),
+  transport: z.enum(["http", "sse"]),
+  token: z.string().min(1, "Token is required"),
+  name: z.string().optional(),
+});
+
+type McpFormValues = z.infer<typeof mcpFormSchema>;
 
 // --- Step indicator ---
 
@@ -369,6 +407,203 @@ function GoogleConnectStep({
   );
 }
 
+// --- MCP Connect Step ---
+
+interface McpConnectStepProps {
+  form: ReturnType<typeof useForm<McpFormValues>>;
+  connecting: boolean;
+  testing: boolean;
+  testTools: McpTool[] | null;
+  testError: string | null;
+  onBack: () => void;
+  onCancel: () => void;
+  onSubmit: (values: McpFormValues) => void;
+  onTestConnection: () => void;
+}
+
+function McpConnectStep({
+  form,
+  connecting,
+  testing,
+  testTools,
+  testError,
+  onBack,
+  onCancel,
+  onSubmit,
+  onTestConnection,
+}: McpConnectStepProps) {
+  const preset = useWatch({ control: form.control, name: "preset" });
+  const token = useWatch({ control: form.control, name: "token" });
+  const url = useWatch({ control: form.control, name: "url" });
+  const mcpPreset = getMcpPreset(preset);
+  const isGeneric = preset === "generic";
+  const isSubmitDisabled = connecting || !token?.trim() || !url?.trim();
+
+  function handlePresetChange(value: string) {
+    const newPreset = getMcpPreset(value);
+    form.setValue("preset", value as McpFormValues["preset"]);
+    form.setValue("url", newPreset.defaultUrl ?? "");
+    form.setValue("transport", newPreset.defaultTransport);
+  }
+
+  return (
+    <>
+      <DialogHeader>
+        <DialogTitle>Connect MCP Server</DialogTitle>
+        <DialogDescription>
+          Connect an MCP-compatible server to expose tools to your agents.
+        </DialogDescription>
+      </DialogHeader>
+
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+          {/* Preset selector */}
+          <FormField
+            control={form.control}
+            name="preset"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Preset</FormLabel>
+                <FormControl>
+                  <Select
+                    value={field.value}
+                    onValueChange={(value) => {
+                      field.onChange(value);
+                      handlePresetChange(value);
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Select a preset" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {MCP_PRESETS.map((p) => (
+                        <SelectItem key={p.id} value={p.id}>
+                          {p.displayName}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {/* Token instructions */}
+          {mcpPreset.tokenInstructions && (
+            <p className="text-sm text-muted-foreground whitespace-pre-line">
+              {mcpPreset.tokenInstructions}
+            </p>
+          )}
+
+          {/* URL field */}
+          <FormField
+            control={form.control}
+            name="url"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>URL</FormLabel>
+                <FormControl>
+                  <Input placeholder="https://mcp.example.com/" {...field} readOnly={!isGeneric} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {/* Token field */}
+          <FormField
+            control={form.control}
+            name="token"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Token</FormLabel>
+                <FormControl>
+                  <PasswordInput placeholder="Your authentication token" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {form.formState.errors.root && (
+            <p className="text-sm text-destructive">{form.formState.errors.root.message}</p>
+          )}
+
+          {/* Test connection — generic only */}
+          {isGeneric && (
+            <div className="space-y-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={testing || !url?.trim() || !token?.trim()}
+                onClick={onTestConnection}
+              >
+                {testing ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Testing...
+                  </>
+                ) : (
+                  "Test connection"
+                )}
+              </Button>
+
+              {testError && <p className="text-sm text-destructive">{testError}</p>}
+
+              {testTools !== null && (
+                <div className="rounded-md border p-3 space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">
+                    {testTools.length === 0
+                      ? "Connected — no tools exposed"
+                      : `${testTools.length} tool${testTools.length === 1 ? "" : "s"} discovered:`}
+                  </p>
+                  {testTools.length > 0 && (
+                    <ul className="space-y-0.5">
+                      {testTools.map((tool) => (
+                        <li key={tool.name} className="text-sm font-mono">
+                          {tool.name}
+                          {tool.description && (
+                            <span className="font-sans text-xs text-muted-foreground ml-2">
+                              — {tool.description}
+                            </span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="flex justify-between pt-2">
+            <Button type="button" variant="ghost" onClick={onBack}>
+              Back
+            </Button>
+            <div className="flex gap-2">
+              <Button type="button" variant="outline" onClick={onCancel}>
+                Cancel
+              </Button>
+              <Button type="submit" disabled={isSubmitDisabled}>
+                {connecting ? (
+                  <>
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                    Connecting...
+                  </>
+                ) : (
+                  "Connect"
+                )}
+              </Button>
+            </div>
+          </div>
+        </form>
+      </Form>
+    </>
+  );
+}
+
 // --- Dialog component ---
 
 interface AddIntegrationDialogProps {
@@ -438,6 +673,22 @@ export function AddIntegrationDialog({
     },
   });
 
+  const mcpForm = useForm<McpFormValues>({
+    resolver: zodResolver(mcpFormSchema),
+    defaultValues: {
+      preset: "generic",
+      url: "",
+      transport: "http",
+      token: "",
+      name: "",
+    },
+  });
+
+  // MCP test connection state
+  const [mcpTesting, setMcpTesting] = useState(false);
+  const [mcpTestTools, setMcpTestTools] = useState<McpTool[] | null>(null);
+  const [mcpTestError, setMcpTestError] = useState<string | null>(null);
+
   function resetAll() {
     setStep(initialType ? "connect" : "type");
     setSelectedType(initialType ?? null);
@@ -450,8 +701,12 @@ export function AddIntegrationDialog({
     setConnectionName("");
     setDbFetchState("idle");
     setFetchedDatabases([]);
+    setMcpTesting(false);
+    setMcpTestTools(null);
+    setMcpTestError(null);
     form.reset();
     webSearchForm.reset();
+    mcpForm.reset({ preset: "generic", url: "", transport: "http", token: "", name: "" });
   }
 
   function handleClose(isOpen: boolean) {
@@ -697,6 +952,81 @@ export function AddIntegrationDialog({
     }
   }
 
+  // --- MCP: Test connection (generic preset only) ---
+
+  async function handleMcpTestConnection() {
+    const values = mcpForm.getValues();
+    setMcpTesting(true);
+    setMcpTestTools(null);
+    setMcpTestError(null);
+
+    try {
+      const res = await fetch("/api/integrations/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          url: values.url,
+          transport: values.transport,
+          token: values.token,
+        }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        setMcpTestError(data.error || "Connection test failed");
+      } else {
+        setMcpTestTools(data.tools ?? []);
+      }
+    } catch {
+      setMcpTestError("Connection test failed");
+    } finally {
+      setMcpTesting(false);
+    }
+  }
+
+  // --- MCP: Submit (create integration) ---
+
+  async function onMcpConnect(values: McpFormValues) {
+    mcpForm.clearErrors("root");
+    setConnecting(true);
+
+    const preset = getMcpPreset(values.preset);
+    const autoName = values.name?.trim() || `${preset.displayName} MCP`;
+
+    try {
+      const res = await fetch("/api/integrations", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "mcp",
+          name: autoName,
+          description: "",
+          preset: values.preset,
+          transport: values.transport,
+          url: values.url,
+          token: values.token,
+        }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        mcpForm.setError("root", {
+          message: data.error || data.detail || "Connection failed",
+        });
+        setConnecting(false);
+        return;
+      }
+
+      toast.success(`${preset.displayName} connected`);
+      handleClose(false);
+      onSuccess();
+    } catch {
+      mcpForm.setError("root", { message: "Connection failed" });
+      setConnecting(false);
+    }
+  }
+
   // --- Permission error detection ---
   const isPermissionError =
     syncError &&
@@ -816,6 +1146,21 @@ export function AddIntegrationDialog({
               </form>
             </Form>
           </>
+        )}
+
+        {/* Step 1: Connect (MCP) */}
+        {step === "connect" && selectedType === "mcp" && (
+          <McpConnectStep
+            form={mcpForm}
+            connecting={connecting}
+            testing={mcpTesting}
+            testTools={mcpTestTools}
+            testError={mcpTestError}
+            onBack={handleBack}
+            onCancel={() => handleClose(false)}
+            onSubmit={onMcpConnect}
+            onTestConnection={handleMcpTestConnection}
+          />
         )}
 
         {/* Step 1: Connect (Odoo) */}
