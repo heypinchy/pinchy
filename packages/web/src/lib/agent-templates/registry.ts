@@ -2,6 +2,7 @@ import { CUSTOM_TEMPLATES } from "./data/custom";
 import { DOCUMENT_TEMPLATES } from "./data/document-agents";
 import { EMAIL_TEMPLATES } from "./data/email-agents";
 import { KNOWLEDGE_BASE_TEMPLATES } from "./data/knowledge-base";
+import { MCP_TEMPLATES } from "./data/mcp-agents";
 import { ODOO_TEMPLATES } from "./data/odoo-agents";
 import type { AgentTemplate } from "./types";
 
@@ -9,12 +10,14 @@ import type { AgentTemplate } from "./types";
 // iteration order. Keep `custom` between the document templates and the
 // integration-specific (odoo, email) templates so it stays visually grouped
 // with the "no integration required" templates.
+// MCP templates are grouped with the other integration templates at the end.
 export const AGENT_TEMPLATES: Record<string, AgentTemplate> = {
   ...KNOWLEDGE_BASE_TEMPLATES,
   ...DOCUMENT_TEMPLATES,
   ...CUSTOM_TEMPLATES,
   ...ODOO_TEMPLATES,
   ...EMAIL_TEMPLATES,
+  ...MCP_TEMPLATES,
 };
 
 export function getTemplate(id: string): AgentTemplate | undefined {
