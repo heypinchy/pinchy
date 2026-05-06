@@ -2,6 +2,7 @@ import { test, expect } from "@playwright/test";
 import {
   seedProviderConfig,
   loginAsAdmin,
+  loginAs,
   switchUser,
   createSecondUserViaInvite,
   SECOND_USER,
@@ -122,28 +123,37 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     await expect(page.locator(`a[href*="${agentId}"]`)).toBeVisible({ timeout: 10000 });
   });
 
-  test("non-admin no longer sees the restricted agent", async ({ page }) => {
-    // Switch to the non-admin via a clean logout first so the prior admin
-    // session cookie (set by beforeEach) is fully cleared. Without this, the
-    // sign-in API call sometimes does not replace the existing session and
-    // the SSR layout re-fetches with admin's role.
-    await switchUser(page, SECOND_USER.email, SECOND_USER.password);
+  test("non-admin no longer sees the restricted agent", async ({ browser }) => {
+    // Use a brand-new BrowserContext for the non-admin. Earlier attempts
+    // reusing the per-test page (via switchUser) hit a CI-only race where
+    // /api/agents correctly excluded the restricted agent for the second
+    // user, but the very next page.goto('/agents') redirected to the
+    // restricted agent's chat URL — i.e. SSR somehow saw a different
+    // visibility result than the API call moments earlier. Spinning up an
+    // isolated context for the non-admin sidesteps any cookie/cache
+    // interaction with the prior admin session.
+    const memberContext = await browser.newContext();
+    const memberPage = await memberContext.newPage();
+    try {
+      await loginAs(memberPage, SECOND_USER.email, SECOND_USER.password);
 
-    // API-level assertion first: verify the server agrees the agent is hidden
-    // from this user. If this fails, it's a server-side visibility bug rather
-    // than a client/UI rendering issue, and the next assertion just confirms
-    // the contract holds end-to-end.
-    const memberAgents = await page.context().request.get("/api/agents");
-    expect(memberAgents.ok()).toBeTruthy();
-    const list = (await memberAgents.json()) as Array<{ id: string }>;
-    expect(
-      list.some((a) => a.id === agentId),
-      `Restricted agent ${agentId} unexpectedly visible to non-member via /api/agents`
-    ).toBe(false);
+      // API-level assertion: server agrees the agent is hidden from this user.
+      const memberAgents = await memberPage.context().request.get("/api/agents");
+      expect(memberAgents.ok()).toBeTruthy();
+      const list = (await memberAgents.json()) as Array<{ id: string }>;
+      expect(
+        list.some((a) => a.id === agentId),
+        `Restricted agent ${agentId} unexpectedly visible to non-member via /api/agents`
+      ).toBe(false);
 
-    // UI: the link must also not appear in the sidebar.
-    await page.goto("/agents");
-    await expect(page.locator(`a[href*="${agentId}"]`)).not.toBeVisible({ timeout: 10000 });
+      // UI: the link must also not appear in the sidebar.
+      await memberPage.goto("/agents");
+      await expect(memberPage.locator(`a[href*="${agentId}"]`)).not.toBeVisible({
+        timeout: 10000,
+      });
+    } finally {
+      await memberContext.close();
+    }
   });
 
   test("admin adds non-admin to the group; non-admin sees agent again", async ({ page }) => {
