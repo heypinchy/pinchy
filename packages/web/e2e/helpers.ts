@@ -35,6 +35,7 @@ export const SECOND_USER = {
 /**
  * Creates a second user via the invite + claim API flow.
  * Assumes admin session is present in `request` (pass `page.context().request`).
+ * Requires a clean test database — will throw if the email is already registered.
  * Returns the user email.
  */
 export async function createSecondUserViaInvite(
@@ -50,18 +51,7 @@ export async function createSecondUserViaInvite(
   if (!inviteRes.ok()) {
     throw new Error(`Invite failed: ${inviteRes.status()} ${await inviteRes.text()}`);
   }
-  const inviteBody = await inviteRes.json();
-
-  // The invite API returns { token } directly
-  let token: string;
-  if (inviteBody.token) {
-    token = inviteBody.token;
-  } else if (inviteBody.inviteLink) {
-    // Fallback: parse token from URL /.../invite/TOKEN
-    token = inviteBody.inviteLink.split("/invite/").pop()!;
-  } else {
-    throw new Error(`Unexpected invite response shape: ${JSON.stringify(inviteBody)}`);
-  }
+  const { token } = await inviteRes.json();
 
   const claimRes = await request.post("/api/invite/claim", {
     data: { token, name: SECOND_USER.name, password: SECOND_USER.password },
