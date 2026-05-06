@@ -14,7 +14,7 @@ const createGroupSchema = z.object({
     .min(1)
     .transform((v) => v.trim())
     .refine((v) => v.length > 0, "Name is required"),
-  description: z.string().optional(),
+  description: z.string().nullish(),
 });
 
 export async function GET() {
