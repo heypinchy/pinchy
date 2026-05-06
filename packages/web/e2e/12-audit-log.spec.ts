@@ -77,28 +77,12 @@ test.describe.serial("Audit log", () => {
       timeout: 10000,
     });
 
-    // The table (desktop) or card list (mobile) must contain the event type badge
-    // Use a broad text matcher that covers both layouts
+    // The event type badge must be visible
     await expect(page.getByText("group.created").first()).toBeVisible({ timeout: 10000 });
 
-    // The snapshotted group name should appear somewhere in the rendered entries
-    // (it surfaces in the resource column or detail sheet, but the Badge always shows eventType)
-    // Verify the event type for our specific group by filtering
-    await page.goto(`/audit`);
-    await expect(page.getByRole("heading", { name: "Audit Trail" })).toBeVisible({
-      timeout: 10000,
-    });
-
-    // Use the API one more time from page context to confirm the entry has the right name in detail
-    const res = await page.context().request.get(`/api/audit?eventType=group.created&limit=100`);
-    const body = await res.json();
-    const entry = (body.entries as Array<Record<string, unknown>>).find(
-      (e) => (e.detail as Record<string, unknown>)?.name === AUDIT_TEST_GROUP
-    );
-    expect(
-      entry,
-      `group.created entry for "${AUDIT_TEST_GROUP}" not visible via admin API`
-    ).toBeDefined();
+    // The snapshotted group name must appear somewhere in the rendered page
+    // (surfaces in the resource column, detail text, or a detail sheet)
+    await expect(page.getByText(AUDIT_TEST_GROUP)).toBeVisible({ timeout: 10000 });
   });
 
   test("non-admin cannot access the audit log API", async ({ page }) => {
