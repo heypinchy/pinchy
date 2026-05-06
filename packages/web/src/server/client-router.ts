@@ -376,7 +376,12 @@ export class ClientRouter {
 
   // Shared streaming loop used by handleMessage. Handles heartbeat, chunk
   // routing (text/error/done/userMessagePersisted), and the terminal "complete"
-  // frame.
+  // frame. The loop drains the OpenClaw stream to its natural end regardless
+  // of browser WS state — Pinchy-side accounting (sessionCache, messageId
+  // rotation) always runs; consumer-bound frames are gated by readyState so
+  // we don't write to a closed socket. This makes the assistant reply
+  // deterministically present in OpenClaw's session.jsonl by the time the
+  // user reconnects (issue #199 Layer B).
   private async pipeStream(
     clientWs: WebSocket,
     stream: AsyncIterable<ChatChunk>,
@@ -396,15 +401,10 @@ export class ClientRouter {
 
     try {
       for await (const chunk of stream) {
-        // Stop consuming the stream if the browser disconnected — frees
-        // server resources while letting OpenClaw finish on its side.
-        if (clientWs.readyState !== WS_OPEN) {
-          break;
-        }
-
-        // Start keep-alive heartbeats on the first chunk. Deferring until
-        // here ensures heartbeats only flow while OpenClaw is actively
-        // producing output — not while it may be hung before the first byte.
+        // Lazily start the keep-alive heartbeat on the first chunk. The
+        // interval callback already self-guards with readyState === WS_OPEN,
+        // so a heartbeat to a closed WS is a no-op until the finally block
+        // clears it.
         if (heartbeatInterval === null) {
           heartbeatInterval = setInterval(() => {
             if (clientWs.readyState === WS_OPEN) {
@@ -413,39 +413,46 @@ export class ClientRouter {
           }, THINKING_HEARTBEAT_MS);
         }
 
-        if (chunk.type === "userMessagePersisted") {
-          this.sendToClient(clientWs, {
-            type: "ack",
-            clientMessageId: chunk.clientMessageId,
-          });
-          continue;
+        // Pinchy-side accounting — runs regardless of consumer state. The
+        // browser may have navigated away, but OpenClaw is still streaming
+        // and persisting on its side; our local view of the session
+        // (sessionCache, per-turn messageId rotation) must keep up so the
+        // next history fetch / WS reconnect sees a coherent state.
+        if (chunk.type === "done") {
+          this.sessionCache.add(sessionKey);
         }
 
-        if (chunk.type === "text") {
-          const cleaned = chunk.text.replace(/<\/?final>/g, "");
-          if (cleaned) {
-            this.sendToClient(clientWs, { type: "chunk", content: cleaned, messageId });
+        // Consumer forwarding — only meaningful while the browser WS is open.
+        if (clientWs.readyState === WS_OPEN) {
+          if (chunk.type === "userMessagePersisted") {
+            this.sendToClient(clientWs, {
+              type: "ack",
+              clientMessageId: chunk.clientMessageId,
+            });
+          } else if (chunk.type === "text") {
+            const cleaned = chunk.text.replace(/<\/?final>/g, "");
+            if (cleaned) {
+              this.sendToClient(clientWs, { type: "chunk", content: cleaned, messageId });
+            }
+          } else if (chunk.type === "error") {
+            console.error("OpenClaw error chunk:", chunk.text);
+            this.sendToClient(clientWs, {
+              type: "error",
+              agentName: agent.name,
+              providerError: chunk.text,
+              hint: getErrorHint(chunk.text, this.userRole),
+              messageId,
+            });
+          } else if (chunk.type === "done") {
+            this.sendToClient(clientWs, { type: "done", messageId });
           }
         }
 
-        if (chunk.type === "error") {
-          console.error("OpenClaw error chunk:", chunk.text);
-          this.sendToClient(clientWs, {
-            type: "error",
-            agentName: agent.name,
-            providerError: chunk.text,
-            hint: getErrorHint(chunk.text, this.userRole),
-            messageId,
-          });
-        }
-
+        // Per-turn messageId rotation — runs after the optional `done`
+        // forwarding so the next agent turn starts with a fresh id whether
+        // or not the browser is listening (consistent with how OpenClaw
+        // stores them in history).
         if (chunk.type === "done") {
-          this.sessionCache.add(sessionKey);
-          this.sendToClient(clientWs, { type: "done", messageId });
-
-          // Next agent turn gets a fresh messageId so the browser
-          // creates a separate assistant message — consistent with
-          // how OpenClaw stores them in history.
           messageId = crypto.randomUUID();
         }
       }
@@ -455,7 +462,11 @@ export class ClientRouter {
       // iterator is exhausted, so the UI can confidently turn off the
       // thinking indicator only when no more chunks will arrive.
       // No messageId — this terminator is not tied to any specific turn.
-      this.sendToClient(clientWs, { type: "complete" });
+      // Skip if the consumer is gone — they'll get the natural state via
+      // history on reconnect.
+      if (clientWs.readyState === WS_OPEN) {
+        this.sendToClient(clientWs, { type: "complete" });
+      }
     } finally {
       if (heartbeatInterval !== null) {
         clearInterval(heartbeatInterval);

@@ -691,7 +691,7 @@ describe("ClientRouter", () => {
     expect(clientWs.send).not.toHaveBeenCalled();
   });
 
-  it("should stop consuming stream early when client WebSocket closes mid-stream", async () => {
+  it("should drain the full stream even when the client WebSocket closes mid-stream, but only forward frames while WS is open", async () => {
     const clientWs = createMockClientWs();
     let chunksYielded = 0;
 
@@ -715,9 +715,10 @@ describe("ClientRouter", () => {
       agentId: "agent-1",
     });
 
-    // Should stop consuming after detecting the closed WS, not drain the entire stream
-    expect(chunksYielded).toBe(2);
-    // Only the first chunk should have been sent
+    // Stream must be drained to its natural end regardless of WS state
+    // (issue #199 Layer B — server-side accounting must keep up with OpenClaw).
+    expect(chunksYielded).toBe(4);
+    // Only frames sent while the WS was open should have reached the client
     const messages = clientWs.sent.map((s) => JSON.parse(s));
     const textChunks = messages.filter((m: any) => m.type === "chunk");
     expect(textChunks).toHaveLength(1);
