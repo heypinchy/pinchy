@@ -82,3 +82,15 @@ export async function logout(page: Page): Promise<void> {
   await page.getByRole("button", { name: /log out/i }).click();
   await page.waitForURL(/\/login/);
 }
+
+/**
+ * Forcefully clears all session cookies on the page's browser context.
+ * Use this before `loginAs` when switching users in a test that previously
+ * had a different user logged in — `loginAs` alone does not always replace
+ * the existing session cookie, and the UI-based `logout` helper requires the
+ * current session to still be valid (the "Log out" button only renders on
+ * authenticated pages).
+ */
+export async function clearSession(page: Page): Promise<void> {
+  await page.context().clearCookies();
+}

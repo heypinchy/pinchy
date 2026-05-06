@@ -92,13 +92,15 @@ test.describe.serial("Audit log", () => {
     // lg:block) — only one is visible at any viewport. .first() picks the
     // mobile DOM node which is hidden under lg+ viewports, so scope to the
     // table to consistently target the visible desktop variant.
-    await expect(page.getByRole("table").getByText("group.created").first()).toBeVisible({
-      timeout: 10000,
-    });
+    const badge = page.getByRole("table").getByText("group.created").first();
+    await expect(badge).toBeVisible({ timeout: 10000 });
 
-    // The snapshotted group name must appear in the rendered table (same
-    // mobile/desktop dual-layout reasoning as above).
-    await expect(page.getByRole("table").getByText(AUDIT_TEST_GROUP)).toBeVisible({
+    // The audit API does not currently JOIN with `groups`, so the resource
+    // cell shows '—' for group resources — the snapshotted name lives in the
+    // entry's `detail` JSON, which the UI renders in the per-row detail sheet.
+    // Click the row to open the sheet, then assert the group name there.
+    await badge.click();
+    await expect(page.getByRole("dialog").getByText(AUDIT_TEST_GROUP)).toBeVisible({
       timeout: 10000,
     });
   });

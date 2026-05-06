@@ -3,7 +3,7 @@ import {
   seedProviderConfig,
   loginAsAdmin,
   loginAs,
-  logout,
+  clearSession,
   createSecondUserViaInvite,
   SECOND_USER,
 } from "./helpers";
@@ -74,7 +74,7 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     expect(adminSeesOwn).toBe(true);
 
     // Switch to second user and verify admin's Smithers is absent
-    await logout(page);
+    await clearSession(page);
     await loginAs(page, SECOND_USER.email, SECOND_USER.password);
 
     // API: admin's Smithers must not appear in SECOND_USER's agent list
@@ -112,7 +112,7 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     expect(secondSeesOwn).toBe(true);
 
     // Switch to admin and verify second user's Smithers is absent
-    await logout(page);
+    await clearSession(page);
     await loginAsAdmin(page);
 
     // API: second user's Smithers must not appear in admin's agent list

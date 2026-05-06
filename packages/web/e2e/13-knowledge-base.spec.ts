@@ -3,7 +3,7 @@ import {
   seedProviderConfig,
   loginAsAdmin,
   loginAs,
-  logout,
+  clearSession,
   createSecondUserViaInvite,
   SECOND_USER,
 } from "./helpers";
@@ -104,8 +104,10 @@ test.describe.serial("Knowledge base file editing", () => {
   });
 
   test("non-admin cannot write to a shared agent SOUL.md (403)", async ({ page }) => {
-    // Log out the admin session (set by beforeEach), then log in as non-admin
-    await logout(page);
+    // Clear the admin session (set by beforeEach), then log in as non-admin.
+    // clearSession is more reliable than the UI-based logout helper because it
+    // does not depend on the current page rendering the "Log out" button.
+    await clearSession(page);
     await loginAs(page, SECOND_USER.email, SECOND_USER.password);
 
     // Attempt to PUT SOUL.md content as the non-admin member

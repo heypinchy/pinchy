@@ -3,7 +3,7 @@ import {
   seedProviderConfig,
   loginAsAdmin,
   loginAs,
-  logout,
+  clearSession,
   createSecondUserViaInvite,
   SECOND_USER,
 } from "./helpers";
@@ -95,7 +95,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     // beforeEach logged the admin in; switch to the non-admin via a clean
     // logout first so Better Auth issues a fresh session cookie for the new
     // user (sign-in alone does not always invalidate the existing cookie).
-    await logout(page);
+    await clearSession(page);
     await loginAs(page, SECOND_USER.email, SECOND_USER.password);
 
     const memberAgents = await page.context().request.get("/api/agents");
@@ -129,7 +129,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     // session cookie (set by beforeEach) is fully cleared. Without this, the
     // sign-in API call sometimes does not replace the existing session and
     // the SSR layout re-fetches with admin's role.
-    await logout(page);
+    await clearSession(page);
     await loginAs(page, SECOND_USER.email, SECOND_USER.password);
 
     // API-level assertion first: verify the server agrees the agent is hidden
@@ -160,7 +160,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
 
     // Now switch to second user with a clean logout (avoids session leakage
     // from beforeEach's admin login) and verify the agent reappears.
-    await logout(page);
+    await clearSession(page);
     await loginAs(page, SECOND_USER.email, SECOND_USER.password);
     await page.goto("/agents");
 
