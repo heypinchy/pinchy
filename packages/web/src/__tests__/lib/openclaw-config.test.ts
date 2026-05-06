@@ -1356,15 +1356,16 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama"].models).toHaveLength(2);
     expect(config.models.providers["ollama"].models[0]).toMatchObject({
       id: "qwen2.5:7b",
-      // Pinchy's display label ("<id> (<size>)") flows through to OpenClaw's
-      // model picker — same string the user saw at setup time.
-      name: "qwen2.5:7b (7B)",
+      // The bare id is used for both `id` and `name`. Switching `name` to
+      // Pinchy's display label (m.name = "qwen2.5:7b (7B)") tripped a runtime
+      // drift in OpenClaw 2026.4.27 — see build.ts comment for context.
+      name: "qwen2.5:7b",
       input: ["text"],
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     });
     expect(config.models.providers["ollama"].models[1]).toMatchObject({
       id: "llama3.2-vision:11b",
-      name: "llama3.2-vision:11b (11B)",
+      name: "llama3.2-vision:11b",
       input: ["text", "image"],
     });
     // contextWindow + maxTokens present and numeric

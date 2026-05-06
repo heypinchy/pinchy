@@ -779,10 +779,15 @@ export async function regenerateOpenClawConfig() {
       // path (model-auth-CsyLGY9m.js:130-132). Without at least one entry, OpenClaw
       // falls through to "No API key found for provider 'ollama'".
       models: ollamaModels.map((m) => {
-        // m.name is Pinchy's display label ("qwen2.5:7b (7B)") — same string
-        // the user saw at setup time. Surfacing it in OpenClaw's model picker
-        // keeps the two UIs consistent.
-        const displayName = m.name;
+        // Use the bare model id as both `id` and `name`. Pinchy's display label
+        // (m.name = "qwen2.5:7b (7B)") looks nicer, but switching `name` to
+        // that value tripped a runtime drift in OpenClaw 2026.4.27 — the
+        // 5-iteration idempotency stress test (00-config-idempotency.spec.ts)
+        // saw the file flip to root:0600 (gateway SIGUSR1 restart) on the
+        // first PATCH after setup. Investigation showed OpenClaw's diff
+        // classifier treats model `name` changes as restart-required even
+        // when the rest of the config is byte-equal. m.name stays UI-only.
+        const bareId = m.id.replace(/^ollama\//, "");
         // Real context window when /api/show reported one (Ollama with model_info
         // support); fall back to a safe default for older Ollama versions.
         const contextWindow = m.contextLength ?? OLLAMA_LOCAL_DEFAULT_CONTEXT_WINDOW;
@@ -790,8 +795,8 @@ export async function regenerateOpenClawConfig() {
         // otherwise advertise more output than they can produce.
         const maxTokens = Math.min(OLLAMA_LOCAL_MAX_TOKENS_CAP, contextWindow);
         return {
-          id: m.id.replace(/^ollama\//, ""),
-          name: displayName,
+          id: bareId,
+          name: bareId,
           input: m.capabilities.vision ? ["text", "image"] : ["text"],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow,
