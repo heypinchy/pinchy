@@ -64,9 +64,9 @@ describe("assertAgentAccess", () => {
     expect(() => assertAgentAccess(agent, "other-user", "member")).toThrow("Access denied");
   });
 
-  it("allows admin access to personal agent of another user", () => {
+  it("denies admin access to personal agent of another user", () => {
     const agent = { id: "a1", ownerId: "user-1", isPersonal: true };
-    expect(() => assertAgentAccess(agent, "admin-user", "admin")).not.toThrow();
+    expect(() => assertAgentAccess(agent, "admin-user", "admin")).toThrow("Access denied");
   });
 });
 
