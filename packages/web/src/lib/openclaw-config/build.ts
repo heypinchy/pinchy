@@ -638,15 +638,27 @@ export async function regenerateOpenClawConfig() {
    * docker-compose maps `ollama.local` to `host-gateway` so connectivity is
    * preserved. Private IPv4 and other *.local names are already in the allowlist
    * and are returned unchanged.
+   *
+   * Also appends `/v1` so pi-ai's openai-completions provider hits Ollama's
+   * OpenAI-compatible endpoint at `/v1/chat/completions` (pi-ai appends
+   * `/chat/completions` to the configured baseUrl).
    */
   function rewriteOllamaHostForOpenClaw(rawUrl: string): string {
     const trimmed = rawUrl.replace(/\/$/, "");
     try {
       const parsed = new URL(trimmed);
+      // OpenClaw's isLocalBaseUrl allowlist doesn't include the Docker
+      // Desktop hostname. ollama.local is wired to host-gateway in
+      // docker-compose so it resolves to the same place — and *.local
+      // passes the allowlist.
       if (parsed.hostname === "host.docker.internal") {
         parsed.hostname = "ollama.local";
-        return parsed.toString().replace(/\/$/, "");
       }
+      // Ollama's OpenAI-compatible API lives at /v1. pi-ai's openai-completions
+      // provider appends /chat/completions to the baseUrl, so we include /v1
+      // here so requests land at /v1/chat/completions (not /chat/completions).
+      const withV1 = parsed.toString().replace(/\/$/, "");
+      return withV1.endsWith("/v1") ? withV1 : `${withV1}/v1`;
     } catch {
       // Not a parseable URL — return as-is (validateProviderUrl already rejected garbage)
     }
@@ -711,7 +723,15 @@ export async function regenerateOpenClawConfig() {
     const ollamaModels = await fetchOllamaLocalModelsFromUrl(ollamaLocalUrl);
     const providerConfig: Record<string, unknown> = {
       baseUrl: rewriteOllamaHostForOpenClaw(ollamaLocalUrl),
-      api: "ollama",
+      // Use openai-completions (not "ollama") so pi-ai's built-in provider handles
+      // the stream. The "ollama" api type requires OpenClaw's bundled Ollama runtime
+      // plugin to register itself with pi-ai dynamically — that registration only
+      // happens via OpenClaw's native setup wizard (credential store: ollama:default
+      // profile), not when configured via Pinchy's custom openclaw.json config.
+      // Without registration, pi-ai throws "No API provider registered for api: ollama".
+      // Ollama's OpenAI-compatible endpoint (/v1/chat/completions) is functionally
+      // equivalent and already supported by pi-ai as a built-in.
+      api: "openai-completions",
       // OpenClaw 2026.4.27 requires models.length > 0 for the synthetic-local-key
       // path (model-auth-CsyLGY9m.js:130-132). Without at least one entry, OpenClaw
       // falls through to "No API key found for provider 'ollama'".

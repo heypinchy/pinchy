@@ -1352,7 +1352,7 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written);
 
     expect(config.models.providers["ollama"]).toBeDefined();
-    expect(config.models.providers["ollama"].api).toBe("ollama");
+    expect(config.models.providers["ollama"].api).toBe("openai-completions");
     expect(config.models.providers["ollama"].models).toHaveLength(2);
     expect(config.models.providers["ollama"].models[0]).toMatchObject({
       id: "qwen2.5:7b",
@@ -1414,7 +1414,7 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434");
+    expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434/v1");
   });
 
   it("rewrites host.docker.internal to ollama.local in baseUrl (OpenClaw isLocalBaseUrl allowlist)", async () => {
@@ -1437,7 +1437,7 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434");
+    expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434/v1");
   });
 
   it("passes through private IPv4 baseUrl unchanged (already in isLocalBaseUrl allowlist)", async () => {
@@ -1460,7 +1460,7 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    expect(config.models.providers["ollama"].baseUrl).toBe("http://192.168.1.50:11434");
+    expect(config.models.providers["ollama"].baseUrl).toBe("http://192.168.1.50:11434/v1");
   });
 
   it("should not add env block for ollama-local provider (URL-based, no API key)", async () => {
