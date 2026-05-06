@@ -4946,8 +4946,9 @@ describe("restart-state integration", () => {
         }
         // callCount 2 = agentConnectionPermissions (chained with innerJoin)
         // callCount 3 = integrationConnections for web-search (chained with where)
-        // callCount 4 = channel_links table: both users linked
-        if (callCount === 4) {
+        // callCount 4 = integrationConnections for mcp (chained with where, returns [])
+        // callCount 5 = channel_links table: both users linked
+        if (callCount === 5) {
           return Object.assign(
             Promise.resolve([
               { userId: "user-a", channel: "telegram", channelUserId: "111222333" },
@@ -5044,8 +5045,9 @@ describe("restart-state integration", () => {
         }
         // callCount 2 = agentConnectionPermissions (chained with innerJoin)
         // callCount 3 = integrationConnections for web-search (chained with where)
-        // callCount 4 = channel_links table
-        if (callCount === 4) {
+        // callCount 4 = integrationConnections for mcp (chained with where, returns [])
+        // callCount 5 = channel_links table
+        if (callCount === 5) {
           return Object.assign(
             Promise.resolve([{ userId: "user-1", channel: "telegram", channelUserId: "999888" }]),
             { innerJoin: mockInnerJoin([]), where: vi.fn().mockResolvedValue([]) }

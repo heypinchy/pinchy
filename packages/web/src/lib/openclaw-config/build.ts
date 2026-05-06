@@ -6,11 +6,12 @@ import { PROVIDERS, type ProviderName, resolveProviderBaseUrl } from "@/lib/prov
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { isModelVisionCapable } from "@/lib/model-vision";
 import { ensureModelCapabilityCacheLoaded } from "@/lib/model-capabilities/cache";
-import { eq, ne } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import { db } from "@/db";
 import {
   agents,
   agentConnectionPermissions,
+  agentMcpToolPermissions,
   integrationConnections,
   channelLinks,
 } from "@/db/schema";
@@ -890,6 +891,74 @@ export async function regenerateOpenClawConfig() {
           gatewayToken: gatewayTokenString,
           connectionId: webConn.id,
           agents: webAgentConfigs,
+        },
+      };
+    }
+  }
+
+  // Collect MCP integration configs for active connections with agent tool grants.
+  // Credentials are NEVER emitted in the config — the plugin fetches them at
+  // runtime from /api/internal/integrations/<connectionId>/credentials using the
+  // gateway token as Bearer auth (same pattern as pinchy-odoo / pinchy-email).
+  const activeMcpConnections = await db
+    .select()
+    .from(integrationConnections)
+    .where(
+      and(eq(integrationConnections.type, "mcp"), eq(integrationConnections.status, "active"))
+    );
+
+  if (activeMcpConnections.length > 0) {
+    // Fetch all MCP tool permissions in one query and group client-side.
+    const allMcpPerms = await db.select().from(agentMcpToolPermissions);
+
+    // Build agentTools map per connectionId: { [agentId]: toolName[] }
+    const agentToolsByConn = new Map<string, Record<string, string[]>>();
+    for (const perm of allMcpPerms) {
+      if (!agentToolsByConn.has(perm.connectionId)) {
+        agentToolsByConn.set(perm.connectionId, {});
+      }
+      const agentTools = agentToolsByConn.get(perm.connectionId)!;
+      if (!agentTools[perm.agentId]) {
+        agentTools[perm.agentId] = [];
+      }
+      agentTools[perm.agentId].push(perm.toolName);
+    }
+
+    // Only include connections that have at least one agent with granted tools.
+    // Including a connection with no agentTools would cause the plugin to attempt
+    // connecting to an MCP server that no agent is allowed to use.
+    const mcpConnectionEntries: Array<Record<string, unknown>> = [];
+    for (const conn of activeMcpConnections) {
+      const agentTools = agentToolsByConn.get(conn.id);
+      if (!agentTools || Object.keys(agentTools).length === 0) continue;
+
+      const data = (conn.data ?? {}) as {
+        preset?: string;
+        transport?: string;
+        url?: string;
+        toolPrefix?: string;
+      };
+
+      mcpConnectionEntries.push({
+        connectionId: conn.id,
+        preset: data.preset ?? "generic",
+        transport: data.transport ?? "http",
+        url: data.url ?? "",
+        toolPrefix: data.toolPrefix ?? "mcp_",
+        // agentTools maps agentId → list of tool names the agent is allowed to call.
+        // Never include credentials here — they are fetched at runtime.
+        agentTools,
+      });
+    }
+
+    if (mcpConnectionEntries.length > 0) {
+      entries["pinchy-mcp"] = {
+        enabled: true,
+        config: {
+          apiBaseUrl:
+            process.env.PINCHY_INTERNAL_URL || `http://pinchy:${process.env.PORT || "7777"}`,
+          gatewayToken: gatewayTokenString,
+          connections: mcpConnectionEntries,
         },
       };
     }
