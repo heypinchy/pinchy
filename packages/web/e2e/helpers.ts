@@ -18,10 +18,15 @@ export async function seedProviderConfig() {
   await sql.end();
 }
 
+export const ADMIN_USER = {
+  email: "admin@test.local",
+  password: "test-password-123",
+} as const;
+
 export async function loginAsAdmin(page: Page) {
   await page.goto("/login");
-  await page.getByLabel(/email/i).fill("admin@test.local");
-  await page.getByLabel("Password", { exact: true }).fill("test-password-123");
+  await page.getByLabel(/email/i).fill(ADMIN_USER.email);
+  await page.getByLabel("Password", { exact: true }).fill(ADMIN_USER.password);
   await page.getByRole("button", { name: /sign in/i }).click();
   await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
 }
@@ -93,4 +98,27 @@ export async function logout(page: Page): Promise<void> {
  */
 export async function clearSession(page: Page): Promise<void> {
   await page.context().clearCookies();
+}
+
+/**
+ * Switch the current page's session to a different user via the auth API
+ * directly — no UI form interaction. This is deterministic and avoids the
+ * UI race conditions that affect the form-based loginAs (form state caching
+ * across goto, hydration timing, Better Auth's signIn not always replacing
+ * an existing session cookie).
+ *
+ * After this call, page.context() (and thus page.request and any subsequent
+ * page.goto) uses the target user's session cookie.
+ */
+export async function switchUser(page: Page, email: string, password: string): Promise<void> {
+  // Clear existing cookies so the Set-Cookie from sign-in becomes the only
+  // session cookie in the jar.
+  await page.context().clearCookies();
+  const res = await page.request.post("/api/auth/sign-in/email", {
+    data: { email, password },
+    headers: { "Content-Type": "application/json" },
+  });
+  if (!res.ok()) {
+    throw new Error(`switchUser failed: ${res.status()} ${await res.text()}`);
+  }
 }

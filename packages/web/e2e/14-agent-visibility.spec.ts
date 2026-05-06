@@ -3,7 +3,8 @@ import {
   seedProviderConfig,
   loginAsAdmin,
   loginAs,
-  clearSession,
+  switchUser,
+  ADMIN_USER,
   createSecondUserViaInvite,
   SECOND_USER,
 } from "./helpers";
@@ -73,9 +74,9 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     );
     expect(adminSeesOwn).toBe(true);
 
-    // Switch to second user and verify admin's Smithers is absent
-    await clearSession(page);
-    await loginAs(page, SECOND_USER.email, SECOND_USER.password);
+    // Switch to second user via the auth API (deterministic — avoids
+    // racy UI form-state interactions when chaining logins).
+    await switchUser(page, SECOND_USER.email, SECOND_USER.password);
 
     // API: admin's Smithers must not appear in SECOND_USER's agent list
     const secondAgentsRes = await page.context().request.get("/api/agents");
@@ -102,8 +103,10 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
   });
 
   test("user's personal agent is not visible to admin", async ({ page }) => {
-    // Verify: second user sees their own Smithers via /api/agents
-    await loginAs(page, SECOND_USER.email, SECOND_USER.password);
+    // Verify: second user sees their own Smithers via /api/agents.
+    // beforeEach left the page logged in as admin; switch to second user
+    // via the auth API.
+    await switchUser(page, SECOND_USER.email, SECOND_USER.password);
     const secondAgentsRes = await page.context().request.get("/api/agents");
     const secondAgents = await secondAgentsRes.json();
     const secondSeesOwn = (secondAgents as Array<{ id: string }>).some(
@@ -111,9 +114,8 @@ test.describe.serial("Agent visibility — personal vs shared", () => {
     );
     expect(secondSeesOwn).toBe(true);
 
-    // Switch to admin and verify second user's Smithers is absent
-    await clearSession(page);
-    await loginAsAdmin(page);
+    // Switch to admin via the auth API (deterministic, see comment above).
+    await switchUser(page, ADMIN_USER.email, ADMIN_USER.password);
 
     // API: second user's Smithers must not appear in admin's agent list
     const adminAgentsRes = await page.context().request.get("/api/agents");

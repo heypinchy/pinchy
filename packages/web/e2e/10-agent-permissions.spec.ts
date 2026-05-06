@@ -2,8 +2,7 @@ import { test, expect } from "@playwright/test";
 import {
   seedProviderConfig,
   loginAsAdmin,
-  loginAs,
-  clearSession,
+  switchUser,
   createSecondUserViaInvite,
   SECOND_USER,
 } from "./helpers";
@@ -95,8 +94,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     // beforeEach logged the admin in; switch to the non-admin via a clean
     // logout first so Better Auth issues a fresh session cookie for the new
     // user (sign-in alone does not always invalidate the existing cookie).
-    await clearSession(page);
-    await loginAs(page, SECOND_USER.email, SECOND_USER.password);
+    await switchUser(page, SECOND_USER.email, SECOND_USER.password);
 
     const memberAgents = await page.context().request.get("/api/agents");
     expect(memberAgents.ok()).toBeTruthy();
@@ -129,8 +127,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
     // session cookie (set by beforeEach) is fully cleared. Without this, the
     // sign-in API call sometimes does not replace the existing session and
     // the SSR layout re-fetches with admin's role.
-    await clearSession(page);
-    await loginAs(page, SECOND_USER.email, SECOND_USER.password);
+    await switchUser(page, SECOND_USER.email, SECOND_USER.password);
 
     // API-level assertion first: verify the server agrees the agent is hidden
     // from this user. If this fails, it's a server-side visibility bug rather
@@ -160,8 +157,7 @@ test.describe.serial("Agent permissions — restricted visibility", () => {
 
     // Now switch to second user with a clean logout (avoids session leakage
     // from beforeEach's admin login) and verify the agent reappears.
-    await clearSession(page);
-    await loginAs(page, SECOND_USER.email, SECOND_USER.password);
+    await switchUser(page, SECOND_USER.email, SECOND_USER.password);
     await page.goto("/agents");
 
     await expect(page.locator(`a[href*="${agentId}"]`)).toBeVisible({ timeout: 10000 });

@@ -2,8 +2,7 @@ import { test, expect } from "@playwright/test";
 import {
   seedProviderConfig,
   loginAsAdmin,
-  loginAs,
-  clearSession,
+  switchUser,
   createSecondUserViaInvite,
   SECOND_USER,
 } from "./helpers";
@@ -104,11 +103,10 @@ test.describe.serial("Knowledge base file editing", () => {
   });
 
   test("non-admin cannot write to a shared agent SOUL.md (403)", async ({ page }) => {
-    // Clear the admin session (set by beforeEach), then log in as non-admin.
-    // clearSession is more reliable than the UI-based logout helper because it
-    // does not depend on the current page rendering the "Log out" button.
-    await clearSession(page);
-    await loginAs(page, SECOND_USER.email, SECOND_USER.password);
+    // Switch from admin (set by beforeEach) to the non-admin via the auth API
+    // directly. UI-based loginAs has racy form-state interactions when chained
+    // after a prior login on the same page; switchUser is deterministic.
+    await switchUser(page, SECOND_USER.email, SECOND_USER.password);
 
     // Attempt to PUT SOUL.md content as the non-admin member
     const putRes = await page.context().request.put(`/api/agents/${agentId}/files/SOUL.md`, {
