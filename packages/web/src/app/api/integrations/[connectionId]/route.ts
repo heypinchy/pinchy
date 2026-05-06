@@ -13,6 +13,7 @@ import { probeIntegrationCredentials } from "@/lib/integrations/probe";
 import { clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 import { z } from "zod";
 import { parseRequestBody, formatValidationError } from "@/lib/api-validation";
+import type { McpIntegrationData } from "@/lib/integrations/types";
 
 const updateConnectionSchema = z
   .object({
@@ -227,12 +228,26 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     }
   }
 
+  const deletedDetail: Record<string, unknown> = {
+    id: connectionId,
+    name: existing.name,
+    type: existing.type,
+  };
+  if (existing.type === "mcp" && existing.data) {
+    const mcpData = existing.data as unknown as McpIntegrationData;
+    deletedDetail.mcp = {
+      preset: mcpData.preset,
+      transport: mcpData.transport,
+      url: mcpData.url,
+    };
+  }
+
   await appendAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "integration.deleted",
     resource: `integration:${connectionId}`,
-    detail: { id: connectionId, name: existing.name, type: existing.type },
+    detail: deletedDetail,
     outcome: "success",
   });
 
