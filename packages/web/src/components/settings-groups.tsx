@@ -33,6 +33,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
+import { toast } from "sonner";
 
 interface Group {
   id: string;
@@ -133,39 +134,59 @@ export function SettingsGroups({ refreshKey }: SettingsGroupsProps) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: formName, description: formDescription || null }),
     });
-    if (res.ok) {
-      const newGroup = await res.json();
-      // Set members if any selected
-      if (formMemberIds.length > 0) {
-        await fetch(`/api/groups/${newGroup.id}/members`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ userIds: formMemberIds }),
-        });
-      }
-      setCreateOpen(false);
-      fetchData();
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast.error(err.error || "Failed to create group");
+      return;
     }
+    const newGroup = await res.json();
+    if (formMemberIds.length > 0) {
+      const memRes = await fetch(`/api/groups/${newGroup.id}/members`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userIds: formMemberIds }),
+      });
+      if (!memRes.ok) {
+        const err = await memRes.json().catch(() => ({}));
+        toast.error(err.error || "Group created but failed to set members");
+      }
+    }
+    setCreateOpen(false);
+    fetchData();
   }
 
   async function handleEdit() {
     if (!editGroup) return;
-    await fetch(`/api/groups/${editGroup.id}`, {
+    const res = await fetch(`/api/groups/${editGroup.id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ name: formName, description: formDescription || null }),
     });
-    await fetch(`/api/groups/${editGroup.id}/members`, {
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast.error(err.error || "Failed to update group");
+      return;
+    }
+    const memRes = await fetch(`/api/groups/${editGroup.id}/members`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ userIds: formMemberIds }),
     });
+    if (!memRes.ok) {
+      const err = await memRes.json().catch(() => ({}));
+      toast.error(err.error || "Failed to update group members");
+    }
     setEditGroup(null);
     fetchData();
   }
 
   async function handleDelete(groupId: string) {
-    await fetch(`/api/groups/${groupId}`, { method: "DELETE" });
+    const res = await fetch(`/api/groups/${groupId}`, { method: "DELETE" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      toast.error(err.error || "Failed to delete group");
+      return;
+    }
     setDeleteGroupId(null);
     fetchData();
   }
