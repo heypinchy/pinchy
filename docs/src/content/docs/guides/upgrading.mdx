@@ -114,7 +114,7 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from %%PINCHY_VERSION%% to %%PINCHY_VERSION%%
+## Upgrading from v0.5.0 to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
@@ -122,13 +122,13 @@ None.
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% is a hotfix release. It fixes a startup loop in OpenClaw caused by a missing `baseUrl` field in the generated `openclaw.json` for the Anthropic, OpenAI, and Google providers. Deployments of %%PINCHY_VERSION%% that configured any of these providers without setting `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or `GOOGLE_BASE_URL` env-vars hit a `models.providers.<name>.baseUrl: expected string, received undefined` error and OpenClaw never came up.
+%%PINCHY_VERSION%% is a hotfix release. It fixes a startup loop in OpenClaw caused by a missing `baseUrl` field in the generated `openclaw.json` for the Anthropic, OpenAI, and Google providers. Deployments of v0.5.0 that configured any of these providers without setting `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or `GOOGLE_BASE_URL` env-vars hit a `models.providers.<name>.baseUrl: expected string, received undefined` error and OpenClaw never came up.
 
 Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=%%PINCHY_VERSION%%/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=v0.5.0/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d
 ```
 
