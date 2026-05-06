@@ -55,7 +55,9 @@ test.describe.serial("Groups CRUD", () => {
 
     // Group appears in the table
     await expect(page.getByRole("table")).toBeVisible();
-    await expect(page.getByRole("cell", { name: "Engineering" })).toBeVisible({ timeout: 5000 });
+    await expect(page.getByRole("cell", { name: "Engineering", exact: true })).toBeVisible({
+      timeout: 5000,
+    });
   });
 
   test("create a group with description and a member — member count shows 1", async ({ page }) => {
@@ -80,6 +82,7 @@ test.describe.serial("Groups CRUD", () => {
     // Group appears; find the Design row and verify member count = 1
     const designRow = page.getByRole("row", { name: /Design/ });
     await expect(designRow).toBeVisible({ timeout: 5000 });
+    // nth(2) = Members column (0=Name, 1=Description, 2=Members, 3=Actions)
     await expect(designRow.getByRole("cell").nth(2)).toHaveText("1");
   });
 
