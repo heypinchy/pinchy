@@ -12,16 +12,33 @@ import {
 import { OdooPermissionSection } from "@/components/odoo-permission-section";
 import { EmailPermissionSection } from "@/components/email-permission-section";
 import { WebSearchPermissionSection } from "@/components/web-search-permission-section";
+import {
+  McpPermissionSection,
+  type McpIntegrationValue,
+} from "@/components/mcp-permission-section";
 import type { Connection as OdooConnection } from "@/hooks/use-odoo-permissions";
 import type { AgentPluginConfig } from "@/db/schema";
+import type { McpIntegrationData } from "@/lib/integrations/types";
+
+/** Discriminated union format matching PUT /api/agents/[id]/integrations body. */
+type OdooIntegrationEntry = {
+  kind: "odoo";
+  connectionId: string;
+  entries: Array<{ model: string; operation: string }>;
+};
+
+type McpIntegrationEntry = {
+  kind: "mcp";
+  connectionId: string;
+  tools: string[];
+};
+
+export type IntegrationEntry = OdooIntegrationEntry | McpIntegrationEntry;
 
 export interface PermissionsValues {
   allowedTools: string[];
   allowedPaths: string[];
-  integrations: Array<{
-    connectionId: string;
-    permissions: Array<{ model: string; operation: string }>;
-  }>;
+  integrations: IntegrationEntry[];
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
 }
 
@@ -30,7 +47,7 @@ interface Connection {
   name: string;
   type: string;
   status?: string;
-  data?: unknown;
+  data?: McpIntegrationData | unknown;
 }
 
 const EMAIL_CONNECTION_TYPES = new Set(["google", "microsoft", "imap"]);
@@ -82,6 +99,8 @@ export function AgentSettingsPermissions({
     permissions: Array<{ model: string; operation: string }>;
   } | null>(null);
   const [emailIsDirty, setEmailIsDirty] = useState(false);
+  const [mcpIntegrations, setMcpIntegrations] = useState<McpIntegrationValue[]>([]);
+  const [mcpIsDirty, setMcpIsDirty] = useState(false);
   const [webSearchConfig, setWebSearchConfig] = useState<AgentPluginConfig["pinchy-web"]>(
     agent.pluginConfig?.["pinchy-web"] ?? {}
   );
@@ -114,18 +133,27 @@ export function AgentSettingsPermissions({
   const showSecurityWarning = hasWebToolChecked && hasSensitiveDataAccess;
 
   // Partition active (non-pending) connections by integration type
-  const { odooConnections, emailConnections, webSearchConnections } = useMemo(() => {
-    const active = connections.filter((c) => c.status !== "pending");
-    return {
-      odooConnections: active.filter((c) => c.type === "odoo") as OdooConnection[],
-      emailConnections: active.filter((c) => EMAIL_CONNECTION_TYPES.has(c.type)),
-      webSearchConnections: active.filter((c) => c.type === "web-search"),
-    };
-  }, [connections]);
+  const { odooConnections, emailConnections, webSearchConnections, mcpConnections } =
+    useMemo(() => {
+      const active = connections.filter((c) => c.status !== "pending");
+      return {
+        odooConnections: active.filter((c) => c.type === "odoo") as OdooConnection[],
+        emailConnections: active.filter((c) => EMAIL_CONNECTION_TYPES.has(c.type)),
+        webSearchConnections: active.filter((c) => c.type === "web-search"),
+        mcpConnections: active.filter((c) => c.type === "mcp") as Array<{
+          id: string;
+          name: string;
+          type: "mcp";
+          status?: string;
+          data?: McpIntegrationData;
+        }>,
+      };
+    }, [connections]);
 
   const showOdoo = odooConnections.length > 0;
   const showEmail = emailConnections.length > 0;
   const hasWebSearchApiKey = webSearchConnections.length > 0;
+  const showMcp = mcpConnections.length > 0;
 
   // Compute the combined allowedTools array (KB tools + web tools + odoo tools + email tools)
   const computeAllowedTools = useCallback(
@@ -183,14 +211,41 @@ export function AgentSettingsPermissions({
         JSON.stringify([...initialAllowedPaths.current].sort());
     const webConfigDirty =
       JSON.stringify(webSearchConfig) !== JSON.stringify(initialWebSearchConfig.current);
-    const isDirty = kbDirty || odooIsDirty || emailIsDirty || webConfigDirty;
-    // Collect all active integrations
-    const integrations: Array<{
-      connectionId: string;
-      permissions: Array<{ model: string; operation: string }>;
-    }> = [];
-    if (odooIntegration) integrations.push(odooIntegration);
-    if (emailIntegration) integrations.push(emailIntegration);
+    const isDirty = kbDirty || odooIsDirty || emailIsDirty || mcpIsDirty || webConfigDirty;
+
+    // Build integrations array in the discriminated union format matching PUT API
+    const integrations: IntegrationEntry[] = [];
+
+    // Odoo: transform from { connectionId, permissions } to { kind: "odoo", connectionId, entries }
+    if (odooIntegration && odooIntegration.permissions.length > 0) {
+      integrations.push({
+        kind: "odoo",
+        connectionId: odooIntegration.connectionId,
+        entries: odooIntegration.permissions,
+      });
+    }
+
+    // Email: transform from { connectionId, permissions } to { kind: "odoo", connectionId, entries }
+    // Email permissions use the same Odoo connection permission table with model="email"
+    if (emailIntegration && emailIntegration.permissions.length > 0) {
+      integrations.push({
+        kind: "odoo",
+        connectionId: emailIntegration.connectionId,
+        entries: emailIntegration.permissions,
+      });
+    }
+
+    // MCP: already in correct format
+    for (const mcp of mcpIntegrations) {
+      if (mcp.tools.length > 0) {
+        integrations.push({
+          kind: "mcp",
+          connectionId: mcp.connectionId,
+          tools: mcp.tools,
+        });
+      }
+    }
+
     onChange(
       {
         allowedTools: allAllowedTools,
@@ -207,6 +262,8 @@ export function AgentSettingsPermissions({
     odooIsDirty,
     emailIntegration,
     emailIsDirty,
+    mcpIntegrations,
+    mcpIsDirty,
     webSearchConfig,
     onChange,
     computeAllowedTools,
@@ -246,6 +303,11 @@ export function AgentSettingsPermissions({
 
   function handleWebSearchConfigChange(config: AgentPluginConfig["pinchy-web"]) {
     setWebSearchConfig(config);
+  }
+
+  function handleMcpChange(values: McpIntegrationValue[], isDirty: boolean) {
+    setMcpIntegrations(values);
+    setMcpIsDirty(isDirty);
   }
 
   return (
@@ -356,6 +418,15 @@ export function AgentSettingsPermissions({
             onChange={handleEmailChange}
           />
         </section>
+      )}
+
+      {/* MCP sections — one card per MCP connection, no section header */}
+      {showMcp && (
+        <McpPermissionSection
+          agentId={agent.id}
+          connections={mcpConnections}
+          onChange={handleMcpChange}
+        />
       )}
 
       {/* Admin-only discoverability link */}

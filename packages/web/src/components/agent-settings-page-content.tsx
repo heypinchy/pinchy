@@ -72,13 +72,14 @@ interface PersonalityValues {
   soulContent: string;
 }
 
+type IntegrationEntry =
+  | { kind: "odoo"; connectionId: string; entries: Array<{ model: string; operation: string }> }
+  | { kind: "mcp"; connectionId: string; tools: string[] };
+
 interface PermissionsValues {
   allowedTools: string[];
   allowedPaths: string[];
-  integrations: Array<{
-    connectionId: string;
-    permissions: Array<{ model: string; operation: string }>;
-  }>;
+  integrations: IntegrationEntry[];
   webSearchConfig?: AgentPluginConfig["pinchy-web"];
 }
 
@@ -272,17 +273,16 @@ export function AgentSettingsPageContent({ initialTab }: { initialTab?: string }
           "pinchy-web": permissionsDraft.current.webSearchConfig,
         };
 
-        // Save each active integration separately, or clear all if none
+        // Send all integrations in a single PUT call (discriminated union array),
+        // or DELETE to clear all if no integrations are active.
         if (permissionsDraft.current.integrations.length > 0) {
-          for (const integration of permissionsDraft.current.integrations) {
-            integrationPromises.push(
-              fetch(`/api/agents/${agentId}/integrations`, {
-                method: "PUT",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(integration),
-              })
-            );
-          }
+          integrationPromises.push(
+            fetch(`/api/agents/${agentId}/integrations`, {
+              method: "PUT",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(permissionsDraft.current.integrations),
+            })
+          );
         } else {
           // Clear all integration permissions when no connections are configured
           integrationPromises.push(

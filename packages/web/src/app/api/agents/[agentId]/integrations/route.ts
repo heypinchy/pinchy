@@ -19,7 +19,15 @@ type OdooEntry = { model: string; operation: string };
 
 type IntegrationPermission =
   | { kind: "odoo"; connectionId: string; entries: OdooEntry[] }
-  | { kind: "mcp"; connectionId: string; tools: string[] };
+  | {
+      kind: "mcp";
+      connectionId: string;
+      connectionName: string;
+      availableTools: string[];
+      tools: string[];
+    };
+
+type DriftEntry = { connectionName: string; removedTool: string };
 
 // ── Zod schemas ───────────────────────────────────────────────────────────────
 
@@ -44,9 +52,19 @@ type RouteContext = { params: Promise<{ agentId: string }> };
 /**
  * GET /api/agents/[agentId]/integrations
  *
- * Returns current integration permissions for this agent as a discriminated union array.
+ * Returns current integration permissions for this agent.
+ *
+ * Response shape:
+ * {
+ *   permissions: IntegrationPermission[],
+ *   drift: Array<{ connectionName: string; removedTool: string }>
+ * }
+ *
  * Odoo entries: { kind: "odoo", connectionId, entries: [{ model, operation }] }
- * MCP entries:  { kind: "mcp", connectionId, tools: ["tool_name", ...] }
+ * MCP entries:  { kind: "mcp", connectionId, connectionName, availableTools, tools }
+ *
+ * Drift entries are MCP tool permissions that reference a tool no longer
+ * present in the connection's data.tools list (e.g. after a re-sync).
  */
 export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
   const { agentId } = await params;
@@ -86,24 +104,50 @@ export const GET = withAdmin<RouteContext>(async (_req, { params }) => {
     )
     .where(eq(agentMcpToolPermissions.agentId, agentId));
 
-  const mcpGrouped = new Map<string, { kind: "mcp"; connectionId: string; tools: string[] }>();
+  const mcpGrouped = new Map<
+    string,
+    {
+      kind: "mcp";
+      connectionId: string;
+      connectionName: string;
+      availableTools: string[];
+      tools: string[];
+    }
+  >();
+
+  const drift: DriftEntry[] = [];
 
   for (const row of mcpRows) {
     const conn = row.integration_connections;
     const perm = row.agent_mcp_tool_permissions;
+    const connData = conn.data as McpIntegrationData | null;
+    const availableNames = new Set((connData?.tools ?? []).map((t) => t.name));
 
     if (!mcpGrouped.has(conn.id)) {
-      mcpGrouped.set(conn.id, { kind: "mcp", connectionId: conn.id, tools: [] });
+      mcpGrouped.set(conn.id, {
+        kind: "mcp",
+        connectionId: conn.id,
+        connectionName: conn.name,
+        availableTools: (connData?.tools ?? []).map((t) => t.name),
+        tools: [],
+      });
     }
-    mcpGrouped.get(conn.id)!.tools.push(perm.toolName);
+
+    // Drift detection: tool was granted but no longer available
+    if (!availableNames.has(perm.toolName)) {
+      drift.push({ connectionName: conn.name, removedTool: perm.toolName });
+    } else {
+      mcpGrouped.get(conn.id)!.tools.push(perm.toolName);
+    }
   }
 
   // ── Combine and sort by connectionId ──────────────────────────────────────
-  const result: IntegrationPermission[] = [...odooGrouped.values(), ...mcpGrouped.values()].sort(
-    (a, b) => a.connectionId.localeCompare(b.connectionId)
-  );
+  const permissions: IntegrationPermission[] = [
+    ...odooGrouped.values(),
+    ...mcpGrouped.values(),
+  ].sort((a, b) => a.connectionId.localeCompare(b.connectionId));
 
-  return NextResponse.json(result);
+  return NextResponse.json({ permissions, drift });
 });
 
 /**

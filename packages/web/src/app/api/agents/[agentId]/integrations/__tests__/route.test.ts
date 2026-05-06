@@ -143,7 +143,7 @@ describe("GET /api/agents/[agentId]/integrations", () => {
     mockGetSession.mockResolvedValue(adminSession);
   });
 
-  it("returns empty array when agent has no permissions", async () => {
+  it("returns empty permissions and no drift when agent has no permissions", async () => {
     // First select (agentConnectionPermissions join) returns empty
     mockSelectFrom.mockReturnValueOnce({
       innerJoin: vi.fn().mockReturnValue({
@@ -163,7 +163,7 @@ describe("GET /api/agents/[agentId]/integrations", () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toEqual([]);
+    expect(body).toEqual({ permissions: [], drift: [] });
   });
 
   it("returns Odoo permissions with kind='odoo'", async () => {
@@ -195,15 +195,16 @@ describe("GET /api/agents/[agentId]/integrations", () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toHaveLength(1);
-    expect(body[0]).toMatchObject({
+    expect(body.permissions).toHaveLength(1);
+    expect(body.permissions[0]).toMatchObject({
       kind: "odoo",
       connectionId: "conn-odoo-1",
       entries: [{ model: "sale.order", operation: "read" }],
     });
+    expect(body.drift).toEqual([]);
   });
 
-  it("returns MCP permissions with kind='mcp'", async () => {
+  it("returns MCP permissions with kind='mcp' including connectionName and availableTools", async () => {
     const mcpRows = [
       {
         integration_connections: mcpConnection,
@@ -238,12 +239,15 @@ describe("GET /api/agents/[agentId]/integrations", () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toHaveLength(1);
-    expect(body[0]).toMatchObject({
+    expect(body.permissions).toHaveLength(1);
+    expect(body.permissions[0]).toMatchObject({
       kind: "mcp",
       connectionId: "conn-mcp-1",
+      connectionName: "My GitHub MCP",
+      availableTools: expect.arrayContaining(["list_repos", "create_issue"]),
       tools: expect.arrayContaining(["list_repos", "create_issue"]),
     });
+    expect(body.drift).toEqual([]);
   });
 
   it("returns mixed Odoo + MCP permissions sorted by connectionId", async () => {
@@ -285,15 +289,73 @@ describe("GET /api/agents/[agentId]/integrations", () => {
     const body = await res.json();
 
     expect(res.status).toBe(200);
-    expect(body).toHaveLength(2);
+    expect(body.permissions).toHaveLength(2);
 
-    const kinds = body.map((item: { kind: string }) => item.kind);
+    const kinds = body.permissions.map((item: { kind: string }) => item.kind);
     expect(kinds).toContain("odoo");
     expect(kinds).toContain("mcp");
 
     // Verify sorted by connectionId
-    const ids = body.map((item: { connectionId: string }) => item.connectionId);
+    const ids = body.permissions.map((item: { connectionId: string }) => item.connectionId);
     expect(ids).toEqual([...ids].sort());
+
+    expect(body.drift).toEqual([]);
+  });
+
+  it("returns drift entries for MCP tools that were granted but no longer available", async () => {
+    // Connection now only has list_repos, but create_issue was previously granted
+    const mcpConnectionWithFewerTools = {
+      ...mcpConnection,
+      data: {
+        ...mcpConnection.data,
+        tools: [{ name: "list_repos", description: "List repos", inputSchema: {} }],
+      },
+    };
+
+    const mcpRows = [
+      {
+        integration_connections: mcpConnectionWithFewerTools,
+        agent_mcp_tool_permissions: {
+          connectionId: "conn-mcp-1",
+          toolName: "list_repos",
+        },
+      },
+      {
+        integration_connections: mcpConnectionWithFewerTools,
+        agent_mcp_tool_permissions: {
+          connectionId: "conn-mcp-1",
+          toolName: "create_issue", // no longer available
+        },
+      },
+    ];
+
+    mockSelectFrom.mockReturnValueOnce({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue([]), // no odoo perms
+      }),
+    });
+    mockSelectFrom.mockReturnValueOnce({
+      innerJoin: vi.fn().mockReturnValue({
+        where: vi.fn().mockResolvedValue(mcpRows),
+      }),
+    });
+
+    const { GET } = await import("@/app/api/agents/[agentId]/integrations/route");
+    const req = makeRequest("/api/agents/agent-1/integrations");
+    const res = await GET(req, { params: Promise.resolve({ agentId: "agent-1" }) });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+
+    // list_repos should be in permissions, create_issue should be in drift
+    expect(body.permissions[0].tools).toContain("list_repos");
+    expect(body.permissions[0].tools).not.toContain("create_issue");
+
+    expect(body.drift).toHaveLength(1);
+    expect(body.drift[0]).toEqual({
+      connectionName: "My GitHub MCP",
+      removedTool: "create_issue",
+    });
   });
 });
 
