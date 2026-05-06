@@ -1,0 +1,133 @@
+import { test, expect } from "@playwright/test";
+import {
+  seedProviderConfig,
+  loginAsAdmin,
+  loginAs,
+  createSecondUserViaInvite,
+  SECOND_USER,
+} from "./helpers";
+
+test.describe.serial("Agent permissions — restricted visibility", () => {
+  let agentId: string;
+  let groupId: string;
+  let secondUserId: string;
+
+  test.beforeAll(async ({ browser }) => {
+    await seedProviderConfig();
+    const page = await browser.newPage();
+    await loginAsAdmin(page);
+
+    // Enable enterprise mode (same pattern as 09-groups.spec.ts)
+    const status = await page.request.get("/api/enterprise/status");
+    const { enterprise } = await status.json();
+    if (!enterprise) {
+      await page.request.post("/api/dev/enterprise-toggle");
+    }
+
+    // Create second user (idempotent: ignore if already exists)
+    await createSecondUserViaInvite(page.context().request).catch(() => {});
+
+    // Resolve second user's ID from the users list
+    const usersRes = await page.context().request.get("/api/users");
+    const { users } = await usersRes.json();
+    const secondUser = users.find(
+      (u: { email: string; id: string }) => u.email === SECOND_USER.email
+    );
+    if (!secondUser) throw new Error("Second user not found after invite");
+    secondUserId = secondUser.id;
+
+    // Create a group with no members yet
+    const groupRes = await page.context().request.post("/api/groups", {
+      data: { name: "Restricted Group", description: null },
+    });
+    const groupData = await groupRes.json();
+    if (!groupRes.ok()) {
+      throw new Error(`Failed to create group: ${JSON.stringify(groupData)}`);
+    }
+    groupId = groupData.id;
+
+    // Create a shared agent using the "custom" template (no extra config required).
+    // POST /api/agents always creates shared agents; visibility defaults to "all".
+    const agentRes = await page.context().request.post("/api/agents", {
+      data: {
+        name: "Permissions Test Agent",
+        templateId: "custom",
+        tagline: "E2E permissions test agent",
+      },
+    });
+    const agentData = await agentRes.json();
+    if (!agentRes.ok()) {
+      throw new Error(`Failed to create agent: ${JSON.stringify(agentData)}`);
+    }
+    agentId = agentData.id;
+
+    await page.close();
+  });
+
+  test("admin sees the agent (visibility: all)", async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto("/chat");
+
+    // The agent should appear as a sidebar link
+    await expect(page.getByRole("link", { name: "Permissions Test Agent" })).toBeVisible({
+      timeout: 10000,
+    });
+  });
+
+  test("non-admin sees the agent while visibility is all", async ({ page }) => {
+    await loginAs(page, SECOND_USER.email, SECOND_USER.password);
+    await page.goto("/chat");
+
+    // The second user should also see the shared agent
+    await expect(page.getByRole("link", { name: "Permissions Test Agent" })).toBeVisible({
+      timeout: 10000,
+    });
+  });
+
+  test("admin restricts agent to a group the non-admin is NOT in", async ({ page }) => {
+    await loginAsAdmin(page);
+
+    // PATCH agent: set visibility to "restricted" and assign the group (non-admin is not a member)
+    const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
+      data: {
+        visibility: "restricted",
+        groupIds: [groupId],
+      },
+    });
+    expect(patchRes.ok()).toBeTruthy();
+
+    // Admin still sees the agent (admins bypass visibility filtering)
+    await page.goto("/chat");
+    await expect(page.getByRole("link", { name: "Permissions Test Agent" })).toBeVisible({
+      timeout: 10000,
+    });
+  });
+
+  test("non-admin no longer sees the restricted agent", async ({ page }) => {
+    await loginAs(page, SECOND_USER.email, SECOND_USER.password);
+    await page.goto("/chat");
+
+    // The agent should not appear in the sidebar for the non-member user
+    await expect(page.getByRole("link", { name: "Permissions Test Agent" })).not.toBeVisible({
+      timeout: 10000,
+    });
+  });
+
+  test("admin adds non-admin to the group; non-admin sees agent again", async ({ page }) => {
+    await loginAsAdmin(page);
+
+    // Add second user to the restricted group via PUT /api/groups/:groupId/members
+    const membersRes = await page.request.put(`/api/groups/${groupId}/members`, {
+      data: { userIds: [secondUserId] },
+    });
+    expect(membersRes.ok()).toBeTruthy();
+
+    // Now log in as second user and verify the agent reappears
+    await loginAs(page, SECOND_USER.email, SECOND_USER.password);
+    await page.goto("/chat");
+
+    await expect(page.getByRole("link", { name: "Permissions Test Agent" })).toBeVisible({
+      timeout: 10000,
+    });
+  });
+});
