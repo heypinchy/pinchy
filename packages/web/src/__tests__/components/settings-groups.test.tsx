@@ -256,5 +256,7 @@ describe("SettingsGroups", () => {
     expect(
       screen.getByText("New Group", { selector: "[data-slot='dialog-title']" })
     ).toBeInTheDocument();
+    // Stronger check: an interactive form field is only accessible when the dialog is truly open
+    expect(screen.getByLabelText(/^name$/i)).toBeInTheDocument();
   });
 });
