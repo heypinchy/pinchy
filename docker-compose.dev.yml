@@ -19,6 +19,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.openclaw
+    extra_hosts:
+      # ollama.local is mapped to the Docker host gateway so the OpenClaw
+      # container can reach Ollama on the host. Pinchy's build.ts rewrites
+      # host.docker.internal -> ollama.local in the emitted config because
+      # host.docker.internal is not in OpenClaw 2026.4.27's isLocalBaseUrl
+      # allowlist (*.local is).
+      - "ollama.local:host-gateway"
     volumes:
       - ./packages/plugins/pinchy-files:/root/.openclaw/extensions/pinchy-files
       - ./packages/plugins/pinchy-context:/root/.openclaw/extensions/pinchy-context
