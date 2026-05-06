@@ -105,6 +105,20 @@ const defaultAgent = {
   greetingMessage: "Hello.",
 };
 
+// Helper for tests that need to disconnect mid-stream. Yields each chunk
+// from `chunks` after one macrotask tick (setImmediate) — that gap is the
+// test's window to mutate clientWs.readyState before the next yield.
+// Using setImmediate rather than Promise.resolve() ensures the test's own
+// setImmediate fires in between stream chunks (microtasks wouldn't suffice
+// because the for-await loop drains all microtasks before yielding to the
+// event loop).
+async function* steppedStream<T>(chunks: T[]): AsyncGenerator<T> {
+  for (const chunk of chunks) {
+    await new Promise<void>((r) => setImmediate(r));
+    yield chunk;
+  }
+}
+
 function createMockOpenClawClient(connected = true) {
   const emitter = new EventEmitter();
   const client = Object.assign(emitter, {
@@ -2444,6 +2458,38 @@ describe("ClientRouter", () => {
       expect(messages.some((m: any) => m.type === "error")).toBe(true);
 
       consoleSpy.mockRestore();
+    });
+  });
+
+  describe("pipeStream — consumer disconnect", () => {
+    it("keeps draining the OpenClaw stream after the browser WS closes, so sessionCache records the completed turn", async () => {
+      // Fresh cache so the test proves the add() actually happens here, not
+      // pre-seeded by beforeEach.
+      const cache = new SessionCache();
+      const localRouter = new ClientRouter(mockOpenClawClient as any, "user-1", "member", cache);
+
+      const clientWs = createMockClientWs();
+      mockChat.mockReturnValue(
+        steppedStream([
+          { type: "text" as const, text: "tok-1" },
+          { type: "text" as const, text: "tok-2" },
+          { type: "done" as const, text: "" },
+        ])
+      );
+
+      const handlePromise = localRouter.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      // Let the first chunk be consumed, then "the browser navigates away"
+      await new Promise((r) => setImmediate(r));
+      clientWs.readyState = 3; // CLOSED
+
+      await handlePromise;
+
+      expect(cache.has("agent:agent-1:direct:user-1")).toBe(true);
     });
   });
 });
