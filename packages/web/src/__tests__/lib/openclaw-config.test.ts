@@ -174,6 +174,40 @@ async function drainBackgroundCoroutine(): Promise<void> {
   await new Promise((r) => setImmediate(r));
 }
 
+/**
+ * Mirror of OpenClaw 2026.4.27's `isLocalBaseUrl` predicate
+ * (model-auth-CsyLGY9m.js:111-118 + isPrivateIpv4Host:120-126). The function
+ * isn't exported through any of openclaw's public subpath exports, so the
+ * tests below re-implement it as a drift guard: if upstream changes the
+ * allowlist, this mirror diverges and the related tests should be updated
+ * (and the docs in ollama-setup.mdx revisited).
+ */
+function mirrorOpenClawIsLocalBaseUrl(baseUrl: string): boolean {
+  try {
+    let host = new URL(baseUrl).hostname.toLowerCase();
+    if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
+    return (
+      host === "localhost" ||
+      host === "127.0.0.1" ||
+      host === "0.0.0.0" ||
+      host === "::1" ||
+      host === "::ffff:7f00:1" ||
+      host === "::ffff:127.0.0.1" ||
+      host.endsWith(".local") ||
+      mirrorIsPrivateIpv4Host(host)
+    );
+  } catch {
+    return false;
+  }
+}
+function mirrorIsPrivateIpv4Host(host: string): boolean {
+  if (!/^\d+\.\d+\.\d+\.\d+$/.test(host)) return false;
+  const octets = host.split(".").map((o) => Number.parseInt(o, 10));
+  if (octets.some((p) => !Number.isInteger(p) || p < 0 || p > 255)) return false;
+  const [a, b] = octets;
+  return a === 10 || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168);
+}
+
 describe("regenerateOpenClawConfig", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1647,6 +1681,86 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written);
 
     expect(config.models.providers["ollama"].baseUrl).toBe("http://ollama.local:11434/v1");
+  });
+
+  it("docs option B (Ollama as a sibling Docker service) URL pattern emits a baseUrl OpenClaw accepts (#280 follow-up)", async () => {
+    // Mirrors docs/src/content/docs/guides/ollama-setup.mdx options B+C:
+    // user adds `ollama.docker.local` as a Docker network alias on their
+    // ollama service and sets the URL to `http://ollama.docker.local:11434`.
+    // The chosen hostname must:
+    //   1. End in `.local` so OpenClaw's isLocalBaseUrl predicate accepts it
+    //      (model-auth-CsyLGY9m.js:115 — host.endsWith(".local")).
+    //   2. NOT be `ollama.local`. That hostname is mapped to host-gateway in
+    //      docker-compose.yml's openclaw `extra_hosts` (for option A), and
+    //      `/etc/hosts` wins over Docker DNS aliases on every Linux libc
+    //      resolver — so `ollama.local` from inside openclaw resolves to
+    //      the host gateway, never to a sibling container.
+    // build.ts leaves the URL untouched (it isn't in DOCKER_HOST_ALIASES) and
+    // only appends `/v1`. If this assertion ever drifts from the docs, fix
+    // the docs or the rewrite — don't weaken the test.
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
+      {
+        id: "ollama/qwen3.5:9b",
+        name: "qwen3.5:9b",
+        parameterSize: "9B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ]);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://ollama.docker.local:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const baseUrl = config.models.providers["ollama"].baseUrl;
+
+    expect(baseUrl).toBe("http://ollama.docker.local:11434/v1");
+    // Asserts the round-trip property the docs rely on: the URL we tell
+    // option-B users to set still passes OpenClaw's local-provider gate.
+    expect(mirrorOpenClawIsLocalBaseUrl(baseUrl)).toBe(true);
+  });
+
+  it("bare service hostname (e.g. http://ollama:11434) is left untouched and would fail OpenClaw allowlist (#280 docs guard)", async () => {
+    // Pre-#280 docs told option-B users to set `http://ollama:11434`. The
+    // emitted baseUrl uses the raw service name, which fails OpenClaw's
+    // allowlist (no `.local`, not RFC-1918, not loopback) — chats fail with
+    // "No API key found for provider 'ollama'" at runtime.
+    //
+    // build.ts intentionally rewrites only known Docker host aliases
+    // (DOCKER_HOST_ALIASES); rewriting bare hostnames would silently
+    // misroute legitimate non-local URLs (e.g. http://my-server:11434
+    // pointing at a real LAN box). The docs migration to ollama.docker.local
+    // is the fix; this test pins the no-rewrite behavior so a future
+    // "smarter" rewrite doesn't regress unrelated setups.
+    vi.mocked(fetchOllamaLocalModelsFromUrl).mockResolvedValue([
+      {
+        id: "ollama/qwen3.5:9b",
+        name: "qwen3.5:9b",
+        parameterSize: "9B",
+        compatible: true,
+        capabilities: { tools: true, vision: false, completion: true, thinking: false },
+      },
+    ]);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "ollama_local_url") return "http://ollama:11434";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const baseUrl = config.models.providers["ollama"].baseUrl;
+
+    expect(baseUrl).toBe("http://ollama:11434/v1");
+    // Documents the runtime failure mode bare hostnames would hit: this is
+    // why ollama-setup.mdx tells users to alias the service as
+    // `ollama.docker.local` (or any `*.local` hostname) instead.
+    expect(mirrorOpenClawIsLocalBaseUrl(baseUrl)).toBe(false);
   });
 
   it("should not add env block for ollama-local provider (URL-based, no API key)", async () => {

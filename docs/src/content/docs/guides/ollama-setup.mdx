@@ -69,6 +69,10 @@ Run Ollama alongside Pinchy in Docker. Create a `docker-compose.override.yml` in
 services:
   ollama:
     image: ollama/ollama
+    networks:
+      default:
+        aliases:
+          - ollama.docker.local
     volumes:
       - ollama_data:/root/.ollama
 
@@ -85,8 +89,17 @@ docker compose up -d
 In Pinchy, set the URL to:
 
 ```
-http://ollama:11434
+http://ollama.docker.local:11434
 ```
+
+<Aside type="tip">
+  The `ollama.docker.local` alias matters — Pinchy's agent runtime only treats
+  URLs whose host ends in `.local` (or is loopback / RFC-1918 private) as local
+  providers that don't need an API key. The bare service name `ollama` would be
+  rejected. We can't reuse `ollama.local` itself because that name is already
+  mapped to the host gateway in `docker-compose.yml` for option A, and
+  `/etc/hosts` wins over Docker DNS aliases.
+</Aside>
 
 <Aside type="note">
   You'll still need to pull models inside the container: `docker compose exec
@@ -101,6 +114,10 @@ For GPU acceleration, install the [NVIDIA Container Toolkit](https://docs.nvidia
 services:
   ollama:
     image: ollama/ollama
+    networks:
+      default:
+        aliases:
+          - ollama.docker.local
     volumes:
       - ollama_data:/root/.ollama
     deploy:
@@ -115,7 +132,7 @@ volumes:
   ollama_data:
 ```
 
-Everything else is the same — Pinchy URL is `http://ollama:11434`.
+Everything else is the same — Pinchy URL is `http://ollama.docker.local:11434`. (See the option B note above for why the `.local` alias is required.)
 
 ### D. Ollama on a remote server
 
@@ -242,9 +259,13 @@ agents) with cloud providers (interactive agents).
   had a bug ([#280](https://github.com/heypinchy/pinchy/issues/280)) where
   `host.docker.internal` was rejected by the local-provider auth path.
 - For non-default URLs, the URL host must be one of: `localhost`,
-  `127.0.0.1`, a `*.local` mDNS name, an RFC-1918 private IPv4
+  `127.0.0.1`, a hostname ending in `.local`, an RFC-1918 private IPv4
   (`192.168.*`, `10.*`, `172.16-31.*`), or one of Docker's host aliases
   (`host.docker.internal`, `gateway.docker.internal`).
+- **Upgrading from `http://ollama:11434`?** Earlier docs recommended the
+  bare service name, which fails the check above. Switch to
+  [option B](#b-ollama-as-a-docker-service) — add an `ollama.docker.local`
+  network alias to your ollama service and update the URL.
 
 **No models appear after connecting**
 
