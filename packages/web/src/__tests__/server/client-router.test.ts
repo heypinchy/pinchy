@@ -2524,5 +2524,40 @@ describe("ClientRouter", () => {
 
       expect(clientWs.send.mock.calls.length).toBe(sendCallsBeforeClose);
     });
+
+    it("clears the keep-alive heartbeat interval even when the consumer disconnects mid-stream", async () => {
+      // setInterval/clearInterval are called from inside pipeStream; we
+      // observe via vi.useFakeTimers + getTimerCount(). When the heartbeat
+      // is cleared, the active timer count returns to zero.
+      // Only fake setInterval/clearInterval so that steppedStream's
+      // setImmediate calls remain real and can be awaited normally.
+      vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+
+      try {
+        const clientWs = createMockClientWs();
+        mockChat.mockReturnValue(
+          steppedStream([
+            { type: "text" as const, text: "first" },
+            { type: "done" as const, text: "" },
+          ])
+        );
+
+        const handlePromise = router.handleMessage(clientWs as any, {
+          type: "message",
+          content: "Hi",
+          agentId: "agent-1",
+        });
+
+        // Consume the first chunk under fake timers
+        await new Promise((r) => setImmediate(r));
+        clientWs.readyState = 3; // CLOSED
+        await handlePromise;
+
+        // After pipeStream's finally, no leftover intervals
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
   });
 });
