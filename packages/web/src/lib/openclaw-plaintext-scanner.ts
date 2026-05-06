@@ -10,6 +10,17 @@ const PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: "brave", regex: /^BSA[a-zA-Z0-9]{16,}/ },
   // Ollama Cloud: 32-hex prefix + "." + ≥16 base62 chars (observed format).
   { name: "ollama-cloud", regex: /^[a-f0-9]{32}\.[a-zA-Z0-9]{16,}/ },
+  // MCP token prefixes for Phase-1 presets — these must never appear in
+  // openclaw.json (credentials are fetched at runtime via /api/internal/integrations).
+  // GitHub fine-grained PAT must be checked before classic PAT and OAuth token
+  // because "github_pat_" starts with "ghp" which could false-match if order reversed.
+  { name: "github-pat-fine-grained", regex: /^github_pat_[a-zA-Z0-9_]{10,}/ },
+  { name: "github-pat-classic", regex: /^ghp_[a-zA-Z0-9]{10,}/ },
+  { name: "github-oauth", regex: /^gho_[a-zA-Z0-9]{10,}/ },
+  // Notion internal integration tokens start with "secret_" followed by ≥32 chars.
+  { name: "notion-integration", regex: /^secret_[a-zA-Z0-9]{32,}/ },
+  // Linear personal API keys start with "lin_api_".
+  { name: "linear-api-key", regex: /^lin_api_[a-zA-Z0-9]{8,}/ },
   // telegram-bot tokens omitted: OpenClaw 2026.4.26 does not resolve SecretRef
   // in channels.telegram.accounts.*.botToken — tokens stay as plain strings.
 ];
