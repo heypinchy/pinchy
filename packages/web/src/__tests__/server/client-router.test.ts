@@ -2525,6 +2525,85 @@ describe("ClientRouter", () => {
       expect(clientWs.send.mock.calls.length).toBe(sendCallsBeforeClose);
     });
 
+    it("logs OpenClaw error chunks even when the consumer has already disconnected", async () => {
+      // Observability invariant: with the drain-always loop, error chunks
+      // arriving after the browser navigates away are exactly the chunks an
+      // operator most needs to see — there's no UI to surface them. The
+      // server-side console.error must therefore be unconditional, not
+      // gated by readyState.
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        const clientWs = createMockClientWs();
+        mockChat.mockReturnValue(
+          steppedStream([
+            { type: "text" as const, text: "before-close" },
+            { type: "error" as const, text: "upstream provider exploded" },
+          ])
+        );
+
+        const handlePromise = router.handleMessage(clientWs as any, {
+          type: "message",
+          content: "Hi",
+          agentId: "agent-1",
+        });
+
+        // Allow the first chunk to be consumed, then close the WS before the
+        // error chunk arrives.
+        await new Promise((r) => setImmediate(r));
+        clientWs.readyState = 3; // CLOSED
+
+        await handlePromise;
+
+        const errorLogged = consoleSpy.mock.calls.some(
+          (call) =>
+            typeof call[0] === "string" &&
+            call[0].includes("OpenClaw error chunk:") &&
+            call[1] === "upstream provider exploded"
+        );
+        expect(errorLogged).toBe(true);
+      } finally {
+        consoleSpy.mockRestore();
+      }
+    });
+
+    it("does not record the session in cache when the turn errors without a done chunk", async () => {
+      // Errored turns are not "completed" from Pinchy's perspective —
+      // sessionCache only tracks turns that reached a done chunk. This
+      // test pins the behavior so a future drain-loop refactor can't
+      // accidentally cache failed turns.
+      const freshCache = new SessionCache();
+      const localRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        freshCache
+      );
+
+      const clientWs = createMockClientWs();
+      mockChat.mockReturnValue(
+        steppedStream([
+          { type: "text" as const, text: "partial" },
+          { type: "error" as const, text: "upstream blew up" },
+        ])
+      );
+
+      // Suppress the now-unconditional console.error for cleanliness.
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      try {
+        await localRouter.handleMessage(clientWs as any, {
+          type: "message",
+          content: "Hi",
+          agentId: "agent-1",
+        });
+
+        expect(freshCache.has("agent:agent-1:direct:user-1")).toBe(false);
+      } finally {
+        consoleSpy.mockRestore();
+      }
+    });
+
     it("clears the keep-alive heartbeat interval even when the consumer disconnects mid-stream", async () => {
       // setInterval/clearInterval are called from inside pipeStream; we
       // observe via vi.useFakeTimers + getTimerCount(). When the heartbeat

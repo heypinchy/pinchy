@@ -418,8 +418,19 @@ export class ClientRouter {
         // and persisting on its side; our local view of the session
         // (sessionCache, per-turn messageId rotation) must keep up so the
         // next history fetch / WS reconnect sees a coherent state.
+        // Note: errored turns intentionally do NOT update the cache — only
+        // turns that reach a `done` chunk count as completed sessions.
         if (chunk.type === "done") {
           this.sessionCache.add(sessionKey);
+        }
+
+        // Server-side error logging — unconditional. With the drain-always
+        // loop, error chunks arriving after the browser navigates away are
+        // exactly the chunks operators most need to see (no UI to surface
+        // them). Gating this on readyState would silently swallow upstream
+        // failures during nav-aways.
+        if (chunk.type === "error") {
+          console.error("OpenClaw error chunk:", chunk.text);
         }
 
         // Consumer forwarding — only meaningful while the browser WS is open.
@@ -435,7 +446,6 @@ export class ClientRouter {
               this.sendToClient(clientWs, { type: "chunk", content: cleaned, messageId });
             }
           } else if (chunk.type === "error") {
-            console.error("OpenClaw error chunk:", chunk.text);
             this.sendToClient(clientWs, {
               type: "error",
               agentName: agent.name,
