@@ -22,7 +22,7 @@ if [ ! -f /openclaw-config/openclaw.json ]; then
 fi
 
 # Give pinchy user ownership of the secrets tmpfs so it can read/write
-# secrets.json. The tmpfs is initially owned by root (or uid=1000 per the
+# secrets.json. The tmpfs is initially owned by root (or uid=999 per the
 # volume driver opts); ensure the pinchy user is the directory owner so
 # it can enter the directory and rename files atomically.
 chown pinchy:pinchy /openclaw-secrets 2>/dev/null || true
