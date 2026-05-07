@@ -10,10 +10,11 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
 ## Standard upgrade
 
 <Aside type="note">
-  This is the upgrade flow **between %%PINCHY_VERSION%%+ releases**. If you're
-  still on v0.4.x, complete the **Upgrading from v0.4.4 to %%PINCHY_VERSION%%**
-  section below first — that one-time migration adds the `PINCHY_VERSION` pin
-  you'll bump from here on.
+  This is the upgrade flow **between v0.5.0+ releases**. If you're still on
+  v0.4.x, complete the **Upgrading from v0.4.4 to v0.5.0** section below first —
+  that one-time migration adds the `PINCHY_VERSION` pin you'll bump from here
+  on. After it, return to this section and bump `PINCHY_VERSION` straight to the
+  latest tag.
 </Aside>
 
 <Steps>
@@ -114,7 +115,7 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.5.0 to %%PINCHY_VERSION%%
+## Upgrading from v0.5.1 to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
@@ -122,13 +123,47 @@ None.
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% is a hotfix release. It fixes a startup loop in OpenClaw caused by a missing `baseUrl` field in the generated `openclaw.json` for the Anthropic, OpenAI, and Google providers. Deployments of v0.5.0 that configured any of these providers without setting `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or `GOOGLE_BASE_URL` env-vars hit a `models.providers.<name>.baseUrl: expected string, received undefined` error and OpenClaw never came up.
+%%PINCHY_VERSION%% is a maintenance release: a security fix for admin access to personal agents, the long-standing Ollama local-provider setup bug, and several robustness improvements in **Settings → Groups**.
 
 Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.0/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=v0.5.1/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d
+```
+
+No database migration, no `docker-compose.yml` change, and no env-var changes are required.
+
+#### Security: admin access scope to personal agents
+
+Before %%PINCHY_VERSION%%, an admin could read or modify another user's personal agent by calling `GET`/`PATCH`/`DELETE /api/agents/:agentId` directly, even though the UI did not expose those agents. The admin fast-path in `assertAgentAccess` now correctly enforces the personal-agent boundary: personal agents are only accessible to their owner, regardless of role. To share an agent with the team, set its visibility to **All users** (or use a group), which is unaffected by this change.
+
+No action is required on upgrade. If you relied on this behavior in scripts or integrations, switch them to use a shared agent instead.
+
+#### Ollama local provider works on fresh installs
+
+Setting up a local Ollama provider in the onboarding wizard or **Settings → Providers** now works without manual `.env` edits. Pinchy detects local Ollama base URLs (`localhost`, `127.0.0.1`, `host.docker.internal`) and rewrites them to a Docker-routable hostname (`ollama.local`, mapped to the host gateway in `docker-compose.yml`) so the OpenClaw container can reach the model server on the host. The provider config also uses `openai-completions` with the `/v1` suffix, which is what OpenClaw expects for self-hosted OpenAI-compatible endpoints. Existing deployments that already work are unaffected.
+
+#### Settings → Groups: inline validation, clearer errors
+
+Group create and edit dialogs now render field-level validation errors inline (matching Pinchy's error-display policy) and surface API failures via toasts instead of leaving the dialog in an ambiguous state. Two-step partial failures — for example, the group is created but the initial member assignment fails — are reported explicitly so you know what to retry.
+
+## Upgrading from v0.5.0 to v0.5.1
+
+### Breaking changes
+
+None.
+
+### Upgrade notes
+
+v0.5.1 is a hotfix release. It fixes a startup loop in OpenClaw caused by a missing `baseUrl` field in the generated `openclaw.json` for the Anthropic, OpenAI, and Google providers. Deployments of v0.5.0 that configured any of these providers without setting `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, or `GOOGLE_BASE_URL` env-vars hit a `models.providers.<name>.baseUrl: expected string, received undefined` error and OpenClaw never came up.
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.5.0/PINCHY_VERSION=v0.5.1/' .env
 docker compose pull && docker compose up -d
 ```
 
@@ -136,13 +171,13 @@ No database migration, no config-file change, and no env-var changes are require
 
 If you previously set `ANTHROPIC_BASE_URL` (or the OpenAI/Google equivalents) for a proxy deployment, those env-vars continue to override the defaults — no action needed.
 
-## Upgrading from v0.4.4 to %%PINCHY_VERSION%%
+## Upgrading from v0.4.4 to v0.5.0
 
 ### Breaking changes
 
 None for the standard upgrade path — the new `docker-compose.yml` you download below already contains the `openclaw-secrets` tmpfs block needed by the new SecretRef architecture.
 
-If you maintain a **custom `docker-compose.yml`** (e.g. for a non-standard deployment, a different orchestrator profile, or a downstream fork), you must add a tmpfs-backed named volume for `/openclaw-secrets` and mount it into **both** the `pinchy` and `openclaw` services before starting %%PINCHY_VERSION%%:
+If you maintain a **custom `docker-compose.yml`** (e.g. for a non-standard deployment, a different orchestrator profile, or a downstream fork), you must add a tmpfs-backed named volume for `/openclaw-secrets` and mount it into **both** the `pinchy` and `openclaw` services before starting v0.5.0:
 
 ```yaml
 services:
@@ -169,7 +204,7 @@ The volume must be mounted into both services: Pinchy writes and atomically repl
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% moves image version pinning from `docker-compose.yml` into `.env`. This is a one-time migration — after this, upgrading only means editing `PINCHY_VERSION` in `.env` and running `docker compose pull && docker compose up -d`.
+v0.5.0 moves image version pinning from `docker-compose.yml` into `.env`. This is a one-time migration — after this, upgrading only means editing `PINCHY_VERSION` in `.env` and running `docker compose pull && docker compose up -d`.
 
 <Steps>
 
@@ -183,13 +218,13 @@ The volume must be mounted into both services: Pinchy writes and atomically repl
 
    ```bash
    cd /opt/pinchy
-   curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
+   curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/v0.5.0/docker-compose.yml -o docker-compose.yml
    ```
 
 3. **Add `PINCHY_VERSION` to your `.env`**:
 
    ```bash
-   echo "PINCHY_VERSION=%%PINCHY_VERSION%%" >> /opt/pinchy/.env
+   echo "PINCHY_VERSION=v0.5.0" >> /opt/pinchy/.env
    ```
 
 4. **Pull and restart**:
@@ -218,7 +253,7 @@ OpenClaw detects the new SecretRef config format and hot-reloads. Telegram chann
 
 #### Recommended: rotate your API keys
 
-Before %%PINCHY_VERSION%%, decrypted API keys were written into `openclaw.json` on disk. Docker volumes persist across container restarts, which means previous versions of `openclaw.json` (with decrypted keys inside) may still exist in volume history or backup snapshots taken before %%PINCHY_VERSION%%. After upgrading, rotate the keys at each provider:
+Before v0.5.0, decrypted API keys were written into `openclaw.json` on disk. Docker volumes persist across container restarts, which means previous versions of `openclaw.json` (with decrypted keys inside) may still exist in volume history or backup snapshots taken before v0.5.0. After upgrading, rotate the keys at each provider:
 
 - **Anthropic** — Settings → API Keys → revoke old, generate new
 - **OpenAI** — API Keys → revoke old, generate new
@@ -226,7 +261,7 @@ Before %%PINCHY_VERSION%%, decrypted API keys were written into `openclaw.json` 
 - **Ollama Cloud** — ollama.com/settings → API Keys
 - **Telegram bot** — message @BotFather → `/revoke` → `/newtoken` (only if you suspect exposure; revoking invalidates the previous webhook setup)
 
-Then in Pinchy, go to **Settings → Providers** and re-enter each new key. Pinchy validates each one against the provider's API before saving. Optionally, delete old volume backups that predate %%PINCHY_VERSION%% if you no longer need them.
+Then in Pinchy, go to **Settings → Providers** and re-enter each new key. Pinchy validates each one against the provider's API before saving. Optionally, delete old volume backups that predate v0.5.0 if you no longer need them.
 
 This is a "nice to do" for most deployments, but if your server was ever compromised or you share volume backups with third parties, treat it as required.
 
@@ -242,7 +277,7 @@ It checks audit log entries for patterns that look like API keys (Anthropic `sk-
 
 #### Future upgrades
 
-From %%PINCHY_VERSION%% onwards, upgrading is just:
+From v0.5.0 onwards, upgrading is just:
 
 ```bash
 # Edit /opt/pinchy/.env → change PINCHY_VERSION to the new tag
@@ -251,7 +286,7 @@ docker compose pull && docker compose up -d
 
 The `docker-compose.yml` only changes when we add new services or volumes, which is rare. Release notes will tell you when a fetch is needed.
 
-### What's new in %%PINCHY_VERSION%%
+### What's new in v0.5.0
 
 - **SecretRef architecture (RAM-only secrets)** — API keys no longer touch disk. The `openclaw.json` config file holds opaque `SecretRef` pointers; the actual key material lives in a tmpfs volume (`/openclaw-secrets/secrets.json`) that exists only in RAM and is never persisted. Compliance-friendly default for regulated industries. See [Secrets & API Key Storage](/security/secrets/).
 - **Web Search integration** — connect Pinchy to the Brave Search API and grant agents per-tool access to search and page fetch. Per-agent filters for domain allow/deny, freshness, language, and region let you scope what each agent can reach. See [Set Up Web Search](/guides/web-search-setup/).
