@@ -175,16 +175,24 @@ async function drainBackgroundCoroutine(): Promise<void> {
 }
 
 /**
- * Mirror of OpenClaw 2026.4.27's `isLocalBaseUrl` predicate
+ * Mirror of OpenClaw's `isLocalBaseUrl` predicate
  * (model-auth-CsyLGY9m.js:111-118 + isPrivateIpv4Host:120-126). The function
  * isn't exported through any of openclaw's public subpath exports, so the
  * tests below re-implement it as a drift guard: if upstream changes the
- * allowlist, this mirror diverges and the related tests should be updated
- * (and the docs in ollama-setup.mdx revisited).
+ * allowlist, this mirror won't auto-detect that — but anyone bumping the
+ * `openclaw` version pin should grep for `OPENCLAW_ISLOCAL_PIN` and
+ * re-verify the predicate, then update the docs in ollama-setup.mdx if
+ * the allowlist semantics changed.
+ *
+ * OPENCLAW_ISLOCAL_PIN: 2026.4.27 (re-verify on bump; see PR #279)
  */
 function mirrorOpenClawIsLocalBaseUrl(baseUrl: string): boolean {
   try {
     let host = new URL(baseUrl).hostname.toLowerCase();
+    // Defensive parity with upstream — on Node/V8 `URL.hostname` already
+    // returns IPv6 literals without brackets, so this branch is currently
+    // dead. Keep it so the mirror stays a 1:1 port of the upstream source
+    // and a future Node engine change can't silently diverge us.
     if (host.startsWith("[") && host.endsWith("]")) host = host.slice(1, -1);
     return (
       host === "localhost" ||
