@@ -106,11 +106,9 @@ const { mockInsertValues, mockSelectFrom, mockSelectWhere, mockTransaction } = v
       select: vi.fn().mockReturnValue({
         from: vi.fn().mockReturnValue({ where: mockTxSelectRows }),
       }),
-      update: vi
-        .fn()
-        .mockReturnValue({
-          set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
-        }),
+      update: vi.fn().mockReturnValue({
+        set: vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) }),
+      }),
     };
     return cb(tx);
   });

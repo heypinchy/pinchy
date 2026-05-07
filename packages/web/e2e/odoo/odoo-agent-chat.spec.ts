@@ -101,11 +101,18 @@ test.describe("Odoo Agent Chat", () => {
     // Read them back
     const getRes = await pinchyGet(`/api/agents/${agentId}/integrations`, cookie);
     expect(getRes.status).toBe(200);
-    const integrations = await getRes.json();
+    const body = (await getRes.json()) as {
+      permissions: Array<{
+        kind: string;
+        connectionId: string;
+        entries?: Array<{ model: string; operation: string }>;
+      }>;
+    };
 
-    expect(integrations).toHaveLength(1);
-    expect(integrations[0].connectionId).toBe(connectionId);
-    expect(integrations[0].permissions).toEqual(
+    expect(body.permissions).toHaveLength(1);
+    expect(body.permissions[0].kind).toBe("odoo");
+    expect(body.permissions[0].connectionId).toBe(connectionId);
+    expect(body.permissions[0].entries).toEqual(
       expect.arrayContaining([expect.objectContaining({ model: "sale.order", operation: "read" })])
     );
   });
@@ -208,12 +215,13 @@ test.describe("Odoo Agent Chat", () => {
     // Double-check: the integration data has the connectionId shape (not legacy 'connection' object).
     const intRes = await pinchyGet(`/api/agents/${agentId}/integrations`, cookie);
     expect(intRes.status).toBe(200);
-    const integrations = await intRes.json();
-    const odooInt = integrations.find(
-      (i: { connectionId: string }) => i.connectionId === connectionId
-    );
+    const intBody = (await intRes.json()) as {
+      permissions: Array<{ kind: string; connectionId: string }>;
+    };
+    const odooInt = intBody.permissions.find((i) => i.connectionId === connectionId);
     expect(odooInt).toBeTruthy();
-    expect(typeof odooInt.connectionId).toBe("string");
+    expect(odooInt!.kind).toBe("odoo");
+    expect(typeof odooInt!.connectionId).toBe("string");
   });
 
   test("audit trail records tool usage via internal endpoint", async () => {

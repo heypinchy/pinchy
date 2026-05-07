@@ -9,23 +9,13 @@ const {
   mockDeferAuditLog,
   mockListMcpTools,
   mockRegenerateOpenClawConfig,
-  mockTransaction,
-  mockTxUpdateSet,
-  mockTxDeleteWhere,
+  mockUpdateSet,
+  mockUpdateWhere,
+  mockDelete,
   mockSelectWhere,
 } = vi.hoisted(() => {
-  const mockTxUpdateSet = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-  const mockTxDeleteWhere = vi.fn().mockResolvedValue(undefined);
-
-  const mockTransaction = vi.fn().mockImplementation(async (cb: (tx: unknown) => unknown) => {
-    const tx = {
-      update: vi.fn().mockReturnValue({ set: mockTxUpdateSet }),
-      delete: vi.fn().mockReturnValue({
-        where: vi.fn().mockReturnValue({ where: mockTxDeleteWhere }),
-      }),
-    };
-    return cb(tx);
-  });
+  const mockUpdateWhere = vi.fn().mockResolvedValue(undefined);
+  const mockUpdateSet = vi.fn().mockReturnValue({ where: mockUpdateWhere });
 
   return {
     mockGetSession: vi.fn(),
@@ -33,9 +23,9 @@ const {
     mockDeferAuditLog: vi.fn(),
     mockListMcpTools: vi.fn(),
     mockRegenerateOpenClawConfig: vi.fn().mockResolvedValue(undefined),
-    mockTransaction,
-    mockTxUpdateSet,
-    mockTxDeleteWhere,
+    mockUpdateSet,
+    mockUpdateWhere,
+    mockDelete: vi.fn(),
     mockSelectWhere: vi.fn(),
   };
 });
@@ -83,7 +73,8 @@ vi.mock("@/db", () => ({
     select: vi.fn().mockReturnValue({
       from: vi.fn().mockReturnValue({ where: mockSelectWhere }),
     }),
-    transaction: mockTransaction,
+    update: vi.fn().mockReturnValue({ set: mockUpdateSet }),
+    delete: mockDelete,
   },
 }));
 
@@ -162,20 +153,8 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
     mockGetSession.mockResolvedValue(adminSession);
     mockListMcpTools.mockResolvedValue([toolA, toolB]);
     mockSelectWhere.mockResolvedValue([baseMcpConnection]);
-
-    // Reset transaction mock to use fresh inner mocks
-    const updateWhereMock = vi.fn().mockResolvedValue(undefined);
-    mockTxUpdateSet.mockReturnValue({ where: updateWhereMock });
-    mockTxDeleteWhere.mockResolvedValue(undefined);
-    mockTransaction.mockImplementation(async (cb: (tx: unknown) => unknown) => {
-      const tx = {
-        update: vi.fn().mockReturnValue({ set: mockTxUpdateSet }),
-        delete: vi.fn().mockReturnValue({
-          where: vi.fn().mockReturnValue({ where: mockTxDeleteWhere }),
-        }),
-      };
-      return cb(tx);
-    });
+    mockUpdateWhere.mockResolvedValue(undefined);
+    mockUpdateSet.mockReturnValue({ where: mockUpdateWhere });
 
     const mod = await import("@/app/api/integrations/[connectionId]/sync/route");
     POST = mod.POST;
@@ -218,8 +197,8 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
     // Config regenerated
     expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
 
-    // Transaction executed (to update lastSyncAt)
-    expect(mockTransaction).toHaveBeenCalled();
+    // Connection row updated with new lastSyncAt
+    expect(mockUpdateSet).toHaveBeenCalled();
   });
 
   // ── Test 2: added tools path ───────────────────────────────────────────
@@ -253,29 +232,11 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
     );
   });
 
-  // ── Test 3: removed tools with cascade delete ──────────────────────────
+  // ── Test 3: removed tools — drift detected at GET time, not eager delete ─
 
-  it("removed: deletes matching agentMcpToolPermissions rows in same transaction", async () => {
+  it("removed: does NOT cascade-delete agentMcpToolPermissions; drift surfaces at GET time", async () => {
     // Discovery returns only toolA (toolB was removed)
     mockListMcpTools.mockResolvedValue([toolA]);
-
-    let capturedTx: {
-      update: ReturnType<typeof vi.fn>;
-      delete: ReturnType<typeof vi.fn>;
-    } | null = null;
-
-    const txUpdateWhere = vi.fn().mockResolvedValue(undefined);
-    const txUpdateSet = vi.fn().mockReturnValue({ where: txUpdateWhere });
-    const txDeleteInner = vi.fn().mockReturnValue({ where: vi.fn().mockResolvedValue(undefined) });
-    const txDeleteOuter = vi.fn().mockReturnValue({ where: txDeleteInner });
-
-    mockTransaction.mockImplementation(async (cb: (tx: unknown) => unknown) => {
-      capturedTx = {
-        update: vi.fn().mockReturnValue({ set: txUpdateSet }),
-        delete: vi.fn().mockReturnValue({ where: txDeleteOuter }),
-      };
-      return cb(capturedTx);
-    });
 
     const res = await POST(makeRequest("conn-mcp-1"), makeParams("conn-mcp-1"));
     const body = await res.json();
@@ -287,11 +248,9 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
       total: 1,
     });
 
-    // Transaction was used
-    expect(mockTransaction).toHaveBeenCalled();
-
-    // delete was called on the tx (cascade removal of tool permissions)
-    expect(capturedTx!.delete).toHaveBeenCalled();
+    // No cascade delete — sync only updates the connection row.
+    expect(mockDelete).not.toHaveBeenCalled();
+    expect(mockUpdateSet).toHaveBeenCalled();
 
     // Audit diff reflects the removal
     expect(mockDeferAuditLog).toHaveBeenCalledWith(
@@ -310,6 +269,30 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
     expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
   });
 
+  // ── Test 3b: discovery failure writes failure audit and returns 502 ────
+
+  it("returns 502 with failure audit when MCP discovery throws", async () => {
+    mockListMcpTools.mockRejectedValue(new Error("connection refused"));
+
+    const res = await POST(makeRequest("conn-mcp-1"), makeParams("conn-mcp-1"));
+    const body = await res.json();
+
+    expect(res.status).toBe(502);
+    expect(body.success).toBe(false);
+    expect(body.error).toMatch(/connection refused/);
+
+    expect(mockDeferAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        detail: expect.objectContaining({ action: "integration_mcp_synced" }),
+        outcome: "failure",
+      })
+    );
+
+    // No DB write on failure
+    expect(mockUpdateSet).not.toHaveBeenCalled();
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
+  });
+
   // ── Test 4: non-admin 403 ──────────────────────────────────────────────
 
   it("returns 403 for non-admin users", async () => {
@@ -319,7 +302,7 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
 
     expect(res.status).toBe(403);
     expect(mockListMcpTools).not.toHaveBeenCalled();
-    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(mockUpdateSet).not.toHaveBeenCalled();
   });
 
   // ── Test 5: non-mcp and non-odoo connection returns 400 ──────────────
@@ -333,6 +316,6 @@ describe("POST /api/integrations/[connectionId]/sync (MCP)", () => {
     expect(res.status).toBe(400);
     expect(body.error).toBeDefined();
     expect(mockListMcpTools).not.toHaveBeenCalled();
-    expect(mockTransaction).not.toHaveBeenCalled();
+    expect(mockUpdateSet).not.toHaveBeenCalled();
   });
 });

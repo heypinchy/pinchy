@@ -911,9 +911,21 @@ export async function regenerateOpenClawConfig() {
     // Fetch all MCP tool permissions in one query and group client-side.
     const allMcpPerms = await db.select().from(agentMcpToolPermissions);
 
+    // Build a per-connection set of tools currently exposed by the upstream
+    // server. Permissions referencing tools that are no longer exposed (drift)
+    // are filtered out — emitting them would cause the plugin to register
+    // tools the server doesn't have.
+    const exposedToolsByConn = new Map<string, Set<string>>();
+    for (const conn of activeMcpConnections) {
+      const tools = ((conn.data ?? {}) as { tools?: Array<{ name: string }> }).tools ?? [];
+      exposedToolsByConn.set(conn.id, new Set(tools.map((t) => t.name)));
+    }
+
     // Build agentTools map per connectionId: { [agentId]: toolName[] }
     const agentToolsByConn = new Map<string, Record<string, string[]>>();
     for (const perm of allMcpPerms) {
+      const exposed = exposedToolsByConn.get(perm.connectionId);
+      if (!exposed || !exposed.has(perm.toolName)) continue; // skip drifted/inactive
       if (!agentToolsByConn.has(perm.connectionId)) {
         agentToolsByConn.set(perm.connectionId, {});
       }
@@ -936,15 +948,19 @@ export async function regenerateOpenClawConfig() {
         preset?: string;
         transport?: string;
         url?: string;
-        toolPrefix?: string;
       };
+
+      // Resolve toolPrefix from the preset registry — the prefix is not
+      // persisted on the connection row.
+      const { getMcpPreset } = await import("@/lib/integrations/mcp-presets");
+      const preset = getMcpPreset(data.preset ?? "generic");
 
       mcpConnectionEntries.push({
         connectionId: conn.id,
         preset: data.preset ?? "generic",
         transport: data.transport ?? "http",
         url: data.url ?? "",
-        toolPrefix: data.toolPrefix ?? "mcp_",
+        toolPrefix: preset.toolPrefix,
         // agentTools maps agentId → list of tool names the agent is allowed to call.
         // Never include credentials here — they are fetched at runtime.
         agentTools,

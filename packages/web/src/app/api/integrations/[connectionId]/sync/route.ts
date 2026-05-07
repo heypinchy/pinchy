@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { eq, and, inArray } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
-import { integrationConnections, agentMcpToolPermissions } from "@/db/schema";
+import { integrationConnections } from "@/db/schema";
 import { decrypt } from "@/lib/encryption";
 import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { deferAuditLog } from "@/lib/audit-deferred";
@@ -65,27 +65,17 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
 
     const diff = diffMcpTools(before, after);
 
-    await db.transaction(async (tx) => {
-      await tx
-        .update(integrationConnections)
-        .set({
-          data: { ...data, tools: after, lastSyncAt: new Date().toISOString() },
-          updatedAt: new Date(),
-        })
-        .where(eq(integrationConnections.id, connectionId));
-
-      if (diff.removed.length > 0) {
-        await tx.delete(agentMcpToolPermissions).where(
-          and(
-            eq(agentMcpToolPermissions.connectionId, connectionId),
-            inArray(
-              agentMcpToolPermissions.toolName,
-              diff.removed.map((t) => t.name)
-            )
-          )
-        );
-      }
-    });
+    // Update only the connection row. Stale agentMcpToolPermissions are NOT
+    // cascade-deleted — drift is detected at GET time so the admin sees a
+    // one-shot toast for tools the agent had granted but the server no longer
+    // exposes. The next PUT (saving permissions) overwrites the stale rows.
+    await db
+      .update(integrationConnections)
+      .set({
+        data: { ...data, tools: after, lastSyncAt: new Date().toISOString() },
+        updatedAt: new Date(),
+      })
+      .where(eq(integrationConnections.id, connectionId));
 
     const auditTools = {
       added: diff.added.map((t) => ({ name: t.name })),

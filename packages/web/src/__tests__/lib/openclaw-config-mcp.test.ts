@@ -96,6 +96,14 @@ const gatewayConfig = {
   gateway: { mode: "local", bind: "lan", auth: { token: "gw-token-123" } },
 };
 
+// Default toolset used when a test doesn't override `tools` — covers all
+// tool names referenced by makeMcpPerm in this file.
+const DEFAULT_TEST_TOOLS = [
+  { name: "create_issue", description: "Create issue", inputSchema: { type: "object" } },
+  { name: "list_repos", description: "List repos", inputSchema: { type: "object" } },
+  { name: "search_pages", description: "Search pages", inputSchema: { type: "object" } },
+];
+
 // Helper: build an MCP integration connection row
 function makeMcpConnection(
   overrides: Partial<{
@@ -104,8 +112,12 @@ function makeMcpConnection(
     preset: string;
     transport: string;
     url: string;
+    // Note: toolPrefix is no longer persisted on `data` — build.ts resolves
+    // it from the preset registry. The override is accepted for back-compat
+    // but ignored by build.ts.
     toolPrefix: string;
     status: string;
+    tools: Array<{ name: string; description?: string; inputSchema?: unknown }>;
   }> = {}
 ) {
   const {
@@ -114,8 +126,8 @@ function makeMcpConnection(
     preset = "github",
     transport = "http",
     url = "https://api.githubcopilot.com/mcp/",
-    toolPrefix = "github_",
     status = "active",
+    tools = DEFAULT_TEST_TOOLS,
   } = overrides;
   return {
     id,
@@ -124,7 +136,7 @@ function makeMcpConnection(
     description: "",
     // credentials is AES-256-GCM encrypted JSON — never put in plugin config
     credentials: JSON.stringify({ token: "ghp_secret_leaked" }),
-    data: { preset, transport, url, toolPrefix },
+    data: { preset, transport, url, tools, lastSyncAt: new Date().toISOString() },
     status,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -509,6 +521,7 @@ describe("pinchy-mcp config generation", () => {
     const agent = makeAgent({ id: "agent-cred-check" });
     const conn = makeMcpConnection({
       id: "conn-secret",
+      tools: [{ name: "some_tool", description: "x", inputSchema: { type: "object" } }],
       // The connection has a real token in `credentials` field (encrypted in DB, decrypted here)
     });
     const perms = [makeMcpPerm("agent-cred-check", "conn-secret", "some_tool")];
