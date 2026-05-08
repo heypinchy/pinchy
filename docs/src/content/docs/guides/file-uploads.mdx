@@ -1,0 +1,49 @@
+---
+title: Upload Files in Chat
+description: Drop files into any Pinchy chat and let the agent read, analyze, or transcribe them.
+---
+
+Drop a file into a Pinchy chat and the agent receives its content directly — no copy-pasting, no separate upload step.
+
+## Supported file types
+
+**Documents**
+
+- PDF
+
+**Images**
+
+- JPEG, PNG, WebP, GIF, HEIC/HEIF
+
+**Audio**
+
+- MP3, M4A, WAV, WebM, OGG, FLAC
+
+:::note
+Audio transcription requires a configured LLM provider that supports transcription (e.g. OpenAI, Groq). See [Audio prerequisites](#audio-prerequisites) below.
+:::
+
+## Size limit
+
+15 MB per file.
+
+## How files are used
+
+Two things happen when you attach a file:
+
+1. **The agent sees the content inline.** For PDFs and images, the content is passed to the LLM using vision or document understanding. For audio files, Pinchy transcribes the audio first, then passes the transcript to the LLM.
+2. **The file is saved to the agent workspace** at `uploads/<filename>`. Plugins that access the agent's file system — such as `pinchy-files` — can read it in the same conversation or in later sessions.
+
+## Audio prerequisites
+
+To use audio uploads, at least one LLM provider with transcription support must be configured in **Settings → Providers**. Pinchy uses the transcription capability of that provider to convert audio to text before sending it to the agent.
+
+Providers with transcription support include OpenAI (`whisper-1`) and Groq (`whisper-large-v3`). Check your provider's documentation for the full list of supported models.
+
+## Shared agents
+
+Files uploaded to a shared agent are visible to all users with access to that agent. Pinchy shows a reminder of this in the upload UI. If you're uploading sensitive content, use a personal agent instead.
+
+## Security
+
+Pinchy validates every uploaded file against its actual content, not just the browser-reported MIME type. A file renamed to `.pdf` that contains executable code will be rejected. Filenames are also sanitized before being written to disk.

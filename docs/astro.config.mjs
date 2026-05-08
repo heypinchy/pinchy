@@ -137,6 +137,7 @@ export default defineConfig({
             { label: 'HTTPS & Domain Lock', slug: 'guides/domain-lock' },
             { label: 'Connect Email (Gmail)', slug: 'guides/connect-email' },
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
+            { label: 'Upload Files in Chat', slug: 'guides/file-uploads' },
             { label: 'Set Up Web Search', slug: 'guides/web-search-setup' },
             { label: 'Message Delivery & Retry', slug: 'guides/retry-messages' },
             { label: 'Image Attachments', slug: 'guides/image-attachments' },
