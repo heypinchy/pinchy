@@ -282,7 +282,7 @@ export function useWsRuntime(agentId: string): {
               role: "assistant",
               content: "",
               error: {
-                variant: "payload_too_large",
+                payloadTooLarge: true,
                 message: `Image too large to send. Please use an image smaller than ${Math.round(CLIENT_MAX_IMAGE_SIZE_BYTES / 1024 / 1024)} MB.`,
               },
               // retryable intentionally absent — absence means false per codebase convention

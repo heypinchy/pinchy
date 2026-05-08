@@ -1723,13 +1723,13 @@ describe("useWsRuntime", () => {
         role: string;
         metadata?: {
           custom?: {
-            error?: { variant?: string; message?: string };
+            error?: { payloadTooLarge?: boolean; message?: string };
             retryable?: boolean;
           };
         };
       };
       expect(lastMsg.role).toBe("assistant");
-      expect(lastMsg.metadata?.custom?.error?.variant).toBe("payload_too_large");
+      expect(lastMsg.metadata?.custom?.error?.payloadTooLarge).toBe(true);
       expect(lastMsg.metadata?.custom?.error?.message).toMatch(/too large/i);
       // Resending an oversized frame won't help — must NOT be retryable.
       // Convention: retryable is only written when true; absence means false.

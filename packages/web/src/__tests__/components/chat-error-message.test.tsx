@@ -132,4 +132,23 @@ describe("ChatErrorMessage", () => {
 
     expect(container.firstElementChild).toHaveAttribute("role", "alert");
   });
+
+  it("renders 'Image too large' heading and detail message for payloadTooLarge variant", () => {
+    render(
+      <ChatErrorMessage
+        error={{
+          payloadTooLarge: true,
+          message: "Image too large to send. Please use an image smaller than 15 MB.",
+        }}
+      />
+    );
+    // The dedicated heading must be a <span> with exactly this text
+    expect(screen.getByText("Image too large")).toBeInTheDocument();
+    // The detail message must also appear separately
+    expect(
+      screen.getByText("Image too large to send. Please use an image smaller than 15 MB.")
+    ).toBeInTheDocument();
+    // The too-large icon must be rendered
+    expect(screen.getByTestId("too-large-icon")).toBeInTheDocument();
+  });
 });

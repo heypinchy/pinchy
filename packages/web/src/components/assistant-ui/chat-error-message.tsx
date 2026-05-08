@@ -11,6 +11,7 @@ export interface ChatError {
   message?: string;
   disconnected?: true;
   timedOut?: true;
+  payloadTooLarge?: true;
 }
 
 export const ChatErrorMessage: FC<{ error: ChatError; actionSlot?: ReactNode }> = ({
@@ -19,6 +20,21 @@ export const ChatErrorMessage: FC<{ error: ChatError; actionSlot?: ReactNode }> 
 }) => {
   const wrapperClass =
     "rounded-md border border-destructive bg-destructive/10 p-3 text-sm dark:bg-destructive/5";
+
+  if (error.payloadTooLarge) {
+    return (
+      <div role="alert" className={wrapperClass}>
+        <div className="flex items-center gap-2 font-medium text-destructive dark:text-red-200">
+          <AlertTriangle className="size-4 shrink-0" data-testid="too-large-icon" />
+          <span className="flex-1">Image too large</span>
+          {actionSlot}
+        </div>
+        <p className="mt-1.5 text-destructive/90 dark:text-red-300/90">
+          {error.message ?? "The image you attached is too large to send."}
+        </p>
+      </div>
+    );
+  }
 
   if (error.disconnected) {
     return (
