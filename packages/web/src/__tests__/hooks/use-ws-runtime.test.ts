@@ -1696,7 +1696,7 @@ describe("useWsRuntime", () => {
       expect(result.current.runtime.messages).toHaveLength(messagesBefore);
     });
 
-    it.skip("close-code 1009 surfaces 'Image too large' instead of generic disconnect", async () => {
+    it("close-code 1009 surfaces 'Image too large' instead of generic disconnect", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws = wsInstances[0];
 
@@ -1731,8 +1731,9 @@ describe("useWsRuntime", () => {
       expect(lastMsg.role).toBe("assistant");
       expect(lastMsg.metadata?.custom?.error?.variant).toBe("payload_too_large");
       expect(lastMsg.metadata?.custom?.error?.message).toMatch(/too large/i);
-      // Resending an oversized frame won't help — must NOT be retryable
-      expect(lastMsg.metadata?.custom?.retryable).toBe(false);
+      // Resending an oversized frame won't help — must NOT be retryable.
+      // Convention: retryable is only written when true; absence means false.
+      expect(lastMsg.metadata?.custom?.retryable).toBeFalsy();
     });
 
     it("should reset isDelayed to false when WebSocket disconnects", () => {

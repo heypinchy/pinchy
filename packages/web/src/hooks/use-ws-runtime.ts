@@ -249,7 +249,7 @@ export function useWsRuntime(agentId: string): {
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event?: CloseEvent) => {
         if (connectionAgentId !== agentIdRef.current) return;
         setIsConnected(false);
         setIsDelayed(false);
@@ -257,6 +257,28 @@ export function useWsRuntime(agentId: string): {
         if (delayTimerRef.current) {
           clearTimeout(delayTimerRef.current);
           delayTimerRef.current = null;
+        }
+
+        // Close-code 1009: the incoming frame exceeded maxPayload. The frame
+        // has already been dropped — retrying the same oversized frame would
+        // hit the same limit, so this is NOT retryable.
+        if (event?.code === 1009) {
+          isRunningRef.current = false;
+          setIsRunning(false);
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: uuid(),
+              role: "assistant",
+              content: "",
+              error: {
+                variant: "payload_too_large",
+                message: `Image too large to send. Please use an image smaller than ${Math.round(CLIENT_MAX_IMAGE_SIZE_BYTES / 1024 / 1024)} MB.`,
+              },
+              // retryable intentionally absent — absence means false per codebase convention
+            },
+          ]);
+          return;
         }
 
         // If a stream was in progress, inject a disconnect error so the user
