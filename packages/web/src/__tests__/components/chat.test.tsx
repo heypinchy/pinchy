@@ -302,6 +302,18 @@ describe("Chat", () => {
     expect(mockUseChatStatus).toHaveReturnedWith({ kind: "ready" });
   });
 
+  it("shows the shared-agent upload hint for non-personal agents", () => {
+    mockUseChatStatus.mockReturnValue({ kind: "ready" });
+    render(<Chat agentId="agent-shared" agentName="Team Bot" isPersonal={false} />);
+    expect(screen.getByText(/visible to all users with access to this agent/i)).toBeInTheDocument();
+  });
+
+  it("hides the shared-agent upload hint for personal agents", () => {
+    mockUseChatStatus.mockReturnValue({ kind: "ready" });
+    render(<Chat agentId="agent-personal" agentName="Smithers" isPersonal={true} />);
+    expect(screen.queryByText(/visible to all users with access to this agent/i)).toBeNull();
+  });
+
   describe("ChatStatusBanner", () => {
     it("shows nothing when ready", () => {
       mockUseChatStatus.mockReturnValue({ kind: "ready" });

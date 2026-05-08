@@ -203,6 +203,11 @@ export function Chat({
                   <div className="flex-1 min-h-0 animate-in fade-in duration-300">
                     <Thread />
                   </div>
+                  {!displayIsPersonal && (
+                    <p className="text-xs text-muted-foreground px-3 py-1">
+                      Files uploaded here are visible to all users with access to this agent.
+                    </p>
+                  )}
                   <ChatStatusBanner status={chatStatus} isDelayed={isDelayed} />
                 </div>
               </AgentAvatarContext.Provider>
