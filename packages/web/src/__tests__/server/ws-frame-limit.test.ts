@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { WebSocketServer, WebSocket, type AddressInfo } from "ws";
 import { createServer, type Server as HttpServer } from "node:http";
+import { SERVER_WS_MAX_PAYLOAD_BYTES } from "@/lib/limits";
 
 /**
  * Reproduces the production "Connection lost" failure (issue: image attachments
@@ -9,8 +10,9 @@ import { createServer, type Server as HttpServer } from "node:http";
  * to a too-small limit.
  *
  * The test boots a minimal `ws.WebSocketServer` with the same `maxPayload`
- * production uses, sends a 5 MB JSON frame, and asserts the server delivers
- * the message instead of closing with code 1009 ("Message too big").
+ * production uses (via the shared SERVER_WS_MAX_PAYLOAD_BYTES constant), sends
+ * a 5 MB JSON frame, and asserts the server delivers the message instead of
+ * closing with code 1009 ("Message too big").
  */
 describe("WebSocket server frame limit (regression guard)", () => {
   let httpServer: HttpServer;
@@ -21,10 +23,11 @@ describe("WebSocket server frame limit (regression guard)", () => {
     httpServer = createServer();
     wss = new WebSocketServer({
       server: httpServer,
-      // Mirror the production setting from server.ts. When this is too small
-      // the server closes the connection with code 1009 instead of delivering
-      // the frame, which surfaces in the UI as "Connection lost".
-      maxPayload: 25 * 1024 * 1024,
+      // Mirror the production setting from server.ts via the shared constant.
+      // When this is too small the server closes the connection with code 1009
+      // instead of delivering the frame, which surfaces in the UI as
+      // "Connection lost".
+      maxPayload: SERVER_WS_MAX_PAYLOAD_BYTES,
     });
     await new Promise<void>((resolve) => httpServer.listen(0, resolve));
     port = (httpServer.address() as AddressInfo).port;
