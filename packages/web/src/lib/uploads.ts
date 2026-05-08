@@ -8,7 +8,7 @@ const UPLOADS_SUBDIR = "uploads";
 export interface PersistAttachmentParams {
   agentId: string;
   filename: string;
-  mimeType: string;
+  mimeType: string; // stored in audit log by the caller (not used inside this function)
   buffer: Buffer;
 }
 
@@ -28,6 +28,10 @@ export async function persistAttachment(
   mkdirSync(uploadsDir, { recursive: true });
 
   const contentHash = createHash("sha256").update(buffer).digest("hex");
+  // Note: resolveCollision has a TOCTOU race if two requests for the same
+  // agent/filename arrive concurrently — both could resolve the same free slot
+  // and the slower rename would clobber the faster one. Acceptable for MVP
+  // single-user agents; file locking would be needed for high-concurrency scenarios.
   const resolved = resolveCollision(uploadsDir, filename, buffer, contentHash);
 
   if (resolved.reused) {

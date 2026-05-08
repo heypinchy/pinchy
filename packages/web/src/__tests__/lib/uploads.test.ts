@@ -79,6 +79,19 @@ describe("persistAttachment", () => {
     expect(existsSync(join(tmpRoot, "agent-1/uploads"))).toBe(true);
   });
 
+  it("returns contentHash as hex SHA-256 of the buffer", async () => {
+    const { createHash } = await import("crypto");
+    const expected = createHash("sha256").update(PDF_BUF_A).digest("hex");
+    const result = await persistAttachment({
+      agentId: "agent-1",
+      filename: "invoice.pdf",
+      mimeType: "application/pdf",
+      buffer: PDF_BUF_A,
+    });
+    expect(result.contentHash).toBe(expected);
+    expect(result.contentHash).toMatch(/^[0-9a-f]{64}$/);
+  });
+
   it("rejects invalid agentId (path traversal guard)", async () => {
     await expect(
       persistAttachment({
