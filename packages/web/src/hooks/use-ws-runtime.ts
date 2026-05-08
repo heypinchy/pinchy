@@ -16,8 +16,7 @@ import type { ChatError } from "@/components/assistant-ui/chat-error-message";
 import { reduceMessages, type Action } from "./message-status-reducer";
 import type { MessageStatus } from "./message-status-reducer";
 import { isOrphaned as computeIsOrphaned } from "./orphan-detector";
-
-const MAX_IMAGE_SIZE = 5 * 1024 * 1024; // 5MB
+import { CLIENT_MAX_IMAGE_SIZE_BYTES } from "@/lib/limits";
 
 export interface WsMessage {
   id: string;
@@ -592,13 +591,13 @@ export function useWsRuntime(agentId: string): {
 
       // Check image size limit
       for (const img of images) {
-        if (img.length > MAX_IMAGE_SIZE) {
+        if (img.length > CLIENT_MAX_IMAGE_SIZE_BYTES) {
           setMessages((prev) => [
             ...prev,
             {
               id: uuid(),
               role: "assistant",
-              content: "Image exceeds the 5MB size limit. Please use a smaller image.",
+              content: `Image exceeds the ${Math.round(CLIENT_MAX_IMAGE_SIZE_BYTES / 1024 / 1024)} MB size limit. Please use a smaller image.`,
             },
           ]);
           return;

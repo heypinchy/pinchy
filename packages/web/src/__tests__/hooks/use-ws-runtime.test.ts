@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
 import { useChatStatus } from "@/hooks/use-chat-status";
+import { CLIENT_MAX_IMAGE_SIZE_BYTES } from "@/lib/limits";
 
 // Track all created WebSocket instances
 let wsInstances: MockWebSocket[] = [];
@@ -476,7 +477,7 @@ describe("useWsRuntime", () => {
     expect(sentMessage.content).toBe("Hello plain");
   });
 
-  it("should reject image attachments larger than 5MB", () => {
+  it("should reject image attachments larger than the client size limit", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -484,7 +485,7 @@ describe("useWsRuntime", () => {
       ws.onopen?.();
     });
 
-    const largeImage = "data:image/png;base64," + "A".repeat(5 * 1024 * 1024 + 1);
+    const largeImage = "data:image/png;base64," + "A".repeat(CLIENT_MAX_IMAGE_SIZE_BYTES + 1);
 
     act(() => {
       result.current.runtime.onNew({
@@ -507,10 +508,12 @@ describe("useWsRuntime", () => {
     const sentMessage = JSON.parse(ws.send.mock.calls[0][0]);
     expect(sentMessage.type).toBe("history");
 
-    // Should show an error message in messages
+    // Should show an error message containing the MB limit
+    const expectedMb = Math.round(CLIENT_MAX_IMAGE_SIZE_BYTES / 1024 / 1024);
     const messages = result.current.runtime.messages;
     const errorMessage = messages.find(
-      (m: any) => m.role === "assistant" && m.content[0]?.text?.includes("5MB")
+      (m: any) =>
+        m.role === "assistant" && m.content[0]?.text?.includes(`${expectedMb} MB size limit`)
     );
     expect(errorMessage).toBeDefined();
   });
