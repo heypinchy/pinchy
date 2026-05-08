@@ -36,8 +36,6 @@ describe("processIncomingAttachments", () => {
     const { processIncomingAttachments } = await import("@/server/client-router");
     const result = await processIncomingAttachments({
       agentId: "agent-1",
-      uploaderUserId: "user-1",
-      sessionKey: "agent:agent-1:direct:user-1",
       contentParts: [
         {
           type: "image_url",
@@ -57,6 +55,8 @@ describe("processIncomingAttachments", () => {
         relativePath: "uploads/invoice.pdf",
         mimeType: "application/pdf",
         sizeBytes: PDF.length,
+        contentHash: expect.stringMatching(/^[0-9a-f]{64}$/),
+        reused: false,
       }),
     ]);
     expect(existsSync(join(tmpRoot, "agent-1/uploads/invoice.pdf"))).toBe(true);
@@ -66,8 +66,6 @@ describe("processIncomingAttachments", () => {
     const { processIncomingAttachments } = await import("@/server/client-router");
     const result = await processIncomingAttachments({
       agentId: "agent-1",
-      uploaderUserId: "user-1",
-      sessionKey: "agent:agent-1:direct:user-1",
       contentParts: [
         { type: "image_url", image_url: { url: `data:application/pdf;base64,${PDF_BASE64}` } },
         { type: "image_url", image_url: { url: `data:image/png;base64,${PNG_BASE64}` } },
@@ -83,8 +81,6 @@ describe("processIncomingAttachments", () => {
     await expect(
       processIncomingAttachments({
         agentId: "agent-1",
-        uploaderUserId: "user-1",
-        sessionKey: "agent:agent-1:direct:user-1",
         contentParts: [
           {
             type: "image_url",
@@ -100,8 +96,6 @@ describe("processIncomingAttachments", () => {
     const { processIncomingAttachments } = await import("@/server/client-router");
     const result = await processIncomingAttachments({
       agentId: "agent-1",
-      uploaderUserId: "user-1",
-      sessionKey: "agent:agent-1:direct:user-1",
       contentParts: [
         { type: "image_url", image_url: { url: `data:application/pdf;base64,${PDF_BASE64}` } },
       ],
@@ -115,7 +109,13 @@ describe("buildUploadHint", () => {
   it("renders a system-prompt block listing the uploads", async () => {
     const { buildUploadHint } = await import("@/server/client-router");
     const block = buildUploadHint([
-      { relativePath: "uploads/invoice.pdf", mimeType: "application/pdf", sizeBytes: 245_000 },
+      {
+        relativePath: "uploads/invoice.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 245_000,
+        contentHash: "a".repeat(64),
+        reused: false,
+      },
     ]);
     expect(block).toContain("uploads/invoice.pdf");
     expect(block).toContain("application/pdf");

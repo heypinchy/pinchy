@@ -65,6 +65,8 @@ export interface ProcessedWorkspaceRef {
   relativePath: string;
   mimeType: string;
   sizeBytes: number;
+  contentHash: string;
+  reused: boolean;
 }
 
 export interface ProcessAttachmentsResult {
@@ -74,8 +76,6 @@ export interface ProcessAttachmentsResult {
 
 export interface ProcessAttachmentsParams {
   agentId: string;
-  uploaderUserId: string;
-  sessionKey: string;
   contentParts: ContentPart[];
   claimedFilenames?: string[];
 }
@@ -116,6 +116,8 @@ export async function processIncomingAttachments(
       relativePath: persisted.relativePath,
       mimeType: detectedMime,
       sizeBytes: buffer.length,
+      contentHash: persisted.contentHash,
+      reused: persisted.reused,
     });
     imageIdx++;
   }
@@ -225,8 +227,6 @@ export class ClientRouter {
       try {
         const result = await processIncomingAttachments({
           agentId: message.agentId,
-          uploaderUserId: this.userId,
-          sessionKey,
           contentParts: Array.isArray(message.content) ? message.content : [],
           claimedFilenames: message.filenames,
         });
@@ -235,10 +235,7 @@ export class ClientRouter {
       } catch (err) {
         this.sendToClient(clientWs, {
           type: "error",
-          error: {
-            code: "attachment_invalid",
-            message: err instanceof Error ? err.message : String(err),
-          },
+          message: err instanceof Error ? err.message : String(err),
         });
         return;
       }
@@ -281,7 +278,7 @@ export class ClientRouter {
 
       // Audit each uploaded attachment
       for (const ref of workspaceRefs) {
-        const { relativePath, mimeType, sizeBytes } = ref;
+        const { relativePath, mimeType, sizeBytes, contentHash, reused } = ref;
         const filename = relativePath.replace(/^uploads\//, "");
         const auditEntry = {
           actorType: "user" as const,
@@ -291,7 +288,7 @@ export class ClientRouter {
           outcome: "success" as const,
           detail: {
             agent: { id: agent.id, name: agent.name },
-            attachment: { filename, detectedMimeType: mimeType, sizeBytes },
+            attachment: { filename, detectedMimeType: mimeType, sizeBytes, contentHash, reused },
             sessionKey,
             uploaderUserId: this.userId,
           },
