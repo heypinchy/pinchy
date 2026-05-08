@@ -263,8 +263,18 @@ export function useWsRuntime(agentId: string): {
         // has already been dropped — retrying the same oversized frame would
         // hit the same limit, so this is NOT retryable.
         if (event?.code === 1009) {
+          // Cancel any pending ack timers — the oversized frame was dropped, so
+          // the ack will never arrive. Without this, the 10s timer fires after
+          // the 1009 error bubble is already shown, producing a second error
+          // signal for the same event.
+          for (const timer of pendingAckTimers.current.values()) {
+            clearTimeout(timer);
+          }
+          pendingAckTimers.current.clear();
           isRunningRef.current = false;
           setIsRunning(false);
+          setIsHistoryLoaded(false);
+          setKnownEmptyHistory(false);
           setMessages((prev) => [
             ...prev,
             {
