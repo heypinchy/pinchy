@@ -79,7 +79,12 @@ test.describe("Feature screenshots", () => {
     // flips to "Connected" once useChatStatus reaches `ready`, and every
     // agent's greetingMessage renders a `[data-role="assistant"]` bubble
     // immediately after that.
-    await page.getByRole("button", { name: "Connected" }).waitFor({ timeout: 30000 });
+    //
+    // 90s timeout: OpenClaw cold-start in CI compounds plugin warmup, schema
+    // introspection, and config-change restarts (see #302). 30s wasn't
+    // enough on the v0.5.2 release — failed twice with the indicator never
+    // flipping to "Connected" within budget.
+    await page.getByRole("button", { name: "Connected" }).waitFor({ timeout: 90000 });
     await page
       .locator('[data-role="assistant"]')
       .first()
