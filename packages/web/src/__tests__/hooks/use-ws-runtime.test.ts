@@ -1733,7 +1733,7 @@ describe("useWsRuntime", () => {
       expect(lastMsg.metadata?.custom?.error?.message).toMatch(/too large/i);
       // Resending an oversized frame won't help — must NOT be retryable.
       // Convention: retryable is only written when true; absence means false.
-      expect(lastMsg.metadata?.custom?.retryable).toBeFalsy();
+      expect(lastMsg.metadata?.custom?.retryable).toBeUndefined();
     });
 
     it("should reset isDelayed to false when WebSocket disconnects", () => {
