@@ -16,7 +16,7 @@ class MockWebSocket {
 
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
-  onclose: (() => void) | null = null;
+  onclose: ((event?: CloseEvent) => void) | null = null;
   onerror: (() => void) | null = null;
   readyState = 1;
   send = vi.fn();
@@ -24,6 +24,10 @@ class MockWebSocket {
 
   constructor() {
     wsInstances.push(this);
+  }
+
+  simulateClose(code = 1006) {
+    this.onclose?.(new CloseEvent("close", { code }));
   }
 }
 
@@ -1690,6 +1694,45 @@ describe("useWsRuntime", () => {
       });
 
       expect(result.current.runtime.messages).toHaveLength(messagesBefore);
+    });
+
+    it.skip("close-code 1009 surfaces 'Image too large' instead of generic disconnect", async () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+        ws.onmessage?.({ data: JSON.stringify({ type: "history", messages: [] }) });
+      });
+
+      // Send a message — 1009 is only meaningful in the context of a recent send
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "here's a huge image" }],
+          parentId: "root",
+        });
+      });
+
+      // Simulate the server closing because the frame exceeded maxPayload
+      act(() => {
+        ws.simulateClose(1009);
+      });
+
+      const messages = result.current.runtime.messages;
+      const lastMsg = messages[messages.length - 1] as {
+        role: string;
+        metadata?: {
+          custom?: {
+            error?: { variant?: string; message?: string };
+            retryable?: boolean;
+          };
+        };
+      };
+      expect(lastMsg.role).toBe("assistant");
+      expect(lastMsg.metadata?.custom?.error?.variant).toBe("payload_too_large");
+      expect(lastMsg.metadata?.custom?.error?.message).toMatch(/too large/i);
+      // Resending an oversized frame won't help — must NOT be retryable
+      expect(lastMsg.metadata?.custom?.retryable).toBe(false);
     });
 
     it("should reset isDelayed to false when WebSocket disconnects", () => {
