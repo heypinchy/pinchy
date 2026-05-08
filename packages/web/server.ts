@@ -21,6 +21,7 @@ import { registerShutdownHandlers } from "./src/lib/shutdown";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { getBetterAuthUrlStartupWarning } from "./src/lib/auth-env-warning";
+import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
 
 logCapture.install();
 
@@ -114,7 +115,10 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
 
   const sessionCache = new SessionCache();
 
-  const wss = new WebSocketServer({ noServer: true, maxPayload: 1 * 1024 * 1024 });
+  const wss = new WebSocketServer({
+    noServer: true,
+    maxPayload: SERVER_WS_MAX_PAYLOAD_BYTES,
+  });
   const sessionMap = new Map<WebSocket, { userId: string; userRole: string }>();
   const wsRateLimiter = new WsRateLimiter({
     onReject: (reason) => {
