@@ -35,4 +35,16 @@ describe("sanitizeFilename", () => {
     const long = "a".repeat(300) + ".pdf";
     expect(() => sanitizeFilename(long)).toThrow(/too long/i);
   });
+
+  it("allows legitimate filenames with dots (not path traversal)", () => {
+    expect(sanitizeFilename("version 2..3 notes.pdf")).toBe("version 2..3 notes.pdf");
+    expect(sanitizeFilename("a..b.pdf")).toBe("a..b.pdf");
+  });
+
+  it("rejects BiDi override and invisible Unicode control characters", () => {
+    expect(() => sanitizeFilename("foo‮.pdf")).toThrow(/invalid/i); // RIGHT-TO-LEFT OVERRIDE
+    expect(() => sanitizeFilename("foo​.pdf")).toThrow(/invalid/i); // ZERO-WIDTH SPACE
+    expect(() => sanitizeFilename("foo‏.pdf")).toThrow(/invalid/i); // RIGHT-TO-LEFT MARK
+    expect(() => sanitizeFilename("﻿file.pdf")).toThrow(/invalid/i); // BOM
+  });
 });

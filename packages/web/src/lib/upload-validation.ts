@@ -1,4 +1,5 @@
-const CONTROL_CHAR_RE = /[\x00-\x1f\x7f]/;
+// Covers ASCII control chars, BiDi overrides, invisible Unicode, and BOM.
+const CONTROL_CHAR_RE = /[\x00-\x1f\x7f​‏‪-‮⁦-⁩﻿]/u;
 const MAX_FILENAME_LEN = 255;
 
 export function sanitizeFilename(raw: string): string {
@@ -8,15 +9,20 @@ export function sanitizeFilename(raw: string): string {
   if (CONTROL_CHAR_RE.test(raw)) {
     throw new Error("Invalid filename: contains control characters");
   }
-  if (raw.includes("..")) {
-    throw new Error("Invalid filename: contains parent-directory reference");
-  }
   if (raw.startsWith("./") || raw.startsWith(".\\")) {
     throw new Error("Invalid filename: absolute or relative path");
   }
 
   // Strip directory components, keep last segment.
   const parts = raw.replace(/\\/g, "/").split("/");
+
+  // Reject any component that is exactly ".." (path traversal).
+  for (const part of parts.slice(0, -1)) {
+    if (part === "..") {
+      throw new Error("Invalid filename: contains parent-directory reference");
+    }
+  }
+
   const last = parts[parts.length - 1];
   const trimmed = last.trim();
 
