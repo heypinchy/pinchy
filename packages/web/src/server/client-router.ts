@@ -12,6 +12,8 @@ import { classifyModelError } from "@/server/model-error-classifier";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { sanitizeFilename, validateUploadBuffer } from "@/lib/upload-validation";
+import { persistAttachment } from "@/lib/uploads";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
@@ -43,6 +45,7 @@ interface ChatMessage {
   isRetry?: boolean;
   /** Recovery scenario behind a retry — surfaced in the audit log. */
   retryReason?: RetryReason;
+  filenames?: string[];
 }
 
 interface HistoryRequestMessage {
@@ -56,6 +59,89 @@ interface HistoryMessage {
   role: string;
   content?: unknown;
   timestamp?: number;
+}
+
+export interface ProcessedWorkspaceRef {
+  relativePath: string;
+  mimeType: string;
+  sizeBytes: number;
+}
+
+export interface ProcessAttachmentsResult {
+  chatAttachments: ChatAttachment[];
+  workspaceRefs: ProcessedWorkspaceRef[];
+}
+
+export interface ProcessAttachmentsParams {
+  agentId: string;
+  uploaderUserId: string;
+  sessionKey: string;
+  contentParts: ContentPart[];
+  claimedFilenames?: string[];
+}
+
+const DATA_URL_RE = /^data:([^;]+);base64,(.+)$/;
+
+export async function processIncomingAttachments(
+  params: ProcessAttachmentsParams
+): Promise<ProcessAttachmentsResult> {
+  const { agentId, contentParts } = params;
+  const chatAttachments: ChatAttachment[] = [];
+  const workspaceRefs: ProcessedWorkspaceRef[] = [];
+
+  let imageIdx = 0;
+  for (const part of contentParts) {
+    if (part.type !== "image_url" || !part.image_url?.url) continue;
+    const match = part.image_url.url.match(DATA_URL_RE);
+    if (!match) continue;
+
+    const claimedMime = match[1];
+    const base64 = match[2];
+    const buffer = Buffer.from(base64, "base64");
+
+    const detectedMime = await validateUploadBuffer(buffer, claimedMime);
+
+    const claimedName = params.claimedFilenames?.[imageIdx] ?? "upload";
+    const safeName = sanitizeFilename(claimedName);
+
+    const persisted = await persistAttachment({
+      agentId,
+      filename: safeName,
+      mimeType: detectedMime,
+      buffer,
+    });
+
+    chatAttachments.push({ mimeType: detectedMime, fileName: safeName, content: base64 });
+    workspaceRefs.push({
+      relativePath: persisted.relativePath,
+      mimeType: detectedMime,
+      sizeBytes: buffer.length,
+    });
+    imageIdx++;
+  }
+
+  return { chatAttachments, workspaceRefs };
+}
+
+export function buildUploadHint(refs: ProcessedWorkspaceRef[]): string {
+  if (refs.length === 0) return "";
+  const lines = refs.map(
+    (r) => `- \`${r.relativePath}\` (${r.mimeType}, ${formatBytes(r.sizeBytes)})`
+  );
+  return [
+    "## User uploaded files",
+    "The user just uploaded these files to the agent workspace:",
+    ...lines,
+    "",
+    "These files are also attached inline to this message — read them directly.",
+    "For tasks requiring the file path (e.g. attaching to Odoo, copying, listing later), use the workspace paths above.",
+  ].join("\n");
+}
+
+function formatBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export class ClientRouter {
@@ -121,34 +207,48 @@ export class ClientRouter {
     try {
       await this.waitForConnection();
 
-      // Extract text and images from structured content
+      // Extract text from structured content
       let text: string;
-      const attachments: ChatAttachment[] = [];
 
       if (Array.isArray(message.content)) {
         text = message.content
           .filter((part) => part.type === "text" && part.text)
           .map((part) => part.text!)
           .join(" ");
-
-        for (const part of message.content) {
-          if (part.type === "image_url" && part.image_url?.url) {
-            const match = part.image_url.url.match(/^data:([^;]+);base64,(.+)$/);
-            if (match) {
-              attachments.push({ mimeType: match[1], content: match[2] });
-            }
-          }
-        }
       } else {
         text = message.content;
+      }
+
+      // Process and validate attachments (validation, persistence, dedup)
+      let chatAttachments: ChatAttachment[] = [];
+      let workspaceRefs: ProcessedWorkspaceRef[] = [];
+      try {
+        const result = await processIncomingAttachments({
+          agentId: message.agentId,
+          uploaderUserId: this.userId,
+          sessionKey,
+          contentParts: Array.isArray(message.content) ? message.content : [],
+          claimedFilenames: message.filenames,
+        });
+        chatAttachments = result.chatAttachments;
+        workspaceRefs = result.workspaceRefs;
+      } catch (err) {
+        this.sendToClient(clientWs, {
+          type: "error",
+          error: {
+            code: "attachment_invalid",
+            message: err instanceof Error ? err.message : String(err),
+          },
+        });
+        return;
       }
 
       const chatOptions: Record<string, unknown> = {
         agentId: message.agentId,
         sessionKey,
       };
-      if (attachments.length > 0) {
-        chatOptions.attachments = attachments;
+      if (chatAttachments.length > 0) {
+        chatOptions.attachments = chatAttachments;
       }
       if (message.clientMessageId) {
         chatOptions.clientMessageId = message.clientMessageId;
@@ -171,8 +271,36 @@ export class ClientRouter {
           `The user just opened this chat for the first time. You already greeted them with this message: "${personalizedGreeting}". Do not introduce yourself again. Continue the conversation naturally.`
         );
       }
+      const uploadHint = buildUploadHint(workspaceRefs);
+      if (uploadHint) {
+        extraPromptParts.push(uploadHint);
+      }
       if (extraPromptParts.length > 0) {
         chatOptions.extraSystemPrompt = extraPromptParts.join("\n\n");
+      }
+
+      // Audit each uploaded attachment
+      for (const ref of workspaceRefs) {
+        const { relativePath, mimeType, sizeBytes } = ref;
+        const filename = relativePath.replace(/^uploads\//, "");
+        const auditEntry = {
+          actorType: "user" as const,
+          actorId: this.userId,
+          eventType: "attachment.uploaded" as const,
+          resource: message.agentId,
+          outcome: "success" as const,
+          detail: {
+            agent: { id: agent.id, name: agent.name },
+            attachment: { filename, detectedMimeType: mimeType, sizeBytes },
+            sessionKey,
+            uploaderUserId: this.userId,
+          },
+        };
+        try {
+          await appendAuditLog(auditEntry);
+        } catch (err) {
+          recordAuditFailure(err, auditEntry);
+        }
       }
 
       if (message.isRetry) {

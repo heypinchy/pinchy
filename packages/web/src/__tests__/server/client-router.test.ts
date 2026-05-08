@@ -91,6 +91,19 @@ vi.mock("@/server/model-unavailable-throttle", () => ({
     mockShouldEmitModelUnavailableAudit(...args),
 }));
 
+vi.mock("@/lib/upload-validation", () => ({
+  validateUploadBuffer: vi.fn(async (_buf: Buffer, claimedMime: string) => claimedMime),
+  sanitizeFilename: vi.fn((name: string) => name),
+}));
+
+vi.mock("@/lib/uploads", () => ({
+  persistAttachment: vi.fn(async ({ filename }: { filename: string }) => ({
+    relativePath: `uploads/${filename}`,
+    reused: false,
+    contentHash: "fakehash",
+  })),
+}));
+
 import { ClientRouter } from "@/server/client-router";
 import { SessionCache } from "@/server/session-cache";
 
@@ -795,11 +808,14 @@ describe("ClientRouter", () => {
       agentId: "agent-1",
     });
 
-    expect(mockChat).toHaveBeenCalledWith("What is this?", {
-      agentId: "agent-1",
-      sessionKey: "agent:agent-1:direct:user-1",
-      attachments: [{ mimeType: "image/png", content: "abc123" }],
-    });
+    expect(mockChat).toHaveBeenCalledWith(
+      "What is this?",
+      expect.objectContaining({
+        agentId: "agent-1",
+        sessionKey: "agent:agent-1:direct:user-1",
+        attachments: [{ mimeType: "image/png", fileName: "upload", content: "abc123" }],
+      })
+    );
   });
 
   it("should join multiple text parts from structured content with spaces", async () => {
