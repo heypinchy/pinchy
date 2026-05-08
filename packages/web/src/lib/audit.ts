@@ -49,7 +49,8 @@ export type AuditEventType =
   | "channel.deleted"
   | "chat.retry_triggered"
   | "agent.model_unavailable"
-  | "audit.exported";
+  | "audit.exported"
+  | "attachment.uploaded";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -234,6 +235,21 @@ export type AuditLogEntry =
   | (AuditLogBase & {
       eventType: "audit.exported";
       detail: { format: "csv" | "pdf"; filterSummary: string; rowCount: number };
+    })
+  | (AuditLogBase & {
+      eventType: "attachment.uploaded";
+      detail: {
+        agent: EntityRef;
+        attachment: {
+          filename: string;
+          detectedMimeType: string;
+          sizeBytes: number;
+          contentHash: string;
+          reused: boolean;
+        };
+        sessionKey: string;
+        uploaderUserId: string;
+      };
     });
 
 export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {

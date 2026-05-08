@@ -282,4 +282,28 @@ describe("appendAuditLog", () => {
     expect(inserted.rowHmac).toMatch(/^[0-9a-f]{64}$/);
     expect(inserted.version).toBe(2);
   });
+
+  it("accepts attachment.uploaded with the required detail shape", async () => {
+    await expect(
+      appendAuditLog({
+        eventType: "attachment.uploaded",
+        actorType: "user",
+        actorId: "user-123",
+        resource: "agent-1",
+        outcome: "success",
+        detail: {
+          agent: { id: "agent-1", name: "Smithers" },
+          attachment: {
+            filename: "invoice.pdf",
+            detectedMimeType: "application/pdf",
+            sizeBytes: 245_000,
+            contentHash: "abc123",
+            reused: false,
+          },
+          sessionKey: "agent:agent-1:direct:user-123",
+          uploaderUserId: "user-123",
+        },
+      })
+    ).resolves.toBeUndefined();
+  });
 });
