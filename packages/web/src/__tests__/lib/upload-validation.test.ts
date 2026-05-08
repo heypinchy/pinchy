@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { sanitizeFilename, validateUploadBuffer } from "@/lib/upload-validation";
+import { fileTypeFromBuffer } from "file-type";
+import {
+  sanitizeFilename,
+  validateUploadBuffer,
+  ALLOWED_ATTACHMENT_MIMES,
+} from "@/lib/upload-validation";
 
 describe("sanitizeFilename", () => {
   it("returns clean basename for normal filenames", () => {
@@ -96,5 +101,43 @@ describe("validateUploadBuffer", () => {
     await expect(validateUploadBuffer(exe, "application/x-msdownload")).rejects.toThrow(
       /not supported/i
     );
+  });
+
+  it("ALLOWED_ATTACHMENT_MIMES contains the required types", () => {
+    expect(ALLOWED_ATTACHMENT_MIMES.has("application/pdf")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("image/jpeg")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("image/png")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("image/webp")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("image/gif")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("image/heic")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("image/heif")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/mpeg")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/mp4")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/x-m4a")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/wav")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/webm")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/ogg")).toBe(true);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/flac")).toBe(true);
+  });
+
+  it("accepts a valid M4A audio file", async () => {
+    const M4A_HEADER = Buffer.concat([
+      Buffer.from([0x00, 0x00, 0x00, 0x1c]),
+      Buffer.from("ftyp"),
+      Buffer.from("M4A "),
+      Buffer.from([0x00, 0x00, 0x02, 0x00]),
+      Buffer.from("M4A "),
+      Buffer.from("mp42"),
+      Buffer.from("isom"),
+      Buffer.alloc(32, 0),
+    ]);
+    const result = await fileTypeFromBuffer(
+      new Uint8Array(M4A_HEADER.buffer, M4A_HEADER.byteOffset, M4A_HEADER.byteLength)
+    );
+    // file-type@22 returns audio/x-m4a for M4A ftyp boxes
+    expect(result).not.toBeUndefined();
+    if (result) {
+      expect(ALLOWED_ATTACHMENT_MIMES.has(result.mime)).toBe(true);
+    }
   });
 });

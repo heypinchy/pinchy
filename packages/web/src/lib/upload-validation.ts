@@ -49,6 +49,7 @@ export const ALLOWED_ATTACHMENT_MIMES = new Set<string>([
   "image/heif",
   "audio/mpeg",
   "audio/mp4",
+  "audio/x-m4a",
   "audio/wav",
   "audio/webm",
   "audio/ogg",
