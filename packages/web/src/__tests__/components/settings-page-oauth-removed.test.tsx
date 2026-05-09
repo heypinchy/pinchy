@@ -51,6 +51,9 @@ vi.mock("@/components/settings-profile", () => ({
 vi.mock("@/components/settings-security", () => ({
   SettingsSecurity: () => <div />,
 }));
+vi.mock("@/components/timezone-settings", () => ({
+  TimezoneSettings: () => <div />,
+}));
 
 import { SettingsPageContent } from "@/components/settings-page-content";
 

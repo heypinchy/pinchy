@@ -242,15 +242,17 @@ describe("Setup Form", () => {
     await user.click(screen.getByRole("button", { name: /create account/i }));
 
     await waitFor(() => {
-      expect(global.fetch).toHaveBeenCalledWith("/api/setup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: "Admin User",
-          email: "admin@test.com",
-          password: "Br1ghtNova!2",
-        }),
+      const setupCall = (global.fetch as ReturnType<typeof vi.fn>).mock.calls.find(
+        ([url]) => url === "/api/setup"
+      );
+      expect(setupCall).toBeDefined();
+      const body = JSON.parse(setupCall![1].body);
+      expect(body).toMatchObject({
+        name: "Admin User",
+        email: "admin@test.com",
+        password: "Br1ghtNova!2",
       });
+      expect(typeof body.browserTimezone).toBe("string");
     });
   });
 

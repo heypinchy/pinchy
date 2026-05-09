@@ -22,7 +22,15 @@ export type MembershipDetail = {
   [key: string]: unknown;
 };
 
-export type AuditResource = "agent" | "group" | "user" | "settings" | "config" | "channel" | "chat";
+export type AuditResource =
+  | "agent"
+  | "group"
+  | "user"
+  | "settings"
+  | "config"
+  | "channel"
+  | "chat"
+  | "briefing";
 
 export type AuditEventType =
   | `tool.${string}`
@@ -48,6 +56,9 @@ export type AuditEventType =
   | "channel.created"
   | "channel.deleted"
   | "chat.retry_triggered"
+  | "briefing.created"
+  | "briefing.updated"
+  | "briefing.deleted"
   | "audit.exported";
 
 interface HmacFieldsV1 {

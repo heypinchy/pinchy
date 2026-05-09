@@ -15,20 +15,21 @@ const setupSchema = z.object({
     .refine((v) => v.length > 0, "Name is required"),
   email: z.string().email("A valid email address is required"),
   password: z.string(),
+  browserTimezone: z.string().optional(),
 });
 
 export async function POST(request: NextRequest) {
   try {
     const parsed = await parseRequestBody(setupSchema, request);
     if ("error" in parsed) return parsed.error;
-    const { name, email, password } = parsed.data;
+    const { name, email, password, browserTimezone } = parsed.data;
 
     const passwordError = validatePassword(password);
     if (passwordError) {
       return NextResponse.json({ error: passwordError }, { status: 400 });
     }
 
-    const user = await createAdmin(name, email, password);
+    const user = await createAdmin(name, email, password, browserTimezone);
     // Write OpenClaw config with the newly created Smithers agent so OpenClaw
     // knows about it when the container restarts or the file watcher picks it up.
     // If this fails, surface the error: the admin record was created, but the

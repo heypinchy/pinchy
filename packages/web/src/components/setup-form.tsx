@@ -127,6 +127,7 @@ export function SetupForm() {
           name: values.name,
           email: values.email,
           password: values.password,
+          browserTimezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
         }),
       });
 
