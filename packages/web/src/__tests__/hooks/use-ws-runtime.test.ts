@@ -1,13 +1,34 @@
+/**
+ * Test suite for useWsRuntime — system/integration aspects.
+ *
+ * NOTE: A SECOND companion suite lives at
+ *   packages/web/src/hooks/__tests__/use-ws-runtime.test.ts
+ *
+ * That file uses a different mocking strategy (captures the `onNew` callback
+ * via a stubbed `useExternalStoreRuntime`) and focuses on the runtime's
+ * callback API (`onRetryContinue`, `onRetryResend`, status-reducer flow,
+ * isOpenClawConnected). When you add a new module mock here, mirror it there
+ * — both files have to stay in sync.
+ *
+ * Tracking issue for full consolidation: #313.
+ */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
 import { useChatStatus } from "@/hooks/use-chat-status";
-import { CLIENT_MAX_IMAGE_SIZE_BYTES } from "@/lib/limits";
+import { CLIENT_IMAGE_COMPRESSION_TARGET_BYTES, CLIENT_MAX_IMAGE_SIZE_BYTES } from "@/lib/limits";
 import * as imageCompression from "@/lib/image-compression";
 
-// Mock image compression module — real Canvas API is unavailable in jsdom
+// Mock image compression module — real Canvas API is unavailable in jsdom.
+// Default returns the new CompressionResult shape: ok=true with skipped=true
+// (the file was small enough that no compression was needed). Tests that exercise
+// the compression or failure paths override this with mockResolvedValueOnce.
 vi.mock("@/lib/image-compression", () => ({
-  compressImageForChat: vi.fn(async (file: File) => file),
+  compressImageForChat: vi.fn(async (file: File) => ({
+    ok: true,
+    file,
+    skipped: true,
+  })),
 }));
 
 // Track all created WebSocket instances
@@ -66,8 +87,13 @@ describe("useWsRuntime", () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     wsInstances = [];
-    // Default: compression is a no-op (identity) — real Canvas unavailable in jsdom
-    vi.mocked(imageCompression.compressImageForChat).mockImplementation(async (file) => file);
+    // Default: compression returns the skip-path result (ok=true, skipped=true)
+    // — real Canvas unavailable in jsdom, and most tests don't care about compression.
+    vi.mocked(imageCompression.compressImageForChat).mockImplementation(async (file) => ({
+      ok: true,
+      file,
+      skipped: true,
+    }));
   });
 
   afterEach(() => {
@@ -507,9 +533,11 @@ describe("useWsRuntime", () => {
       type: "image/webp",
       name: "compressed.webp",
     } as unknown as File;
-    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce(
-      stillOversizedAfterCompression
-    );
+    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce({
+      ok: true,
+      file: stillOversizedAfterCompression,
+      skipped: false,
+    });
 
     // Small input — the rejection is based on compressed output size, not input size
     const smallInput = "data:image/png;base64,YWJj";
@@ -549,7 +577,11 @@ describe("useWsRuntime", () => {
     // Arrange: spy on compressImageForChat and return a small WebP file
     const webpBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46]); // "RIFF" stub
     const webpFile = new File([webpBytes], "photo.webp", { type: "image/webp" });
-    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce(webpFile);
+    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce({
+      ok: true,
+      file: webpFile,
+      skipped: false,
+    });
 
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
@@ -585,6 +617,105 @@ describe("useWsRuntime", () => {
     const imageUrl = sentMessage.content.find((p: { type: string }) => p.type === "image_url")
       ?.image_url?.url as string;
     expect(imageUrl).toMatch(/^data:image\/webp;base64,/);
+  });
+
+  it("fails closed when compression failed AND the original is larger than the OpenClaw inline threshold", async () => {
+    // OpenClaw silently offloads images > 2 MB to text-only markers — sending an
+    // uncompressed 3 MB HEIC would mean the model never sees it. Better to fail
+    // loudly than to send a "ghost" image.
+    const oversizedHeic = {
+      size: CLIENT_IMAGE_COMPRESSION_TARGET_BYTES + 1,
+      type: "image/heic",
+      name: "photo.heic",
+    } as unknown as File;
+    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce({
+      ok: false,
+      file: oversizedHeic,
+      reason: "compression-failed",
+      error: new Error("Unable to decode HEIC"),
+    });
+
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    await act(async () => {
+      await result.current.runtime.onNew({
+        content: [{ type: "text", text: "Look at this" }],
+        attachments: [
+          {
+            id: "img-1",
+            type: "image",
+            name: "photo.heic",
+            status: { type: "complete" },
+            content: [{ type: "image", image: "data:image/heic;base64,YWJj" }],
+          },
+        ],
+        parentId: "root",
+      });
+    });
+
+    // Only the history request was sent — the user message must NOT have been transmitted.
+    expect(ws.send).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(ws.send.mock.calls[0][0]).type).toBe("history");
+
+    // The user must see an error mentioning the unsupported format.
+    const messages = result.current.runtime.messages;
+    const errorMessage = messages.find(
+      (m: any) =>
+        m.role === "assistant" && /process|format|unsupported/i.test(m.content[0]?.text ?? "")
+    );
+    expect(errorMessage).toBeDefined();
+  });
+
+  it("sends the original file when compression failed but the file is small enough to be inlined", async () => {
+    // A small JPEG (under the offload threshold) that for some reason failed
+    // compression should still go through — OpenClaw will inline it as-is and
+    // the model will see it. No reason to fail closed here.
+    const smallOriginal = new File([new Uint8Array(100 * 1024)], "small.jpg", {
+      type: "image/jpeg",
+    });
+    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce({
+      ok: false,
+      file: smallOriginal,
+      reason: "compression-failed",
+      error: new Error("Worker crashed"),
+    });
+
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    await act(async () => {
+      await result.current.runtime.onNew({
+        content: [{ type: "text", text: "Look at this" }],
+        attachments: [
+          {
+            id: "img-1",
+            type: "image",
+            name: "small.jpg",
+            status: { type: "complete" },
+            content: [{ type: "image", image: "data:image/jpeg;base64,YWJj" }],
+          },
+        ],
+        parentId: "root",
+      });
+    });
+
+    // The message must have been sent with the original file, NOT rejected.
+    expect(ws.send).toHaveBeenCalledTimes(2);
+    const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
+    expect(sentMessage.type).toBe("message");
+    const imageUrl = sentMessage.content.find((p: { type: string }) => p.type === "image_url")
+      ?.image_url?.url as string;
+    // Original was JPEG — without compression it stays JPEG.
+    expect(imageUrl).toMatch(/^data:image\/jpeg;base64,/);
   });
 
   it("should send history request on connect with agentId", () => {

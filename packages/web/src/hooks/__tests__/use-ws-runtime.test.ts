@@ -1,3 +1,17 @@
+/**
+ * Test suite for useWsRuntime — callback API + status-reducer flow.
+ *
+ * NOTE: A SECOND companion suite lives at
+ *   packages/web/src/__tests__/hooks/use-ws-runtime.test.ts
+ *
+ * That file uses a different mocking strategy (real WebSocket via
+ * `vi.stubGlobal` + accessing `result.current.runtime.onNew`) and focuses
+ * on system aspects (reconnect/backoff, agent switching, history reload,
+ * delay/stuck timers, 1009 frame-too-large handling). When you add a new
+ * module mock here, mirror it there — both files have to stay in sync.
+ *
+ * Tracking issue for full consolidation: #313.
+ */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 
@@ -49,9 +63,14 @@ vi.stubGlobal("WebSocket", MockWebSocketClass);
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
-// Mock image compression — real Canvas API is unavailable in jsdom
+// Mock image compression — real Canvas API is unavailable in jsdom.
+// Returns the new CompressionResult shape (ok=true, skipped=true).
 vi.mock("@/lib/image-compression", () => ({
-  compressImageForChat: vi.fn(async (file: File) => file),
+  compressImageForChat: vi.fn(async (file: File) => ({
+    ok: true,
+    file,
+    skipped: true,
+  })),
 }));
 
 vi.mock("@/components/restart-provider", () => ({

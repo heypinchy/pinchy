@@ -16,8 +16,9 @@ import type { ChatError } from "@/components/assistant-ui/chat-error-message";
 import { reduceMessages, type Action } from "./message-status-reducer";
 import type { MessageStatus } from "./message-status-reducer";
 import { isOrphaned as computeIsOrphaned } from "./orphan-detector";
-import { CLIENT_MAX_IMAGE_SIZE_BYTES } from "@/lib/limits";
+import { CLIENT_IMAGE_COMPRESSION_TARGET_BYTES, CLIENT_MAX_IMAGE_SIZE_BYTES } from "@/lib/limits";
 import { compressImageForChat } from "@/lib/image-compression";
+import { dataUrlToFile, fileToDataUrl } from "@/lib/data-url";
 
 export interface WsMessage {
   id: string;
@@ -81,27 +82,6 @@ function buildWsContent(text: string, images: string[] | undefined): WsContent {
     parts.push({ type: "image_url", image_url: { url: img } });
   }
   return parts;
-}
-
-function dataUrlToFile(dataUrl: string): File {
-  // Parse "data:<mime>;base64,<data>" without fetch so this works in all environments.
-  const [header, b64] = dataUrl.split(",");
-  const mime = header.replace(/^data:/, "").replace(/;base64$/, "");
-  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
-  const ext = mime.split("/")[1] ?? "bin";
-  return new File([bytes], `attachment.${ext}`, { type: mime });
-}
-
-async function fileToDataUrl(file: File): Promise<string> {
-  // arrayBuffer() is a native Blob method that resolves via microtasks
-  // (not timers), so it works correctly even with vi.useFakeTimers().
-  const buffer = await file.arrayBuffer();
-  const bytes = new Uint8Array(buffer);
-  let binary = "";
-  for (let i = 0; i < bytes.length; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return `data:${file.type};base64,${btoa(binary)}`;
 }
 
 class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
@@ -648,12 +628,28 @@ export function useWsRuntime(agentId: string): {
       const compressedImages: string[] = [];
       for (const img of images) {
         const file = dataUrlToFile(img);
-        const compressed = await compressImageForChat(file);
+        const result = await compressImageForChat(file);
 
-        // Check size AFTER compression — reject if still too large.
+        // Fail closed when compression failed AND the original would be silently
+        // offloaded by OpenClaw (size > inline threshold). Sending a "ghost" image
+        // the model can't see is worse than refusing to send.
+        if (!result.ok && result.file.size > CLIENT_IMAGE_COMPRESSION_TARGET_BYTES) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: uuid(),
+              role: "assistant",
+              content:
+                "Couldn't process this image format. Please convert it to JPEG, PNG, or WebP and try again.",
+            },
+          ]);
+          return;
+        }
+
+        // Check size AFTER compression — reject if still too large for the WS frame.
         // Checking file.size (bytes) avoids materialising the full data URL string
         // just to count characters.
-        if (compressed.size > CLIENT_MAX_IMAGE_SIZE_BYTES) {
+        if (result.file.size > CLIENT_MAX_IMAGE_SIZE_BYTES) {
           setMessages((prev) => [
             ...prev,
             {
@@ -665,7 +661,7 @@ export function useWsRuntime(agentId: string): {
           return;
         }
 
-        compressedImages.push(await fileToDataUrl(compressed));
+        compressedImages.push(await fileToDataUrl(result.file));
       }
 
       if (!text.trim() && compressedImages.length === 0) return;
