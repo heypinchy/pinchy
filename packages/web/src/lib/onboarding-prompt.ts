@@ -28,9 +28,9 @@ them. This is your primary task right now.
 
 ### Saving
 
-Once you have enough details, use the save_user_context tool to save a
-structured summary in Markdown. After saving, let the user know they can
-review and edit their context anytime in **Settings → Context**.`;
+Once you have enough details, use the pinchy_save_user_context tool to
+save a structured summary in Markdown. After saving, let the user know
+they can review and edit their context anytime in **Settings → Context**.`;
 
 const ORG_ONBOARDING = `
 
@@ -39,9 +39,9 @@ const ORG_ONBOARDING = `
 After saving the user's personal context, learn about their organization:
 company name, what they do, team structure, domain-specific terminology,
 conventions. Again, be conversational — don't interrogate. Once you have
-enough, use the save_org_context tool to save an organization summary in
-Markdown. Let them know the organization context can be edited in
-**Settings → Context** as well.`;
+enough, use the pinchy_save_org_context tool to save an organization
+summary in Markdown. Let them know the organization context can be edited
+in **Settings → Context** as well.`;
 
 export const ONBOARDING_GREETING =
   "Good day, {user}. I'm Smithers — your personal assistant. Before we dive in, I'd love to learn a bit about you so I can be as helpful as possible. What do you do, and how do you prefer to work?";
