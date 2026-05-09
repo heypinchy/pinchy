@@ -32,7 +32,7 @@ const PNG = Buffer.concat([
 const PNG_BASE64 = PNG.toString("base64");
 
 describe("processIncomingAttachments", () => {
-  it("persists a PDF to the workspace and emits NO inline ChatAttachment (channel-plugin pattern)", async () => {
+  it("persists a PDF and emits inline ChatAttachment + workspace ref", async () => {
     const { processIncomingAttachments } = await import("@/server/client-router");
     const result = await processIncomingAttachments({
       agentId: "agent-1",
@@ -45,10 +45,11 @@ describe("processIncomingAttachments", () => {
       claimedFilenames: ["invoice.pdf"],
     });
 
-    // PDF goes to workspace only — never inline. OpenClaw's `agent` RPC
-    // hardcodes `acceptNonImage: false` and would reject inline PDFs.
-    expect(result.chatAttachments).toHaveLength(0);
-
+    expect(result.chatAttachments).toHaveLength(1);
+    expect(result.chatAttachments[0]).toMatchObject({
+      mimeType: "application/pdf",
+      content: PDF_BASE64,
+    });
     expect(result.workspaceRefs).toEqual([
       expect.objectContaining({
         relativePath: "uploads/invoice.pdf",
@@ -61,28 +62,7 @@ describe("processIncomingAttachments", () => {
     expect(existsSync(join(tmpRoot, "agent-1/uploads/invoice.pdf"))).toBe(true);
   });
 
-  it("persists an image and ALSO emits an inline ChatAttachment (vision-capable models)", async () => {
-    const { processIncomingAttachments } = await import("@/server/client-router");
-    const result = await processIncomingAttachments({
-      agentId: "agent-1",
-      contentParts: [
-        {
-          type: "image_url",
-          image_url: { url: `data:image/png;base64,${PNG_BASE64}` },
-        },
-      ],
-      claimedFilenames: ["photo.png"],
-    });
-
-    expect(result.chatAttachments).toEqual([
-      { mimeType: "image/png", fileName: "photo.png", content: PNG_BASE64 },
-    ]);
-    expect(result.workspaceRefs).toEqual([
-      expect.objectContaining({ relativePath: "uploads/photo.png", mimeType: "image/png" }),
-    ]);
-  });
-
-  it("for a mixed image+PDF message, only the image goes inline; both go to workspace", async () => {
+  it("handles multiple attachments in one message", async () => {
     const { processIncomingAttachments } = await import("@/server/client-router");
     const result = await processIncomingAttachments({
       agentId: "agent-1",
@@ -92,8 +72,7 @@ describe("processIncomingAttachments", () => {
       ],
       claimedFilenames: ["a.pdf", "b.png"],
     });
-    expect(result.chatAttachments).toHaveLength(1);
-    expect(result.chatAttachments[0]).toMatchObject({ mimeType: "image/png", fileName: "b.png" });
+    expect(result.chatAttachments).toHaveLength(2);
     expect(result.workspaceRefs).toHaveLength(2);
   });
 
@@ -181,34 +160,6 @@ describe("buildUploadHint", () => {
   // sanitizeFilename allows backticks, which would break the markdown code
   // span that wraps the path in the system prompt — and could let a crafted
   // filename leak structure into the prompt sent to the LLM.
-  it("marks images as 'shown inline' and non-images as workspace-only", async () => {
-    const { buildUploadHint } = await import("@/server/client-router");
-    const block = buildUploadHint([
-      {
-        relativePath: "uploads/photo.png",
-        mimeType: "image/png",
-        sizeBytes: 50_000,
-        contentHash: "a".repeat(64),
-        reused: false,
-      },
-      {
-        relativePath: "uploads/invoice.pdf",
-        mimeType: "application/pdf",
-        sizeBytes: 245_000,
-        contentHash: "b".repeat(64),
-        reused: false,
-      },
-    ]);
-    // Image line must mention "inline" (the model already sees it)
-    const photoLine = block.split("\n").find((l) => l.includes("photo.png"))!;
-    expect(photoLine).toMatch(/inline/i);
-    // PDF line must not say "inline" — it isn't
-    const pdfLine = block.split("\n").find((l) => l.includes("invoice.pdf"))!;
-    expect(pdfLine).not.toMatch(/inline/i);
-    // The block must mention the read tool name (tells the agent how to access)
-    expect(block).toMatch(/pinchy_read|read.*file/i);
-  });
-
   it("escapes backticks in workspace paths so they cannot break the markdown code span", async () => {
     const { buildUploadHint } = await import("@/server/client-router");
     const block = buildUploadHint([

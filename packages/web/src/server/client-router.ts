@@ -82,15 +82,6 @@ export interface ProcessAttachmentsParams {
 
 const DATA_URL_RE = /^data:([^;]+);base64,(.+)$/;
 
-// OpenClaw's `agent` RPC handler hardcodes `acceptNonImage: false` and rejects
-// any non-image attachment with UnsupportedAttachmentError. The canonical
-// pattern in OpenClaw (used by Slack/Telegram/Email channel plugins) is to
-// persist the file to the agent workspace and surface it via a system-prompt
-// hint, then let the agent read it through its file-reading tools.
-function isInlineCapableMime(mime: string): boolean {
-  return mime.startsWith("image/");
-}
-
 export async function processIncomingAttachments(
   params: ProcessAttachmentsParams
 ): Promise<ProcessAttachmentsResult> {
@@ -128,13 +119,7 @@ export async function processIncomingAttachments(
       buffer,
     });
 
-    // Inline attachments are forwarded to the LLM by OpenClaw's agent RPC.
-    // Only images survive `parseMessageWithAttachments`'s `acceptNonImage: false`
-    // check — every other type must reach the agent via the workspace path.
-    if (isInlineCapableMime(detectedMime)) {
-      chatAttachments.push({ mimeType: detectedMime, fileName: safeName, content: base64 });
-    }
-    // Workspace ref is emitted for every persisted file regardless of mime.
+    chatAttachments.push({ mimeType: detectedMime, fileName: safeName, content: base64 });
     workspaceRefs.push({
       relativePath: persisted.relativePath,
       mimeType: detectedMime,
@@ -160,23 +145,17 @@ function escapeForMarkdownCodeSpan(s: string): string {
 
 export function buildUploadHint(refs: ProcessedWorkspaceRef[]): string {
   if (refs.length === 0) return "";
-  const lines = refs.map((r) => {
-    const inlineNote = r.mimeType.startsWith("image/") ? " — also shown inline" : "";
-    const path = escapeForMarkdownCodeSpan(r.relativePath);
-    return `- \`${path}\` (${r.mimeType}, ${formatBytes(r.sizeBytes)})${inlineNote}`;
-  });
-  const hasNonInline = refs.some((r) => !r.mimeType.startsWith("image/"));
-  const tail = hasNonInline
-    ? [
-        "",
-        "Files without an inline copy are saved only to the workspace. Use `pinchy_read` (or any other file-reading tool you have) with the relative paths above to access their contents when you need them.",
-      ]
-    : [];
+  const lines = refs.map(
+    (r) =>
+      `- \`${escapeForMarkdownCodeSpan(r.relativePath)}\` (${r.mimeType}, ${formatBytes(r.sizeBytes)})`
+  );
   return [
     "## User uploaded files",
     "The user just uploaded these files to the agent workspace:",
     ...lines,
-    ...tail,
+    "",
+    "These files are also attached inline to this message — read them directly.",
+    "For tasks requiring the file path (e.g. attaching to Odoo, copying, listing later), use the workspace paths above.",
   ].join("\n");
 }
 

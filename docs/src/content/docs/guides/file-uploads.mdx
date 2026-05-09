@@ -31,10 +31,8 @@ Audio transcription requires a configured LLM provider that supports transcripti
 
 Two things happen when you attach a file:
 
-1. **The file is saved to the agent workspace** at `uploads/<filename>`. This is how PDFs, audio files, and any other non-image file reaches the agent — it reads them on demand through its file-reading tools.
-2. **Images are also passed inline** to vision-capable models, so the agent can "see" them without an extra read step.
-
-The default personal agent (Smithers) ships with the `pinchy-files` plugin enabled and scoped to `uploads/`, so it can read uploaded files immediately. For shared agents you create yourself, enable the **Pinchy Files** plugin in the agent's settings and add `uploads` to its allowed paths if you want the same behavior.
+1. **The agent sees the content inline.** For PDFs and images, the content is passed to the LLM using vision or document understanding. For audio files, Pinchy transcribes the audio first, then passes the transcript to the LLM.
+2. **The file is saved to the agent workspace** at `uploads/<filename>`. Plugins that access the agent's file system — such as `pinchy-files` — can read it in the same conversation or in later sessions.
 
 ## Audio prerequisites
 
