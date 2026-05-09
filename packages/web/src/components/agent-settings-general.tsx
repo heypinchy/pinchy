@@ -142,11 +142,9 @@ export function AgentSettingsGeneral({
                   </FormControl>
                   <SelectContent>
                     {isDeprecatedModel && (
-                      <SelectGroup>
-                        <SelectItem value={agent.model}>
-                          {agent.model} (no longer available)
-                        </SelectItem>
-                      </SelectGroup>
+                      <SelectItem value={agent.model} className="text-muted-foreground">
+                        {agent.model} (no longer available)
+                      </SelectItem>
                     )}
                     {providersWithModels.map((provider) => (
                       <SelectGroup key={provider.id}>
