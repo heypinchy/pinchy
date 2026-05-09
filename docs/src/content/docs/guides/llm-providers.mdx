@@ -71,6 +71,25 @@ Tokens used through every provider are recorded in the [Usage Dashboard](/guides
 
 When a provider returns an error, Pinchy shows it directly in the chat as a distinct error card with the agent name and the provider's error message. Admins see a hint pointing to **Settings → LLM Provider**; non-admin users see a prompt to contact their administrator. Transient errors (rate limits, timeouts) suggest trying again.
 
+### Model-unavailable errors
+
+When the provider returns a server error (HTTP 5xx) that Pinchy recognises as a model availability problem — for example, the model has been discontinued or is temporarily offline — the chat shows a structured **model-unavailable bubble** instead of a raw error message. The bubble includes:
+
+- The agent name and the model identifier that failed
+- A short plain-English explanation of what happened
+- A collapsible section with the raw technical details if you need them for support
+- A **Switch model →** link that takes you directly to the agent's model settings so you can pick a replacement in one click
+
+This avoids having to hunt through menus when a model goes down.
+
+### Removed model: `ollama-cloud/kimi-k2-thinking`
+
+`ollama-cloud/kimi-k2-thinking` has been removed from Pinchy's supported model list. Agents that used this model will show the model-unavailable bubble the next time they receive a message. To resolve it:
+
+1. Click **Switch model →** in the error bubble, or open the agent's settings manually (gear icon → **General → Model**).
+2. Select a replacement — `ollama-cloud/deepseek-v4-pro` is a good like-for-like option for reasoning-heavy workloads.
+3. Click **Save**. The agent is ready immediately.
+
 **"Invalid API key"** — Double-check the key with the provider's own dashboard. Anthropic keys start with `sk-ant-`, OpenAI keys with `sk-`, Google keys are typically `AIza...`.
 
 **"Your credit balance is too low"** — The provider account has run out of credits. Top up on the provider's billing page.

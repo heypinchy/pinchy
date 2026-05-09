@@ -34,6 +34,14 @@ Pinchy waits 2 seconds before showing the Disconnected state. During those 2 sec
 
 You can type your next message while the agent is still generating a reply. Only the **Send** button and the **Retry** button are disabled during a response — the text input stays active so you can prepare follow-up questions.
 
+## Model-unavailable errors
+
+When the model itself is the problem — not the connection — Pinchy shows a dedicated **model-unavailable bubble** in the chat thread. This is distinct from the connection-state indicators above: the agent runtime is reachable, but the upstream provider returned a server error (HTTP 5xx) that signals the model is offline or discontinued.
+
+The bubble shows the affected agent name, the model identifier, and a plain-English explanation. A **Switch model →** link takes you straight to the agent's model settings so you can pick a replacement without leaving the chat.
+
+See [Manage LLM Providers — Model-unavailable errors](/guides/llm-providers/#model-unavailable-errors) for step-by-step instructions and the list of removed models.
+
 ---
 
 See also: [Message Delivery & Retry](/guides/retry-messages) for how to recover from failed messages.
