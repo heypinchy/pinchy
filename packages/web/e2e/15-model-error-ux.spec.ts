@@ -235,9 +235,7 @@ test.describe("model-unavailable error UX", () => {
     const switchModelLink = page.getByRole("link", { name: /switch model/i });
     await expect(switchModelLink).toBeVisible({ timeout: 5000 });
     const href = await switchModelLink.getAttribute("href");
-    expect(href).toMatch(/\/settings\?tab=general#model$/);
-    // Verify the link is agent-scoped (contains the agentId)
-    expect(href).toContain(agentId);
+    expect(href).toBe(`/chat/${agentId}/settings?tab=general#model`);
 
     // 6c. "Technical details" collapsible is present but collapsed
     const technicalDetailsButton = page.getByRole("button", { name: /technical details/i });
