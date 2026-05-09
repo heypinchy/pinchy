@@ -231,7 +231,15 @@ test.describe("model-unavailable error UX", () => {
     // ── 6. Assertions ─────────────────────────────────────────────────────────
 
     // 6a. Error bubble headline: "{agentName} couldn't respond"
-    const errorBubble = page.locator('[role="alert"]');
+    //
+    // Filter by hasText to disambiguate from other role="alert" elements that
+    // can appear in the same DOM:
+    //   - the amber enterprise-license banner ("Your Pinchy instance is not …"),
+    //     present in CI runs that don't set PINCHY_ENTERPRISE_KEY
+    //   - Next.js's empty `__next-route-announcer__` div
+    // A bare `[role="alert"]` locator triggers Playwright's strict mode and
+    // fails the run even when the bubble itself rendered correctly.
+    const errorBubble = page.getByRole("alert").filter({ hasText: "couldn't respond" });
     await expect(errorBubble).toBeVisible({ timeout: 10000 });
     await expect(errorBubble).toContainText("couldn't respond");
 
