@@ -210,4 +210,16 @@ describe("ChatErrorMessage — modelUnavailable", () => {
     render(<ChatErrorMessage error={baseError} agentId="agent-1" />);
     expect(screen.getByRole("alert")).toBeInTheDocument();
   });
+
+  it("hides the 'Switch model' link when agentId is empty (defensive: no broken /chat//settings link)", () => {
+    // Defensive guard: AgentIdContext is always populated in real usage, but
+    // if it ever returns undefined the parent passes "" as a fallback. Render
+    // the rest of the bubble (so the user still sees the error) but suppress
+    // the deep link rather than producing href="/chat//settings?tab=general#model".
+    render(<ChatErrorMessage error={baseError} agentId="" />);
+    expect(screen.queryByRole("link", { name: /switch model/i })).not.toBeInTheDocument();
+    // The headline and technical-details affordance still render
+    expect(screen.getByText(/Smithers couldn't respond/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /technical details/i })).toBeInTheDocument();
+  });
 });

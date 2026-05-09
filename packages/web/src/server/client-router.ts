@@ -458,6 +458,14 @@ export class ClientRouter {
               ...(modelUnavailable ? { modelUnavailable } : {}),
             });
             if (modelUnavailable && shouldEmitModelUnavailableAudit(agent.id, agent.model ?? "")) {
+              // PII note: `chunk.text` is the raw provider error string. For
+              // 5xx upstream failures (the only branch we audit here) the
+              // server failed before processing the request body, so it
+              // generally returns a generic error envelope without echoing
+              // the user's prompt. If a future provider starts including
+              // request fragments in 5xx error bodies, redact here before
+              // appending to the audit trail. AGENTS.md §"Audit logging
+              // rules" forbids plaintext PII in audit `detail`.
               const auditEntry = {
                 actorType: "user" as const,
                 actorId: this.userId,

@@ -7,6 +7,7 @@ import { PROVIDER_SETTINGS_HINT } from "@/server/error-hints";
 import { ReportIssueLink } from "@/components/report-issue-link";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
+import type { ModelUnavailableError } from "@/lib/schemas/chat-frames";
 
 export interface ChatError {
   agentName?: string;
@@ -16,12 +17,7 @@ export interface ChatError {
   disconnected?: true;
   timedOut?: true;
   payloadTooLarge?: true;
-  modelUnavailable?: {
-    kind: "model_unavailable";
-    model: string;
-    httpStatus: number;
-    ref?: string;
-  };
+  modelUnavailable?: ModelUnavailableError;
 }
 
 export const ChatErrorMessage: FC<{
@@ -101,9 +97,11 @@ export const ChatErrorMessage: FC<{
         <p className="mt-1 text-destructive/75 dark:text-red-300/75">
           If it keeps failing, the model may no longer be available.
         </p>
-        <Button asChild variant="outline" size="sm" className="mt-2">
-          <Link href={`/chat/${agentId}/settings?tab=general#model`}>Switch model →</Link>
-        </Button>
+        {agentId && (
+          <Button asChild variant="outline" size="sm" className="mt-2">
+            <Link href={`/chat/${agentId}/settings?tab=general#model`}>Switch model →</Link>
+          </Button>
+        )}
         <Collapsible open={isOpen} onOpenChange={setIsOpen} className="mt-3">
           <CollapsibleTrigger asChild>
             <Button variant="ghost" size="sm" className="text-xs">

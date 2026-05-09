@@ -2947,5 +2947,50 @@ describe("ClientRouter", () => {
 
       consoleSpy.mockRestore();
     });
+
+    it("does NOT include modelUnavailable and does NOT audit when agent.model is null even on HTTP 5xx", async () => {
+      // Edge case: an agent in the DB with model=null falls through to the
+      // provider's default at runtime. classifyModelError requires a non-empty
+      // model identifier (we can't tell the user *which* model failed if we
+      // don't know it), so it returns null. As a result no modelUnavailable
+      // payload is added to the error frame and no audit is written.
+      // This pins the contract: null model + 5xx = legacy plain error path.
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: null,
+      });
+      mockShouldEmitModelUnavailableAudit.mockReturnValue(true);
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield {
+            type: "error" as const,
+            text: 'HTTP 500: "Internal Server Error (ref: x-2)"',
+          };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      // Error frame is sent, but without a modelUnavailable payload
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const errorMsg = messages.find((m: any) => m.type === "error");
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg).not.toHaveProperty("modelUnavailable");
+
+      // No audit entry of this type
+      expect(mockAppendAuditLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: "agent.model_unavailable" })
+      );
+
+      consoleSpy.mockRestore();
+    });
   });
 });

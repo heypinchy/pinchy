@@ -1,9 +1,6 @@
-export interface ModelUnavailableError {
-  kind: "model_unavailable";
-  model: string;
-  httpStatus: number;
-  ref?: string;
-}
+import type { ModelUnavailableError } from "@/lib/schemas/chat-frames";
+
+export type { ModelUnavailableError };
 
 const HTTP_5XX_PATTERN = /HTTP\s+(5\d\d)\b/i;
 const REF_PATTERN = /ref:\s*([\w-]+)/i;
