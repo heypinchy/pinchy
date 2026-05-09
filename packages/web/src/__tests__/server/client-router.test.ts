@@ -10,6 +10,7 @@ const {
   mockAppendAuditLog,
   mockGetUserGroupIds,
   mockGetAgentGroupIds,
+  mockShouldEmitModelUnavailableAudit,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
@@ -19,6 +20,7 @@ const {
   mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
   mockGetUserGroupIds: vi.fn().mockResolvedValue([]),
   mockGetAgentGroupIds: vi.fn().mockResolvedValue([]),
+  mockShouldEmitModelUnavailableAudit: vi.fn().mockReturnValue(true),
 }));
 
 vi.mock("@/lib/agent-access", async (importOriginal) => {
@@ -82,6 +84,11 @@ vi.mock("@/lib/audit", () => ({
 vi.mock("@/lib/groups", () => ({
   getUserGroupIds: (...args: unknown[]) => mockGetUserGroupIds(...args),
   getAgentGroupIds: (...args: unknown[]) => mockGetAgentGroupIds(...args),
+}));
+
+vi.mock("@/server/model-unavailable-throttle", () => ({
+  shouldEmitModelUnavailableAudit: (...args: unknown[]) =>
+    mockShouldEmitModelUnavailableAudit(...args),
 }));
 
 import { ClientRouter } from "@/server/client-router";
@@ -2790,6 +2797,155 @@ describe("ClientRouter", () => {
       // would still pass on outcome, but the test would no longer be pinning
       // the cache-hit branch specifically.)
       expect(mockSessionsList).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("agent.model_unavailable audit log", () => {
+    it("writes audit log with eventType agent.model_unavailable and outcome failure when HTTP 5xx error chunk arrives", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/deepseek-v4-pro",
+      });
+      mockShouldEmitModelUnavailableAudit.mockReturnValue(true);
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield {
+            type: "error" as const,
+            text: 'HTTP 503: "Service Unavailable (ref: err-42)"',
+          };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorType: "user",
+          actorId: "user-1",
+          eventType: "agent.model_unavailable",
+          resource: "agent:agent-1",
+          outcome: "failure",
+          detail: expect.objectContaining({
+            agent: { id: "agent-1", name: "Smithers" },
+            model: "ollama-cloud/deepseek-v4-pro",
+            providerError: expect.stringContaining("HTTP 503"),
+            httpStatus: 503,
+            ref: "err-42",
+          }),
+        })
+      );
+
+      consoleSpy.mockRestore();
+    });
+
+    it("does NOT write audit log when throttle suppresses the event", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/deepseek-v4-pro",
+      });
+      mockShouldEmitModelUnavailableAudit.mockReturnValue(false);
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield {
+            type: "error" as const,
+            text: 'HTTP 500: "Internal Server Error"',
+          };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: "agent.model_unavailable" })
+      );
+
+      consoleSpy.mockRestore();
+    });
+
+    it("does NOT write audit log when error chunk is not HTTP 5xx (no modelUnavailable)", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/deepseek-v4-pro",
+      });
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield {
+            type: "error" as const,
+            text: "Your credit balance is too low to access the API",
+          };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: "agent.model_unavailable" })
+      );
+
+      consoleSpy.mockRestore();
+    });
+
+    it("truncates providerError to 1024 chars in audit detail", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/x",
+      });
+      mockShouldEmitModelUnavailableAudit.mockReturnValue(true);
+
+      const longError = `HTTP 500: "${"x".repeat(2000)}"`;
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield { type: "error" as const, text: longError };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "agent.model_unavailable",
+          detail: expect.objectContaining({
+            providerError: expect.stringMatching(/^.{1,1024}$/),
+          }),
+        })
+      );
+      const call = mockAppendAuditLog.mock.calls.find(
+        (c: any[]) => c[0]?.eventType === "agent.model_unavailable"
+      );
+      expect(call![0].detail.providerError.length).toBeLessThanOrEqual(1024);
+
+      consoleSpy.mockRestore();
     });
   });
 });

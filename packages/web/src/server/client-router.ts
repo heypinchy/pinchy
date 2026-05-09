@@ -5,6 +5,7 @@ import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { isEnterprise } from "@/lib/enterprise";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
+import { shouldEmitModelUnavailableAudit } from "@/server/model-unavailable-throttle";
 import { SessionCache } from "@/server/session-cache";
 import { getErrorHint } from "@/server/error-hints";
 import { classifyModelError } from "@/server/model-error-classifier";
@@ -456,7 +457,27 @@ export class ClientRouter {
               messageId,
               ...(modelUnavailable ? { modelUnavailable } : {}),
             });
-            // (audit-log call added in Task 7)
+            if (modelUnavailable && shouldEmitModelUnavailableAudit(agent.id, agent.model ?? "")) {
+              const auditEntry = {
+                actorType: "user" as const,
+                actorId: this.userId,
+                eventType: "agent.model_unavailable" as const,
+                resource: `agent:${agent.id}`,
+                detail: {
+                  agent: { id: agent.id, name: agent.name },
+                  model: agent.model,
+                  providerError: chunk.text.slice(0, 1024),
+                  ...(modelUnavailable.ref ? { ref: modelUnavailable.ref } : {}),
+                  httpStatus: modelUnavailable.httpStatus,
+                },
+                outcome: "failure" as const,
+              };
+              try {
+                await appendAuditLog(auditEntry);
+              } catch (err) {
+                recordAuditFailure(err, auditEntry);
+              }
+            }
           } else if (chunk.type === "done") {
             this.sendToClient(clientWs, { type: "done", messageId });
           }

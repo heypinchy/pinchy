@@ -48,6 +48,7 @@ export type AuditEventType =
   | "channel.created"
   | "channel.deleted"
   | "chat.retry_triggered"
+  | "agent.model_unavailable"
   | "audit.exported";
 
 interface HmacFieldsV1 {
@@ -219,6 +220,16 @@ export type AuditLogEntry =
   | (AuditLogBase & {
       eventType: `chat.${string}`;
       detail?: Record<string, unknown>;
+    })
+  | (AuditLogBase & {
+      eventType: "agent.model_unavailable";
+      detail: {
+        agent: { id: string; name: string };
+        model: string | null | undefined;
+        providerError: string;
+        ref?: string;
+        httpStatus: number;
+      };
     })
   | (AuditLogBase & {
       eventType: "audit.exported";
