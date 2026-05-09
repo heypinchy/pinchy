@@ -256,6 +256,105 @@ describe("AgentSettingsGeneral", () => {
     });
   });
 
+  describe("deprecated model (no longer available)", () => {
+    const allowlistedProviders = [
+      {
+        id: "anthropic",
+        name: "Anthropic",
+        models: [
+          { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4" },
+          { id: "anthropic/claude-opus-4-20250514", name: "Claude Opus 4" },
+        ],
+      },
+    ];
+
+    it("should NOT inject a synthetic option when agent.model is in the allowlist", async () => {
+      render(
+        <AgentSettingsGeneral
+          agent={{ ...defaultAgent, model: "anthropic/claude-sonnet-4-6" }}
+          providers={allowlistedProviders}
+          onChange={vi.fn()}
+        />
+      );
+
+      await userEvent.click(screen.getByRole("combobox"));
+
+      const options = screen.getAllByRole("option");
+      const noLongerAvailableOption = options.find((o) =>
+        o.textContent?.includes("no longer available")
+      );
+      expect(noLongerAvailableOption).toBeUndefined();
+    });
+
+    it("should inject a synthetic option at the top when agent.model is NOT in the allowlist", async () => {
+      render(
+        <AgentSettingsGeneral
+          agent={{ ...defaultAgent, model: "ollama-cloud/kimi-k2-thinking" }}
+          providers={allowlistedProviders}
+          onChange={vi.fn()}
+        />
+      );
+
+      await userEvent.click(screen.getByRole("combobox"));
+
+      const options = screen.getAllByRole("option");
+      expect(options[0]).toHaveTextContent("ollama-cloud/kimi-k2-thinking (no longer available)");
+    });
+
+    it("should show the deprecated model as the currently selected value when it is not in the allowlist", () => {
+      render(
+        <AgentSettingsGeneral
+          agent={{ ...defaultAgent, model: "ollama-cloud/kimi-k2-thinking" }}
+          providers={allowlistedProviders}
+          onChange={vi.fn()}
+        />
+      );
+
+      // The combobox trigger should show the deprecated model label
+      expect(screen.getByRole("combobox")).toHaveTextContent(
+        "ollama-cloud/kimi-k2-thinking (no longer available)"
+      );
+    });
+
+    it("should allow selecting a different model, replacing the deprecated one", async () => {
+      const onChange = vi.fn();
+      render(
+        <AgentSettingsGeneral
+          agent={{ ...defaultAgent, model: "ollama-cloud/kimi-k2-thinking" }}
+          providers={allowlistedProviders}
+          onChange={onChange}
+        />
+      );
+
+      await userEvent.click(screen.getByRole("combobox"));
+      const options = screen.getAllByRole("option");
+      const sonnetOption = options.find((o) => o.textContent?.includes("Claude Sonnet 4"));
+      expect(sonnetOption).toBeDefined();
+      await userEvent.click(sonnetOption!);
+
+      await waitFor(() => {
+        expect(onChange).toHaveBeenCalledWith(
+          expect.objectContaining({ model: "anthropic/claude-sonnet-4-6" }),
+          true
+        );
+      });
+    });
+  });
+
+  describe("model picker anchor", () => {
+    it("should have id='model' on the model picker wrapper", () => {
+      render(
+        <AgentSettingsGeneral
+          agent={defaultAgent}
+          providers={defaultProviders}
+          onChange={vi.fn()}
+        />
+      );
+
+      expect(document.getElementById("model")).toBeInTheDocument();
+    });
+  });
+
   describe("onChange behavior", () => {
     it("should NOT render a Save button", () => {
       const onChange = vi.fn();

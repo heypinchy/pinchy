@@ -85,6 +85,18 @@ export function AgentSettingsGeneral({
 
   const providersWithModels = providers.filter((p) => p.models.length > 0);
 
+  // Collect all model IDs from the allowlist to detect deprecated pinned models
+  const allAllowlistedModelIds = new Set(
+    providersWithModels.flatMap((p) => p.models.map((m) => m.id))
+  );
+  const isDeprecatedModel = agent.model !== "" && !allAllowlistedModelIds.has(agent.model);
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && window.location.hash === "#model") {
+      document.getElementById("model")?.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, []);
+
   return (
     <div className="space-y-6">
       <Form {...form}>
@@ -120,7 +132,7 @@ export function AgentSettingsGeneral({
             control={form.control}
             name="model"
             render={({ field }) => (
-              <FormItem>
+              <FormItem id="model">
                 <FormLabel>Model</FormLabel>
                 <Select onValueChange={field.onChange} defaultValue={field.value}>
                   <FormControl>
@@ -129,6 +141,13 @@ export function AgentSettingsGeneral({
                     </SelectTrigger>
                   </FormControl>
                   <SelectContent>
+                    {isDeprecatedModel && (
+                      <SelectGroup>
+                        <SelectItem value={agent.model}>
+                          {agent.model} (no longer available)
+                        </SelectItem>
+                      </SelectGroup>
+                    )}
                     {providersWithModels.map((provider) => (
                       <SelectGroup key={provider.id}>
                         <SelectLabel>{provider.name}</SelectLabel>
