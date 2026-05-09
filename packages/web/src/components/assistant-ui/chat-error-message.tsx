@@ -12,6 +12,12 @@ export interface ChatError {
   disconnected?: true;
   timedOut?: true;
   payloadTooLarge?: true;
+  modelUnavailable?: {
+    kind: "model_unavailable";
+    model: string;
+    httpStatus: number;
+    ref?: string;
+  };
 }
 
 export const ChatErrorMessage: FC<{ error: ChatError; actionSlot?: ReactNode }> = ({

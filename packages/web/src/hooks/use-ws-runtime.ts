@@ -512,6 +512,7 @@ export function useWsRuntime(agentId: string): {
                   agentName: data.agentName,
                   providerError: data.providerError,
                   hint: data.hint,
+                  modelUnavailable: data.modelUnavailable,
                 }
               : { message: data.message || "An unknown error occurred." };
 
