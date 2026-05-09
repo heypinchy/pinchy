@@ -16,7 +16,10 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
 import { useChatStatus } from "@/hooks/use-chat-status";
-import { CLIENT_IMAGE_COMPRESSION_TARGET_BYTES, CLIENT_MAX_IMAGE_SIZE_BYTES } from "@/lib/limits";
+import {
+  CLIENT_IMAGE_COMPRESSION_TARGET_BYTES,
+  CLIENT_MAX_ATTACHMENT_SIZE_BYTES,
+} from "@/lib/limits";
 import * as imageCompression from "@/lib/image-compression";
 
 // Mock image compression module — real Canvas API is unavailable in jsdom.
@@ -529,7 +532,7 @@ describe("useWsRuntime", () => {
     // The compressed file's size is checked before converting to data URL, so we can use
     // a plain object with the right size rather than allocating megabytes of real data.
     const stillOversizedAfterCompression = {
-      size: CLIENT_MAX_IMAGE_SIZE_BYTES + 1,
+      size: CLIENT_MAX_ATTACHMENT_SIZE_BYTES + 1,
       type: "image/webp",
       name: "compressed.webp",
     } as unknown as File;
@@ -564,7 +567,7 @@ describe("useWsRuntime", () => {
     expect(sentMessage.type).toBe("history");
 
     // Should show an error message containing the MB limit
-    const expectedMb = Math.round(CLIENT_MAX_IMAGE_SIZE_BYTES / 1024 / 1024);
+    const expectedMb = Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024);
     const messages = result.current.runtime.messages;
     const errorMessage = messages.find(
       (m: any) =>

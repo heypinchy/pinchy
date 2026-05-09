@@ -1,18 +1,18 @@
 import { describe, it, expect } from "vitest";
 import {
   SERVER_WS_MAX_PAYLOAD_BYTES,
-  CLIENT_MAX_IMAGE_SIZE_BYTES,
+  CLIENT_MAX_ATTACHMENT_SIZE_BYTES,
   CLIENT_IMAGE_COMPRESSION_TARGET_BYTES,
   CLIENT_IMAGE_COMPRESSION_SKIP_BELOW_BYTES,
 } from "@/lib/limits";
 
 describe("WS frame limits — invariants", () => {
-  it("server limit is at least 1.5× the client image limit (covers base64 + JSON overhead)", () => {
+  it("server limit is at least 1.5× the client attachment limit (covers base64 + JSON overhead)", () => {
     // Base64 encoding adds ~33% overhead; the JSON envelope and additional
     // message parts add a bit more. 1.5× is a conservative floor — a single
-    // 15 MB image becomes ~20 MB on the wire, comfortably below 25 MB.
+    // 15 MB attachment becomes ~20 MB on the wire, comfortably below 25 MB.
     expect(SERVER_WS_MAX_PAYLOAD_BYTES).toBeGreaterThanOrEqual(
-      Math.ceil(CLIENT_MAX_IMAGE_SIZE_BYTES * 1.5)
+      Math.ceil(CLIENT_MAX_ATTACHMENT_SIZE_BYTES * 1.5)
     );
   });
 

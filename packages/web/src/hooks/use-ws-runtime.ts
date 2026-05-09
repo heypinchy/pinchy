@@ -16,7 +16,10 @@ import type { ChatError } from "@/components/assistant-ui/chat-error-message";
 import { reduceMessages, type Action } from "./message-status-reducer";
 import type { MessageStatus } from "./message-status-reducer";
 import { isOrphaned as computeIsOrphaned } from "./orphan-detector";
-import { CLIENT_IMAGE_COMPRESSION_TARGET_BYTES, CLIENT_MAX_IMAGE_SIZE_BYTES } from "@/lib/limits";
+import {
+  CLIENT_IMAGE_COMPRESSION_TARGET_BYTES,
+  CLIENT_MAX_ATTACHMENT_SIZE_BYTES,
+} from "@/lib/limits";
 import { compressImageForChat } from "@/lib/image-compression";
 import { dataUrlToFile, fileToDataUrl } from "@/lib/data-url";
 
@@ -285,7 +288,7 @@ export function useWsRuntime(agentId: string): {
               content: "",
               error: {
                 payloadTooLarge: true,
-                message: `Image too large to send. Please use an image smaller than ${Math.round(CLIENT_MAX_IMAGE_SIZE_BYTES / 1024 / 1024)} MB.`,
+                message: `File too large to send. Please use a file smaller than ${Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024)} MB.`,
               },
               // retryable intentionally absent — absence means false per codebase convention
             },
@@ -650,13 +653,13 @@ export function useWsRuntime(agentId: string): {
         // Check size AFTER compression — reject if still too large for the WS frame.
         // Checking file.size (bytes) avoids materialising the full data URL string
         // just to count characters.
-        if (result.file.size > CLIENT_MAX_IMAGE_SIZE_BYTES) {
+        if (result.file.size > CLIENT_MAX_ATTACHMENT_SIZE_BYTES) {
           setMessages((prev) => [
             ...prev,
             {
               id: uuid(),
               role: "assistant",
-              content: `Image exceeds the ${Math.round(CLIENT_MAX_IMAGE_SIZE_BYTES / 1024 / 1024)} MB size limit. Please use a smaller image.`,
+              content: `File exceeds the ${Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024)} MB size limit. Please use a smaller file.`,
             },
           ]);
           return;
