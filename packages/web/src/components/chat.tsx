@@ -163,7 +163,7 @@ export function Chat({
 
   const indicator = getStatusIndicator(chatStatus);
 
-  if (!chatBundle) {
+  if (!chatBundle || chatBundle.runtime === PLACEHOLDER_RUNTIME) {
     return null; // Brief flash before ChatSessionMounts publishes the real bundle
   }
 
