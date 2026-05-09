@@ -40,3 +40,39 @@ describe("compressImageForChat — skip path", () => {
     expect(out).toBe(compressed);
   });
 });
+
+describe("compressImageForChat — compression path", () => {
+  beforeEach(() => {
+    mockedImageCompression.mockReset();
+  });
+
+  it("calls browser-image-compression with WebP at the configured target size for a large JPEG", async () => {
+    const large = makeFile(5 * 1024 * 1024, "image/jpeg");
+    const compressed = makeFile(800 * 1024, "image/webp", "compressed");
+    mockedImageCompression.mockResolvedValueOnce(compressed);
+
+    const out = await compressImageForChat(large);
+
+    expect(mockedImageCompression).toHaveBeenCalledOnce();
+    const [fileArg, options] = mockedImageCompression.mock.calls[0];
+    expect(fileArg).toBe(large);
+    expect(options).toMatchObject({
+      fileType: "image/webp",
+      maxWidthOrHeight: 2560,
+      initialQuality: 0.85,
+      useWebWorker: true,
+    });
+    expect(options!.maxSizeMB).toBeCloseTo(1_900_000 / (1024 * 1024), 2);
+    expect(out).toBe(compressed);
+  });
+
+  it("returns the original file when the compression library throws (e.g. HEIC, corrupt input)", async () => {
+    const heic = makeFile(3 * 1024 * 1024, "image/heic");
+    mockedImageCompression.mockRejectedValueOnce(new Error("Unable to decode HEIC"));
+
+    const out = await compressImageForChat(heic);
+
+    expect(out).toBe(heic);
+    expect(mockedImageCompression).toHaveBeenCalledOnce();
+  });
+});
