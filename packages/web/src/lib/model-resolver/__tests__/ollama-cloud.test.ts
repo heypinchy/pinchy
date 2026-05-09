@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS } from "@/lib/ollama-cloud-models";
 import { resolveOllamaCloud } from "../providers/ollama-cloud";
 
 describe("resolveOllamaCloud", () => {
@@ -27,6 +28,21 @@ describe("resolveOllamaCloud", () => {
   it("returns fallbackUsed=false when exact taskType match exists", () => {
     const r = resolveOllamaCloud({ tier: "balanced", taskType: "coder" });
     expect(r.fallbackUsed).toBe(false);
+  });
+});
+
+describe("resolveOllamaCloud — allowlist invariant", () => {
+  it("every resolver target is present in TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS", () => {
+    const allowlist = new Set<string>(TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS);
+    const tiers = ["fast", "balanced", "reasoning"] as const;
+    const taskTypes = ["general", "coder", "vision", "reasoning"] as const;
+    for (const tier of tiers) {
+      for (const taskType of taskTypes) {
+        const { model } = resolveOllamaCloud({ tier, taskType });
+        const bareId = model.replace(/^ollama-cloud\//, "");
+        expect(allowlist.has(bareId)).toBe(true);
+      }
+    }
   });
 });
 

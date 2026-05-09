@@ -270,6 +270,7 @@ describe("fetchProviderModels", () => {
             { id: "glm-5.1" },
             { id: "gpt-oss:20b" },
             { id: "gpt-oss:120b" },
+            // kimi-k2-thinking: still returned by Ollama API but removed from Pinchy allowlist (#305)
             { id: "kimi-k2-thinking" },
             { id: "kimi-k2.5" },
             { id: "kimi-k2.6" },
