@@ -17,6 +17,7 @@ import { reduceMessages, type Action } from "./message-status-reducer";
 import type { MessageStatus } from "./message-status-reducer";
 import { isOrphaned as computeIsOrphaned } from "./orphan-detector";
 import { CLIENT_MAX_IMAGE_SIZE_BYTES } from "@/lib/limits";
+import { compressImageForChat } from "@/lib/image-compression";
 
 export interface WsMessage {
   id: string;
@@ -80,6 +81,27 @@ function buildWsContent(text: string, images: string[] | undefined): WsContent {
     parts.push({ type: "image_url", image_url: { url: img } });
   }
   return parts;
+}
+
+function dataUrlToFile(dataUrl: string): File {
+  // Parse "data:<mime>;base64,<data>" without fetch so this works in all environments.
+  const [header, b64] = dataUrl.split(",");
+  const mime = header.replace(/^data:/, "").replace(/;base64$/, "");
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  const ext = mime.split("/")[1] ?? "bin";
+  return new File([bytes], `attachment.${ext}`, { type: mime });
+}
+
+async function fileToDataUrl(file: File): Promise<string> {
+  // arrayBuffer() is a native Blob method that resolves via microtasks
+  // (not timers), so it works correctly even with vi.useFakeTimers().
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return `data:${file.type};base64,${btoa(binary)}`;
 }
 
 class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
@@ -621,9 +643,17 @@ export function useWsRuntime(agentId: string): {
         }
       }
 
-      // Check image size limit
+      // Compress client-side to WebP < 1.9 MB before sending.
+      // OpenClaw's agent.run path offloads images > 2 MB as text-only markers.
+      const compressedImages: string[] = [];
       for (const img of images) {
-        if (img.length > CLIENT_MAX_IMAGE_SIZE_BYTES) {
+        const file = dataUrlToFile(img);
+        const compressed = await compressImageForChat(file);
+
+        // Check size AFTER compression — reject if still too large.
+        // Checking file.size (bytes) avoids materialising the full data URL string
+        // just to count characters.
+        if (compressed.size > CLIENT_MAX_IMAGE_SIZE_BYTES) {
           setMessages((prev) => [
             ...prev,
             {
@@ -634,9 +664,11 @@ export function useWsRuntime(agentId: string): {
           ]);
           return;
         }
+
+        compressedImages.push(await fileToDataUrl(compressed));
       }
 
-      if (!text.trim() && images.length === 0) return;
+      if (!text.trim() && compressedImages.length === 0) return;
 
       const clientMessageId = uuid();
 
@@ -652,7 +684,7 @@ export function useWsRuntime(agentId: string): {
           content: text,
           timestamp: new Date().toISOString(),
           status: "sending",
-          ...(images.length > 0 && { images }),
+          ...(compressedImages.length > 0 && { images: compressedImages }),
         },
       ]);
 
@@ -673,7 +705,7 @@ export function useWsRuntime(agentId: string): {
 
       const payload = JSON.stringify({
         type: "message",
-        content: buildWsContent(text, images),
+        content: buildWsContent(text, compressedImages),
         agentId,
         clientMessageId,
       });

@@ -49,17 +49,26 @@ vi.stubGlobal("WebSocket", MockWebSocketClass);
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
+// Mock image compression — real Canvas API is unavailable in jsdom
+vi.mock("@/lib/image-compression", () => ({
+  compressImageForChat: vi.fn(async (file: File) => file),
+}));
+
 vi.mock("@/components/restart-provider", () => ({
   useRestart: () => ({ triggerRestart: vi.fn() }),
 }));
 
 // Capture the `onNew` callback and `messages` passed into useExternalStoreRuntime
 // so tests can call it directly without needing to interact with the assistant-ui UI.
-let capturedOnNew: ((msg: unknown) => void) | null = null;
+// onNew is async (runs image compression), so type it as returning Promise<void>.
+let capturedOnNew: ((msg: unknown) => Promise<void> | void) | null = null;
 let capturedMessages: unknown[] = [];
 
 vi.mock("@assistant-ui/react", () => ({
-  useExternalStoreRuntime: (opts: { onNew?: (msg: unknown) => void; messages?: unknown[] }) => {
+  useExternalStoreRuntime: (opts: {
+    onNew?: (msg: unknown) => Promise<void> | void;
+    messages?: unknown[];
+  }) => {
     capturedOnNew = opts.onNew ?? null;
     capturedMessages = opts.messages ?? [];
     return {
@@ -1357,10 +1366,12 @@ describe("onRetryResend", () => {
       latestWs().simulateMessage({ type: "history", messages: [] });
     });
 
-    // Send a message with an image attachment
-    const imageDataUrl = "data:image/png;base64,abc123";
+    // Send a message with an image attachment.
+    // Use valid base64 ("YWJj" encodes "abc") so dataUrlToFile parses it correctly.
+    // Await capturedOnNew because onNew is now async (it runs image compression).
+    const imageDataUrl = "data:image/png;base64,YWJj";
     await act(async () => {
-      capturedOnNew!({
+      await capturedOnNew!({
         content: [{ type: "text", text: "look at this image" }],
         attachments: [
           {

@@ -3,6 +3,12 @@ import { renderHook, act } from "@testing-library/react";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
 import { useChatStatus } from "@/hooks/use-chat-status";
 import { CLIENT_MAX_IMAGE_SIZE_BYTES } from "@/lib/limits";
+import * as imageCompression from "@/lib/image-compression";
+
+// Mock image compression module — real Canvas API is unavailable in jsdom
+vi.mock("@/lib/image-compression", () => ({
+  compressImageForChat: vi.fn(async (file: File) => file),
+}));
 
 // Track all created WebSocket instances
 let wsInstances: MockWebSocket[] = [];
@@ -60,6 +66,8 @@ describe("useWsRuntime", () => {
     vi.clearAllMocks();
     vi.useFakeTimers();
     wsInstances = [];
+    // Default: compression is a no-op (identity) — real Canvas unavailable in jsdom
+    vi.mocked(imageCompression.compressImageForChat).mockImplementation(async (file) => file);
   });
 
   afterEach(() => {
@@ -428,7 +436,7 @@ describe("useWsRuntime", () => {
     expect(acceptedTypes).toContain(".py");
   });
 
-  it("should send structured content array when message has image attachment", () => {
+  it("should send structured content array when message has image attachment", async () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -437,8 +445,10 @@ describe("useWsRuntime", () => {
     });
 
     // assistant-ui puts images in attachments, not content
-    act(() => {
-      result.current.runtime.onNew({
+    // Use valid base64 ("YWJj" encodes "abc") so the atob/FileReader round-trip
+    // preserves the data URL exactly.
+    await act(async () => {
+      await result.current.runtime.onNew({
         content: [{ type: "text", text: "What is this?" }],
         attachments: [
           {
@@ -446,7 +456,7 @@ describe("useWsRuntime", () => {
             type: "image",
             name: "photo.png",
             status: { type: "complete" },
-            content: [{ type: "image", image: "data:image/png;base64,abc123" }],
+            content: [{ type: "image", image: "data:image/png;base64,YWJj" }],
           },
         ],
         parentId: "root",
@@ -457,7 +467,7 @@ describe("useWsRuntime", () => {
     const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
     expect(sentMessage.content).toEqual([
       { type: "text", text: "What is this?" },
-      { type: "image_url", image_url: { url: "data:image/png;base64,abc123" } },
+      { type: "image_url", image_url: { url: "data:image/png;base64,YWJj" } },
     ]);
   });
 
@@ -481,7 +491,7 @@ describe("useWsRuntime", () => {
     expect(sentMessage.content).toBe("Hello plain");
   });
 
-  it("should reject image attachments larger than the client size limit", () => {
+  it("should reject image attachments larger than the client size limit", async () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -489,10 +499,23 @@ describe("useWsRuntime", () => {
       ws.onopen?.();
     });
 
-    const largeImage = "data:image/png;base64," + "A".repeat(CLIENT_MAX_IMAGE_SIZE_BYTES + 1);
+    // Mock compressImageForChat to return a File that is still too large after compression.
+    // The compressed file's size is checked before converting to data URL, so we can use
+    // a plain object with the right size rather than allocating megabytes of real data.
+    const stillOversizedAfterCompression = {
+      size: CLIENT_MAX_IMAGE_SIZE_BYTES + 1,
+      type: "image/webp",
+      name: "compressed.webp",
+    } as unknown as File;
+    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce(
+      stillOversizedAfterCompression
+    );
 
-    act(() => {
-      result.current.runtime.onNew({
+    // Small input — the rejection is based on compressed output size, not input size
+    const smallInput = "data:image/png;base64,YWJj";
+
+    await act(async () => {
+      await result.current.runtime.onNew({
         content: [{ type: "text", text: "Big image" }],
         attachments: [
           {
@@ -500,7 +523,7 @@ describe("useWsRuntime", () => {
             type: "image",
             name: "big.png",
             status: { type: "complete" },
-            content: [{ type: "image", image: largeImage }],
+            content: [{ type: "image", image: smallInput }],
           },
         ],
         parentId: "root",
@@ -520,6 +543,48 @@ describe("useWsRuntime", () => {
         m.role === "assistant" && m.content[0]?.text?.includes(`${expectedMb} MB size limit`)
     );
     expect(errorMessage).toBeDefined();
+  });
+
+  it("compresses images to WebP before sending over the WebSocket", async () => {
+    // Arrange: spy on compressImageForChat and return a small WebP file
+    const webpBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46]); // "RIFF" stub
+    const webpFile = new File([webpBytes], "photo.webp", { type: "image/webp" });
+    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce(webpFile);
+
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    // Send a message with a JPEG image (valid base64: "YWJj" = "abc")
+    await act(async () => {
+      await result.current.runtime.onNew({
+        content: [{ type: "text", text: "What is this?" }],
+        attachments: [
+          {
+            id: "img-1",
+            type: "image",
+            name: "photo.jpg",
+            status: { type: "complete" },
+            content: [{ type: "image", image: "data:image/jpeg;base64,YWJj" }],
+          },
+        ],
+        parentId: "root",
+      });
+    });
+
+    // compressImageForChat must have been called with a File of JPEG type
+    expect(imageCompression.compressImageForChat).toHaveBeenCalledOnce();
+    const [receivedFile] = vi.mocked(imageCompression.compressImageForChat).mock.calls[0];
+    expect(receivedFile.type).toBe("image/jpeg");
+
+    // The WS frame must carry the compressed WebP data URL, not the original JPEG
+    const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
+    const imageUrl = sentMessage.content.find((p: { type: string }) => p.type === "image_url")
+      ?.image_url?.url as string;
+    expect(imageUrl).toMatch(/^data:image\/webp;base64,/);
   });
 
   it("should send history request on connect with agentId", () => {
@@ -795,7 +860,7 @@ describe("useWsRuntime", () => {
     });
   });
 
-  it("should store image data on user message for display", () => {
+  it("should store image data on user message for display", async () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];
 
@@ -803,8 +868,11 @@ describe("useWsRuntime", () => {
       ws.onopen?.();
     });
 
-    act(() => {
-      result.current.runtime.onNew({
+    // Use valid base64 ("dGVzdA==" encodes "test") so the atob/FileReader round-trip
+    // preserves the data URL exactly. After compression (identity mock), the stored URL
+    // must match the compressed output — which equals the input when compression is no-op.
+    await act(async () => {
+      await result.current.runtime.onNew({
         content: [{ type: "text", text: "Describe this" }],
         attachments: [
           {
@@ -812,7 +880,7 @@ describe("useWsRuntime", () => {
             type: "image",
             name: "photo.png",
             status: { type: "complete" },
-            content: [{ type: "image", image: "data:image/png;base64,xyz789" }],
+            content: [{ type: "image", image: "data:image/png;base64,dGVzdA==" }],
           },
         ],
         parentId: "root",
@@ -825,7 +893,7 @@ describe("useWsRuntime", () => {
 
     const imageContent = userMsg.content.find((c: any) => c.type === "image");
     expect(imageContent).toBeDefined();
-    expect(imageContent.image).toBe("data:image/png;base64,xyz789");
+    expect(imageContent.image).toBe("data:image/png;base64,dGVzdA==");
   });
 
   describe("isDelayed", () => {
