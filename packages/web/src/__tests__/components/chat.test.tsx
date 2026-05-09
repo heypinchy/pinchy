@@ -4,9 +4,10 @@ import "@testing-library/jest-dom";
 import { Chat } from "@/components/chat";
 import type { Agent } from "@/components/agent-list";
 
-const { mockGetAgent, mockUseChatStatus } = vi.hoisted(() => ({
+const { mockGetAgent, mockUseChatStatus, mockUseChatSession } = vi.hoisted(() => ({
   mockGetAgent: vi.fn() as ReturnType<typeof vi.fn>,
   mockUseChatStatus: vi.fn(),
+  mockUseChatSession: vi.fn(),
 }));
 
 vi.mock("@/components/agents-provider", () => ({
@@ -24,15 +25,8 @@ vi.mock("@/lib/avatar", () => ({
   ),
 }));
 
-vi.mock("@/hooks/use-ws-runtime", () => ({
-  useWsRuntime: vi.fn().mockReturnValue({
-    runtime: {},
-    isConnected: true,
-    isDelayed: false,
-    isHistoryLoaded: true,
-    hasInitialContent: true,
-    isOpenClawConnected: true,
-  }),
+vi.mock("@/components/chat-session-provider", () => ({
+  useChatSession: mockUseChatSession,
 }));
 
 vi.mock("@/hooks/use-chat-status", () => ({
@@ -71,26 +65,30 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import { useWsRuntime } from "@/hooks/use-ws-runtime";
-import { ChatStatusContext } from "@/components/chat";
+const DEFAULT_BUNDLE = {
+  runtime: {} as any,
+  isConnected: true,
+  isDelayed: false,
+  isHistoryLoaded: true,
+  hasInitialContent: true,
+  isOpenClawConnected: true,
+  isRunning: false,
+  reconnectExhausted: false,
+  isOrphaned: false,
+  onRetryContinue: vi.fn(),
+  onRetryResend: vi.fn(),
+  lastError: null,
+};
 
 describe("Chat", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetAgent.mockReturnValue(undefined);
     mockUseChatStatus.mockReturnValue({ kind: "ready" });
-    vi.mocked(useWsRuntime).mockReturnValue({
-      runtime: {} as any,
-      isConnected: true,
-      isDelayed: false,
-      isHistoryLoaded: true,
-      hasInitialContent: true,
-      isOpenClawConnected: true,
-      isRunning: false,
-      reconnectExhausted: false,
-      isOrphaned: false,
-      onRetryContinue: vi.fn(),
-      onRetryResend: vi.fn(),
+    mockUseChatSession.mockReturnValue({
+      bundle: DEFAULT_BUNDLE,
+      publish: vi.fn(),
+      remove: vi.fn(),
     });
   });
 
@@ -273,21 +271,15 @@ describe("Chat", () => {
   });
 
   it("provides ChatStatusContext with ready status when fully connected", () => {
-    // Render Chat; with the beforeEach mock (isConnected: true,
+    // Render Chat; with the beforeEach mock bundle (isConnected: true,
     // isOpenClawConnected: true, isHistoryLoaded: true, isRunning: false,
     // reconnectExhausted: false) and no configuring prop, useChatStatus
-    // resolves to { kind: "ready" }. The MobileChatHeader mock exposes the
-    // context value via a data attribute so we can assert it without adding
-    // children support to Chat.
+    // resolves to { kind: "ready" }.
     render(<Chat agentId="agent-1" agentName="Test Agent" />);
 
-    // useChatStatus is called inside Chat with the wired inputs. Since
-    // ChatStatusContext.Provider receives its return value directly, we verify
-    // the provider is correctly wired by reading the context from the
-    // MobileChatHeader mock (rendered inside Chat) via useContext.
-    // Because no current child mock reads ChatStatusContext, we assert instead
-    // that useChatStatus is called with the correct inputs — the hook's own
-    // unit tests cover the output mapping exhaustively.
+    // useChatStatus is called inside Chat with the wired inputs from the
+    // ChatSessionProvider bundle. The hook's own unit tests cover the output
+    // mapping exhaustively; here we verify that Chat passes the correct fields.
     expect(mockUseChatStatus).toHaveBeenCalledWith(
       expect.objectContaining({
         isConnected: true,
@@ -325,18 +317,14 @@ describe("Chat", () => {
 
     it("shows delayed message when responding and delayed", () => {
       mockUseChatStatus.mockReturnValue({ kind: "responding" });
-      vi.mocked(useWsRuntime).mockReturnValue({
-        runtime: {} as any,
-        isConnected: true,
-        isDelayed: true,
-        isHistoryLoaded: true,
-        hasInitialContent: true,
-        isOpenClawConnected: true,
-        isRunning: true,
-        reconnectExhausted: false,
-        isOrphaned: false,
-        onRetryContinue: vi.fn(),
-        onRetryResend: vi.fn(),
+      mockUseChatSession.mockReturnValue({
+        bundle: {
+          ...DEFAULT_BUNDLE,
+          isDelayed: true,
+          isRunning: true,
+        },
+        publish: vi.fn(),
+        remove: vi.fn(),
       });
       render(<Chat agentId="agent-1" agentName="Smithers" />);
       expect(screen.getByText(/taking longer than usual/i)).toBeInTheDocument();

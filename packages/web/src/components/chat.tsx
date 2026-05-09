@@ -1,9 +1,10 @@
 "use client";
 
-import { createContext } from "react";
+import { createContext, useEffect } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
+import type { AssistantRuntime } from "@assistant-ui/react";
 import { Thread } from "@/components/assistant-ui/thread";
-import { useWsRuntime } from "@/hooks/use-ws-runtime";
+import { useChatSession } from "@/components/chat-session-provider";
 import { useAgentsContext } from "@/components/agents-provider";
 import { getAgentAvatarSvg } from "@/lib/avatar";
 import Link from "next/link";
@@ -49,7 +50,7 @@ export const RetryContinueContext = createContext<
 >(() => {});
 
 /**
- * Structured chat connection/activity status derived from useWsRuntime state.
+ * Structured chat connection/activity status derived from the RuntimeBundle.
  * Drives the connection indicator, the retry-button enabled state, and the
  * composer input/send disabled state — one mental model for the user:
  * red dot ⇔ retry disabled.
@@ -86,6 +87,9 @@ function ChatStatusBanner({ status, isDelayed }: ChatStatusBannerProps) {
   return null;
 }
 
+// Sentinel used while ChatSessionMounts spins up the real runtime.
+const PLACEHOLDER_RUNTIME = {} as AssistantRuntime;
+
 interface ChatProps {
   agentId: string;
   agentName: string;
@@ -111,18 +115,41 @@ export function Chat({
     : avatarUrl;
   const displayIsPersonal = liveAgent?.isPersonal ?? isPersonal;
 
-  const {
-    runtime,
-    isConnected,
-    isDelayed,
-    isHistoryLoaded,
-    hasInitialContent,
-    isOpenClawConnected,
-    isRunning,
-    reconnectExhausted,
-    onRetryResend,
-    onRetryContinue,
-  } = useWsRuntime(agentId);
+  const { bundle: chatBundle, publish } = useChatSession(agentId);
+
+  // Register this agent with the provider on first mount so
+  // ChatSessionMounts spins up a hidden runtime instance.
+  useEffect(() => {
+    if (!chatBundle) {
+      publish({
+        runtime: PLACEHOLDER_RUNTIME,
+        isRunning: false,
+        isConnected: false,
+        isHistoryLoaded: false,
+        hasInitialContent: false,
+        isOpenClawConnected: false,
+        isDelayed: false,
+        reconnectExhausted: false,
+        isOrphaned: false,
+        onRetryContinue: () => {},
+        onRetryResend: () => {},
+        lastError: null,
+      });
+    }
+  }, [chatBundle, publish]);
+
+  // All hooks must be called unconditionally — destructure after so
+  // useChatStatus always runs regardless of whether the bundle is ready.
+  const runtime = chatBundle?.runtime ?? PLACEHOLDER_RUNTIME;
+  const isRunning = chatBundle?.isRunning ?? false;
+  const isConnected = chatBundle?.isConnected ?? false;
+  const isDelayed = chatBundle?.isDelayed ?? false;
+  const isHistoryLoaded = chatBundle?.isHistoryLoaded ?? false;
+  const hasInitialContent = chatBundle?.hasInitialContent ?? false;
+  const isOpenClawConnected = chatBundle?.isOpenClawConnected ?? false;
+  const reconnectExhausted = chatBundle?.reconnectExhausted ?? false;
+  const onRetryContinue = chatBundle?.onRetryContinue ?? (() => {});
+  const onRetryResend = chatBundle?.onRetryResend ?? (() => {});
 
   const chatStatus = useChatStatus({
     isConnected,
@@ -135,6 +162,10 @@ export function Chat({
   });
 
   const indicator = getStatusIndicator(chatStatus);
+
+  if (!chatBundle) {
+    return null; // Brief flash before ChatSessionMounts publishes the real bundle
+  }
 
   return (
     <AgentIdContext.Provider value={agentId}>
