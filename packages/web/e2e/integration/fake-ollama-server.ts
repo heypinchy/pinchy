@@ -37,9 +37,26 @@ function streamTextResponse(res: http.ServerResponse, text: string) {
 }
 
 async function streamTextResponseSlow(res: http.ServerResponse, text: string) {
-  res.writeHead(200, { "Content-Type": "application/x-ndjson" });
-  // Suppress EPIPE errors when the client disconnects mid-stream.
-  res.socket?.on("error", () => {});
+  res.writeHead(200, {
+    "Content-Type": "application/x-ndjson",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  // Push headers immediately so OpenClaw's streaming reader can attach without
+  // waiting for the first data chunk.
+  res.flushHeaders();
+  // Disable Nagle's algorithm — small NDJSON chunks (~120 bytes each) would
+  // otherwise be coalesced at the kernel level, defeating the slow-stream
+  // semantics this helper exists for.
+  res.socket?.setNoDelay(true);
+  // Narrowly suppress EPIPE/ECONNRESET on mid-stream disconnect — those are
+  // the expected failure modes when the client tears down. Anything else is
+  // a real bug we want to see in the test logs.
+  res.socket?.on("error", (err: NodeJS.ErrnoException) => {
+    if (err.code !== "EPIPE" && err.code !== "ECONNRESET") {
+      console.error("[fake-ollama] socket error:", err);
+    }
+  });
   const words = text.split(" ");
   try {
     for (const [index, word] of words.entries()) {
