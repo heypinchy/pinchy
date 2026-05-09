@@ -29,9 +29,14 @@ export async function createSmithersAgent({
   // docs_list / docs_read come from the pinchy-docs plugin, which is enabled
   // automatically for every personal agent (see openclaw-config.ts). No need
   // to list them here.
-  const allowedTools = isAdmin
+  const baseTools = isAdmin
     ? ["pinchy_save_user_context", "pinchy_save_org_context"]
     : ["pinchy_save_user_context"];
+  // pinchy_ls / pinchy_read let Smithers read files the user uploaded into
+  // the agent workspace (uploads/). This is the path the chat composer's
+  // PDF/audio support relies on — without it, the upload hint mentions a file
+  // the agent cannot reach. Scoped to "uploads" via pluginConfig below.
+  const allowedTools = [...baseTools, "pinchy_ls", "pinchy_read"];
 
   const [agent] = await db
     .insert(agents)
@@ -45,6 +50,9 @@ export async function createSmithersAgent({
       personalityPresetId: "the-butler",
       greetingMessage: ONBOARDING_GREETING,
       allowedTools,
+      pluginConfig: {
+        "pinchy-files": { allowed_paths: ["uploads"] },
+      },
     })
     .returning();
 

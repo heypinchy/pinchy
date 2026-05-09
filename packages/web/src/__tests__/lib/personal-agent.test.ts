@@ -155,7 +155,8 @@ describe("createSmithersAgent", () => {
       avatarSeed: "__smithers__",
       personalityPresetId: "the-butler",
       greetingMessage: "Test onboarding greeting",
-      allowedTools: ["pinchy_save_user_context"],
+      allowedTools: ["pinchy_save_user_context", "pinchy_ls", "pinchy_read"],
+      pluginConfig: { "pinchy-files": { allowed_paths: ["uploads"] } },
     });
     expect(agent).toEqual(fakeAgent);
   });
@@ -316,7 +317,7 @@ describe("createSmithersAgent", () => {
     expect(agent).toEqual(fakeAgent);
   });
 
-  it("sets allowedTools with save_user_context for non-admin user", async () => {
+  it("sets allowedTools with save_user_context + file tools for non-admin user", async () => {
     getContextForAgentMock.mockResolvedValueOnce("");
     const fakeAgent = {
       id: "agent-tools-1",
@@ -338,12 +339,12 @@ describe("createSmithersAgent", () => {
 
     expect(valuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: ["pinchy_save_user_context"],
+        allowedTools: ["pinchy_save_user_context", "pinchy_ls", "pinchy_read"],
       })
     );
   });
 
-  it("sets allowedTools with both context tools for admin user", async () => {
+  it("sets allowedTools with both context tools + file tools for admin user", async () => {
     getContextForAgentMock.mockResolvedValueOnce("");
     const fakeAgent = {
       id: "agent-tools-2",
@@ -365,7 +366,40 @@ describe("createSmithersAgent", () => {
 
     expect(valuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: ["pinchy_save_user_context", "pinchy_save_org_context"],
+        allowedTools: [
+          "pinchy_save_user_context",
+          "pinchy_save_org_context",
+          "pinchy_ls",
+          "pinchy_read",
+        ],
+      })
+    );
+  });
+
+  it("auto-enables pinchy-files scoped to uploads/ so the agent can read uploaded files", async () => {
+    getContextForAgentMock.mockResolvedValueOnce("");
+    const fakeAgent = {
+      id: "agent-files-1",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-6",
+      ownerId: "user-1",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { createSmithersAgent } = await import("@/lib/personal-agent");
+    await createSmithersAgent({
+      model: "anthropic/claude-sonnet-4-6",
+      ownerId: "user-1",
+      isPersonal: true,
+      isAdmin: false,
+    });
+
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        allowedTools: expect.arrayContaining(["pinchy_ls", "pinchy_read"]),
+        pluginConfig: { "pinchy-files": { allowed_paths: ["uploads"] } },
       })
     );
   });
