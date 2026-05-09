@@ -235,6 +235,7 @@ export class ClientRouter {
       } catch (err) {
         this.sendToClient(clientWs, {
           type: "error",
+          code: "attachment_invalid",
           message: err instanceof Error ? err.message : String(err),
         });
         return;

@@ -18,6 +18,7 @@ export interface ChatError {
   timedOut?: true;
   payloadTooLarge?: true;
   modelUnavailable?: ModelUnavailableError;
+  attachmentInvalid?: true;
 }
 
 export const ChatErrorMessage: FC<{
@@ -40,6 +41,21 @@ export const ChatErrorMessage: FC<{
         </div>
         <p className="mt-1.5 text-destructive/90 dark:text-red-300/90">
           {error.message ?? "The file you attached is too large to send."}
+        </p>
+      </div>
+    );
+  }
+
+  if (error.attachmentInvalid) {
+    return (
+      <div role="alert" className={wrapperClass}>
+        <div className="flex items-center gap-2 font-medium text-destructive dark:text-red-200">
+          <AlertTriangle className="size-4 shrink-0" data-testid="attachment-invalid-icon" />
+          <span className="flex-1">Invalid file</span>
+          {actionSlot}
+        </div>
+        <p className="mt-1.5 text-destructive/90 dark:text-red-300/90">
+          {error.message ?? "The file could not be processed."}
         </p>
       </div>
     );

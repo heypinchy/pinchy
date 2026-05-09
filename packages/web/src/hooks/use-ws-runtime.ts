@@ -517,7 +517,9 @@ export function useWsRuntime(agentId: string): {
                   hint: data.hint,
                   modelUnavailable: data.modelUnavailable,
                 }
-              : { message: data.message || "An unknown error occurred." };
+              : data.code === "attachment_invalid"
+                ? { attachmentInvalid: true, message: data.message }
+                : { message: data.message || "An unknown error occurred." };
 
             setMessages((prev) => [
               // Remove any existing error bubble — only one error is ever shown

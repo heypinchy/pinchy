@@ -2366,4 +2366,37 @@ describe("useWsRuntime", () => {
       expect(historySentAfter).toHaveLength(0);
     });
   });
+
+  it("should set attachmentInvalid on ChatError when server sends attachment_invalid code", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "error",
+          code: "attachment_invalid",
+          message: "File type mismatch: claimed application/pdf, content is image/png",
+        }),
+      });
+    });
+
+    const messages = result.current.runtime.messages;
+    const errorMsg = messages.find((m: any) => m.role === "assistant" && m.metadata?.custom?.error);
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.metadata.custom.error).toEqual({
+      attachmentInvalid: true,
+      message: "File type mismatch: claimed application/pdf, content is image/png",
+    });
+  });
 });

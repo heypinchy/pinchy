@@ -157,6 +157,20 @@ describe("ChatErrorMessage", () => {
     // The too-large icon must be rendered
     expect(screen.getByTestId("too-large-icon")).toBeInTheDocument();
   });
+
+  it("renders 'Invalid file' heading and detail message for attachmentInvalid variant", () => {
+    render(
+      <ChatErrorMessage
+        error={{
+          attachmentInvalid: true,
+          message: "File type mismatch: claimed application/pdf, content is image/png",
+        }}
+      />
+    );
+    expect(screen.getByText("Invalid file")).toBeInTheDocument();
+    expect(screen.getByText(/mismatch/i)).toBeInTheDocument();
+    expect(screen.getByTestId("attachment-invalid-icon")).toBeInTheDocument();
+  });
 });
 
 describe("ChatErrorMessage — modelUnavailable", () => {
