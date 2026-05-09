@@ -104,6 +104,16 @@ describe("ChatSessionProvider", () => {
 
     expect(result.current.ids.sort()).toEqual(["agent-A", "agent-B"]);
   });
+
+  it("remove() clears the bundle for that agent", () => {
+    const { result } = renderHook(() => useChatSession("agent-A"), { wrapper });
+
+    act(() => result.current.publish(fakeBundle()));
+    expect(result.current.bundle).toBeDefined();
+
+    act(() => result.current.remove());
+    expect(result.current.bundle).toBeUndefined();
+  });
 });
 
 // Helper component: subscribes to agent-B and calls onRender each render.

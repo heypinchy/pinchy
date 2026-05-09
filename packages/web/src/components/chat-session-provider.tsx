@@ -14,7 +14,7 @@ export interface RuntimeBundle {
   isDelayed: boolean;
   reconnectExhausted: boolean;
   isOrphaned: boolean;
-  onRetryContinue: (...args: unknown[]) => void;
+  onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
   lastError: string | null;
 }
