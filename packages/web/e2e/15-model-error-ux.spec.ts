@@ -153,7 +153,11 @@ test.describe("model-unavailable error UX", () => {
                   data: JSON.stringify({
                     type: "history",
                     messages: [],
-                    sessionKnown: false,
+                    // sessionKnown: true signals the server knows this session
+                    // but it has no history yet. This sets knownEmptyHistory=true
+                    // in useWsRuntime so hasInitialContent becomes true, allowing
+                    // chatStatus to transition to "ready" and enabling the Send button.
+                    sessionKnown: true,
                   }),
                 });
               }, 5);
