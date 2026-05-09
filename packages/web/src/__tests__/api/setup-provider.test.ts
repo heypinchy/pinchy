@@ -437,6 +437,46 @@ describe("POST /api/setup/provider", () => {
     });
   });
 
+  // ── #177 regression: saving a provider key must NOT restart Pinchy ──────
+  // The original bug (v0.4.4) was that this route called process.exit(0) to
+  // force a restart so OpenClaw could pick up the new key. That broke open
+  // browser tabs: their Server Action IDs no longer matched the freshly-built
+  // server, so the chat panel reverted to its initial empty state. The fix
+  // was to rely on OpenClaw's hot-reload of the regenerated config instead.
+  // This guard fails fast if anyone re-introduces a process.exit (or its
+  // equivalent) into the api-key or url-based code path.
+  it("does not call process.exit on api-key provider save (regression for #177)", async () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+    try {
+      const response = await POST(
+        makeRequest({
+          provider: "anthropic",
+          apiKey: "sk-ant-key",
+        }) as any
+      );
+      expect(response.status).toBe(200);
+      expect(exitSpy).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
+  it("does not call process.exit on url-based provider save (regression for #177)", async () => {
+    const exitSpy = vi.spyOn(process, "exit").mockImplementation((() => {}) as never);
+    try {
+      const response = await POST(
+        makeRequest({
+          provider: "ollama-local",
+          url: "http://host.docker.internal:11434",
+        }) as any
+      );
+      expect(response.status).toBe(200);
+      expect(exitSpy).not.toHaveBeenCalled();
+    } finally {
+      exitSpy.mockRestore();
+    }
+  });
+
   it("writes an audit log entry for a url-based provider without leaking the URL", async () => {
     await POST(
       makeRequest({
