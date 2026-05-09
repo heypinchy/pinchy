@@ -3,6 +3,7 @@ import { z } from "zod";
 import { withAuth } from "@/lib/api-auth";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
+import { getAgentWithAccess } from "@/lib/agent-access";
 
 const BackgroundRunBody = z.object({
   agentId: z.string().min(1),
@@ -15,12 +16,18 @@ export const POST = withAuth(async (req: NextRequest, _ctx, session) => {
 
   const { agentId, durationMs } = parsed.data;
 
+  // Verify the agent exists and the user has access to it.
+  // This prevents authenticated users from writing fake telemetry for agents they don't own.
+  const agentOrError = await getAgentWithAccess(agentId, session.user.id!, session.user.role);
+  if (agentOrError instanceof NextResponse) return agentOrError;
+  const agent = agentOrError;
+
   await appendAuditLog({
     actorType: "user",
     actorId: session.user.id!,
     eventType: "chat.background_run_completed",
     resource: `agent:${agentId}`,
-    detail: { agentId, durationMs },
+    detail: { agent: { id: agentId, name: agent.name }, durationMs },
     outcome: "success",
   });
 

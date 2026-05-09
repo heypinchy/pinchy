@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { NextRequest } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 
 vi.mock("next/headers", () => ({
   headers: vi.fn().mockResolvedValue(new Headers()),
@@ -23,6 +23,12 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn().mockResolvedValue(undefined),
 }));
 
+const mockGetAgentWithAccess = vi.fn();
+
+vi.mock("@/lib/agent-access", () => ({
+  getAgentWithAccess: (...args: unknown[]) => mockGetAgentWithAccess(...args),
+}));
+
 import { getSession } from "@/lib/auth";
 import { appendAuditLog } from "@/lib/audit";
 import { POST } from "@/app/api/internal/audit/background-run/route";
@@ -41,6 +47,7 @@ describe("POST /api/internal/audit/background-run", () => {
     vi.mocked(getSession).mockResolvedValue({
       user: { id: "user-1", email: "user@test.com", role: "member" },
     } as Awaited<ReturnType<typeof getSession>>);
+    mockGetAgentWithAccess.mockResolvedValue({ id: "agent-1", name: "Smithers" });
   });
 
   it("returns 401 when the user is not authenticated", async () => {
@@ -52,7 +59,20 @@ describe("POST /api/internal/audit/background-run", () => {
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
 
+  it("returns 404 when the agent does not exist or is not owned by the user", async () => {
+    mockGetAgentWithAccess.mockResolvedValue(
+      NextResponse.json({ error: "Agent not found" }, { status: 404 })
+    );
+
+    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: 1500 }));
+
+    expect(res.status).toBe(404);
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
   it("returns 204 and writes a chat.background_run_completed audit log on success", async () => {
+    mockGetAgentWithAccess.mockResolvedValue({ id: "agent-1", name: "Smithers" });
+
     const res = await POST(makeRequest({ agentId: "agent-1", durationMs: 1500 }));
 
     expect(res.status).toBe(204);
@@ -61,7 +81,7 @@ describe("POST /api/internal/audit/background-run", () => {
       actorId: "user-1",
       eventType: "chat.background_run_completed",
       resource: "agent:agent-1",
-      detail: { agentId: "agent-1", durationMs: 1500 },
+      detail: { agent: { id: "agent-1", name: "Smithers" }, durationMs: 1500 },
       outcome: "success",
     });
   });

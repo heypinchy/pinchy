@@ -4,6 +4,7 @@ import { useContext, useEffect, useRef } from "react";
 import { usePathname } from "next/navigation";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
 import { useVisitedAgentIds, ChatSessionStoreContext } from "@/components/chat-session-provider";
+import { apiPost } from "@/lib/api-client";
 
 export function ChatSessionMounts() {
   const visitedAgentIds = useVisitedAgentIds();
@@ -27,7 +28,7 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
   if (!store) throw new Error("ChatSessionMounts must be used within ChatSessionProvider");
 
   const pathname = usePathname();
-  const isOnThisChat = pathname?.startsWith(`/chat/${agentId}`);
+  const isOnThisChat = pathname?.startsWith(`/chat/${agentId}`) ?? false;
   const previousIsRunning = useRef(false);
   const turnStartedAt = useRef<number | null>(null);
 
@@ -43,11 +44,7 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
     ) {
       // Turn completed while user is on a different page — fire telemetry.
       const durationMs = Date.now() - turnStartedAt.current;
-      void fetch("/api/internal/audit/background-run", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ agentId, durationMs }),
-      }).catch(() => {
+      void apiPost("/api/internal/audit/background-run", { agentId, durationMs }).catch(() => {
         // Swallow errors — this is non-critical telemetry.
       });
     }
