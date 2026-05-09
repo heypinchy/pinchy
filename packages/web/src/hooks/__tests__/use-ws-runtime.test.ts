@@ -641,6 +641,7 @@ describe("injected error bubbles have retryable: true", () => {
   });
 
   it("disconnect error bubble has retryReason 'send_failure' when no chunks were received", async () => {
+    vi.useFakeTimers();
     const { result } = renderHook(() => useWsRuntime("agent-1"));
 
     await act(async () => {
@@ -657,6 +658,12 @@ describe("injected error bubbles have retryable: true", () => {
       latestWs().simulateClose();
     });
 
+    // Disconnect bubble is now deferred 2s — give a successful reconnect a
+    // chance to land first (issue #199). Advance past the grace window.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+
     expect(result.current.isRunning).toBe(false);
 
     const lastMsg = capturedMessages[capturedMessages.length - 1] as {
@@ -669,6 +676,7 @@ describe("injected error bubbles have retryable: true", () => {
   });
 
   it("disconnect error bubble has retryable: true in metadata", async () => {
+    vi.useFakeTimers();
     const { result } = renderHook(() => useWsRuntime("agent-1"));
 
     await act(async () => {
@@ -687,6 +695,12 @@ describe("injected error bubbles have retryable: true", () => {
 
     await act(async () => {
       latestWs().simulateClose();
+    });
+
+    // Disconnect bubble is now deferred 2s — give a successful reconnect a
+    // chance to land first (issue #199). Advance past the grace window.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
     });
 
     // isRunning should have been true, so a disconnect error bubble was injected
@@ -814,6 +828,7 @@ describe("injected error bubbles have retryable: true", () => {
   });
 
   it("does not wipe local state on reconnect when last message is the disconnect error bubble", async () => {
+    vi.useFakeTimers();
     renderHook(() => useWsRuntime("agent-1"));
 
     // Open WS, load empty history
@@ -836,19 +851,27 @@ describe("injected error bubbles have retryable: true", () => {
       ws.simulateMessage({ type: "chunk", messageId: "asst-1", content: "Partial " });
     });
 
-    // Simulate disconnect — adds the "Connection lost" error bubble + arms reconcile
+    // Simulate disconnect — arms reconcile, schedules deferred error bubble
     await act(async () => {
       ws.simulateClose();
     });
 
-    const beforeReconnect = (capturedMessages as Array<{ role: string }>).length;
-    expect(beforeReconnect).toBeGreaterThanOrEqual(3); // user + partial assistant + error
-
-    // Reconnect: new WS opens, server returns the same empty history
+    // Reconnect with EMPTY history before the deferral fires — empty history
+    // can't be canonical, so the local state stays. The deferred bubble timer
+    // is NOT cancelled (only non-empty history cancels it), so advancing past
+    // the grace window surfaces the bubble.
     await act(async () => {
       latestWs().simulateOpen();
       latestWs().simulateMessage({ type: "history", messages: [] });
     });
+
+    // Advance past the disconnect-bubble grace window (issue #199).
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2000);
+    });
+
+    const afterReconnect = (capturedMessages as Array<{ role: string }>).length;
+    expect(afterReconnect).toBeGreaterThanOrEqual(3); // user + partial assistant + error
 
     // Local state must be preserved — empty server history can't be canonical
     // when we still have unpersisted local state ending in an error bubble.

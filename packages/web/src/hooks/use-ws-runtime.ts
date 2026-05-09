@@ -235,6 +235,24 @@ const attachmentAdapter = new CompositeAttachmentAdapter([
 
 const MAX_RECONNECT_ATTEMPTS = 10;
 const MAX_BUNDLED_MESSAGES = 200;
+/**
+ * Grace period before a disconnect-mid-stream is surfaced as a chat error
+ * bubble. If the next reconnect succeeds and history reconciles within this
+ * window, no bubble is shown — the user just sees the canonical reply land.
+ *
+ * Why we defer the bubble: when reconcile replaces `[..., partial-chunk,
+ * error-bubble]` with the canonical history, the message list shrinks. The
+ * `<AssistantMessage>` component subscribed to the trailing index reads its
+ * stale snapshot on the next subscription notification and assistant-ui
+ * throws "tapClientLookup: Index N out of bounds (length: N)" before React
+ * can unmount it (issue #199). Adding the bubble only AFTER reconcile fails
+ * keeps the message-list length stable across reconnects in the common case.
+ *
+ * The 2000 ms cap is comfortably above the first reconnect backoff (1000 ms)
+ * plus a typical history-roundtrip; reconnect attempts further out (2 s, 4 s,
+ * 5 s) still trigger the bubble because they cross this threshold.
+ */
+const DISCONNECT_ERROR_GRACE_MS = 2_000;
 
 function capMessages<T>(messages: T[]): T[] {
   if (messages.length <= MAX_BUNDLED_MESSAGES) return messages;
@@ -291,6 +309,21 @@ export function useWsRuntime(agentId: string): {
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldRecoverFromHistoryRef = useRef(false);
+  /**
+   * Pending-disconnect-error timer. Set by `onclose` when a stream is
+   * interrupted; cleared when a successful history reconcile lands within
+   * DISCONNECT_ERROR_GRACE_MS. If the timer fires, the disconnect bubble is
+   * appended. See comment on `DISCONNECT_ERROR_GRACE_MS` for why this is
+   * deferred (issue #199 / assistant-ui index-snapshot race).
+   *
+   * Carries the `retryReason` chosen at close time — `partial_stream_failure`
+   * if any chunks arrived, otherwise `send_failure` — so a delayed firing
+   * still classifies the failure correctly.
+   */
+  const pendingDisconnectErrorRef = useRef<{
+    timer: ReturnType<typeof setTimeout>;
+    retryReason: "partial_stream_failure" | "send_failure";
+  } | null>(null);
   const pendingMessageRef = useRef<string | null>(null);
   const isRunningRef = useRef(false);
   /**
@@ -326,6 +359,10 @@ export function useWsRuntime(agentId: string): {
     setIsDelayed(false);
     setIsHistoryLoaded(false);
     setKnownEmptyHistory(false);
+    if (pendingDisconnectErrorRef.current) {
+      clearTimeout(pendingDisconnectErrorRef.current.timer);
+      pendingDisconnectErrorRef.current = null;
+    }
   }
 
   const dispatchMessages = useCallback((action: Action) => {
@@ -441,26 +478,39 @@ export function useWsRuntime(agentId: string): {
           return;
         }
 
-        // If a stream was in progress, inject a disconnect error so the user
-        // knows the response may have been lost.
+        // If a stream was in progress, defer injecting the disconnect error
+        // bubble — give the imminent reconnect+history-reconcile a chance to
+        // land first. If reconcile arrives within DISCONNECT_ERROR_GRACE_MS,
+        // it will clear this timer and the bubble is never shown. This keeps
+        // the message-list length stable across reconnects in the common case
+        // (avoids issue #199 / assistant-ui index-snapshot race).
         if (isRunningRef.current) {
           isRunningRef.current = false;
           setIsRunning(false);
-          setMessages((prev) =>
-            capMessages([
-              ...prev,
-              {
-                id: uuid(),
-                role: "assistant",
-                content: "",
-                error: { disconnected: true },
-                retryable: true,
-                retryReason: hasReceivedChunkRef.current
-                  ? ("partial_stream_failure" as const)
-                  : ("send_failure" as const),
-              },
-            ])
-          );
+          if (pendingDisconnectErrorRef.current) {
+            clearTimeout(pendingDisconnectErrorRef.current.timer);
+          }
+          const retryReason = hasReceivedChunkRef.current
+            ? ("partial_stream_failure" as const)
+            : ("send_failure" as const);
+          const timer = setTimeout(() => {
+            pendingDisconnectErrorRef.current = null;
+            if (!mountedRef.current) return;
+            setMessages((prev) =>
+              capMessages([
+                ...prev,
+                {
+                  id: uuid(),
+                  role: "assistant",
+                  content: "",
+                  error: { disconnected: true },
+                  retryable: true,
+                  retryReason,
+                },
+              ])
+            );
+          }, DISCONNECT_ERROR_GRACE_MS);
+          pendingDisconnectErrorRef.current = { timer, retryReason };
         } else {
           setIsRunning(false);
         }
@@ -508,6 +558,18 @@ export function useWsRuntime(agentId: string): {
               timestamp?: string;
               files?: WsFileMeta[];
             }> = data.messages ?? [];
+            // Successful history reconcile within the grace window — cancel
+            // the deferred disconnect bubble so the user just sees the
+            // canonical reply land without a transient error bubble. See
+            // DISCONNECT_ERROR_GRACE_MS (issue #199).
+            if (
+              shouldRecoverFromHistoryRef.current &&
+              serverMessages.length > 0 &&
+              pendingDisconnectErrorRef.current
+            ) {
+              clearTimeout(pendingDisconnectErrorRef.current.timer);
+              pendingDisconnectErrorRef.current = null;
+            }
             const sessionKnown: boolean = data.sessionKnown === true;
             // Server tells us the session exists but its history is currently
             // unavailable (e.g. OpenClaw restart race). Without this flag the
@@ -714,6 +776,10 @@ export function useWsRuntime(agentId: string): {
       if (delayTimerRef.current) {
         clearTimeout(delayTimerRef.current);
       }
+      if (pendingDisconnectErrorRef.current) {
+        clearTimeout(pendingDisconnectErrorRef.current.timer);
+        pendingDisconnectErrorRef.current = null;
+      }
       clearStuckTimer();
       // Clear all pending ack timers to avoid memory leaks and stale dispatches.
       // Use the snapshot captured at effect start (see comment above) — the ref
@@ -897,6 +963,14 @@ export function useWsRuntime(agentId: string): {
       const hasFilenames = binaryFiles.length > 0;
 
       const clientMessageId = uuid();
+
+      // A new turn starts — cancel any pending deferred disconnect bubble
+      // from a prior interrupted turn so the bubble doesn't land in the
+      // middle of a fresh exchange.
+      if (pendingDisconnectErrorRef.current) {
+        clearTimeout(pendingDisconnectErrorRef.current.timer);
+        pendingDisconnectErrorRef.current = null;
+      }
 
       // Add the user message directly with status: "sending" and an ISO timestamp
       // for display. The reducer is used only for status transitions (ack, timeout,

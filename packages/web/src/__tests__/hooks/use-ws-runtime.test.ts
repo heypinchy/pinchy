@@ -1814,6 +1814,13 @@ describe("useWsRuntime", () => {
         ws.onclose?.();
       });
 
+      // Disconnect bubble is now deferred 2s — give a successful reconnect
+      // a chance to land first (issue #199). Advance past the grace window
+      // to surface the bubble for assertion.
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+
       const messages = result.current.runtime.messages;
       const disconnectError = messages.find(
         (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
@@ -1878,6 +1885,13 @@ describe("useWsRuntime", () => {
         ws.onclose?.();
       });
 
+      // Disconnect bubble is now deferred 2s — give a successful reconnect
+      // a chance to land first (issue #199). Advance past the grace window
+      // to surface the bubble for assertion.
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+
       const messages = result.current.runtime.messages;
       const disconnectError = messages.find(
         (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
@@ -1907,6 +1921,131 @@ describe("useWsRuntime", () => {
       });
 
       expect(result.current.runtime.messages).toHaveLength(messagesBefore);
+    });
+
+    // Regression guard for #199: the disconnect bubble injection is deferred
+    // by DISCONNECT_ERROR_GRACE_MS so a successful reconnect+history-reconcile
+    // can land first. Without this, the messages array shrinks 4→3 during
+    // reconcile and assistant-ui's index-based AssistantMessage subscription
+    // throws "tapClientLookup: Index N out of bounds (length: N)" before the
+    // trailing component can unmount. See use-ws-runtime.ts.
+    it("does NOT inject the disconnect bubble when reconnect+history-reconcile lands within the grace window", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [{ role: "assistant", content: "Hi" }],
+          }),
+        });
+      });
+
+      // User sends → partial chunk → close mid-stream
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Wie ist die Vacation Policy?" }],
+          parentId: "root",
+        });
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "chunk",
+            content: "Ich schaue nach. Urlaub**:",
+            messageId: "asst-1",
+          }),
+        });
+      });
+      act(() => {
+        ws.onclose?.();
+      });
+
+      // Bubble must NOT be present immediately — it's deferred.
+      const beforeReconnect = result.current.runtime.messages;
+      expect(
+        beforeReconnect.find(
+          (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
+        )
+      ).toBeUndefined();
+
+      // Reconnect runs after backoff (1s for first attempt)
+      act(() => {
+        vi.advanceTimersByTime(1000);
+      });
+      const ws2 = wsInstances[1];
+      act(() => {
+        ws2.onopen?.();
+      });
+      act(() => {
+        ws2.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [
+              { role: "assistant", content: "Hi" },
+              { role: "user", content: "Wie ist die Vacation Policy?" },
+              {
+                role: "assistant",
+                content: "Ich schaue nach. **Urlaubsanspruch:** 25 Tage",
+              },
+            ],
+          }),
+        });
+      });
+
+      // Advance past the full grace window — bubble must STAY cancelled.
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+
+      const finalMessages = result.current.runtime.messages;
+      expect(
+        finalMessages.find(
+          (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
+        )
+      ).toBeUndefined();
+      // The canonical reply must be the last assistant message — proves the
+      // history reconcile happened without an intermediate shrink.
+      expect(finalMessages[finalMessages.length - 1].content[0].text).toBe(
+        "Ich schaue nach. **Urlaubsanspruch:** 25 Tage"
+      );
+    });
+
+    it("DOES inject the disconnect bubble when reconnect does not arrive within the grace window", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        ws.onmessage?.({ data: JSON.stringify({ type: "history", messages: [] }) });
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Hello" }],
+          parentId: "root",
+        });
+      });
+      act(() => {
+        ws.onclose?.();
+      });
+
+      // Advance past grace window with no reconnect/history.
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+
+      const messages = result.current.runtime.messages;
+      const disconnectError = messages.find(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
+      );
+      expect(disconnectError).toBeDefined();
     });
 
     it("close-code 1009 surfaces 'Image too large' instead of generic disconnect", () => {
