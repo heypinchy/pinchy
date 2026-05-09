@@ -106,6 +106,7 @@ vi.mock("@assistant-ui/react", () => ({
 // ── Import hook AFTER mocks ────────────────────────────────────────────────────
 
 import { useWsRuntime } from "../use-ws-runtime";
+import { CLIENT_MAX_ATTACHMENT_SIZE_BYTES } from "@/lib/limits";
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -1607,5 +1608,92 @@ describe("history reconcile on reconnect", () => {
     // The sending message should now be "failed" — not in history.
     // isOrphaned is false because status="failed" (not "sent")
     expect(result.current.isOrphaned).toBe(false);
+  });
+
+  describe("binary file attachments (PDF and audio)", () => {
+    beforeEach(async () => {
+      wsInstances.length = 0;
+      capturedOnNew = null;
+      capturedMessages = [];
+      renderHook(() => useWsRuntime("agent-1"));
+      await act(async () => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({ type: "history", messages: [] });
+      });
+    });
+
+    it("includes PDF attachment as image_url content part with filename in WS payload", async () => {
+      const pdfDataUrl = "data:application/pdf;base64,YWJj";
+      await act(async () => {
+        await capturedOnNew!({
+          content: [{ type: "text", text: "see this PDF" }],
+          attachments: [
+            {
+              type: "file",
+              name: "document.pdf",
+              sizeBytes: 100,
+              content: [{ type: "file", url: pdfDataUrl }],
+            },
+          ],
+        });
+      });
+
+      const ws = latestWs();
+      const messageCalls = ws.send.mock.calls.filter((call) => {
+        const parsed = JSON.parse(call[0] as string) as { type: string };
+        return parsed.type === "message";
+      });
+      expect(messageCalls).toHaveLength(1);
+      const frame = JSON.parse(messageCalls[0][0] as string) as {
+        content: unknown;
+        filenames?: string[];
+      };
+
+      // Content must include an image_url part for the PDF data URL
+      expect(Array.isArray(frame.content)).toBe(true);
+      const contentArr = frame.content as Array<{
+        type: string;
+        image_url?: { url: string };
+      }>;
+      const filePart = contentArr.find((p) => p.type === "image_url");
+      expect(filePart?.image_url?.url).toBe(pdfDataUrl);
+
+      // Filenames must be passed alongside the content
+      expect(frame.filenames).toEqual(["document.pdf"]);
+    });
+
+    it("shows payloadTooLarge error and does not send WS message when binary file exceeds size limit", async () => {
+      const oversizedDataUrl = "data:application/pdf;base64,YWJj";
+      await act(async () => {
+        await capturedOnNew!({
+          content: [{ type: "text", text: "big file" }],
+          attachments: [
+            {
+              type: "file",
+              name: "huge.pdf",
+              sizeBytes: CLIENT_MAX_ATTACHMENT_SIZE_BYTES + 1,
+              content: [{ type: "file", url: oversizedDataUrl }],
+            },
+          ],
+        });
+      });
+
+      const ws = latestWs();
+      const messageCalls = ws.send.mock.calls.filter((call) => {
+        const parsed = JSON.parse(call[0] as string) as { type: string };
+        return parsed.type === "message";
+      });
+      // No message frame should be sent
+      expect(messageCalls).toHaveLength(0);
+
+      // A payloadTooLarge error bubble must appear in the thread
+      const errorMsg = (
+        capturedMessages as Array<{
+          role: string;
+          metadata?: { custom?: { error?: { payloadTooLarge?: boolean } } };
+        }>
+      ).find((m) => m.role === "assistant" && m.metadata?.custom?.error?.payloadTooLarge);
+      expect(errorMsg).toBeDefined();
+    });
   });
 });

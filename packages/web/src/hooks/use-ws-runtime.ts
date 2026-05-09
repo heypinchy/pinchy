@@ -92,9 +92,44 @@ class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
     "text/plain,text/html,text/markdown,text/csv,text/xml,text/json,text/css,application/javascript,application/typescript,.js,.ts,.tsx,.jsx,.py,.rs,.go,.sh,.sql,.yaml,.yml,.toml,.json";
 }
 
+/**
+ * Adapter for binary files the model can read: PDFs and audio.
+ * Reads the file as a base64 data URL and stores it in `content` for
+ * extraction in `onNew`. Size validation happens in `onNew` (consistent
+ * with image handling) — `add()` converts unconditionally.
+ */
+class SimpleBinaryFileAttachmentAdapter {
+  public accept =
+    "application/pdf,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav,audio/webm,audio/ogg,audio/flac,.pdf,.mp3,.m4a,.wav,.webm,.ogg,.flac";
+
+  async add(state: { file: File }) {
+    const { file } = state;
+    const url = await fileToDataUrl(file);
+    return {
+      type: "file" as const,
+      name: file.name,
+      contentType: file.type,
+      file,
+      sizeBytes: file.size,
+      status: { type: "complete" as const },
+      content: [{ type: "file" as const, url }],
+    };
+  }
+
+  async send(attachment: {
+    name: string;
+    contentType: string;
+    sizeBytes: number;
+    content: Array<{ type: string; url: string }>;
+  }) {
+    return attachment;
+  }
+}
+
 const attachmentAdapter = new CompositeAttachmentAdapter([
   new SimpleImageAttachmentAdapter(),
   new CodeTextAttachmentAdapter(),
+  new SimpleBinaryFileAttachmentAdapter(),
 ]);
 
 const MAX_RECONNECT_ATTEMPTS = 10;
@@ -608,13 +643,15 @@ export function useWsRuntime(agentId: string): {
       const textParts = message.content.filter((part) => part.type === "text");
       const text = textParts.map((part) => ("text" in part ? part.text : "")).join("");
 
-      // Extract images from attachments (assistant-ui puts them there, not in content)
+      // Extract attachments (assistant-ui puts them there, not in content)
       const attachments =
         (
           message as {
             attachments?: Array<{
               type: string;
-              content?: Array<{ type: string; image?: string }>;
+              name?: string;
+              sizeBytes?: number;
+              content?: Array<{ type: string; image?: string; url?: string }>;
             }>;
           }
         ).attachments ?? [];
@@ -626,6 +663,41 @@ export function useWsRuntime(agentId: string): {
               images.push(c.image);
             }
           }
+        }
+      }
+
+      // Extract binary file attachments (PDF, audio) added by SimpleBinaryFileAttachmentAdapter
+      const binaryFiles: Array<{ url: string; name: string; sizeBytes: number }> = [];
+      for (const att of attachments) {
+        if (att.type === "file" && att.content) {
+          for (const c of att.content) {
+            if (c.type === "file" && c.url) {
+              binaryFiles.push({
+                url: c.url,
+                name: att.name ?? "file",
+                sizeBytes: att.sizeBytes ?? 0,
+              });
+            }
+          }
+        }
+      }
+
+      // Size check for binary files (no compression path — reject immediately if over limit)
+      for (const f of binaryFiles) {
+        if (f.sizeBytes > CLIENT_MAX_ATTACHMENT_SIZE_BYTES) {
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: uuid(),
+              role: "assistant",
+              content: "",
+              error: {
+                payloadTooLarge: true,
+                message: `File exceeds the ${Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024)} MB size limit. Please use a smaller file.`,
+              },
+            },
+          ]);
+          return;
         }
       }
 
@@ -670,7 +742,20 @@ export function useWsRuntime(agentId: string): {
         compressedImages.push(await fileToDataUrl(result.file));
       }
 
-      if (!text.trim() && compressedImages.length === 0) return;
+      if (!text.trim() && compressedImages.length === 0 && binaryFiles.length === 0) return;
+
+      // Combine images and binary files into a single content array for the WS payload.
+      // Server-side processIncomingAttachments processes all image_url parts uniformly.
+      const allFileUrls = [...compressedImages, ...binaryFiles.map((f) => f.url)];
+      const allFilenames = [
+        // Images don't have meaningful filenames in the current flow; empty strings
+        // tell the server to fall back to its "upload" default for those indices.
+        ...compressedImages.map(() => ""),
+        ...binaryFiles.map((f) => f.name),
+      ];
+      // Only pass filenames when at least one binary file is present — image-only
+      // sends don't benefit from the filename array (server falls back to "upload").
+      const hasFilenames = binaryFiles.length > 0;
 
       const clientMessageId = uuid();
 
@@ -707,7 +792,8 @@ export function useWsRuntime(agentId: string): {
 
       const payload = JSON.stringify({
         type: "message",
-        content: buildWsContent(text, compressedImages),
+        content: buildWsContent(text, allFileUrls.length > 0 ? allFileUrls : undefined),
+        ...(hasFilenames && { filenames: allFilenames }),
         agentId,
         clientMessageId,
       });
