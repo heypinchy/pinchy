@@ -2460,6 +2460,75 @@ describe("ClientRouter", () => {
 
       consoleSpy.mockRestore();
     });
+
+    it("should include modelUnavailable in error frame when error chunk signals HTTP 5xx", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/deepseek-v4-pro",
+      });
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield {
+            type: "error" as const,
+            text: 'HTTP 500: "Internal Server Error (ref: x-1)"',
+          };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const errorMsg = messages.find((m: any) => m.type === "error");
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg.modelUnavailable).toEqual({
+        kind: "model_unavailable",
+        model: "ollama-cloud/deepseek-v4-pro",
+        httpStatus: 500,
+        ref: "x-1",
+      });
+
+      consoleSpy.mockRestore();
+    });
+
+    it("should NOT include modelUnavailable in error frame when error is not HTTP 5xx", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/deepseek-v4-pro",
+      });
+
+      mockChat.mockImplementation(() => {
+        return (async function* () {
+          yield {
+            type: "error" as const,
+            text: "Your credit balance is too low to access the API",
+          };
+        })();
+      });
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const errorMsg = messages.find((m: any) => m.type === "error");
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg).not.toHaveProperty("modelUnavailable");
+
+      consoleSpy.mockRestore();
+    });
   });
 
   describe("pipeStream — consumer disconnect", () => {

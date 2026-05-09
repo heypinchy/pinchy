@@ -7,6 +7,7 @@ import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
 import { SessionCache } from "@/server/session-cache";
 import { getErrorHint } from "@/server/error-hints";
+import { classifyModelError } from "@/server/model-error-classifier";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -385,7 +386,7 @@ export class ClientRouter {
   private async pipeStream(
     clientWs: WebSocket,
     stream: AsyncIterable<ChatChunk>,
-    agent: { id: string; name: string },
+    agent: { id: string; name: string; model?: string | null },
     sessionKey: string,
     initialMessageId: string
   ): Promise<void> {
@@ -446,13 +447,16 @@ export class ClientRouter {
               this.sendToClient(clientWs, { type: "chunk", content: cleaned, messageId });
             }
           } else if (chunk.type === "error") {
+            const modelUnavailable = classifyModelError(chunk.text, agent.model ?? "");
             this.sendToClient(clientWs, {
               type: "error",
               agentName: agent.name,
               providerError: chunk.text,
               hint: getErrorHint(chunk.text, this.userRole),
               messageId,
+              ...(modelUnavailable ? { modelUnavailable } : {}),
             });
+            // (audit-log call added in Task 7)
           } else if (chunk.type === "done") {
             this.sendToClient(clientWs, { type: "done", messageId });
           }
