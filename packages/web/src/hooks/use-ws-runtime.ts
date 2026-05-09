@@ -96,20 +96,35 @@ class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
  * Adapter for binary files the model can read: PDFs and audio.
  *
  * Lifecycle:
- *   add()  — returns a PendingAttachment; file reading is deferred to send().
+ *   add()  — validates size up front, then returns a PendingAttachment.
+ *            File reading (base64 encode) is deferred to send() so picking
+ *            the file is cheap.
  *   send() — reads the file, extracts base64 data + mimeType, returns a
  *            CompleteAttachment with a FileMessagePart in content.
  *   remove() — no-op (local files need no cleanup).
  *
  * onNew then reconstructs the data URL from content[].data + content[].mimeType.
- * Size validation is done in onNew using att.file?.size (carried through send()).
+ * onNew also re-checks size as defense in depth (a stale attachment that
+ * predates a limit change, or a programmatic add() that bypasses the
+ * composer flow, would otherwise slip through).
+ *
+ * Exported only so the size-rejection contract can be unit-tested in isolation.
  */
-class SimpleBinaryFileAttachmentAdapter {
+export class SimpleBinaryFileAttachmentAdapter {
   public accept =
     "application/pdf,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav,audio/webm,audio/ogg,audio/flac,.pdf,.mp3,.m4a,.wav,.webm,.ogg,.flac";
 
   async add(state: { file: File }) {
     const { file } = state;
+    // Reject oversized files BEFORE any base64 encoding runs in send().
+    // For a 100 MB pick this saves ~130 MB of string allocation and the
+    // user gets the "too big" feedback instantly instead of after a freeze.
+    if (file.size > CLIENT_MAX_ATTACHMENT_SIZE_BYTES) {
+      const limitMb = Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024);
+      throw new Error(
+        `File "${file.name}" is too large (${Math.round(file.size / 1024 / 1024)} MB). The limit is ${limitMb} MB.`
+      );
+    }
     return {
       id: uuid(),
       type: "file" as const,

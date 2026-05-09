@@ -103,6 +103,36 @@ describe("processIncomingAttachments", () => {
     expect(result.workspaceRefs[0].relativePath).toMatch(/^uploads\//);
     expect(existsSync(join(tmpRoot, "agent-1/uploads"))).toBe(true);
   });
+
+  // Regression: a mixed image+PDF message sends `filenames = ["", "doc.pdf"]`
+  // because images don't carry a meaningful filename. The empty-string slot
+  // must fall back to "upload" — `??` alone won't, since "" is not nullish.
+  it("treats empty/whitespace claimed filenames as 'upload' (mixed-attachment regression)", async () => {
+    const { processIncomingAttachments } = await import("@/server/client-router");
+    const result = await processIncomingAttachments({
+      agentId: "agent-1",
+      contentParts: [
+        { type: "image_url", image_url: { url: `data:image/png;base64,${PNG_BASE64}` } },
+        { type: "image_url", image_url: { url: `data:application/pdf;base64,${PDF_BASE64}` } },
+      ],
+      claimedFilenames: ["", "report.pdf"],
+    });
+    expect(result.workspaceRefs).toHaveLength(2);
+    expect(result.workspaceRefs[0].relativePath).toBe("uploads/upload");
+    expect(result.workspaceRefs[1].relativePath).toBe("uploads/report.pdf");
+  });
+
+  it("treats whitespace-only claimed filename as 'upload'", async () => {
+    const { processIncomingAttachments } = await import("@/server/client-router");
+    const result = await processIncomingAttachments({
+      agentId: "agent-1",
+      contentParts: [
+        { type: "image_url", image_url: { url: `data:application/pdf;base64,${PDF_BASE64}` } },
+      ],
+      claimedFilenames: ["   "],
+    });
+    expect(result.workspaceRefs[0].relativePath).toBe("uploads/upload");
+  });
 });
 
 describe("buildUploadHint", () => {
@@ -125,5 +155,28 @@ describe("buildUploadHint", () => {
   it("returns empty string when no uploads", async () => {
     const { buildUploadHint } = await import("@/server/client-router");
     expect(buildUploadHint([])).toBe("");
+  });
+
+  // sanitizeFilename allows backticks, which would break the markdown code
+  // span that wraps the path in the system prompt — and could let a crafted
+  // filename leak structure into the prompt sent to the LLM.
+  it("escapes backticks in workspace paths so they cannot break the markdown code span", async () => {
+    const { buildUploadHint } = await import("@/server/client-router");
+    const block = buildUploadHint([
+      {
+        relativePath: "uploads/foo`bar`.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 100,
+        contentHash: "a".repeat(64),
+        reused: false,
+      },
+    ]);
+    // Each line wraps the path in a single ` … ` code span. After escaping,
+    // the only backticks remaining must be the two delimiters per line.
+    const lineWithPath = block.split("\n").find((l) => l.includes("uploads/foo")) ?? "";
+    const backtickCount = (lineWithPath.match(/`/g) ?? []).length;
+    expect(backtickCount).toBe(2);
+    // The original filename text must still be recognisable to the agent.
+    expect(lineWithPath).toMatch(/foo.+bar.+\.pdf/);
   });
 });

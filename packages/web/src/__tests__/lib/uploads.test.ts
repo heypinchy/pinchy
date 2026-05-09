@@ -24,7 +24,6 @@ describe("persistAttachment", () => {
     const result = await persistAttachment({
       agentId: "agent-1",
       filename: "invoice.pdf",
-      mimeType: "application/pdf",
       buffer: PDF_BUF_A,
     });
     expect(result.relativePath).toBe("uploads/invoice.pdf");
@@ -36,13 +35,11 @@ describe("persistAttachment", () => {
     await persistAttachment({
       agentId: "agent-1",
       filename: "invoice.pdf",
-      mimeType: "application/pdf",
       buffer: PDF_BUF_A,
     });
     const second = await persistAttachment({
       agentId: "agent-1",
       filename: "invoice.pdf",
-      mimeType: "application/pdf",
       buffer: PDF_BUF_A,
     });
     expect(second.relativePath).toBe("uploads/invoice.pdf");
@@ -53,13 +50,11 @@ describe("persistAttachment", () => {
     await persistAttachment({
       agentId: "agent-1",
       filename: "invoice.pdf",
-      mimeType: "application/pdf",
       buffer: PDF_BUF_A,
     });
     const second = await persistAttachment({
       agentId: "agent-1",
       filename: "invoice.pdf",
-      mimeType: "application/pdf",
       buffer: PDF_BUF_B,
     });
     expect(second.relativePath).toBe("uploads/invoice (1).pdf");
@@ -73,7 +68,6 @@ describe("persistAttachment", () => {
     await persistAttachment({
       agentId: "agent-1",
       filename: "first.pdf",
-      mimeType: "application/pdf",
       buffer: PDF_BUF_A,
     });
     expect(existsSync(join(tmpRoot, "agent-1/uploads"))).toBe(true);
@@ -85,7 +79,6 @@ describe("persistAttachment", () => {
     const result = await persistAttachment({
       agentId: "agent-1",
       filename: "invoice.pdf",
-      mimeType: "application/pdf",
       buffer: PDF_BUF_A,
     });
     expect(result.contentHash).toBe(expected);
@@ -97,9 +90,51 @@ describe("persistAttachment", () => {
       persistAttachment({
         agentId: "../etc",
         filename: "x.pdf",
-        mimeType: "application/pdf",
         buffer: PDF_BUF_A,
       })
     ).rejects.toThrow(/agentId/i);
+  });
+
+  // TOCTOU regression: two concurrent uploads of *different* content under
+  // the same filename must each end up at a distinct path, with no clobbering.
+  it("handles concurrent writes of different content under the same filename without clobbering", async () => {
+    const distinctBuffers = Array.from({ length: 8 }, (_, i) =>
+      Buffer.from(`%PDF-distinct-${i}-${"x".repeat(64)}`)
+    );
+
+    const results = await Promise.all(
+      distinctBuffers.map((buffer) =>
+        persistAttachment({
+          agentId: "agent-1",
+          filename: "shared.pdf",
+          buffer,
+        })
+      )
+    );
+
+    // Every concurrent caller got a unique path — none lost their write.
+    const paths = results.map((r) => r.relativePath);
+    expect(new Set(paths).size).toBe(distinctBuffers.length);
+
+    // Each file on disk contains the buffer the caller actually wrote.
+    for (let i = 0; i < distinctBuffers.length; i++) {
+      const onDisk = readFileSync(join(tmpRoot, "agent-1", paths[i]));
+      expect(onDisk).toEqual(distinctBuffers[i]);
+    }
+  });
+
+  it("dedups concurrent writes of identical content", async () => {
+    const same = Buffer.from("%PDF-identical-content");
+    const results = await Promise.all(
+      Array.from({ length: 4 }, () =>
+        persistAttachment({ agentId: "agent-1", filename: "shared.pdf", buffer: same })
+      )
+    );
+    const paths = new Set(results.map((r) => r.relativePath));
+    // All four resolve to the same on-disk file.
+    expect(paths.size).toBe(1);
+    expect([...paths][0]).toBe("uploads/shared.pdf");
+    // At least one was written; the rest reused.
+    expect(results.filter((r) => r.reused).length).toBeGreaterThanOrEqual(3);
   });
 });

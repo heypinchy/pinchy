@@ -86,10 +86,15 @@ export async function processIncomingAttachments(
   params: ProcessAttachmentsParams
 ): Promise<ProcessAttachmentsResult> {
   const { agentId, contentParts } = params;
+  // Defensive: strip non-array values at the trust boundary so a malformed
+  // payload can never reach the per-index lookup below.
+  const claimedFilenames = Array.isArray(params.claimedFilenames)
+    ? params.claimedFilenames
+    : undefined;
   const chatAttachments: ChatAttachment[] = [];
   const workspaceRefs: ProcessedWorkspaceRef[] = [];
 
-  let imageIdx = 0;
+  let attachmentIdx = 0;
   for (const part of contentParts) {
     if (part.type !== "image_url" || !part.image_url?.url) continue;
     const match = part.image_url.url.match(DATA_URL_RE);
@@ -101,13 +106,16 @@ export async function processIncomingAttachments(
 
     const detectedMime = await validateUploadBuffer(buffer, claimedMime);
 
-    const claimedName = params.claimedFilenames?.[imageIdx] ?? "upload";
+    // The client sends `""` for image slots in mixed image+binary messages
+    // (images don't carry a meaningful filename). Treat empty/whitespace
+    // strings as nullish here — `??` alone misses the empty-string case.
+    const rawName = claimedFilenames?.[attachmentIdx];
+    const claimedName = typeof rawName === "string" && rawName.trim() ? rawName : "upload";
     const safeName = sanitizeFilename(claimedName);
 
     const persisted = await persistAttachment({
       agentId,
       filename: safeName,
-      mimeType: detectedMime,
       buffer,
     });
 
@@ -119,16 +127,27 @@ export async function processIncomingAttachments(
       contentHash: persisted.contentHash,
       reused: persisted.reused,
     });
-    imageIdx++;
+    attachmentIdx++;
   }
 
   return { chatAttachments, workspaceRefs };
 }
 
+// Filenames are sanitized server-side, but `sanitizeFilename` permits backticks
+// (rare-but-legal in real filenames). When the path is interpolated into a
+// markdown code span in the system prompt, an embedded backtick would close
+// the span and let user-supplied text leak into the prompt structure.
+// Replace `` ` `` with the visually-similar U+02BC MODIFIER LETTER APOSTROPHE
+// so the path stays readable to the agent and the code span stays balanced.
+function escapeForMarkdownCodeSpan(s: string): string {
+  return s.replace(/`/g, "ʼ");
+}
+
 export function buildUploadHint(refs: ProcessedWorkspaceRef[]): string {
   if (refs.length === 0) return "";
   const lines = refs.map(
-    (r) => `- \`${r.relativePath}\` (${r.mimeType}, ${formatBytes(r.sizeBytes)})`
+    (r) =>
+      `- \`${escapeForMarkdownCodeSpan(r.relativePath)}\` (${r.mimeType}, ${formatBytes(r.sizeBytes)})`
   );
   return [
     "## User uploaded files",

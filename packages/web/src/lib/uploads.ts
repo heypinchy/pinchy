@@ -1,14 +1,14 @@
 import { createHash } from "crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "fs";
+import { mkdir, open, readFile } from "fs/promises";
 import { join, parse as parsePath } from "path";
 import { getWorkspacePath } from "@/lib/workspace";
 
 const UPLOADS_SUBDIR = "uploads";
+const MAX_COLLISION_SLOTS = 1000;
 
 export interface PersistAttachmentParams {
   agentId: string;
   filename: string;
-  mimeType: string; // stored in audit log by the caller (not used inside this function)
   buffer: Buffer;
 }
 
@@ -18,67 +18,65 @@ export interface PersistAttachmentResult {
   contentHash: string;
 }
 
+/**
+ * Writes the buffer to `<workspace>/<agentId>/uploads/<filename>`.
+ *
+ * - If the target slot is free, writes there.
+ * - If the slot is taken by identical content, returns `reused: true`.
+ * - If the slot is taken by *different* content, tries `<name> (1)<ext>`,
+ *   `<name> (2)<ext>`, ... up to `MAX_COLLISION_SLOTS`.
+ *
+ * Concurrency-safe: each candidate is opened with `O_CREAT | O_EXCL` (`wx`),
+ * so two concurrent writers of *different* content under the same filename
+ * can never clobber each other — the loser of the race sees `EEXIST`,
+ * compares hashes, and either dedups or moves to the next slot.
+ *
+ * All FS work uses `fs/promises` so the event loop stays responsive while
+ * hashing and writing the (up to 15 MB) attachment.
+ */
 export async function persistAttachment(
   params: PersistAttachmentParams
 ): Promise<PersistAttachmentResult> {
   const { agentId, filename, buffer } = params;
 
-  const agentWorkspace = getWorkspacePath(agentId);
+  const agentWorkspace = getWorkspacePath(agentId); // throws on bad agentId
   const uploadsDir = join(agentWorkspace, UPLOADS_SUBDIR);
-  mkdirSync(uploadsDir, { recursive: true });
+  await mkdir(uploadsDir, { recursive: true });
 
   const contentHash = createHash("sha256").update(buffer).digest("hex");
-  // Note: resolveCollision has a TOCTOU race if two requests for the same
-  // agent/filename arrive concurrently — both could resolve the same free slot
-  // and the slower rename would clobber the faster one. Acceptable for MVP
-  // single-user agents; file locking would be needed for high-concurrency scenarios.
-  const resolved = resolveCollision(uploadsDir, filename, buffer, contentHash);
-
-  if (resolved.reused) {
-    return {
-      relativePath: `${UPLOADS_SUBDIR}/${resolved.filename}`,
-      reused: true,
-      contentHash,
-    };
-  }
-
-  const finalPath = join(uploadsDir, resolved.filename);
-  const tmpPath = `${finalPath}.tmp.${process.pid}.${Date.now()}`;
-  writeFileSync(tmpPath, buffer);
-  renameSync(tmpPath, finalPath);
-
-  return {
-    relativePath: `${UPLOADS_SUBDIR}/${resolved.filename}`,
-    reused: false,
-    contentHash,
-  };
-}
-
-function resolveCollision(
-  uploadsDir: string,
-  filename: string,
-  buffer: Buffer,
-  contentHash: string
-): { filename: string; reused: boolean } {
-  const candidatePath = join(uploadsDir, filename);
-  if (!existsSync(candidatePath)) {
-    return { filename, reused: false };
-  }
-  const existing = readFileSync(candidatePath);
-  if (createHash("sha256").update(existing).digest("hex") === contentHash) {
-    return { filename, reused: true };
-  }
   const { name, ext } = parsePath(filename);
-  for (let i = 1; i < 1000; i++) {
-    const next = `${name} (${i})${ext}`;
-    const nextPath = join(uploadsDir, next);
-    if (!existsSync(nextPath)) {
-      return { filename: next, reused: false };
-    }
-    const buf = readFileSync(nextPath);
-    if (createHash("sha256").update(buf).digest("hex") === contentHash) {
-      return { filename: next, reused: true };
+
+  for (let i = 0; i < MAX_COLLISION_SLOTS; i++) {
+    const candidate = i === 0 ? filename : `${name} (${i})${ext}`;
+    const candidatePath = join(uploadsDir, candidate);
+
+    try {
+      // O_CREAT | O_EXCL — atomic create-or-fail. Wins the slot or throws EEXIST.
+      const fh = await open(candidatePath, "wx");
+      try {
+        await fh.writeFile(buffer);
+      } finally {
+        await fh.close();
+      }
+      return {
+        relativePath: `${UPLOADS_SUBDIR}/${candidate}`,
+        reused: false,
+        contentHash,
+      };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      // Existing file under this name — does it match our content?
+      const existing = await readFile(candidatePath);
+      if (createHash("sha256").update(existing).digest("hex") === contentHash) {
+        return {
+          relativePath: `${UPLOADS_SUBDIR}/${candidate}`,
+          reused: true,
+          contentHash,
+        };
+      }
+      // Different content occupies this slot — try the next one.
     }
   }
+
   throw new Error(`Too many collisions for ${filename}`);
 }

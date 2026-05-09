@@ -1,7 +1,16 @@
 import { fileTypeFromBuffer } from "file-type";
 
-// Covers ASCII control chars, BiDi overrides, invisible Unicode, and BOM.
-const CONTROL_CHAR_RE = /[\x00-\x1f\x7f​‏‪-‮⁦-⁩﻿]/u;
+// Covers ASCII control chars (C0 + DEL), zero-width and BiDi formatting
+// characters, BiDi isolates, and the BOM. Using explicit `\u…` escapes
+// instead of literal invisible characters so editors that normalise
+// whitespace can never silently break this rule. Specifically:
+//   \x00-\x1f         C0 control characters
+//   \x7f              DEL
+//   ​-‏     ZWSP, ZWNJ, ZWJ, LRM, RLM
+//   ‪-‮     LRE, RLE, PDF, LRO, RLO (BiDi formatting)
+//   ⁦-⁩     LRI, RLI, FSI, PDI (BiDi isolates)
+//   ﻿            BOM / ZWNBSP
+const CONTROL_CHAR_RE = /[\x00-\x1f\x7f\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/u;
 const MAX_FILENAME_LEN = 255;
 
 export function sanitizeFilename(raw: string): string {
