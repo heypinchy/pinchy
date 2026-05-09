@@ -1623,7 +1623,7 @@ describe("history reconcile on reconnect", () => {
     });
 
     it("includes PDF attachment as image_url content part with filename in WS payload", async () => {
-      const pdfDataUrl = "data:application/pdf;base64,YWJj";
+      const pdfBase64 = "YWJj";
       await act(async () => {
         await capturedOnNew!({
           content: [{ type: "text", text: "see this PDF" }],
@@ -1631,8 +1631,9 @@ describe("history reconcile on reconnect", () => {
             {
               type: "file",
               name: "document.pdf",
-              sizeBytes: 100,
-              content: [{ type: "file", url: pdfDataUrl }],
+              // file carries the size for the pre-send size check
+              file: { size: 100 } as unknown as File,
+              content: [{ type: "file", data: pdfBase64, mimeType: "application/pdf" }],
             },
           ],
         });
@@ -1649,21 +1650,20 @@ describe("history reconcile on reconnect", () => {
         filenames?: string[];
       };
 
-      // Content must include an image_url part for the PDF data URL
+      // Content must include an image_url part with the reconstructed data URL
       expect(Array.isArray(frame.content)).toBe(true);
       const contentArr = frame.content as Array<{
         type: string;
         image_url?: { url: string };
       }>;
       const filePart = contentArr.find((p) => p.type === "image_url");
-      expect(filePart?.image_url?.url).toBe(pdfDataUrl);
+      expect(filePart?.image_url?.url).toBe(`data:application/pdf;base64,${pdfBase64}`);
 
       // Filenames must be passed alongside the content
       expect(frame.filenames).toEqual(["document.pdf"]);
     });
 
     it("shows payloadTooLarge error and does not send WS message when binary file exceeds size limit", async () => {
-      const oversizedDataUrl = "data:application/pdf;base64,YWJj";
       await act(async () => {
         await capturedOnNew!({
           content: [{ type: "text", text: "big file" }],
@@ -1671,8 +1671,9 @@ describe("history reconcile on reconnect", () => {
             {
               type: "file",
               name: "huge.pdf",
-              sizeBytes: CLIENT_MAX_ATTACHMENT_SIZE_BYTES + 1,
-              content: [{ type: "file", url: oversizedDataUrl }],
+              // file.size drives the pre-send size check in onNew
+              file: { size: CLIENT_MAX_ATTACHMENT_SIZE_BYTES + 1 } as unknown as File,
+              content: [{ type: "file", data: "YWJj", mimeType: "application/pdf" }],
             },
           ],
         });

@@ -94,9 +94,15 @@ class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
 
 /**
  * Adapter for binary files the model can read: PDFs and audio.
- * Reads the file as a base64 data URL and stores it in `content` for
- * extraction in `onNew`. Size validation happens in `onNew` (consistent
- * with image handling) — `add()` converts unconditionally.
+ *
+ * Lifecycle:
+ *   add()  — returns a PendingAttachment; file reading is deferred to send().
+ *   send() — reads the file, extracts base64 data + mimeType, returns a
+ *            CompleteAttachment with a FileMessagePart in content.
+ *   remove() — no-op (local files need no cleanup).
+ *
+ * onNew then reconstructs the data URL from content[].data + content[].mimeType.
+ * Size validation is done in onNew using att.file?.size (carried through send()).
  */
 class SimpleBinaryFileAttachmentAdapter {
   public accept =
@@ -104,25 +110,42 @@ class SimpleBinaryFileAttachmentAdapter {
 
   async add(state: { file: File }) {
     const { file } = state;
-    const url = await fileToDataUrl(file);
     return {
+      id: uuid(),
       type: "file" as const,
       name: file.name,
-      contentType: file.type,
       file,
-      sizeBytes: file.size,
-      status: { type: "complete" as const },
-      content: [{ type: "file" as const, url }],
+      status: { type: "requires-action" as const, reason: "composer-send" as const },
     };
   }
 
-  async send(attachment: {
-    name: string;
-    contentType: string;
-    sizeBytes: number;
-    content: Array<{ type: string; url: string }>;
-  }) {
-    return attachment;
+  async send(attachment: { id?: string; name?: string; file: File }) {
+    const dataUrl = await fileToDataUrl(attachment.file);
+    // Parse "data:<mimeType>;base64,<data>" → extract base64 string and mimeType
+    const commaIdx = dataUrl.indexOf(",");
+    const data = dataUrl.slice(commaIdx + 1);
+    const mimeType = dataUrl.slice("data:".length, dataUrl.indexOf(";"));
+    const name = attachment.name ?? "";
+    return {
+      id: attachment.id ?? uuid(),
+      type: "file" as const,
+      name,
+      // Carry file through so onNew can read file.size for the size check
+      file: attachment.file,
+      status: { type: "complete" as const },
+      content: [
+        {
+          type: "file" as const,
+          data,
+          mimeType,
+          filename: name || undefined,
+        },
+      ],
+    };
+  }
+
+  async remove(_attachment: unknown): Promise<void> {
+    // No-op — local files require no cleanup
   }
 }
 
@@ -650,8 +673,18 @@ export function useWsRuntime(agentId: string): {
             attachments?: Array<{
               type: string;
               name?: string;
-              sizeBytes?: number;
-              content?: Array<{ type: string; image?: string; url?: string }>;
+              /** Original File object — carried through send() so onNew can read file.size */
+              file?: File;
+              content?: Array<{
+                type: string;
+                image?: string;
+                /** Image data URL (SimpleImageAttachmentAdapter) */
+                url?: string;
+                /** Binary file base64 data (SimpleBinaryFileAttachmentAdapter FileMessagePart) */
+                data?: string;
+                mimeType?: string;
+                filename?: string;
+              }>;
             }>;
           }
         ).attachments ?? [];
@@ -666,16 +699,21 @@ export function useWsRuntime(agentId: string): {
         }
       }
 
-      // Extract binary file attachments (PDF, audio) added by SimpleBinaryFileAttachmentAdapter
+      // Extract binary file attachments (PDF, audio) added by SimpleBinaryFileAttachmentAdapter.
+      // After send(), content parts carry base64 `data` + `mimeType` (FileMessagePart shape).
+      // Reconstruct the data URL here so the WS payload stays the same for the server.
       const binaryFiles: Array<{ url: string; name: string; sizeBytes: number }> = [];
       for (const att of attachments) {
         if (att.type === "file" && att.content) {
           for (const c of att.content) {
-            if (c.type === "file" && c.url) {
+            if (c.type === "file" && c.data) {
+              const dataUrl = `data:${c.mimeType};base64,${c.data}`;
               binaryFiles.push({
-                url: c.url,
-                name: att.name ?? "file",
-                sizeBytes: att.sizeBytes ?? 0,
+                url: dataUrl,
+                name: att.name ?? c.filename ?? "file",
+                // Use the original File's byte count when available; fall back to
+                // computing from base64 length (within a few bytes of actual size).
+                sizeBytes: att.file?.size ?? Math.ceil((c.data.length * 3) / 4),
               });
             }
           }
