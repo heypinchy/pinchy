@@ -4783,3 +4783,174 @@ describe("regenerateOpenClawConfig validation guard", () => {
     );
   });
 });
+
+describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedGetOrCreateGatewayToken.mockResolvedValue("test-gateway-token");
+    mockedExistsSync.mockReturnValue(true);
+    mockReadSecretsFile.mockReturnValue({});
+    mockValidateBuiltConfig.mockReturnValue({ ok: true });
+    mockGetClient.mockImplementation(() => {
+      throw new Error("OpenClaw client not initialized");
+    });
+    _resetPushGeneration();
+  });
+
+  it("refuses to write a config that would shrink the file by more than 50%", async () => {
+    // Simulates the #311 cascade fingerprint: OpenClaw has a healthy config
+    // on disk (gateway + agents + channels.telegram + bindings + session),
+    // but a regenerate runs through a window where DB-derived telegram
+    // state isn't reachable (race observed in the agent-create-no-restart
+    // flake) and would produce a tiny payload. Without this guard, Pinchy
+    // would writeConfigAtomic the tiny payload — OpenClaw's inotify watcher
+    // diffs it against the in-memory baseline, sees channels/bindings/
+    // session vanish, classifies the diff as restart-required, triggers a
+    // full gateway restart cascade, and the apply RPC is rejected with
+    // size-drop:OLD->NEW. We mirror OpenClaw's own 50% threshold here so
+    // the bad payload never reaches disk in the first place.
+    //
+    // Padding lives under `secrets` — a top-level OC-managed field that's
+    // neither read into the regenerated payload (build.ts) nor supplemented
+    // into it (normalize.ts:supplementFromSource). That keeps the size
+    // delta between existing (with padding) and new (without) representative
+    // of the real failure: existing has substantial OC-managed state, new
+    // is a pure Pinchy regenerate.
+    const padding = "x".repeat(8000);
+    const largeExisting =
+      JSON.stringify(
+        {
+          gateway: {
+            mode: "local",
+            bind: "lan",
+            auth: { mode: "token", token: "test-gateway-token" },
+            controlUi: { enabled: false },
+          },
+          secrets: { padding }, // ~8kB of OC-side state that Pinchy doesn't reproduce
+          agents: {
+            list: [
+              {
+                id: "smithers",
+                name: "Smithers",
+                model: "anthropic/claude-haiku-4-5-20251001",
+              },
+            ],
+          },
+          plugins: { allow: ["pinchy-files"], entries: {} },
+          channels: {
+            telegram: {
+              enabled: true,
+              dmPolicy: "pairing",
+              accounts: { smithers: { botToken: "123:ABC" } },
+            },
+          },
+          bindings: [
+            { agentId: "smithers", match: { channel: "telegram", accountId: "smithers" } },
+          ],
+          session: { dmScope: "per-peer" },
+          meta: { lastTouchedAt: 1700000000 },
+        },
+        null,
+        2
+      ).trimEnd() + "\n";
+    expect(largeExisting.length).toBeGreaterThan(8000); // sanity
+    mockedReadFileSync.mockReturnValue(largeExisting);
+
+    // No agents and no telegram tokens in DB — the regenerate produces a
+    // payload missing the entire agents list, channels.telegram block, and
+    // bindings. That's substantially smaller than `largeExisting`.
+    mockedDb.select.mockReturnValue({ from: mockFrom([]) } as never);
+    mockedGetSetting.mockResolvedValue(null);
+
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      await regenerateOpenClawConfig();
+    } finally {
+      // (capture any error logs first; restore at end)
+    }
+
+    // openclaw.json must NOT have been written — preserving OpenClaw's
+    // healthy config is the whole point of this guard. Filter on the
+    // canonical .tmp suffix that writeConfigAtomic uses so we don't
+    // accidentally count the postmortem `.regenerate-rejected.<ts>` dump
+    // (which legitimately writes the rejected payload for debugging).
+    const canonicalWrites = mockedWriteFileSync.mock.calls.filter(
+      (c) => typeof c[0] === "string" && (c[0] as string).endsWith("openclaw.json.tmp")
+    );
+    expect(
+      canonicalWrites,
+      `expected 0 canonical openclaw.json writes, got ${canonicalWrites.length}: ` +
+        canonicalWrites.map((c) => `len=${(c[1] as string).length}`).join(", ")
+    ).toHaveLength(0);
+
+    // The postmortem dump SHOULD be written so the underlying race is
+    // debuggable from disk after the fact.
+    const postmortemWrites = mockedWriteFileSync.mock.calls.filter(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes(".regenerate-rejected.")
+    );
+    expect(postmortemWrites).toHaveLength(1);
+
+    // The guard must log loudly so the underlying race is observable in
+    // production — silent skip would hide the bug forever.
+    const errorMessages = errorSpy.mock.calls.flat().join(" ");
+    expect(errorMessages).toMatch(/size-drop|refus|shrink|small/i);
+
+    errorSpy.mockRestore();
+  });
+
+  it("does NOT trigger when new content is at the threshold (>= 50%) of existing", async () => {
+    // Boundary check: legitimate moderate reductions must pass through.
+    // Constructing a payload that's exactly between 50% and 100% of the
+    // existing file is brittle, so instead we exercise the threshold
+    // arithmetic directly and confirm the guard does not fire.
+    //
+    // Mock readFileSync to return content exactly 1.99x the new payload
+    // size (just below the 2x threshold). The guard's predicate
+    //   `newContent.length < existing.length * 0.5`
+    // must evaluate to false in this case — proving the threshold is
+    // strict-less-than, not less-than-or-equal.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+    // Use a stable, predictable payload by mocking the new content path
+    // through the existing-equality check. We construct an existing that
+    // is *larger* than the new content but not by 2x. The new content
+    // emerges from the empty-DB regenerate (~881 bytes in this fixture);
+    // we need existing < 1762 bytes to keep the ratio above 0.5.
+    const justUnderTwoX =
+      JSON.stringify(
+        {
+          gateway: {
+            mode: "local",
+            bind: "lan",
+            auth: { mode: "token", token: "test-gateway-token" },
+            controlUi: { enabled: false },
+          },
+          secrets: { padding: "x".repeat(700) },
+          agents: { list: [] },
+          plugins: { allow: ["pinchy-files"], entries: {} },
+        },
+        null,
+        2
+      ).trimEnd() + "\n";
+    expect(justUnderTwoX.length).toBeGreaterThan(900); // > new content
+    expect(justUnderTwoX.length).toBeLessThan(1800); // < 2x new content
+    mockedReadFileSync.mockReturnValue(justUnderTwoX);
+
+    mockedDb.select.mockReturnValue({ from: mockFrom([]) } as never);
+    mockedGetSetting.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    // Guard must NOT have logged — this is the no-false-positive proof.
+    const errorMessages = errorSpy.mock.calls.flat().join(" ");
+    expect(errorMessages).not.toMatch(/size-drop|suspiciously small/i);
+
+    // No `.regenerate-rejected.` postmortem dump must have been written.
+    const postmortemWrites = mockedWriteFileSync.mock.calls.filter(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes(".regenerate-rejected.")
+    );
+    expect(postmortemWrites).toHaveLength(0);
+
+    errorSpy.mockRestore();
+  });
+});

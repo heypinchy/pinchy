@@ -1,4 +1,4 @@
-import { readFileSync } from "fs";
+import { readFileSync, writeFileSync } from "fs";
 import { dirname } from "path";
 import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
@@ -962,6 +962,39 @@ export async function regenerateOpenClawConfig() {
     // 15-30 s of "Agent runtime is not available" downtime (#193).
     // Removable when we bump OpenClaw past the upstream fix; tracked in #215.
     if (configsAreEquivalentUpToOpenClawMetadata(existing, newContent)) return;
+
+    // Defense-in-depth size-drop guard (#311). OpenClaw's `config.apply` RPC
+    // already rejects writes that shrink the on-disk config by more than 50%
+    // (`size-drop:OLD->NEW` error), but Pinchy's `writeConfigAtomic` runs
+    // BEFORE `pushConfigInBackground`, so a corrupted regenerate lands on
+    // disk and OC's inotify watcher diffs it before the RPC ever runs —
+    // triggering a full gateway restart cascade. The trigger pattern: a
+    // regenerate runs through a window where DB-derived state isn't fully
+    // loaded (telegram_bot_token race in CI flake) and produces a payload
+    // missing `channels.telegram` + `bindings`, ~50% smaller than the
+    // healthy on-disk file. Mirroring OC's threshold on the Pinchy side
+    // keeps the bad payload off disk so the cascade never starts; the next
+    // regenerate (from the same or a follow-up request) writes correct
+    // content. The bad payload is saved alongside the config for postmortem
+    // — silent skip would hide the underlying race forever.
+    if (existing.length > 0 && newContent.length < existing.length * 0.5) {
+      const ts = new Date().toISOString().replace(/[:.]/g, "-");
+      const rejectedPath = `${CONFIG_PATH}.regenerate-rejected.${ts}`;
+      try {
+        // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is CONFIG_PATH + ISO timestamp, no user input
+        writeFileSync(rejectedPath, newContent, { encoding: "utf-8", mode: 0o644 });
+      } catch {
+        // Best-effort; the warn below carries the salient bytes either way.
+      }
+      console.error(
+        `[openclaw-config] regenerate produced a suspiciously small config ` +
+          `(${newContent.length} bytes, was ${existing.length}). ` +
+          `Refusing the write to keep OpenClaw's existing state intact. ` +
+          `Likely a DB-state-loading race; see #311. ` +
+          `Rejected payload saved to ${rejectedPath}.`
+      );
+      return;
+    }
   } catch {
     // File doesn't exist yet — write it
   }
