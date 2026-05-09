@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, fireEvent } from "@testing-library/react";
 import "@testing-library/jest-dom";
 import { ChatErrorMessage } from "@/components/assistant-ui/chat-error-message";
 
@@ -12,6 +12,7 @@ describe("ChatErrorMessage", () => {
           providerError: "Your credit balance is too low.",
           hint: "Go to Settings > Providers to check your API configuration.",
         }}
+        agentId="agent-1"
       />
     );
 
@@ -33,6 +34,7 @@ describe("ChatErrorMessage", () => {
           agentName: "Smithers",
           providerError: "Your credit balance is too low.",
         }}
+        agentId="agent-1"
       />
     );
 
@@ -53,6 +55,7 @@ describe("ChatErrorMessage", () => {
           agentName: "Smithers",
           providerError: "Your credit balance is too low.",
         }}
+        agentId="agent-1"
       />
     );
 
@@ -72,6 +75,7 @@ describe("ChatErrorMessage", () => {
           providerError: "Something unexpected",
           hint: null,
         }}
+        agentId="agent-1"
       />
     );
 
@@ -85,6 +89,7 @@ describe("ChatErrorMessage", () => {
         error={{
           message: "Access denied",
         }}
+        agentId="agent-1"
       />
     );
 
@@ -99,6 +104,7 @@ describe("ChatErrorMessage", () => {
           agentName: "Smithers",
           providerError: "Error text",
         }}
+        agentId="agent-1"
       />
     );
 
@@ -114,6 +120,7 @@ describe("ChatErrorMessage", () => {
           agentName: "Smithers",
           providerError: "Error text",
         }}
+        agentId="agent-1"
       />
     );
 
@@ -127,6 +134,7 @@ describe("ChatErrorMessage", () => {
           agentName: "Smithers",
           providerError: "Error text",
         }}
+        agentId="agent-1"
       />
     );
 
@@ -150,5 +158,56 @@ describe("ChatErrorMessage", () => {
     ).toBeInTheDocument();
     // The too-large icon must be rendered
     expect(screen.getByTestId("too-large-icon")).toBeInTheDocument();
+  });
+});
+
+describe("ChatErrorMessage — modelUnavailable", () => {
+  const baseError = {
+    agentName: "Smithers",
+    providerError: 'HTTP 500: "Internal Server Error (ref: abc-123)"',
+    modelUnavailable: {
+      kind: "model_unavailable" as const,
+      model: "ollama-cloud/kimi-k2-thinking",
+      httpStatus: 500,
+      ref: "abc-123",
+    },
+  };
+
+  it("renders the agent name and model", () => {
+    render(<ChatErrorMessage error={baseError} agentId="agent-1" />);
+    expect(screen.getByText(/Smithers couldn't respond/i)).toBeInTheDocument();
+    expect(screen.getByText(/ollama-cloud\/kimi-k2-thinking/)).toBeInTheDocument();
+  });
+
+  it("renders 'Switch model' link to settings with model anchor", () => {
+    render(<ChatErrorMessage error={baseError} agentId="agent-1" />);
+    const link = screen.getByRole("link", { name: /switch model/i });
+    expect(link).toHaveAttribute("href", "/chat/agent-1/settings?tab=general#model");
+  });
+
+  it("hides raw providerError behind a collapsible 'Technical details'", () => {
+    render(<ChatErrorMessage error={baseError} agentId="agent-1" />);
+    // Radix Collapsible does not render children when closed in JSDOM
+    const technicalDetailsBtn = screen.getByRole("button", { name: /technical details/i });
+    expect(technicalDetailsBtn).toBeInTheDocument();
+    // Content is not rendered before clicking
+    expect(screen.queryByText(/HTTP 500/)).not.toBeInTheDocument();
+    fireEvent.click(technicalDetailsBtn);
+    expect(screen.getByText(/HTTP 500/)).toBeInTheDocument();
+  });
+
+  it("falls back to legacy raw render when modelUnavailable absent", () => {
+    render(
+      <ChatErrorMessage
+        error={{ agentName: "Smithers", providerError: "Network down" }}
+        agentId="agent-1"
+      />
+    );
+    expect(screen.getByText(/Network down/)).toBeInTheDocument();
+  });
+
+  it("uses role=alert for screen readers", () => {
+    render(<ChatErrorMessage error={baseError} agentId="agent-1" />);
+    expect(screen.getByRole("alert")).toBeInTheDocument();
   });
 });

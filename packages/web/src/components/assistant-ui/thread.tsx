@@ -315,9 +315,10 @@ const MessageError: FC = () => {
 
 const AssistantErrorOrContent: FC<{ actionSlot?: React.ReactNode }> = ({ actionSlot }) => {
   const error = useMessage((s) => s.metadata?.custom?.error as ChatError | undefined);
+  const agentId = useContext(AgentIdContext) ?? "";
 
   if (error) {
-    return <ChatErrorMessage error={error} actionSlot={actionSlot} />;
+    return <ChatErrorMessage error={error} agentId={agentId} actionSlot={actionSlot} />;
   }
 
   return (
