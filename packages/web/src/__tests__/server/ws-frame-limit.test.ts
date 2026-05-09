@@ -66,4 +66,42 @@ describe("WebSocket server frame limit (regression guard)", () => {
     expect(echoed.length).toBe(payload.length);
     client.close();
   });
+
+  it("rejects a frame larger than the server limit with close code 1009 (negative guard)", async () => {
+    // The /review feedback flagged that the positive test alone is not enough:
+    // someone could set maxPayload to Infinity and the positive test would still
+    // pass. This test pins down the *upper* end of the contract — frames over
+    // the limit must be rejected with 1009 ("Message too big"), which is what
+    // the client-side handler in use-ws-runtime.ts uses to surface "Image too
+    // large".
+    let messageReceived = false;
+    wss.on("connection", (ws) => {
+      ws.on("message", () => {
+        messageReceived = true;
+      });
+      // The `ws` library emits an "error" event with WS_ERR_UNSUPPORTED_MESSAGE_LENGTH
+      // when an oversized frame arrives. Without a listener Node treats it as
+      // unhandled and Vitest fails the test even though the close code is what
+      // we're asserting on. Swallow it — the close code is the contract.
+      ws.on("error", () => {});
+    });
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}`);
+    await new Promise<void>((resolve, reject) => {
+      client.once("open", () => resolve());
+      client.once("error", reject);
+    });
+
+    const closeEvent = new Promise<{ code: number }>((resolve) => {
+      client.once("close", (code) => resolve({ code }));
+    });
+
+    // Just over the limit — guaranteed to trigger maxPayload rejection.
+    const oversized = "x".repeat(SERVER_WS_MAX_PAYLOAD_BYTES + 1);
+    client.send(oversized);
+
+    const { code } = await closeEvent;
+    expect(code).toBe(1009);
+    expect(messageReceived).toBe(false);
+  });
 });
