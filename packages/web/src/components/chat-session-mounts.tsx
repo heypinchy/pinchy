@@ -33,6 +33,7 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
   const { onRetryContinue, onRetryResend } = bundle;
 
   useEffect(() => {
+    const lastError = bundle.isOrphaned ? "The agent did not respond" : null;
     store.getState().publish(agentId, {
       runtime: bundle.runtime,
       isRunning: bundle.isRunning,
@@ -45,7 +46,7 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
       isOrphaned: bundle.isOrphaned,
       onRetryContinue,
       onRetryResend,
-      lastError: null,
+      lastError,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [

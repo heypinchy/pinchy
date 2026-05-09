@@ -27,6 +27,61 @@ function makeBundle(overrides: Partial<RuntimeBundle> = {}): RuntimeBundle {
   };
 }
 
+describe("AgentSidebarIndicator error state", () => {
+  it("renders the error indicator when bundle.lastError is set", () => {
+    function Helper() {
+      const { publish } = useChatSession("agent-A");
+      return (
+        <button
+          data-testid="set-error"
+          onClick={() => publish(makeBundle({ isRunning: false, lastError: "agent timed out" }))}
+        >
+          set-error
+        </button>
+      );
+    }
+    render(
+      <ChatSessionProvider>
+        <Helper />
+        <AgentSidebarIndicator agentId="agent-A" />
+      </ChatSessionProvider>
+    );
+
+    act(() => screen.getByTestId("set-error").click());
+
+    expect(screen.getByTestId("agent-error-indicator")).toBeInTheDocument();
+    expect(screen.getByTestId("agent-error-indicator")).toHaveAttribute(
+      "title",
+      expect.stringContaining("timed out")
+    );
+  });
+
+  it("error wins over running when both are true", () => {
+    function Helper() {
+      const { publish } = useChatSession("agent-A");
+      return (
+        <button
+          data-testid="set-error-running"
+          onClick={() => publish(makeBundle({ isRunning: true, lastError: "boom" }))}
+        >
+          set-error-running
+        </button>
+      );
+    }
+    render(
+      <ChatSessionProvider>
+        <Helper />
+        <AgentSidebarIndicator agentId="agent-A" />
+      </ChatSessionProvider>
+    );
+
+    act(() => screen.getByTestId("set-error-running").click());
+
+    expect(screen.getByTestId("agent-error-indicator")).toBeInTheDocument();
+    expect(screen.queryByTestId("agent-running-indicator")).toBeNull();
+  });
+});
+
 describe("AgentSidebarIndicator", () => {
   it("renders nothing when no bundle exists for the agent", () => {
     render(
