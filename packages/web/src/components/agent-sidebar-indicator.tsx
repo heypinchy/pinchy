@@ -7,13 +7,13 @@ export function AgentSidebarIndicator({ agentId }: { agentId: string }) {
   if (!bundle) return null;
 
   // Error wins over running: a stale error shouldn't be hidden by a
-  // freshly-started retry. Error clears when the user opens the chat
-  // and useWsRuntime resets isOrphaned.
+  // freshly-started retry. Error clears when the user retries, which
+  // sets isRunning=true and resolves isOrphaned.
   if (bundle.lastError) {
     return (
       <span
         data-testid="agent-error-indicator"
-        aria-label={bundle.lastError}
+        aria-label="Agent error"
         title={bundle.lastError}
         className="size-1.5 rounded-full bg-destructive shrink-0"
       />
