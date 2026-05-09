@@ -31,8 +31,12 @@ Audio transcription requires a configured LLM provider that supports transcripti
 
 Two things happen when you attach a file:
 
-1. **The agent sees the content inline.** For PDFs and images, the content is passed to the LLM using vision or document understanding. For audio files, Pinchy transcribes the audio first, then passes the transcript to the LLM.
-2. **The file is saved to the agent workspace** at `uploads/<filename>`. Plugins that access the agent's file system — such as `pinchy-files` — can read it in the same conversation or in later sessions.
+1. **The file is saved to the agent workspace** at `uploads/<filename>`. PDFs and images reach the agent through OpenClaw's built-in `pdf` and `image` tools — the agent reads them on demand using the workspace path.
+2. **Images are also sent inline** to the LLM when the model supports vision, so the agent can "see" an image without a separate read step.
+
+Pinchy automatically selects the best vision-capable model available in your provider configuration for PDF analysis (Anthropic Claude and Google Gemini support native PDF mode; other vision-capable models use a text-and-image extraction fallback). The agent can also override the model per-call if needed.
+
+Workspaces are isolated per agent — the `pdf` and `image` tools can only read files inside that agent's own workspace, not from other agents or the host system.
 
 ## Audio prerequisites
 

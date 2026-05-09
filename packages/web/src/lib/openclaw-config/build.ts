@@ -3,6 +3,7 @@ import { dirname } from "path";
 import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-secrets";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
+import { isModelVisionCapable } from "@/lib/model-vision";
 import { eq, ne } from "drizzle-orm";
 import { db } from "@/db";
 import {
@@ -146,6 +147,32 @@ function deepMerge(
   return result;
 }
 
+/**
+ * Resolve a vision-capable model to use for the built-in `pdf` tool.
+ * Anthropic and Google are preferred (native PDF mode = raw bytes to model,
+ * higher fidelity). Otherwise the first vision-capable model from any
+ * configured provider is used. Returns null when no vision-capable model
+ * is available (text-only stack).
+ */
+async function resolveDefaultPdfModel(): Promise<string | null> {
+  // 1. Prefer native PDF providers (Anthropic, Google)
+  for (const native of ["anthropic", "google"] as const) {
+    const key = await getSetting(PROVIDERS[native].settingsKey);
+    if (key) return await getDefaultModel(native);
+  }
+  // 2. Fall back to any configured provider whose default model is vision-capable
+  for (const [providerName, providerConfig] of Object.entries(PROVIDERS)) {
+    const provider = providerName as ProviderName;
+    if (provider === "anthropic" || provider === "google" || provider === "ollama-local") continue;
+    const key = await getSetting(providerConfig.settingsKey);
+    if (key) {
+      const model = await getDefaultModel(provider);
+      if (model && isModelVisionCapable(model)) return model;
+    }
+  }
+  return null;
+}
+
 export async function regenerateOpenClawConfig() {
   let existing = readExistingConfig();
 
@@ -216,6 +243,14 @@ export async function regenerateOpenClawConfig() {
     pinchyDefaults.model = { primary: await getDefaultModel(defaultProvider) };
   }
 
+  // Auto-set pdfModel to the best vision-capable model available.
+  // The built-in `pdf` tool registers only when this resolves — without it,
+  // agents on text-only models (e.g. deepseek-v4-flash) get no PDF capability.
+  const pdfModel = await resolveDefaultPdfModel();
+  if (pdfModel) {
+    pinchyDefaults.pdfModel = { primary: pdfModel };
+  }
+
   // Build agents list with OpenClaw-side workspace paths, tools.deny, and plugin configs
   const pluginConfigs: Record<string, Record<string, Record<string, unknown>>> = {};
   let contextPluginAgents: Record<string, { tools: string[]; userId: string }> | undefined;
@@ -238,6 +273,14 @@ export async function regenerateOpenClawConfig() {
     if (deniedGroups.length > 0) {
       agentEntry.tools = { deny: deniedGroups };
     }
+
+    // Confine the built-in `pdf` and `image` tools to the agent's own
+    // workspace directory. Without this, the tools would have unrestricted
+    // host-filesystem access. See CISO-review note in PR #316.
+    agentEntry.tools = {
+      ...((agentEntry.tools as Record<string, unknown>) ?? {}),
+      fs: { workspaceOnly: true },
+    };
 
     // Collect plugin config for agents that have file tools (pinchy_ls, pinchy_read)
     const hasFileTools = allowedTools.some((t: string) => t === "pinchy_ls" || t === "pinchy_read");
@@ -662,6 +705,15 @@ export async function regenerateOpenClawConfig() {
   //     so users can't reach it without admin opt-in.
   //   - memory-core: activation.onStartup=false; lazy and free at startup.
   //   - talk-voice: leaf TTS-voice picker; tiny, future voice work.
+  // Bundled OpenClaw extensions that Pinchy depends on but that aren't
+  // otherwise visible to the build (no `entries` written, not in
+  // `existingAllow` on first boot). Without explicit inclusion in
+  // plugins.allow they are blocked by the whitelist and the dependent
+  // built-in tools fail at runtime.
+  //   - document-extract: PDF text + image extraction backend used by the
+  //     built-in `pdf` tool's extraction fallback mode (pdfjs-dist).
+  const REQUIRED_BUNDLED_PLUGINS = ["document-extract"] as const;
+
   const DISABLED_OPENCLAW_PLUGINS = new Set(["acpx", "bonjour", "device-pair", "phone-control"]);
   const isWanted = (p: string) =>
     !DISABLED_OPENCLAW_PLUGINS.has(p) && (!isPinchyPlugin(p) || ourPlugins.has(p));
@@ -680,7 +732,9 @@ export async function regenerateOpenClawConfig() {
   // additions go at the end so the positions of pre-existing entries stay
   // stable (no spurious diff for unrelated plugins).
   const newAdditions = [...ourPlugins].filter((p) => !seen.has(p));
-  const allowedPlugins = [...preservedOrder, ...newAdditions];
+  // Include required bundled plugins that aren't already in the list
+  const requiredAdditions = [...REQUIRED_BUNDLED_PLUGINS].filter((p) => !seen.has(p));
+  const allowedPlugins = [...preservedOrder, ...newAdditions, ...requiredAdditions];
 
   // Preserve OpenClaw-managed plugin entries that we don't write ourselves.
   // OpenClaw auto-enables each configured provider (anthropic, openai, google,

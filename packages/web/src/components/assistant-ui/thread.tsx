@@ -19,6 +19,7 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
   useMessage,
+  useMessagePartFile,
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
@@ -26,6 +27,7 @@ import {
   CheckIcon,
   CopyIcon,
   DownloadIcon,
+  FileText,
   MoreHorizontalIcon,
   SquareIcon,
 } from "lucide-react";
@@ -427,6 +429,17 @@ export function sendingOpacityClass(status: string | undefined): string {
   return status === "sending" ? "opacity-60" : "";
 }
 
+export const FilePart: FC = () => {
+  const { mimeType, filename } = useMessagePartFile();
+  const isPdf = mimeType === "application/pdf";
+  return (
+    <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 my-1">
+      <FileText className="size-5 shrink-0 text-muted-foreground" />
+      <span className="text-sm truncate">{filename ?? (isPdf ? "PDF document" : "File")}</span>
+    </div>
+  );
+};
+
 export const UserMessage: FC = () => {
   const status = useMessage((s) => s.metadata?.custom?.status as string | undefined);
   const isLast = useMessage((s) => s.isLast);
@@ -452,6 +465,7 @@ export const UserMessage: FC = () => {
           <MessagePrimitive.Parts
             components={{
               Image: ChatImage,
+              File: FilePart,
             }}
           />
         </div>

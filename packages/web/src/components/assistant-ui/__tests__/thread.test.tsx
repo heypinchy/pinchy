@@ -87,6 +87,12 @@ vi.mock("@assistant-ui/react", () => ({
   },
   useMessage: vi.fn(),
   useComposerRuntime: vi.fn(() => null),
+  useMessagePartFile: vi.fn(() => ({
+    type: "file" as const,
+    filename: "test.pdf",
+    mimeType: "application/pdf",
+    status: { type: "complete" },
+  })),
 }));
 
 vi.mock("@/lib/draft-store", () => ({
@@ -514,5 +520,52 @@ describe("ComposerAction Send/Stop mutual exclusion (#207)", () => {
     const stopBtn = screen.queryByRole("button", { name: /stop generating/i });
 
     expect(sendBtn === null && stopBtn !== null).toBe(true);
+  });
+});
+
+describe("FilePart component", () => {
+  it("renders the filename from a file content part", async () => {
+    const { useMessagePartFile } = await import("@assistant-ui/react");
+    vi.mocked(useMessagePartFile).mockReturnValue({
+      type: "file",
+      filename: "invoice.pdf",
+      mimeType: "application/pdf",
+      status: { type: "complete" },
+    } as never);
+
+    const { FilePart } = await import("@/components/assistant-ui/thread");
+    render(<FilePart />);
+
+    expect(screen.getByText("invoice.pdf")).toBeInTheDocument();
+  });
+
+  it("shows 'PDF document' as fallback when filename is missing", async () => {
+    const { useMessagePartFile } = await import("@assistant-ui/react");
+    vi.mocked(useMessagePartFile).mockReturnValue({
+      type: "file",
+      filename: undefined,
+      mimeType: "application/pdf",
+      status: { type: "complete" },
+    } as never);
+
+    const { FilePart } = await import("@/components/assistant-ui/thread");
+    render(<FilePart />);
+
+    expect(screen.getByText("PDF document")).toBeInTheDocument();
+  });
+
+  it("shows 'File' as fallback for non-PDF files without filename", async () => {
+    const { useMessagePartFile } = await import("@assistant-ui/react");
+    vi.mocked(useMessagePartFile).mockReturnValue({
+      type: "file",
+      filename: undefined,
+      mimeType: "audio/mp3",
+      status: { type: "complete" },
+    } as never);
+
+    const { FilePart } = await import("@/components/assistant-ui/thread");
+    render(<FilePart />);
+
+    expect(screen.getByText("File")).toBeInTheDocument();
   });
 });

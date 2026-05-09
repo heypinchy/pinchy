@@ -124,28 +124,33 @@ describe("getToolsByCategory", () => {
 });
 
 describe("computeDeniedGroups", () => {
-  it("always returns all groups and standalone tools", () => {
+  it("does not deny the OpenClaw built-in `pdf` tool — it powers chat-attachment PDF reading", () => {
     const denied = computeDeniedGroups([]);
-    expect(denied).toEqual([
-      "group:runtime",
-      "group:fs",
-      "group:web",
-      "pdf",
-      "image",
-      "image_generate",
-    ]);
+    expect(denied).not.toContain("pdf");
   });
 
-  it("returns full deny list even when tool IDs are passed", () => {
+  it("does not deny the OpenClaw built-in `image` tool — same reason for image attachments", () => {
+    const denied = computeDeniedGroups([]);
+    expect(denied).not.toContain("image");
+  });
+
+  it("still denies `image_generate` (write/output tool, requires explicit opt-in)", () => {
+    const denied = computeDeniedGroups([]);
+    expect(denied).toContain("image_generate");
+  });
+
+  it("always returns the base group deny list", () => {
+    const denied = computeDeniedGroups([]);
+    expect(denied).toContain("group:runtime");
+    expect(denied).toContain("group:fs");
+    expect(denied).toContain("group:web");
+  });
+
+  it("returns same deny list even when tool IDs are passed (forward compat)", () => {
     const denied = computeDeniedGroups(["pinchy_ls", "odoo_create"]);
-    expect(denied).toEqual([
-      "group:runtime",
-      "group:fs",
-      "group:web",
-      "pdf",
-      "image",
-      "image_generate",
-    ]);
+    expect(denied).not.toContain("pdf");
+    expect(denied).not.toContain("image");
+    expect(denied).toContain("image_generate");
   });
 });
 

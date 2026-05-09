@@ -136,10 +136,13 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
 
 const ALL_GROUPS = ["group:runtime", "group:fs", "group:web"] as const;
 
-// Standalone OpenClaw tools that bypass Pinchy's access control and must be
-// denied unless an admin explicitly enables them. These tools have global
-// file/media access without respecting allowed_paths.
-const STANDALONE_DENY = ["pdf", "image", "image_generate"] as const;
+// `pdf` and `image` are deliberately NOT in this list. They are read-only
+// vision/document tools that respect `tools.fs.workspaceOnly`, and they
+// power Pinchy's chat-attachment feature: the upload-hint instructs the
+// agent to call them with the workspace path. `image_generate` stays denied
+// because it produces new content (token cost, output side-effects) and
+// belongs behind explicit admin opt-in.
+const STANDALONE_DENY = ["image_generate"] as const;
 
 export function getToolById(id: string): ToolDefinition | undefined {
   return TOOL_REGISTRY.find((t) => t.id === id);

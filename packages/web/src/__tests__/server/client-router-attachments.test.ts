@@ -32,7 +32,7 @@ const PNG = Buffer.concat([
 const PNG_BASE64 = PNG.toString("base64");
 
 describe("processIncomingAttachments", () => {
-  it("persists a PDF and emits inline ChatAttachment + workspace ref", async () => {
+  it("persists a PDF to workspace only (no inline attachment)", async () => {
     const { processIncomingAttachments } = await import("@/server/client-router");
     const result = await processIncomingAttachments({
       agentId: "agent-1",
@@ -45,11 +45,7 @@ describe("processIncomingAttachments", () => {
       claimedFilenames: ["invoice.pdf"],
     });
 
-    expect(result.chatAttachments).toHaveLength(1);
-    expect(result.chatAttachments[0]).toMatchObject({
-      mimeType: "application/pdf",
-      content: PDF_BASE64,
-    });
+    expect(result.chatAttachments).toHaveLength(0);
     expect(result.workspaceRefs).toEqual([
       expect.objectContaining({
         relativePath: "uploads/invoice.pdf",
@@ -72,7 +68,7 @@ describe("processIncomingAttachments", () => {
       ],
       claimedFilenames: ["a.pdf", "b.png"],
     });
-    expect(result.chatAttachments).toHaveLength(2);
+    expect(result.chatAttachments).toHaveLength(1);
     expect(result.workspaceRefs).toHaveLength(2);
   });
 
@@ -141,6 +137,7 @@ describe("buildUploadHint", () => {
     const block = buildUploadHint([
       {
         relativePath: "uploads/invoice.pdf",
+        absolutePath: "/root/.openclaw/workspaces/test/uploads/invoice.pdf",
         mimeType: "application/pdf",
         sizeBytes: 245_000,
         contentHash: "a".repeat(64),
@@ -165,18 +162,67 @@ describe("buildUploadHint", () => {
     const block = buildUploadHint([
       {
         relativePath: "uploads/foo`bar`.pdf",
+        absolutePath: "/root/.openclaw/workspaces/test/uploads/foo`bar`.pdf",
         mimeType: "application/pdf",
         sizeBytes: 100,
         contentHash: "a".repeat(64),
         reused: false,
       },
     ]);
-    // Each line wraps the path in a single ` … ` code span. After escaping,
-    // the only backticks remaining must be the two delimiters per line.
+    // The path is wrapped in a single ` … ` code span. After escaping,
+    // the path segment itself must not contain any backticks — they are
+    // replaced with the visually-similar U+02BC apostrophe.
     const lineWithPath = block.split("\n").find((l) => l.includes("uploads/foo")) ?? "";
-    const backtickCount = (lineWithPath.match(/`/g) ?? []).length;
-    expect(backtickCount).toBe(2);
+    // Extract just the code-span content (text between the first pair of backticks)
+    const codeSpanMatch = lineWithPath.match(/`([^`]*)`/);
+    const pathInCodeSpan = codeSpanMatch?.[1] ?? "";
+    expect(pathInCodeSpan).not.toContain("`");
     // The original filename text must still be recognisable to the agent.
     expect(lineWithPath).toMatch(/foo.+bar.+\.pdf/);
+  });
+
+  it("tells the agent which built-in tool to call and uses the absolute workspace path", async () => {
+    const { buildUploadHint } = await import("@/server/client-router");
+    const block = buildUploadHint([
+      {
+        relativePath: "uploads/invoice.pdf",
+        absolutePath: "/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 50_000,
+        contentHash: "a".repeat(64),
+        reused: false,
+      },
+      {
+        relativePath: "uploads/photo.png",
+        absolutePath: "/root/.openclaw/workspaces/agent-1/uploads/photo.png",
+        mimeType: "image/png",
+        sizeBytes: 30_000,
+        contentHash: "b".repeat(64),
+        reused: false,
+      },
+    ]);
+    // Must reference the actual built-in tool names
+    expect(block).toMatch(/\bpdf\b/);
+    expect(block).toMatch(/\bimage\b/);
+    // Must use the absolute workspace path (not relative)
+    expect(block).toContain("/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf");
+    expect(block).toContain("/root/.openclaw/workspaces/agent-1/uploads/photo.png");
+  });
+
+  it("reminds the agent to pass exact paths to sub-agents (not from memory)", async () => {
+    const { buildUploadHint } = await import("@/server/client-router");
+    const block = buildUploadHint([
+      {
+        relativePath: "uploads/invoice.pdf",
+        absolutePath: "/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 50_000,
+        contentHash: "a".repeat(64),
+        reused: false,
+      },
+    ]);
+    // Must remind agent to pass exact paths to sub-agents
+    expect(block.toLowerCase()).toMatch(/sub.?agent|subagent|delegate/);
+    expect(block.toLowerCase()).toMatch(/exact path|exact paths/);
   });
 });

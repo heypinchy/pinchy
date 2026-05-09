@@ -527,7 +527,10 @@ describe("regenerateOpenClawConfig", () => {
       name: "Smithers",
       model: "anthropic/claude-opus-4-7",
       workspace: "/root/.openclaw/workspaces/uuid-agent-1",
-      tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
+      tools: {
+        deny: ["group:runtime", "group:fs", "group:web", "image_generate"],
+        fs: { workspaceOnly: true },
+      },
       heartbeat: { every: "0m" },
     });
     expect(config.agents.list[1]).toEqual({
@@ -535,9 +538,45 @@ describe("regenerateOpenClawConfig", () => {
       name: "Jeeves",
       model: "openai/gpt-5.4",
       workspace: "/root/.openclaw/workspaces/uuid-agent-2",
-      tools: { deny: ["group:runtime", "group:fs", "group:web", "pdf", "image", "image_generate"] },
+      tools: {
+        deny: ["group:runtime", "group:fs", "group:web", "image_generate"],
+        fs: { workspaceOnly: true },
+      },
       heartbeat: { every: "0m" },
     });
+  });
+
+  it("includes the OpenClaw bundled `document-extract` extension in plugins.allow so the pdf tool's extraction fallback works", async () => {
+    // Simulate existing plugins.allow WITHOUT document-extract
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
+        plugins: { allow: ["browser", "memory-core"] },
+      })
+    );
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.plugins.allow).toContain("document-extract");
+  });
+
+  it("emits tools.fs = { workspaceOnly: true } for every agent so built-in pdf/image tools cannot escape the workspace", async () => {
+    const agentsData = [
+      {
+        id: "ws-agent-1",
+        name: "Smithers",
+        model: "anthropic/claude-opus-4-7",
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({ from: mockFrom(agentsData) } as never);
+    mockedGetSetting.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const agentEntry = config.agents.list.find((a: { id: string }) => a.id === "ws-agent-1");
+    expect(agentEntry.tools.fs).toEqual({ workspaceOnly: true });
   });
 
   it("writes gateway.auth.token from getOrCreateGatewayToken() (DB wins over existing config)", async () => {
@@ -3709,7 +3748,8 @@ describe("restart-state integration", () => {
 
     // Order must match the existing file exactly. Anything else - even with
     // identical contents - triggers a full gateway restart.
-    expect(config.plugins.allow).toEqual(["pinchy-audit", "telegram"]);
+    // document-extract is a required bundled plugin appended after pinchy-* entries.
+    expect(config.plugins.allow).toEqual(["pinchy-audit", "telegram", "document-extract"]);
   });
 
   it("appends new pinchy plugins at the end of plugins.allow (#193 follow-up)", async () => {
@@ -4157,11 +4197,13 @@ describe("restart-state integration", () => {
       const written = JSON.parse(write[1] as string);
       // Same set, same order. Without the fix, telegram migrates to position 0
       // and the pinchy-* entries get re-shuffled by entries-insertion order.
+      // document-extract is a required bundled plugin appended after pinchy-* entries.
       expect(written.plugins.allow).toEqual([
         "pinchy-audit",
         "pinchy-context",
         "pinchy-docs",
         "telegram",
+        "document-extract",
       ]);
     }
     // Acceptable alternative: byte-equal early return (no write).
@@ -4949,5 +4991,39 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     expect(postmortemWrites).toHaveLength(0);
 
     errorSpy.mockRestore();
+  });
+
+  it("auto-sets agents.defaults.pdfModel when Anthropic is configured (preferred native PDF provider)", async () => {
+    // Anthropic has a configured API key → should be preferred for native PDF
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "anthropic_api_key" ? "sk-ant-test" : null
+    );
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents.defaults.pdfModel).toEqual({
+      primary: "anthropic/claude-haiku-4-5-20251001",
+    });
+  });
+
+  it("falls back to a vision-capable non-native model when Anthropic/Google are not configured", async () => {
+    // Only ollama-cloud configured; gemini-3-flash-preview is vision-capable
+    mockedGetSetting.mockImplementation(async (key: string) =>
+      key === "ollama_cloud_api_key" ? "test-key" : null
+    );
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents.defaults.pdfModel).toBeDefined();
+    expect(config.agents.defaults.pdfModel.primary).toBe("ollama-cloud/gemini-3-flash-preview");
+  });
+
+  it("does not set agents.defaults.pdfModel when no provider is configured", async () => {
+    // Default: getSetting always returns null
+    mockedGetSetting.mockResolvedValue(null);
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents?.defaults?.pdfModel).toBeUndefined();
   });
 });

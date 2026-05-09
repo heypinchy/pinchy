@@ -14,6 +14,7 @@ import { agents, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { sanitizeFilename, validateUploadBuffer } from "@/lib/upload-validation";
 import { persistAttachment } from "@/lib/uploads";
+import { getOpenClawWorkspacePath } from "@/lib/workspace";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
@@ -63,6 +64,7 @@ interface HistoryMessage {
 
 export interface ProcessedWorkspaceRef {
   relativePath: string;
+  absolutePath: string;
   mimeType: string;
   sizeBytes: number;
   contentHash: string;
@@ -93,6 +95,7 @@ export async function processIncomingAttachments(
     : undefined;
   const chatAttachments: ChatAttachment[] = [];
   const workspaceRefs: ProcessedWorkspaceRef[] = [];
+  const workspaceRoot = getOpenClawWorkspacePath(agentId);
 
   let attachmentIdx = 0;
   for (const part of contentParts) {
@@ -119,9 +122,17 @@ export async function processIncomingAttachments(
       buffer,
     });
 
-    chatAttachments.push({ mimeType: detectedMime, fileName: safeName, content: base64 });
+    // Only images can be sent inline to the LLM (vision models accept them).
+    // PDFs and other binary files go workspace-only — the agent reads them
+    // via the built-in `pdf` / `image` tools using the workspace path from
+    // the upload hint. OpenClaw's `agent` entrypoint rejects non-image
+    // inline attachments anyway (`acceptNonImage: false`).
+    if (detectedMime.startsWith("image/")) {
+      chatAttachments.push({ mimeType: detectedMime, fileName: safeName, content: base64 });
+    }
     workspaceRefs.push({
       relativePath: persisted.relativePath,
+      absolutePath: `${workspaceRoot}/${persisted.relativePath}`,
       mimeType: detectedMime,
       sizeBytes: buffer.length,
       contentHash: persisted.contentHash,
@@ -145,17 +156,22 @@ function escapeForMarkdownCodeSpan(s: string): string {
 
 export function buildUploadHint(refs: ProcessedWorkspaceRef[]): string {
   if (refs.length === 0) return "";
-  const lines = refs.map(
-    (r) =>
-      `- \`${escapeForMarkdownCodeSpan(r.relativePath)}\` (${r.mimeType}, ${formatBytes(r.sizeBytes)})`
-  );
+  const lines = refs.map((r) => {
+    const path = escapeForMarkdownCodeSpan(r.absolutePath);
+    const tool =
+      r.mimeType === "application/pdf"
+        ? "`pdf`"
+        : r.mimeType.startsWith("image/")
+          ? "`image`"
+          : "the appropriate built-in tool";
+    return `- \`${path}\` (${r.mimeType}, ${formatBytes(r.sizeBytes)}) — analyze with ${tool}`;
+  });
   return [
     "## User uploaded files",
-    "The user just uploaded these files to the agent workspace:",
+    "The user uploaded these files into the agent workspace. Use the listed built-in tool with the exact absolute path to analyze each file:",
     ...lines,
     "",
-    "These files are also attached inline to this message — read them directly.",
-    "For tasks requiring the file path (e.g. attaching to Odoo, copying, listing later), use the workspace paths above.",
+    "If you delegate this task to a sub-agent or another tool, pass the exact paths from the list above — do not retype from memory.",
   ].join("\n");
 }
 
