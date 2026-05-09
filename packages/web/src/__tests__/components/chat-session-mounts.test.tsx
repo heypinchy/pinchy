@@ -4,8 +4,10 @@ import { useState } from "react";
 import { ChatSessionProvider, useChatSession } from "@/components/chat-session-provider";
 import { ChatSessionMounts } from "@/components/chat-session-mounts";
 
-// Mutable state that tests can override to control useWsRuntime's isRunning value.
+// Mutable state that tests can override to control useWsRuntime's return value.
 let mockIsRunning = false;
+let mockIsOrphaned = false;
+let mockReconnectExhausted = false;
 let mockPathname = "/agents";
 
 vi.mock("next/navigation", () => ({
@@ -26,8 +28,8 @@ vi.mock("@/hooks/use-ws-runtime", () => ({
       hasInitialContent: true,
       isOpenClawConnected: true,
       isDelayed: false,
-      reconnectExhausted: false,
-      isOrphaned: false,
+      reconnectExhausted: mockReconnectExhausted,
+      isOrphaned: mockIsOrphaned,
       onRetryContinue: vi.fn(),
       onRetryResend: vi.fn(),
     };
@@ -54,6 +56,8 @@ function seedBundle(agentId: string, publish: (b: any) => void) {
 describe("ChatSessionMounts", () => {
   beforeEach(() => {
     mockIsRunning = false;
+    mockIsOrphaned = false;
+    mockReconnectExhausted = false;
     mockPathname = "/agents";
   });
 
@@ -207,6 +211,60 @@ describe("ChatSessionMounts", () => {
       expect(fetchMock).not.toHaveBeenCalled();
 
       vi.unstubAllGlobals();
+    });
+  });
+
+  describe("lastError publishing", () => {
+    function Harness({ agentId, onBundle }: { agentId: string; onBundle: (b: any) => void }) {
+      const session = useChatSession(agentId);
+      // Seed once so ChatSessionMounts mounts the instance for this agent.
+      if (!session.bundle) seedBundle(agentId, session.publish);
+      if (session.bundle) onBundle(session.bundle);
+      return null;
+    }
+
+    function lastBundleFor(agentId: string, mockSetup: () => void) {
+      mockSetup();
+      const observed: any[] = [];
+      render(
+        <ChatSessionProvider>
+          <Harness agentId={agentId} onBundle={(b) => observed.push(b)} />
+          <ChatSessionMounts />
+        </ChatSessionProvider>
+      );
+      // Last bundle observed reflects ChatSessionInstance's useEffect publish
+      // (which overwrites the seed with the real useWsRuntime values).
+      return observed[observed.length - 1];
+    }
+
+    it("publishes lastError='The agent did not respond' when bundle.isOrphaned is true", () => {
+      const bundle = lastBundleFor("agent-orphan", () => {
+        mockIsOrphaned = true;
+      });
+      expect(bundle?.lastError).toBe("The agent did not respond");
+    });
+
+    it("publishes lastError='Connection lost...' when bundle.reconnectExhausted is true", () => {
+      const bundle = lastBundleFor("agent-exhausted", () => {
+        mockReconnectExhausted = true;
+      });
+      expect(bundle?.lastError).toMatch(/connection lost/i);
+    });
+
+    it("publishes lastError=null when neither isOrphaned nor reconnectExhausted is set", () => {
+      const bundle = lastBundleFor("agent-healthy", () => {});
+      expect(bundle?.lastError).toBeNull();
+    });
+
+    it("prefers reconnectExhausted message over isOrphaned when both are true", () => {
+      // reconnectExhausted is the more severe state — the user can't recover
+      // without reloading, while isOrphaned just means the current turn timed
+      // out. The more-severe message wins so the sidebar tooltip is actionable.
+      const bundle = lastBundleFor("agent-both", () => {
+        mockIsOrphaned = true;
+        mockReconnectExhausted = true;
+      });
+      expect(bundle?.lastError).toMatch(/connection lost/i);
     });
   });
 });

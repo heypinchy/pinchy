@@ -62,7 +62,13 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
   const { onRetryContinue, onRetryResend } = bundle;
 
   useEffect(() => {
-    const lastError = bundle.isOrphaned ? "The agent did not respond" : null;
+    // reconnectExhausted wins: the user can't recover without reloading, so
+    // its tooltip is more actionable than the per-turn isOrphaned hint.
+    const lastError = bundle.reconnectExhausted
+      ? "Connection lost. Reload the page to resume."
+      : bundle.isOrphaned
+        ? "The agent did not respond"
+        : null;
     store.getState().publish(agentId, {
       runtime: bundle.runtime,
       isRunning: bundle.isRunning,

@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import {
   ChatSessionProvider,
+  MAX_LIVE_BUNDLES,
   useChatSession,
   useVisitedAgentIds,
   type RuntimeBundle,
@@ -113,6 +114,97 @@ describe("ChatSessionProvider", () => {
 
     act(() => result.current.remove());
     expect(result.current.bundle).toBeUndefined();
+  });
+
+  describe("LRU eviction (MAX_LIVE_BUNDLES cap)", () => {
+    // Each bundle pins one WebSocket connection (via the surviving
+    // ChatSessionInstance) and up to MAX_BUNDLED_MESSAGES messages.
+    // Without a cap, a long-lived tab that opens many agents accumulates
+    // unbounded WebSockets and memory. The store evicts the
+    // least-recently-published agent once the cap is exceeded so the
+    // resource budget stays bounded; the evicted agent reconnects fresh
+    // when the user navigates back to it.
+
+    it("keeps exactly MAX_LIVE_BUNDLES bundles alive across many publishes", () => {
+      // Probe component that publishes on mount via render-time call —
+      // same pattern <Chat> uses for its placeholder publish.
+      function PublishOnMount({ id }: { id: string }) {
+        const session = useChatSession(id);
+        if (!session.bundle) session.publish(fakeBundle());
+        return null;
+      }
+
+      const allIds = Array.from({ length: MAX_LIVE_BUNDLES + 5 }, (_, i) => `lru-${i}`);
+
+      const { result } = renderHook(() => useVisitedAgentIds(), {
+        wrapper: ({ children }) => (
+          <ChatSessionProvider>
+            {allIds.map((id) => (
+              <PublishOnMount key={id} id={id} />
+            ))}
+            {children}
+          </ChatSessionProvider>
+        ),
+      });
+
+      // The cap holds: never more than MAX_LIVE_BUNDLES alive.
+      expect(result.current.length).toBe(MAX_LIVE_BUNDLES);
+      // The earliest publishes were evicted; the most recent ones survive.
+      const expectedSurvivors = allIds.slice(-MAX_LIVE_BUNDLES).sort();
+      expect([...result.current].sort()).toEqual(expectedSurvivors);
+    });
+
+    it("re-publishing an existing agent moves it to the most-recently-used position", () => {
+      // Sequence: publish A, publish B..(MAX-1), re-publish A, publish a new id.
+      // Without LRU, A would be evicted (it was first). With LRU, the
+      // newest of the original B..(MAX-1) gets evicted instead because
+      // re-publishing A bumped it to MRU.
+
+      const publishers = new Map<string, (b: RuntimeBundle) => void>();
+
+      function PublishHarness({ id }: { id: string }) {
+        const session = useChatSession(id);
+        publishers.set(id, session.publish);
+        return null;
+      }
+
+      const filler = Array.from({ length: MAX_LIVE_BUNDLES - 1 }, (_, i) => `filler-${i}`);
+      const allIds = ["a", ...filler];
+
+      const { result } = renderHook(() => useVisitedAgentIds(), {
+        wrapper: ({ children }) => (
+          <ChatSessionProvider>
+            {allIds.map((id) => (
+              <PublishHarness key={id} id={id} />
+            ))}
+            <PublishHarness key="overflow" id="overflow" />
+            {children}
+          </ChatSessionProvider>
+        ),
+      });
+
+      // Step 1: publish a, then all fillers — store now has MAX entries
+      // (a + MAX_LIVE_BUNDLES - 1 fillers).
+      act(() => {
+        publishers.get("a")!(fakeBundle());
+        for (const id of filler) publishers.get(id)!(fakeBundle());
+      });
+      expect(result.current.length).toBe(MAX_LIVE_BUNDLES);
+      expect(result.current).toContain("a");
+
+      // Step 2: re-publish "a" — moves it to MRU. Now oldest is filler-0.
+      act(() => publishers.get("a")!(fakeBundle()));
+
+      // Step 3: publish "overflow" — exceeds cap, evicts oldest. Without
+      // the bump on "a", "a" would be the oldest and would get evicted.
+      // With the bump, "filler-0" is oldest and gets evicted instead.
+      act(() => publishers.get("overflow")!(fakeBundle()));
+
+      expect(result.current.length).toBe(MAX_LIVE_BUNDLES);
+      expect(result.current).toContain("a"); // "a" survived because it was bumped
+      expect(result.current).not.toContain("filler-0"); // oldest got evicted
+      expect(result.current).toContain("overflow");
+    });
   });
 });
 

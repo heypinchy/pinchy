@@ -138,8 +138,12 @@ export function Chat({
     }
   }, [chatBundle, publish]);
 
-  // All hooks must be called unconditionally — destructure after so
-  // useChatStatus always runs regardless of whether the bundle is ready.
+  // Hooks must be called unconditionally (Rules of Hooks), so we destructure
+  // bundle fields with defaults and call useChatStatus on every render —
+  // including the initial render where the bundle is still undefined or the
+  // placeholder. The computed status is intentionally discarded by the
+  // early `return null` below; once the real bundle arrives, the next
+  // render produces a real status that drives the UI.
   const runtime = chatBundle?.runtime ?? PLACEHOLDER_RUNTIME;
   const isRunning = chatBundle?.isRunning ?? false;
   const isConnected = chatBundle?.isConnected ?? false;

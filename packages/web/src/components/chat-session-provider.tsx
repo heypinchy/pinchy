@@ -30,13 +30,44 @@ interface ChatSessionStoreActions {
 
 type Store = StoreApi<ChatSessionStoreState & ChatSessionStoreActions>;
 
+/**
+ * Maximum number of live runtime bundles kept in the store. Each bundle
+ * pins an open WebSocket (via the surviving <ChatSessionInstance>) plus
+ * up to 200 cached messages. Without a cap, a long-lived tab that opens
+ * many agents accumulates unbounded WebSockets and memory. When this cap
+ * is exceeded, the least-recently-published bundle is evicted; the
+ * evicted agent reconnects fresh when the user navigates back to it.
+ *
+ * 20 was chosen as a generous "many agents per session" number that
+ * still bounds resource usage to a few MB and a few dozen WebSockets.
+ */
+export const MAX_LIVE_BUNDLES = 20;
+
 /** Exported for internal use by ChatSessionMounts only — not part of public API. */
 export const ChatSessionStoreContext = createContext<Store | null>(null);
 
 function createChatSessionStore(): Store {
   return create<ChatSessionStoreState & ChatSessionStoreActions>()((set) => ({
     bundles: {},
-    publish: (agentId, bundle) => set((s) => ({ bundles: { ...s.bundles, [agentId]: bundle } })),
+    publish: (agentId, bundle) =>
+      set((s) => {
+        // Rebuild the bundles object so re-publishing an existing agent
+        // moves it to the most-recently-used (insertion-order last)
+        // position. JS objects preserve string-key insertion order, so
+        // the first key after this rebuild is the LRU candidate.
+        const next: Record<string, RuntimeBundle | undefined> = {};
+        for (const [k, v] of Object.entries(s.bundles)) {
+          if (k !== agentId && v !== undefined) next[k] = v;
+        }
+        next[agentId] = bundle;
+        // Enforce the cap. Worst case: overshoot by exactly one (the new
+        // entry that just pushed us over). Drop the oldest until we fit.
+        const keys = Object.keys(next);
+        for (let i = 0; keys.length - i > MAX_LIVE_BUNDLES; i++) {
+          delete next[keys[i]];
+        }
+        return { bundles: next };
+      }),
     remove: (agentId) =>
       set((s) => {
         const next = { ...s.bundles };

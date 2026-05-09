@@ -106,4 +106,20 @@ describe("POST /api/internal/audit/background-run", () => {
     expect(res.status).toBe(400);
     expect(appendAuditLog).not.toHaveBeenCalled();
   });
+
+  it("returns 400 when durationMs exceeds 10 minutes (telemetry sanity bound)", async () => {
+    const tenMinutesPlusOne = 10 * 60 * 1000 + 1;
+    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: tenMinutesPlusOne }));
+
+    expect(res.status).toBe(400);
+    expect(appendAuditLog).not.toHaveBeenCalled();
+  });
+
+  it("accepts durationMs at exactly 10 minutes (boundary)", async () => {
+    const tenMinutes = 10 * 60 * 1000;
+    const res = await POST(makeRequest({ agentId: "agent-1", durationMs: tenMinutes }));
+
+    expect(res.status).toBe(204);
+    expect(appendAuditLog).toHaveBeenCalled();
+  });
 });

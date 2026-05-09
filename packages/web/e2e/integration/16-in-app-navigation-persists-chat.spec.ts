@@ -114,20 +114,25 @@ test.describe("In-app navigation chat persistence (#199)", () => {
     ).toBeVisible({ timeout: 30000 });
 
     // Navigate to second agent and send another slow prompt. OpenClaw is
-    // already connected so we skip waitForOpenClawConnected. We do NOT wait
-    // for the second stream's first token — that wait would consume enough time
-    // for Smithers' stream to finish, making a count==2 assertion flaky.
+    // already connected so we skip waitForOpenClawConnected.
     await page.goto(`/chat/${second.id}`);
     const input2 = page.getByPlaceholder(/send a message/i);
     await expect(input2).toBeVisible({ timeout: 10000 });
     await input2.fill(`${FAKE_OLLAMA_SLOW_STREAM_TRIGGER}: list ${FIRST_WORD}..${LAST_WORD}`);
     await input2.press("Enter");
 
-    // Navigate to /agents immediately. Smithers is definitely still running
-    // (we only consumed ~1 word-delay since confirming its first token).
-    // The second agent may or may not have started, so assert >= 1, not == 2.
+    // Wait for BOTH sidebar pulse-dots to be visible BEFORE navigating away.
+    // The sidebar is rendered on the chat page too, so this wait happens
+    // entirely while the second stream is starting — no need to navigate
+    // first, no race against Smithers finishing. This is the assertion the
+    // test was originally trying to make.
+    await expect(page.locator('[data-testid="agent-running-indicator"]')).toHaveCount(2, {
+      timeout: 10000,
+    });
+
+    // Now navigate away. Both must still be running (background-mode promise).
     await page.goto("/agents");
-    await expect(page.locator('[data-testid="agent-running-indicator"]')).toHaveCount(1, {
+    await expect(page.locator('[data-testid="agent-running-indicator"]')).toHaveCount(2, {
       timeout: 5000,
     });
 

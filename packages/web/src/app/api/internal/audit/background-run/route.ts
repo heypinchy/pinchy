@@ -5,9 +5,15 @@ import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
 import { getAgentWithAccess } from "@/lib/agent-access";
 
+// Cap at 10 minutes — `durationMs` is client-supplied telemetry, so a
+// sanity bound prevents a misbehaving (or malicious) client from skewing
+// metrics with absurd values. A turn longer than 10 minutes is itself a
+// signal worth investigating, not data to feed into normal aggregations.
+const MAX_BACKGROUND_RUN_DURATION_MS = 10 * 60 * 1000;
+
 const BackgroundRunBody = z.object({
   agentId: z.string().min(1),
-  durationMs: z.number().int().nonnegative(),
+  durationMs: z.number().int().nonnegative().max(MAX_BACKGROUND_RUN_DURATION_MS),
 });
 
 export const POST = withAuth(async (req: NextRequest, _ctx, session) => {
