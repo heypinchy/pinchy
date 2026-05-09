@@ -73,7 +73,7 @@ describe("isModelVisionCapable", () => {
       expect(isModelVisionCapable("ollama-cloud/glm-4.7")).toBe(false);
       expect(isModelVisionCapable("ollama-cloud/nemotron-3-nano:30b")).toBe(false);
       expect(isModelVisionCapable("ollama-cloud/gpt-oss:20b")).toBe(false);
-      expect(isModelVisionCapable("ollama-cloud/kimi-k2-thinking")).toBe(false);
+      // kimi-k2-thinking removed from allowlist (#305) — vision check is moot
       expect(isModelVisionCapable("ollama-cloud/qwen3-coder:480b")).toBe(false);
       expect(isModelVisionCapable("ollama-cloud/qwen3-coder-next")).toBe(false);
     });

@@ -29,3 +29,17 @@ describe("resolveOllamaCloud", () => {
     expect(r.fallbackUsed).toBe(false);
   });
 });
+
+describe("resolveOllamaCloud — reasoning tier", () => {
+  it("falls through to deepseek-v4-pro when taskType=reasoning (kimi-k2-thinking removed in #305)", () => {
+    const result = resolveOllamaCloud({ tier: "reasoning", taskType: "reasoning" });
+    expect(result.model).toBe("ollama-cloud/deepseek-v4-pro");
+    expect(result.fallbackUsed).toBe(true);
+  });
+
+  it("keeps deepseek-v4-pro for tier=reasoning, taskType=general", () => {
+    const result = resolveOllamaCloud({ tier: "reasoning", taskType: "general" });
+    expect(result.model).toBe("ollama-cloud/deepseek-v4-pro");
+    expect(result.fallbackUsed).toBe(false);
+  });
+});

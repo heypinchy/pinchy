@@ -324,7 +324,6 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/glm-5.1",
         "ollama-cloud/gpt-oss:20b",
         "ollama-cloud/gpt-oss:120b",
-        "ollama-cloud/kimi-k2-thinking",
         "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
         "ollama-cloud/minimax-m2",
@@ -346,7 +345,9 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/rnj-1:8b",
       ])
     );
-    expect(ids).toHaveLength(34);
+    // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
+    expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
+    expect(ids).toHaveLength(33);
 
     // Non-tool-capable models are filtered out
     expect(ids).not.toContain("ollama-cloud/kimi-k2:1t");
@@ -392,7 +393,9 @@ describe("fetchProviderModels", () => {
     const ollama = result.find((p) => p.id === "ollama-cloud");
     expect(ollama).toBeDefined();
     const ids = ollama!.models.map((m) => m.id);
-    expect(ids).toHaveLength(34);
+    // kimi-k2-thinking removed from allowlist (#305 — Ollama Cloud returns HTTP 500 for this model)
+    expect(ids).not.toContain("ollama-cloud/kimi-k2-thinking");
+    expect(ids).toHaveLength(33);
     expect(ids).toEqual(
       expect.arrayContaining([
         "ollama-cloud/deepseek-v3.1:671b",
@@ -409,7 +412,6 @@ describe("fetchProviderModels", () => {
         "ollama-cloud/glm-5.1",
         "ollama-cloud/gpt-oss:20b",
         "ollama-cloud/gpt-oss:120b",
-        "ollama-cloud/kimi-k2-thinking",
         "ollama-cloud/kimi-k2.5",
         "ollama-cloud/kimi-k2.6",
         "ollama-cloud/minimax-m2",

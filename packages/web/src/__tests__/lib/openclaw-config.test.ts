@@ -1134,7 +1134,6 @@ describe("regenerateOpenClawConfig", () => {
         "glm-5.1",
         "gpt-oss:120b",
         "gpt-oss:20b",
-        "kimi-k2-thinking",
         "kimi-k2.5",
         "kimi-k2.6",
         "minimax-m2",
@@ -1199,7 +1198,6 @@ describe("regenerateOpenClawConfig", () => {
     // 256K — the most common class
     expect(ctx["devstral-2:123b"]).toBe(262144);
     expect(ctx["gemma4:31b"]).toBe(262144);
-    expect(ctx["kimi-k2-thinking"]).toBe(262144);
     expect(ctx["kimi-k2.5"]).toBe(262144);
     expect(ctx["kimi-k2.6"]).toBe(262144);
     expect(ctx["ministral-3:3b"]).toBe(262144);
@@ -1284,7 +1282,6 @@ describe("regenerateOpenClawConfig", () => {
       "glm-5.1",
       "gpt-oss:20b",
       "gpt-oss:120b",
-      "kimi-k2-thinking",
       "kimi-k2.5",
       "kimi-k2.6",
       "minimax-m2",
