@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AppSidebar } from "@/components/sidebar";
 import { SidebarProvider } from "@/components/ui/sidebar";
+import { ChatSessionProvider } from "@/components/chat-session-provider";
 import type { Agent } from "@/components/agent-list";
 import { sortAgents } from "@/components/agent-list";
 
@@ -56,6 +57,16 @@ function setAgents(agents: Agent[]) {
   mockAgentsContextValue.getAgent = vi.fn((id: string) => agents.find((a) => a.id === id));
 }
 
+function renderSidebar(isAdmin: boolean) {
+  return render(
+    <ChatSessionProvider>
+      <SidebarProvider>
+        <AppSidebar isAdmin={isAdmin} />
+      </SidebarProvider>
+    </ChatSessionProvider>
+  );
+}
+
 describe("AppSidebar", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -64,20 +75,12 @@ describe("AppSidebar", () => {
   });
 
   it("should render Pinchy branding", () => {
-    render(
-      <SidebarProvider>
-        <AppSidebar isAdmin={false} />
-      </SidebarProvider>
-    );
+    renderSidebar(false);
     expect(screen.getByText("Pinchy")).toBeInTheDocument();
   });
 
   it("should render the Pinchy logo in the header", () => {
-    render(
-      <SidebarProvider>
-        <AppSidebar isAdmin={false} />
-      </SidebarProvider>
-    );
+    renderSidebar(false);
     const logo = screen.getByAltText("Pinchy");
     expect(logo).toBeInTheDocument();
     expect(logo).toHaveAttribute("src", "/pinchy-logo.png");
@@ -94,63 +97,39 @@ describe("AppSidebar", () => {
         avatarSeed: null,
       },
     ]);
-    render(
-      <SidebarProvider>
-        <AppSidebar isAdmin={false} />
-      </SidebarProvider>
-    );
+    renderSidebar(false);
     expect(screen.getByText("Smithers")).toBeInTheDocument();
   });
 
   it("should render settings link", () => {
-    render(
-      <SidebarProvider>
-        <AppSidebar isAdmin={false} />
-      </SidebarProvider>
-    );
+    renderSidebar(false);
     expect(screen.getByRole("link", { name: /settings/i })).toBeInTheDocument();
   });
 
   describe("New Agent link visibility", () => {
     it("should render New Agent link when isAdmin is true", () => {
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={true} />
-        </SidebarProvider>
-      );
+      renderSidebar(true);
       const newAgentLink = screen.getByRole("link", { name: /new agent/i });
       expect(newAgentLink).toBeInTheDocument();
       expect(newAgentLink).toHaveAttribute("href", "/agents/new");
     });
 
     it("should NOT render New Agent link when isAdmin is false", () => {
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       expect(screen.queryByRole("link", { name: /new agent/i })).not.toBeInTheDocument();
     });
   });
 
   describe("Usage link visibility", () => {
     it("should render Usage link when isAdmin is true", () => {
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={true} />
-        </SidebarProvider>
-      );
+      renderSidebar(true);
       const usageLink = screen.getByRole("link", { name: /usage/i });
       expect(usageLink).toBeInTheDocument();
       expect(usageLink).toHaveAttribute("href", "/usage");
     });
 
     it("should NOT render Usage link when isAdmin is false", () => {
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       expect(screen.queryByRole("link", { name: /^usage$/i })).not.toBeInTheDocument();
     });
   });
@@ -167,11 +146,7 @@ describe("AppSidebar", () => {
           avatarSeed: "my-seed",
         },
       ]);
-      const { container } = render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      const { container } = renderSidebar(false);
       const avatar = container.querySelector('img[src="data:image/svg+xml;utf8,mock-my-seed"]');
       expect(avatar).toBeInTheDocument();
     });
@@ -187,11 +162,7 @@ describe("AppSidebar", () => {
           avatarSeed: "__smithers__",
         },
       ]);
-      const { container } = render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      const { container } = renderSidebar(false);
       const avatar = container.querySelector('img[src="/images/smithers-avatar.png"]');
       expect(avatar).toBeInTheDocument();
     });
@@ -209,11 +180,7 @@ describe("AppSidebar", () => {
           avatarSeed: null,
         },
       ]);
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       expect(screen.getByText("Answers HR questions")).toBeInTheDocument();
     });
 
@@ -228,11 +195,7 @@ describe("AppSidebar", () => {
           avatarSeed: null,
         },
       ]);
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       const tagline = screen.getByText("Answers HR questions from your documents");
       expect(tagline).toHaveAttribute("title", "Answers HR questions from your documents");
     });
@@ -248,11 +211,7 @@ describe("AppSidebar", () => {
           avatarSeed: null,
         },
       ]);
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       const name = screen.getByText("A Very Long Agent Name That Gets Truncated");
       expect(name).toHaveAttribute("title", "A Very Long Agent Name That Gets Truncated");
     });
@@ -268,11 +227,7 @@ describe("AppSidebar", () => {
           avatarSeed: null,
         },
       ]);
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       const link = screen.getByRole("link", { name: /hr bot/i });
       expect(link).toBeInTheDocument();
       expect(link.textContent).toBe("HR Bot");
@@ -281,21 +236,13 @@ describe("AppSidebar", () => {
 
   describe("logout button", () => {
     it("should render a logout button in the sidebar footer", () => {
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       expect(screen.getByRole("button", { name: /log out/i })).toBeInTheDocument();
     });
 
     it("should call signOut and redirect when clicked", async () => {
       const user = userEvent.setup();
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       await user.click(screen.getByRole("button", { name: /log out/i }));
       expect(mockSignOut).toHaveBeenCalled();
       await waitFor(() => {
@@ -327,11 +274,7 @@ describe("AppSidebar", () => {
     it("should mark the current agent's menu button as active", () => {
       mockUsePathname.mockReturnValue("/chat/agent-1");
       setAgents(agents);
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       const activeButton = screen.getByRole("link", { name: /alpha/i }).closest("[data-active]");
       expect(activeButton).toHaveAttribute("data-active", "true");
     });
@@ -339,11 +282,7 @@ describe("AppSidebar", () => {
     it("should not mark other agents as active", () => {
       mockUsePathname.mockReturnValue("/chat/agent-1");
       setAgents(agents);
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       const betaLink = screen.getByRole("link", { name: /beta/i });
       const betaButton = betaLink.closest("[data-active]");
       expect(betaButton === null || betaButton.getAttribute("data-active") === "false").toBe(true);
@@ -352,11 +291,7 @@ describe("AppSidebar", () => {
     it("should apply custom active background on the active agent", () => {
       mockUsePathname.mockReturnValue("/chat/agent-1");
       setAgents(agents);
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       const activeLink = screen.getByRole("link", { name: /alpha/i });
       expect(activeLink.className).toContain("data-[active=true]:bg-[oklch");
     });
@@ -364,11 +299,7 @@ describe("AppSidebar", () => {
     it("should not apply custom active background on inactive agents", () => {
       mockUsePathname.mockReturnValue("/chat/agent-1");
       setAgents(agents);
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       const inactiveLink = screen.getByRole("link", { name: /beta/i });
       expect(inactiveLink.className).not.toContain("data-[active=true]:bg-[oklch");
     });
@@ -376,33 +307,21 @@ describe("AppSidebar", () => {
     it("should update active state for settings subpages", () => {
       mockUsePathname.mockReturnValue("/chat/agent-2/settings");
       setAgents(agents);
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       const activeButton = screen.getByRole("link", { name: /beta/i }).closest("[data-active]");
       expect(activeButton).toHaveAttribute("data-active", "true");
     });
   });
 
   it("should render a Report a bug button in the footer", () => {
-    render(
-      <SidebarProvider>
-        <AppSidebar isAdmin={false} />
-      </SidebarProvider>
-    );
+    renderSidebar(false);
     expect(screen.getByRole("button", { name: /report a bug/i })).toBeInTheDocument();
   });
 
   it("should open bug report URL when Report a bug is clicked", async () => {
     const user = userEvent.setup();
     const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
-    render(
-      <SidebarProvider>
-        <AppSidebar isAdmin={false} />
-      </SidebarProvider>
-    );
+    renderSidebar(false);
     await user.click(screen.getByRole("button", { name: /report a bug/i }));
     expect(openSpy).toHaveBeenCalledWith(
       expect.stringContaining("github.com/heypinchy/pinchy/issues/new"),
@@ -432,11 +351,7 @@ describe("AppSidebar", () => {
           avatarSeed: null,
         },
       ]);
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       const links = screen.getAllByRole("link").filter((link) => {
         const href = link.getAttribute("href");
         return href?.startsWith("/chat/");
@@ -481,11 +396,7 @@ describe("AppSidebar", () => {
           avatarSeed: null,
         },
       ]);
-      render(
-        <SidebarProvider>
-          <AppSidebar isAdmin={false} />
-        </SidebarProvider>
-      );
+      renderSidebar(false);
       const links = screen.getAllByRole("link").filter((link) => {
         const href = link.getAttribute("href");
         return href?.startsWith("/chat/");

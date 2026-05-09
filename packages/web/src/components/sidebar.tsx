@@ -20,6 +20,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { getAgentAvatarSvg } from "@/lib/avatar";
 import { buildBugReportUrl } from "@/lib/github-issue";
+import { AgentSidebarIndicator } from "@/components/agent-sidebar-indicator";
 
 interface AppSidebarProps {
   isAdmin: boolean;
@@ -66,7 +67,7 @@ export function AppSidebar({ isAdmin }: AppSidebarProps) {
                           alt=""
                           className="size-8 rounded-full shrink-0"
                         />
-                        <div className="flex flex-col min-w-0">
+                        <div className="flex flex-col min-w-0 flex-1">
                           <span className="truncate font-semibold" title={agent.name}>
                             {agent.name}
                           </span>
@@ -79,6 +80,7 @@ export function AppSidebar({ isAdmin }: AppSidebarProps) {
                             </span>
                           )}
                         </div>
+                        <AgentSidebarIndicator agentId={agent.id} />
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
