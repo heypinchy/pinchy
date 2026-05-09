@@ -2464,6 +2464,10 @@ describe("ClientRouter", () => {
 
   describe("pipeStream — consumer disconnect", () => {
     it("keeps draining the OpenClaw stream after the browser WS closes, so sessionCache records the completed turn", async () => {
+      // This is the upstream half of the #199 Layer A regression guard pair:
+      // Layer B (this test) populates the cache on disconnect; Layer A
+      // (handleHistory regression-guards block below) consumes it on reload.
+      // Together they prevent the "user message gone after reload" symptom.
       // Fresh cache so the test proves the add() actually happens here, not
       // pre-seeded by beforeEach.
       const freshCache = new SessionCache();
@@ -2637,6 +2641,63 @@ describe("ClientRouter", () => {
       } finally {
         vi.useRealTimers();
       }
+    });
+  });
+
+  describe("handleHistory — Layer A regression guards (#199)", () => {
+    it("returns messages (not greeting) when sessionCache.has=true and history populates on the 2s retry", async () => {
+      // Layer A symptom: after a mid-stream disconnect (handled by Layer B's
+      // drain-always loop), the next reload calls handleHistory. If
+      // sessions.history is briefly empty (OpenClaw hasn't re-indexed yet),
+      // the cache hit must trigger the 2s retry — NOT a greeting fallback.
+      // Without this branch, the user message visibly disappears on reload.
+      const freshCache = new SessionCache();
+      const sessionKey = "agent:agent-1:direct:user-1";
+      freshCache.add(sessionKey); // simulate Layer-B's done-chunk effect
+
+      const localRouter = new ClientRouter(
+        mockOpenClawClient as any,
+        "user-1",
+        "member",
+        freshCache
+      );
+
+      const clientWs = createMockClientWs();
+
+      // First call: empty (race window). Second call (after 2s retry): populated.
+      mockSessionsHistory.mockResolvedValueOnce({ messages: [] }).mockResolvedValueOnce({
+        messages: [
+          { role: "user", content: "Hi", timestamp: 1 },
+          { role: "assistant", content: "Hello!", timestamp: 2 },
+        ],
+      });
+
+      // Speed up the 2s setTimeout in handleHistory.
+      vi.useFakeTimers({ toFake: ["setTimeout"] });
+      try {
+        const handlePromise = localRouter.handleMessage(clientWs as any, {
+          type: "history",
+          agentId: "agent-1",
+        });
+        await vi.advanceTimersByTimeAsync(2100);
+        await handlePromise;
+      } finally {
+        vi.useRealTimers();
+      }
+
+      const sent = clientWs.send.mock.calls.map(([s]: [string]) => JSON.parse(s));
+      const historyFrames = sent.filter((m) => m.type === "history");
+      expect(historyFrames).toHaveLength(1);
+      expect(historyFrames[0].messages).toHaveLength(2);
+      expect(historyFrames[0].messages[0]).toMatchObject({ role: "user", content: "Hi" });
+      // Crucial: no greeting was sent.
+      const greetingFrames = sent.filter(
+        (m) =>
+          m.type === "history" &&
+          Array.isArray(m.messages) &&
+          m.messages.some((msg: { content?: string }) => msg.content === "Hello.")
+      );
+      expect(greetingFrames).toHaveLength(0);
     });
   });
 });
