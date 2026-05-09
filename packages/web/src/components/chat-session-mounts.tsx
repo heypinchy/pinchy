@@ -1,6 +1,7 @@
 "use client";
 
-import { useContext, useEffect } from "react";
+import { useContext, useEffect, useRef } from "react";
+import { usePathname } from "next/navigation";
 import { useWsRuntime } from "@/hooks/use-ws-runtime";
 import { useVisitedAgentIds, ChatSessionStoreContext } from "@/components/chat-session-provider";
 
@@ -24,6 +25,37 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
   //   publish → store update → re-render → publish → …
   const store = useContext(ChatSessionStoreContext);
   if (!store) throw new Error("ChatSessionMounts must be used within ChatSessionProvider");
+
+  const pathname = usePathname();
+  const isOnThisChat = pathname?.startsWith(`/chat/${agentId}`);
+  const previousIsRunning = useRef(false);
+  const turnStartedAt = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (bundle.isRunning && !previousIsRunning.current) {
+      turnStartedAt.current = Date.now();
+    }
+    if (
+      !bundle.isRunning &&
+      previousIsRunning.current &&
+      !isOnThisChat &&
+      turnStartedAt.current !== null
+    ) {
+      // Turn completed while user is on a different page — fire telemetry.
+      const durationMs = Date.now() - turnStartedAt.current;
+      void fetch("/api/internal/audit/background-run", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentId, durationMs }),
+      }).catch(() => {
+        // Swallow errors — this is non-critical telemetry.
+      });
+    }
+    if (!bundle.isRunning) {
+      turnStartedAt.current = null;
+    }
+    previousIsRunning.current = bundle.isRunning;
+  }, [bundle.isRunning, isOnThisChat, agentId]);
 
   // Capture the bundle callbacks in the effect closure. In production,
   // useWsRuntime memoizes them with useCallback so they are stable across
