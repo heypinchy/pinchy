@@ -2651,6 +2651,13 @@ describe("ClientRouter", () => {
       // sessions.history is briefly empty (OpenClaw hasn't re-indexed yet),
       // the cache hit must trigger the 2s retry — NOT a greeting fallback.
       // Without this branch, the user message visibly disappears on reload.
+      //
+      // Note: the cold-cache path (cache miss within 30s TTL after Pinchy
+      // restart, sessions.list() falls back to live OpenClaw state) is
+      // already covered by the existing "should retry history via
+      // sessions.list fallback when cache is empty but session exists in
+      // OpenClaw" test above. This test pins the *hot-cache* path, which is
+      // the one Layer B's drain-always primes.
       const freshCache = new SessionCache();
       const sessionKey = "agent:agent-1:direct:user-1";
       freshCache.add(sessionKey); // simulate Layer-B's done-chunk effect
@@ -2663,6 +2670,8 @@ describe("ClientRouter", () => {
       );
 
       const clientWs = createMockClientWs();
+      const agentWithGreeting = { ...defaultAgent, greetingMessage: "Hello." };
+      mockFindFirst.mockResolvedValue(agentWithGreeting);
 
       // First call: empty (race window). Second call (after 2s retry): populated.
       mockSessionsHistory.mockResolvedValueOnce({ messages: [] }).mockResolvedValueOnce({
@@ -2685,13 +2694,33 @@ describe("ClientRouter", () => {
         vi.useRealTimers();
       }
 
-      const sent = clientWs.send.mock.calls.map(([s]: [string]) => JSON.parse(s));
+      const sent = clientWs.sent.map((s) => JSON.parse(s));
       const historyFrames = sent.filter((m) => m.type === "history");
       expect(historyFrames).toHaveLength(1);
-      expect(historyFrames[0].messages).toHaveLength(2);
-      expect(historyFrames[0].messages[0]).toMatchObject({ role: "user", content: "Hi" });
-      // The two-message assertion above is sufficient: a greeting would produce
-      // a single-message frame, so toHaveLength(2) already rules it out.
+
+      // Strict shape assertion — pins both messages by role and content so a
+      // future regression where the greeting is two frames (e.g. system primer
+      // + greeting text) can't silently match a length-2 array.
+      expect(historyFrames[0].messages).toEqual([
+        { role: "user", content: "Hi", timestamp: 1 },
+        { role: "assistant", content: "Hello!", timestamp: 2 },
+      ]);
+
+      // Belt-and-braces: the agent's greeting text must NOT appear on the wire,
+      // proving sendGreeting() was not called as a fallback.
+      const greetingFrames = sent.filter(
+        (m) =>
+          m.type === "history" &&
+          m.messages.length === 1 &&
+          m.messages[0].content === agentWithGreeting.greetingMessage
+      );
+      expect(greetingFrames).toHaveLength(0);
+
+      // sessions.list() must NOT be called — the cache hit is supposed to
+      // short-circuit the live fallback. (If it's called anyway, the test
+      // would still pass on outcome, but the test would no longer be pinning
+      // the cache-hit branch specifically.)
+      expect(mockSessionsList).not.toHaveBeenCalled();
     });
   });
 });
