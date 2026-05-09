@@ -4,6 +4,7 @@ import type { Page, BrowserContext } from "@playwright/test";
 import {
   FAKE_OLLAMA_SLOW_STREAM_TRIGGER,
   FAKE_OLLAMA_SLOW_STREAM_RESPONSE,
+  FAKE_OLLAMA_SLOW_STREAM_DELAY_MS,
 } from "./fake-ollama-server";
 
 test.describe("Stream persistence — #199 Layer A + B end-to-end", () => {
@@ -76,8 +77,9 @@ test.describe("Stream persistence — #199 Layer A + B end-to-end", () => {
     await ctx1.close();
 
     // Allow remaining tokens to arrive on the server side.
-    // Slow stream is 10 words × 500ms ≈ 5s; pad to 8s for CI variance.
-    await new Promise((r) => setTimeout(r, 8000));
+    // Derived from stream parameters: 10 words × DELAY_MS + 3s CI buffer.
+    const wordCount = FAKE_OLLAMA_SLOW_STREAM_RESPONSE.split(" ").length;
+    await new Promise((r) => setTimeout(r, FAKE_OLLAMA_SLOW_STREAM_DELAY_MS * wordCount + 3000));
 
     // Fresh context — no shared cookies, no shared websocket.
     const ctx2 = await browser.newContext();

@@ -38,20 +38,26 @@ function streamTextResponse(res: http.ServerResponse, text: string) {
 
 async function streamTextResponseSlow(res: http.ServerResponse, text: string) {
   res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+  // Suppress EPIPE errors when the client disconnects mid-stream.
+  res.socket?.on("error", () => {});
   const words = text.split(" ");
-  for (const [index, word] of words.entries()) {
-    const isLast = index === words.length - 1;
-    const chunk = {
-      model: MODEL_NAME,
-      created_at: new Date().toISOString(),
-      message: { role: "assistant", content: index === 0 ? word : " " + word },
-      done: isLast,
-      ...(isLast && { done_reason: "stop", total_duration: 1000000 }),
-    };
-    res.write(JSON.stringify(chunk) + "\n");
-    if (!isLast) {
-      await new Promise((r) => setTimeout(r, SLOW_STREAM_DELAY_MS));
+  try {
+    for (const [index, word] of words.entries()) {
+      const isLast = index === words.length - 1;
+      const chunk = {
+        model: MODEL_NAME,
+        created_at: new Date().toISOString(),
+        message: { role: "assistant", content: index === 0 ? word : " " + word },
+        done: isLast,
+        ...(isLast && { done_reason: "stop", total_duration: 1000000 }),
+      };
+      res.write(JSON.stringify(chunk) + "\n");
+      if (!isLast) {
+        await new Promise((r) => setTimeout(r, SLOW_STREAM_DELAY_MS));
+      }
     }
+  } catch {
+    // Client disconnected mid-stream — normal in mid-stream disconnect tests.
   }
   res.end();
 }
