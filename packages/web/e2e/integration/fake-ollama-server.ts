@@ -13,6 +13,9 @@ const MODEL_NAME = "llama3.2";
 const FAKE_RESPONSE = "Integration test response.";
 const DOMAIN_LOCK_TOOL_TRIGGER = "E2E_DOMAIN_LOCK_DOCS_TOOL";
 const DOMAIN_LOCK_TOOL_RESPONSE = "Domain lock docs tool call completed.";
+const SLOW_STREAM_TRIGGER = "E2E_SLOW_STREAM";
+const SLOW_STREAM_RESPONSE = "one two three four five six seven eight nine ten";
+const SLOW_STREAM_DELAY_MS = 500;
 
 function writeNdjson(res: http.ServerResponse, chunks: unknown[]) {
   res.writeHead(200, { "Content-Type": "application/x-ndjson" });
@@ -31,6 +34,26 @@ function streamTextResponse(res: http.ServerResponse, text: string) {
     ...(i === arr.length - 1 && { done_reason: "stop", total_duration: 1000000 }),
   }));
   writeNdjson(res, chunks);
+}
+
+async function streamTextResponseSlow(res: http.ServerResponse, text: string) {
+  res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+  const words = text.split(" ");
+  for (const [index, word] of words.entries()) {
+    const isLast = index === words.length - 1;
+    const chunk = {
+      model: MODEL_NAME,
+      created_at: new Date().toISOString(),
+      message: { role: "assistant", content: index === 0 ? word : " " + word },
+      done: isLast,
+      ...(isLast && { done_reason: "stop", total_duration: 1000000 }),
+    };
+    res.write(JSON.stringify(chunk) + "\n");
+    if (!isLast) {
+      await new Promise((r) => setTimeout(r, SLOW_STREAM_DELAY_MS));
+    }
+  }
+  res.end();
 }
 
 function readJsonBody(req: http.IncomingMessage): Promise<Record<string, unknown>> {
@@ -133,6 +156,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return;
     }
 
+    const isSlowStreamPrompt = messageContent(lastUserMessage).includes(SLOW_STREAM_TRIGGER);
+    if (isSlowStreamPrompt && !hasToolResult) {
+      await streamTextResponseSlow(res, SLOW_STREAM_RESPONSE);
+      return;
+    }
+
     streamTextResponse(res, isDomainLockToolPrompt ? DOMAIN_LOCK_TOOL_RESPONSE : FAKE_RESPONSE);
     return;
   }
@@ -147,6 +176,9 @@ export const FAKE_OLLAMA_MODEL = `ollama/${MODEL_NAME}`;
 export const FAKE_OLLAMA_RESPONSE = FAKE_RESPONSE;
 export const FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER = DOMAIN_LOCK_TOOL_TRIGGER;
 export const FAKE_OLLAMA_DOMAIN_LOCK_TOOL_RESPONSE = DOMAIN_LOCK_TOOL_RESPONSE;
+export const FAKE_OLLAMA_SLOW_STREAM_TRIGGER = SLOW_STREAM_TRIGGER;
+export const FAKE_OLLAMA_SLOW_STREAM_RESPONSE = SLOW_STREAM_RESPONSE;
+export const FAKE_OLLAMA_SLOW_STREAM_DELAY_MS = SLOW_STREAM_DELAY_MS;
 
 let server: http.Server | null = null;
 
