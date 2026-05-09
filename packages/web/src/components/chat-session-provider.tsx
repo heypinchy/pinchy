@@ -30,7 +30,8 @@ interface ChatSessionStoreActions {
 
 type Store = StoreApi<ChatSessionStoreState & ChatSessionStoreActions>;
 
-const ChatSessionContext = createContext<Store | null>(null);
+/** Exported for internal use by ChatSessionMounts only — not part of public API. */
+export const ChatSessionStoreContext = createContext<Store | null>(null);
 
 function createChatSessionStore(): Store {
   return create<ChatSessionStoreState & ChatSessionStoreActions>()((set) => ({
@@ -48,11 +49,13 @@ function createChatSessionStore(): Store {
 export function ChatSessionProvider({ children }: { children: React.ReactNode }) {
   // useState initializer runs once — avoids accessing ref.current during render.
   const [store] = useState(createChatSessionStore);
-  return <ChatSessionContext.Provider value={store}>{children}</ChatSessionContext.Provider>;
+  return (
+    <ChatSessionStoreContext.Provider value={store}>{children}</ChatSessionStoreContext.Provider>
+  );
 }
 
 function useStoreOrThrow(): Store {
-  const store = useContext(ChatSessionContext);
+  const store = useContext(ChatSessionStoreContext);
   if (!store) throw new Error("useChatSession must be used within ChatSessionProvider");
   return store;
 }

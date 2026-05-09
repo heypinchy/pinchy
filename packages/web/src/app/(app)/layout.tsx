@@ -10,6 +10,8 @@ import { SidebarProvider, SidebarInset } from "@/components/ui/sidebar";
 import { EnterpriseBanner } from "@/components/enterprise-banner";
 import { InsecureBanner } from "@/components/insecure-banner";
 import { DevToolbar } from "@/components/dev-toolbar";
+import { ChatSessionProvider } from "@/components/chat-session-provider";
+import { ChatSessionMounts } from "@/components/chat-session-mounts";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   await cookies();
@@ -28,15 +30,18 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <AgentsProvider initialAgents={visibleAgents}>
-      <SidebarProvider>
-        <AppSidebar isAdmin={isAdmin} />
-        <SidebarInset className="h-dvh overflow-hidden">
-          <InsecureBanner isAdmin={isAdmin} />
-          <EnterpriseBanner isAdmin={isAdmin} />
-          <AppShell isAdmin={isAdmin}>{children}</AppShell>
-        </SidebarInset>
-      </SidebarProvider>
-      {process.env.NODE_ENV === "development" && <DevToolbar />}
+      <ChatSessionProvider>
+        <SidebarProvider>
+          <AppSidebar isAdmin={isAdmin} />
+          <SidebarInset className="h-dvh overflow-hidden">
+            <InsecureBanner isAdmin={isAdmin} />
+            <EnterpriseBanner isAdmin={isAdmin} />
+            <AppShell isAdmin={isAdmin}>{children}</AppShell>
+          </SidebarInset>
+        </SidebarProvider>
+        <ChatSessionMounts />
+        {process.env.NODE_ENV === "development" && <DevToolbar />}
+      </ChatSessionProvider>
     </AgentsProvider>
   );
 }
