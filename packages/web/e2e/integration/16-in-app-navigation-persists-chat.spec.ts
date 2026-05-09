@@ -58,7 +58,7 @@ test.describe("In-app navigation chat persistence (#199)", () => {
     await ctx.close();
   });
 
-  test("sidebar shows the running indicator while navigated away", async ({ browser }) => {
+  test("sidebar pulse dot appears while the agent is responding", async ({ browser }) => {
     const ctx = await browser.newContext();
     const page = await ctx.newPage();
     await login(page);
@@ -67,10 +67,9 @@ test.describe("In-app navigation chat persistence (#199)", () => {
     await page.goto(`/chat/${agentId}`);
     await waitForOpenClawConnected(page);
 
-    // OpenClaw history persists across tests in the same suite, so prior
-    // turns may already be visible in this chat. Snapshot the current
-    // count and wait for it to grow by exactly one — this is robust
-    // against history accumulation, unlike a `filter({ hasText })` match.
+    // OpenClaw history persists across tests in the same suite. Snapshot
+    // the count first and wait for it to grow by one — robust against
+    // accumulated prior turns.
     const assistantBefore = await page.locator('[data-role="assistant"]').count();
 
     const input = page.getByPlaceholder(/send a message/i);
@@ -78,28 +77,26 @@ test.describe("In-app navigation chat persistence (#199)", () => {
     await input.fill(`${FAKE_OLLAMA_SLOW_STREAM_TRIGGER}: list ${FIRST_WORD}..${LAST_WORD}`);
     await input.press("Enter");
 
-    // Wait for the new assistant message to appear with its first token.
+    // The sidebar is rendered on the chat page too — assert the pulse dot
+    // appears in the sidebar while the stream is in flight. Doing this
+    // assertion BEFORE any navigation keeps the test deterministic: a
+    // hard `page.goto` would unmount (app)/layout and reset the
+    // ChatSessionProvider store, defeating the in-memory `isRunning`
+    // signal the indicator depends on. Cross-page persistence under
+    // client-side navigation is covered by runtime-stability.test.tsx.
+    await expect(page.locator('[data-testid="agent-running-indicator"]')).toBeVisible({
+      timeout: 10000,
+    });
+
+    // Wait for the stream to complete and confirm the indicator clears.
     await expect(page.locator('[data-role="assistant"]')).toHaveCount(assistantBefore + 1, {
       timeout: 30000,
     });
-    await expect(page.locator('[data-role="assistant"]').last()).toContainText(FIRST_WORD, {
+    await expect(page.locator('[data-role="assistant"]').last()).toContainText(LAST_WORD, {
       timeout: 30000,
     });
-
-    await page.goto("/agents");
-
-    // Indicator must be visible on the agents/sidebar page.
-    await expect(page.locator('[data-testid="agent-running-indicator"]')).toBeVisible({
-      timeout: 5000,
-    });
-
-    // Wait for stream completion.
-    const remainingStreamMs = FAKE_OLLAMA_SLOW_STREAM_DELAY_MS * RESPONSE_WORDS.length;
-    await new Promise((r) => setTimeout(r, remainingStreamMs + 3000));
-
-    // Indicator must clear within ~1s of completion.
     await expect(page.locator('[data-testid="agent-running-indicator"]')).toBeHidden({
-      timeout: 2000,
+      timeout: 5000,
     });
 
     await ctx.close();
@@ -114,7 +111,7 @@ test.describe("In-app navigation chat persistence (#199)", () => {
   //    directory is bind-mounted into the OpenClaw container, which
   //    creates files there as root, leaving the host-side Pinchy process
   //    unable to add new agent subdirs (EACCES). The multi-agent
-  //    indicator behavior is exercised end-to-end in the unit tests
+  //    indicator behaviour is exercised end-to-end in the unit tests
   //    sidebar-running-indicator.test.tsx and chat-session-mounts.test.tsx
   //    by publishing bundles for several agentIds simultaneously and
   //    asserting on the rendered DOM.
@@ -130,4 +127,15 @@ test.describe("In-app navigation chat persistence (#199)", () => {
   //    navigation" would be a false promise — so this test was removed
   //    along with the corresponding line in
   //    docs/explanation/chat-states.mdx.
+  //
+  // 3. "Sidebar pulse dot stays visible after navigating to /agents"
+  //    The user-visible feature relies on Next.js client-side navigation
+  //    keeping (app)/layout (and therefore the ChatSessionProvider store)
+  //    mounted. Playwright's `page.goto` performs a hard reload, which
+  //    unmounts the layout and resets the store; the indicator then
+  //    correctly reports "not running" because there is no longer any
+  //    bundle to read from. Stable cross-route persistence under
+  //    real client-side navigation is covered by
+  //    runtime-stability.test.tsx, which simulates the consumer
+  //    mount/unmount/remount cycle that next/link triggers.
 });
