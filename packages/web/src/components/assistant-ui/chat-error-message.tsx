@@ -35,11 +35,11 @@ export const ChatErrorMessage: FC<{
       <div role="alert" className={wrapperClass}>
         <div className="flex items-center gap-2 font-medium text-destructive dark:text-red-200">
           <AlertTriangle className="size-4 shrink-0" data-testid="too-large-icon" />
-          <span className="flex-1">Image too large</span>
+          <span className="flex-1">File too large</span>
           {actionSlot}
         </div>
         <p className="mt-1.5 text-destructive/90 dark:text-red-300/90">
-          {error.message ?? "The image you attached is too large to send."}
+          {error.message ?? "The file you attached is too large to send."}
         </p>
       </div>
     );
