@@ -88,6 +88,72 @@ test.describe("Agent chat — full integration", () => {
     });
   });
 
+  test("PDF attachment is accepted, persisted, and logged in the audit trail", async ({ page }) => {
+    await login(page);
+    const agentId = await getSmithersAgentId(page);
+    await page.goto(`/chat/${agentId}`);
+    await waitForOpenClawConnected(page);
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10000 });
+
+    // Minimal valid PDF — %PDF- magic bytes are enough for file-type@22 detection
+    const minimalPdf = Buffer.from(
+      "%PDF-1.1\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n" +
+        "2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n" +
+        "3 0 obj<</Type/Page/MediaBox[0 0 3 3]>>endobj\n" +
+        "xref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n" +
+        "0000000058 00000 n \n0000000115 00000 n \n" +
+        "trailer<</Size 4/Root 1 0 R>>\nstartxref\n190\n%%EOF"
+    );
+
+    // Click the attachment button and set the file via the native file chooser
+    const [fileChooser] = await Promise.all([
+      page.waitForEvent("filechooser"),
+      page.locator(".aui-composer-add-attachment").click(),
+    ]);
+    await fileChooser.setFiles([
+      {
+        name: "test-document.pdf",
+        mimeType: "application/pdf",
+        buffer: minimalPdf,
+      },
+    ]);
+
+    // Send a message alongside the PDF
+    await input.fill("What does this document say?");
+    await page.keyboard.press("Enter");
+
+    // The fake Ollama responds regardless of attachment content
+    await expect(page.getByText(FAKE_OLLAMA_RESPONSE)).toBeVisible({ timeout: 30000 });
+
+    // Verify the attachment.uploaded audit entry was written with the correct details
+    const deadline = Date.now() + 15000;
+    let foundAuditEntry = false;
+    while (Date.now() < deadline) {
+      const auditRes = await page.request.get("/api/audit?eventType=attachment.uploaded&limit=10");
+      expect(auditRes.status()).toBe(200);
+      const audit = await auditRes.json();
+      foundAuditEntry = audit.entries.some(
+        (entry: {
+          resource: string | null;
+          outcome: string | null;
+          detail: {
+            attachment?: { filename?: string; detectedMimeType?: string };
+          } | null;
+        }) =>
+          entry.resource === `agent:${agentId}` &&
+          entry.outcome === "success" &&
+          entry.detail?.attachment?.filename === "test-document.pdf" &&
+          entry.detail?.attachment?.detectedMimeType === "application/pdf"
+      );
+      if (foundAuditEntry) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    expect(foundAuditEntry).toBe(true);
+  });
+
   test("Domain Lock allows OpenClaw tool calls to write audit entries", async ({ page }) => {
     await login(page);
     const agentId = await getSmithersAgentId(page);

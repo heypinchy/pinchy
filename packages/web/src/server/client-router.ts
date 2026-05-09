@@ -285,7 +285,7 @@ export class ClientRouter {
           actorType: "user" as const,
           actorId: this.userId,
           eventType: "attachment.uploaded" as const,
-          resource: message.agentId,
+          resource: `agent:${message.agentId}`,
           outcome: "success" as const,
           detail: {
             agent: { id: agent.id, name: agent.name },
