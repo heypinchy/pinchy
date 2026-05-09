@@ -1,0 +1,43 @@
+---
+title: Image Attachments
+description: What images you can send to your agents in chat, and how Pinchy handles them.
+---
+
+You can attach images directly to chat messages — drag and drop, paste from your clipboard, or use the attachment button in the composer. Pinchy takes care of the rest.
+
+## What you can send
+
+| Format     | Status                                                              |
+| ---------- | ------------------------------------------------------------------- |
+| **JPEG**   | Sent as-is when small, re-encoded to WebP when large                |
+| **PNG**    | Always re-encoded to WebP (PNG → WebP usually shrinks 50–90%)       |
+| **WebP**   | Sent as-is when small, re-encoded to fit when large                 |
+| **HEIC**   | Convert to JPEG or PNG first — your phone's share sheet can do this |
+| **Others** | Convert to JPEG, PNG, or WebP first                                 |
+
+Up to **15 MB per image**. If a file exceeds that, you'll see "Image exceeds the 15 MB size limit" in the composer — no message is sent.
+
+## What happens automatically
+
+Modern smartphone photos are often 5–12 MB. To make sure your agent's vision model actually sees them, Pinchy resizes and re-encodes large images to WebP under 1.9 MB before sending. The original quality looks identical for chat-sized viewing, but the file fits in the model's inline image budget. No setting required — it just happens.
+
+You can verify the conversion worked: the agent's response should reference what's actually in the picture. If the agent answers as if no image was attached, see "Troubleshooting" below.
+
+## When something goes wrong
+
+| You see                                  | What it means                                                                 | What to do                                                |
+| ---------------------------------------- | ----------------------------------------------------------------------------- | --------------------------------------------------------- |
+| **"Couldn't process this image format"** | The image is in a format Pinchy can't re-encode (e.g. HEIC) and is too large. | Convert it to JPEG or PNG and try again.                  |
+| **"Image too large"**                    | The encoded message exceeded the WebSocket frame limit.                       | Use a smaller image, or crop before attaching.            |
+| **Agent ignores the image entirely**     | The model you're using doesn't support vision.                                | Switch to a vision-capable model in the agent's settings. |
+
+## Vision support by model
+
+Whether the agent can actually see an image depends on the underlying LLM. As of today:
+
+- **OpenAI** GPT-4o and newer — full vision support
+- **Anthropic** Claude 3.5 Sonnet and newer — full vision support
+- **Google** Gemini Pro/Flash — full vision support
+- **Local Ollama** — only models marked as vision-capable (e.g. `llama3.2-vision`, `gemma3`)
+
+If you attach an image to a text-only model, the model won't see it. Pinchy doesn't block this — some users intentionally route images through tool calls — but the result depends entirely on what the agent does with the attachment.
