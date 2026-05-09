@@ -94,13 +94,6 @@ export const TOOL_CAPABLE_OLLAMA_CLOUD_MODELS = [
   { id: "glm-5.1", contextWindow: 202752, maxTokens: 8192, reasoning: true, vision: false },
   { id: "gpt-oss:20b", contextWindow: 131072, maxTokens: 8192, reasoning: true, vision: false },
   { id: "gpt-oss:120b", contextWindow: 131072, maxTokens: 8192, reasoning: true, vision: false },
-  {
-    id: "kimi-k2-thinking",
-    contextWindow: 262144,
-    maxTokens: 8192,
-    reasoning: true,
-    vision: false,
-  },
   { id: "kimi-k2.5", contextWindow: 262144, maxTokens: 8192, reasoning: true, vision: true },
   { id: "kimi-k2.6", contextWindow: 262144, maxTokens: 8192, reasoning: true, vision: true },
   { id: "minimax-m2", contextWindow: 204800, maxTokens: 8192, reasoning: true, vision: false },

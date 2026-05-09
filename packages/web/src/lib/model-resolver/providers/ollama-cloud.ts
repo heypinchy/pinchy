@@ -23,7 +23,6 @@ const BY_TIER_FAMILY: Record<
   },
   reasoning: {
     general: "ollama-cloud/deepseek-v4-pro",
-    reasoning: "ollama-cloud/kimi-k2-thinking",
   },
 };
 
