@@ -2277,6 +2277,37 @@ describe("useWsRuntime", () => {
     });
   });
 
+  describe("message-history cap (#199)", () => {
+    it("drops the oldest messages once the bundle exceeds 200 entries", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+
+      // Push 250 messages via a single history frame — the fastest path into
+      // setMessages that doesn't require 250 individual WS round-trips.
+      const historyPayload = Array.from({ length: 250 }, (_, i) => ({
+        role: i % 2 === 0 ? "user" : "assistant",
+        content: `message-${i}`,
+        timestamp: `2026-01-01T00:00:${String(i).padStart(2, "0")}Z`,
+      }));
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "history", messages: historyPayload }),
+        });
+      });
+
+      const messages = result.current.runtime.messages;
+      expect(messages).toHaveLength(200);
+      // The oldest 50 must be gone; the newest 200 must be retained.
+      expect(messages[0].content[0].text).toBe("message-50");
+      expect(messages[199].content[0].text).toBe("message-249");
+    });
+  });
+
   describe("auto-recovery on OpenClaw reconnect", () => {
     it("re-requests history when fullyConnected transitions false → true", async () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));

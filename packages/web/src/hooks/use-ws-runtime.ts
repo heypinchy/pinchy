@@ -234,6 +234,12 @@ const attachmentAdapter = new CompositeAttachmentAdapter([
 ]);
 
 const MAX_RECONNECT_ATTEMPTS = 10;
+const MAX_BUNDLED_MESSAGES = 200;
+
+function capMessages<T>(messages: T[]): T[] {
+  if (messages.length <= MAX_BUNDLED_MESSAGES) return messages;
+  return messages.slice(messages.length - MAX_BUNDLED_MESSAGES);
+}
 
 export function useWsRuntime(agentId: string): {
   runtime: AssistantRuntime;
@@ -315,7 +321,7 @@ export function useWsRuntime(agentId: string): {
   const [prevAgentId, setPrevAgentId] = useState(agentId);
   if (prevAgentId !== agentId) {
     setPrevAgentId(agentId);
-    setMessages([]);
+    setMessages(capMessages([]));
     setIsRunning(false);
     setIsDelayed(false);
     setIsHistoryLoaded(false);
@@ -323,7 +329,7 @@ export function useWsRuntime(agentId: string): {
   }
 
   const dispatchMessages = useCallback((action: Action) => {
-    setMessages((prev) => reduceMessages(prev, action));
+    setMessages((prev) => capMessages(reduceMessages(prev, action)));
   }, []);
 
   useEffect(() => {
@@ -353,17 +359,19 @@ export function useWsRuntime(agentId: string): {
         isRunningRef.current = false;
         setIsRunning(false);
         setIsDelayed(false);
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: uuid(),
-            role: "assistant",
-            content: "",
-            error: { timedOut: true },
-            retryable: true,
-            retryReason: "partial_stream_failure" as const,
-          },
-        ]);
+        setMessages((prev) =>
+          capMessages([
+            ...prev,
+            {
+              id: uuid(),
+              role: "assistant",
+              content: "",
+              error: { timedOut: true },
+              retryable: true,
+              retryReason: "partial_stream_failure" as const,
+            },
+          ])
+        );
       }, STUCK_TIMEOUT_MS);
     }
 
@@ -416,19 +424,20 @@ export function useWsRuntime(agentId: string): {
           setIsRunning(false);
           setIsHistoryLoaded(false);
           setKnownEmptyHistory(false);
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: uuid(),
-              role: "assistant",
-              content: "",
-              error: {
-                payloadTooLarge: true,
-                message: `File too large to send. Please use a file smaller than ${Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024)} MB.`,
+          setMessages((prev) =>
+            capMessages([
+              ...prev,
+              {
+                id: uuid(),
+                role: "assistant",
+                content: "",
+                error: {
+                  payloadTooLarge: true,
+                  message: `File too large to send. Please use a file smaller than ${Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024)} MB.`,
+                },
               },
-              // retryable intentionally absent — absence means false per codebase convention
-            },
-          ]);
+            ])
+          );
           return;
         }
 
@@ -437,19 +446,21 @@ export function useWsRuntime(agentId: string): {
         if (isRunningRef.current) {
           isRunningRef.current = false;
           setIsRunning(false);
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: uuid(),
-              role: "assistant",
-              content: "",
-              error: { disconnected: true },
-              retryable: true,
-              retryReason: hasReceivedChunkRef.current
-                ? ("partial_stream_failure" as const)
-                : ("send_failure" as const),
-            },
-          ]);
+          setMessages((prev) =>
+            capMessages([
+              ...prev,
+              {
+                id: uuid(),
+                role: "assistant",
+                content: "",
+                error: { disconnected: true },
+                retryable: true,
+                retryReason: hasReceivedChunkRef.current
+                  ? ("partial_stream_failure" as const)
+                  : ("send_failure" as const),
+              },
+            ])
+          );
         } else {
           setIsRunning(false);
         }
@@ -516,7 +527,7 @@ export function useWsRuntime(agentId: string): {
             const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
             setMessages((prev) => {
               if (prev.length === 0) {
-                return historyMessages;
+                return capMessages(historyMessages);
               }
               // After reconnects, replace local messages with canonical history
               // from the server. Skip the wipe when server history is empty
@@ -531,7 +542,7 @@ export function useWsRuntime(agentId: string): {
                 // (i.e. we were in the middle of a response when disconnected).
                 const lastNonError = [...prev].reverse().find((m) => !m.error);
                 if (lastNonError?.role === "assistant") {
-                  return historyMessages;
+                  return capMessages(historyMessages);
                 }
               }
               return prev;
@@ -610,12 +621,12 @@ export function useWsRuntime(agentId: string): {
               }
               const last = filtered[filtered.length - 1];
               if (last?.role === "assistant" && last.id === data.messageId) {
-                return [
+                return capMessages([
                   ...filtered.slice(0, -1),
                   { ...last, content: last.content + data.content },
-                ];
+                ]);
               }
-              return [
+              return capMessages([
                 ...filtered,
                 {
                   id: data.messageId,
@@ -623,7 +634,7 @@ export function useWsRuntime(agentId: string): {
                   content: data.content,
                   timestamp: new Date().toISOString(),
                 },
-              ];
+              ]);
             });
           }
 
@@ -665,21 +676,23 @@ export function useWsRuntime(agentId: string): {
                 ? { attachmentInvalid: true, message: data.message }
                 : { message: data.message || "An unknown error occurred." };
 
-            setMessages((prev) => [
-              // Remove any existing error bubble — only one error is ever shown
-              // at a time to avoid stacking after repeated retries.
-              ...prev.filter((m) => !m.error),
-              {
-                id: uuid(),
-                role: "assistant",
-                content: "",
-                error,
-                retryable: true,
-                retryReason: hasReceivedChunkRef.current
-                  ? ("partial_stream_failure" as const)
-                  : ("send_failure" as const),
-              },
-            ]);
+            setMessages((prev) =>
+              capMessages([
+                // Remove any existing error bubble — only one error is ever shown
+                // at a time to avoid stacking after repeated retries.
+                ...prev.filter((m) => !m.error),
+                {
+                  id: uuid(),
+                  role: "assistant",
+                  content: "",
+                  error,
+                  retryable: true,
+                  retryReason: hasReceivedChunkRef.current
+                    ? ("partial_stream_failure" as const)
+                    : ("send_failure" as const),
+                },
+              ])
+            );
             isRunningRef.current = false;
             setIsRunning(false);
           }
@@ -833,15 +846,17 @@ export function useWsRuntime(agentId: string): {
         // offloaded by OpenClaw (size > inline threshold). Sending a "ghost" image
         // the model can't see is worse than refusing to send.
         if (!result.ok && result.file.size > CLIENT_IMAGE_COMPRESSION_TARGET_BYTES) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: uuid(),
-              role: "assistant",
-              content:
-                "Couldn't process this image format. Please convert it to JPEG, PNG, or WebP and try again.",
-            },
-          ]);
+          setMessages((prev) =>
+            capMessages([
+              ...prev,
+              {
+                id: uuid(),
+                role: "assistant",
+                content:
+                  "Couldn't process this image format. Please convert it to JPEG, PNG, or WebP and try again.",
+              },
+            ])
+          );
           return;
         }
 
@@ -849,15 +864,17 @@ export function useWsRuntime(agentId: string): {
         // Checking file.size (bytes) avoids materialising the full data URL string
         // just to count characters.
         if (result.file.size > CLIENT_MAX_ATTACHMENT_SIZE_BYTES) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: uuid(),
-              role: "assistant",
-              content: "",
-              error: buildAttachmentTooLargeError(),
-            },
-          ]);
+          setMessages((prev) =>
+            capMessages([
+              ...prev,
+              {
+                id: uuid(),
+                role: "assistant",
+                content: "",
+                error: buildAttachmentTooLargeError(),
+              },
+            ])
+          );
           return;
         }
 
@@ -885,24 +902,26 @@ export function useWsRuntime(agentId: string): {
       // for display. The reducer is used only for status transitions (ack, timeout,
       // etc.) on already-added messages — not for the initial insertion, so we keep
       // the hook's string timestamp format intact.
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: clientMessageId,
-          role: "user",
-          content: text,
-          timestamp: new Date().toISOString(),
-          status: "sending",
-          ...(compressedImages.length > 0 && { images: compressedImages }),
-          ...(binaryFiles.length > 0 && {
-            files: binaryFiles.map((f) => ({
-              filename: f.name,
-              // f.url is `data:<mime>;base64,<data>` — extract mime up to the `;`
-              mimeType: f.url.slice("data:".length, f.url.indexOf(";")),
-            })),
-          }),
-        },
-      ]);
+      setMessages((prev) =>
+        capMessages([
+          ...prev,
+          {
+            id: clientMessageId,
+            role: "user",
+            content: text,
+            timestamp: new Date().toISOString(),
+            status: "sending",
+            ...(compressedImages.length > 0 && { images: compressedImages }),
+            ...(binaryFiles.length > 0 && {
+              files: binaryFiles.map((f) => ({
+                filename: f.name,
+                // f.url is `data:<mime>;base64,<data>` — extract mime up to the `;`
+                mimeType: f.url.slice("data:".length, f.url.indexOf(";")),
+              })),
+            }),
+          },
+        ])
+      );
 
       isRunningRef.current = true;
       hasReceivedChunkRef.current = false;
