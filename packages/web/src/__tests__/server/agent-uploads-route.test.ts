@@ -109,7 +109,11 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
     expect(res.status).toBe(404);
   });
 
-  it("returns 404 when the filename contains a forward slash (subdir escape)", async () => {
+  // sanitizeFilename strips directory separators — "subdir/foo.pdf" becomes
+  // "foo.pdf". The file lookup then fails because "foo.pdf" was never written,
+  // so we still get a 404. The point of this test is to ensure the route never
+  // resolves to a file outside uploads/ even with slashed input.
+  it("strips directory prefix from slashed filenames (sanitizeFilename normalizes to basename)", async () => {
     writeUpload("agent-1", "invoice.pdf", PDF_BYTES);
     const res = await callGET("agent-1", "subdir/foo.pdf");
     expect(res.status).toBe(404);

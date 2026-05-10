@@ -71,7 +71,7 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
         "cache-control": "private, max-age=3600",
         // Inline so the browser renders PDFs/images directly instead of
         // forcing a download. The filename is advisory.
-        "content-disposition": `inline; filename="${safeName.replace(/"/g, "")}"`,
+        "content-disposition": `inline; filename="${safeName.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
       },
     });
   } finally {
