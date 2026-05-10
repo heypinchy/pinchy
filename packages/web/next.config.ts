@@ -27,6 +27,15 @@ const nextConfig: NextConfig = {
           // Setting it here would require runtime DB access which next.config doesn't support.
         ],
       },
+      {
+        // The uploads API serves files that are embedded inline via <embed> and
+        // <img> in AttachmentPreview. The global DENY rule above would block the
+        // browser's PDF/image viewer from rendering them, so we relax to
+        // SAMEORIGIN here. Same-origin only — cross-origin embedding is still
+        // blocked. This rule comes after the catch-all so it takes precedence.
+        source: "/api/agents/:agentId/uploads/:filename",
+        headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
+      },
     ];
   },
 };
