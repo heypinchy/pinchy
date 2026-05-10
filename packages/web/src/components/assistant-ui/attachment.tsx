@@ -135,11 +135,15 @@ const AttachmentUI: FC = () => {
   // Non-image composer attachments (e.g. PDFs) show a named chip so the user
   // can see which file is attached without having to hover for the tooltip.
   if (isComposer && !isImage) {
+    const dotIdx = name.lastIndexOf(".");
+    const base = dotIdx > 0 ? name.slice(0, dotIdx) : name;
+    const ext = dotIdx > 0 ? name.slice(dotIdx) : "";
     return (
       <AttachmentPrimitive.Root className="aui-attachment-root relative">
         <div className="flex max-w-48 items-center gap-2 rounded-xl border border-foreground/20 bg-muted/60 py-2 pl-3 pr-8">
           <FileText className="size-4 shrink-0 text-muted-foreground" />
-          <span className="truncate text-sm">{name}</span>
+          <span className="min-w-0 truncate text-sm">{base}</span>
+          {ext && <span className="shrink-0 text-sm">{ext}</span>}
         </div>
         <AttachmentRemove />
       </AttachmentPrimitive.Root>
