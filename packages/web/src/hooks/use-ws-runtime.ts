@@ -455,8 +455,12 @@ export function useWsRuntime(agentId: string): {
           }
 
           if (data.type === "history") {
-            const serverMessages: Array<{ role: string; content: string; timestamp?: string }> =
-              data.messages ?? [];
+            const serverMessages: Array<{
+              role: string;
+              content: string;
+              timestamp?: string;
+              files?: WsFileMeta[];
+            }> = data.messages ?? [];
             const sessionKnown: boolean = data.sessionKnown === true;
             // Server tells us the session exists but its history is currently
             // unavailable (e.g. OpenClaw restart race). Without this flag the
@@ -468,6 +472,10 @@ export function useWsRuntime(agentId: string): {
               role: (msg.role === "system" ? "assistant" : msg.role) as "user" | "assistant",
               content: msg.content ?? "",
               timestamp: msg.timestamp,
+              // Round-tripped from the server's parseAttachmentBlock — server
+              // strips the in-message markup and surfaces the file metadata
+              // here so the file chip renders on reload.
+              ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
             }));
             const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
             setMessages((prev) => {

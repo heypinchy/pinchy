@@ -33,7 +33,7 @@ const PNG_BASE64 = PNG.toString("base64");
 
 describe("PDF upload contract — OpenClaw chat() call shape", () => {
   it("does not include PDFs as inline attachments — workspace-only via pdf tool", async () => {
-    const { processIncomingAttachments, buildUploadHint } =
+    const { processIncomingAttachments, buildAttachmentBlock } =
       await import("@/server/attachment-pipeline");
 
     const result = await processIncomingAttachments({
@@ -61,7 +61,11 @@ describe("PDF upload contract — OpenClaw chat() call shape", () => {
     );
 
     // Upload hint must mention the `pdf` tool and the absolute path
-    const hint = buildUploadHint(result.workspaceRefs);
+    const hint = buildAttachmentBlock(result.workspaceRefs);
+    // The block is wrapped in <pinchy:attachments> so the display layer can
+    // strip it cleanly on history reload.
+    expect(hint).toMatch(/^<pinchy:attachments>/);
+    expect(hint).toMatch(/<\/pinchy:attachments>$/);
     expect(hint).toMatch(/\bpdf\b/);
     expect(hint).toContain(ref.absolutePath);
   });
@@ -87,7 +91,7 @@ describe("PDF upload contract — OpenClaw chat() call shape", () => {
   });
 
   it("in a mixed PDF+PNG message, only PNG is inline, both are workspace-saved", async () => {
-    const { processIncomingAttachments, buildUploadHint } =
+    const { processIncomingAttachments, buildAttachmentBlock } =
       await import("@/server/attachment-pipeline");
 
     const result = await processIncomingAttachments({
@@ -103,7 +107,11 @@ describe("PDF upload contract — OpenClaw chat() call shape", () => {
     expect(result.chatAttachments[0].mimeType).toBe("image/png");
     expect(result.workspaceRefs).toHaveLength(2);
 
-    const hint = buildUploadHint(result.workspaceRefs);
+    const hint = buildAttachmentBlock(result.workspaceRefs);
+    // The block is wrapped in <pinchy:attachments> so the display layer can
+    // strip it cleanly on history reload.
+    expect(hint).toMatch(/^<pinchy:attachments>/);
+    expect(hint).toMatch(/<\/pinchy:attachments>$/);
     // Both files mentioned in the hint
     expect(hint).toContain("invoice.pdf");
     expect(hint).toContain("photo.png");

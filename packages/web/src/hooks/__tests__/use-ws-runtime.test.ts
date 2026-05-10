@@ -1730,5 +1730,48 @@ describe("history reconcile on reconnect", () => {
       ).find((m) => m.role === "assistant" && m.metadata?.custom?.error?.payloadTooLarge);
       expect(errorMsg).toBeDefined();
     });
+
+    it("renders the chip on a user message loaded from history (files field round-tripped)", async () => {
+      // Reload regression: PDF chip survived the fresh-send path (PR #316 review
+      // fix) but disappeared on page reload because the server's history payload
+      // didn't carry file metadata. With the in-message <pinchy:attachments>
+      // block the server now parses out the file refs and surfaces them as a
+      // `files` field on each history user message — the hook must convert
+      // those into a `file` content part so the chip renders identically to
+      // the fresh-send path.
+      wsInstances.length = 0;
+      capturedMessages = [];
+      renderHook(() => useWsRuntime("agent-1"));
+      await act(async () => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({
+          type: "history",
+          messages: [
+            {
+              role: "user",
+              content: "Was steht in dieser Datei?",
+              files: [{ filename: "invoice.pdf", mimeType: "application/pdf" }],
+              timestamp: 1708460000000,
+            },
+          ],
+        });
+      });
+
+      const userMsg = (
+        capturedMessages as Array<{
+          role: string;
+          content: Array<{ type: string; filename?: string; mimeType?: string; text?: string }>;
+        }>
+      ).find((m) => m.role === "user");
+      expect(userMsg).toBeDefined();
+      // Text content must be the user's typed text — without the markup block.
+      const textPart = userMsg!.content.find((p) => p.type === "text");
+      expect(textPart?.text).toBe("Was steht in dieser Datei?");
+      // File chip must be rendered from the round-tripped files field.
+      const filePart = userMsg!.content.find((p) => p.type === "file");
+      expect(filePart).toBeDefined();
+      expect(filePart!.filename).toBe("invoice.pdf");
+      expect(filePart!.mimeType).toBe("application/pdf");
+    });
   });
 });

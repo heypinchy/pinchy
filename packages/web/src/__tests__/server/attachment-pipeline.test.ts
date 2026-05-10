@@ -131,10 +131,10 @@ describe("processIncomingAttachments", () => {
   });
 });
 
-describe("buildUploadHint", () => {
-  it("renders a system-prompt block listing the uploads", async () => {
-    const { buildUploadHint } = await import("@/server/attachment-pipeline");
-    const block = buildUploadHint([
+describe("buildAttachmentBlock", () => {
+  it("renders a <pinchy:attachments> block listing the uploads", async () => {
+    const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
+    const block = buildAttachmentBlock([
       {
         relativePath: "uploads/invoice.pdf",
         absolutePath: "/root/.openclaw/workspaces/test/uploads/invoice.pdf",
@@ -144,22 +144,26 @@ describe("buildUploadHint", () => {
         reused: false,
       },
     ]);
+    // Wrapped in custom XML-style tag so the strip/parse step on the display
+    // side has a unique, unambiguous boundary — markdown headings would clash
+    // with user-typed text.
+    expect(block).toMatch(/^<pinchy:attachments>/);
+    expect(block).toMatch(/<\/pinchy:attachments>$/);
     expect(block).toContain("uploads/invoice.pdf");
     expect(block).toContain("application/pdf");
-    expect(block).toMatch(/uploaded/i);
   });
 
   it("returns empty string when no uploads", async () => {
-    const { buildUploadHint } = await import("@/server/attachment-pipeline");
-    expect(buildUploadHint([])).toBe("");
+    const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
+    expect(buildAttachmentBlock([])).toBe("");
   });
 
   // sanitizeFilename allows backticks, which would break the markdown code
-  // span that wraps the path in the system prompt — and could let a crafted
-  // filename leak structure into the prompt sent to the LLM.
+  // span that wraps the path in the block — and could let a crafted filename
+  // leak structure into the message sent to the LLM.
   it("escapes backticks in workspace paths so they cannot break the markdown code span", async () => {
-    const { buildUploadHint } = await import("@/server/attachment-pipeline");
-    const block = buildUploadHint([
+    const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
+    const block = buildAttachmentBlock([
       {
         relativePath: "uploads/foo`bar`.pdf",
         absolutePath: "/root/.openclaw/workspaces/test/uploads/foo`bar`.pdf",
@@ -182,8 +186,8 @@ describe("buildUploadHint", () => {
   });
 
   it("tells the agent which built-in tool to call and uses the absolute workspace path", async () => {
-    const { buildUploadHint } = await import("@/server/attachment-pipeline");
-    const block = buildUploadHint([
+    const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
+    const block = buildAttachmentBlock([
       {
         relativePath: "uploads/invoice.pdf",
         absolutePath: "/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf",
@@ -210,8 +214,8 @@ describe("buildUploadHint", () => {
   });
 
   it("reminds the agent to pass exact paths to sub-agents (not from memory)", async () => {
-    const { buildUploadHint } = await import("@/server/attachment-pipeline");
-    const block = buildUploadHint([
+    const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
+    const block = buildAttachmentBlock([
       {
         relativePath: "uploads/invoice.pdf",
         absolutePath: "/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf",
@@ -230,9 +234,9 @@ describe("buildUploadHint", () => {
   // appropriate built-in tool" string for any MIME outside PDF/image. That
   // would leave the agent guessing on a future MIME we forgot to wire.
   it("throws when given a MIME type with no registered built-in tool", async () => {
-    const { buildUploadHint } = await import("@/server/attachment-pipeline");
+    const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
     expect(() =>
-      buildUploadHint([
+      buildAttachmentBlock([
         {
           relativePath: "uploads/song.flac",
           absolutePath: "/root/.openclaw/workspaces/agent-1/uploads/song.flac",
@@ -243,6 +247,105 @@ describe("buildUploadHint", () => {
         },
       ])
     ).toThrow(/no built-in tool/i);
+  });
+});
+
+describe("parseAttachmentBlock", () => {
+  it("returns input unchanged + empty list when no block present", async () => {
+    const { parseAttachmentBlock } = await import("@/server/attachment-pipeline");
+    const result = parseAttachmentBlock("Just a normal message.");
+    expect(result.cleanText).toBe("Just a normal message.");
+    expect(result.attachments).toEqual([]);
+  });
+
+  it("strips a trailing block and returns the parsed attachments", async () => {
+    const { buildAttachmentBlock, parseAttachmentBlock } =
+      await import("@/server/attachment-pipeline");
+    const block = buildAttachmentBlock([
+      {
+        relativePath: "uploads/invoice.pdf",
+        absolutePath: "/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 245_000,
+        contentHash: "a".repeat(64),
+        reused: false,
+      },
+    ]);
+    const text = `Was steht in dieser Datei?\n\n${block}`;
+    const result = parseAttachmentBlock(text);
+    // The block (and the blank line that separates it from the user text)
+    // must be removed cleanly so the user only sees what they typed.
+    expect(result.cleanText).toBe("Was steht in dieser Datei?");
+    expect(result.attachments).toEqual([
+      {
+        path: "/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf",
+        filename: "invoice.pdf",
+        mimeType: "application/pdf",
+      },
+    ]);
+  });
+
+  it("parses multiple attachments in order", async () => {
+    const { buildAttachmentBlock, parseAttachmentBlock } =
+      await import("@/server/attachment-pipeline");
+    const block = buildAttachmentBlock([
+      {
+        relativePath: "uploads/a.pdf",
+        absolutePath: "/ws/agent-1/uploads/a.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 1000,
+        contentHash: "a".repeat(64),
+        reused: false,
+      },
+      {
+        relativePath: "uploads/b.png",
+        absolutePath: "/ws/agent-1/uploads/b.png",
+        mimeType: "image/png",
+        sizeBytes: 500,
+        contentHash: "b".repeat(64),
+        reused: false,
+      },
+    ]);
+    const result = parseAttachmentBlock(`hi\n\n${block}`);
+    expect(result.cleanText).toBe("hi");
+    expect(result.attachments.map((a) => a.filename)).toEqual(["a.pdf", "b.png"]);
+    expect(result.attachments.map((a) => a.mimeType)).toEqual(["application/pdf", "image/png"]);
+  });
+
+  it("is idempotent: parsing already-clean text is a no-op", async () => {
+    const { parseAttachmentBlock } = await import("@/server/attachment-pipeline");
+    const result = parseAttachmentBlock("clean text");
+    expect(parseAttachmentBlock(result.cleanText).cleanText).toBe("clean text");
+  });
+
+  it("handles a malformed (unterminated) block by leaving text unchanged", async () => {
+    // We don't want a stray opening tag from a future format change to silently
+    // eat half the user's message. If the closing tag is missing the parser
+    // refuses to strip — better to show garbage once than to lose data.
+    const { parseAttachmentBlock } = await import("@/server/attachment-pipeline");
+    const broken = "user text\n\n<pinchy:attachments>\n- /no/end";
+    const result = parseAttachmentBlock(broken);
+    expect(result.cleanText).toBe(broken);
+    expect(result.attachments).toEqual([]);
+  });
+
+  it("preserves filenames containing spaces and parentheses", async () => {
+    const { buildAttachmentBlock, parseAttachmentBlock } =
+      await import("@/server/attachment-pipeline");
+    const block = buildAttachmentBlock([
+      {
+        relativePath: "uploads/Profile (38).pdf",
+        absolutePath: "/ws/agent-1/uploads/Profile (38).pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 1000,
+        contentHash: "a".repeat(64),
+        reused: false,
+      },
+    ]);
+    const result = parseAttachmentBlock(`hi\n\n${block}`);
+    expect(result.attachments).toHaveLength(1);
+    expect(result.attachments[0].filename).toBe("Profile (38).pdf");
+    expect(result.attachments[0].path).toBe("/ws/agent-1/uploads/Profile (38).pdf");
   });
 });
 

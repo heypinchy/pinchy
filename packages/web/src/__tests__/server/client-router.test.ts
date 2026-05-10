@@ -808,14 +808,19 @@ describe("ClientRouter", () => {
       agentId: "agent-1",
     });
 
-    expect(mockChat).toHaveBeenCalledWith(
-      "What is this?",
-      expect.objectContaining({
-        agentId: "agent-1",
-        sessionKey: "agent:agent-1:direct:user-1",
-        attachments: [{ mimeType: "image/png", fileName: "upload", content: "abc123" }],
-      })
-    );
+    // The user text now carries an appended <pinchy:attachments> block so the
+    // file metadata is preserved per-message in OpenClaw's session JSONL (see
+    // attachment-pipeline.ts buildAttachmentBlock for the rationale). The
+    // inline `attachments` option is still set for vision models that read
+    // images directly.
+    const [text, options] = mockChat.mock.calls[0];
+    expect(text).toMatch(/^What is this\?\n\n<pinchy:attachments>/);
+    expect(text).toContain("</pinchy:attachments>");
+    expect(options).toMatchObject({
+      agentId: "agent-1",
+      sessionKey: "agent:agent-1:direct:user-1",
+      attachments: [{ mimeType: "image/png", fileName: "upload", content: "abc123" }],
+    });
   });
 
   it("should join multiple text parts from structured content with spaces", async () => {
@@ -840,6 +845,76 @@ describe("ClientRouter", () => {
       agentId: "agent-1",
       sessionKey: "agent:agent-1:direct:user-1",
     });
+  });
+
+  it("should append a <pinchy:attachments> block to the user text so file metadata is recorded per-message in session history", async () => {
+    // Without per-message file metadata, OpenClaw's JSONL only stores the user
+    // text — so on Turn 2, when reading history, the agent has no record of
+    // which file Turn 1 was about. Embedding the block in the user text fixes
+    // both the agent's history view AND chip rendering on reload, without a
+    // separate persistence layer.
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "ok" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    const PDF_DATA = `data:application/pdf;base64,${Buffer.from("%PDF-1.4\n").toString("base64")}`;
+    await router.handleMessage(createMockClientWs() as any, {
+      type: "message",
+      content: [
+        { type: "text", text: "Was steht hier?" },
+        { type: "image_url", image_url: { url: PDF_DATA } },
+      ],
+      filenames: ["invoice.pdf"],
+      agentId: "agent-1",
+    });
+
+    const [text, options] = mockChat.mock.calls[0];
+    expect(text).toContain("Was steht hier?");
+    expect(text).toContain("<pinchy:attachments>");
+    expect(text).toContain("</pinchy:attachments>");
+    expect(text).toContain("uploads/invoice.pdf");
+    expect(text).toContain("application/pdf");
+    expect(text).toMatch(/\bpdf\b/);
+    // The legacy `extraSystemPrompt`-side upload hint is gone — file
+    // attribution lives in the message itself now. If extraSystemPrompt is
+    // present (e.g. for greeting/user context) it must NOT carry the path.
+    if (typeof options.extraSystemPrompt === "string") {
+      expect(options.extraSystemPrompt).not.toContain("uploads/invoice.pdf");
+    }
+  });
+
+  it("should strip <pinchy:attachments> block from history user messages and surface it as a files field", async () => {
+    // On reload, the chat must show the file chip on the user's bubble even
+    // though OpenClaw's JSONL only knows the message text. We round-trip the
+    // metadata via the in-message block: the server parses it out before
+    // sending history to the browser so the user never sees the markup, and
+    // populates `files` so the UI can render the chip.
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "user",
+          content:
+            "Was steht in dieser Datei?\n\n<pinchy:attachments>\n" +
+            "The user attached these files (already saved into your workspace). Read each file with the listed built-in tool, using the exact absolute path:\n" +
+            "- `/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf` (application/pdf, 240 KB) — analyze with `pdf`\n" +
+            "\nIf you delegate this task to a sub-agent or another tool, pass these exact paths verbatim — do not retype from memory.\n" +
+            "</pinchy:attachments>",
+          timestamp: 1708460000000,
+        },
+      ],
+    });
+
+    await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].messages).toHaveLength(1);
+    const userMsg = sent[0].messages[0];
+    expect(userMsg.role).toBe("user");
+    expect(userMsg.content).toBe("Was steht in dieser Datei?");
+    expect(userMsg.files).toEqual([{ filename: "invoice.pdf", mimeType: "application/pdf" }]);
   });
 
   it("should omit attachments when content has no images", async () => {

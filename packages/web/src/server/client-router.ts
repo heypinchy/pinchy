@@ -15,7 +15,8 @@ import { eq } from "drizzle-orm";
 import {
   type ContentPart,
   type ProcessedWorkspaceRef,
-  buildUploadHint,
+  buildAttachmentBlock,
+  parseAttachmentBlock,
   processIncomingAttachments,
   UploadValidationError,
 } from "@/server/attachment-pipeline";
@@ -197,12 +198,20 @@ export class ClientRouter {
           `The user just opened this chat for the first time. You already greeted them with this message: "${personalizedGreeting}". Do not introduce yourself again. Continue the conversation naturally.`
         );
       }
-      const uploadHint = buildUploadHint(workspaceRefs);
-      if (uploadHint) {
-        extraPromptParts.push(uploadHint);
-      }
       if (extraPromptParts.length > 0) {
         chatOptions.extraSystemPrompt = extraPromptParts.join("\n\n");
+      }
+
+      // Embed the attachment block in the *user message text*, not the system
+      // prompt. OpenClaw persists the user message into its session JSONL but
+      // rebuilds the system prompt on every turn, so a system-prompt-side hint
+      // is invisible when the agent reads its own history. Embedding the file
+      // ↔ turn mapping in the message itself keeps it visible per-turn AND
+      // lets the history-load path round-trip the metadata into chip rendering
+      // (see parseAttachmentBlock + handleHistory below).
+      const attachmentBlock = buildAttachmentBlock(workspaceRefs);
+      if (attachmentBlock) {
+        text = text.length > 0 ? `${text}\n\n${attachmentBlock}` : attachmentBlock;
       }
 
       // Audit each uploaded attachment. AGENTS.md requires {id, name} pairs
@@ -318,14 +327,29 @@ export class ClientRouter {
           // Strip protocol tags from assistant responses
           content = content.replace(/<\/?final>/g, "");
 
-          // Strip OpenClaw timestamp prefix from user messages
+          // For user messages: strip OpenClaw's timestamp prefix AND extract
+          // the per-message <pinchy:attachments> block (see buildAttachmentBlock
+          // in attachment-pipeline.ts). The block lives in the message text in
+          // OpenClaw's session JSONL — we round-trip its metadata into the
+          // wire-level `files` field so the browser can render the chip
+          // without ever seeing the markup.
+          let files: Array<{ filename: string; mimeType: string }> | undefined;
           if (msg.role === "user") {
             content = content.replace(/^\[.*?\]\s*/, "");
+            const parsed = parseAttachmentBlock(content);
+            content = parsed.cleanText;
+            if (parsed.attachments.length > 0) {
+              files = parsed.attachments.map((a) => ({
+                filename: a.filename,
+                mimeType: a.mimeType,
+              }));
+            }
           }
 
           return {
             role: msg.role as "user" | "assistant",
             content,
+            files,
             rawContent:
               typeof msg.content === "string"
                 ? msg.content
@@ -342,7 +366,7 @@ export class ClientRouter {
         })
         .filter((msg) => msg.content)
         .filter((msg) => !(msg.role === "user" && msg.rawContent.startsWith(QUEUED_RETRY_PREFIX)))
-        .map(({ role, content, timestamp }) => ({ role, content, timestamp }));
+        .map(({ role, content, files, timestamp }) => ({ role, content, files, timestamp }));
     };
 
     const sendGreeting = async () => {

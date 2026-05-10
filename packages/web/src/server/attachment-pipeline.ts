@@ -182,7 +182,36 @@ function toolNameForMime(mimeType: string): string {
   );
 }
 
-export function buildUploadHint(refs: ProcessedWorkspaceRef[]): string {
+/** Opening / closing markers for the in-message attachment block. The tag is
+ * deliberately custom (and namespaced under `pinchy:`) so the strip step on
+ * the display side cannot collide with anything the user might type. */
+const ATTACHMENT_BLOCK_OPEN = "<pinchy:attachments>";
+const ATTACHMENT_BLOCK_CLOSE = "</pinchy:attachments>";
+
+/**
+ * Build the per-message attachment metadata block that gets *appended* to the
+ * user's chat message text before the message is forwarded to OpenClaw.
+ *
+ * Why per-message (not in `extraSystemPrompt`)?
+ *
+ * OpenClaw persists the user message text into its session JSONL but does NOT
+ * persist the system prompt — that gets rebuilt on every turn from the agent
+ * config. If we put the upload paths into the system prompt, then on Turn 2
+ * the agent's *own history view* of Turn 1 contains "Was steht in dieser
+ * Datei?" with no record of which file. The model's attention then drifts to
+ * whichever upload was discussed at length in the recent assistant response,
+ * even when the user's new turn carries a brand-new file.
+ *
+ * Embedding the path-list in the user message text fixes this: the file ↔ turn
+ * mapping is now part of the immutable message record. As a bonus, on history
+ * reload we can parse the same block back out and render the file chip without
+ * any separate persistence layer.
+ *
+ * The block is wrapped in a `<pinchy:attachments>` tag (not a markdown heading
+ * or code fence) so the strip/parse step on the display side has an
+ * unambiguous boundary that user-typed text cannot accidentally produce.
+ */
+export function buildAttachmentBlock(refs: ProcessedWorkspaceRef[]): string {
   if (refs.length === 0) return "";
   const lines = refs.map((r) => {
     const path = escapeForMarkdownCodeSpan(r.absolutePath);
@@ -190,12 +219,69 @@ export function buildUploadHint(refs: ProcessedWorkspaceRef[]): string {
     return `- \`${path}\` (${r.mimeType}, ${formatBytes(r.sizeBytes)}) — analyze with ${tool}`;
   });
   return [
-    "## User uploaded files",
-    "The user uploaded these files into the agent workspace. Use the listed built-in tool with the exact absolute path to analyze each file:",
+    ATTACHMENT_BLOCK_OPEN,
+    "The user attached these files (already saved into your workspace). Read each file with the listed built-in tool, using the exact absolute path:",
     ...lines,
     "",
-    "If you delegate this task to a sub-agent or another tool, pass the exact paths from the list above — do not retype from memory.",
+    "If you delegate this task to a sub-agent or another tool, pass these exact paths verbatim — do not retype from memory.",
+    ATTACHMENT_BLOCK_CLOSE,
   ].join("\n");
+}
+
+export interface ParsedAttachment {
+  /** Absolute workspace path. */
+  path: string;
+  /** Display filename (last path segment). */
+  filename: string;
+  /** MIME type as recorded at upload time. */
+  mimeType: string;
+}
+
+export interface ParseAttachmentBlockResult {
+  cleanText: string;
+  attachments: ParsedAttachment[];
+}
+
+// Each list-item line in the block looks like:
+//   - `<absolute-path>` (<mime>, <size>) — analyze with `<tool>`
+// Backticks in the path itself are escaped to U+02BC in `buildAttachmentBlock`,
+// so a bare `[^`]+` capture for the path is safe.
+const ATTACHMENT_LINE_RE = /^- `([^`]+)` \(([^,]+),/;
+
+/**
+ * Inverse of `buildAttachmentBlock`: pulls the trailing block (and the blank
+ * line that separates it from the user text) out of a message, returning the
+ * clean user-visible text plus the parsed attachment list.
+ *
+ * Refuses to strip if the block is malformed (e.g. opening tag without a
+ * closing tag) — better to show the raw markup once than to silently eat half
+ * the user's message after a future format change.
+ */
+export function parseAttachmentBlock(text: string): ParseAttachmentBlockResult {
+  const openIdx = text.indexOf(ATTACHMENT_BLOCK_OPEN);
+  if (openIdx === -1) return { cleanText: text, attachments: [] };
+  const closeIdx = text.indexOf(ATTACHMENT_BLOCK_CLOSE, openIdx);
+  if (closeIdx === -1) return { cleanText: text, attachments: [] };
+
+  const blockBody = text.slice(openIdx + ATTACHMENT_BLOCK_OPEN.length, closeIdx);
+  const attachments: ParsedAttachment[] = [];
+  for (const line of blockBody.split("\n")) {
+    const m = line.match(ATTACHMENT_LINE_RE);
+    if (!m) continue;
+    const path = m[1];
+    const mimeType = m[2];
+    const filename = path.slice(path.lastIndexOf("/") + 1);
+    attachments.push({ path, filename, mimeType });
+  }
+
+  // Strip the block AND the blank-line separator that `buildAttachmentBlock`
+  // is designed to follow (we always emit `<text>\n\n<block>`). Trim trailing
+  // whitespace so a message that was *only* a block doesn't leave a dangling
+  // newline.
+  const before = text.slice(0, openIdx).replace(/\n*$/, "");
+  const after = text.slice(closeIdx + ATTACHMENT_BLOCK_CLOSE.length);
+  const cleanText = (before + after).replace(/\s+$/, "");
+  return { cleanText, attachments };
 }
 
 function formatBytes(n: number): string {
