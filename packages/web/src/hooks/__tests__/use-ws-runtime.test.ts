@@ -1773,5 +1773,35 @@ describe("history reconcile on reconnect", () => {
       expect(filePart!.filename).toBe("invoice.pdf");
       expect(filePart!.mimeType).toBe("application/pdf");
     });
+
+    it("renders an image preview on a user message loaded from history (image/png)", async () => {
+      wsInstances.length = 0;
+      capturedMessages = [];
+      renderHook(() => useWsRuntime("agent-1"));
+      await act(async () => {
+        latestWs().simulateOpen();
+        latestWs().simulateMessage({
+          type: "history",
+          messages: [
+            {
+              role: "user",
+              content: "Hier ein Foto",
+              files: [{ filename: "selfie.jpg", mimeType: "image/jpeg" }],
+              timestamp: 1708460000000,
+            },
+          ],
+        });
+      });
+      const userMsg = (
+        capturedMessages as Array<{
+          role: string;
+          content: Array<{ type: string; mimeType?: string; filename?: string }>;
+        }>
+      ).find((m) => m.role === "user");
+      expect(userMsg).toBeDefined();
+      const filePart = userMsg!.content.find((p) => p.type === "file");
+      expect(filePart?.mimeType).toBe("image/jpeg");
+      expect(filePart?.filename).toBe("selfie.jpg");
+    });
   });
 });
