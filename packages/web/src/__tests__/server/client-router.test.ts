@@ -341,6 +341,94 @@ describe("ClientRouter", () => {
     expect(allText).toBe("Right away! How can I help?");
   });
 
+  it("should suppress NO_REPLY sentinel arriving as a single text chunk", async () => {
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "NO_REPLY" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      agentId: "agent-1",
+      content: "say nothing",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const textChunks = messages.filter((m: any) => m.type === "chunk");
+    expect(textChunks).toHaveLength(0);
+  });
+
+  it("should suppress NO_REPLY sentinel even when streamed across chunk boundaries", async () => {
+    // Reproduces the user-reported bug where "NO_REPL" leaked into the chat
+    // UI because OpenClaw streams the silent-reply token character-by-character
+    // and the truncated prefix flushed before the full sentinel was assembled.
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "NO" };
+      yield { type: "text" as const, text: "_REPL" };
+      yield { type: "text" as const, text: "Y" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      agentId: "agent-1",
+      content: "say nothing",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const textChunks = messages.filter((m: any) => m.type === "chunk");
+    expect(textChunks).toHaveLength(0);
+    const allText = textChunks.map((c: any) => c.content).join("");
+    expect(allText).not.toContain("NO_REPL");
+    expect(allText).not.toContain("NO_REPLY");
+  });
+
+  it("should suppress <final>NO_REPLY</final> envelope variant", async () => {
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "<final>NO_REPLY</final>" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      agentId: "agent-1",
+      content: "say nothing",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const textChunks = messages.filter((m: any) => m.type === "chunk");
+    expect(textChunks).toHaveLength(0);
+  });
+
+  it("should still emit text that begins with letters from NO_REPLY", async () => {
+    // Buffering must not swallow legitimate replies that happen to start with
+    // characters that are also a prefix of the NO_REPLY sentinel (e.g. "Now").
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "N" };
+      yield { type: "text" as const, text: "ow let me help." };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      agentId: "agent-1",
+      content: "hi",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const textChunks = messages.filter((m: any) => m.type === "chunk");
+    const allText = textChunks.map((c: any) => c.content).join("");
+    expect(allText).toBe("Now let me help.");
+  });
+
   it("should include consistent messageId within a single turn", async () => {
     const clientWs = createMockClientWs();
     async function* fakeStream() {

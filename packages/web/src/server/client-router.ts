@@ -9,6 +9,11 @@ import { shouldEmitModelUnavailableAudit } from "@/server/model-unavailable-thro
 import { SessionCache } from "@/server/session-cache";
 import { getErrorHint } from "@/server/error-hints";
 import { classifyModelError } from "@/server/model-error-classifier";
+import {
+  SILENT_REPLY_TOKEN,
+  safeEmitLength,
+  stripFinalEnvelope,
+} from "@/server/silent-reply-buffer";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
@@ -393,6 +398,11 @@ export class ClientRouter {
   ): Promise<void> {
     let messageId = initialMessageId;
 
+    // Per-turn rolling buffer for text chunks. We hold back any tail that
+    // could still grow into a SILENT_REPLY_TOKEN, then either flush or
+    // suppress it when the turn ends.
+    let textBuffer = "";
+
     // Heartbeat is intentionally deferred until the first chunk arrives.
     // Starting it immediately would reset the client-side stuck timer even
     // when OpenClaw's stream hangs before producing any output (e.g. after a
@@ -443,9 +453,12 @@ export class ClientRouter {
               clientMessageId: chunk.clientMessageId,
             });
           } else if (chunk.type === "text") {
-            const cleaned = chunk.text.replace(/<\/?final>/g, "");
-            if (cleaned) {
-              this.sendToClient(clientWs, { type: "chunk", content: cleaned, messageId });
+            textBuffer = stripFinalEnvelope(textBuffer + chunk.text);
+            const safeLen = safeEmitLength(textBuffer);
+            if (safeLen > 0) {
+              const emit = textBuffer.slice(0, safeLen);
+              textBuffer = textBuffer.slice(safeLen);
+              this.sendToClient(clientWs, { type: "chunk", content: emit, messageId });
             }
           } else if (chunk.type === "error") {
             const modelUnavailable = classifyModelError(chunk.text, agent.model ?? "");
@@ -487,6 +500,16 @@ export class ClientRouter {
               }
             }
           } else if (chunk.type === "done") {
+            // Flush remaining buffer at end-of-turn. If the entire turn
+            // resolved to the silent-reply sentinel, suppress it; otherwise
+            // emit whatever text was held back.
+            if (textBuffer && textBuffer !== SILENT_REPLY_TOKEN) {
+              this.sendToClient(clientWs, {
+                type: "chunk",
+                content: textBuffer,
+                messageId,
+              });
+            }
             this.sendToClient(clientWs, { type: "done", messageId });
           }
         }
@@ -496,6 +519,7 @@ export class ClientRouter {
         // or not the browser is listening (consistent with how OpenClaw
         // stores them in history).
         if (chunk.type === "done") {
+          textBuffer = "";
           messageId = crypto.randomUUID();
         }
       }
