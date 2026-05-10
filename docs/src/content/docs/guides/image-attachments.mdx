@@ -5,6 +5,10 @@ description: What images you can send to your agents in chat, and how Pinchy han
 
 You can attach images directly to chat messages — drag and drop, paste from your clipboard, or use the attachment button in the composer. Pinchy takes care of the rest.
 
+:::note
+This page covers image-specific behavior. For the broader picture — PDFs, audio, file size limits, and what an attachment looks like to the agent — see [Upload Files in Chat](/guides/file-uploads/).
+:::
+
 ## What you can send
 
 | Format     | Status                                                              |
@@ -19,9 +23,18 @@ Up to **15 MB per image**. If a file exceeds that, you'll see "Image exceeds the
 
 ## What happens automatically
 
-Modern smartphone photos are often 5–12 MB. To make sure your agent's vision model actually sees them, Pinchy resizes and re-encodes large images to WebP under 1.9 MB before sending. The original quality looks identical for chat-sized viewing, but the file fits in the model's inline image budget. No setting required — it just happens.
+Modern smartphone photos are often 5–12 MB. To make sure your agent's vision model actually sees them, Pinchy resizes and re-encodes large images to WebP under 1.9 MB before sending inline. The original quality looks identical for chat-sized viewing, but the file fits in the model's inline image budget. No setting required — it just happens.
 
 You can verify the conversion worked: the agent's response should reference what's actually in the picture. If the agent answers as if no image was attached, see "Troubleshooting" below.
+
+### Two paths, one upload
+
+Each image you attach travels two routes simultaneously:
+
+1. **Inline to the model** — the resized version is sent with the message itself, so a vision-capable model can "see" the image immediately without an extra step.
+2. **Saved to the agent's [workspace](/concepts/workspaces/)** — the **original** file lands in `uploads/<filename>` so the agent can re-read it later (e.g. when you ask follow-up questions about details, or when a sub-agent needs the full-resolution version).
+
+Most of the time you don't need to think about this — the agent picks the right path. The workspace copy matters mainly for shared agents, where it's visible to anyone with access to the agent.
 
 ## When something goes wrong
 
