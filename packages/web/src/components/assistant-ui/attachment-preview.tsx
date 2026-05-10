@@ -63,7 +63,10 @@ const PdfPreview: FC<{ url: string; filename: string }> = ({ url, filename }) =>
         <span className="truncate text-sm">{filename}</span>
       </div>
     </DialogTrigger>
-    <DialogContent className="p-2 sm:max-w-4xl">
+    <DialogContent
+      className="p-2 sm:max-w-4xl [&>button]:rounded-full [&>button]:bg-foreground/60 [&>button]:p-1 [&>button]:opacity-100 [&>button]:ring-0! [&_svg]:text-background [&>button]:hover:[&_svg]:text-destructive"
+      aria-describedby={undefined}
+    >
       <DialogTitle className="sr-only">{filename}</DialogTitle>
       <embed src={url} type="application/pdf" className="block h-[80dvh] w-full" />
     </DialogContent>
@@ -82,12 +85,15 @@ const ImagePreview: FC<{ url: string; filename: string }> = ({ url, filename }) 
         className="max-h-64 max-w-sm rounded-lg object-contain"
       />
     </DialogTrigger>
-    <DialogContent className="p-2 sm:max-w-3xl">
+    <DialogContent
+      className="p-2 sm:max-w-3xl [&>button]:rounded-full [&>button]:bg-foreground/60 [&>button]:p-1 [&>button]:opacity-100 [&>button]:ring-0! [&_svg]:text-background [&>button]:hover:[&_svg]:text-destructive"
+      aria-describedby={undefined}
+    >
       <DialogTitle className="sr-only">{filename}</DialogTitle>
       <img
         src={url}
         alt={`Attachment: ${filename}`}
-        className="block h-auto max-h-[80vh] w-auto max-w-full object-contain"
+        className="block h-auto max-h-[80dvh] w-auto max-w-full object-contain"
       />
     </DialogContent>
   </Dialog>
