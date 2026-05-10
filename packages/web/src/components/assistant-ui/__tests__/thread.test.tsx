@@ -549,7 +549,12 @@ describe("FilePart component (re-exported AttachmentPreview)", () => {
       data: "",
     } as never);
     const { FilePart } = await import("@/components/assistant-ui/thread");
-    render(<FilePart />);
+    const { AgentIdContext } = await import("@/components/chat");
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <FilePart />
+      </AgentIdContext.Provider>
+    );
     expect(screen.getByText("archive.zip")).toBeInTheDocument();
   });
 

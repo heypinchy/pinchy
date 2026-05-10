@@ -428,6 +428,7 @@ export function sendingOpacityClass(status: string | undefined): string {
   return status === "sending" ? "opacity-60" : "";
 }
 
+// Re-exported as FilePart for backward compatibility and stable test imports.
 export { AttachmentPreview as FilePart };
 
 export const UserMessage: FC = () => {
