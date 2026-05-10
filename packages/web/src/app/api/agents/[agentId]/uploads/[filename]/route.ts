@@ -42,6 +42,7 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
 
   let info;
   try {
+    // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is sanitized + resolve-checked above
     info = await stat(fullPath);
   } catch {
     return new NextResponse("Not found", { status: 404 });
@@ -55,6 +56,7 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
   // fileTypeFromBuffer (same as upload-validation.ts) rather than
   // fileTypeFromFile, which uses dynamic imports that Next.js/Webpack cannot
   // statically analyse ("Cannot find module as expression is too dynamic").
+  // eslint-disable-next-line security/detect-non-literal-fs-filename -- path is sanitized + resolve-checked above
   const fh = await open(fullPath, "r");
   let buffer: Buffer;
   try {
@@ -72,7 +74,7 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
     return new NextResponse("Unsupported media type", { status: 415 });
   }
 
-  return new NextResponse(buffer, {
+  return new NextResponse(Uint8Array.from(buffer), {
     headers: {
       "content-type": detected.mime,
       "content-length": String(buffer.byteLength),
