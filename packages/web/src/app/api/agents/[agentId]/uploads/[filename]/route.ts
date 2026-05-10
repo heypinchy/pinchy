@@ -1,26 +1,17 @@
 // audit-exempt: read-only access to the caller's own uploaded attachments —
 // no state change, audit log not required (see AGENTS.md § audit rules).
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
 import { open, stat } from "fs/promises";
 import { join, resolve, sep } from "path";
 import { fileTypeFromFile } from "file-type";
-// auth-direct: reads session from request headers directly so the handler is
-// unit-testable without a live Next.js request scope (no next/headers call).
-import { getSession } from "@/lib/auth";
+import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { getWorkspacePath } from "@/lib/workspace";
 import { sanitizeFilename, ALLOWED_ATTACHMENT_MIMES } from "@/lib/upload-validation";
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
-export async function GET(req: NextRequest, { params }: Params): Promise<NextResponse> {
-  // Resolve session from the request's own headers so this handler is
-  // testable without a live Next.js request-scope (no next/headers call).
-  const session = await getSession({ headers: req.headers });
-  if (!session?.user) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
+export const GET = withAuth<Params>(async (_req, { params }, session) => {
   const { agentId, filename: rawFilename } = await params;
 
   // Access check FIRST — same gate as the chat itself. The helper returns
@@ -86,4 +77,4 @@ export async function GET(req: NextRequest, { params }: Params): Promise<NextRes
   } finally {
     await fh.close();
   }
-}
+});

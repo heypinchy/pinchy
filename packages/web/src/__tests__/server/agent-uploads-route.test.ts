@@ -14,6 +14,9 @@ vi.mock("@/lib/auth", () => ({ getSession: mockGetSession }));
 vi.mock("@/lib/agent-access", () => ({
   getAgentWithAccess: mockGetAgentWithAccess,
 }));
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
+}));
 
 let tmpRoot: string;
 
