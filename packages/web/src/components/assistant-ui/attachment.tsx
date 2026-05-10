@@ -117,6 +117,7 @@ const AttachmentUI: FC = () => {
   const isComposer = aui.attachment.source === "composer";
 
   const isImage = useAuiState((s) => s.attachment.type === "image");
+  const name = useAuiState((s) => s.attachment.name ?? "File");
   const typeLabel = useAuiState((s) => {
     const type = s.attachment.type;
     switch (type) {
@@ -130,6 +131,20 @@ const AttachmentUI: FC = () => {
         return "File";
     }
   });
+
+  // Non-image composer attachments (e.g. PDFs) show a named chip so the user
+  // can see which file is attached without having to hover for the tooltip.
+  if (isComposer && !isImage) {
+    return (
+      <AttachmentPrimitive.Root className="aui-attachment-root relative">
+        <div className="flex max-w-48 items-center gap-2 rounded-xl border border-foreground/20 bg-muted/60 py-2 pl-3 pr-8">
+          <FileText className="size-4 shrink-0 text-muted-foreground" />
+          <span className="truncate text-sm">{name}</span>
+        </div>
+        <AttachmentRemove />
+      </AttachmentPrimitive.Root>
+    );
+  }
 
   return (
     <Tooltip>
