@@ -51,6 +51,33 @@ function stripMeta(raw: string): string {
   return JSON.stringify(parsed);
 }
 
+/**
+ * Read CONFIG_PATH with EACCES retry. Mirrors the production retry loop in
+ * `src/lib/openclaw-config/write.ts`: OpenClaw rewrites the file as
+ * `root:0600` on every internal SIGUSR1 restart, and start-openclaw.sh's
+ * chmod loop opens it back up to 0666 — so the test runner can hit a small
+ * window where the file exists but is unreadable. Without retry, a naked
+ * readFileSync fails the assertion even though the production code path
+ * tolerates this race.
+ */
+function readConfigSafely(): string {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    try {
+      return readFileSync(CONFIG_PATH, "utf-8");
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (code !== "EACCES" || attempt === 9) throw err;
+      // Synchronous busy-wait. Async would require touching every call site.
+      const start = Date.now();
+      while (Date.now() - start < 100) {
+        // spin
+      }
+    }
+  }
+  // Unreachable — the loop either returns or throws.
+  throw new Error("readConfigSafely: exhausted retries");
+}
+
 function openClawLogsSince(sinceIso: string): string {
   return execSync(`docker compose ${COMPOSE_FILE} logs openclaw --since "${sinceIso}" 2>&1`, {
     encoding: "utf-8",
@@ -188,7 +215,7 @@ test.describe("regenerateOpenClawConfig — cold-start & idempotency contract", 
     //    (auto-enable markers, agents.defaults.*, gateway.controlUi.allowedOrigins,
     //    meta.lastTouchedAt etc.). This is the baseline we expect Pinchy to
     //    preserve byte-for-byte.
-    const before = readFileSync(CONFIG_PATH, "utf-8");
+    const before = readConfigSafely();
     const beforeMark = new Date(Date.now() - 1000).toISOString();
 
     // 3. Trigger a no-op state-change path. PATCH name to its current value.
@@ -209,7 +236,7 @@ test.describe("regenerateOpenClawConfig — cold-start & idempotency contract", 
     await new Promise((r) => setTimeout(r, 5000));
 
     // 5. Contract assertions.
-    const after = readFileSync(CONFIG_PATH, "utf-8");
+    const after = readConfigSafely();
     const logs = openClawLogsSince(beforeMark);
 
     // (a) Semantic equality, ignoring the entire `meta` block. OpenClaw
@@ -287,7 +314,7 @@ test.describe("regenerateOpenClawConfig — cold-start & idempotency contract", 
     await waitForOpenClawQuiet();
 
     for (let i = 1; i <= 5; i++) {
-      const snapshot = readFileSync(CONFIG_PATH, "utf-8");
+      const snapshot = readConfigSafely();
       const beforeMark = new Date(Date.now() - 1000).toISOString();
 
       const patchRes = await fetch(`${PINCHY_URL}/api/agents/${smithersId}`, {
@@ -300,7 +327,7 @@ test.describe("regenerateOpenClawConfig — cold-start & idempotency contract", 
       // Allow enough time for the write + any potential restart to surface.
       await new Promise((r) => setTimeout(r, 5000));
 
-      const after = readFileSync(CONFIG_PATH, "utf-8");
+      const after = readConfigSafely();
       const logs = openClawLogsSince(beforeMark);
 
       if (stripMeta(snapshot) !== stripMeta(after)) {
