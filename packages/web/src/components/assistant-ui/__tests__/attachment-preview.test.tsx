@@ -46,7 +46,8 @@ describe("AttachmentPreview — PDF", () => {
       filename: "invoice.pdf",
     });
     await renderWithAgent("agent-1");
-    // The thumbnail itself is the trigger — assistant-ui's Dialog wraps it.
+    // The thumbnail itself is the trigger — the component uses shadcn/ui Dialog
+    // from @/components/ui/dialog, not assistant-ui.
     const trigger = screen.getByRole("button", { name: /preview invoice\.pdf/i });
     await userEvent.click(trigger);
     // Modal content uses a unique label so we can assert it's open.
@@ -91,6 +92,18 @@ describe("AttachmentPreview — image", () => {
     await renderWithAgent("agent-1");
     await userEvent.click(screen.getByRole("button", { name: /preview selfie\.jpg/i }));
     expect(screen.getByRole("dialog")).toBeInTheDocument();
+    const modalImg = screen.getByRole("dialog").querySelector("img");
+    expect(modalImg?.getAttribute("src")).toBe("/api/agents/agent-1/uploads/selfie.jpg");
+  });
+
+  it("renders a fallback chip when there is no agent id in context (defensive)", async () => {
+    mockUseMessagePartFile.mockReturnValue({
+      mimeType: "image/png",
+      filename: "photo.png",
+    });
+    const { container } = await renderWithAgent(null);
+    expect(container.querySelector("img")).toBeNull();
+    expect(screen.getByText("photo.png")).toBeInTheDocument();
   });
 });
 
