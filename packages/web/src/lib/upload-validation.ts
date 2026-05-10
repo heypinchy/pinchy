@@ -48,6 +48,8 @@ export function sanitizeFilename(raw: string): string {
   return trimmed;
 }
 
+// Audio is intentionally absent — see #321. Adding audio MIMEs here without
+// also wiring transcription means the agent receives a file it cannot read.
 export const ALLOWED_ATTACHMENT_MIMES = new Set<string>([
   "application/pdf",
   "image/jpeg",
@@ -56,13 +58,6 @@ export const ALLOWED_ATTACHMENT_MIMES = new Set<string>([
   "image/gif",
   "image/heic",
   "image/heif",
-  "audio/mpeg",
-  "audio/mp4",
-  "audio/x-m4a",
-  "audio/wav",
-  "audio/webm",
-  "audio/ogg",
-  "audio/flac",
 ]);
 
 export async function validateUploadBuffer(buffer: Buffer, claimedMime: string): Promise<string> {

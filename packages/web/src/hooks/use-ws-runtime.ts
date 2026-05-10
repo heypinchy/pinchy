@@ -93,7 +93,11 @@ class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
 }
 
 /**
- * Adapter for binary files the model can read: PDFs and audio.
+ * Adapter for binary files the model can read.
+ *
+ * Currently: PDF only. Audio is tracked in #321 — it requires a transcription
+ * pipeline that does not yet exist; accepting audio here without it would
+ * persist files the agent has no way to read.
  *
  * Lifecycle:
  *   add()  — validates size up front, then returns a PendingAttachment.
@@ -111,8 +115,7 @@ class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
  * Exported only so the size-rejection contract can be unit-tested in isolation.
  */
 export class SimpleBinaryFileAttachmentAdapter {
-  public accept =
-    "application/pdf,audio/mpeg,audio/mp4,audio/x-m4a,audio/wav,audio/webm,audio/ogg,audio/flac,.pdf,.mp3,.m4a,.wav,.webm,.ogg,.flac";
+  public accept = "application/pdf,.pdf";
 
   async add(state: { file: File }) {
     const { file } = state;
@@ -714,7 +717,7 @@ export function useWsRuntime(agentId: string): {
         }
       }
 
-      // Extract binary file attachments (PDF, audio) added by SimpleBinaryFileAttachmentAdapter.
+      // Extract binary file attachments (PDF) added by SimpleBinaryFileAttachmentAdapter.
       // After send(), content parts carry base64 `data` + `mimeType` (FileMessagePart shape).
       // Reconstruct the data URL here so the WS payload stays the same for the server.
       const binaryFiles: Array<{ url: string; name: string; sizeBytes: number }> = [];

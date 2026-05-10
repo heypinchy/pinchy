@@ -33,7 +33,8 @@ const PNG_BASE64 = PNG.toString("base64");
 
 describe("PDF upload contract — OpenClaw chat() call shape", () => {
   it("does not include PDFs as inline attachments — workspace-only via pdf tool", async () => {
-    const { processIncomingAttachments, buildUploadHint } = await import("@/server/client-router");
+    const { processIncomingAttachments, buildUploadHint } =
+      await import("@/server/attachment-pipeline");
 
     const result = await processIncomingAttachments({
       agentId: "agent-pdf-contract",
@@ -66,7 +67,7 @@ describe("PDF upload contract — OpenClaw chat() call shape", () => {
   });
 
   it("sends PNG images inline but workspace-saves them too", async () => {
-    const { processIncomingAttachments } = await import("@/server/client-router");
+    const { processIncomingAttachments } = await import("@/server/attachment-pipeline");
 
     const result = await processIncomingAttachments({
       agentId: "agent-img-contract",
@@ -86,7 +87,8 @@ describe("PDF upload contract — OpenClaw chat() call shape", () => {
   });
 
   it("in a mixed PDF+PNG message, only PNG is inline, both are workspace-saved", async () => {
-    const { processIncomingAttachments, buildUploadHint } = await import("@/server/client-router");
+    const { processIncomingAttachments, buildUploadHint } =
+      await import("@/server/attachment-pipeline");
 
     const result = await processIncomingAttachments({
       agentId: "agent-mixed-contract",

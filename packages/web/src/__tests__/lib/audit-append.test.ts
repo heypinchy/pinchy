@@ -293,6 +293,7 @@ describe("appendAuditLog", () => {
         outcome: "success",
         detail: {
           agent: { id: "agent-1", name: "Smithers" },
+          uploader: { id: "user-123", name: "Alice Carter" },
           attachment: {
             filename: "invoice.pdf",
             detectedMimeType: "application/pdf",
@@ -301,7 +302,6 @@ describe("appendAuditLog", () => {
             reused: false,
           },
           sessionKey: "agent:agent-1:direct:user-123",
-          uploaderUserId: "user-123",
         },
       })
     ).resolves.toBeUndefined();

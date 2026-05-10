@@ -12,9 +12,13 @@ import { classifyModelError } from "@/server/model-error-classifier";
 import { db } from "@/db";
 import { agents, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { sanitizeFilename, validateUploadBuffer } from "@/lib/upload-validation";
-import { persistAttachment } from "@/lib/uploads";
-import { getOpenClawWorkspacePath } from "@/lib/workspace";
+import {
+  type ContentPart,
+  type ProcessedWorkspaceRef,
+  buildUploadHint,
+  processIncomingAttachments,
+  UploadValidationError,
+} from "@/server/attachment-pipeline";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
@@ -24,12 +28,6 @@ const CONNECTION_TIMEOUT_MS = 10_000;
 // with periodic frames. We send a "thinking" heartbeat every 15s — frequent
 // enough to defeat any reasonable idle timer, sparse enough not to spam.
 const THINKING_HEARTBEAT_MS = 15_000;
-
-interface ContentPart {
-  type: string;
-  text?: string;
-  image_url?: { url: string };
-}
 
 type RetryReason = "orphan" | "partial_stream_failure" | "send_failure";
 const ALLOWED_RETRY_REASONS: ReadonlySet<string> = new Set([
@@ -60,125 +58,6 @@ interface HistoryMessage {
   role: string;
   content?: unknown;
   timestamp?: number;
-}
-
-export interface ProcessedWorkspaceRef {
-  relativePath: string;
-  absolutePath: string;
-  mimeType: string;
-  sizeBytes: number;
-  contentHash: string;
-  reused: boolean;
-}
-
-export interface ProcessAttachmentsResult {
-  chatAttachments: ChatAttachment[];
-  workspaceRefs: ProcessedWorkspaceRef[];
-}
-
-export interface ProcessAttachmentsParams {
-  agentId: string;
-  contentParts: ContentPart[];
-  claimedFilenames?: string[];
-}
-
-const DATA_URL_RE = /^data:([^;]+);base64,(.+)$/;
-
-export async function processIncomingAttachments(
-  params: ProcessAttachmentsParams
-): Promise<ProcessAttachmentsResult> {
-  const { agentId, contentParts } = params;
-  // Defensive: strip non-array values at the trust boundary so a malformed
-  // payload can never reach the per-index lookup below.
-  const claimedFilenames = Array.isArray(params.claimedFilenames)
-    ? params.claimedFilenames
-    : undefined;
-  const chatAttachments: ChatAttachment[] = [];
-  const workspaceRefs: ProcessedWorkspaceRef[] = [];
-  const workspaceRoot = getOpenClawWorkspacePath(agentId);
-
-  let attachmentIdx = 0;
-  for (const part of contentParts) {
-    if (part.type !== "image_url" || !part.image_url?.url) continue;
-    const match = part.image_url.url.match(DATA_URL_RE);
-    if (!match) continue;
-
-    const claimedMime = match[1];
-    const base64 = match[2];
-    const buffer = Buffer.from(base64, "base64");
-
-    const detectedMime = await validateUploadBuffer(buffer, claimedMime);
-
-    // The client sends `""` for image slots in mixed image+binary messages
-    // (images don't carry a meaningful filename). Treat empty/whitespace
-    // strings as nullish here — `??` alone misses the empty-string case.
-    const rawName = claimedFilenames?.[attachmentIdx];
-    const claimedName = typeof rawName === "string" && rawName.trim() ? rawName : "upload";
-    const safeName = sanitizeFilename(claimedName);
-
-    const persisted = await persistAttachment({
-      agentId,
-      filename: safeName,
-      buffer,
-    });
-
-    // Only images can be sent inline to the LLM (vision models accept them).
-    // PDFs and other binary files go workspace-only — the agent reads them
-    // via the built-in `pdf` / `image` tools using the workspace path from
-    // the upload hint. OpenClaw's `agent` entrypoint rejects non-image
-    // inline attachments anyway (`acceptNonImage: false`).
-    if (detectedMime.startsWith("image/")) {
-      chatAttachments.push({ mimeType: detectedMime, fileName: safeName, content: base64 });
-    }
-    workspaceRefs.push({
-      relativePath: persisted.relativePath,
-      absolutePath: `${workspaceRoot}/${persisted.relativePath}`,
-      mimeType: detectedMime,
-      sizeBytes: buffer.length,
-      contentHash: persisted.contentHash,
-      reused: persisted.reused,
-    });
-    attachmentIdx++;
-  }
-
-  return { chatAttachments, workspaceRefs };
-}
-
-// Filenames are sanitized server-side, but `sanitizeFilename` permits backticks
-// (rare-but-legal in real filenames). When the path is interpolated into a
-// markdown code span in the system prompt, an embedded backtick would close
-// the span and let user-supplied text leak into the prompt structure.
-// Replace `` ` `` with the visually-similar U+02BC MODIFIER LETTER APOSTROPHE
-// so the path stays readable to the agent and the code span stays balanced.
-function escapeForMarkdownCodeSpan(s: string): string {
-  return s.replace(/`/g, "ʼ");
-}
-
-export function buildUploadHint(refs: ProcessedWorkspaceRef[]): string {
-  if (refs.length === 0) return "";
-  const lines = refs.map((r) => {
-    const path = escapeForMarkdownCodeSpan(r.absolutePath);
-    const tool =
-      r.mimeType === "application/pdf"
-        ? "`pdf`"
-        : r.mimeType.startsWith("image/")
-          ? "`image`"
-          : "the appropriate built-in tool";
-    return `- \`${path}\` (${r.mimeType}, ${formatBytes(r.sizeBytes)}) — analyze with ${tool}`;
-  });
-  return [
-    "## User uploaded files",
-    "The user uploaded these files into the agent workspace. Use the listed built-in tool with the exact absolute path to analyze each file:",
-    ...lines,
-    "",
-    "If you delegate this task to a sub-agent or another tool, pass the exact paths from the list above — do not retype from memory.",
-  ].join("\n");
-}
-
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`;
-  return `${(n / 1024 / 1024).toFixed(1)} MB`;
 }
 
 export class ClientRouter {
@@ -268,11 +147,25 @@ export class ClientRouter {
         chatAttachments = result.chatAttachments;
         workspaceRefs = result.workspaceRefs;
       } catch (err) {
-        this.sendToClient(clientWs, {
-          type: "error",
-          code: "attachment_invalid",
-          message: err instanceof Error ? err.message : String(err),
-        });
+        // Validation errors are caused by client input and are safe to surface
+        // verbatim ("File type mismatch", "Filename too long", etc.). Anything
+        // else is an internal failure (filesystem error, programmer mistake)
+        // that must NOT leak to the client — log it server-side and return a
+        // generic message.
+        if (err instanceof UploadValidationError) {
+          this.sendToClient(clientWs, {
+            type: "error",
+            code: "attachment_invalid",
+            message: err.message,
+          });
+        } else {
+          console.error("[client-router] attachment processing failed:", err);
+          this.sendToClient(clientWs, {
+            type: "error",
+            code: "attachment_invalid",
+            message: "Could not process attachment. Please try again.",
+          });
+        }
         return;
       }
 
@@ -312,7 +205,11 @@ export class ClientRouter {
         chatOptions.extraSystemPrompt = extraPromptParts.join("\n\n");
       }
 
-      // Audit each uploaded attachment
+      // Audit each uploaded attachment. AGENTS.md requires {id, name} pairs
+      // for both the resource (agent) and the actor (uploader); a name-less
+      // user-id row is harder to read months later when the user record may
+      // have been renamed or deleted.
+      const uploaderRef = { id: this.userId, name: user?.name ?? this.userId };
       for (const ref of workspaceRefs) {
         const { relativePath, mimeType, sizeBytes, contentHash, reused } = ref;
         const filename = relativePath.replace(/^uploads\//, "");
@@ -324,9 +221,9 @@ export class ClientRouter {
           outcome: "success" as const,
           detail: {
             agent: { id: agent.id, name: agent.name },
+            uploader: uploaderRef,
             attachment: { filename, detectedMimeType: mimeType, sizeBytes, contentHash, reused },
             sessionKey,
-            uploaderUserId: this.userId,
           },
         };
         try {

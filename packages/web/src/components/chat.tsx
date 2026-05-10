@@ -205,7 +205,7 @@ export function Chat({
                   </div>
                   {!displayIsPersonal && (
                     <p className="text-xs text-muted-foreground px-3 py-1">
-                      Files uploaded here are visible to all users with access to this agent.
+                      Files uploaded here are visible to anyone with access to this agent.
                     </p>
                   )}
                   <ChatStatusBanner status={chatStatus} isDelayed={isDelayed} />

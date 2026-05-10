@@ -240,6 +240,7 @@ export type AuditLogEntry =
       eventType: "attachment.uploaded";
       detail: {
         agent: EntityRef;
+        uploader: EntityRef;
         attachment: {
           filename: string;
           detectedMimeType: string;
@@ -248,7 +249,6 @@ export type AuditLogEntry =
           reused: boolean;
         };
         sessionKey: string;
-        uploaderUserId: string;
       };
     });
 

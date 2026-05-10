@@ -1610,7 +1610,7 @@ describe("history reconcile on reconnect", () => {
     expect(result.current.isOrphaned).toBe(false);
   });
 
-  describe("binary file attachments (PDF and audio)", () => {
+  describe("binary file attachments (PDF)", () => {
     beforeEach(async () => {
       wsInstances.length = 0;
       capturedOnNew = null;

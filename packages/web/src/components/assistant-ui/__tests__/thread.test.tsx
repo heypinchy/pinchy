@@ -555,11 +555,14 @@ describe("FilePart component", () => {
   });
 
   it("shows 'File' as fallback for non-PDF files without filename", async () => {
+    // Defensive: keeps the fallback path covered even though only PDFs are
+    // accepted today. History messages from older deployments could carry
+    // unfamiliar mime types.
     const { useMessagePartFile } = await import("@assistant-ui/react");
     vi.mocked(useMessagePartFile).mockReturnValue({
       type: "file",
       filename: undefined,
-      mimeType: "audio/mp3",
+      mimeType: "application/octet-stream",
       status: { type: "complete" },
     } as never);
 

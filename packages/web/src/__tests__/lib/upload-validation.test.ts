@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import { fileTypeFromBuffer } from "file-type";
 import {
   sanitizeFilename,
   validateUploadBuffer,
@@ -10,7 +9,7 @@ describe("sanitizeFilename", () => {
   it("returns clean basename for normal filenames", () => {
     expect(sanitizeFilename("invoice.pdf")).toBe("invoice.pdf");
     expect(sanitizeFilename("My Photo.jpg")).toBe("My Photo.jpg");
-    expect(sanitizeFilename("recording-2026-05-08.m4a")).toBe("recording-2026-05-08.m4a");
+    expect(sanitizeFilename("notes 2026-05-08.pdf")).toBe("notes 2026-05-08.pdf");
   });
 
   it("strips path separators", () => {
@@ -111,16 +110,23 @@ describe("validateUploadBuffer", () => {
     expect(ALLOWED_ATTACHMENT_MIMES.has("image/gif")).toBe(true);
     expect(ALLOWED_ATTACHMENT_MIMES.has("image/heic")).toBe(true);
     expect(ALLOWED_ATTACHMENT_MIMES.has("image/heif")).toBe(true);
-    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/mpeg")).toBe(true);
-    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/mp4")).toBe(true);
-    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/x-m4a")).toBe(true);
-    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/wav")).toBe(true);
-    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/webm")).toBe(true);
-    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/ogg")).toBe(true);
-    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/flac")).toBe(true);
   });
 
-  it("accepts a valid M4A audio file", async () => {
+  // Audio is intentionally NOT in the whitelist yet — see #321 for the
+  // follow-up that wires real transcription. Until then, accepting audio
+  // would persist files the agent has no way to read.
+  it("does not accept audio MIME types (tracked in #321)", () => {
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/mpeg")).toBe(false);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/mp4")).toBe(false);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/x-m4a")).toBe(false);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/wav")).toBe(false);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/webm")).toBe(false);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/ogg")).toBe(false);
+    expect(ALLOWED_ATTACHMENT_MIMES.has("audio/flac")).toBe(false);
+  });
+
+  it("rejects audio uploads with the same 'not supported' error as any other unknown type", async () => {
+    // Minimal valid M4A ftyp box — file-type detects it as audio/x-m4a
     const M4A_HEADER = Buffer.concat([
       Buffer.from([0x00, 0x00, 0x00, 0x1c]),
       Buffer.from("ftyp"),
@@ -131,13 +137,6 @@ describe("validateUploadBuffer", () => {
       Buffer.from("isom"),
       Buffer.alloc(32, 0),
     ]);
-    const result = await fileTypeFromBuffer(
-      new Uint8Array(M4A_HEADER.buffer, M4A_HEADER.byteOffset, M4A_HEADER.byteLength)
-    );
-    // file-type@22 returns audio/x-m4a for M4A ftyp boxes
-    expect(result).not.toBeUndefined();
-    if (result) {
-      expect(ALLOWED_ATTACHMENT_MIMES.has(result.mime)).toBe(true);
-    }
+    await expect(validateUploadBuffer(M4A_HEADER, "audio/x-m4a")).rejects.toThrow(/not supported/i);
   });
 });

@@ -33,7 +33,7 @@ const PNG_BASE64 = PNG.toString("base64");
 
 describe("processIncomingAttachments", () => {
   it("persists a PDF to workspace only (no inline attachment)", async () => {
-    const { processIncomingAttachments } = await import("@/server/client-router");
+    const { processIncomingAttachments } = await import("@/server/attachment-pipeline");
     const result = await processIncomingAttachments({
       agentId: "agent-1",
       contentParts: [
@@ -59,7 +59,7 @@ describe("processIncomingAttachments", () => {
   });
 
   it("handles multiple attachments in one message", async () => {
-    const { processIncomingAttachments } = await import("@/server/client-router");
+    const { processIncomingAttachments } = await import("@/server/attachment-pipeline");
     const result = await processIncomingAttachments({
       agentId: "agent-1",
       contentParts: [
@@ -73,7 +73,7 @@ describe("processIncomingAttachments", () => {
   });
 
   it("rejects MIME mismatch", async () => {
-    const { processIncomingAttachments } = await import("@/server/client-router");
+    const { processIncomingAttachments } = await import("@/server/attachment-pipeline");
     await expect(
       processIncomingAttachments({
         agentId: "agent-1",
@@ -89,7 +89,7 @@ describe("processIncomingAttachments", () => {
   });
 
   it("defaults filename to 'upload' when claimedFilenames is absent", async () => {
-    const { processIncomingAttachments } = await import("@/server/client-router");
+    const { processIncomingAttachments } = await import("@/server/attachment-pipeline");
     const result = await processIncomingAttachments({
       agentId: "agent-1",
       contentParts: [
@@ -104,7 +104,7 @@ describe("processIncomingAttachments", () => {
   // because images don't carry a meaningful filename. The empty-string slot
   // must fall back to "upload" — `??` alone won't, since "" is not nullish.
   it("treats empty/whitespace claimed filenames as 'upload' (mixed-attachment regression)", async () => {
-    const { processIncomingAttachments } = await import("@/server/client-router");
+    const { processIncomingAttachments } = await import("@/server/attachment-pipeline");
     const result = await processIncomingAttachments({
       agentId: "agent-1",
       contentParts: [
@@ -119,7 +119,7 @@ describe("processIncomingAttachments", () => {
   });
 
   it("treats whitespace-only claimed filename as 'upload'", async () => {
-    const { processIncomingAttachments } = await import("@/server/client-router");
+    const { processIncomingAttachments } = await import("@/server/attachment-pipeline");
     const result = await processIncomingAttachments({
       agentId: "agent-1",
       contentParts: [
@@ -133,7 +133,7 @@ describe("processIncomingAttachments", () => {
 
 describe("buildUploadHint", () => {
   it("renders a system-prompt block listing the uploads", async () => {
-    const { buildUploadHint } = await import("@/server/client-router");
+    const { buildUploadHint } = await import("@/server/attachment-pipeline");
     const block = buildUploadHint([
       {
         relativePath: "uploads/invoice.pdf",
@@ -150,7 +150,7 @@ describe("buildUploadHint", () => {
   });
 
   it("returns empty string when no uploads", async () => {
-    const { buildUploadHint } = await import("@/server/client-router");
+    const { buildUploadHint } = await import("@/server/attachment-pipeline");
     expect(buildUploadHint([])).toBe("");
   });
 
@@ -158,7 +158,7 @@ describe("buildUploadHint", () => {
   // span that wraps the path in the system prompt — and could let a crafted
   // filename leak structure into the prompt sent to the LLM.
   it("escapes backticks in workspace paths so they cannot break the markdown code span", async () => {
-    const { buildUploadHint } = await import("@/server/client-router");
+    const { buildUploadHint } = await import("@/server/attachment-pipeline");
     const block = buildUploadHint([
       {
         relativePath: "uploads/foo`bar`.pdf",
@@ -182,7 +182,7 @@ describe("buildUploadHint", () => {
   });
 
   it("tells the agent which built-in tool to call and uses the absolute workspace path", async () => {
-    const { buildUploadHint } = await import("@/server/client-router");
+    const { buildUploadHint } = await import("@/server/attachment-pipeline");
     const block = buildUploadHint([
       {
         relativePath: "uploads/invoice.pdf",
@@ -210,7 +210,7 @@ describe("buildUploadHint", () => {
   });
 
   it("reminds the agent to pass exact paths to sub-agents (not from memory)", async () => {
-    const { buildUploadHint } = await import("@/server/client-router");
+    const { buildUploadHint } = await import("@/server/attachment-pipeline");
     const block = buildUploadHint([
       {
         relativePath: "uploads/invoice.pdf",
@@ -224,5 +224,60 @@ describe("buildUploadHint", () => {
     // Must remind agent to pass exact paths to sub-agents
     expect(block.toLowerCase()).toMatch(/sub.?agent|subagent|delegate/);
     expect(block.toLowerCase()).toMatch(/exact path|exact paths/);
+  });
+
+  // The previous implementation silently fell back to a vague "the
+  // appropriate built-in tool" string for any MIME outside PDF/image. That
+  // would leave the agent guessing on a future MIME we forgot to wire.
+  it("throws when given a MIME type with no registered built-in tool", async () => {
+    const { buildUploadHint } = await import("@/server/attachment-pipeline");
+    expect(() =>
+      buildUploadHint([
+        {
+          relativePath: "uploads/song.flac",
+          absolutePath: "/root/.openclaw/workspaces/agent-1/uploads/song.flac",
+          mimeType: "audio/flac",
+          sizeBytes: 1_000_000,
+          contentHash: "c".repeat(64),
+          reused: false,
+        },
+      ])
+    ).toThrow(/no built-in tool/i);
+  });
+});
+
+describe("UploadValidationError", () => {
+  it("is thrown for a MIME mismatch (client-input error, safe to surface)", async () => {
+    const { processIncomingAttachments, UploadValidationError } =
+      await import("@/server/attachment-pipeline");
+    await expect(
+      processIncomingAttachments({
+        agentId: "agent-1",
+        contentParts: [
+          {
+            type: "image_url",
+            image_url: { url: `data:application/pdf;base64,${PNG_BASE64}` },
+          },
+        ],
+        claimedFilenames: ["wrong.pdf"],
+      })
+    ).rejects.toBeInstanceOf(UploadValidationError);
+  });
+
+  it("is thrown for an invalid filename (client-input error)", async () => {
+    const { processIncomingAttachments, UploadValidationError } =
+      await import("@/server/attachment-pipeline");
+    await expect(
+      processIncomingAttachments({
+        agentId: "agent-1",
+        contentParts: [
+          {
+            type: "image_url",
+            image_url: { url: `data:application/pdf;base64,${PDF_BASE64}` },
+          },
+        ],
+        claimedFilenames: ["foo\0.pdf"],
+      })
+    ).rejects.toBeInstanceOf(UploadValidationError);
   });
 });

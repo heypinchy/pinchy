@@ -13,7 +13,7 @@ export const SERVER_WS_MAX_PAYLOAD_BYTES = 25 * 1024 * 1024;
 
 /**
  * Maximum raw attachment size accepted by the chat composer client-side.
- * Applies to all attachment types: images, PDFs, audio, and any future types.
+ * Applies to all attachment types: images, PDFs, and any future types.
  * Raised from the original 5 MB limit (set when only API providers were used)
  * to cover modern smartphone photos.
  */

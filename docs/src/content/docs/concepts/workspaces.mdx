@@ -54,6 +54,10 @@ Workspaces are stored in the `pinchy-workspaces` Docker volume. They survive con
 
 If a workspace is ever lost, the agent starts with a fresh one rebuilt from your database (identity, personality, and context files). Files that were only attached to past conversations would not return.
 
+### Uploads accumulate
+
+Files uploaded into a chat stay in `uploads/<filename>` indefinitely — Pinchy does not currently age them out. For an active shared agent, this volume can grow over time. Plan for it: include `pinchy-workspaces` in your backup rotation, monitor its size as part of your normal disk-usage checks, and prune obsolete files manually if the agent no longer needs them. A future release will add an admin-visible size view and retention controls.
+
 ## See also
 
 - [Context Management](/concepts/context/) — how user and organization context end up in workspaces.

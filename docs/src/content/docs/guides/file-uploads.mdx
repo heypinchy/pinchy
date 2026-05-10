@@ -15,12 +15,8 @@ Drop a file into a Pinchy chat and the agent receives its content directly — n
 
 - JPEG, PNG, WebP, GIF, HEIC/HEIF
 
-**Audio**
-
-- MP3, M4A, WAV, WebM, OGG, FLAC
-
 :::note
-Audio transcription requires a configured LLM provider that supports transcription (e.g. OpenAI, Groq). See [Audio prerequisites](#audio-prerequisites) below.
+Audio attachments are not yet supported. Transcription wiring is tracked in [issue #321](https://github.com/heypinchy/pinchy/issues/321).
 :::
 
 ## Size limit
@@ -37,12 +33,6 @@ Two things happen when you attach a file:
 For PDFs, Pinchy automatically picks the best vision-capable model available in your provider configuration. Anthropic Claude and Google Gemini handle PDFs natively; other vision-capable models fall back to a text-and-image extraction step.
 
 Workspaces are isolated per agent: file-reading tools only see files in that agent's own workspace, never another agent's files or the host system. See [Agent Workspaces](/concepts/workspaces/) for the full picture.
-
-## Audio prerequisites
-
-To use audio uploads, at least one LLM provider with transcription support must be configured in **Settings → Providers**. Pinchy uses the transcription capability of that provider to convert audio to text before sending it to the agent.
-
-Providers with transcription support include OpenAI (`whisper-1`) and Groq (`whisper-large-v3`). Check your provider's documentation for the full list of supported models.
 
 ## Shared agents
 
