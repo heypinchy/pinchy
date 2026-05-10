@@ -31,12 +31,12 @@ Audio transcription requires a configured LLM provider that supports transcripti
 
 Two things happen when you attach a file:
 
-1. **The file is saved to the agent workspace** at `uploads/<filename>`. PDFs and images reach the agent through OpenClaw's built-in `pdf` and `image` tools — the agent reads them on demand using the workspace path.
+1. **The file is saved to the agent's [workspace](/concepts/workspaces/)** at `uploads/<filename>`. The agent reads it on demand from there.
 2. **Images are also sent inline** to the LLM when the model supports vision, so the agent can "see" an image without a separate read step.
 
-Pinchy automatically selects the best vision-capable model available in your provider configuration for PDF analysis (Anthropic Claude and Google Gemini support native PDF mode; other vision-capable models use a text-and-image extraction fallback). The agent can also override the model per-call if needed.
+For PDFs, Pinchy automatically picks the best vision-capable model available in your provider configuration. Anthropic Claude and Google Gemini handle PDFs natively; other vision-capable models fall back to a text-and-image extraction step.
 
-Workspaces are isolated per agent — the `pdf` and `image` tools can only read files inside that agent's own workspace, not from other agents or the host system.
+Workspaces are isolated per agent: file-reading tools only see files in that agent's own workspace, never another agent's files or the host system. See [Agent Workspaces](/concepts/workspaces/) for the full picture.
 
 ## Audio prerequisites
 
@@ -46,7 +46,7 @@ Providers with transcription support include OpenAI (`whisper-1`) and Groq (`whi
 
 ## Shared agents
 
-Files uploaded to a shared agent are visible to all users with access to that agent. Pinchy shows a reminder of this in the upload UI. If you're uploading sensitive content, use a personal agent instead.
+Files uploaded to a shared agent are visible to all users with access to that agent — they live in a workspace that everyone with access to the agent shares. Pinchy shows a reminder of this in the upload UI. If you're uploading sensitive content, use a personal agent instead. See [Agent Workspaces](/concepts/workspaces/#personal-vs-shared-agent-workspaces) for the privacy implications.
 
 ## Security
 

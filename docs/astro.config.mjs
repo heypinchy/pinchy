@@ -152,6 +152,7 @@ export default defineConfig({
             { label: 'Chat Connection States', slug: 'explanation/chat-states' },
             { label: 'Agent Settings', slug: 'concepts/agent-settings' },
             { label: 'Agent Permissions', slug: 'concepts/agent-permissions' },
+            { label: 'Agent Workspaces', slug: 'concepts/workspaces' },
             { label: 'Context Management', slug: 'concepts/context' },
             { label: 'User Roles', slug: 'concepts/user-roles' },
             { label: 'Groups', slug: 'concepts/groups' },

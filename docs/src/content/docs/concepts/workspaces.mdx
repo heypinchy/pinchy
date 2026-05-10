@@ -1,0 +1,61 @@
+---
+title: Agent Workspaces
+description: Each Pinchy agent has its own private workspace — what it contains, who can access it, and what changes between personal and shared agents.
+---
+
+## What is an agent workspace?
+
+Every agent in Pinchy has its own **workspace** — a private folder on the Pinchy server where the agent keeps everything it needs to do its job: who it is, who it's working with, and any files attached to recent conversations.
+
+Think of a workspace like a desk. Each agent gets exactly one. The agent can read what's on its own desk, but it cannot reach over to another agent's desk.
+
+## What's in a workspace?
+
+A workspace typically contains:
+
+- **The agent's identity** — its name, role, and personality.
+- **Context files** — your personal context (for personal agents) or your organization's context (for shared agents). See [Context Management](/concepts/context/).
+- **Uploaded files** — files you drop into the chat. These land in an `uploads/` folder where the agent can read them on demand. See [Upload Files in Chat](/guides/file-uploads/).
+- **Working notes** — anything the agent or its plugins write down to remember between conversations.
+
+## Personal vs. shared agent workspaces
+
+Workspaces work the same way for both kinds of agents — but the access model is fundamentally different, and that affects what should go inside.
+
+### Personal agents
+
+A personal agent (like the Smithers each user gets automatically) belongs to exactly one user. Its workspace is effectively yours: your context, your uploaded files, your working notes. Other users cannot see this workspace because they cannot see the agent at all.
+
+### Shared agents
+
+A shared agent is accessible to multiple people, and **so is its workspace**. The same files, the same context, the same notes — every user with access to the shared agent works with the same workspace.
+
+This has practical consequences:
+
+- **Files are visible to everyone with access.** A document you upload to a shared agent can be read by anyone who chats with that agent. Pinchy reminds you of this in the upload UI.
+- **Context is organizational.** Shared agents receive the [organization context](/concepts/context/), not personal user context, in their workspace. Your name and personal context are still passed to the agent at chat time, so it knows who is speaking — they just aren't written into the shared workspace.
+- **No per-user partitioning.** If a shared agent has files left over from a teammate's earlier conversation, those files are still there when you start a new chat with it.
+
+When you need to upload sensitive content, prefer your personal agent.
+
+:::caution[Shared workspaces are shared]
+Anything inside a shared agent's workspace — uploaded files, working notes, derived data — is accessible to every user who can chat with that agent. Treat the workspace like a shared team folder, not a private inbox.
+:::
+
+## What agents can and cannot do
+
+Each agent's tools are **constrained to its own workspace**. File-reading tools (such as PDF or image analysis) only see files inside that agent's workspace. They cannot read files from another agent, from the host system, or from mounted [data directories](/guides/mount-data-directories/) — unless [Agent Permissions](/concepts/agent-permissions/) explicitly allow it.
+
+This applies regardless of how a file ended up in the workspace: chat upload, plugin write, or context sync. Once it's in the workspace, the agent's built-in file tools can use it.
+
+## Persistence
+
+Workspaces are stored in the `pinchy-workspaces` Docker volume. They survive container restarts and upgrades, so an agent doesn't lose its working state when you redeploy. Back up this volume the same way you back up your database — it contains the working memory of every agent.
+
+If a workspace is ever lost, the agent starts with a fresh one rebuilt from your database (identity, personality, and context files). Files that were only attached to past conversations would not return.
+
+## See also
+
+- [Context Management](/concepts/context/) — how user and organization context end up in workspaces.
+- [Agent Permissions](/concepts/agent-permissions/) — what tools an agent has, and what data they can reach beyond the workspace.
+- [Upload Files in Chat](/guides/file-uploads/) — how chat attachments enter the workspace.
