@@ -523,52 +523,45 @@ describe("ComposerAction Send/Stop mutual exclusion (#207)", () => {
   });
 });
 
-describe("FilePart component", () => {
-  it("renders the filename from a file content part", async () => {
+describe("FilePart component (re-exported AttachmentPreview)", () => {
+  it("renders a PDF preview with embed thumbnail when MIME is application/pdf", async () => {
     const { useMessagePartFile } = await import("@assistant-ui/react");
     vi.mocked(useMessagePartFile).mockReturnValue({
-      type: "file",
-      filename: "invoice.pdf",
       mimeType: "application/pdf",
-      status: { type: "complete" },
+      filename: "report.pdf",
+      data: "",
     } as never);
-
     const { FilePart } = await import("@/components/assistant-ui/thread");
-    render(<FilePart />);
-
-    expect(screen.getByText("invoice.pdf")).toBeInTheDocument();
+    const { AgentIdContext } = await import("@/components/chat");
+    const { container } = render(
+      <AgentIdContext.Provider value="agent-1">
+        <FilePart />
+      </AgentIdContext.Provider>
+    );
+    expect(container.querySelector("embed[type='application/pdf']")).toBeTruthy();
   });
 
-  it("shows 'PDF document' as fallback when filename is missing", async () => {
+  it("renders a plain chip for an unknown MIME (regression: never silently drop the file)", async () => {
     const { useMessagePartFile } = await import("@assistant-ui/react");
     vi.mocked(useMessagePartFile).mockReturnValue({
-      type: "file",
-      filename: undefined,
-      mimeType: "application/pdf",
-      status: { type: "complete" },
+      mimeType: "application/zip",
+      filename: "archive.zip",
+      data: "",
     } as never);
-
     const { FilePart } = await import("@/components/assistant-ui/thread");
     render(<FilePart />);
-
-    expect(screen.getByText("PDF document")).toBeInTheDocument();
+    expect(screen.getByText("archive.zip")).toBeInTheDocument();
   });
 
-  it("shows 'File' as fallback for non-PDF files without filename", async () => {
-    // Defensive: keeps the fallback path covered even though only PDFs are
-    // accepted today. History messages from older deployments could carry
-    // unfamiliar mime types.
+  it("falls back to 'PDF document' label when filename is missing", async () => {
     const { useMessagePartFile } = await import("@assistant-ui/react");
     vi.mocked(useMessagePartFile).mockReturnValue({
-      type: "file",
+      mimeType: "application/pdf",
       filename: undefined,
-      mimeType: "application/octet-stream",
-      status: { type: "complete" },
+      data: "",
     } as never);
-
     const { FilePart } = await import("@/components/assistant-ui/thread");
     render(<FilePart />);
-
-    expect(screen.getByText("File")).toBeInTheDocument();
+    expect(screen.getByText(/PDF document/i)).toBeInTheDocument();
   });
 });

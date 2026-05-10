@@ -4,6 +4,7 @@ import {
   UserMessageAttachments,
 } from "@/components/assistant-ui/attachment";
 import { ChatErrorMessage, type ChatError } from "@/components/assistant-ui/chat-error-message";
+import { AttachmentPreview } from "@/components/assistant-ui/attachment-preview";
 import { ChatImage } from "@/components/assistant-ui/chat-image";
 import { MarkdownText } from "@/components/assistant-ui/markdown-text";
 import { ToolFallback } from "@/components/assistant-ui/tool-fallback";
@@ -19,7 +20,6 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
   useMessage,
-  useMessagePartFile,
 } from "@assistant-ui/react";
 import {
   ArrowDownIcon,
@@ -27,7 +27,6 @@ import {
   CheckIcon,
   CopyIcon,
   DownloadIcon,
-  FileText,
   MoreHorizontalIcon,
   SquareIcon,
 } from "lucide-react";
@@ -429,16 +428,7 @@ export function sendingOpacityClass(status: string | undefined): string {
   return status === "sending" ? "opacity-60" : "";
 }
 
-export const FilePart: FC = () => {
-  const { mimeType, filename } = useMessagePartFile();
-  const isPdf = mimeType === "application/pdf";
-  return (
-    <div className="flex items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 my-1">
-      <FileText className="size-5 shrink-0 text-muted-foreground" />
-      <span className="text-sm truncate">{filename ?? (isPdf ? "PDF document" : "File")}</span>
-    </div>
-  );
-};
+export { AttachmentPreview as FilePart };
 
 export const UserMessage: FC = () => {
   const status = useMessage((s) => s.metadata?.custom?.status as string | undefined);
@@ -465,7 +455,7 @@ export const UserMessage: FC = () => {
           <MessagePrimitive.Parts
             components={{
               Image: ChatImage,
-              File: FilePart,
+              File: AttachmentPreview,
             }}
           />
         </div>
