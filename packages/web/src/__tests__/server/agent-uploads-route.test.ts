@@ -130,6 +130,18 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
     expect(res.status).toBe(415);
   });
 
+  it("sets X-Frame-Options: SAMEORIGIN so the browser can <embed> the file inline (PDF viewer)", async () => {
+    // Pinchy's global Next.js header rule emits X-Frame-Options: DENY for every
+    // path — which blocks AttachmentPreview's <embed> from loading the PDF.
+    // The uploads route MUST override this with SAMEORIGIN. Without this
+    // header the PDF preview silently fails: the user sees an empty modal
+    // and no console error.
+    writeUpload("agent-1", "invoice.pdf", PDF_BYTES);
+    const res = await callGET("agent-1", "invoice.pdf");
+    expect(res.status).toBe(200);
+    expect(res.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+  });
+
   it("URL-decodes the filename param so files with spaces/parentheses work (regression guard)", async () => {
     // "Profile (38).pdf" round-trips as "Profile%20(38).pdf" through encodeURIComponent.
     writeUpload("agent-1", "Profile (38).pdf", PDF_BYTES);

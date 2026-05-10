@@ -112,7 +112,7 @@ const AttachmentThumb: FC = () => {
   );
 };
 
-const AttachmentUI: FC = () => {
+export const AttachmentUI: FC = () => {
   const aui = useAui();
   const isComposer = aui.attachment.source === "composer";
 
