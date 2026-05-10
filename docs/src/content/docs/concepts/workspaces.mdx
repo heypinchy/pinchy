@@ -58,6 +58,12 @@ If a workspace is ever lost, the agent starts with a fresh one rebuilt from your
 
 Files uploaded into a chat stay in `uploads/<filename>` indefinitely — Pinchy does not currently age them out. For an active shared agent, this volume can grow over time. Plan for it: include `pinchy-workspaces` in your backup rotation, monitor its size as part of your normal disk-usage checks, and prune obsolete files manually if the agent no longer needs them. A future release will add an admin-visible size view and retention controls.
 
+Uploaded files are also reachable through an authenticated API
+(`GET /api/agents/<agent-id>/uploads/<filename>`) so the chat can render
+inline previews. Access is gated by the same agent-permission check as
+the chat itself — only members who can chat with the agent can fetch its
+uploaded files.
+
 ## See also
 
 - [Context Management](/concepts/context/) — how user and organization context end up in workspaces.

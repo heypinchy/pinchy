@@ -38,6 +38,15 @@ Workspaces are isolated per agent: file-reading tools only see files in that age
 
 Files uploaded to a shared agent are visible to all users with access to that agent — they live in a workspace that everyone with access to the agent shares. Pinchy shows a reminder of this in the upload UI. If you're uploading sensitive content, use a personal agent instead. See [Agent Workspaces](/concepts/workspaces/#personal-vs-shared-agent-workspaces) for the privacy implications.
 
+## Preview attachments in chat
+
+Pinchy renders an inline preview next to your chat message:
+
+- **PDFs** show a small first-page thumbnail. Click to open the browser's PDF viewer in a modal — zoom, page-nav and download all work as you'd expect.
+- **Images** render as a thumbnail. Click to enlarge.
+
+Both previews survive page reloads — the file lives in the agent workspace, not in browser memory, so it's still there hours or days later.
+
 ## Security
 
 Pinchy validates every uploaded file against its actual content, not just the browser-reported MIME type. A file renamed to `.pdf` that contains executable code will be rejected. Filenames are also sanitized before being written to disk.
