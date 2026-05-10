@@ -149,26 +149,43 @@ function deepMerge(
 
 /**
  * Resolve a vision-capable model to use for the built-in `pdf` tool.
- * Anthropic and Google are preferred (native PDF mode = raw bytes to model,
- * higher fidelity). Otherwise the first vision-capable model from any
- * configured provider is used. Returns null when no vision-capable model
- * is available (text-only stack).
+ *
+ * Preference is EXPLICIT (not derived from `Object.entries(PROVIDERS)` order)
+ * so adding a new provider can't silently shift PDF-model selection. Two
+ * tiers, ordered:
+ *   1. Native PDF providers — raw bytes to model, highest fidelity.
+ *   2. Vision fallback — image-extract pipeline; lower fidelity but works
+ *      when no native provider is configured.
+ *
+ * Within each tier, list order is the preference order. Returns null when
+ * none of the listed providers is configured (text-only stack).
+ *
+ * `ollama-local` is intentionally absent: vision capability depends on
+ * which model the user has pulled, and `getDefaultModel("ollama-local")`
+ * returns `ollama/llama3.2` which is text-only. A future change could
+ * inspect `ollamaLocalVisionCache` here.
  */
+const PDF_MODEL_PREFERENCE: readonly ProviderName[] = [
+  "anthropic", // native PDF
+  "google", // native PDF
+  "openai", // vision fallback
+  "ollama-cloud", // vision fallback
+];
+
 async function resolveDefaultPdfModel(): Promise<string | null> {
-  // 1. Prefer native PDF providers (Anthropic, Google)
-  for (const native of ["anthropic", "google"] as const) {
-    const key = await getSetting(PROVIDERS[native].settingsKey);
-    if (key) return await getDefaultModel(native);
-  }
-  // 2. Fall back to any configured provider whose default model is vision-capable
-  for (const [providerName, providerConfig] of Object.entries(PROVIDERS)) {
-    const provider = providerName as ProviderName;
-    if (provider === "anthropic" || provider === "google" || provider === "ollama-local") continue;
-    const key = await getSetting(providerConfig.settingsKey);
-    if (key) {
-      const model = await getDefaultModel(provider);
-      if (model && isModelVisionCapable(model)) return model;
-    }
+  for (const provider of PDF_MODEL_PREFERENCE) {
+    // `provider` is a typed ProviderName from the const tuple above, never
+    // user input — `PROVIDERS[provider]` is safe key access on a finite map.
+    // eslint-disable-next-line security/detect-object-injection
+    const key = await getSetting(PROVIDERS[provider].settingsKey);
+    if (!key) continue;
+    const model = await getDefaultModel(provider);
+    if (!model) continue;
+    // Native PDF providers (anthropic, google) are always vision-capable,
+    // so the check is a no-op there. For the fallback tier the check
+    // guards against a provider whose default model isn't actually
+    // vision-capable (e.g. a future text-only model winning the slot).
+    if (isModelVisionCapable(model)) return model;
   }
   return null;
 }

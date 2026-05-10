@@ -1,6 +1,6 @@
 import type { ChatAttachment } from "openclaw-node";
 import { sanitizeFilename, validateUploadBuffer } from "@/lib/upload-validation";
-import { persistAttachment } from "@/lib/uploads";
+import { persistAttachment, UploadSlotExhaustedError } from "@/lib/uploads";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 
 export interface ContentPart {
@@ -27,6 +27,12 @@ export interface ProcessAttachmentsParams {
   agentId: string;
   contentParts: ContentPart[];
   claimedFilenames?: string[];
+  /**
+   * Test-only override forwarded to `persistAttachment.maxCollisions`.
+   * Production callers MUST NOT set this — it exists so the slot-exhaustion
+   * branch can be exercised without writing the full 1000 collision files.
+   */
+  maxCollisionsForTesting?: number;
 }
 
 const DATA_URL_RE = /^data:([^;]+);base64,(.+)$/;
@@ -89,9 +95,29 @@ export async function processIncomingAttachments(
   const prepared: PreparedAttachment[] = [];
   let attachmentIdx = 0;
   for (const part of contentParts) {
-    if (part.type !== "image_url" || !part.image_url?.url) continue;
+    // Non-attachment parts (notably the leading `text` part — see
+    // `buildWsContent` in use-ws-runtime.ts) are ignored entirely; they
+    // have no slot in `claimedFilenames` so they don't advance the index.
+    if (part.type !== "image_url") continue;
+
+    // Every `image_url` part MUST carry a base64 `data:` URL. Anything
+    // else (missing url, https/file URL, plain text without `;base64,`)
+    // is a client-payload bug. Failing closed here keeps the
+    // `image_url[i]` ↔ `claimedFilenames[i]` alignment invariant intact —
+    // silently skipping a malformed slot would shift every subsequent
+    // filename onto the WRONG attachment.
+    if (!part.image_url?.url) {
+      throw new UploadValidationError(
+        `Invalid attachment payload at index ${attachmentIdx}: image_url part is missing url.`
+      );
+    }
     const match = part.image_url.url.match(DATA_URL_RE);
-    if (!match) continue;
+    if (!match) {
+      throw new UploadValidationError(
+        `Invalid attachment payload at index ${attachmentIdx}: ` +
+          `image_url must be a base64 data: URL.`
+      );
+    }
 
     const claimedMime = match[1];
     const base64 = match[2];
@@ -122,7 +148,28 @@ export async function processIncomingAttachments(
       } catch (err) {
         throw new UploadValidationError(err instanceof Error ? err.message : String(err));
       }
-      const ref = await persistAttachment({ agentId, filename: safeName, buffer });
+      let ref;
+      try {
+        ref = await persistAttachment({
+          agentId,
+          filename: safeName,
+          buffer,
+          // `maxCollisionsForTesting` is undefined in production → falls back
+          // to the persistAttachment default (1000). Tests pass a small value
+          // to exercise the slot-exhaustion branch without writing 1000 files.
+          ...(params.maxCollisionsForTesting !== undefined
+            ? { maxCollisions: params.maxCollisionsForTesting }
+            : {}),
+        });
+      } catch (err) {
+        // Slot exhaustion is caused by client input (uploading thousands of
+        // distinct files under one name) and is recoverable by renaming.
+        // Surface it verbatim — see UploadValidationError jsdoc above.
+        if (err instanceof UploadSlotExhaustedError) {
+          throw new UploadValidationError(err.message);
+        }
+        throw err;
+      }
       return { detectedMime, ref };
     })
   );

@@ -5026,4 +5026,52 @@ describe("regenerateOpenClawConfig size-drop guard (#311)", () => {
     const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
     expect(config.agents?.defaults?.pdfModel).toBeUndefined();
   });
+
+  // Originally `resolveDefaultPdfModel` iterated `Object.entries(PROVIDERS)`
+  // and returned the first vision-capable non-native model found, which means
+  // the preference was implicit (JS insertion order in PROVIDERS) and would
+  // silently shift if a new provider were inserted higher in the object.
+  // These tests pin the order EXPLICITLY: native PDF (anthropic > google)
+  // wins over vision fallback (openai > ollama-cloud > ollama-local). Any
+  // future provider must be wired into the explicit list in build.ts to
+  // appear at all.
+  it("prefers openai over ollama-cloud in the vision-capable fallback (explicit order)", async () => {
+    // Both non-native vision providers configured. Without explicit ordering
+    // this test passes only by coincidence of PROVIDERS insertion order.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "openai_api_key") return "sk-openai-test";
+      if (key === "ollama_cloud_api_key") return "ollama-test";
+      return null;
+    });
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents.defaults.pdfModel.primary).toBe("openai/gpt-5.4-mini");
+  });
+
+  it("prefers anthropic over google when both native PDF providers are configured", async () => {
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-test";
+      if (key === "google_api_key") return "AIza-test";
+      return null;
+    });
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents.defaults.pdfModel.primary).toBe("anthropic/claude-haiku-4-5-20251001");
+  });
+
+  it("native PDF providers (anthropic, google) win over vision fallback (openai, ollama-cloud)", async () => {
+    // Native PDF mode sends raw bytes — higher fidelity than the
+    // image-extract fallback. Order: anthropic/google > openai/ollama-cloud.
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "google_api_key") return "AIza-test";
+      if (key === "openai_api_key") return "sk-openai-test";
+      return null;
+    });
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    expect(config.agents.defaults.pdfModel.primary).toBe("google/gemini-2.5-flash");
+  });
 });

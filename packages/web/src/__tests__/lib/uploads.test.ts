@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, rmSync, readFileSync, existsSync } from "fs";
 import { join } from "path";
 import { tmpdir } from "os";
-import { persistAttachment } from "@/lib/uploads";
+import { persistAttachment, UploadSlotExhaustedError } from "@/lib/uploads";
 
 let tmpRoot: string;
 
@@ -136,5 +136,60 @@ describe("persistAttachment", () => {
     expect([...paths][0]).toBe("uploads/shared.pdf");
     // At least one was written; the rest reused.
     expect(results.filter((r) => r.reused).length).toBeGreaterThanOrEqual(3);
+  });
+
+  // Originally the slot-exhaustion path threw a plain Error("Too many collisions
+  // for foo.pdf"). The client-router then mapped it to the generic "internal
+  // failure" branch — the user got a useless "Could not process attachment.
+  // Please try again." back, with no hint that retrying with the SAME filename
+  // would never succeed. The fix is a typed `UploadSlotExhaustedError` so the
+  // attachment pipeline can surface a specific, actionable message.
+  it("throws UploadSlotExhaustedError when collision slots are exhausted", async () => {
+    // Fill 2 distinct-content slots manually, then ask persistAttachment to
+    // place a third distinct buffer with maxCollisions=2 — must fail typed.
+    await persistAttachment({
+      agentId: "agent-1",
+      filename: "invoice.pdf",
+      buffer: Buffer.from("%PDF-1"),
+    });
+    await persistAttachment({
+      agentId: "agent-1",
+      filename: "invoice.pdf",
+      buffer: Buffer.from("%PDF-2"),
+    });
+
+    let caught: unknown;
+    try {
+      await persistAttachment({
+        agentId: "agent-1",
+        filename: "invoice.pdf",
+        buffer: Buffer.from("%PDF-3"),
+        maxCollisions: 2,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(UploadSlotExhaustedError);
+    expect((caught as Error).message).toMatch(/invoice\.pdf/);
+  });
+
+  it("UploadSlotExhaustedError carries the filename so the caller can build a user-facing message", async () => {
+    await persistAttachment({
+      agentId: "agent-1",
+      filename: "report.pdf",
+      buffer: Buffer.from("%PDF-X"),
+    });
+    let caught: UploadSlotExhaustedError | undefined;
+    try {
+      await persistAttachment({
+        agentId: "agent-1",
+        filename: "report.pdf",
+        buffer: Buffer.from("%PDF-Y"),
+        maxCollisions: 1,
+      });
+    } catch (err) {
+      caught = err as UploadSlotExhaustedError;
+    }
+    expect(caught?.filename).toBe("report.pdf");
   });
 });

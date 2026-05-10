@@ -4,18 +4,48 @@ import { join, parse as parsePath } from "path";
 import { getWorkspacePath } from "@/lib/workspace";
 
 const UPLOADS_SUBDIR = "uploads";
-const MAX_COLLISION_SLOTS = 1000;
+const DEFAULT_MAX_COLLISION_SLOTS = 1000;
 
 export interface PersistAttachmentParams {
   agentId: string;
   filename: string;
   buffer: Buffer;
+  /**
+   * Maximum number of `<name> (N).<ext>` slots to try before giving up with
+   * `UploadSlotExhaustedError`. Defaults to 1000. Exposed mainly so tests can
+   * exercise the exhaustion path without writing thousands of files; in
+   * production this should always use the default.
+   */
+  maxCollisions?: number;
 }
 
 export interface PersistAttachmentResult {
   relativePath: string;
   reused: boolean;
   contentHash: string;
+}
+
+/**
+ * Thrown when `persistAttachment` cannot find a free slot for a filename
+ * with *different* content from every existing slot, within `maxCollisions`
+ * tries. This is a client-input problem (uploading thousands of distinct
+ * files under the same filename) — the caller maps it to a typed
+ * validation error so the user sees an actionable message instead of a
+ * generic "internal error". Carrying `filename` lets the caller include
+ * it in the user-facing string.
+ */
+export class UploadSlotExhaustedError extends Error {
+  constructor(
+    public readonly filename: string,
+    public readonly maxCollisions: number
+  ) {
+    super(
+      `Too many existing files share the name "${filename}". ` +
+        `Tried ${maxCollisions} alternative slots without finding a free one. ` +
+        `Rename the file or remove old uploads from the agent workspace.`
+    );
+    this.name = "UploadSlotExhaustedError";
+  }
 }
 
 /**
@@ -38,6 +68,7 @@ export async function persistAttachment(
   params: PersistAttachmentParams
 ): Promise<PersistAttachmentResult> {
   const { agentId, filename, buffer } = params;
+  const maxCollisions = params.maxCollisions ?? DEFAULT_MAX_COLLISION_SLOTS;
 
   const agentWorkspace = getWorkspacePath(agentId); // throws on bad agentId
   const uploadsDir = join(agentWorkspace, UPLOADS_SUBDIR);
@@ -46,7 +77,7 @@ export async function persistAttachment(
   const contentHash = createHash("sha256").update(buffer).digest("hex");
   const { name, ext } = parsePath(filename);
 
-  for (let i = 0; i < MAX_COLLISION_SLOTS; i++) {
+  for (let i = 0; i < maxCollisions; i++) {
     const candidate = i === 0 ? filename : `${name} (${i})${ext}`;
     const candidatePath = join(uploadsDir, candidate);
 
@@ -78,5 +109,5 @@ export async function persistAttachment(
     }
   }
 
-  throw new Error(`Too many collisions for ${filename}`);
+  throw new UploadSlotExhaustedError(filename, maxCollisions);
 }

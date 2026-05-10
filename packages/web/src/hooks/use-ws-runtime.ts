@@ -53,6 +53,32 @@ export interface WsMessage {
 const DELAY_HINT_MS = 15_000;
 const STUCK_TIMEOUT_MS = 60_000;
 
+/**
+ * Append the canonical "payload too large" error bubble to the message list.
+ *
+ * Three independent code paths can reject an oversize attachment:
+ *   1. `SimpleBinaryFileAttachmentAdapter.add()` — pre-encode, throws to the
+ *      composer (handled outside this hook).
+ *   2. `onNew` binary-file size check — after the adapter has produced
+ *      content but before the WS payload is built.
+ *   3. `onNew` image size check — after client-side compression couldn't get
+ *      the file under the limit.
+ *   4. WS close-code 1009 ("Message too big") — the server rejected the
+ *      frame at the transport layer.
+ *
+ * All UI-visible rejections share the same shape so the inline error
+ * renderer in `ChatErrorMessage` always picks up the correct icon, heading
+ * ("File too large"), and styling. The plain-content fallback that used to
+ * live on the image path was visually inconsistent and is gone.
+ */
+export function buildAttachmentTooLargeError(): ChatError {
+  const limitMb = Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024);
+  return {
+    payloadTooLarge: true,
+    message: `File exceeds the ${limitMb} MB size limit. Please use a smaller file.`,
+  };
+}
+
 function convertMessage(msg: WsMessage): ThreadMessageLike {
   const parts: Array<
     | { type: "text"; text: string }
@@ -163,10 +189,20 @@ export class SimpleBinaryFileAttachmentAdapter {
 
   async send(attachment: { id?: string; name?: string; file: File }) {
     const dataUrl = await fileToDataUrl(attachment.file);
-    // Parse "data:<mimeType>;base64,<data>" → extract base64 string and mimeType
-    const commaIdx = dataUrl.indexOf(",");
-    const data = dataUrl.slice(commaIdx + 1);
-    const mimeType = dataUrl.slice("data:".length, dataUrl.indexOf(";"));
+    // Validated parse — fail closed on anything that isn't a base64 data: URL.
+    // Earlier raw `indexOf(",")` / `indexOf(";")` parsing silently produced a
+    // garbage mimeType for malformed URLs (no `data:` prefix, `;` before `:`,
+    // empty mime, non-base64 encoding) which would then ship to the server.
+    // Mirrors the server-side DATA_URL_RE in attachment-pipeline.ts.
+    const match = /^data:([^;,]+);base64,(.+)$/.exec(dataUrl);
+    if (!match) {
+      throw new Error(
+        `SimpleBinaryFileAttachmentAdapter: invalid data URL from fileToDataUrl — ` +
+          `expected "data:<mime>;base64,<data>", got "${dataUrl.slice(0, 32)}…"`
+      );
+    }
+    const mimeType = match[1];
+    const data = match[2];
     const name = attachment.name ?? "";
     return {
       id: attachment.id ?? uuid(),
@@ -779,10 +815,7 @@ export function useWsRuntime(agentId: string): {
               id: uuid(),
               role: "assistant",
               content: "",
-              error: {
-                payloadTooLarge: true,
-                message: `File exceeds the ${Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024)} MB size limit. Please use a smaller file.`,
-              },
+              error: buildAttachmentTooLargeError(),
             },
           ]);
           return;
@@ -821,7 +854,8 @@ export function useWsRuntime(agentId: string): {
             {
               id: uuid(),
               role: "assistant",
-              content: `File exceeds the ${Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024)} MB size limit. Please use a smaller file.`,
+              content: "",
+              error: buildAttachmentTooLargeError(),
             },
           ]);
           return;

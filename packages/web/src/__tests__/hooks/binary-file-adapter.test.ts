@@ -74,6 +74,40 @@ describe("SimpleBinaryFileAttachmentAdapter.send", () => {
       },
     ]);
   });
+
+  // Originally `send()` parsed the data URL with raw `indexOf(",")` and
+  // `indexOf(";")` and silently produced garbage `mimeType` if the URL
+  // wasn't in the expected `data:<mime>;base64,<data>` shape. A future
+  // `fileToDataUrl` implementation that returned `;` before `:` (or the
+  // URL being mangled in transit) would have shipped a corrupt mime/base64
+  // pair to the server. Better to fail closed at the parse step so the
+  // composer surfaces the error instead of the server choking on it.
+  it("rejects when the data URL is not a well-formed base64 data: URL", async () => {
+    const dataUrlModule = await import("@/lib/data-url");
+    vi.mocked(dataUrlModule.fileToDataUrl).mockResolvedValueOnce("not-a-data-url");
+    const adapter = new SimpleBinaryFileAttachmentAdapter();
+    await expect(adapter.send({ name: "doc.pdf", file: fakeFile({ size: 1 }) })).rejects.toThrow(
+      /data url|invalid/i
+    );
+  });
+
+  it("rejects when the data URL is not base64-encoded (e.g. URL-encoded text)", async () => {
+    const dataUrlModule = await import("@/lib/data-url");
+    vi.mocked(dataUrlModule.fileToDataUrl).mockResolvedValueOnce("data:text/plain,hello");
+    const adapter = new SimpleBinaryFileAttachmentAdapter();
+    await expect(adapter.send({ name: "doc.pdf", file: fakeFile({ size: 1 }) })).rejects.toThrow(
+      /data url|invalid|base64/i
+    );
+  });
+
+  it("rejects when the mime type is empty", async () => {
+    const dataUrlModule = await import("@/lib/data-url");
+    vi.mocked(dataUrlModule.fileToDataUrl).mockResolvedValueOnce("data:;base64,YWJj");
+    const adapter = new SimpleBinaryFileAttachmentAdapter();
+    await expect(adapter.send({ name: "doc.pdf", file: fakeFile({ size: 1 }) })).rejects.toThrow(
+      /data url|invalid|mime/i
+    );
+  });
 });
 
 describe("SimpleBinaryFileAttachmentAdapter.remove", () => {

@@ -349,6 +349,123 @@ describe("parseAttachmentBlock", () => {
   });
 });
 
+describe("filename ↔ image_url alignment", () => {
+  // Edge case from the PR review: `processIncomingAttachments` counts
+  // `attachmentIdx` only for valid `image_url` parts. If a client sends a
+  // malformed `image_url` part in the middle of an array, the original
+  // implementation silently skipped it — and every subsequent filename
+  // shifted one slot earlier, attaching the wrong name to the wrong file.
+  //
+  // The defensive fix is to fail closed: any `image_url` part that doesn't
+  // yield a valid base64 data URL is a client-payload bug, so reject the
+  // whole upload with UploadValidationError rather than silently misalign.
+  //
+  // (Legitimate clients always send well-formed `data:<mime>;base64,...`
+  // URLs — see buildWsContent in use-ws-runtime.ts.)
+  it("throws UploadValidationError when an image_url part has a non-base64-data URL (preserves filename alignment)", async () => {
+    const { processIncomingAttachments, UploadValidationError } =
+      await import("@/server/attachment-pipeline");
+    let caught: unknown;
+    try {
+      await processIncomingAttachments({
+        agentId: "agent-1",
+        contentParts: [
+          // First part is malformed (https URL, not a data URL).
+          { type: "image_url", image_url: { url: "https://example.com/foo.pdf" } },
+          // Second part is valid. With the old code, this would consume
+          // `claimedFilenames[0]` ("A.pdf") and be misnamed.
+          { type: "image_url", image_url: { url: `data:application/pdf;base64,${PDF_BASE64}` } },
+        ],
+        claimedFilenames: ["A.pdf", "B.pdf"],
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(UploadValidationError);
+    // Message should mention the attachment/URL so a debugging admin can
+    // identify which slot was bad — but must not leak internal details.
+    expect((caught as Error).message).toMatch(/attachment|url/i);
+  });
+
+  it("throws UploadValidationError when an image_url part is missing its url", async () => {
+    const { processIncomingAttachments, UploadValidationError } =
+      await import("@/server/attachment-pipeline");
+    await expect(
+      processIncomingAttachments({
+        agentId: "agent-1",
+        contentParts: [
+          { type: "image_url" } as unknown as { type: string; image_url?: { url: string } },
+          { type: "image_url", image_url: { url: `data:application/pdf;base64,${PDF_BASE64}` } },
+        ],
+        claimedFilenames: ["A.pdf", "B.pdf"],
+      })
+    ).rejects.toBeInstanceOf(UploadValidationError);
+  });
+
+  // Sanity check: text parts interleaved with image_url parts must not
+  // disturb alignment. The first valid image_url consumes filenames[0].
+  it("ignores text parts when aligning filenames to image_url parts", async () => {
+    const { processIncomingAttachments } = await import("@/server/attachment-pipeline");
+    const result = await processIncomingAttachments({
+      agentId: "agent-1",
+      contentParts: [
+        { type: "text", text: "hello" },
+        { type: "image_url", image_url: { url: `data:application/pdf;base64,${PDF_BASE64}` } },
+      ],
+      claimedFilenames: ["only.pdf"],
+    });
+    expect(result.workspaceRefs).toHaveLength(1);
+    expect(result.workspaceRefs[0].relativePath).toBe("uploads/only.pdf");
+  });
+});
+
+describe("UploadValidationError — collision-slot exhaustion (DoS surface)", () => {
+  // A determined attacker (or buggy client) could fill 1000 unique-content
+  // slots under one filename. Before this fix the slot-exhaustion threw a
+  // plain `Error("Too many collisions ...")` which got mapped to the generic
+  // "internal failure" branch in client-router — the user saw "Could not
+  // process attachment. Please try again." with no clue that retrying the
+  // same filename would keep failing. The pipeline must surface this as a
+  // typed UploadValidationError whose message names the actual problem
+  // (filename clash) so the user can rename or clean up.
+  it("maps UploadSlotExhaustedError to UploadValidationError with an actionable message", async () => {
+    const { processIncomingAttachments, UploadValidationError } =
+      await import("@/server/attachment-pipeline");
+    const { persistAttachment } = await import("@/lib/uploads");
+
+    // Fill one distinct-content slot so the pipeline's persistAttachment
+    // call collides on attempt #1 and runs out of tries with maxCollisions=1.
+    await persistAttachment({
+      agentId: "agent-1",
+      filename: "invoice.pdf",
+      buffer: Buffer.from("%PDF-existing-distinct-content"),
+    });
+
+    let caught: unknown;
+    try {
+      await processIncomingAttachments({
+        agentId: "agent-1",
+        contentParts: [
+          {
+            type: "image_url",
+            image_url: { url: `data:application/pdf;base64,${PDF_BASE64}` },
+          },
+        ],
+        claimedFilenames: ["invoice.pdf"],
+        // Internal knob — exercises the slot-exhaustion path without
+        // writing 1000 files. Default in production is 1000.
+        maxCollisionsForTesting: 1,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(UploadValidationError);
+    // Message must name the file AND give the user the recovery action.
+    expect((caught as Error).message).toMatch(/invoice\.pdf/);
+    expect((caught as Error).message).toMatch(/rename|remove/i);
+  });
+});
+
 describe("UploadValidationError", () => {
   it("is thrown for a MIME mismatch (client-input error, safe to surface)", async () => {
     const { processIncomingAttachments, UploadValidationError } =

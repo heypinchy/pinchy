@@ -566,14 +566,25 @@ describe("useWsRuntime", () => {
     const sentMessage = JSON.parse(ws.send.mock.calls[0][0]);
     expect(sentMessage.type).toBe("history");
 
-    // Should show an error message containing the MB limit
+    // Should surface the size error as a structured `payloadTooLarge` error
+    // (NOT as a plain assistant content message). Both image and binary paths
+    // now share `emitAttachmentTooLargeError` so the error UI renders
+    // consistently — the icon, heading ("File too large"), and inline error
+    // styling all rely on this error variant being set.
     const expectedMb = Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024);
     const messages = result.current.runtime.messages;
     const errorMessage = messages.find(
-      (m: any) =>
-        m.role === "assistant" && m.content[0]?.text?.includes(`${expectedMb} MB size limit`)
-    );
+      (m: {
+        role: string;
+        metadata?: { custom?: { error?: { payloadTooLarge?: boolean; message?: string } } };
+      }) => m.role === "assistant" && m.metadata?.custom?.error?.payloadTooLarge === true
+    ) as
+      | {
+          metadata?: { custom?: { error?: { payloadTooLarge?: boolean; message?: string } } };
+        }
+      | undefined;
     expect(errorMessage).toBeDefined();
+    expect(errorMessage?.metadata?.custom?.error?.message).toMatch(new RegExp(`${expectedMb} MB`));
   });
 
   it("compresses images to WebP before sending over the WebSocket", async () => {
