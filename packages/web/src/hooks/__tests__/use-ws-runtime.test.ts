@@ -1663,6 +1663,40 @@ describe("history reconcile on reconnect", () => {
       expect(frame.filenames).toEqual(["document.pdf"]);
     });
 
+    it("renders the user message with a file content part so the chat shows an attachment chip", async () => {
+      // Bug from PR #316 review: the PDF was sent in the WS payload and persisted
+      // server-side, but the local user-message state only carried `images`. The
+      // FilePart component was wired in UserMessage but never received a `file`
+      // content part, so the attachment chip was invisible next to the user
+      // bubble. Assert the chip data is present in the rendered user message.
+      const pdfBase64 = "YWJj";
+      await act(async () => {
+        await capturedOnNew!({
+          content: [{ type: "text", text: "see this PDF" }],
+          attachments: [
+            {
+              type: "file",
+              name: "report.pdf",
+              file: { size: 100 } as unknown as File,
+              content: [{ type: "file", data: pdfBase64, mimeType: "application/pdf" }],
+            },
+          ],
+        });
+      });
+
+      const userMsg = (
+        capturedMessages as Array<{
+          role: string;
+          content: Array<{ type: string; filename?: string; mimeType?: string }>;
+        }>
+      ).find((m) => m.role === "user");
+      expect(userMsg).toBeDefined();
+      const filePart = userMsg!.content.find((p) => p.type === "file");
+      expect(filePart).toBeDefined();
+      expect(filePart!.filename).toBe("report.pdf");
+      expect(filePart!.mimeType).toBe("application/pdf");
+    });
+
     it("shows payloadTooLarge error and does not send WS message when binary file exceeds size limit", async () => {
       await act(async () => {
         await capturedOnNew!({

@@ -23,11 +23,23 @@ import {
 import { compressImageForChat } from "@/lib/image-compression";
 import { dataUrlToFile, fileToDataUrl } from "@/lib/data-url";
 
+/** Lightweight metadata for binary file attachments shown next to user messages. */
+export interface WsFileMeta {
+  filename: string;
+  mimeType: string;
+}
+
 export interface WsMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
   images?: string[];
+  /**
+   * Non-image attachments shown as chips next to the user message. Only the
+   * filename + mimeType are kept here — the actual bytes already live in the
+   * agent's workspace and don't need to be replayed in client memory.
+   */
+  files?: WsFileMeta[];
   timestamp?: string;
   error?: ChatError;
   /** Delivery status — only set for user messages managed by the reducer */
@@ -42,13 +54,25 @@ const DELAY_HINT_MS = 15_000;
 const STUCK_TIMEOUT_MS = 60_000;
 
 function convertMessage(msg: WsMessage): ThreadMessageLike {
-  const parts: Array<{ type: "text"; text: string } | { type: "image"; image: string }> = [
-    { type: "text", text: msg.content },
-  ];
+  const parts: Array<
+    | { type: "text"; text: string }
+    | { type: "image"; image: string }
+    | { type: "file"; data: string; mimeType: string; filename: string }
+  > = [{ type: "text", text: msg.content }];
 
   if (msg.images) {
     for (const image of msg.images) {
       parts.push({ type: "image", image });
+    }
+  }
+
+  if (msg.files) {
+    for (const file of msg.files) {
+      // `data` is required by the assistant-ui FileMessagePart shape but the
+      // FilePart renderer only reads `mimeType` + `filename`. Pass an empty
+      // string — the actual bytes live in the agent's workspace, not in
+      // client memory.
+      parts.push({ type: "file", data: "", mimeType: file.mimeType, filename: file.filename });
     }
   }
 
@@ -828,6 +852,13 @@ export function useWsRuntime(agentId: string): {
           timestamp: new Date().toISOString(),
           status: "sending",
           ...(compressedImages.length > 0 && { images: compressedImages }),
+          ...(binaryFiles.length > 0 && {
+            files: binaryFiles.map((f) => ({
+              filename: f.name,
+              // f.url is `data:<mime>;base64,<data>` — extract mime up to the `;`
+              mimeType: f.url.slice("data:".length, f.url.indexOf(";")),
+            })),
+          }),
         },
       ]);
 
