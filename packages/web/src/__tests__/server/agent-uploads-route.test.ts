@@ -29,6 +29,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.resetModules();
   vi.unstubAllEnvs();
   rmSync(tmpRoot, { recursive: true, force: true });
 });
@@ -84,7 +85,7 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
     expect(res.status).toBe(401);
   });
 
-  it("returns 404 (NOT 403) when the user lacks access to the agent so we don't leak existence", async () => {
+  it("forwards the getAgentWithAccess denial response verbatim (403 from helper → 403 to caller)", async () => {
     // getAgentWithAccess returns a NextResponse on denial.
     const { NextResponse } = await import("next/server");
     mockGetAgentWithAccess.mockResolvedValue(
@@ -92,8 +93,7 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
     );
     writeUpload("agent-1", "invoice.pdf", PDF_BYTES);
     const res = await callGET("agent-1", "invoice.pdf");
-    // We forward the helper's response verbatim — same shape as other routes.
-    // Spec: whatever getAgentWithAccess returns is returned to the caller.
+    // The route forwards the helper's response verbatim — same pattern as all other agent routes.
     expect(res.status).toBe(403);
   });
 
