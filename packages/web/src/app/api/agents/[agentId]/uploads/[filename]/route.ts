@@ -3,7 +3,7 @@
 import { NextResponse } from "next/server";
 import { open, stat } from "fs/promises";
 import { join, resolve, sep } from "path";
-import { fileTypeFromFile } from "file-type";
+import { fileTypeFromBuffer } from "file-type";
 import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { getWorkspacePath } from "@/lib/workspace";
@@ -50,31 +50,40 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
     return new NextResponse("Not found", { status: 404 });
   }
 
-  // Detect MIME from magic bytes (file-type only reads what it needs).
+  // Read the buffer first — uploads are capped at 15 MB at upload time so an
+  // in-memory read is fine. We detect MIME from the buffer's magic bytes using
+  // fileTypeFromBuffer (same as upload-validation.ts) rather than
+  // fileTypeFromFile, which uses dynamic imports that Next.js/Webpack cannot
+  // statically analyse ("Cannot find module as expression is too dynamic").
+  const fh = await open(fullPath, "r");
+  let buffer: Buffer;
+  try {
+    buffer = await fh.readFile();
+  } finally {
+    await fh.close();
+  }
+
   // Refuse anything outside the upload allowlist — a sneaked-in .exe must
   // never reach the browser as application/octet-stream either.
-  const detected = await fileTypeFromFile(fullPath);
+  const detected = await fileTypeFromBuffer(
+    new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
+  );
   if (!detected || !ALLOWED_ATTACHMENT_MIMES.has(detected.mime)) {
     return new NextResponse("Unsupported media type", { status: 415 });
   }
 
-  // Read the buffer — uploads are capped at 15 MB at upload time, so an
-  // in-memory read is fine. (Streaming via ReadableStream would force us
-  // into Node's stream→Web stream adapter for marginal benefit.)
-  const fh = await open(fullPath, "r");
-  try {
-    const buffer = await fh.readFile();
-    return new NextResponse(buffer, {
-      headers: {
-        "content-type": detected.mime,
-        "content-length": String(buffer.byteLength),
-        "cache-control": "private, max-age=3600",
-        // Inline so the browser renders PDFs/images directly instead of
-        // forcing a download. The filename is advisory.
-        "content-disposition": `inline; filename="${safeName.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
-      },
-    });
-  } finally {
-    await fh.close();
-  }
+  return new NextResponse(buffer, {
+    headers: {
+      "content-type": detected.mime,
+      "content-length": String(buffer.byteLength),
+      "cache-control": "private, max-age=3600",
+      // Inline so the browser renders PDFs/images directly instead of
+      // forcing a download. The filename is advisory.
+      "content-disposition": `inline; filename="${safeName.replace(/[^\x20-\x7e]/g, "_")}"; filename*=UTF-8''${encodeURIComponent(safeName)}`,
+      // Allow same-origin embeds (<embed> thumbnail in AttachmentPreview).
+      // Without this override Next.js emits X-Frame-Options: DENY by default
+      // which blocks the <embed> from loading the file.
+      "x-frame-options": "SAMEORIGIN",
+    },
+  });
 });
