@@ -14,18 +14,25 @@ interface MockXHRInstance {
   // Writable event handlers assigned by the implementation
   onload: XHREventHandler;
   onerror: XHREventHandler;
+  ontimeout: (() => void) | null;
+  onabort: (() => void) | null;
   upload: {
     onprogress: ((this: XMLHttpRequestUpload, ev: ProgressEvent) => void) | null;
   };
   // Properties set by the test harness to simulate a response
   status: number;
   responseText: string;
+  timeout: number;
   // Helper: trigger upload progress
   simulateProgress: (loaded: number, total: number) => void;
   // Helper: complete the request successfully
   simulateLoad: () => void;
   // Helper: trigger a network error
   simulateError: () => void;
+  // Helper: trigger a timeout
+  simulateTimeout: () => void;
+  // Helper: trigger an abort
+  simulateAbort: () => void;
 }
 
 /**
@@ -41,6 +48,8 @@ function createMockXHRClass(overrides?: Partial<Pick<MockXHRInstance, "status" |
     send: vi.fn(),
     onload: null,
     onerror: null,
+    ontimeout: null,
+    onabort: null,
     upload: { onprogress: null },
     status: overrides?.status ?? 201,
     responseText:
@@ -51,6 +60,7 @@ function createMockXHRClass(overrides?: Partial<Pick<MockXHRInstance, "status" |
         mimeType: "application/pdf",
         sizeBytes: 1024,
       }),
+    timeout: 0,
     simulateProgress(loaded: number, total: number) {
       instance.upload.onprogress?.call(
         {} as XMLHttpRequestUpload,
@@ -62,6 +72,12 @@ function createMockXHRClass(overrides?: Partial<Pick<MockXHRInstance, "status" |
     },
     simulateError() {
       instance.onerror?.call({} as XMLHttpRequest, {} as ProgressEvent);
+    },
+    simulateTimeout() {
+      instance.ontimeout?.();
+    },
+    simulateAbort() {
+      instance.onabort?.();
     },
   };
 
@@ -82,6 +98,7 @@ function createMockXHRClass(overrides?: Partial<Pick<MockXHRInstance, "status" |
 
 describe("uploadAttachment", () => {
   beforeEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 
@@ -91,14 +108,15 @@ describe("uploadAttachment", () => {
 
     const { uploadAttachment } = await import("@/lib/upload-attachment");
 
+    const draftId = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
     const file = new File(["hello"], "hello.txt", { type: "text/plain" });
-    const promise = uploadAttachment("agent-abc", "draft-id-123", file);
+    const promise = uploadAttachment("agent-abc", draftId, file);
 
     // Verify open was called with POST and correct URL
     expect(xhr.open).toHaveBeenCalledWith("POST", "/api/agents/agent-abc/uploads");
 
     // Verify x-pinchy-draft-id header was set
-    expect(xhr.setRequestHeader).toHaveBeenCalledWith("x-pinchy-draft-id", "draft-id-123");
+    expect(xhr.setRequestHeader).toHaveBeenCalledWith("x-pinchy-draft-id", draftId);
 
     // Verify send was called with a FormData containing the file
     expect(xhr.send).toHaveBeenCalledOnce();
@@ -118,9 +136,14 @@ describe("uploadAttachment", () => {
 
     const file = new File(["data"], "data.bin", { type: "application/octet-stream" });
     const progressValues: number[] = [];
-    const promise = uploadAttachment("agent-1", "draft-1", file, (pct) => {
-      progressValues.push(pct);
-    });
+    const promise = uploadAttachment(
+      "agent-1",
+      "3fa85f64-5717-4562-b3fc-2c963f66afa6",
+      file,
+      (pct) => {
+        progressValues.push(pct);
+      }
+    );
 
     xhr.simulateProgress(25, 100);
     xhr.simulateProgress(50, 100);
@@ -147,7 +170,7 @@ describe("uploadAttachment", () => {
     const { uploadAttachment } = await import("@/lib/upload-attachment");
 
     const file = new File(["img"], "photo.jpg", { type: "image/jpeg" });
-    const promise = uploadAttachment("agent-2", "draft-2", file);
+    const promise = uploadAttachment("agent-2", "3fa85f64-5717-4562-b3fc-2c963f66afa6", file);
 
     xhr.simulateLoad();
     const result = await promise;
@@ -165,7 +188,7 @@ describe("uploadAttachment", () => {
     const { uploadAttachment } = await import("@/lib/upload-attachment");
 
     const file = new File(["x"], "x.txt", { type: "text/plain" });
-    const promise = uploadAttachment("agent-3", "draft-3", file);
+    const promise = uploadAttachment("agent-3", "3fa85f64-5717-4562-b3fc-2c963f66afa6", file);
 
     xhr.simulateLoad();
 
@@ -183,7 +206,7 @@ describe("uploadAttachment", () => {
     const { uploadAttachment } = await import("@/lib/upload-attachment");
 
     const file = new File(["x"], "x.txt", { type: "text/plain" });
-    const promise = uploadAttachment("agent-4", "draft-4", file);
+    const promise = uploadAttachment("agent-4", "3fa85f64-5717-4562-b3fc-2c963f66afa6", file);
 
     xhr.simulateLoad();
 
@@ -201,7 +224,7 @@ describe("uploadAttachment", () => {
     const { uploadAttachment } = await import("@/lib/upload-attachment");
 
     const file = new File(["x"], "x.txt", { type: "text/plain" });
-    const promise = uploadAttachment("agent-5", "draft-5", file);
+    const promise = uploadAttachment("agent-5", "3fa85f64-5717-4562-b3fc-2c963f66afa6", file);
 
     xhr.simulateLoad();
 
@@ -218,11 +241,56 @@ describe("uploadAttachment", () => {
     const { uploadAttachment } = await import("@/lib/upload-attachment");
 
     const file = new File(["x"], "x.txt", { type: "text/plain" });
-    const promise = uploadAttachment("agent-6", "draft-6", file);
+    const promise = uploadAttachment("agent-6", "3fa85f64-5717-4562-b3fc-2c963f66afa6", file);
 
     xhr.simulateError();
 
     await expect(promise).rejects.toBeInstanceOf(ApiError);
     await expect(promise).rejects.toMatchObject({ status: 0 });
+  });
+
+  it("throws ApiError(0, 'Invalid draft ID') when draftId is not a UUID", async () => {
+    const { uploadAttachment } = await import("@/lib/upload-attachment");
+
+    const file = new File(["x"], "x.txt", { type: "text/plain" });
+
+    await expect(uploadAttachment("agent-7", "not-a-uuid", file)).rejects.toMatchObject({
+      status: 0,
+      message: "Invalid draft ID",
+    });
+  });
+
+  it("rejects with ApiError(0, 'Upload timed out. Please try again.') when ontimeout fires", async () => {
+    const { MockXHRClass, instance: xhr } = createMockXHRClass();
+    vi.stubGlobal("XMLHttpRequest", MockXHRClass);
+
+    const { uploadAttachment } = await import("@/lib/upload-attachment");
+
+    const file = new File(["x"], "x.txt", { type: "text/plain" });
+    const promise = uploadAttachment("agent-8", "3fa85f64-5717-4562-b3fc-2c963f66afa6", file);
+
+    xhr.simulateTimeout();
+
+    await expect(promise).rejects.toMatchObject({
+      status: 0,
+      message: "Upload timed out. Please try again.",
+    });
+  });
+
+  it("rejects with ApiError(0, 'Upload cancelled.') when onabort fires", async () => {
+    const { MockXHRClass, instance: xhr } = createMockXHRClass();
+    vi.stubGlobal("XMLHttpRequest", MockXHRClass);
+
+    const { uploadAttachment } = await import("@/lib/upload-attachment");
+
+    const file = new File(["x"], "x.txt", { type: "text/plain" });
+    const promise = uploadAttachment("agent-9", "3fa85f64-5717-4562-b3fc-2c963f66afa6", file);
+
+    xhr.simulateAbort();
+
+    await expect(promise).rejects.toMatchObject({
+      status: 0,
+      message: "Upload cancelled.",
+    });
   });
 });

@@ -1,5 +1,5 @@
 import { ApiError } from "@/lib/api-client";
-import { uploadResponseSchema, type UploadResponse } from "@/lib/schemas/uploads";
+import { draftIdSchema, uploadResponseSchema, type UploadResponse } from "@/lib/schemas/uploads";
 
 /**
  * Upload a file attachment to the server using XMLHttpRequest so that upload
@@ -18,8 +18,21 @@ export async function uploadAttachment(
   file: File,
   onProgress?: (percent: number) => void
 ): Promise<UploadResponse> {
+  if (!draftIdSchema.safeParse(draftId).success) {
+    throw new ApiError(0, "Invalid draft ID");
+  }
+
   return new Promise<UploadResponse>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+
+    xhr.timeout = 120_000;
+    xhr.ontimeout = () => {
+      reject(new ApiError(0, "Upload timed out. Please try again."));
+    };
+
+    xhr.onabort = () => {
+      reject(new ApiError(0, "Upload cancelled."));
+    };
 
     xhr.open("POST", `/api/agents/${agentId}/uploads`);
     xhr.setRequestHeader("x-pinchy-draft-id", draftId);
@@ -27,7 +40,7 @@ export async function uploadAttachment(
     if (onProgress) {
       xhr.upload.onprogress = (event: ProgressEvent) => {
         if (event.lengthComputable) {
-          onProgress(Math.round((event.loaded / event.total) * 100));
+          onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
         }
       };
     }
