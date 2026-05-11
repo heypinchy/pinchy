@@ -79,6 +79,7 @@ export async function POST(request: NextRequest) {
       appendAuditLog({
         actorType: "user",
         actorId: sessionOrError.user.id!,
+        resource: "integration:microsoft-oauth",
         eventType: "config.changed",
         detail: { key: SETTINGS_KEY_MAP["microsoft"], provider: "microsoft" },
         outcome: "success",
@@ -92,6 +93,7 @@ export async function POST(request: NextRequest) {
       appendAuditLog({
         actorType: "user",
         actorId: sessionOrError.user.id!,
+        resource: "integration:google-oauth",
         eventType: "config.changed",
         detail: { key: SETTINGS_KEY_MAP["google"], provider: "google" },
         outcome: "success",

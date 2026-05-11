@@ -266,6 +266,7 @@ describe("POST /api/settings/oauth", () => {
     expect(appendAuditLog).toHaveBeenCalledWith({
       actorType: "user",
       actorId: "admin-1",
+      resource: "integration:google-oauth",
       eventType: "config.changed",
       detail: { key: "google_oauth_credentials", provider: "google" },
       outcome: "success",
@@ -341,6 +342,7 @@ describe("POST /api/settings/oauth", () => {
     expect(appendAuditLog).toHaveBeenCalledWith({
       actorType: "user",
       actorId: "admin-1",
+      resource: "integration:microsoft-oauth",
       eventType: "config.changed",
       detail: { key: "microsoft_oauth_credentials", provider: "microsoft" },
       outcome: "success",
