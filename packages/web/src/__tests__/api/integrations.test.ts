@@ -1376,6 +1376,97 @@ describe("POST /api/integrations (web-search)", () => {
   });
 });
 
+describe("GET /api/integrations (lastError/lastErrorAt)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+  });
+
+  it("returns lastError and lastErrorAt for auth_failed connections", async () => {
+    const lastErrorAt = new Date("2026-05-01T10:00:00Z");
+    const authFailedConnection = {
+      ...mockConnection,
+      id: "conn-failed",
+      status: "auth_failed",
+      lastError: "Access denied",
+      lastErrorAt,
+    };
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([authFailedConnection]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([authFailedConnection]);
+      return result;
+    });
+
+    const { GET } = await import("@/app/api/integrations/route");
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body[0].status).toBe("auth_failed");
+    expect(body[0].lastError).toBe("Access denied");
+    expect(body[0].lastErrorAt).toBeTruthy();
+  });
+
+  it("returns lastError: null and lastErrorAt: null for active connections", async () => {
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([
+        { ...mockConnection, lastError: null, lastErrorAt: null },
+      ]) as Promise<unknown[]> & { where: ReturnType<typeof vi.fn> };
+      result.where = vi
+        .fn()
+        .mockResolvedValue([{ ...mockConnection, lastError: null, lastErrorAt: null }]);
+      return result;
+    });
+
+    const { GET } = await import("@/app/api/integrations/route");
+    const response = await GET();
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body[0].status).toBe("active");
+    expect(body[0].lastError).toBeNull();
+    expect(body[0].lastErrorAt).toBeNull();
+  });
+});
+
+describe("GET /api/integrations/[connectionId] (lastError/lastErrorAt)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+  });
+
+  it("returns lastError and lastErrorAt for auth_failed connection", async () => {
+    const lastErrorAt = new Date("2026-05-01T10:00:00Z");
+    const authFailedConnection = {
+      ...mockConnection,
+      id: "conn-failed",
+      status: "auth_failed",
+      lastError: "Access denied",
+      lastErrorAt,
+    };
+    mockSelectFrom.mockImplementationOnce(() => {
+      const result = Promise.resolve([authFailedConnection]) as Promise<unknown[]> & {
+        where: ReturnType<typeof vi.fn>;
+      };
+      result.where = vi.fn().mockResolvedValue([authFailedConnection]);
+      return result;
+    });
+
+    const { GET } = await import("@/app/api/integrations/[connectionId]/route");
+    const response = await GET(makeRequest("/api/integrations/conn-failed"), {
+      params: Promise.resolve({ connectionId: "conn-failed" }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe("auth_failed");
+    expect(body.lastError).toBe("Access denied");
+    expect(body.lastErrorAt).toBeTruthy();
+  });
+});
+
 describe("GET /api/integrations (web-search masking)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
