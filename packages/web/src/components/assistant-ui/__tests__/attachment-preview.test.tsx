@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
@@ -16,9 +16,14 @@ vi.mock("@assistant-ui/react", () => ({
   useMessagePartFile: () => mockUseMessagePartFile(),
 }));
 
+const originalFetch = global.fetch;
+beforeEach(() => {
+  global.fetch = vi.fn();
+});
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  global.fetch = originalFetch;
 });
 
 async function renderWithAgent(agentId: string | null) {

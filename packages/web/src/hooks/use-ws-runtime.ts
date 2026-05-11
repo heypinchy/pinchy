@@ -1781,11 +1781,18 @@ export function useWsRuntime(agentId: string): {
       })
         .then((response) => {
           const previewUrl = `/api/agents/${encodeURIComponent(agentId)}/uploads/${encodeURIComponent(response.filename)}`;
-          URL.revokeObjectURL(objectUrl); // swap object URL for server URL
+          URL.revokeObjectURL(objectUrl);
           setPendingUploads((prev) =>
             prev.map((u) =>
               u.localId === localId
-                ? { ...u, state: "ready", uploadId: response.id, previewUrl, progress: 100 }
+                ? {
+                    ...u,
+                    state: "ready",
+                    uploadId: response.id,
+                    previewUrl,
+                    progress: 100,
+                    objectUrl: "", // revoked above — clear to prevent double-revoke in remove/cleanup
+                  }
                 : u
             )
           );
@@ -1810,6 +1817,7 @@ export function useWsRuntime(agentId: string): {
   const removePendingUpload = useCallback((localId: string) => {
     setPendingUploads((prev) => {
       const upload = prev.find((u) => u.localId === localId);
+      // objectUrl is cleared to "" when upload succeeds — skip revoke for those
       if (upload?.objectUrl) URL.revokeObjectURL(upload.objectUrl);
       return prev.filter((u) => u.localId !== localId);
     });
@@ -1834,10 +1842,18 @@ export function useWsRuntime(agentId: string): {
       })
         .then((response) => {
           const previewUrl = `/api/agents/${encodeURIComponent(agentId)}/uploads/${encodeURIComponent(response.filename)}`;
+          if (upload.objectUrl) URL.revokeObjectURL(upload.objectUrl);
           setPendingUploads((prev) =>
             prev.map((u) =>
               u.localId === localId
-                ? { ...u, state: "ready", uploadId: response.id, previewUrl, progress: 100 }
+                ? {
+                    ...u,
+                    state: "ready",
+                    uploadId: response.id,
+                    previewUrl,
+                    progress: 100,
+                    objectUrl: "", // revoked above — clear to prevent double-revoke
+                  }
                 : u
             )
           );
