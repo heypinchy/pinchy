@@ -1,4 +1,5 @@
 import { GmailAdapter } from "./gmail-adapter.js";
+import { GraphAdapter } from "./graph-adapter.js";
 import type { EmailAdapter } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
 
@@ -210,12 +211,14 @@ const plugin = {
         gatewayToken,
         config.connectionId,
       );
-      let adapter: EmailAdapter;
-      if (type === "google") {
-        adapter = new GmailAdapter({ accessToken: creds.accessToken });
-      } else {
-        throw new Error(`unsupported email provider: ${type}`);
-      }
+      const adapter: EmailAdapter =
+        type === "microsoft"
+          ? new GraphAdapter({ accessToken: creds.accessToken })
+          : type === "google"
+            ? new GmailAdapter({ accessToken: creds.accessToken })
+            : (() => {
+                throw new Error(`unsupported email provider: ${type}`);
+              })();
       cache.set(agentId, { adapter, expiresAt: Date.now() + CREDENTIALS_TTL_MS });
       return adapter;
     }
