@@ -406,6 +406,33 @@ describe("ClientRouter", () => {
     expect(textChunks).toHaveLength(0);
   });
 
+  it("should strip <final> envelope even when split across chunk boundaries", async () => {
+    // The original chunk-level strip leaked partial tags ("<fin", "</fi")
+    // into the UI when OpenClaw fragmented the envelope across chunks.
+    // Buffer-level holding of <final>-/</final>-prefix suffixes prevents
+    // that — the tail is retained until it either completes the tag (then
+    // stripped) or proves to be unrelated text (then emitted).
+    const clientWs = createMockClientWs();
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "<fin" };
+      yield { type: "text" as const, text: "al>Hello world</fi" };
+      yield { type: "text" as const, text: "nal>" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      agentId: "agent-1",
+      content: "hi",
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const textChunks = messages.filter((m: any) => m.type === "chunk");
+    const allText = textChunks.map((c: any) => c.content).join("");
+    expect(allText).toBe("Hello world");
+  });
+
   it("should still emit text that begins with letters from NO_REPLY", async () => {
     // Buffering must not swallow legitimate replies that happen to start with
     // characters that are also a prefix of the NO_REPLY sentinel (e.g. "Now").

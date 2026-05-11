@@ -67,11 +67,9 @@ function readConfigSafely(): string {
     } catch (err) {
       const code = (err as NodeJS.ErrnoException)?.code;
       if (code !== "EACCES" || attempt === 9) throw err;
-      // Synchronous busy-wait. Async would require touching every call site.
-      const start = Date.now();
-      while (Date.now() - start < 100) {
-        // spin
-      }
+      // Sync sleep — keeps callers synchronous (every call site uses the
+      // result inline) without burning a CPU core in a busy-wait.
+      execSync("sleep 0.1");
     }
   }
   // Unreachable — the loop either returns or throws.

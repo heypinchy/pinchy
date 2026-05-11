@@ -50,6 +50,27 @@ describe("safeEmitLength", () => {
     // prefix — the longest matching suffix is 'N' (1 char).
     expect(safeEmitLength("Hello NOON")).toBe(9);
   });
+
+  it("holds back any <final>-prefix suffix so split opening tags get stripped", () => {
+    expect(safeEmitLength("Hello <")).toBe(6);
+    expect(safeEmitLength("Hello <fin")).toBe(6);
+    expect(safeEmitLength("Hello <fina")).toBe(6);
+    expect(safeEmitLength("Hello <final")).toBe(6);
+  });
+
+  it("holds back any </final>-prefix suffix so split closing tags get stripped", () => {
+    expect(safeEmitLength("Hello </")).toBe(6);
+    expect(safeEmitLength("Hello </fin")).toBe(6);
+    expect(safeEmitLength("Hello </final")).toBe(6);
+  });
+
+  it("picks the longest hold across all patterns", () => {
+    // "Hello <fin" — `<fin` (4) is a <final>-prefix, longer than any
+    // NO_REPLY match (`n` is lowercase so the only candidate is empty).
+    expect(safeEmitLength("Hello <fin")).toBe(6);
+    // "Hello NO" — `NO` (2) is a NO_REPLY-prefix, no <final>-prefix.
+    expect(safeEmitLength("Hello NO")).toBe(6);
+  });
 });
 
 describe("stripFinalEnvelope", () => {
