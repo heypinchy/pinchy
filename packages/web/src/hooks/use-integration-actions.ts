@@ -36,10 +36,10 @@ export function useIntegrationActions(onChange: () => void) {
         const data = await res.json();
         if (data.success) {
           toast.success("Schema synced successfully");
-          onChange();
         } else {
           toast.error(data.error || "Schema sync failed");
         }
+        onChange();
       } catch {
         toast.error("Failed to sync schema");
       } finally {

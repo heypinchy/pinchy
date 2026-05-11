@@ -143,7 +143,7 @@ describe("useIntegrationActions", () => {
       });
 
       expect(mockToastError).toHaveBeenCalledWith("Permission denied");
-      expect(mockOnChange).not.toHaveBeenCalled();
+      expect(mockOnChange).toHaveBeenCalled();
     });
   });
 
