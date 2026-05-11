@@ -587,12 +587,12 @@ describe("AgentSettingsPermissions", () => {
     });
   });
 
-  // Regression for #XXX: After a successful save the parent updates the
-  // `agent` prop to reflect the persisted state, and refetched `connections`
-  // cause sibling sections (Odoo/Email) to re-emit a fresh onChange. If the
-  // child component's "initial values" snapshot is frozen at first mount,
-  // that downstream onChange triggers a dirty-recheck against stale refs
-  // and falsely marks the Permissions tab as dirty again.
+  // After a successful save the parent updates the `agent` prop to reflect
+  // the persisted state, and refetched `connections` cause sibling sections
+  // (Odoo/Email) to re-emit a fresh onChange. If the child component's
+  // "initial values" snapshot is frozen at first mount, that downstream
+  // onChange triggers a dirty-recheck against stale refs and falsely marks
+  // the Permissions tab as dirty again.
   describe("dirty re-evaluation after agent prop is updated (post-save cascade)", () => {
     const webSearchConnection = { id: "ws-1", name: "Brave Search", type: "web-search" };
 

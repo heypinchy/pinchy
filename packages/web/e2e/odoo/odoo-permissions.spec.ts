@@ -321,6 +321,13 @@ test.describe.serial("Odoo Permission Setup", () => {
       document.querySelector("[title='Disable enterprise']")?.closest(".fixed")?.remove();
     });
 
+    // The cascade is triggered by the post-save refetch of /api/integrations.
+    // Set up the wait BEFORE the click so we don't miss the response.
+    const integrationsRefetch = page.waitForResponse(
+      (resp) => resp.url().endsWith("/api/integrations") && resp.request().method() === "GET",
+      { timeout: 30000 }
+    );
+
     // Save & Restart.
     await page.getByRole("button", { name: /save/i }).last().click();
     const restartDialog = page.getByRole("alertdialog");
@@ -330,11 +337,10 @@ test.describe.serial("Odoo Permission Setup", () => {
     // Save completes — dirty bar reads "All changes saved".
     await expect(page.getByText("All changes saved")).toBeVisible({ timeout: 30000 });
 
-    // The cascade fires within ~100ms of the save returning: fetchData
-    // refetches connections, useOdooPermissions emits a fresh onChange, and
-    // the child component re-evaluates dirty state. Wait long enough for
-    // that to settle, then assert it stayed clean.
-    await page.waitForTimeout(3000);
+    // Wait for the cascade trigger (connections refetch) to complete; from
+    // there React only needs to flush a couple of renders.
+    await integrationsRefetch;
+
     await expect(page.getByText("All changes saved")).toBeVisible();
     await expect(page.getByText("Unsaved changes")).not.toBeVisible();
   });
