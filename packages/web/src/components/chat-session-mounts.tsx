@@ -78,6 +78,7 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
       isOpenClawConnected: bundle.isOpenClawConnected,
       isDelayed: bundle.isDelayed,
       reconnectExhausted: bundle.reconnectExhausted,
+      payloadRejected: bundle.payloadRejected,
       isOrphaned: bundle.isOrphaned,
       onRetryContinue,
       onRetryResend,
@@ -95,6 +96,7 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
     bundle.isOpenClawConnected,
     bundle.isDelayed,
     bundle.reconnectExhausted,
+    bundle.payloadRejected,
     bundle.isOrphaned,
   ]);
 

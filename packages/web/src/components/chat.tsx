@@ -22,6 +22,8 @@ function getStatusIndicator(status: ChatStatus): { colorClass: string; label: st
       return { colorClass: "bg-green-600", label: "Responding..." };
     case "starting":
       return { colorClass: "bg-yellow-500", label: "Starting..." };
+    case "payloadRejected":
+      return { colorClass: "bg-destructive", label: "Image too large" };
     case "unavailable":
       switch (status.reason) {
         case "configuring":
@@ -84,6 +86,13 @@ function ChatStatusBanner({ status, isDelayed }: ChatStatusBannerProps) {
       </div>
     );
   }
+  if (status.kind === "payloadRejected") {
+    return (
+      <div className="px-4 py-2 text-center text-xs text-destructive border-t bg-destructive/5">
+        Image too large. Send a smaller file to keep chatting.
+      </div>
+    );
+  }
   return null;
 }
 
@@ -130,6 +139,7 @@ export function Chat({
         isOpenClawConnected: false,
         isDelayed: false,
         reconnectExhausted: false,
+        payloadRejected: false,
         isOrphaned: false,
         onRetryContinue: () => {},
         onRetryResend: () => {},
@@ -152,6 +162,7 @@ export function Chat({
   const hasInitialContent = chatBundle?.hasInitialContent ?? false;
   const isOpenClawConnected = chatBundle?.isOpenClawConnected ?? false;
   const reconnectExhausted = chatBundle?.reconnectExhausted ?? false;
+  const payloadRejected = chatBundle?.payloadRejected ?? false;
   const onRetryContinue = chatBundle?.onRetryContinue ?? (() => {});
   const onRetryResend = chatBundle?.onRetryResend ?? (() => {});
 
@@ -162,6 +173,7 @@ export function Chat({
     hasInitialContent,
     isRunning,
     reconnectExhausted,
+    payloadRejected,
     configuring,
   });
 

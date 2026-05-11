@@ -158,6 +158,18 @@ export const ThreadWelcome: FC = () => {
     return null;
   }
 
+  if (chatStatus.kind === "payloadRejected") {
+    return (
+      <div className="aui-thread-welcome-root mx-auto my-auto flex w-full max-w-(--thread-max-width) grow flex-col">
+        <div className="aui-thread-welcome-center flex w-full grow flex-col items-center justify-center">
+          <p className="text-sm font-medium text-muted-foreground">
+            Image too large. Send a smaller file to keep chatting.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (chatStatus.kind === "unavailable") {
     const { reason } = chatStatus;
     const message =

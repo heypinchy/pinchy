@@ -8,6 +8,7 @@ import { ChatSessionMounts } from "@/components/chat-session-mounts";
 let mockIsRunning = false;
 let mockIsOrphaned = false;
 let mockReconnectExhausted = false;
+let mockPayloadRejected = false;
 let mockPathname = "/agents";
 
 vi.mock("next/navigation", () => ({
@@ -29,6 +30,7 @@ vi.mock("@/hooks/use-ws-runtime", () => ({
       isOpenClawConnected: true,
       isDelayed: false,
       reconnectExhausted: mockReconnectExhausted,
+      payloadRejected: mockPayloadRejected,
       isOrphaned: mockIsOrphaned,
       onRetryContinue: vi.fn(),
       onRetryResend: vi.fn(),
@@ -46,6 +48,7 @@ function seedBundle(agentId: string, publish: (b: any) => void) {
     isOpenClawConnected: false,
     isDelayed: false,
     reconnectExhausted: false,
+    payloadRejected: false,
     isOrphaned: false,
     onRetryContinue: vi.fn(),
     onRetryResend: vi.fn(),
@@ -58,6 +61,7 @@ describe("ChatSessionMounts", () => {
     mockIsRunning = false;
     mockIsOrphaned = false;
     mockReconnectExhausted = false;
+    mockPayloadRejected = false;
     mockPathname = "/agents";
   });
 

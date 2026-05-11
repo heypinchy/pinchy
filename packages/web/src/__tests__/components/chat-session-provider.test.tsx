@@ -22,6 +22,7 @@ function fakeBundle(overrides: Partial<RuntimeBundle> = {}): RuntimeBundle {
     isOpenClawConnected: true,
     isDelayed: false,
     reconnectExhausted: false,
+    payloadRejected: false,
     isOrphaned: false,
     onRetryContinue: vi.fn(),
     onRetryResend: vi.fn(),

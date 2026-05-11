@@ -311,6 +311,12 @@ describe("ThreadWelcome", () => {
     await renderWith({ kind: "unavailable", reason: "exhausted" });
     expect(screen.getByText(/please reload/i)).toBeInTheDocument();
   });
+
+  it("renders the image-too-large prompt when payloadRejected", async () => {
+    await renderWith({ kind: "payloadRejected" });
+    expect(screen.getByText(/image too large/i)).toBeInTheDocument();
+    expect(screen.queryByTestId("loading-spinner")).not.toBeInTheDocument();
+  });
 });
 
 describe("AssistantMessage retryable error bubble", () => {

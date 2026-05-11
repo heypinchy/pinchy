@@ -17,6 +17,7 @@ function makeBundle(overrides: Partial<RuntimeBundle> = {}): RuntimeBundle {
     isOpenClawConnected: true,
     isDelayed: false,
     reconnectExhausted: false,
+    payloadRejected: false,
     isOrphaned: false,
     onRetryContinue: vi.fn() as (
       reason: "orphan" | "partial_stream_failure" | "send_failure"

@@ -74,6 +74,7 @@ const DEFAULT_BUNDLE = {
   isOpenClawConnected: true,
   isRunning: false,
   reconnectExhausted: false,
+  payloadRejected: false,
   isOrphaned: false,
   onRetryContinue: vi.fn(),
   onRetryResend: vi.fn(),
@@ -147,6 +148,12 @@ describe("Chat", () => {
       mockUseChatStatus.mockReturnValue({ kind: "unavailable", reason: "exhausted" });
       render(<Chat agentId="agent-1" agentName="Smithers" />);
       expect(getDotColor(/reload/i)).toContain("bg-destructive");
+    });
+
+    it('shows red dot with label containing "Image too large" for payloadRejected status', () => {
+      mockUseChatStatus.mockReturnValue({ kind: "payloadRejected" });
+      render(<Chat agentId="agent-1" agentName="Smithers" />);
+      expect(getDotColor(/image too large/i)).toContain("bg-destructive");
     });
   });
 
@@ -288,6 +295,7 @@ describe("Chat", () => {
         hasInitialContent: true,
         isRunning: false,
         reconnectExhausted: false,
+        payloadRejected: false,
         configuring: false,
       })
     );

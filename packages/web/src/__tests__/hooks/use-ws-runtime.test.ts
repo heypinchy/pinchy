@@ -1386,6 +1386,7 @@ describe("useWsRuntime", () => {
           hasInitialContent: ws.hasInitialContent,
           isRunning: ws.isRunning,
           reconnectExhausted: ws.reconnectExhausted,
+          payloadRejected: ws.payloadRejected,
           configuring: false,
         });
         return { ws, status };
@@ -2086,6 +2087,95 @@ describe("useWsRuntime", () => {
       // Resending an oversized frame won't help — must NOT be retryable.
       // Convention: retryable is only written when true; absence means false.
       expect(lastMsg.metadata?.custom?.retryable).toBeUndefined();
+    });
+
+    it("close-code 1009 exposes payloadRejected status instead of reconnecting after hysteresis", () => {
+      const { result } = renderHook(() => {
+        const ws = useWsRuntime("agent-1");
+        const status = useChatStatus({
+          isConnected: ws.isConnected,
+          isOpenClawConnected: ws.isOpenClawConnected,
+          isHistoryLoaded: ws.isHistoryLoaded,
+          hasInitialContent: ws.hasInitialContent,
+          isRunning: ws.isRunning,
+          reconnectExhausted: ws.reconnectExhausted,
+          payloadRejected: Boolean((ws as { payloadRejected?: boolean }).payloadRejected),
+          configuring: false,
+        });
+        return { ws, status };
+      });
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+        ws.onmessage?.({ data: JSON.stringify({ type: "openclaw_status", connected: true }) });
+        ws.onmessage?.({ data: JSON.stringify({ type: "history", messages: [] }) });
+      });
+
+      act(() => {
+        result.current.ws.runtime.onNew({
+          content: [{ type: "text", text: "here's a huge image" }],
+          parentId: "root",
+        });
+      });
+
+      act(() => {
+        ws.simulateClose(1009);
+      });
+
+      expect(result.current.status).toEqual({ kind: "payloadRejected" });
+
+      act(() => {
+        vi.advanceTimersByTime(2100);
+      });
+
+      expect(result.current.status).toEqual({ kind: "payloadRejected" });
+    });
+
+    it("sends the next message over a fresh WebSocket after close-code 1009", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const firstWs = wsInstances[0];
+
+      act(() => {
+        firstWs.onopen?.();
+        firstWs.onmessage?.({ data: JSON.stringify({ type: "history", messages: [] }) });
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "oversized image" }],
+          parentId: "root",
+        });
+      });
+
+      act(() => {
+        firstWs.simulateClose(1009);
+      });
+
+      expect(result.current.payloadRejected).toBe(true);
+      expect(wsInstances).toHaveLength(1);
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "smaller image" }],
+          parentId: "root",
+        });
+      });
+
+      expect(result.current.payloadRejected).toBe(false);
+      expect(wsInstances).toHaveLength(2);
+
+      const nextWs = wsInstances[1];
+      act(() => {
+        nextWs.onopen?.();
+      });
+
+      expect(nextWs.send).toHaveBeenCalledWith(
+        JSON.stringify({ type: "history", agentId: "agent-1" })
+      );
+      expect(nextWs.send).toHaveBeenCalledWith(
+        expect.stringContaining('"content":"smaller image"')
+      );
     });
 
     it("should reset isDelayed to false when WebSocket disconnects", () => {

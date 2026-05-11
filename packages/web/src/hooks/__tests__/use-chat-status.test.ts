@@ -9,6 +9,7 @@ const base = {
   hasInitialContent: true,
   isRunning: false,
   reconnectExhausted: false,
+  payloadRejected: false,
   configuring: false,
 };
 
@@ -55,12 +56,25 @@ describe("useChatStatus", () => {
     expect(result.current).toEqual({ kind: "unavailable", reason: "exhausted" });
   });
 
-  it("priority: exhausted > configuring > disconnected > starting > responding > ready", () => {
+  it("returns 'payloadRejected' immediately when the last send was too large", () => {
+    const { result } = renderHook(() =>
+      useChatStatus({
+        ...base,
+        isConnected: false,
+        isHistoryLoaded: false,
+        payloadRejected: true,
+      })
+    );
+    expect(result.current).toEqual({ kind: "payloadRejected" });
+  });
+
+  it("priority: exhausted > configuring > payloadRejected > disconnected > starting > responding > ready", () => {
     const { result } = renderHook(() =>
       useChatStatus({
         ...base,
         reconnectExhausted: true,
         configuring: true,
+        payloadRejected: true,
         isConnected: false,
         isHistoryLoaded: false,
         isRunning: true,
@@ -149,6 +163,24 @@ describe("hysteresis", () => {
     rerender({ inputs: { ...base, reconnectExhausted: true } });
     expect(result.current).toEqual({ kind: "unavailable", reason: "exhausted" });
   });
+
+  it("keeps payload rejection from becoming disconnected after the hysteresis delay", () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(() =>
+      useChatStatus({
+        ...base,
+        isConnected: false,
+        isHistoryLoaded: false,
+        payloadRejected: true,
+      })
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(2100);
+    });
+
+    expect(result.current).toEqual({ kind: "payloadRejected" });
+  });
 });
 
 /**
@@ -178,13 +210,15 @@ describe("hysteresis", () => {
  *                              Shows "Applying changes…" during the ~10s restart window.
  *                              Triggered by user action post-boot, not by cold-start.
  *
+ *   payloadRejected           — Server rejected the last WebSocket frame as too large.
+ *
  *   unavailable/disconnected — WebSocket dropped unexpectedly. 2s hysteresis suppresses
  *                              the red dot during brief reconnects.
  *
  *   unavailable/exhausted    — Reconnect gave up after max attempts. User must reload.
  *
  * Priority (highest → lowest):
- *   exhausted > configuring > disconnected > starting > responding > ready
+ *   exhausted > configuring > payloadRejected > disconnected > starting > responding > ready
  */
 describe("state machine documentation — complete output mapping", () => {
   it("exhausted=true → unavailable/exhausted (highest priority, ignores all other flags)", () => {
@@ -204,6 +238,17 @@ describe("state machine documentation — complete output mapping", () => {
   it("configuring=true, not exhausted → unavailable/configuring", () => {
     const { result } = renderHook(() => useChatStatus({ ...base, configuring: true }));
     expect(result.current).toEqual({ kind: "unavailable", reason: "configuring" });
+  });
+
+  it("payloadRejected=true, not exhausted/configuring → payloadRejected", () => {
+    const { result } = renderHook(() =>
+      useChatStatus({
+        ...base,
+        isConnected: false,
+        payloadRejected: true,
+      })
+    );
+    expect(result.current).toEqual({ kind: "payloadRejected" });
   });
 
   it("history not loaded → starting", () => {

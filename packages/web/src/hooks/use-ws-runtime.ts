@@ -282,6 +282,7 @@ export function useWsRuntime(agentId: string): {
    */
   hasInitialContent: boolean;
   reconnectExhausted: boolean;
+  payloadRejected: boolean;
   isOrphaned: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
@@ -301,7 +302,9 @@ export function useWsRuntime(agentId: string): {
   const [knownEmptyHistory, setKnownEmptyHistory] = useState(false);
   const [isOpenClawConnected, setIsOpenClawConnected] = useState(false);
   const [reconnectExhausted, setReconnectExhausted] = useState(false);
+  const [payloadRejected, setPayloadRejected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
+  const connectRef = useRef<(() => void) | null>(null);
   const delayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const stuckTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const resetStuckTimerRef = useRef<(() => void) | null>(null);
@@ -359,6 +362,7 @@ export function useWsRuntime(agentId: string): {
     setIsDelayed(false);
     setIsHistoryLoaded(false);
     setKnownEmptyHistory(false);
+    setPayloadRejected(false);
     if (pendingDisconnectErrorRef.current) {
       clearTimeout(pendingDisconnectErrorRef.current.timer);
       pendingDisconnectErrorRef.current = null;
@@ -425,6 +429,7 @@ export function useWsRuntime(agentId: string): {
       ws.onopen = () => {
         setIsConnected(true);
         setReconnectExhausted(false);
+        setPayloadRejected(false);
         reconnectAttemptRef.current = 0;
         ws.send(JSON.stringify({ type: "history", agentId }));
 
@@ -437,6 +442,7 @@ export function useWsRuntime(agentId: string): {
 
       ws.onclose = (event?: CloseEvent) => {
         if (connectionAgentId !== agentIdRef.current) return;
+        if (wsRef.current === ws) wsRef.current = null;
         setIsConnected(false);
         setIsDelayed(false);
         clearStuckTimer();
@@ -461,6 +467,7 @@ export function useWsRuntime(agentId: string): {
           setIsRunning(false);
           setIsHistoryLoaded(false);
           setKnownEmptyHistory(false);
+          setPayloadRejected(true);
           setMessages((prev) =>
             capMessages([
               ...prev,
@@ -517,12 +524,16 @@ export function useWsRuntime(agentId: string): {
 
         setIsHistoryLoaded(false);
         setKnownEmptyHistory(false);
+        setPayloadRejected(false);
 
         if (mountedRef.current && reconnectAttemptRef.current < MAX_RECONNECT_ATTEMPTS) {
           shouldRecoverFromHistoryRef.current = true;
           const delay = Math.min(1000 * Math.pow(2, reconnectAttemptRef.current), 5000);
           reconnectAttemptRef.current++;
-          reconnectTimerRef.current = setTimeout(connect, delay);
+          reconnectTimerRef.current = setTimeout(() => {
+            reconnectTimerRef.current = null;
+            connect();
+          }, delay);
         } else if (mountedRef.current) {
           setReconnectExhausted(true);
         }
@@ -766,12 +777,17 @@ export function useWsRuntime(agentId: string): {
       wsRef.current = ws;
     }
 
+    connectRef.current = connect;
     connect();
 
     return () => {
       mountedRef.current = false;
+      if (connectRef.current === connect) {
+        connectRef.current = null;
+      }
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
       }
       if (delayTimerRef.current) {
         clearTimeout(delayTimerRef.current);
@@ -819,10 +835,13 @@ export function useWsRuntime(agentId: string): {
    * pendingMessageRef on open).
    */
   const sendOrQueue = useCallback((payload: string) => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(payload);
+    const ws = wsRef.current;
+    if (ws?.readyState === WebSocket.OPEN) {
+      ws.send(payload);
     } else {
       pendingMessageRef.current = payload;
+      if (ws?.readyState === WebSocket.CONNECTING || reconnectTimerRef.current) return;
+      connectRef.current?.();
     }
   }, []);
 
@@ -948,6 +967,7 @@ export function useWsRuntime(agentId: string): {
       }
 
       if (!text.trim() && compressedImages.length === 0 && binaryFiles.length === 0) return;
+      setPayloadRejected(false);
 
       // Combine images and binary files into a single content array for the WS payload.
       // Server-side processIncomingAttachments processes all image_url parts uniformly.
@@ -1152,6 +1172,7 @@ export function useWsRuntime(agentId: string): {
     hasInitialContent,
     isOpenClawConnected,
     reconnectExhausted,
+    payloadRejected,
     isOrphaned,
     onRetryContinue,
     onRetryResend,

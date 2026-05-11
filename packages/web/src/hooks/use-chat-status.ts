@@ -5,6 +5,7 @@ export type ChatStatus =
   | { kind: "starting" }
   | { kind: "ready" }
   | { kind: "responding" }
+  | { kind: "payloadRejected" }
   | { kind: "unavailable"; reason: UnavailableReason };
 
 export interface ChatStatusInputs {
@@ -20,6 +21,7 @@ export interface ChatStatusInputs {
   hasInitialContent: boolean;
   isRunning: boolean;
   reconnectExhausted: boolean;
+  payloadRejected: boolean;
   configuring: boolean;
 }
 
@@ -30,7 +32,7 @@ export function useChatStatus(inputs: ChatStatusInputs): ChatStatus {
   const [delayedDisconnect, setDelayedDisconnect] = useState(false);
 
   useEffect(() => {
-    if (fullyConnected) {
+    if (fullyConnected || inputs.payloadRejected) {
       // setTimeout(0) is required: calling setState synchronously inside an
       // effect body triggers the react-hooks/set-state-in-effect ESLint rule.
       // The negligible delay is imperceptible to users. The cleanup cancels
@@ -42,10 +44,11 @@ export function useChatStatus(inputs: ChatStatusInputs): ChatStatus {
     if (inputs.configuring || inputs.reconnectExhausted) return;
     const t = setTimeout(() => setDelayedDisconnect(true), DISCONNECT_HYSTERESIS_MS);
     return () => clearTimeout(t);
-  }, [fullyConnected, inputs.configuring, inputs.reconnectExhausted]);
+  }, [fullyConnected, inputs.configuring, inputs.reconnectExhausted, inputs.payloadRejected]);
 
   if (inputs.reconnectExhausted) return { kind: "unavailable", reason: "exhausted" };
   if (inputs.configuring) return { kind: "unavailable", reason: "configuring" };
+  if (inputs.payloadRejected) return { kind: "payloadRejected" };
   if (!fullyConnected && delayedDisconnect) return { kind: "unavailable", reason: "disconnected" };
   if (!inputs.isHistoryLoaded || !inputs.hasInitialContent) return { kind: "starting" };
   if (inputs.isRunning) return { kind: "responding" };
