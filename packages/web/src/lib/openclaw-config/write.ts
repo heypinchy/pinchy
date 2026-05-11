@@ -31,11 +31,20 @@ export function readExistingConfig(): Record<string, unknown> {
   // Retry briefly on EACCES. OpenClaw rewrites openclaw.json as root:0600 on
   // every internal SIGUSR1 restart; start-openclaw.sh's 3s chmod loop opens
   // it back up to 0666, but Pinchy (uid 999) can hit a small window where
-  // the file is unreadable. Without retry, readFileSync throws → catch
-  // returns {} → targeted writes (updateTelegramChannelConfig etc.) would
-  // produce a config WITHOUT the gateway block, and OpenClaw's next start
-  // refuses with "Gateway start blocked: existing config is missing
-  // gateway.mode". 5 × 100ms covers two chmod-loop ticks worst case.
+  // the file is unreadable.
+  //
+  // Two outcomes after this loop:
+  //   - ENOENT or parse error: returns {} (file genuinely missing or invalid
+  //     — callers treat as cold-start).
+  //   - Persistent EACCES: THROWS so callers can distinguish "file doesn't
+  //     exist" from "file exists but unreadable". Returning {} here would
+  //     conflate the two and let `regenerateOpenClawConfig` proceed with
+  //     empty `existing`, stripping every OC-enriched field (meta,
+  //     gateway.controlUi.*, non-pinchy plugins.entries, channels.telegram
+  //     OC fields) and emitting a thin payload that triggers the inotify
+  //     cascade documented in #314. Targeted writes already throw on
+  //     empty `existing.gateway.mode`; this just surfaces the same race
+  //     loudly one layer up. 5 × 100ms covers two chmod-loop ticks worst case.
   for (let attempt = 0; attempt < 5; attempt++) {
     try {
       return JSON.parse(readFileSync(CONFIG_PATH, "utf-8"));
@@ -50,9 +59,9 @@ export function readExistingConfig(): Record<string, unknown> {
         console.warn(
           "[openclaw-config] readExistingConfig: persistent EACCES on",
           CONFIG_PATH,
-          "— returning empty (callers must guard against partial writes)"
+          "— propagating to caller (must skip-and-retry the regenerate)"
         );
-        return {};
+        throw err;
       }
       // Synchronous busy-wait. Async would change all caller signatures.
       const start = Date.now();
@@ -61,7 +70,8 @@ export function readExistingConfig(): Record<string, unknown> {
       }
     }
   }
-  return {};
+  // Unreachable — every branch of the loop either returns or throws.
+  throw new Error("[openclaw-config] readExistingConfig: unreachable");
 }
 
 // Monotonically-increasing counter that lets each pushConfigInBackground call

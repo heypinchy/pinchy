@@ -191,18 +191,54 @@ async function resolveDefaultPdfModel(): Promise<string | null> {
 }
 
 export async function regenerateOpenClawConfig() {
-  let existing = readExistingConfig();
+  // `readExistingConfig` distinguishes two recoverable failure modes:
+  //   - ENOENT / parse error → returns {} (cold start; we build the first config from scratch).
+  //   - Persistent EACCES → throws (file exists but unreadable; race with OC's
+  //     SIGUSR1-driven 0600/0666 chmod loop). We MUST NOT proceed with an
+  //     empty `existing` in that case: every `...existing.<field>` spread
+  //     collapses, OC enrichments (meta, gateway.controlUi.*, non-pinchy
+  //     plugins.entries, channels.telegram OC fields) get stripped, and the
+  //     resulting thin payload triggers the inotify cascade documented in #314.
+  //   On EACCES, wait one chmod-loop tick and try once more; if still
+  //   unreadable, skip the regenerate entirely — the next API-triggered
+  //   regenerate (or boot-inits) will heal once 0666 is restored.
+  let existing: Record<string, unknown>;
+  try {
+    existing = readExistingConfig();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "EACCES") throw err;
+    await new Promise((r) => setTimeout(r, 300));
+    try {
+      existing = readExistingConfig();
+    } catch (err2) {
+      if ((err2 as NodeJS.ErrnoException)?.code !== "EACCES") throw err2;
+      console.error(
+        "[openclaw-config] regenerate skipped: openclaw.json is persistently " +
+          "unreadable (EACCES) after one chmod-loop retry. This is the " +
+          "OC-restart race documented in #314 — the next regenerate (or " +
+          "boot-inits) will heal once 0666 is restored. No write performed."
+      );
+      return;
+    }
+  }
 
-  // If readExistingConfig returned empty it may be a transient EACCES hit:
-  // OpenClaw's in-process SIGUSR1 restart rewrites openclaw.json as root:0600
-  // before start-openclaw.sh's chmod loop restores 0666. Under CI load the
-  // chmod may not run within readExistingConfig()'s 5×100ms budget → returns
-  // {} → meta absent → config.apply sends meta-less payload → OpenClaw 4.27
-  // "missing-meta-before-write" anomaly → sentinel restoration broken →
-  // spurious full gateway restart. 300ms covers one chmod-loop tick worst case.
+  // If readExistingConfig returned empty (ENOENT / parse failure, NOT EACCES —
+  // EACCES is handled above) it may be a transient cold-start hit. 300ms
+  // covers one chmod-loop tick worst case for parse-during-write races.
   if (Object.keys(existing).length === 0) {
     await new Promise((r) => setTimeout(r, 300));
-    existing = readExistingConfig();
+    try {
+      existing = readExistingConfig();
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code !== "EACCES") throw err;
+      // File appeared during the wait and is now locked — same recovery path
+      // as the first-read EACCES branch above.
+      console.error(
+        "[openclaw-config] regenerate skipped: openclaw.json became " +
+          "unreadable (EACCES) during the cold-start retry. See #314."
+      );
+      return;
+    }
   }
 
   // Build the gateway block. mode and bind are always set. auth.token is written

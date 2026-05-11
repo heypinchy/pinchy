@@ -2200,6 +2200,57 @@ describe("regenerateOpenClawConfig", () => {
     }
   });
 
+  it("skips the write when openclaw.json is persistently unreadable via EACCES (#314)", async () => {
+    // Scenario from issue #314: OC's SIGUSR1 restart toggles openclaw.json to
+    // root:0600 longer than `readExistingConfig`'s retry budget (5×100ms +
+    // 300ms async retry + 5×100ms = 1.3s). With persistent EACCES the file
+    // looks empty to `readExistingConfig`, the spread of every
+    // `...existing.<field>` collapses to {}, and the regenerate emits a thin
+    // payload that:
+    //   - strips `meta` → OC's "missing-meta-before-write" anomaly
+    //   - strips `gateway.controlUi.*` OC enrichments
+    //   - strips non-pinchy `plugins.entries.*` (telegram, providers)
+    //   - drops models.providers when settings reads also race
+    //   - drops channels.telegram/bindings/session when DB-derived state
+    //     races with the unreadable file
+    // → inotify diff cascade (4874 → 2351 size-drop) → full gateway restart.
+    //
+    // The contract: when the existing file is provably unreadable (EACCES,
+    // not ENOENT), regenerate must NOT write a thin payload. Skip the write
+    // and rely on the next regenerate (or boot-inits) to heal once the
+    // chmod loop restores 0666.
+    //
+    // We do NOT use fake timers here — `readExistingConfig`'s synchronous
+    // busy-wait uses real Date.now() and would hang under fake clocks.
+    // The total real-time budget is bounded: 5×100ms busy-wait + 300ms
+    // async retry + 5×100ms busy-wait + any extra fix-side budget ≈ ≤ 2s.
+    const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    try {
+      mockedExistsSync.mockReturnValue(true);
+      mockedReadFileSync.mockImplementation((path) => {
+        if (typeof path === "string" && path.includes("openclaw.json")) {
+          throw Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" });
+        }
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      });
+
+      await regenerateOpenClawConfig();
+
+      // No write to openclaw.json — proceeding with `existing = {}` would
+      // have produced the bad thin payload from #314.
+      const openclawWrites = mockedWriteFileSync.mock.calls.filter(
+        (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+      );
+      expect(openclawWrites).toEqual([]);
+      // The skip must be loud — silent skips hide the underlying race.
+      expect(errorSpy).toHaveBeenCalled();
+      const message = errorSpy.mock.calls.map((c) => c.join(" ")).join("\n");
+      expect(message).toMatch(/EACCES|unreadable|#314/);
+    } finally {
+      errorSpy.mockRestore();
+    }
+  }, 10000);
+
   describe("config propagation to OpenClaw runtime (#200)", () => {
     // Pinchy must push config changes to OpenClaw's *runtime*, not just
     // disk. The original bug: writing openclaw.json relied on OpenClaw's
@@ -4771,14 +4822,20 @@ describe("updateIdentityLinks", () => {
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
   });
 
-  it("regression: throws if existing config has no gateway.mode (avoids clobber from EACCES)", async () => {
+  it("regression: throws if existing config is unreadable (avoids clobber from EACCES, #314)", async () => {
     // This reproduces the production-image telegram-e2e cascade: while
     // OpenClaw is mid-SIGUSR1-restart, openclaw.json is briefly root:0600.
-    // readExistingConfig hits EACCES, returns {} after retries. Without
-    // the safety check below, updateIdentityLinks would write a config
-    // with ONLY a session block — no gateway, no agents, nothing — and
-    // OpenClaw's next start refuses with "missing gateway.mode" then
-    // crash-loops.
+    //
+    // Two layers of defence:
+    //   1. `readExistingConfig` propagates persistent EACCES rather than
+    //      returning {} (#314 — returning {} let `regenerateOpenClawConfig`
+    //      emit a thin payload that triggered the inotify cascade).
+    //   2. `updateIdentityLinks` independently guards on missing gateway.mode
+    //      so non-EACCES paths (ENOENT, parse error) also can't clobber the
+    //      gateway block.
+    //
+    // Under EACCES the throw now comes from layer 1; either error message is
+    // acceptable as long as no file write happens.
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     mockedExistsSync.mockReturnValue(true);
     mockedReadFileSync.mockImplementation(() => {
@@ -4792,7 +4849,9 @@ describe("updateIdentityLinks", () => {
     // Throwing (rather than silently returning) lets the API route surface
     // the failure as a 5xx so the user can retry, instead of dropping the
     // identity-link update on the floor.
-    expect(() => updateIdentityLinks({ "user-1": ["telegram:123"] })).toThrow(/gateway\.mode/);
+    expect(() => updateIdentityLinks({ "user-1": ["telegram:123"] })).toThrow(
+      /EACCES|gateway\.mode/
+    );
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
     warnSpy.mockRestore();
   });
