@@ -159,6 +159,7 @@ export default defineConfig({
             { label: 'User Roles', slug: 'concepts/user-roles' },
             { label: 'Groups', slug: 'concepts/groups' },
             { label: 'Audit Trail', slug: 'concepts/audit-trail' },
+            { label: 'Attachments', slug: 'concepts/attachments' },
             { label: 'Integrations', slug: 'concepts/integrations' },
           ],
         },

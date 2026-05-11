@@ -1,0 +1,46 @@
+---
+title: Attachments
+description: How file attachments flow through Pinchy — upload, staging, send, and workspace delivery.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+## How attachments work
+
+When you attach a file in chat, Pinchy uses a two-phase upload system to keep things fast and reliable.
+
+### Phase 1 — Upload to staging
+
+As soon as you pick a file, the composer POSTs it to Pinchy over standard multipart form data. The server accepts it immediately and stores it in a temporary staging area. You'll see a chip appear in the composer confirming the file is ready.
+
+The file stays staged — but not yet part of any conversation — until you actually send the message.
+
+### Phase 2 — Promote on send
+
+When you hit Send, Pinchy promotes the staged file to a durable location and includes it in the message delivered to the agent. From that point, the file is attached to the conversation and the agent can read it.
+
+## Staged vs. attached
+
+| State        | What it means                                                            |
+| ------------ | ------------------------------------------------------------------------ |
+| **Staged**   | Uploaded and waiting. Not yet part of a conversation. Expires after 24h. |
+| **Attached** | Promoted when the message was sent. Durable — part of the conversation.  |
+
+If you upload a file but never send the message, Pinchy's hourly cleanup sweep will remove it after 24 hours. No action needed on your part — it just disappears from the composer.
+
+## Supported file types
+
+Pinchy currently accepts **PDFs** and **images** (JPEG, PNG, GIF, WebP). Files outside these types are rejected at upload with a clear error.
+
+PDFs are passed to the agent as readable documents. Images are passed as visual input — useful for agents configured with a vision-capable model.
+
+<Aside type="tip">
+  Agents must be configured with a model that supports vision to interpret image
+  attachments. Check the agent's model in **Settings → General**.
+</Aside>
+
+## The "Protocol outdated" toast
+
+If you see a persistent toast saying the protocol is outdated, your browser tab is running an older version of Pinchy that uses a legacy attachment path the server no longer accepts. This happens when you leave a tab open across a Pinchy upgrade.
+
+**Fix:** Reload the page. The tab will pick up the current version and the toast will go away.
