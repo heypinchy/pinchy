@@ -2691,6 +2691,78 @@ describe("regenerateOpenClawConfig", () => {
       }
     });
 
+    it("cancels a WS-disconnect-waiting coroutine when a newer pushConfigInBackground call starts", async () => {
+      // Coverage backfill for the layered-guardrails rule: the existing
+      // `cancels pending retries when a newer pushConfigInBackground call starts`
+      // test only exercises the apply-retry path. With the OC 5.3 cascade fix
+      // we added a second sleep path — the WS-disconnect 30 s extended wait
+      // (`NOT_CONNECTED_MAX_WAIT_MS` in write.ts). The generation check at the
+      // top of the for-loop runs after each `continue` from that branch, so
+      // cancellation should work the same way; this test pins that behavior
+      // so a future refactor of the WS-disconnect wait (e.g. the `i--`
+      // pattern flagged in code review) can't silently drop the cancellation.
+      vi.useFakeTimers();
+      try {
+        // Both coroutines hit "Not connected" forever — keeps coroutine 2 in
+        // the WS-disconnect retry loop long enough to exhaust its 30 s budget
+        // and surface the file-write fallback. If coroutine 1 was NOT
+        // cancelled, we would see TWO file writes (one OLD, one NEW); the
+        // cancellation guarantee means we see exactly ONE, with the NEW
+        // payload.
+        mockConfigGet.mockRejectedValue(new Error("Not connected to OpenClaw Gateway"));
+        mockGetClient.mockReturnValue({
+          config: { get: mockConfigGet, apply: mockConfigApply },
+        });
+        // readFileSync (used by supplementPayloadWithFileFields in the fallback
+        // path) must return a parseable config so the file-write fallback
+        // succeeds rather than throwing.
+        mockedReadFileSync.mockReturnValue(
+          JSON.stringify({
+            meta: { version: "5.3.0", lastTouchedAt: "2026-01-01T00:00:00Z" },
+            gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
+          }) as unknown as Buffer
+        );
+
+        // Start coroutine 1 (OLD). Its first config.get() rejects on the next
+        // microtask; it enters the 2 s WS-disconnect sleep.
+        pushConfigInBackground(JSON.stringify({ env: { OLD: "1" } }));
+        // Immediately start coroutine 2 (NEW). Synchronously increments
+        // _pushGeneration from 1 to 2 BEFORE coroutine 1's sleep ends.
+        pushConfigInBackground(JSON.stringify({ env: { NEW: "2" } }));
+
+        // Advance past coroutine 2's 30 s budget plus the final retry slot.
+        for (let i = 0; i < 35; i++) {
+          await vi.advanceTimersByTimeAsync(2_100);
+        }
+        for (let i = 0; i < 10; i++) {
+          await vi.advanceTimersByTimeAsync(0);
+        }
+
+        // Find every openclaw.json file write (the atomic rename target;
+        // .tmp writes show up as separate calls).
+        const openclawWrites = mockedWriteFileSync.mock.calls.filter(
+          (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+        );
+
+        // The .tmp + final path each show up — but only from ONE coroutine.
+        // If the cancellation broke, we would see writes from both coroutines.
+        // The decisive check is the payload content: it must be the NEW
+        // payload, never the OLD.
+        const oldWrites = openclawWrites.filter((c) => String(c[1]).includes('"OLD"'));
+        const newWrites = openclawWrites.filter((c) => String(c[1]).includes('"NEW"'));
+        expect(
+          oldWrites.length,
+          "OLD payload must NEVER be written — coroutine 1 was superseded before its WS-disconnect sleep ended"
+        ).toBe(0);
+        expect(
+          newWrites.length,
+          "NEW payload must be written via the WS-disconnect 30 s budget fallback"
+        ).toBeGreaterThan(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("falls back to inotify after the 30 s WS-disconnected budget exhausts", async () => {
       // Scenario: OC is genuinely down (not just restarting). config.get()
       // keeps rejecting with "Not connected" past the 30 s extended budget.
