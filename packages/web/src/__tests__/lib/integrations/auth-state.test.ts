@@ -143,4 +143,18 @@ describe("clearIntegrationAuthError", () => {
     expect(mockedDb.update).not.toHaveBeenCalled();
     expect(mockedAppendAudit).not.toHaveBeenCalled();
   });
+
+  it("returns silently when connection does not exist (no throw, no audit)", async () => {
+    mockedDb.select.mockReturnValue({
+      from: () => ({ where: () => Promise.resolve([]) }),
+    } as never);
+
+    await clearIntegrationAuthError({
+      connectionId: "ghost",
+      actor: { type: "user", id: "u1" },
+    });
+
+    expect(mockedDb.update).not.toHaveBeenCalled();
+    expect(mockedAppendAudit).not.toHaveBeenCalled();
+  });
 });

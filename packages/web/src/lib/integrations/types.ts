@@ -19,7 +19,9 @@ export interface IntegrationConnection {
     provider?: string;
     connectedAt?: string;
   } | null;
-  status: "active" | "pending";
+  status: "active" | "pending" | "auth_failed";
+  lastError: string | null;
+  lastErrorAt: string | null;
   createdAt: string;
   updatedAt: string;
   cannotDecrypt: boolean;
