@@ -117,6 +117,18 @@ vi.mock("@/lib/integrations/oauth-settings", () => ({
   deleteOAuthSettings: (...args: unknown[]) => mockDeleteOAuthSettings(...args),
 }));
 
+const mockProbeIntegrationCredentials = vi.fn();
+vi.mock("@/lib/integrations/probe", () => ({
+  probeIntegrationCredentials: (...args: unknown[]) => mockProbeIntegrationCredentials(...args),
+}));
+
+const mockClearIntegrationAuthError = vi.fn().mockResolvedValue(undefined);
+const mockSetIntegrationAuthFailed = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/integrations/auth-state", () => ({
+  clearIntegrationAuthError: (...args: unknown[]) => mockClearIntegrationAuthError(...args),
+  setIntegrationAuthFailed: (...args: unknown[]) => mockSetIntegrationAuthFailed(...args),
+}));
+
 import { NextRequest } from "next/server";
 
 function makeRequest(path: string, options?: RequestInit) {
@@ -838,7 +850,10 @@ describe("POST /api/integrations/[connectionId]/test", () => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
     mockAuthenticate.mockResolvedValue(2);
-    mockVersion.mockResolvedValue({ serverVersion: "17.0" });
+    // Route now delegates probe to probeIntegrationCredentials
+    mockProbeIntegrationCredentials.mockResolvedValue({ success: true });
+    mockClearIntegrationAuthError.mockResolvedValue(undefined);
+    mockSetIntegrationAuthFailed.mockResolvedValue(undefined);
   });
 
   it("should return 401 when not authenticated", async () => {
@@ -877,7 +892,7 @@ describe("POST /api/integrations/[connectionId]/test", () => {
     expect(response.status).toBe(404);
   });
 
-  it("should authenticate and return version on success", async () => {
+  it("should run the Odoo uid self-heal and return success on valid credentials", async () => {
     const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
 
     const response = await POST(makeRequest("/api/integrations/conn-1/test", { method: "POST" }), {
@@ -887,15 +902,16 @@ describe("POST /api/integrations/[connectionId]/test", () => {
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
-    expect(body.version).toBe("17.0");
-    expect(body.uid).toBe(2);
+    // Uid self-heal still calls OdooClient.authenticate
     expect(mockAuthenticate).toHaveBeenCalledWith({
       url: "https://odoo.example.com",
       db: "prod",
       login: "admin",
       apiKey: "secret-key",
     });
-    expect(mockVersion).toHaveBeenCalled();
+    // Probe is delegated — version/uid are no longer in the response
+    expect(body.version).toBeUndefined();
+    expect(body.uid).toBeUndefined();
   });
 
   it("should return error when authentication fails", async () => {
@@ -912,17 +928,16 @@ describe("POST /api/integrations/[connectionId]/test", () => {
     expect(body.error).toBe("Authentication failed");
   });
 
-  it("should update uid when it changes", async () => {
+  it("should update stored credentials when uid changes (self-heal)", async () => {
     mockAuthenticate.mockResolvedValueOnce(5);
     const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
 
     const response = await POST(makeRequest("/api/integrations/conn-1/test", { method: "POST" }), {
       params: Promise.resolve({ connectionId: "conn-1" }),
     });
-    const body = await response.json();
 
     expect(response.status).toBe(200);
-    expect(body.uid).toBe(5);
+    // Re-encryption with updated uid still happens
     expect(mockEncrypt).toHaveBeenCalledWith(
       JSON.stringify({
         url: "https://odoo.example.com",
@@ -936,9 +951,6 @@ describe("POST /api/integrations/[connectionId]/test", () => {
 });
 
 describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
-  let mockFetch: ReturnType<typeof vi.fn>;
-  const originalFetch = global.fetch;
-
   const webSearchConnection = {
     ...mockConnection,
     id: "conn-ws-1",
@@ -949,9 +961,9 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
-    mockFetch = vi.fn();
-    global.fetch = mockFetch;
     mockDecrypt.mockReturnValue(JSON.stringify({ apiKey: "BSA-valid-key" }));
+    mockClearIntegrationAuthError.mockResolvedValue(undefined);
+    mockSetIntegrationAuthFailed.mockResolvedValue(undefined);
     mockSelectFrom.mockImplementation(() => {
       const result = Promise.resolve([webSearchConnection]) as Promise<unknown[]> & {
         where: ReturnType<typeof vi.fn>;
@@ -962,7 +974,6 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
   });
 
   afterEach(() => {
-    global.fetch = originalFetch;
     mockDecrypt.mockReturnValue(
       JSON.stringify({
         url: "https://odoo.example.com",
@@ -974,8 +985,8 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
     );
   });
 
-  it("should return success when Brave API key is valid", async () => {
-    mockFetch.mockResolvedValueOnce({ ok: true });
+  it("should return success when probe succeeds for a valid Brave API key", async () => {
+    mockProbeIntegrationCredentials.mockResolvedValueOnce({ success: true });
     const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
 
     const response = await POST(
@@ -986,14 +997,16 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(true);
-    expect(mockFetch).toHaveBeenCalledWith(
-      "https://api.search.brave.com/res/v1/web/search?q=test&count=1",
-      { headers: { "X-Subscription-Token": "BSA-valid-key" } }
-    );
+    expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith("web-search", {
+      apiKey: "BSA-valid-key",
+    });
   });
 
-  it("should return error when Brave API key is invalid", async () => {
-    mockFetch.mockResolvedValueOnce({ ok: false, status: 401 });
+  it("should return error when probe fails for an invalid Brave API key", async () => {
+    mockProbeIntegrationCredentials.mockResolvedValueOnce({
+      success: false,
+      reason: "Authentication failed (HTTP 401)",
+    });
     const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
 
     const response = await POST(
@@ -1004,11 +1017,14 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(false);
-    expect(body.error).toBe("Invalid API key");
+    expect(body.error).toBe("Authentication failed (HTTP 401)");
   });
 
   it("should return error when credentials have no apiKey", async () => {
-    mockDecrypt.mockReturnValueOnce(JSON.stringify({}));
+    mockProbeIntegrationCredentials.mockResolvedValueOnce({
+      success: false,
+      reason: "apiKey is required",
+    });
     const { POST } = await import("@/app/api/integrations/[connectionId]/test/route");
 
     const response = await POST(
@@ -1019,7 +1035,7 @@ describe("POST /api/integrations/[connectionId]/test (web-search)", () => {
 
     expect(response.status).toBe(200);
     expect(body.success).toBe(false);
-    expect(body.error).toBe("Invalid credentials format");
+    expect(body.error).toBe("apiKey is required");
   });
 });
 
