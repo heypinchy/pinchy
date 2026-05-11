@@ -1,0 +1,258 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+vi.mock("next/headers", () => ({
+  headers: vi.fn().mockResolvedValue(new Headers()),
+}));
+
+const mockGetSession = vi.fn();
+vi.mock("@/lib/auth", () => ({
+  getSession: (...args: unknown[]) => mockGetSession(...args),
+  auth: { api: { getSession: (...args: unknown[]) => mockGetSession(...args) } },
+}));
+
+const mockEncrypt = vi.fn().mockReturnValue("encrypted-creds");
+const mockDecrypt = vi.fn().mockReturnValue(
+  JSON.stringify({
+    url: "https://odoo.example.com",
+    db: "prod",
+    login: "admin",
+    apiKey: "secret-key",
+    uid: 2,
+  })
+);
+vi.mock("@/lib/encryption", () => ({
+  encrypt: (...args: unknown[]) => mockEncrypt(...args),
+  decrypt: (...args: unknown[]) => mockDecrypt(...args),
+  getOrCreateSecret: vi.fn().mockReturnValue(Buffer.alloc(32)),
+}));
+
+const mockAppendAuditLog = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/audit", () => ({
+  appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
+}));
+
+const mockProbeIntegrationCredentials = vi.fn();
+vi.mock("@/lib/integrations/probe", () => ({
+  probeIntegrationCredentials: (...args: unknown[]) => mockProbeIntegrationCredentials(...args),
+}));
+
+const mockClearIntegrationAuthError = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/integrations/auth-state", () => ({
+  clearIntegrationAuthError: (...args: unknown[]) => mockClearIntegrationAuthError(...args),
+  setIntegrationAuthFailed: vi.fn().mockResolvedValue(undefined),
+}));
+
+const { mockUpdateSet, mockSelectWhere } = vi.hoisted(() => ({
+  mockUpdateSet: vi.fn(),
+  mockSelectWhere: vi.fn(),
+}));
+
+const mockOdooConnection = {
+  id: "conn-1",
+  type: "odoo",
+  name: "Test Odoo",
+  description: "Test connection",
+  credentials: "encrypted-creds",
+  data: null,
+  status: "active",
+  createdAt: new Date("2026-01-01"),
+  updatedAt: new Date("2026-01-01"),
+};
+
+vi.mock("@/db", () => ({
+  db: {
+    select: vi.fn().mockReturnValue({
+      from: vi.fn().mockReturnValue({
+        where: mockSelectWhere,
+      }),
+    }),
+    update: vi.fn().mockReturnValue({
+      set: mockUpdateSet.mockReturnValue({
+        where: vi.fn().mockReturnValue({
+          returning: vi.fn().mockResolvedValue([{ ...mockOdooConnection, name: "Test Odoo" }]),
+        }),
+      }),
+    }),
+  },
+}));
+
+vi.mock("@/db/schema", () => ({
+  integrationConnections: { id: "id" },
+}));
+
+vi.mock("drizzle-orm", () => ({
+  eq: vi.fn((col: unknown, val: unknown) => ({ col, val })),
+}));
+
+vi.mock("@/lib/integrations/odoo-schema", () => ({
+  odooCredentialsSchema: {
+    safeParse: (data: unknown) => {
+      const d = data as Record<string, unknown>;
+      if (
+        typeof d.url === "string" &&
+        d.url.startsWith("https://") &&
+        d.db &&
+        d.login &&
+        d.apiKey
+      ) {
+        return { success: true, data: d };
+      }
+      return { success: false, error: { errors: [{ message: "Invalid credentials" }] } };
+    },
+  },
+}));
+
+vi.mock("@/lib/integrations/url-validation", () => ({
+  validateExternalUrl: (url: string) => {
+    if (url.startsWith("https://")) return { valid: true };
+    return { valid: false, error: "URL must use HTTPS" };
+  },
+}));
+
+vi.mock("@/lib/integrations/mask-credentials", () => ({
+  maskConnectionCredentials: (_type: string, _creds: unknown, _decrypt: unknown) => ({
+    url: "https://odoo.example.com",
+    db: "prod",
+    login: "admin",
+  }),
+}));
+
+vi.mock("@/lib/integrations/oauth-settings", () => ({
+  deleteOAuthSettings: vi.fn().mockResolvedValue(undefined),
+}));
+
+import { NextRequest } from "next/server";
+
+function makeRequest(path: string, options?: RequestInit) {
+  return new NextRequest(`http://localhost:7777${path}`, options);
+}
+
+const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
+
+const validOdooCredentials = {
+  url: "https://odoo.example.com",
+  db: "prod",
+  login: "admin",
+  apiKey: "secret-key",
+  uid: 2,
+};
+
+describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockSelectWhere.mockResolvedValue([mockOdooConnection]);
+    mockProbeIntegrationCredentials.mockResolvedValue({ success: true });
+    mockDecrypt.mockReturnValue(JSON.stringify(validOdooCredentials));
+    mockEncrypt.mockReturnValue("encrypted-creds");
+  });
+
+  it("PATCH with new credentials probes upstream and updates on success", async () => {
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const newCredentials = { ...validOdooCredentials, apiKey: "new-secret-key" };
+    const response = await PATCH(
+      makeRequest("/api/integrations/conn-1", {
+        method: "PATCH",
+        body: JSON.stringify({ credentials: newCredentials }),
+      }),
+      { params: Promise.resolve({ connectionId: "conn-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    // Probe was called with merged credentials
+    expect(mockProbeIntegrationCredentials).toHaveBeenCalledWith(
+      "odoo",
+      expect.objectContaining({ apiKey: "new-secret-key" })
+    );
+    // DB update was called
+    expect(mockUpdateSet).toHaveBeenCalled();
+    // clearIntegrationAuthError was called
+    expect(mockClearIntegrationAuthError).toHaveBeenCalledWith(
+      expect.objectContaining({ connectionId: "conn-1" })
+    );
+    // Audit log for credentials_updated was written with fields
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "integration.credentials_updated",
+        resource: "integration:conn-1",
+        detail: expect.objectContaining({
+          fields: expect.arrayContaining(["apiKey"]),
+        }),
+        outcome: "success",
+      })
+    );
+  });
+
+  it("PATCH with bad new credentials returns 400 with reason and writes nothing", async () => {
+    mockProbeIntegrationCredentials.mockResolvedValue({
+      success: false,
+      reason: "Access denied",
+    });
+
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await PATCH(
+      makeRequest("/api/integrations/conn-1", {
+        method: "PATCH",
+        body: JSON.stringify({ credentials: validOdooCredentials }),
+      }),
+      { params: Promise.resolve({ connectionId: "conn-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toContain("Access denied");
+    // db.update should NOT have been called
+    expect(mockUpdateSet).not.toHaveBeenCalled();
+  });
+
+  it("PATCH on google connection rejects credentials field", async () => {
+    const googleConnection = {
+      ...mockOdooConnection,
+      id: "conn-google-1",
+      type: "google",
+    };
+    mockSelectWhere.mockResolvedValueOnce([googleConnection]);
+
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await PATCH(
+      makeRequest("/api/integrations/conn-google-1", {
+        method: "PATCH",
+        body: JSON.stringify({ credentials: { accessToken: "x" } }),
+      }),
+      { params: Promise.resolve({ connectionId: "conn-google-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(400);
+    expect(body.error).toMatch(/Google|OAuth|Reconnect/i);
+    // Probe should not have been called
+    expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+    // DB update should not have been called
+    expect(mockUpdateSet).not.toHaveBeenCalled();
+  });
+
+  it("PATCH with only name (no credentials) skips probe and updates normally", async () => {
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await PATCH(
+      makeRequest("/api/integrations/conn-1", {
+        method: "PATCH",
+        body: JSON.stringify({ name: "New Name" }),
+      }),
+      { params: Promise.resolve({ connectionId: "conn-1" }) }
+    );
+
+    expect(response.status).toBe(200);
+    // Probe should NOT have been called
+    expect(mockProbeIntegrationCredentials).not.toHaveBeenCalled();
+    // DB update was still called (for name change)
+    expect(mockUpdateSet).toHaveBeenCalled();
+    // No credentials_updated audit log
+    expect(mockAppendAuditLog).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "integration.credentials_updated" })
+    );
+  });
+});

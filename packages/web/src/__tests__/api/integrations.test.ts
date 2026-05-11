@@ -544,6 +544,8 @@ describe("PATCH /api/integrations/[connectionId]", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockGetSession.mockResolvedValue(adminSession);
+    // Probe succeeds by default so credential-update tests pass without extra setup
+    mockProbeIntegrationCredentials.mockResolvedValue({ success: true });
   });
 
   it("should return 401 when not authenticated", async () => {
@@ -665,6 +667,8 @@ describe("PATCH /api/integrations/[connectionId]", () => {
       result.where = vi.fn().mockResolvedValue([webSearchConnection]);
       return result;
     });
+    // Existing web-search credentials stored in DB
+    mockDecrypt.mockReturnValueOnce(JSON.stringify({ apiKey: "old-brave-key" }));
 
     const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
 
@@ -677,6 +681,8 @@ describe("PATCH /api/integrations/[connectionId]", () => {
     );
 
     expect(response.status).toBe(200);
+    // After merging existing { apiKey: "old-brave-key" } with new { apiKey: "new-brave-key" }
+    // the merged result is { apiKey: "new-brave-key" }
     expect(mockEncrypt).toHaveBeenCalledWith(JSON.stringify({ apiKey: "new-brave-key" }));
   });
 

@@ -9,6 +9,8 @@ import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
 import { maskConnectionCredentials } from "@/lib/integrations/mask-credentials";
 import { deleteOAuthSettings } from "@/lib/integrations/oauth-settings";
+import { probeIntegrationCredentials } from "@/lib/integrations/probe";
+import { clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 import { z } from "zod";
 import { parseRequestBody, formatValidationError } from "@/lib/api-validation";
 
@@ -65,6 +67,15 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
   const rawCredentials = body.credentials;
   let parsedCredentials: Record<string, unknown> | undefined;
   if (rawCredentials !== undefined) {
+    if (existing.type === "google") {
+      return NextResponse.json(
+        {
+          error:
+            "Google credentials cannot be edited directly. Use Reconnect to start a new OAuth flow.",
+        },
+        { status: 400 }
+      );
+    }
     const credSchema = credentialSchemas[existing.type];
     if (!credSchema) {
       return NextResponse.json(
@@ -101,7 +112,19 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
         return NextResponse.json({ error: urlCheck.error }, { status: 400 });
       }
     }
-    updateData.credentials = encrypt(JSON.stringify(parsedCredentials));
+
+    // Merge with existing stored credentials so callers can omit unchanged fields
+    // ("leave empty to keep current" pattern).
+    const existingDecoded = JSON.parse(decrypt(existing.credentials)) as Record<string, unknown>;
+    const merged = { ...existingDecoded, ...parsedCredentials };
+
+    // Probe before persisting.
+    const probe = await probeIntegrationCredentials(existing.type, merged);
+    if (!probe.success) {
+      return NextResponse.json({ error: probe.reason }, { status: 400 });
+    }
+
+    updateData.credentials = encrypt(JSON.stringify(merged));
     changes.credentials = { from: "[redacted]", to: "[redacted]" };
   }
 
@@ -118,6 +141,25 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
       eventType: "config.changed",
       resource: `integration:${connectionId}`,
       detail: { action: "integration_updated", id: connectionId, changes },
+      outcome: "success",
+    });
+  }
+
+  if (parsedCredentials !== undefined) {
+    await clearIntegrationAuthError({
+      connectionId,
+      actor: { type: "user", id: session.user.id! },
+    });
+    await appendAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "integration.credentials_updated",
+      resource: `integration:${connectionId}`,
+      detail: {
+        id: connectionId,
+        name: updated.name,
+        fields: Object.keys(parsedCredentials),
+      },
       outcome: "success",
     });
   }
