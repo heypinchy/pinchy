@@ -52,6 +52,12 @@ test.describe("pinchy-email — Gmail E2E", () => {
     const settled = await waitForOpenClawConnected(cookie, 120000);
     if (!settled) throw new Error("OpenClaw did not reconnect after setup wizard");
 
+    // Allow the config.apply rate-limit window from seedSetup to clear (~25s).
+    // seedSetup fires 3 rapid config.apply calls; the next call from test 1's
+    // permission grant may hit the rate limit and fall back to 60s inotify —
+    // too slow for the chat tests. 35s clears the window with a small buffer.
+    await new Promise((r) => setTimeout(r, 35000));
+
     // Get Smithers agent
     const agents = await pinchyGet("/api/agents", cookie);
     expect(agents.status).toBe(200);
@@ -102,6 +108,11 @@ test.describe("pinchy-email — Gmail E2E", () => {
     // restart. Give 120s to cover the restart + reconnect window.
     const connected = await waitForOpenClawConnected(cookie, 120000);
     expect(connected).toBe(true);
+
+    // Hot-reload buffer: config.apply takes ~2s and hot-reload ~0.5s.
+    // Tests 1+2 run in ~100ms — without this wait, test 3 sends its message
+    // before pinchy-email is registered in OpenClaw.
+    await new Promise((r) => setTimeout(r, 5000));
 
     // The Google connection is visible in the integrations list
     const integrations = await pinchyGet("/api/integrations", cookie);
