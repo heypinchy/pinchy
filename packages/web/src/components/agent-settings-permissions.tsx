@@ -91,6 +91,21 @@ export function AgentSettingsPermissions({
   const initialAllowedPaths = useRef(agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? []);
   const initialWebSearchConfig = useRef(agent.pluginConfig?.["pinchy-web"] ?? {});
 
+  // Re-sync the "initial" snapshot when the agent prop changes (the parent
+  // refetches the agent after a successful save, so the prop now reflects the
+  // persisted state). Without this the dirty comparison would keep using the
+  // mount-time values and falsely report dirty=true the next time a sibling
+  // section emits onChange — e.g. Odoo's load effect re-running on a fresh
+  // connections reference resets `odooIntegration`, which triggers this
+  // component's dirty-recheck against stale refs.
+  useEffect(() => {
+    initialKbToolsRef.current = agent.allowedTools.filter(
+      (id) => !id.startsWith("odoo_") && !id.startsWith("email_")
+    );
+    initialAllowedPaths.current = agent.pluginConfig?.["pinchy-files"]?.allowed_paths ?? [];
+    initialWebSearchConfig.current = agent.pluginConfig?.["pinchy-web"] ?? {};
+  }, [agent.allowedTools, agent.pluginConfig]);
+
   const hasKbToolChecked = kbTools.some((tool) => allowedKbTools.includes(tool.id));
   const hasWebToolChecked = webTools.some((tool) => allowedKbTools.includes(tool.id));
 

@@ -297,4 +297,45 @@ test.describe.serial("Odoo Permission Setup", () => {
     // Model should still be in the table
     await expect(page.getByText("res.partner")).toBeVisible();
   });
+
+  // Regression: with an Odoo connection configured, saving any other
+  // Permissions change (here: a KB tool) used to falsely re-mark the tab as
+  // dirty. The parent's post-save fetchData refetches connections with a new
+  // array reference, useOdooPermissions re-runs its load effect, and the
+  // resulting onChange propagates up to AgentSettingsPermissions which
+  // re-evaluated dirty state against stale mount-time refs.
+  test("save clears dirty state and keeps it clear under the Odoo cascade", async ({ page }) => {
+    test.setTimeout(120000);
+    await loginViaUI(page);
+
+    await page.goto(`/chat/${agentId}/settings?tab=permissions`);
+    await expect(page.getByRole("heading", { name: "Odoo" })).toBeVisible({ timeout: 10000 });
+
+    // Toggle a KB tool — its change crosses one of the snapshots that the
+    // child component used to freeze at mount.
+    await page.getByLabel("List approved directories").click();
+    await expect(page.getByText("Unsaved changes")).toBeVisible({ timeout: 10000 });
+
+    // Remove enterprise badge overlay if present (blocks button clicks).
+    await page.evaluate(() => {
+      document.querySelector("[title='Disable enterprise']")?.closest(".fixed")?.remove();
+    });
+
+    // Save & Restart.
+    await page.getByRole("button", { name: /save/i }).last().click();
+    const restartDialog = page.getByRole("alertdialog");
+    await expect(restartDialog).toBeVisible({ timeout: 5000 });
+    await restartDialog.getByRole("button", { name: /save & restart/i }).click();
+
+    // Save completes — dirty bar reads "All changes saved".
+    await expect(page.getByText("All changes saved")).toBeVisible({ timeout: 30000 });
+
+    // The cascade fires within ~100ms of the save returning: fetchData
+    // refetches connections, useOdooPermissions emits a fresh onChange, and
+    // the child component re-evaluates dirty state. Wait long enough for
+    // that to settle, then assert it stayed clean.
+    await page.waitForTimeout(3000);
+    await expect(page.getByText("All changes saved")).toBeVisible();
+    await expect(page.getByText("Unsaved changes")).not.toBeVisible();
+  });
 });

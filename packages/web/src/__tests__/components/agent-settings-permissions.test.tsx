@@ -1,8 +1,23 @@
-import { describe, it, expect, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
 import { AgentSettingsPermissions } from "@/components/agent-settings-permissions";
+import type { AgentPluginConfig } from "@/db/schema";
+
+// Capture onChange callbacks from child sections so tests can simulate
+// the post-save cascade where a sibling section's onChange fires and
+// causes AgentSettingsPermissions to re-evaluate its dirty state.
+let capturedOdooOnChange:
+  | ((
+      v: {
+        connectionId: string;
+        permissions: Array<{ model: string; operation: string }>;
+      } | null,
+      isDirty: boolean
+    ) => void)
+  | null = null;
+let capturedWebSearchOnChange: ((v: AgentPluginConfig["pinchy-web"]) => void) | null = null;
 
 vi.mock("@/components/odoo-permission-section", () => ({
   OdooPermissionSection: ({
@@ -10,26 +25,36 @@ vi.mock("@/components/odoo-permission-section", () => ({
   }: {
     agentId: string;
     connections: unknown[];
-    onChange: (v: unknown, d: boolean) => void;
+    onChange: (
+      v: {
+        connectionId: string;
+        permissions: Array<{ model: string; operation: string }>;
+      } | null,
+      d: boolean
+    ) => void;
   }) => {
-    void onChange;
+    capturedOdooOnChange = onChange;
     return <div data-testid="odoo-section">Odoo Section</div>;
   },
 }));
 
 vi.mock("@/components/web-search-permission-section", () => ({
   WebSearchPermissionSection: ({
+    onChange,
     showSecurityWarning,
   }: {
     config: unknown;
-    onChange: (v: unknown) => void;
+    onChange: (v: AgentPluginConfig["pinchy-web"]) => void;
     showSecurityWarning: boolean;
-  }) => (
-    <div data-testid="web-search-section">
-      Web Search Config
-      {showSecurityWarning && <span data-testid="security-warning">Security Warning</span>}
-    </div>
-  ),
+  }) => {
+    capturedWebSearchOnChange = onChange;
+    return (
+      <div data-testid="web-search-section">
+        Web Search Config
+        {showSecurityWarning && <span data-testid="security-warning">Security Warning</span>}
+      </div>
+    );
+  },
 }));
 
 vi.mock("@/components/email-permission-section", () => ({
@@ -44,6 +69,11 @@ vi.mock("@/components/email-permission-section", () => ({
     return <div data-testid="email-section">Email Section</div>;
   },
 }));
+
+beforeEach(() => {
+  capturedOdooOnChange = null;
+  capturedWebSearchOnChange = null;
+});
 
 describe("AgentSettingsPermissions", () => {
   const defaultAgent = {
@@ -554,6 +584,188 @@ describe("AgentSettingsPermissions", () => {
         }),
         false
       );
+    });
+  });
+
+  // Regression for #XXX: After a successful save the parent updates the
+  // `agent` prop to reflect the persisted state, and refetched `connections`
+  // cause sibling sections (Odoo/Email) to re-emit a fresh onChange. If the
+  // child component's "initial values" snapshot is frozen at first mount,
+  // that downstream onChange triggers a dirty-recheck against stale refs
+  // and falsely marks the Permissions tab as dirty again.
+  describe("dirty re-evaluation after agent prop is updated (post-save cascade)", () => {
+    const webSearchConnection = { id: "ws-1", name: "Brave Search", type: "web-search" };
+
+    it("clears dirty state for webSearchConfig when agent prop reflects saved value and Odoo cascade fires", async () => {
+      const onChange = vi.fn();
+      const initialAgent = {
+        ...defaultAgent,
+        allowedTools: ["pinchy_web_search"],
+        pluginConfig: null as import("@/db/schema").AgentPluginConfig | null,
+      };
+
+      const { rerender } = render(
+        <AgentSettingsPermissions
+          agent={initialAgent}
+          directories={defaultDirectories}
+          connections={[odooConnection, webSearchConnection]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      // User changes Web Search config (e.g. picks a freshness window).
+      await waitFor(() => expect(capturedWebSearchOnChange).not.toBeNull());
+      act(() => capturedWebSearchOnChange!({ freshness: "pd" }));
+
+      await waitFor(() => {
+        expect(onChange).toHaveBeenLastCalledWith(
+          expect.objectContaining({ webSearchConfig: { freshness: "pd" } }),
+          true
+        );
+      });
+
+      onChange.mockClear();
+
+      // Save completes: parent re-renders with agent reflecting the saved
+      // pluginConfig and (because fetchData re-fetched) a fresh connections
+      // array reference.
+      rerender(
+        <AgentSettingsPermissions
+          agent={{
+            ...initialAgent,
+            pluginConfig: { "pinchy-web": { freshness: "pd" } },
+          }}
+          directories={defaultDirectories}
+          connections={[{ ...odooConnection }, { ...webSearchConnection }]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      // In production the cascade fires because useOdooPermissions resets
+      // its addedModels to a new Map reference, which propagates a fresh
+      // onChange call up to AgentSettingsPermissions. Simulate that here.
+      await waitFor(() => expect(capturedOdooOnChange).not.toBeNull());
+      act(() => capturedOdooOnChange!({ connectionId: "conn-odoo", permissions: [] }, false));
+
+      // After the cascade, the dirty state must reflect the new (saved)
+      // agent prop — there are no unsaved changes anymore.
+      await waitFor(() => {
+        expect(onChange).toHaveBeenCalled();
+        const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(lastCall[1]).toBe(false);
+      });
+    });
+
+    it("clears dirty state for KB tools after the agent prop reflects the saved tools and a sibling onChange fires", async () => {
+      const onChange = vi.fn();
+      const initialAgent = {
+        ...defaultAgent,
+        allowedTools: [] as string[],
+        pluginConfig: null as import("@/db/schema").AgentPluginConfig | null,
+      };
+
+      const { rerender } = render(
+        <AgentSettingsPermissions
+          agent={initialAgent}
+          directories={defaultDirectories}
+          connections={[odooConnection]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      // User checks a KB tool.
+      await userEvent.click(screen.getByLabelText("List approved directories"));
+
+      await waitFor(() => {
+        expect(onChange).toHaveBeenLastCalledWith(
+          expect.objectContaining({ allowedTools: expect.arrayContaining(["pinchy_ls"]) }),
+          true
+        );
+      });
+
+      onChange.mockClear();
+
+      // Save completes: parent passes new agent prop and a refetched
+      // connections array.
+      rerender(
+        <AgentSettingsPermissions
+          agent={{
+            ...initialAgent,
+            allowedTools: ["pinchy_ls"],
+            pluginConfig: { "pinchy-files": { allowed_paths: [] } },
+          }}
+          directories={defaultDirectories}
+          connections={[{ ...odooConnection }]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      // Sibling Odoo section emits a fresh onChange (simulating the load
+      // effect re-running on the new connections reference).
+      await waitFor(() => expect(capturedOdooOnChange).not.toBeNull());
+      act(() => capturedOdooOnChange!({ connectionId: "conn-odoo", permissions: [] }, false));
+
+      await waitFor(() => {
+        expect(onChange).toHaveBeenCalled();
+        const lastCall = onChange.mock.calls[onChange.mock.calls.length - 1];
+        expect(lastCall[1]).toBe(false);
+      });
+    });
+
+    it("re-marks dirty when the user reverts a saved web search config back to empty", async () => {
+      const onChange = vi.fn();
+      const initialAgent = {
+        ...defaultAgent,
+        allowedTools: ["pinchy_web_search"],
+        pluginConfig: null as import("@/db/schema").AgentPluginConfig | null,
+      };
+
+      const { rerender } = render(
+        <AgentSettingsPermissions
+          agent={initialAgent}
+          directories={defaultDirectories}
+          connections={[webSearchConnection]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      // User picks a freshness value.
+      await waitFor(() => expect(capturedWebSearchOnChange).not.toBeNull());
+      act(() => capturedWebSearchOnChange!({ freshness: "pd" }));
+
+      // Simulate "saved".
+      rerender(
+        <AgentSettingsPermissions
+          agent={{
+            ...initialAgent,
+            pluginConfig: { "pinchy-web": { freshness: "pd" } },
+          }}
+          directories={defaultDirectories}
+          connections={[{ ...webSearchConnection }]}
+          isAdmin={true}
+          onChange={onChange}
+        />
+      );
+
+      onChange.mockClear();
+
+      // User reverts the saved value back to empty.
+      act(() => capturedWebSearchOnChange!({}));
+
+      // Compared to the *saved* state ({ freshness: "pd" }), reverting to {}
+      // is dirty again. If we incorrectly compare against the mount-time
+      // snapshot ({}), this would be falsely reported as clean.
+      await waitFor(() => {
+        expect(onChange).toHaveBeenLastCalledWith(
+          expect.objectContaining({ webSearchConfig: {} }),
+          true
+        );
+      });
     });
   });
 });
