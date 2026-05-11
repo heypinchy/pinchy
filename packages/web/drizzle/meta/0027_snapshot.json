@@ -1,6 +1,6 @@
 {
-  "id": "eaf1338e-14d4-49ef-bb9d-a5d6ce69860c",
-  "prevId": "10a4e848-edd1-4941-a7bf-ef16ccbc6b14",
+  "id": "fd3da3ad-e05e-4543-9a33-9cd6fac4cdea",
+  "prevId": "08bcca19-8645-4ba3-bd7d-8dd33621b2c3",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -430,7 +430,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "audit_log_v2_outcome_required": {
+          "name": "audit_log_v2_outcome_required",
+          "value": "\"audit_log\".\"version\" = 1 OR \"audit_log\".\"outcome\" IS NOT NULL"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.channel_links": {

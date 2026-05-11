@@ -1,6 +1,6 @@
 {
-  "id": "eaf1338e-14d4-49ef-bb9d-a5d6ce69860c",
-  "prevId": "10a4e848-edd1-4941-a7bf-ef16ccbc6b14",
+  "id": "40b72272-5f0e-400a-b3dc-ed341734c658",
+  "prevId": "760676c6-d606-4fbb-baa3-59d71b33e56d",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -430,7 +430,12 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "policies": {},
-      "checkConstraints": {},
+      "checkConstraints": {
+        "audit_log_v2_outcome_required": {
+          "name": "audit_log_v2_outcome_required",
+          "value": "\"audit_log\".\"version\" = 1 OR \"audit_log\".\"outcome\" IS NOT NULL"
+        }
+      },
       "isRLSEnabled": false
     },
     "public.channel_links": {
@@ -1250,6 +1255,13 @@
           "primaryKey": false,
           "notNull": false,
           "default": "now()"
+        },
+        "status": {
+          "name": "status",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "default": "'active'"
         }
       },
       "indexes": {},
