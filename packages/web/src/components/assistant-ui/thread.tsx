@@ -35,7 +35,7 @@ import {
   SquareIcon,
   X,
 } from "lucide-react";
-import { type FC, useState, useEffect, useRef, useContext } from "react";
+import { type FC, useState, useEffect, useRef, useContext, createContext } from "react";
 import {
   AgentIdContext,
   AgentNameContext,
@@ -59,6 +59,10 @@ import { useAgentsContext } from "@/components/agents-provider";
 import { requiredCapabilityForFile } from "@/lib/attachment-capability";
 import { RecoveryPanel } from "@/components/recovery-panel";
 import { apiPatch } from "@/lib/api-client";
+import { parseUnsupportedAttachmentError } from "@/lib/chat-errors";
+
+export type RecoveryStateSetter = (state: { files: File[]; model: string } | null) => void;
+export const RecoveryContext = createContext<RecoveryStateSetter>(() => {});
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -85,16 +89,14 @@ const MessageTimestamp: FC = () => {
   return <span className="text-xs text-muted-foreground/60">{formatTimestamp(timestamp)}</span>;
 };
 
-export const Thread: FC<{ isReconcilingMessages?: boolean }> = ({
-  isReconcilingMessages = false,
-}) => {
+const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMessages }) => {
+  const [recoveryState, setRecoveryState] = useState<{
+    files: File[];
+    model: string;
+  } | null>(null);
+
   return (
-    <ThreadPrimitive.Root
-      className="aui-root aui-thread-root @container flex h-full flex-col bg-background"
-      style={{
-        ["--thread-max-width" as string]: "44rem",
-      }}
-    >
+    <RecoveryContext.Provider value={setRecoveryState}>
       <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4">
         {!isReconcilingMessages && (
           <>
@@ -113,9 +115,24 @@ export const Thread: FC<{ isReconcilingMessages?: boolean }> = ({
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-3xl bg-background pb-4 md:pb-6">
           <ThreadScrollToBottom />
-          <Composer />
+          <Composer recoveryState={recoveryState} setRecoveryState={setRecoveryState} />
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
+    </RecoveryContext.Provider>
+  );
+};
+
+export const Thread: FC<{ isReconcilingMessages?: boolean }> = ({
+  isReconcilingMessages = false,
+}) => {
+  return (
+    <ThreadPrimitive.Root
+      className="aui-root aui-thread-root @container flex h-full flex-col bg-background"
+      style={{
+        ["--thread-max-width" as string]: "44rem",
+      }}
+    >
+      <ThreadInner isReconcilingMessages={isReconcilingMessages} />
     </ThreadPrimitive.Root>
   );
 };
@@ -282,9 +299,6 @@ function UploadChip({ upload }: { upload: PendingUpload }) {
   const removePendingUpload = useContext(RemovePendingUploadContext);
   const retryPendingUpload = useContext(RetryPendingUploadContext);
   const isImage = upload.file.type.startsWith("image/");
-  // Always render from the local blob URL — the server URL is only valid
-  // after the file has been promoted into the workspace, which happens
-  // server-side at WS-send time. Until then a /uploads/<name> request 404s.
   const previewSrc = upload.objectUrl;
 
   return (
@@ -364,17 +378,18 @@ export function PendingUploadChips() {
   );
 }
 
-export const Composer: FC = () => {
+interface ComposerProps {
+  recoveryState: { files: File[]; model: string } | null;
+  setRecoveryState: RecoveryStateSetter;
+}
+
+export const Composer: FC<ComposerProps> = ({ recoveryState, setRecoveryState }) => {
   const agentId = useContext(AgentIdContext);
   const canEditAgent = useContext(CanEditContext);
   const isAdmin = useContext(IsAdminContext);
   const { getAgent } = useAgentsContext();
   const composerRuntime = useComposerRuntime({ optional: true });
   const { data: capabilities } = useModelCapabilities();
-  const [recoveryState, setRecoveryState] = useState<{
-    files: File[];
-    model: string;
-  } | null>(null);
 
   const agent = agentId ? getAgent(agentId) : undefined;
   const agentModel = agent?.model ?? "";
@@ -435,11 +450,6 @@ export const Composer: FC = () => {
       onSubmit={handleSubmit}
     >
       <DraftPersistence />
-<<<<<<< HEAD
-      {recoveryState && <div data-testid="recovery-panel-placeholder" className="hidden" />}
-      <PinchyDropZone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20">
-        <PendingUploadChips />
-=======
       {recoveryState && (
         <RecoveryPanel
           filename={recoveryState.files[0]?.name ?? "attachment"}
@@ -460,8 +470,8 @@ export const Composer: FC = () => {
           onDismiss={() => setRecoveryState(null)}
         />
       )}
-      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-accent/50">
->>>>>>> d8060f054 (feat(chat): wire blocked send to RecoveryPanel + agent.model update path)
+      <PinchyDropZone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20">
+        <PendingUploadChips />
         <ComposerAttachments />
         <ComposerPrimitive.Input
           placeholder="Send a message..."
@@ -530,9 +540,24 @@ const MessageError: FC = () => {
 const AssistantErrorOrContent: FC<{ actionSlot?: React.ReactNode }> = ({ actionSlot }) => {
   const error = useMessage((s) => s.metadata?.custom?.error as ChatError | undefined);
   const agentId = useContext(AgentIdContext) ?? "";
+  const { getAgent } = useAgentsContext();
+  const setRecoveryState = useContext(RecoveryContext);
 
-  if (error) {
+  const providerError = error?.providerError;
+  const unsupported = providerError ? parseUnsupportedAttachmentError(providerError) : null;
+
+  useEffect(() => {
+    if (!unsupported) return;
+    const agent = agentId ? getAgent(agentId) : undefined;
+    setRecoveryState({ files: [], model: agent?.model ?? "" });
+  }, [unsupported, agentId, getAgent, setRecoveryState]);
+
+  if (error && !unsupported) {
     return <ChatErrorMessage error={error} agentId={agentId} actionSlot={actionSlot} />;
+  }
+
+  if (unsupported) {
+    return null;
   }
 
   return (
