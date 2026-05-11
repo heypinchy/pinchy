@@ -95,6 +95,38 @@ describe("GraphAdapter.read", () => {
     expect(result.cc).toBe("charlie@example.com");
     expect(result.unread).toBe(true);
   });
+
+  it("non-ok response throws a descriptive error", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: false,
+      status: 404,
+      statusText: "Not Found",
+      text: async () => "Message not found",
+    });
+    await expect(adapter.read("msg1")).rejects.toThrow(/Graph 404/);
+  });
+
+  it("URL-encodes the message ID in the path", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        id: "msg/special+id",
+        subject: "S",
+        bodyPreview: "",
+        receivedDateTime: "2024-01-01T10:00:00Z",
+        from: { emailAddress: { address: "a@b.com" } },
+        toRecipients: [],
+        isRead: true,
+        body: { contentType: "text", content: "" },
+      }),
+    });
+    await adapter.read("msg/special+id");
+    const url = (fetch as Mock).mock.calls[0][0] as string;
+    expect(url).toContain(encodeURIComponent("msg/special+id"));
+    expect(url).not.toContain("/msg/special+id");
+  });
 });
 
 describe("GraphAdapter.search", () => {
@@ -163,6 +195,18 @@ describe("GraphAdapter.draft", () => {
     );
     expect(result.draftId).toBe("reply1");
   });
+
+  it("new draft body contains subject, body.contentType, body.content, and toRecipients", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ id: "draft1" }) });
+    await adapter.draft({ to: "bob@example.com", subject: "Test Subject", body: "Hello body" });
+    const call = (fetch as Mock).mock.calls[0];
+    const sentBody = JSON.parse((call[1] as RequestInit).body as string);
+    expect(sentBody.subject).toBe("Test Subject");
+    expect(sentBody.body.contentType).toBe("text");
+    expect(sentBody.body.content).toBe("Hello body");
+    expect(sentBody.toRecipients).toEqual([{ emailAddress: { address: "bob@example.com" } }]);
+  });
 });
 
 describe("GraphAdapter.send", () => {
@@ -190,5 +234,15 @@ describe("GraphAdapter.send", () => {
       expect.stringContaining("/me/messages/reply1/send"),
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  it("send({...,replyTo}) returns draftId as messageId", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "reply42" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, headers: { get: () => null }, json: async () => ({}) });
+    const result = await adapter.send({ to: "bob@example.com", subject: "Re: Test", body: "Thanks", replyTo: "original-id" });
+    expect(result.messageId).toBe("reply42");
   });
 });
