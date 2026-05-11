@@ -86,8 +86,23 @@ export class GraphAdapter implements EmailAdapter {
     return data.value.map(toSummary);
   }
 
-  async read(_id: string): Promise<EmailFull> {
-    throw new Error("not yet implemented");
+  async read(id: string): Promise<EmailFull> {
+    const params = new URLSearchParams({
+      $select:
+        "id,subject,bodyPreview,receivedDateTime,from,toRecipients,ccRecipients,isRead,body",
+    });
+    const res = await this.req(
+      `/me/messages/${encodeURIComponent(id)}?${params.toString()}`,
+    );
+    const m = (await res.json()) as GraphMessage & {
+      ccRecipients?: Array<{ emailAddress?: { address?: string } }>;
+      body?: { contentType?: string; content?: string };
+    };
+    return {
+      ...toSummary(m),
+      cc: m.ccRecipients?.map((r) => r.emailAddress?.address ?? "").join(", ") ?? "",
+      body: m.body?.content ?? "",
+    };
   }
 
   async search(_opts: SearchOptions): Promise<EmailSummary[]> {
