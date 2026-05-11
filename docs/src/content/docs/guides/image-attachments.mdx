@@ -44,6 +44,19 @@ Most of the time you don't need to think about this — the agent picks the righ
 | **"Image too large"**                    | The encoded message exceeded the WebSocket frame limit.                       | Use a smaller image, or crop before attaching.            |
 | **Agent ignores the image entirely**     | The model you're using doesn't support vision.                                | Switch to a vision-capable model in the agent's settings. |
 
+## Model capability matrix
+
+Pinchy tracks four input-modality capabilities per model. Each capability is either present or absent — there's no partial support.
+
+| Capability    | What it unlocks                                                                |
+| ------------- | ------------------------------------------------------------------------------ |
+| **vision**    | The model can "see" images sent inline with a message.                         |
+| **documents** | The model processes PDFs natively (no image-extract fallback required).        |
+| **audio**     | The model can transcribe or reason over audio files. (Planned — not yet wired) |
+| **video**     | The model can process video frames or streams. (Planned — not yet wired)       |
+
+The `models` table is seeded automatically at boot from Pinchy's built-in model catalog. For Anthropic, OpenAI, Google, and Ollama Cloud, no manual entry is required. For local Ollama, Pinchy detects vision-capable models from the Ollama API when you configure the URL during setup.
+
 ## Vision support by model
 
 Whether the agent can actually see an image depends on the underlying LLM. As of today:
@@ -54,3 +67,11 @@ Whether the agent can actually see an image depends on the underlying LLM. As of
 - **Local Ollama** — only models marked as vision-capable (e.g. `llama3.2-vision`, `gemma3`)
 
 If you attach an image to a text-only model, the model won't see it. Pinchy doesn't block this — some users intentionally route images through tool calls — but the result depends entirely on what the agent does with the attachment.
+
+## How templates declare required capabilities
+
+When you create an agent from a template, Pinchy automatically picks a model that meets the template's capability requirements. Each template declares the capabilities it needs — for example, a document-analyzer template requires `vision`, `documents`, and `long-context`. Pinchy's model resolver searches your configured providers for a model that satisfies all three.
+
+If no configured model meets the requirements, Pinchy shows a warning at agent-creation time and offers to proceed with the best available match. Adding a vision-capable provider (Anthropic, OpenAI, Google, or Ollama Cloud with a vision model) gives the resolver more options to work with.
+
+Custom agents created from the "Custom Agent" template have no required capabilities — you choose the model manually in **Agent Settings → General**.

@@ -63,6 +63,27 @@ The "default provider" is the one Pinchy reaches for when creating new agents. Y
 
 If any agent currently uses a model from the removed provider, the chat will fail to start until you assign that agent a model from a still-configured provider. Pinchy will not silently re-assign agents.
 
+## Model capability catalog
+
+Pinchy maintains a `models` table that tracks which capabilities each model supports — vision, native PDF reading, audio, and video. The table is seeded automatically at every boot from Pinchy's built-in catalog for Anthropic, OpenAI, Google, and Ollama Cloud. You don't need to configure anything.
+
+For local Ollama, capabilities depend on which model you've pulled. Pinchy reads this from the Ollama API when you save the URL during setup or settings, and updates the catalog accordingly.
+
+Capability data drives two things in practice:
+
+1. **Template model selection** — when you create an agent from a template, Pinchy picks the first model from your configured providers that meets the template's required capabilities (e.g. vision + documents for a document-analyzer). If no model qualifies, you see a warning.
+2. **Pre-send checks** — if you attach an image or PDF and the agent's current model doesn't support that input type, Pinchy warns you before sending and shows you how to switch to a capable model.
+
+Admins can inspect raw capability data by querying the `models` table directly:
+
+```sql
+SELECT provider, model_id, vision, documents, audio, video, long_context, tools
+FROM models
+ORDER BY provider, model_id;
+```
+
+A future admin UI will surface this without needing database access.
+
 ## How costs are tracked
 
 Tokens used through every provider are recorded in the [Usage Dashboard](/guides/usage-dashboard/) at `/usage`. Cost is estimated using the per-model prices baked into Pinchy's model config — provider invoices remain the source of truth. Local Ollama records token counts but always shows zero cost.
