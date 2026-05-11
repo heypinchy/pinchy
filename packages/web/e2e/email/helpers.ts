@@ -53,7 +53,24 @@ export async function seedSetup(): Promise<void> {
     return;
   }
 
-  // Create admin via Pinchy's setup API
+  // Seed provider config BEFORE calling the setup API so that regenerateOpenClawConfig()
+  // (called inside POST /api/setup) picks up the ollama-local provider and creates
+  // Smithers with model "ollama/llama3.2". The fake-ollama Docker service is already
+  // healthy at this point (depends_on: service_healthy in docker-compose.email-test.yml).
+  const ollamaUrl = process.env.OLLAMA_LOCAL_URL || "http://fake-ollama:11435";
+  await sql`
+    INSERT INTO settings (key, value, encrypted)
+    VALUES ('ollama_local_url', ${ollamaUrl}, false)
+    ON CONFLICT (key) DO UPDATE SET value = ${ollamaUrl}
+  `;
+  await sql`
+    INSERT INTO settings (key, value, encrypted)
+    VALUES ('default_provider', 'ollama-local', false)
+    ON CONFLICT (key) DO UPDATE SET value = 'ollama-local'
+  `;
+
+  // Create admin via Pinchy's setup API.
+  // This calls regenerateOpenClawConfig() which reads the settings seeded above.
   const setupRes = await fetch(`${PINCHY_URL}/api/setup`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: PINCHY_URL },
@@ -69,21 +86,6 @@ export async function seedSetup(): Promise<void> {
     await sql.end();
     throw new Error(`Setup failed: ${setupRes.status} ${text}`);
   }
-
-  await new Promise((r) => setTimeout(r, 2000));
-
-  // Seed provider config (needed for agent creation)
-  const testApiKey = process.env.TEST_ANTHROPIC_API_KEY || "sk-ant-fake-key-for-e2e-testing";
-  await sql`
-    INSERT INTO settings (key, value, encrypted)
-    VALUES ('default_provider', 'anthropic', false)
-    ON CONFLICT (key) DO UPDATE SET value = 'anthropic'
-  `;
-  await sql`
-    INSERT INTO settings (key, value, encrypted)
-    VALUES ('anthropic_api_key', ${testApiKey}, false)
-    ON CONFLICT (key) DO UPDATE SET value = ${testApiKey}
-  `;
 
   await sql.end();
   await new Promise((r) => setTimeout(r, 3000));
