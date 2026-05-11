@@ -45,4 +45,69 @@ describe("ModelPicker", () => {
     expect(screen.getByLabelText("Supports document input")).toBeInTheDocument();
     expect(screen.queryByLabelText("Supports audio input")).not.toBeInTheDocument();
   });
+
+  it("shows amber warning when row violates requiredCapabilities", async () => {
+    const providersNoVision = [
+      {
+        id: "ollama-cloud",
+        name: "Ollama Cloud",
+        models: [
+          {
+            id: "ollama-cloud/deepseek-v4-pro",
+            name: "DeepSeek V4 Pro",
+            capabilities: { vision: false, documents: false, audio: false, video: false },
+          },
+        ],
+      },
+    ];
+    render(
+      <ModelPicker
+        value=""
+        onChange={() => {}}
+        providers={providersNoVision}
+        requiredCapabilities={["vision"]}
+      />
+    );
+
+    await userEvent.click(screen.getByRole("combobox"));
+
+    expect(
+      screen.getByLabelText(/doesn't satisfy required capability: vision/i)
+    ).toBeInTheDocument();
+  });
+
+  it("hides rows with filterToCompatible when they violate requiredCapabilities", async () => {
+    const mixedProviders = [
+      {
+        id: "ollama-cloud",
+        name: "Ollama Cloud",
+        models: [
+          {
+            id: "ollama-cloud/deepseek-v4-pro",
+            name: "DeepSeek V4 Pro",
+            capabilities: { vision: false, documents: false, audio: false, video: false },
+          },
+          {
+            id: "anthropic/claude-opus-4-7",
+            name: "Claude Opus 4.7",
+            capabilities: { vision: true, documents: true, audio: false, video: false },
+          },
+        ],
+      },
+    ];
+    render(
+      <ModelPicker
+        value=""
+        onChange={() => {}}
+        providers={mixedProviders}
+        requiredCapabilities={["vision"]}
+        filterToCompatible
+      />
+    );
+
+    await userEvent.click(screen.getByRole("combobox"));
+
+    expect(screen.queryByText("DeepSeek V4 Pro")).not.toBeInTheDocument();
+    expect(screen.getByText("Claude Opus 4.7")).toBeInTheDocument();
+  });
 });

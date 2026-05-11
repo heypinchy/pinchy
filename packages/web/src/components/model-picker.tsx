@@ -1,6 +1,6 @@
 "use client";
 
-import { Image, FileText, AudioLines, Video } from "lucide-react";
+import { Image, FileText, AudioLines, Video, AlertTriangle } from "lucide-react";
 import {
   Select,
   SelectContent,
@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import type { ModelCapability } from "@/lib/model-resolver/types";
 
 type ModelCapabilities = {
   vision: boolean;
@@ -38,6 +39,8 @@ type ModelPickerProps = {
   onChange: (modelId: string) => void;
   providers: ProviderGroup[];
   deprecatedModelId?: string;
+  requiredCapabilities?: ModelCapability[];
+  filterToCompatible?: boolean;
 };
 
 const CAPABILITY_ICONS = [
@@ -46,6 +49,9 @@ const CAPABILITY_ICONS = [
   { key: "audio" as const, Icon: AudioLines, label: "Supports audio input" },
   { key: "video" as const, Icon: Video, label: "Supports video input" },
 ];
+
+type CheckableCapability = keyof ModelCapabilities;
+const CHECKABLE_CAPABILITIES = new Set<string>(["vision", "documents", "audio", "video"]);
 
 function CapabilityBadges({ caps }: { caps: ModelCapabilities }) {
   return (
@@ -64,7 +70,24 @@ function CapabilityBadges({ caps }: { caps: ModelCapabilities }) {
   );
 }
 
-export function ModelPicker({ value, onChange, providers, deprecatedModelId }: ModelPickerProps) {
+function getMissingCapabilities(
+  caps: ModelCapabilities | undefined,
+  required: ModelCapability[]
+): CheckableCapability[] {
+  return required.filter(
+    (cap): cap is CheckableCapability =>
+      CHECKABLE_CAPABILITIES.has(cap) && !caps?.[cap as CheckableCapability]
+  );
+}
+
+export function ModelPicker({
+  value,
+  onChange,
+  providers,
+  deprecatedModelId,
+  requiredCapabilities,
+  filterToCompatible,
+}: ModelPickerProps) {
   const providersWithModels = providers.filter((p) => p.models.length > 0);
 
   const allAllowlistedModelIds = new Set(
@@ -90,12 +113,39 @@ export function ModelPicker({ value, onChange, providers, deprecatedModelId }: M
           <SelectGroup key={provider.id}>
             <SelectLabel>{provider.name}</SelectLabel>
             {provider.models.map((m) => {
+              const missingCaps =
+                requiredCapabilities && requiredCapabilities.length > 0
+                  ? getMissingCapabilities(m.capabilities, requiredCapabilities)
+                  : [];
+
+              if (filterToCompatible && missingCaps.length > 0) {
+                return null;
+              }
+
               const isDisabled = m.compatible === false;
+              const warningLabel =
+                missingCaps.length > 0
+                  ? `Doesn't satisfy required capability: ${missingCaps.join(", ")}`
+                  : undefined;
+
               return (
                 <SelectItem key={m.id} value={m.id} disabled={isDisabled}>
                   <span className="inline-flex items-center">
                     {m.name}
                     {m.capabilities && <CapabilityBadges caps={m.capabilities} />}
+                    {warningLabel && (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <AlertTriangle
+                              className="ml-1 size-3.5 text-amber-500"
+                              aria-label={warningLabel}
+                            />
+                          </TooltipTrigger>
+                          <TooltipContent>{warningLabel}</TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    )}
                   </span>
                   {isDisabled && m.incompatibleReason && (
                     <span className="block text-xs font-normal text-muted-foreground">
