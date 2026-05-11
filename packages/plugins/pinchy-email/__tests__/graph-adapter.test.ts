@@ -96,3 +96,42 @@ describe("GraphAdapter.read", () => {
     expect(result.unread).toBe(true);
   });
 });
+
+describe("GraphAdapter.search", () => {
+  beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('search({from,subject}) issues $search with from: and subject:', async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ value: [] }) });
+    await adapter.search({ from: "alice@example.com", subject: "invoice" });
+    const url = (fetch as Mock).mock.calls[0][0] as string;
+    expect(url).toContain("%24search=");
+    expect(decodeURIComponent(url)).toContain("from:alice@example.com");
+    expect(decodeURIComponent(url)).toContain("subject:invoice");
+  });
+
+  it("search({unread:true,sinceDays:7}) uses $filter for date and isRead", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ value: [] }) });
+    await adapter.search({ unread: true, sinceDays: 7 });
+    const url = (fetch as Mock).mock.calls[0][0] as string;
+    expect(decodeURIComponent(url)).toContain("isRead eq false");
+    expect(decodeURIComponent(url)).toContain("receivedDateTime ge");
+  });
+
+  it("search({}) throws 'at least one filter'", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    await expect(adapter.search({})).rejects.toThrow(/at least one/i);
+  });
+
+  it("folder scopes via mailFolders path", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ value: [] }) });
+    await adapter.search({ from: "alice@example.com", folder: "SENT" });
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/me/mailFolders/sentitems/messages"),
+      expect.any(Object),
+    );
+  });
+});
