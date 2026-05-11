@@ -65,3 +65,34 @@ describe("GraphAdapter.list", () => {
     delete process.env.GRAPH_API_BASE_URL;
   });
 });
+
+describe("GraphAdapter.read", () => {
+  beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("read(id) hits /v1.0/me/messages/<id>", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        id: "msg1",
+        subject: "Hello",
+        bodyPreview: "Hi there",
+        receivedDateTime: "2024-01-01T10:00:00Z",
+        from: { emailAddress: { address: "alice@example.com" } },
+        toRecipients: [{ emailAddress: { address: "bob@example.com" } }],
+        ccRecipients: [{ emailAddress: { address: "charlie@example.com" } }],
+        isRead: false,
+        body: { contentType: "text", content: "Hi there, full body" },
+      }),
+    });
+    const result = await adapter.read("msg1");
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/v1.0/me/messages/msg1"),
+      expect.any(Object),
+    );
+    expect(result.body).toBe("Hi there, full body");
+    expect(result.cc).toBe("charlie@example.com");
+    expect(result.unread).toBe(true);
+  });
+});
