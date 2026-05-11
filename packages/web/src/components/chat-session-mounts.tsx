@@ -59,7 +59,13 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
   // renders. The effect deps below intentionally exclude the callbacks to
   // avoid churning publishes on every render in environments (e.g. tests)
   // where the callbacks are not memoized.
-  const { onRetryContinue, onRetryResend } = bundle;
+  const {
+    onRetryContinue,
+    onRetryResend,
+    addPendingUpload,
+    removePendingUpload,
+    retryPendingUpload,
+  } = bundle;
 
   useEffect(() => {
     // reconnectExhausted wins: the user can't recover without reloading, so
@@ -84,6 +90,10 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
       onRetryContinue,
       onRetryResend,
       lastError,
+      pendingUploads: bundle.pendingUploads,
+      addPendingUpload,
+      removePendingUpload,
+      retryPendingUpload,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
@@ -100,6 +110,7 @@ function ChatSessionInstance({ agentId }: { agentId: string }) {
     bundle.reconnectExhausted,
     bundle.payloadRejected,
     bundle.isOrphaned,
+    bundle.pendingUploads,
   ]);
 
   return null;
