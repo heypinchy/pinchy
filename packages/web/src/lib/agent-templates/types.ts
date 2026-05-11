@@ -9,6 +9,14 @@ export interface OdooTemplateConfig {
   requiredModels: Array<{
     model: string;
     operations: OdooOperation[];
+    /**
+     * Mark a model as optional when it is only present on some Odoo editions
+     * or modules (e.g. `approval.request` exists in Odoo Enterprise but not
+     * Community). Optional models that are missing from the connection still
+     * appear in `warnings`, but they do NOT enter `missingModels` and
+     * therefore do not block agent creation in the UI.
+     */
+    optional?: boolean;
   }>;
 }
 
@@ -54,6 +62,7 @@ export interface OdooAgentTemplateSpec {
   requiredModels: ReadonlyArray<{
     model: string;
     operations: ReadonlyArray<OdooOperation>;
+    optional?: boolean;
   }>;
   modelHint?: ModelHint;
 }

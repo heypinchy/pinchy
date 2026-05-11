@@ -27,10 +27,17 @@ export function validateOdooTemplate(
 
     if (!connectionModel) {
       warnings.push(`${required.model}: model not available`);
-      missingModels.push({
-        model: required.model,
-        name: required.model, // No display name available when model isn't in connection
-      });
+      // Optional models (edition- or module-conditional, e.g. approval.request
+      // which exists in Odoo Enterprise but not Community) are surfaced as
+      // warnings but do not block agent creation. The agent's AGENTS.md is
+      // expected to gate its own usage of these models via `odoo_schema` at
+      // runtime.
+      if (!required.optional) {
+        missingModels.push({
+          model: required.model,
+          name: required.model, // No display name available when model isn't in connection
+        });
+      }
       continue;
     }
 

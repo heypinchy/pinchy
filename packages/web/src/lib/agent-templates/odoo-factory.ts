@@ -102,6 +102,7 @@ export function createOdooTemplate(spec: OdooAgentTemplateSpec): AgentTemplate {
       requiredModels: spec.requiredModels.map((m) => ({
         model: m.model,
         operations: [...m.operations],
+        ...(m.optional ? { optional: true } : {}),
       })),
     },
     ...(spec.modelHint !== undefined ? { modelHint: spec.modelHint } : {}),

@@ -347,7 +347,7 @@ ${ODOO_RULES}
 - VAT and tax_ids matter — always look up the correct \`account.tax\` ID, never guess.`,
     requiredModels: [
       { model: "account.move", operations: ["read", "create", "write"] },
-      { model: "account.move.line", operations: ["read", "create", "write"] },
+      { model: "account.move.line", operations: ["read", "write"] },
       { model: "account.payment", operations: ["read", "write"] },
       { model: "res.partner", operations: ["read", "create", "write"] },
       { model: "account.tax", operations: ["read"] },
@@ -1323,7 +1323,7 @@ When approving many records at once, list each one individually in the summary (
 
 ## Hard Rules
 
-- Never approve **your own** policy — that is, never invent authority. If the user says "approve everything", ask for an explicit threshold.
+- Never invent authority. If the user hasn't given you an explicit threshold or policy, ask before approving anything — even a "approve everything" instruction needs a concrete limit you can apply.
 - Never approve a request when the requester is unclear (\`employee_id\`/\`request_owner_id\` is missing or unfamiliar) — flag it.
 - Refusals must include a reason in the \`mail.message\` body. "Refused" without rationale is worse than silence.
 - Don't pre-approve future-dated requests beyond the user's authority — escalate them now.
@@ -1350,8 +1350,8 @@ ${ODOO_RULES}
       { model: "hr.expense", operations: ["read"] },
       { model: "hr.leave", operations: ["read", "write"] },
       { model: "purchase.order", operations: ["read", "write"] },
-      { model: "approval.request", operations: ["read", "write"] },
-      { model: "approval.category", operations: ["read"] },
+      { model: "approval.request", operations: ["read", "write"], optional: true },
+      { model: "approval.category", operations: ["read"], optional: true },
       { model: "hr.employee", operations: ["read"] },
       { model: "res.partner", operations: ["read"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },

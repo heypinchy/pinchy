@@ -965,16 +965,31 @@ describe("Odoo Bookkeeper template (write counterpart of Finance Controller)", (
     expect(getTemplate("odoo-bookkeeper")!.odooConfig!.accessLevel).toBe("read-write");
   });
 
-  it("grants read+create+write on account.move, account.move.line, res.partner", () => {
+  it("grants read+create+write on account.move and res.partner", () => {
     const t = getTemplate("odoo-bookkeeper")!;
     const byModel = new Map(t.odooConfig!.requiredModels.map((m) => [m.model, m.operations]));
-    for (const model of ["account.move", "account.move.line", "res.partner"]) {
+    for (const model of ["account.move", "res.partner"]) {
       const ops = byModel.get(model);
       expect(ops, `missing ${model}`).toBeDefined();
       expect(ops).toContain("read");
       expect(ops).toContain("create");
       expect(ops).toContain("write");
     }
+  });
+
+  it("grants read+write but NOT create on account.move.line (lines flow via invoice_line_ids inline)", () => {
+    // The Bookkeeper's mandatory workflow rule #3 forbids creating
+    // account.move.line records separately — they must be inlined via the
+    // account.move create's `invoice_line_ids` field. Granting `create` here
+    // would be a permission the agent is documented never to use, and would
+    // open a non-atomic invoice creation path. `write` stays so the agent can
+    // edit lines on existing drafts (description, qty, tax) before posting.
+    const t = getTemplate("odoo-bookkeeper")!;
+    const line = t.odooConfig!.requiredModels.find((m) => m.model === "account.move.line");
+    expect(line).toBeDefined();
+    expect(line!.operations).toContain("read");
+    expect(line!.operations).toContain("write");
+    expect(line!.operations).not.toContain("create");
   });
 
   it("grants read+write but NOT create on account.payment", () => {
@@ -1041,25 +1056,30 @@ describe("Vision capability for read-write Odoo operator templates", () => {
   // primary "paper into Odoo" workflow. Without vision in the hint, the
   // default resolver picks a text-only model and the user has to manually
   // override, sometimes landing on unstable Vision+Tools models.
-  const READ_WRITE_OPERATOR_IDS = [
-    "odoo-bookkeeper",
-    "odoo-project-manager",
-    "odoo-hr-operator",
-    "odoo-warehouse-operator",
-    "odoo-production-operator",
-    "odoo-approval-manager",
-    "odoo-crm-assistant",
-    "odoo-procurement-agent",
-    "odoo-customer-service",
-    "odoo-recruitment-coordinator",
-  ] as const;
+  //
+  // The list of operator templates is derived from the registry rather than
+  // hard-coded — if a new Odoo template ships with accessLevel "read-write"
+  // or "full" but forgets the vision capability hint, this invariant catches
+  // it automatically.
+  it("every read-write Odoo template requests vision capability", () => {
+    const operators = Object.entries(AGENT_TEMPLATES).filter(
+      ([, t]) =>
+        t.requiresOdooConnection &&
+        (t.odooConfig?.accessLevel === "read-write" || t.odooConfig?.accessLevel === "full")
+    );
 
-  it("every read-write operator template requests vision capability", () => {
-    for (const id of READ_WRITE_OPERATOR_IDS) {
-      const t = getTemplate(id)!;
-      expect(t.modelHint, `${id} missing modelHint`).toBeDefined();
-      expect(t.modelHint!.capabilities, `${id} missing vision`).toContain("vision");
+    // Smoke guard: if the filter ever returns nothing, the invariant would
+    // pass vacuously and mask a regression where every operator lost the hint
+    // (or the registry filtering broke).
+    expect(operators.length).toBeGreaterThan(0);
+
+    const missingVision: string[] = [];
+    for (const [id, t] of operators) {
+      if (!t.modelHint?.capabilities?.includes("vision")) {
+        missingVision.push(id);
+      }
     }
+    expect(missingVision).toEqual([]);
   });
 });
 
@@ -1353,6 +1373,19 @@ describe("Odoo Approval Manager template (cross-module approvals)", () => {
     }
   });
 
+  it("marks Enterprise-only approval models as optional (so Community connections can still create the agent)", () => {
+    // `approval.request` and `approval.category` ship with Odoo Enterprise's
+    // Approvals module. On Community they do not exist, and without the
+    // optional flag the missing-models gate in new-agent-form.tsx disables
+    // the Create button entirely. Marking them optional keeps Community
+    // users able to create an Approval Manager that still covers expenses /
+    // leaves / POs.
+    const t = getTemplate("odoo-approval-manager")!;
+    const byModel = new Map(t.odooConfig!.requiredModels.map((m) => [m.model, m]));
+    expect(byModel.get("approval.request")?.optional).toBe(true);
+    expect(byModel.get("approval.category")?.optional).toBe(true);
+  });
+
   it("does NOT grant create on approval surfaces (approvals act on existing records)", () => {
     // The agent approves what already exists; it does not file expense reports,
     // request leave, or create POs. Those originate from other roles.
@@ -1381,6 +1414,17 @@ describe("Odoo Approval Manager template (cross-module approvals)", () => {
   it("AGENTS.md warns about authority limits and forwarding above-threshold requests", () => {
     const t = getTemplate("odoo-approval-manager")!;
     expect(t.defaultAgentsMd).toMatch(/authority|threshold|escalat|above|exceeds/i);
+  });
+
+  it("AGENTS.md does not use the ambiguous 'approve your own policy' phrasing", () => {
+    // Earlier draft said "Never approve your own policy — that is, never
+    // invent authority", which models tend to parse as "never approve
+    // requests you yourself submitted". The intent is the opposite:
+    // never *invent* authority. Test guards against regressing to the
+    // ambiguous wording.
+    const t = getTemplate("odoo-approval-manager")!;
+    expect(t.defaultAgentsMd).not.toMatch(/approve\s+\*?\*?your\s+own\*?\*?\s+policy/i);
+    expect(t.defaultAgentsMd).toMatch(/invent authority|invent policy|never create policy/i);
   });
 
   it("appears in getTemplateList", () => {
