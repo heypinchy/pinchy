@@ -76,6 +76,23 @@ describe("ModelPicker", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows a deprecated fallback entry when the current model is no longer in the allowlist", async () => {
+    render(
+      <ModelPicker
+        value="anthropic/removed-model"
+        onChange={() => {}}
+        providers={providers}
+        deprecatedModelId="anthropic/removed-model"
+      />
+    );
+
+    await userEvent.click(screen.getByRole("combobox"));
+
+    // The text appears in the trigger (selected value) and in the dropdown option.
+    const matches = screen.getAllByText(/anthropic\/removed-model \(no longer available\)/i);
+    expect(matches.length).toBeGreaterThanOrEqual(1);
+  });
+
   it("hides rows with filterToCompatible when they violate requiredCapabilities", async () => {
     const mixedProviders = [
       {
