@@ -1,7 +1,17 @@
+import { readFile } from "fs/promises";
+import { join } from "path";
 import type { ChatAttachment } from "openclaw-node";
+import { eq, and, inArray } from "drizzle-orm";
+import { db } from "@/db";
+import { uploadedFiles } from "@/db/schema";
+import { appendAuditLog } from "@/lib/audit";
 import { sanitizeFilename, validateUploadBuffer } from "@/lib/upload-validation";
-import { persistAttachment, UploadSlotExhaustedError } from "@/lib/uploads";
-import { getOpenClawWorkspacePath } from "@/lib/workspace";
+import {
+  persistAttachment,
+  promoteStagedToAttached,
+  UploadSlotExhaustedError,
+} from "@/lib/uploads";
+import { getWorkspacePath, getOpenClawWorkspacePath } from "@/lib/workspace";
 
 export interface ContentPart {
   type: string;
@@ -36,6 +46,188 @@ export interface ProcessAttachmentsParams {
 }
 
 const DATA_URL_RE = /^data:([^;]+);base64,(.+)$/;
+
+// ── materializeAttachments ───────────────────────────────────────────────────
+
+export class AttachmentNotFoundError extends Error {
+  constructor(public readonly ids: string[]) {
+    super(`Attachment(s) not found or not accessible: ${ids.join(", ")}`);
+    this.name = "AttachmentNotFoundError";
+  }
+}
+
+export class AttachmentExpiredError extends Error {
+  constructor(public readonly ids: string[]) {
+    super(`Attachment(s) have expired: ${ids.join(", ")}`);
+    this.name = "AttachmentExpiredError";
+  }
+}
+
+export class AttachmentAlreadyAttachedError extends Error {
+  constructor(public readonly ids: string[]) {
+    super(`Attachment(s) have already been attached: ${ids.join(", ")}`);
+    this.name = "AttachmentAlreadyAttachedError";
+  }
+}
+
+export interface MaterializeParams {
+  agentId: string;
+  userId: string;
+  /** Upload IDs from the WS message frame. */
+  attachmentIds: string[];
+  /** The WS message being sent — stored on the DB row for traceability. */
+  messageId: string;
+  /** Agent display name, snapshotted in audit detail. */
+  agentName: string;
+}
+
+/**
+ * Server-side second phase of the two-phase upload flow.
+ *
+ * Looks up the staged upload rows by `(id, userId, agentId, status=staged)`,
+ * validates expiry + status, atomically promotes each staged file to its
+ * durable `uploads/` path, flips the DB row to `attached`, emits per-file
+ * `file.upload.attached` audit events, and returns the same
+ * `ProcessAttachmentsResult` shape that `processIncomingAttachments` returns
+ * so the WS send-path can remain uniform.
+ *
+ * Throws:
+ *   `AttachmentNotFoundError`        — id missing or owned by another user/agent
+ *   `AttachmentExpiredError`         — staged file has passed `expiresAt`
+ *   `AttachmentAlreadyAttachedError` — row is already `attached`
+ */
+export async function materializeAttachments(
+  params: MaterializeParams
+): Promise<ProcessAttachmentsResult> {
+  const { agentId, userId, attachmentIds, messageId, agentName } = params;
+
+  // Step 1: fetch rows owned by (userId, agentId) with the requested IDs.
+  const rows = await db
+    .select()
+    .from(uploadedFiles)
+    .where(
+      and(
+        inArray(uploadedFiles.id, attachmentIds),
+        eq(uploadedFiles.userId, userId),
+        eq(uploadedFiles.agentId, agentId)
+      )
+    );
+
+  const foundIds = new Set(rows.map((r) => r.id));
+
+  // Step 2: check for missing IDs (cross-user attack or wrong agent)
+  const missingIds = attachmentIds.filter((id) => !foundIds.has(id));
+  if (missingIds.length > 0) {
+    for (const uploadId of missingIds) {
+      await appendAuditLog({
+        eventType: "file.upload.attached",
+        actorType: "user",
+        actorId: userId,
+        outcome: "failure",
+        detail: { uploadId, reason: "not_found" },
+      });
+    }
+    throw new AttachmentNotFoundError(missingIds);
+  }
+
+  const now = new Date();
+
+  // Step 3: check for expired rows
+  const expiredRows = rows.filter((r) => r.expiresAt !== null && r.expiresAt < now);
+  if (expiredRows.length > 0) {
+    for (const row of expiredRows) {
+      await appendAuditLog({
+        eventType: "file.upload.attached",
+        actorType: "user",
+        actorId: userId,
+        outcome: "failure",
+        detail: { uploadId: row.id, reason: "expired" },
+      });
+    }
+    throw new AttachmentExpiredError(expiredRows.map((r) => r.id));
+  }
+
+  // Step 4: check for already-attached rows
+  const alreadyAttached = rows.filter((r) => r.status === "attached");
+  if (alreadyAttached.length > 0) {
+    for (const row of alreadyAttached) {
+      await appendAuditLog({
+        eventType: "file.upload.attached",
+        actorType: "user",
+        actorId: userId,
+        outcome: "failure",
+        detail: { uploadId: row.id, reason: "already_attached" },
+      });
+    }
+    throw new AttachmentAlreadyAttachedError(alreadyAttached.map((r) => r.id));
+  }
+
+  // Step 5: promote each staged file
+  const workspaceRoot = getWorkspacePath(agentId);
+  const openClawWorkspaceRoot = getOpenClawWorkspacePath(agentId);
+
+  const chatAttachments: ChatAttachment[] = [];
+  const workspaceRefs: ProcessedWorkspaceRef[] = [];
+
+  // Process sequentially to keep audit order deterministic and avoid
+  // racing two renames into the same collision-suffix slot.
+  for (const row of rows) {
+    const stagedRelativePath = row.stagingPath!;
+
+    // 5a: promote staged → uploads/
+    const promoted = await promoteStagedToAttached({
+      workspaceRoot,
+      stagedRelativePath,
+      filename: row.filename,
+    });
+
+    // 5b: flip DB row to attached
+    await db
+      .update(uploadedFiles)
+      .set({
+        status: "attached",
+        messageId,
+        attachedAt: now,
+        expiresAt: null,
+      })
+      .where(eq(uploadedFiles.id, row.id));
+
+    // 5c: for image MIMEs — re-read the durable file and base64-encode
+    if (row.mimeType.startsWith("image/")) {
+      const durablePath = join(workspaceRoot, promoted.relativePath);
+      const fileBuffer = await readFile(durablePath);
+      const content = fileBuffer.toString("base64");
+      chatAttachments.push({ mimeType: row.mimeType, fileName: row.filename, content });
+    }
+
+    // 5d/5e: build workspace ref
+    const absolutePath = `${openClawWorkspaceRoot}/${promoted.relativePath}`;
+    workspaceRefs.push({
+      relativePath: promoted.relativePath,
+      absolutePath,
+      mimeType: row.mimeType,
+      sizeBytes: row.sizeBytes,
+      contentHash: row.contentHash,
+      reused: false,
+    });
+
+    // 5f: emit success audit event
+    await appendAuditLog({
+      eventType: "file.upload.attached",
+      actorType: "user",
+      actorId: userId,
+      outcome: "success",
+      detail: {
+        uploadId: row.id,
+        messageId,
+        filename: row.filename,
+        agent: { id: agentId, name: agentName },
+      },
+    });
+  }
+
+  return { chatAttachments, workspaceRefs };
+}
 
 /**
  * Error class for attachment problems caused by client input we should report
