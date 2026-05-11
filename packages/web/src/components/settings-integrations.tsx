@@ -34,6 +34,7 @@ import {
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 // toast is now handled by useIntegrationActions hook
 import { AddIntegrationDialog } from "./add-integration-dialog";
+import { EditCredentialsDialog } from "./edit-credentials-dialog";
 import { EditOAuthDialog } from "./edit-oauth-dialog";
 import { BraveIcon, GoogleIcon, OdooIcon } from "./integration-icons";
 import type { IntegrationConnection } from "@/lib/integrations/types";
@@ -66,6 +67,7 @@ export function SettingsIntegrations() {
   const [renameName, setRenameName] = useState("");
   const [showOAuthEdit, setShowOAuthEdit] = useState(false);
   const [resumeGoogleSetup, setResumeGoogleSetup] = useState(false);
+  const [editCredConn, setEditCredConn] = useState<IntegrationConnection | null>(null);
 
   const fetchConnections = useCallback(async () => {
     try {
@@ -195,11 +197,7 @@ export function SettingsIntegrations() {
                           ) : (
                             <>
                               {conn.status === "auth_failed" && (
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    // TODO(Task 14): open edit-credentials dialog
-                                  }}
-                                >
+                                <DropdownMenuItem onClick={() => setEditCredConn(conn)}>
                                   Reconnect
                                 </DropdownMenuItem>
                               )}
@@ -217,6 +215,9 @@ export function SettingsIntegrations() {
                                 </DropdownMenuItem>
                               ) : (
                                 <>
+                                  <DropdownMenuItem onClick={() => setEditCredConn(conn)}>
+                                    Edit credentials
+                                  </DropdownMenuItem>
                                   <DropdownMenuItem
                                     onClick={() => testConnection(conn.id)}
                                     disabled={testing === conn.id}
@@ -395,6 +396,16 @@ export function SettingsIntegrations() {
       </AlertDialog>
 
       <EditOAuthDialog open={showOAuthEdit} onOpenChange={setShowOAuthEdit} />
+
+      <EditCredentialsDialog
+        connection={editCredConn}
+        open={editCredConn !== null}
+        onOpenChange={(o) => !o && setEditCredConn(null)}
+        onSuccess={() => {
+          setEditCredConn(null);
+          fetchConnections();
+        }}
+      />
     </div>
   );
 }

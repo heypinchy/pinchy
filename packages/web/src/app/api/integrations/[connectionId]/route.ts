@@ -23,8 +23,11 @@ const updateConnectionSchema = z
   .passthrough();
 
 const credentialSchemas: Record<string, z.ZodType> = {
-  odoo: odooCredentialsSchema,
-  "web-search": z.object({ apiKey: z.string().min(1) }).strict(),
+  odoo: odooCredentialsSchema.partial(),
+  "web-search": z
+    .object({ apiKey: z.string().min(1) })
+    .strict()
+    .partial(),
 };
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
