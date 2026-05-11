@@ -13,16 +13,8 @@ import {
   FormLabel,
   FormMessage,
 } from "@/components/ui/form";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectLabel,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { DeleteAgentDialog } from "@/components/delete-agent-dialog";
+import { ModelPicker } from "@/components/model-picker";
 
 import { AGENT_NAME_MAX_LENGTH } from "@/lib/agent-constants";
 
@@ -83,14 +75,6 @@ export function AgentSettingsGeneral({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [values, form.formState.isDirty]);
 
-  const providersWithModels = providers.filter((p) => p.models.length > 0);
-
-  // Collect all model IDs from the allowlist to detect deprecated pinned models
-  const allAllowlistedModelIds = new Set(
-    providersWithModels.flatMap((p) => p.models.map((m) => m.id))
-  );
-  const isDeprecatedModel = agent.model !== "" && !allAllowlistedModelIds.has(agent.model);
-
   useEffect(() => {
     if (typeof window !== "undefined" && window.location.hash === "#model") {
       document.getElementById("model")?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -134,38 +118,14 @@ export function AgentSettingsGeneral({
             render={({ field }) => (
               <FormItem id="model">
                 <FormLabel>Model</FormLabel>
-                <Select onValueChange={field.onChange} defaultValue={field.value}>
-                  <FormControl>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a model" />
-                    </SelectTrigger>
-                  </FormControl>
-                  <SelectContent>
-                    {isDeprecatedModel && (
-                      <SelectItem value={agent.model} className="text-muted-foreground">
-                        {agent.model} (no longer available)
-                      </SelectItem>
-                    )}
-                    {providersWithModels.map((provider) => (
-                      <SelectGroup key={provider.id}>
-                        <SelectLabel>{provider.name}</SelectLabel>
-                        {provider.models.map((m) => {
-                          const isDisabled = m.compatible === false;
-                          return (
-                            <SelectItem key={m.id} value={m.id} disabled={isDisabled}>
-                              {m.name}
-                              {isDisabled && m.incompatibleReason && (
-                                <span className="block text-xs font-normal text-muted-foreground">
-                                  {m.incompatibleReason}
-                                </span>
-                              )}
-                            </SelectItem>
-                          );
-                        })}
-                      </SelectGroup>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <FormControl>
+                  <ModelPicker
+                    value={field.value}
+                    onChange={field.onChange}
+                    providers={providers}
+                    deprecatedModelId={agent.model}
+                  />
+                </FormControl>
                 <FormMessage />
               </FormItem>
             )}
