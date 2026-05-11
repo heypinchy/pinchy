@@ -1,6 +1,13 @@
 /**
- * Tests for AddIntegrationDialog — MCP preset picker (Task 7.1)
- * and test-connection button (Task 7.2).
+ * Tests for AddIntegrationDialog — MCP integration type cards (one card per
+ * preset) and the resulting connect-step variants:
+ *
+ *  - Named-preset flow (GitHub / Notion / Linear): preset is prefilled,
+ *    URL and transport are hidden, user enters only a token.
+ *  - Custom server flow ("Custom MCP server" card): user picks a preset,
+ *    enters URL, transport, and token.
+ *
+ * The "Test connection" button is available in both flows.
  */
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -37,9 +44,9 @@ function renderDialog(props: Partial<Parameters<typeof AddIntegrationDialog>[0]>
   );
 }
 
-// ── Task 7.1: MCP preset picker ─────────────────────────────────────────────
+// ── Type picker: four MCP cards visible when the flag is on ─────────────────
 
-describe("AddIntegrationDialog — MCP preset picker (Task 7.1)", () => {
+describe("AddIntegrationDialog — MCP type cards", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
@@ -49,120 +56,30 @@ describe("AddIntegrationDialog — MCP preset picker (Task 7.1)", () => {
     vi.unstubAllEnvs();
   });
 
-  it("shows an 'MCP' option in the type picker", () => {
+  it("shows GitHub, Notion, Linear and Custom MCP server cards", () => {
     renderDialog();
-    expect(screen.getByText(/Generic MCP/i)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /GitHub/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Notion/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Linear/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Custom MCP server/i })).toBeInTheDocument();
   });
 
-  it("selecting GitHub pre-fills the URL field with the GitHub MCP URL", async () => {
-    const user = userEvent.setup();
+  it("hides every MCP card when the flag is off", () => {
+    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "0");
     renderDialog();
-
-    // Click the MCP type button in the type picker
-    const mcpButton = screen.getByRole("button", { name: /Generic MCP/i });
-    await user.click(mcpButton);
-
-    // Now we are on the connect step — find the preset combobox (Radix Select renders as button with role=combobox)
-    const presetSelector = screen.getByRole("combobox");
-    await user.click(presetSelector);
-    const githubOption = screen.getByRole("option", { name: /GitHub/i });
-    await user.click(githubOption);
-
-    // The URL field should be pre-filled
-    const urlInput = screen.getByRole("textbox", { name: /URL/i });
-    expect(urlInput).toHaveValue("https://api.githubcopilot.com/mcp/");
-  });
-
-  it("shows token instructions after selecting GitHub preset", async () => {
-    const user = userEvent.setup();
-    renderDialog();
-
-    const mcpButton = screen.getByRole("button", { name: /Generic MCP/i });
-    await user.click(mcpButton);
-
-    const presetSelector = screen.getByRole("combobox");
-    await user.click(presetSelector);
-    const githubOption = screen.getByRole("option", { name: /GitHub/i });
-    await user.click(githubOption);
-
-    // Token instructions should be visible
-    expect(screen.getByText(/Fine-Grained Personal Access Token/i)).toBeInTheDocument();
-  });
-
-  it("submit button is labelled 'Connect' for MCP types", async () => {
-    const user = userEvent.setup();
-    renderDialog();
-
-    const mcpButton = screen.getByRole("button", { name: /Generic MCP/i });
-    await user.click(mcpButton);
-
-    // The connect step should have a "Connect" submit button
-    expect(screen.getByRole("button", { name: /^Connect$/i })).toBeInTheDocument();
-  });
-
-  it("submit button is disabled until token is entered", async () => {
-    const user = userEvent.setup();
-    renderDialog();
-
-    const mcpButton = screen.getByRole("button", { name: /Generic MCP/i });
-    await user.click(mcpButton);
-
-    // Select GitHub so URL is pre-filled, but token still empty
-    const presetSelector = screen.getByRole("combobox");
-    await user.click(presetSelector);
-    await user.click(screen.getByRole("option", { name: /GitHub/i }));
-
-    const submitButton = screen.getByRole("button", { name: /^Connect$/i });
-    expect(submitButton).toBeDisabled();
-  });
-
-  it("submit button is enabled once token is entered", async () => {
-    const user = userEvent.setup();
-    renderDialog();
-
-    const mcpButton = screen.getByRole("button", { name: /Generic MCP/i });
-    await user.click(mcpButton);
-
-    // Select GitHub (URL pre-filled)
-    const presetSelector = screen.getByRole("combobox");
-    await user.click(presetSelector);
-    await user.click(screen.getByRole("option", { name: /GitHub/i }));
-
-    // Enter a token
-    const tokenInput = screen.getByLabelText(/token/i);
-    await user.type(tokenInput, "github_pat_sometoken");
-
-    const submitButton = screen.getByRole("button", { name: /^Connect$/i });
-    expect(submitButton).not.toBeDisabled();
-  });
-
-  it("Generic MCP shows URL, transport and token fields — all blank initially", async () => {
-    const user = userEvent.setup();
-    renderDialog();
-
-    const mcpButton = screen.getByRole("button", { name: /Generic MCP/i });
-    await user.click(mcpButton);
-
-    // Generic is the default preset — URL should be empty
-    const urlInput = screen.getByRole("textbox", { name: /URL/i });
-    expect(urlInput).toHaveValue("");
-  });
-
-  it("token field is of type password", async () => {
-    const user = userEvent.setup();
-    renderDialog();
-
-    const mcpButton = screen.getByRole("button", { name: /Generic MCP/i });
-    await user.click(mcpButton);
-
-    const tokenInput = screen.getByLabelText(/token/i);
-    expect(tokenInput).toHaveAttribute("type", "password");
+    // None of the four MCP cards should be present.
+    expect(screen.queryByRole("button", { name: /^GitHub$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Notion$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Linear$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Custom MCP server/i })).not.toBeInTheDocument();
+    // Odoo (non-MCP) is still listed.
+    expect(screen.getByRole("button", { name: /Odoo/i })).toBeInTheDocument();
   });
 });
 
-// ── Task 7.2: Test connection button ─────────────────────────────────────────
+// ── Named-preset flow: GitHub card ──────────────────────────────────────────
 
-describe("AddIntegrationDialog — Test connection button (Task 7.2)", () => {
+describe("AddIntegrationDialog — GitHub named-preset flow", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
@@ -172,33 +89,172 @@ describe("AddIntegrationDialog — Test connection button (Task 7.2)", () => {
     vi.unstubAllEnvs();
   });
 
-  it("shows 'Test connection' button only for Generic MCP", async () => {
+  it("hides the preset selector — the card already picked GitHub", async () => {
     const user = userEvent.setup();
     renderDialog();
 
-    const mcpButton = screen.getByRole("button", { name: /Generic MCP/i });
-    await user.click(mcpButton);
+    await user.click(screen.getByRole("button", { name: /GitHub/i }));
 
-    // Generic is the default preset — test connection should be visible
+    // No combobox should be visible — the preset is locked in by the card choice.
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("hides the URL field — GitHub's URL is fixed", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /GitHub/i }));
+
+    expect(screen.queryByRole("textbox", { name: /URL/i })).not.toBeInTheDocument();
+  });
+
+  it("shows the dialog title 'Connect GitHub'", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /GitHub/i }));
+
+    expect(screen.getByRole("heading", { name: /Connect GitHub/i })).toBeInTheDocument();
+  });
+
+  it("shows GitHub-specific token instructions", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /GitHub/i }));
+
+    expect(screen.getByText(/Fine-Grained Personal Access Token/i)).toBeInTheDocument();
+  });
+
+  it("token field is type=password", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /GitHub/i }));
+
+    expect(screen.getByLabelText(/token/i)).toHaveAttribute("type", "password");
+  });
+
+  it("Connect submit is disabled until a token is entered", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /GitHub/i }));
+
+    const submit = screen.getByRole("button", { name: /^Connect$/i });
+    expect(submit).toBeDisabled();
+
+    await user.type(screen.getByLabelText(/token/i), "github_pat_sometoken");
+    expect(submit).not.toBeDisabled();
+  });
+
+  it("submits with preset=github and the GitHub MCP URL", async () => {
+    const user = userEvent.setup();
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: "conn-1", type: "mcp" }),
+    } as unknown as Response);
+
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /GitHub/i }));
+    await user.type(screen.getByLabelText(/token/i), "github_pat_sometoken");
+    await user.click(screen.getByRole("button", { name: /^Connect$/i }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/integrations",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.stringContaining('"preset":"github"'),
+        })
+      );
+      // URL is the fixed GitHub MCP endpoint from the preset registry.
+      const body = fetchMock.mock.calls.at(-1)?.[1]?.body as string;
+      expect(body).toContain("https://api.githubcopilot.com/mcp/");
+    });
+  });
+});
+
+// ── Custom server flow ──────────────────────────────────────────────────────
+
+describe("AddIntegrationDialog — Custom MCP server flow", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("shows the preset selector — user may still pick a known preset", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /Custom MCP server/i }));
+
+    expect(screen.getByRole("combobox")).toBeInTheDocument();
+  });
+
+  it("shows an empty URL field — user supplies their own server URL", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /Custom MCP server/i }));
+
+    const urlInput = screen.getByRole("textbox", { name: /URL/i });
+    expect(urlInput).toBeInTheDocument();
+    expect(urlInput).toHaveValue("");
+  });
+
+  it("switching the preset to GitHub from the dropdown prefills the URL", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /Custom MCP server/i }));
+
+    await user.click(screen.getByRole("combobox"));
+    await user.click(screen.getByRole("option", { name: /GitHub/i }));
+
+    expect(screen.getByRole("textbox", { name: /URL/i })).toHaveValue(
+      "https://api.githubcopilot.com/mcp/"
+    );
+  });
+});
+
+// ── Test-connection button (available in every MCP flow) ────────────────────
+
+describe("AddIntegrationDialog — Test connection", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  it("renders the 'Test connection' button in the GitHub flow", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /GitHub/i }));
+
     expect(screen.getByRole("button", { name: /Test connection/i })).toBeInTheDocument();
   });
 
-  it("does NOT show 'Test connection' button for GitHub preset", async () => {
+  it("renders the 'Test connection' button in the Custom flow", async () => {
     const user = userEvent.setup();
     renderDialog();
 
-    const mcpButton = screen.getByRole("button", { name: /Generic MCP/i });
-    await user.click(mcpButton);
+    await user.click(screen.getByRole("button", { name: /Custom MCP server/i }));
 
-    // Select GitHub preset
-    const presetSelector = screen.getByRole("combobox");
-    await user.click(presetSelector);
-    await user.click(screen.getByRole("option", { name: /GitHub/i }));
-
-    expect(screen.queryByRole("button", { name: /Test connection/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Test connection/i })).toBeInTheDocument();
   });
 
-  it("clicking 'Test connection' calls POST /api/integrations/test and shows tool list", async () => {
+  it("calls POST /api/integrations/test and lists discovered tools (custom flow)", async () => {
     const user = userEvent.setup();
 
     fetchMock.mockResolvedValueOnce({
@@ -213,21 +269,12 @@ describe("AddIntegrationDialog — Test connection button (Task 7.2)", () => {
 
     renderDialog();
 
-    const mcpButton = screen.getByRole("button", { name: /Generic MCP/i });
-    await user.click(mcpButton);
+    await user.click(screen.getByRole("button", { name: /Custom MCP server/i }));
+    await user.type(screen.getByRole("textbox", { name: /URL/i }), "https://mcp.example.com/");
+    await user.type(screen.getByLabelText(/token/i), "tok-123");
 
-    // Generic is the default preset
-    // Fill in URL and token
-    const urlInput = screen.getByRole("textbox", { name: /URL/i });
-    await user.type(urlInput, "https://mcp.example.com/");
-    const tokenInput = screen.getByLabelText(/token/i);
-    await user.type(tokenInput, "tok-123");
+    await user.click(screen.getByRole("button", { name: /Test connection/i }));
 
-    // Click test connection
-    const testBtn = screen.getByRole("button", { name: /Test connection/i });
-    await user.click(testBtn);
-
-    // Verify API was called
     await waitFor(() => {
       expect(fetchMock).toHaveBeenCalledWith(
         "/api/integrations/test",
@@ -238,14 +285,33 @@ describe("AddIntegrationDialog — Test connection button (Task 7.2)", () => {
       );
     });
 
-    // Verify tool list appears inline
     await waitFor(() => {
       expect(screen.getByText("list_repos")).toBeInTheDocument();
       expect(screen.getByText("create_issue")).toBeInTheDocument();
     });
   });
 
-  it("shows error message when test connection fails", async () => {
+  it("calls POST /api/integrations/test with the preset's fixed URL (named flow)", async () => {
+    const user = userEvent.setup();
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ tools: [] }),
+    } as unknown as Response);
+
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /GitHub/i }));
+    await user.type(screen.getByLabelText(/token/i), "github_pat_sometoken");
+    await user.click(screen.getByRole("button", { name: /Test connection/i }));
+
+    await waitFor(() => {
+      const body = fetchMock.mock.calls.at(-1)?.[1]?.body as string;
+      expect(body).toContain("https://api.githubcopilot.com/mcp/");
+    });
+  });
+
+  it("shows an inline error when the test fails", async () => {
     const user = userEvent.setup();
 
     fetchMock.mockResolvedValueOnce({
@@ -255,16 +321,10 @@ describe("AddIntegrationDialog — Test connection button (Task 7.2)", () => {
 
     renderDialog();
 
-    const mcpButton = screen.getByRole("button", { name: /Generic MCP/i });
-    await user.click(mcpButton);
-
-    // Generic is the default preset
-    // Fill in URL and token
+    await user.click(screen.getByRole("button", { name: /Custom MCP server/i }));
     await user.type(screen.getByRole("textbox", { name: /URL/i }), "https://mcp.example.com/");
     await user.type(screen.getByLabelText(/token/i), "tok-123");
-
-    const testBtn = screen.getByRole("button", { name: /Test connection/i });
-    await user.click(testBtn);
+    await user.click(screen.getByRole("button", { name: /Test connection/i }));
 
     await waitFor(() => {
       expect(screen.getByText(/Cannot connect to MCP server/i)).toBeInTheDocument();

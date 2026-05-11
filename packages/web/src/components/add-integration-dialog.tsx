@@ -36,7 +36,14 @@ import { parseOdooSubdomainHint, generateConnectionName } from "@/lib/integratio
 import { normalizeUrl } from "@/lib/url";
 import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
-import { OdooIcon, GoogleIcon, BraveIcon } from "./integration-icons";
+import {
+  OdooIcon,
+  GoogleIcon,
+  BraveIcon,
+  GitHubIcon,
+  NotionIcon,
+  LinearIcon,
+} from "./integration-icons";
 import { docsUrl } from "./docs-link";
 import { MCP_PRESETS, getMcpPreset } from "@/lib/integrations/mcp-presets";
 import type { McpTool } from "@/lib/integrations/types";
@@ -88,13 +95,48 @@ const INTEGRATION_TYPES: IntegrationType[] = [
     description: "Search the web and fetch pages via Brave Search API.",
     icon: BraveIcon,
   },
+  // MCP integrations — surface popular providers as first-class options.
+  // All four route through the same MCP connect step; the internal `preset`
+  // discriminator (github/notion/linear/generic) drives URL, transport,
+  // tool prefix, and token instructions.
   {
-    id: "mcp",
-    name: "Generic MCP",
-    description: "Connect any MCP-compatible server (GitHub, Notion, Linear, or custom).",
+    id: "mcp-github",
+    name: "GitHub",
+    description: "Manage repos, issues, and PRs through GitHub's MCP server.",
+    icon: GitHubIcon,
+  },
+  {
+    id: "mcp-notion",
+    name: "Notion",
+    description: "Read and update pages and databases in your Notion workspace.",
+    icon: NotionIcon,
+  },
+  {
+    id: "mcp-linear",
+    name: "Linear",
+    description: "Query issues, projects, and teams from your Linear workspace.",
+    icon: LinearIcon,
+  },
+  {
+    id: "mcp-custom",
+    name: "Custom MCP server",
+    description: "Bring your own MCP-compatible server URL and token.",
     icon: McpIcon,
   },
 ];
+
+// Map an INTEGRATION_TYPES.id like `mcp-github` to the internal preset
+// discriminator used by the backend / mcp-presets registry.
+const MCP_TYPE_TO_PRESET: Record<string, "github" | "notion" | "linear" | "generic"> = {
+  "mcp-github": "github",
+  "mcp-notion": "notion",
+  "mcp-linear": "linear",
+  "mcp-custom": "generic",
+};
+
+function isMcpType(type: string | null | undefined): type is keyof typeof MCP_TYPE_TO_PRESET {
+  return typeof type === "string" && type in MCP_TYPE_TO_PRESET;
+}
 
 // --- Wizard state ---
 
@@ -412,6 +454,10 @@ function GoogleConnectStep({
 
 interface McpConnectStepProps {
   form: ReturnType<typeof useForm<McpFormValues>>;
+  // `isCustom` controls which UI variant renders: the named-preset flow (just
+  // token + tool-list preview) or the custom-server flow (URL + transport +
+  // token, with a preset switcher in case the user picked the wrong card).
+  isCustom: boolean;
   connecting: boolean;
   testing: boolean;
   testTools: McpTool[] | null;
@@ -424,6 +470,7 @@ interface McpConnectStepProps {
 
 function McpConnectStep({
   form,
+  isCustom,
   connecting,
   testing,
   testTools,
@@ -437,7 +484,8 @@ function McpConnectStep({
   const token = useWatch({ control: form.control, name: "token" });
   const url = useWatch({ control: form.control, name: "url" });
   const mcpPreset = getMcpPreset(preset);
-  const isGeneric = preset === "generic";
+  // The token-and-URL gate stays in both flows so we never submit empty values.
+  // Named presets always have a URL prefilled — only the token can be empty.
   const isSubmitDisabled = connecting || !token?.trim() || !url?.trim();
 
   function handlePresetChange(value: string) {
@@ -450,69 +498,77 @@ function McpConnectStep({
   return (
     <>
       <DialogHeader>
-        <DialogTitle>Connect MCP Server</DialogTitle>
+        <DialogTitle>
+          {isCustom ? "Connect MCP server" : `Connect ${mcpPreset.displayName}`}
+        </DialogTitle>
         <DialogDescription>
-          Connect an MCP-compatible server to expose tools to your agents.
+          {isCustom
+            ? "Enter the URL of an MCP-compatible server and a token to authenticate."
+            : `Connect your ${mcpPreset.displayName} workspace to expose tools to your agents.`}
         </DialogDescription>
       </DialogHeader>
 
       <Form {...form}>
         <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-          {/* Preset selector */}
-          <FormField
-            control={form.control}
-            name="preset"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>Preset</FormLabel>
-                <FormControl>
-                  <Select
-                    value={field.value}
-                    onValueChange={(value) => {
-                      field.onChange(value);
-                      handlePresetChange(value);
-                    }}
-                  >
-                    <SelectTrigger className="w-full">
-                      <SelectValue placeholder="Select a preset" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {MCP_PRESETS.map((p) => (
-                        <SelectItem key={p.id} value={p.id}>
-                          {p.displayName}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+          {/* Preset selector — custom flow only (a named-preset card already picked the preset) */}
+          {isCustom && (
+            <FormField
+              control={form.control}
+              name="preset"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Preset</FormLabel>
+                  <FormControl>
+                    <Select
+                      value={field.value}
+                      onValueChange={(value) => {
+                        field.onChange(value);
+                        handlePresetChange(value);
+                      }}
+                    >
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select a preset" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {MCP_PRESETS.map((p) => (
+                          <SelectItem key={p.id} value={p.id}>
+                            {p.displayName}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
 
-          {/* Token instructions */}
+          {/* Token instructions — provider-specific copy from the preset registry */}
           {mcpPreset.tokenInstructions && (
             <p className="text-sm text-muted-foreground whitespace-pre-line">
               {mcpPreset.tokenInstructions}
             </p>
           )}
 
-          {/* URL field */}
-          <FormField
-            control={form.control}
-            name="url"
-            render={({ field }) => (
-              <FormItem>
-                <FormLabel>URL</FormLabel>
-                <FormControl>
-                  <Input placeholder="https://mcp.example.com/" {...field} readOnly={!isGeneric} />
-                </FormControl>
-                <FormMessage />
-              </FormItem>
-            )}
-          />
+          {/* URL field — custom flow only. Named presets ship a fixed URL. */}
+          {isCustom && (
+            <FormField
+              control={form.control}
+              name="url"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>URL</FormLabel>
+                  <FormControl>
+                    <Input placeholder="https://mcp.example.com/" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
 
-          {/* Token field */}
+          {/* Token field — always visible */}
           <FormField
             control={form.control}
             name="token"
@@ -531,53 +587,52 @@ function McpConnectStep({
             <p className="text-sm text-destructive">{form.formState.errors.root.message}</p>
           )}
 
-          {/* Test connection — generic only */}
-          {isGeneric && (
-            <div className="space-y-2">
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                disabled={testing || !url?.trim() || !token?.trim()}
-                onClick={onTestConnection}
-              >
-                {testing ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Testing...
-                  </>
-                ) : (
-                  "Test connection"
-                )}
-              </Button>
-
-              {testError && <p className="text-sm text-destructive">{testError}</p>}
-
-              {testTools !== null && (
-                <div className="rounded-md border p-3 space-y-1">
-                  <p className="text-xs font-medium text-muted-foreground">
-                    {testTools.length === 0
-                      ? "Connected — no tools exposed"
-                      : `${testTools.length} tool${testTools.length === 1 ? "" : "s"} discovered:`}
-                  </p>
-                  {testTools.length > 0 && (
-                    <ul className="space-y-0.5">
-                      {testTools.map((tool) => (
-                        <li key={tool.name} className="text-sm font-mono">
-                          {tool.name}
-                          {tool.description && (
-                            <span className="font-sans text-xs text-muted-foreground ml-2">
-                              — {tool.description}
-                            </span>
-                          )}
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </div>
+          {/* Test connection — always available so the admin can verify the token
+              and preview tool discovery before committing to a connection. */}
+          <div className="space-y-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              disabled={testing || !url?.trim() || !token?.trim()}
+              onClick={onTestConnection}
+            >
+              {testing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Testing...
+                </>
+              ) : (
+                "Test connection"
               )}
-            </div>
-          )}
+            </Button>
+
+            {testError && <p className="text-sm text-destructive">{testError}</p>}
+
+            {testTools !== null && (
+              <div className="rounded-md border p-3 space-y-1">
+                <p className="text-xs font-medium text-muted-foreground">
+                  {testTools.length === 0
+                    ? "Connected — no tools exposed"
+                    : `${testTools.length} tool${testTools.length === 1 ? "" : "s"} discovered:`}
+                </p>
+                {testTools.length > 0 && (
+                  <ul className="space-y-0.5">
+                    {testTools.map((tool) => (
+                      <li key={tool.name} className="text-sm font-mono">
+                        {tool.name}
+                        {tool.description && (
+                          <span className="font-sans text-xs text-muted-foreground ml-2">
+                            — {tool.description}
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
+          </div>
 
           <div className="flex justify-between pt-2">
             <Button type="button" variant="ghost" onClick={onBack}>
@@ -625,10 +680,10 @@ export function AddIntegrationDialog({
   // Types that only allow one connection (singletons)
   const singletonTypes = new Set(["web-search"]);
 
-  // Hide MCP when the feature flag is off
+  // Hide all MCP-backed integrations when the feature flag is off
   const visibleIntegrationTypes = isMcpEnabledClient()
     ? INTEGRATION_TYPES
-    : INTEGRATION_TYPES.filter((t) => t.id !== "mcp");
+    : INTEGRATION_TYPES.filter((t) => !isMcpType(t.id));
   const [step, setStep] = useState<WizardStep>(initialType ? "connect" : "type");
   const [selectedType, setSelectedType] = useState<string | null>(initialType ?? null);
 
@@ -1064,6 +1119,19 @@ export function AddIntegrationDialog({
                     disabled={alreadyExists}
                     onClick={() => {
                       setSelectedType(type.id);
+                      // For MCP type cards, prefill preset/URL/transport so
+                      // the connect step renders the right fields immediately.
+                      if (isMcpType(type.id)) {
+                        const preset = MCP_TYPE_TO_PRESET[type.id];
+                        const presetCfg = getMcpPreset(preset);
+                        mcpForm.reset({
+                          preset,
+                          url: presetCfg.defaultUrl ?? "",
+                          transport: presetCfg.defaultTransport,
+                          token: "",
+                          name: "",
+                        });
+                      }
                       setStep("connect");
                     }}
                     className="flex items-center gap-4 rounded-lg border p-4 text-left transition-colors hover:bg-accent disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:bg-transparent"
@@ -1155,9 +1223,10 @@ export function AddIntegrationDialog({
         )}
 
         {/* Step 1: Connect (MCP) — hidden when MCP feature flag is off */}
-        {step === "connect" && selectedType === "mcp" && isMcpEnabledClient() && (
+        {step === "connect" && isMcpType(selectedType) && isMcpEnabledClient() && (
           <McpConnectStep
             form={mcpForm}
+            isCustom={selectedType === "mcp-custom"}
             connecting={connecting}
             testing={mcpTesting}
             testTools={mcpTestTools}
