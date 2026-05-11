@@ -275,16 +275,15 @@ const plugin = {
     // 1. email_list
     api.registerTool(
       (ctx: PluginToolContext) => {
-        // ctx?.agentId: optional chaining guards against OC calling the factory
-        // with undefined ctx at registerTool() probe time. Returning null at
-        // probe time is correct — it signals to OC that this is a per-session
-        // factory (called again at session start with the real agentId). A
-        // non-null return at probe time causes OC to register a static tool and
-        // never invoke the factory per-session, making the tool permanently
-        // unavailable. Matches the pinchy-web / pinchy-odoo factory pattern.
         const agentId = ctx?.agentId;
+        console.log(
+          `[pinchy-email] email_list factory — agentId=${agentId ?? "none"} knownAgents=${JSON.stringify(Object.keys(agentConfigs))}`,
+        );
         if (!agentId) return null;
         const config = getAgentConfig(agentConfigs, agentId);
+        console.log(
+          `[pinchy-email] email_list factory session — agentId=${agentId} config=${config ? "found" : "NOT FOUND"}`,
+        );
         if (!config) return null;
 
         return {
