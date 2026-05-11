@@ -36,7 +36,7 @@ import { parseOdooSubdomainHint, generateConnectionName } from "@/lib/integratio
 import { normalizeUrl } from "@/lib/url";
 import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
-import { OdooIcon, GoogleIcon, BraveIcon } from "./integration-icons";
+import { OdooIcon, GoogleIcon, BraveIcon, MicrosoftIcon } from "./integration-icons";
 import { docsUrl } from "./docs-link";
 
 interface IntegrationType {
@@ -58,6 +58,12 @@ const INTEGRATION_TYPES: IntegrationType[] = [
     name: "Google",
     description: "Connect your Google account to sync email via Gmail.",
     icon: GoogleIcon,
+  },
+  {
+    id: "microsoft",
+    name: "Microsoft",
+    description: "Connect your Microsoft 365 account to sync email via Outlook.",
+    icon: MicrosoftIcon,
   },
   {
     id: "web-search",
@@ -367,6 +373,18 @@ function GoogleConnectStep({
       </div>
     </div>
   );
+}
+
+// --- Microsoft Connect Step ---
+
+function MicrosoftConnectStep({
+  onBack,
+  onConnect,
+}: {
+  onBack: () => void;
+  onConnect: () => void;
+}) {
+  return <div>Microsoft connect (TODO)</div>;
 }
 
 // --- Dialog component ---
@@ -976,6 +994,20 @@ export function AddIntegrationDialog({
               onBack={handleBack}
               onCancel={() => handleClose(false)}
             />
+          </>
+        )}
+
+        {/* Step 1: Connect (Microsoft OAuth) */}
+        {step === "connect" && selectedType === "microsoft" && (
+          <>
+            <DialogHeader>
+              <DialogTitle>Connect Microsoft</DialogTitle>
+              <DialogDescription>
+                Sign in with your Microsoft account to connect Outlook.
+              </DialogDescription>
+            </DialogHeader>
+
+            <MicrosoftConnectStep onBack={handleBack} onConnect={() => handleClose(false)} />
           </>
         )}
 
