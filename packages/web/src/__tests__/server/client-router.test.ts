@@ -2488,6 +2488,111 @@ describe("ClientRouter", () => {
     });
   });
 
+  describe("agent model override forwarded to openclaw.chat()", () => {
+    // Why: OpenClaw's `agent` RPC resolves the session model via
+    // `resolveSessionModelRef(cfg, entry, undefined)` — `agentId` is hard-coded
+    // to `undefined` inside server-methods, so the lookup falls back to the
+    // gateway-wide default model rather than the agent's configured one. That
+    // breaks the vision-capability check for image attachments on per-agent
+    // vision-capable models. Passing `provider` + `model` through
+    // openclaw-node ≥ 0.9 forces the Gateway to use the right pair.
+    it("splits agent.model on '/' and forwards as provider+model overrides", async () => {
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/gemini-3-flash-preview",
+      });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith(
+        "Hi",
+        expect.objectContaining({
+          provider: "ollama-cloud",
+          model: "gemini-3-flash-preview",
+        })
+      );
+    });
+
+    it("omits provider/model when agent.model is missing", async () => {
+      mockFindFirst.mockResolvedValue({ ...defaultAgent, model: null });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const callArgs = mockChat.mock.calls[0][1] as Record<string, unknown>;
+      expect(callArgs).not.toHaveProperty("provider");
+      expect(callArgs).not.toHaveProperty("model");
+    });
+
+    it("omits provider/model when agent.model has no '/' (defensive — db invariant violated)", async () => {
+      // Legacy or hand-edited rows that store just the model id without a
+      // provider prefix would otherwise produce a malformed RPC call (empty
+      // provider). Treat as "no override" instead.
+      mockFindFirst.mockResolvedValue({ ...defaultAgent, model: "gpt-5-2025-08-07" });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const callArgs = mockChat.mock.calls[0][1] as Record<string, unknown>;
+      expect(callArgs).not.toHaveProperty("provider");
+      expect(callArgs).not.toHaveProperty("model");
+    });
+
+    it("handles model ids that contain slashes themselves (e.g. 'huggingface/microsoft/phi-3:mini')", async () => {
+      // The provider is everything before the FIRST slash; the model is
+      // everything after. Models with slashes in their id (HuggingFace,
+      // OpenRouter, ...) need this contract.
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "huggingface/microsoft/phi-3:mini",
+      });
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hi" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(createMockClientWs() as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockChat).toHaveBeenCalledWith(
+        "Hi",
+        expect.objectContaining({
+          provider: "huggingface",
+          model: "microsoft/phi-3:mini",
+        })
+      );
+    });
+  });
+
   describe("clientMessageId forwarding", () => {
     it("forwards clientMessageId from browser WS frame to openclaw.chat()", async () => {
       async function* fakeStream() {

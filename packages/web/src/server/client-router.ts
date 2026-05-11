@@ -179,6 +179,19 @@ export class ClientRouter {
         agentId: message.agentId,
         sessionKey,
       };
+      // Forward the agent's configured provider/model so OpenClaw's `agent`
+      // RPC resolves capability checks (notably image-input support) against
+      // the right model. Without this, server-methods falls back to the
+      // gateway-wide default model — see #324 / openclaw-node 0.9.0.
+      // Split on the FIRST '/' only: provider is before, model is the
+      // rest (model ids can themselves contain '/', e.g. HuggingFace).
+      if (agent.model) {
+        const slashIdx = agent.model.indexOf("/");
+        if (slashIdx > 0 && slashIdx < agent.model.length - 1) {
+          chatOptions.provider = agent.model.slice(0, slashIdx);
+          chatOptions.model = agent.model.slice(slashIdx + 1);
+        }
+      }
       if (chatAttachments.length > 0) {
         chatOptions.attachments = chatAttachments;
       }

@@ -102,8 +102,8 @@ importers:
         specifier: 0.2.0
         version: 0.2.0
       openclaw-node:
-        specifier: 0.7.0
-        version: 0.7.0
+        specifier: 0.9.0
+        version: 0.9.0
       pdfkit:
         specifier: ^0.18.0
         version: 0.18.0
@@ -1430,8 +1430,8 @@ packages:
       '@cfworker/json-schema':
         optional: true
 
-  '@mongodb-js/saslprep@1.4.9':
-    resolution: {integrity: sha512-RXSxsokhAF/4nWys8An8npsqOI33Ex1Hlzqjw2pZOO+GKtMAR2noGnUdsFiGwsaO/xXI+56mtjTmDA3JXJsvmA==}
+  '@mongodb-js/saslprep@1.4.11':
+    resolution: {integrity: sha512-o9rAHc0IpIjuPSxRutWpE1F62x7n+4mVS4rCNHkzhIUMQcc18bb6xEq5wd2NdN0WjepIyXIppRshYI2kQDOZVA==}
 
   '@napi-rs/wasm-runtime@0.2.12':
     resolution: {integrity: sha512-ZVWUcfwY4E/yPitQJl481FjFo3K22D6qF0DuFH6Y/nbnE11GY5uguDxZMGXPQ8WQ0128MXQD7TnfHyK4oWoIJQ==}
@@ -5248,8 +5248,8 @@ packages:
       zod:
         optional: true
 
-  openclaw-node@0.7.0:
-    resolution: {integrity: sha512-vKGK8g8EP220WEF1PwOPs+EYS2TID1BBk/VxbJvvcMMUXfKsQeHpZIu/RozJFPN1LFjQe5VfKpHp0VCphu6Wug==}
+  openclaw-node@0.9.0:
+    resolution: {integrity: sha512-8g8C+yqDKCOFjYfsivCw7FFM3kvi0JDzBTeOtlN+sOQTpvkx2wBWyp9LKN6kdiV1/9t0F3bzSZi5Z51OwY12nw==}
     engines: {node: '>=20.0.0'}
 
   openclaw@2026.4.27:
@@ -7916,7 +7916,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  '@mongodb-js/saslprep@1.4.9':
+  '@mongodb-js/saslprep@1.4.11':
     dependencies:
       sparse-bitfield: 3.0.3
     optional: true
@@ -11919,7 +11919,7 @@ snapshots:
 
   mongodb@7.1.0(socks@2.8.8):
     dependencies:
-      '@mongodb-js/saslprep': 1.4.9
+      '@mongodb-js/saslprep': 1.4.11
       bson: 7.2.0
       mongodb-connection-string-url: 7.0.1
     optionalDependencies:
@@ -12064,7 +12064,7 @@ snapshots:
       ws: 8.20.0
       zod: 4.3.6
 
-  openclaw-node@0.7.0:
+  openclaw-node@0.9.0:
     optionalDependencies:
       ws: 8.20.0
     transitivePeerDependencies:
