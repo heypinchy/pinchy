@@ -179,6 +179,22 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     expect(resp.status).toBe(403);
   });
 
+  // ── Form data validation ───────────────────────────────────────────────
+
+  it("returns 400 when file field is missing from form data", async () => {
+    const user = await seedUser();
+    mockGetSession.mockResolvedValue({
+      user: { id: user.id, email: user.email, role: "admin" },
+    });
+    const agent = await seedAgent(null);
+
+    const resp = await POST(makeRequest(agent.id, { file: null }), makeParams(agent.id));
+
+    expect(resp.status).toBe(400);
+    const body = await resp.json();
+    expect(body.error).toMatch(/file/i);
+  });
+
   // ── Header validation ──────────────────────────────────────────────────
 
   it("returns 400 when x-pinchy-draft-id header is missing", async () => {
@@ -324,6 +340,7 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     expect(dbRow.filename).toBe("report.pdf");
     expect(dbRow.mimeType).toBe("application/pdf");
     expect(dbRow.sizeBytes).toBe(VALID_PDF.length);
+    expect(dbRow.contentHash).toMatch(/^[a-f0-9]{64}$/);
     expect(dbRow.stagingPath).toMatch(/^\.staging\//);
     // expiresAt should be ~24h from now (within a 5-second window)
     const expectedExpiry = new Date(before.getTime() + 24 * 60 * 60 * 1000);
@@ -345,5 +362,8 @@ describe("POST /api/agents/[agentId]/uploads", () => {
     expect(detail.uploadId).toBe(body.id);
     expect(detail.filename).toBe("report.pdf");
     expect(detail.mimeType).toBe("application/pdf");
+    expect(detail.sizeBytes).toBe(VALID_PDF.length);
+    expect(detail.contentHash).toMatch(/^[a-f0-9]{64}$/);
+    expect((detail.agent as { id: string }).id).toBe(agent.id);
   });
 });
