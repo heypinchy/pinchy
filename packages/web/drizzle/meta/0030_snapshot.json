@@ -1,6 +1,6 @@
 {
-  "id": "98352d00-280a-49a4-906f-ed1ef3ebae9a",
-  "prevId": "40b72272-5f0e-400a-b3dc-ed341734c658",
+  "id": "0473e2fd-05f1-4d8e-aa95-c06787dde488",
+  "prevId": "e0eeaa33-5f1a-4dc3-ae6e-9ea660b90c4a",
   "version": "7",
   "dialect": "postgresql",
   "tables": {
@@ -1475,7 +1475,7 @@
           "name": "greeting_message",
           "type": "text",
           "primaryKey": false,
-          "notNull": false
+          "notNull": true
         },
         "tagline": {
           "name": "tagline",
