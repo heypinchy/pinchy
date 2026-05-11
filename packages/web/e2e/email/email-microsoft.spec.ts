@@ -83,6 +83,22 @@ test.describe("pinchy-email — Microsoft E2E", () => {
       },
     ]);
 
+    // Clear any pre-existing email integrations for Smithers (e.g. left behind
+    // by the Gmail E2E spec that runs in the same job). Without this, both Gmail
+    // and Microsoft connections exist simultaneously and regenerateOpenClawConfig
+    // picks Gmail's connectionId (first DB row) — so the plugin calls the Gmail
+    // API instead of the Graph API, causing tests 3+4 to fail.
+    await fetch(
+      (process.env.PINCHY_URL || "http://localhost:7777") + `/api/agents/${agentId}/integrations`,
+      {
+        method: "DELETE",
+        headers: {
+          Cookie: cookie,
+          Origin: process.env.PINCHY_URL || "http://localhost:7777",
+        },
+      }
+    );
+
     // Insert Microsoft connection directly into DB (OAuth flow is not testable in E2E)
     const conn = await createMicrosoftConnectionInDb("Test Microsoft");
     connectionId = conn.id;
