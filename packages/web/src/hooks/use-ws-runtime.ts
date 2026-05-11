@@ -3,6 +3,8 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useRestart } from "@/components/restart-provider";
 import { uuid } from "@/lib/uuid";
+import { uploadAttachment } from "@/lib/upload-attachment";
+import { useDraftId } from "@/hooks/use-draft-id";
 import {
   useExternalStoreRuntime,
   SimpleImageAttachmentAdapter,
@@ -29,6 +31,18 @@ import { mimeFromFilename } from "@/lib/attachment-mime";
 export interface WsFileMeta {
   filename: string;
   mimeType: string;
+}
+
+/** Tracks a file dropped in the composer while it uploads to the server. */
+export interface PendingUpload {
+  localId: string; // crypto.randomUUID() — client-side stable key
+  file: File;
+  objectUrl: string; // URL.createObjectURL — instant local preview, revoke on cleanup
+  state: "uploading" | "ready" | "failed";
+  uploadId?: string; // server-assigned, set when state = "ready"
+  previewUrl?: string; // /api/agents/<id>/uploads/<filename>, set when state = "ready"
+  progress: number; // 0-100
+  error?: string; // set when state = "failed"
 }
 
 export interface WsMessage {
@@ -532,14 +546,20 @@ export function useWsRuntime(agentId: string): {
   isOrphaned: boolean;
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
+  pendingUploads: PendingUpload[];
+  addPendingUpload: (file: File) => void;
+  removePendingUpload: (localId: string) => void;
+  retryPendingUpload: (localId: string) => void;
 } {
   const { triggerRestart } = useRestart();
+  const draftId = useDraftId(agentId);
   const [messages, setMessages] = useState<WsMessage[]>([]);
   const [isRunning, setIsRunning] = useState(false);
   const [isConnected, setIsConnected] = useState(false);
   const [isDelayed, setIsDelayed] = useState(false);
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
   const [isReconcilingMessages, setIsReconcilingMessages] = useState(false);
+  const [pendingUploads, setPendingUploads] = useState<PendingUpload[]>([]);
   /**
    * Set when the server confirms a session exists but its history is
    * temporarily unavailable (e.g. during an OpenClaw restart). Lets the chat
@@ -668,6 +688,13 @@ export function useWsRuntime(agentId: string): {
       // eslint-disable-next-line react-hooks/refs
       pendingDisconnectErrorRef.current = null;
     }
+    // Revoke object URLs from previous agent's pending uploads and clear the list.
+    setPendingUploads((prev) => {
+      for (const u of prev) {
+        if (u.objectUrl) URL.revokeObjectURL(u.objectUrl);
+      }
+      return [];
+    });
   }
 
   useEffect(() => {
@@ -1732,6 +1759,106 @@ export function useWsRuntime(agentId: string): {
     [agentId, messages, dispatchMessages, sendOrQueue]
   );
 
+  const addPendingUpload = useCallback(
+    (file: File) => {
+      const localId = crypto.randomUUID();
+      const objectUrl = URL.createObjectURL(file);
+
+      const upload: PendingUpload = {
+        localId,
+        file,
+        objectUrl,
+        state: "uploading",
+        progress: 0,
+      };
+
+      setPendingUploads((prev) => [...prev, upload]);
+
+      uploadAttachment(agentId, draftId, file, (progress) => {
+        setPendingUploads((prev) =>
+          prev.map((u) => (u.localId === localId ? { ...u, progress } : u))
+        );
+      })
+        .then((response) => {
+          const previewUrl = `/api/agents/${encodeURIComponent(agentId)}/uploads/${encodeURIComponent(response.filename)}`;
+          URL.revokeObjectURL(objectUrl); // swap object URL for server URL
+          setPendingUploads((prev) =>
+            prev.map((u) =>
+              u.localId === localId
+                ? { ...u, state: "ready", uploadId: response.id, previewUrl, progress: 100 }
+                : u
+            )
+          );
+        })
+        .catch((err: unknown) => {
+          setPendingUploads((prev) =>
+            prev.map((u) =>
+              u.localId === localId
+                ? {
+                    ...u,
+                    state: "failed",
+                    error: err instanceof Error ? err.message : "Upload failed",
+                  }
+                : u
+            )
+          );
+        });
+    },
+    [agentId, draftId] // uploadAttachment is a stable import, not in deps
+  );
+
+  const removePendingUpload = useCallback((localId: string) => {
+    setPendingUploads((prev) => {
+      const upload = prev.find((u) => u.localId === localId);
+      if (upload?.objectUrl) URL.revokeObjectURL(upload.objectUrl);
+      return prev.filter((u) => u.localId !== localId);
+    });
+  }, []);
+
+  const retryPendingUpload = useCallback(
+    (localId: string) => {
+      const upload = pendingUploads.find((u) => u.localId === localId);
+      if (!upload) return;
+
+      setPendingUploads((prev) =>
+        prev.map((u) =>
+          u.localId === localId ? { ...u, state: "uploading", progress: 0, error: undefined } : u
+        )
+      );
+
+      const { file } = upload;
+      uploadAttachment(agentId, draftId, file, (progress) => {
+        setPendingUploads((prev) =>
+          prev.map((u) => (u.localId === localId ? { ...u, progress } : u))
+        );
+      })
+        .then((response) => {
+          const previewUrl = `/api/agents/${encodeURIComponent(agentId)}/uploads/${encodeURIComponent(response.filename)}`;
+          setPendingUploads((prev) =>
+            prev.map((u) =>
+              u.localId === localId
+                ? { ...u, state: "ready", uploadId: response.id, previewUrl, progress: 100 }
+                : u
+            )
+          );
+        })
+        .catch((err: unknown) => {
+          setPendingUploads((prev) =>
+            prev.map((u) =>
+              u.localId === localId
+                ? {
+                    ...u,
+                    state: "failed",
+                    error: err instanceof Error ? err.message : "Upload failed",
+                  }
+                : u
+            )
+          );
+        });
+    },
+    [agentId, draftId, pendingUploads] // uploadAttachment is a stable import, not in deps
+  );
+
   const isOrphaned = computeIsOrphaned(messages, { isRunning, isHistoryLoaded });
   const hasInitialContent = messages.length > 0 || knownEmptyHistory;
 
@@ -1777,5 +1904,9 @@ export function useWsRuntime(agentId: string): {
     isOrphaned,
     onRetryContinue,
     onRetryResend,
+    pendingUploads,
+    addPendingUpload,
+    removePendingUpload,
+    retryPendingUpload,
   };
 }
