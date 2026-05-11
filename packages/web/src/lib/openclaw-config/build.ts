@@ -1097,7 +1097,10 @@ export async function regenerateOpenClawConfig() {
         apiKey: secretRef(`/providers/${providerName}/apiKey`),
         api: BUILTIN_PROVIDER_API[providerName],
         baseUrl,
-        models: getModelCatalogForProvider(providerName),
+        models: getModelCatalogForProvider(providerName).map(
+          // eslint-disable-next-line @typescript-eslint/no-unused-vars
+          ({ vision: _v, documents: _d, audio: _a, video: _vi, ...ocFields }) => ocFields
+        ),
       };
     }
   }

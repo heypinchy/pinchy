@@ -62,4 +62,33 @@ describe("getModelCatalogForProvider", () => {
       expect(m.id).not.toMatch(/^google\//);
     }
   });
+
+  it("anthropic models declare vision=true and documents=true (native PDF)", () => {
+    for (const m of getModelCatalogForProvider("anthropic")) {
+      expect(m.vision).toBe(true);
+      expect(m.documents).toBe(true);
+    }
+  });
+
+  it("google models declare documents=true (native PDF)", () => {
+    for (const m of getModelCatalogForProvider("google")) {
+      expect(m.documents).toBe(true);
+    }
+  });
+
+  it("openai models declare vision=true and documents=true (image-extract fallback)", () => {
+    for (const m of getModelCatalogForProvider("openai")) {
+      expect(m.vision).toBe(true);
+      expect(m.documents).toBe(true);
+    }
+  });
+
+  it("all built-in models declare audio=false and video=false", () => {
+    for (const provider of ["anthropic", "openai", "google"] as const) {
+      for (const m of getModelCatalogForProvider(provider)) {
+        expect(m.audio).toBe(false);
+        expect(m.video).toBe(false);
+      }
+    }
+  });
 });
