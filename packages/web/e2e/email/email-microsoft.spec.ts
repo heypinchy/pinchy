@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import {
   seedSetup,
   waitForPinchy,
@@ -7,12 +7,28 @@ import {
   seedGraphMockMessages,
   getGraphMockRequests,
   createMicrosoftConnectionInDb,
+  getAdminEmail,
+  getAdminPassword,
   login,
   pinchyGet,
   pinchyPost,
   pinchyPatch,
   waitForOpenClawConnected,
 } from "./helpers";
+import {
+  FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER as FAKE_OLLAMA_EMAIL_LIST_TRIGGER,
+  FAKE_OLLAMA_EMAIL_LIST_TOOL_RESPONSE as FAKE_OLLAMA_EMAIL_LIST_RESPONSE,
+  FAKE_OLLAMA_EMAIL_SEND_TOOL_TRIGGER as FAKE_OLLAMA_EMAIL_SEND_TRIGGER,
+  FAKE_OLLAMA_EMAIL_SEND_TOOL_RESPONSE as FAKE_OLLAMA_EMAIL_SEND_RESPONSE,
+} from "../shared/fake-ollama/fake-ollama-server";
+
+async function loginWithPage(page: Page): Promise<void> {
+  await page.goto("/login");
+  await page.getByLabel(/email/i).fill(getAdminEmail());
+  await page.getByLabel("Password", { exact: true }).fill(getAdminPassword());
+  await page.getByRole("button", { name: /sign in/i }).click();
+  await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
+}
 
 test.describe("pinchy-email — Microsoft E2E", () => {
   let cookie: string;
@@ -138,34 +154,96 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     expect(ops).not.toContain("draft");
   });
 
-  test.skip("Graph mock receives email_list request when tool is invoked via chat", async () => {
-    // TODO: this test requires fake-ollama to support tool-call responses.
-    //
-    // Currently fake-ollama (packages/web/e2e/integration/fake-ollama-server.ts)
-    // always returns a fixed string "Integration test response." — it does NOT
-    // produce tool_use blocks. Until fake-ollama is extended to emit an
-    // email_list tool call for specific trigger phrases, we cannot drive the
-    // full round-trip through the chat UI.
-    //
-    // When fake-ollama gains tool-call support:
-    //   1. Send a message through the chat WebSocket that triggers email_list.
-    //   2. Assert graph-mock received a GET /v1.0/me/messages request via
-    //      getGraphMockRequests().
-    //   3. Assert the plugin fetched credentials via /api/internal/integrations
-    //      (check requestLog via /control/requests).
-    //   4. Assert the response includes the seeded test email from seedGraphMockMessages.
-    void getGraphMockRequests; // referenced to avoid "unused import" lint errors
+  test("Graph mock receives email_list request when tool is invoked via chat", async ({ page }) => {
+    if (!connectionId) throw new Error("connectionId not set — did test 1 run?");
+
+    // Reset so we start with a clean request log, then re-seed messages
+    await resetGraphMock();
+    await seedGraphMockMessages([
+      {
+        subject: "Test email from graph-mock",
+        from: "sender@example.com",
+        body: "Hello from Microsoft E2E test",
+        isRead: false,
+      },
+    ]);
+
+    await loginWithPage(page);
+    await page.goto(`/chat/${agentId}`);
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10000 });
+
+    await input.fill(FAKE_OLLAMA_EMAIL_LIST_TRIGGER);
+    await input.press("Enter");
+
+    // Wait for the LLM's follow-up text response after the tool round-trip
+    await expect(page.getByText(FAKE_OLLAMA_EMAIL_LIST_RESPONSE)).toBeVisible({ timeout: 60000 });
+
+    // The plugin must have called the Graph messages endpoint
+    const requests = await getGraphMockRequests();
+    const listReq = (requests as Array<{ endpoint: string }>).find(
+      (r) => r.endpoint === "/v1.0/me/messages" || r.endpoint?.startsWith("/v1.0/me/mailFolders/")
+    );
+    expect(listReq).toBeDefined();
   });
 
-  test.skip("Graph mock receives email_send request when tool is invoked via chat", async () => {
-    // TODO: requires fake-ollama tool-call support (see skip above).
-    //
-    // When fake-ollama gains tool-call support:
-    //   1. Grant email send permission via PUT /api/agents/:id/integrations.
-    //   2. Trigger email_send tool via chat.
-    //   3. Assert graph-mock received a POST /v1.0/me/sendMail request.
-    //   4. Confirm the plugin did NOT embed the raw access token — it must
-    //      have fetched credentials from /api/internal/integrations/:id/credentials.
-    void pinchyPost; // referenced to avoid "unused import" lint errors
+  test("Graph mock receives email_send request when tool is invoked via chat", async ({ page }) => {
+    if (!connectionId) throw new Error("connectionId not set — did test 1 run?");
+
+    // Grant send permission (replaces existing read+search with read+search+send)
+    const permRes = await fetch(
+      (process.env.PINCHY_URL || "http://localhost:7777") + `/api/agents/${agentId}/integrations`,
+      {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Cookie: cookie,
+          Origin: process.env.PINCHY_URL || "http://localhost:7777",
+        },
+        body: JSON.stringify({
+          connectionId,
+          permissions: [
+            { model: "email", operation: "read" },
+            { model: "email", operation: "search" },
+            { model: "email", operation: "send" },
+          ],
+        }),
+      }
+    );
+    expect(permRes.status).toBe(200);
+
+    // Trigger config regeneration
+    const patchRes = await pinchyPatch(`/api/agents/${agentId}`, {}, cookie);
+    expect(patchRes.status).toBe(200);
+
+    // Wait for OpenClaw to reconnect after the config change
+    const reconnected = await waitForOpenClawConnected(cookie, 120000);
+    expect(reconnected).toBe(true);
+
+    // Reset mock so the request log is clean for this assertion
+    await resetGraphMock();
+
+    await loginWithPage(page);
+    await page.goto(`/chat/${agentId}`);
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10000 });
+
+    await input.fill(FAKE_OLLAMA_EMAIL_SEND_TRIGGER);
+    await input.press("Enter");
+
+    // Wait for the LLM's follow-up text response after the tool round-trip
+    await expect(page.getByText(FAKE_OLLAMA_EMAIL_SEND_RESPONSE)).toBeVisible({ timeout: 60000 });
+
+    // The plugin must have posted to the sendMail endpoint
+    const requests = await getGraphMockRequests();
+    const sendReq = (requests as Array<{ endpoint: string; method?: string }>).find(
+      (r) => r.endpoint === "/v1.0/me/sendMail"
+    );
+    expect(sendReq).toBeDefined();
   });
 });
+
+// Silence unused-import warnings for helpers used only in the send test
+void pinchyPost;
