@@ -215,15 +215,16 @@ const plugin = {
     const CREDENTIALS_TTL_MS = 5 * 60 * 1000; // 5 minutes
     const cache = new Map<string, { adapter: EmailAdapter; expiresAt: number }>();
 
-    function invalidate(agentId: string) {
-      cache.delete(agentId);
+    function invalidate(agentId: string, connectionId: string) {
+      cache.delete(`${agentId}:${connectionId}`);
     }
 
     async function getOrCreateClient(
       agentId: string,
       config: AgentEmailConfig,
     ): Promise<EmailAdapter> {
-      const hit = cache.get(agentId);
+      const cacheKey = `${agentId}:${config.connectionId}`;
+      const hit = cache.get(cacheKey);
       if (hit && hit.expiresAt > Date.now()) return hit.adapter;
       // Read apiBaseUrl and gatewayToken dynamically so they reflect any
       // config update that arrived after the initial register() call.
@@ -242,7 +243,7 @@ const plugin = {
             : (() => {
                 throw new Error(`unsupported email provider: ${type}`);
               })();
-      cache.set(agentId, { adapter, expiresAt: Date.now() + CREDENTIALS_TTL_MS });
+      cache.set(cacheKey, { adapter, expiresAt: Date.now() + CREDENTIALS_TTL_MS });
       return adapter;
     }
 
@@ -270,7 +271,7 @@ const plugin = {
           msg.includes("token has been expired") ||
           msg.includes("unauthorized");
         if (!isAuthError) throw err;
-        invalidate(agentId);
+        invalidate(agentId, config.connectionId);
         const fresh = await getOrCreateClient(agentId, config);
         try {
           return await fn(fresh);
