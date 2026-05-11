@@ -468,6 +468,22 @@ Open chats keep running in the background while you navigate within Pinchy — a
 
 If an Odoo or Email connection was configured on an agent, the **Settings → Agent → Permissions** tab kept showing "Unsaved changes" and a **Save & Restart** button after a successful save. The dirty-state check now re-syncs against the persisted state once the post-save refetch lands, so a clean save shows as clean.
 
+#### Pre-send capability check and RecoveryPanel
+
+Attaching an image or PDF to a chat now checks the agent's current model before the message is sent. If the model lacks the required capability, an inline `RecoveryPanel` appears with a plain-English explanation and a direct link to switch the model. No message is sent until the issue is resolved or you choose to override.
+
+#### `models` table — zero configuration needed
+
+%%PINCHY_VERSION%% adds a `models` database table that records which capabilities (vision, documents, audio, video, long-context, tools) each model supports. The table is seeded from Pinchy's built-in catalog at every boot — no manual entry required. For local Ollama, capabilities are detected from the Ollama API when you save the URL.
+
+#### Knowledge Base template now requires vision
+
+The Knowledge Base template's model hint was updated to declare `vision` and `documents` as required capabilities. New agents created from this template will be assigned a model capable of handling scanned PDFs. **Existing agents are unaffected** — they keep their current model. To pick up the new auto-selected model, delete and recreate the agent from the template.
+
+#### Setup wizard vision warning
+
+The provider setup step now shows an amber warning when the saved provider does not guarantee vision-capable models (currently only `ollama-local` may lack vision, depending on which Ollama model you have pulled). The warning is informational and does not block you from proceeding.
+
 #### New `/api/version` endpoint + OCI image labels
 
 You can now confirm which Pinchy and OpenClaw versions are actually running without opening the UI. `GET /api/version` returns `{ pinchyVersion, openclawVersion, build, nodeEnv }` and is exempt from Domain Lock so it works from monitoring tools and the host shell. Docker images now also carry standard OCI labels (`org.opencontainers.image.version`, `org.opencontainers.image.revision`, …), so `docker inspect ghcr.io/heypinchy/pinchy:v0.5.4` reports the version and git SHA the image was built from.
