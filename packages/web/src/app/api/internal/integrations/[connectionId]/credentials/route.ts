@@ -6,12 +6,24 @@ import { integrationConnections } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { decrypt, encrypt } from "@/lib/encryption";
 import { isTokenExpired, refreshAccessToken } from "@/lib/integrations/google-oauth";
+import {
+  isTokenExpired as isMsTokenExpired,
+  refreshAccessToken as refreshMsAccessToken,
+} from "@/lib/integrations/microsoft-oauth";
 import { getOAuthSettings } from "@/lib/integrations/oauth-settings";
 
 interface GoogleCredentials {
   accessToken: string;
   refreshToken: string;
   expiresAt?: string;
+  [k: string]: unknown;
+}
+
+interface MicrosoftCredentials {
+  accessToken: string;
+  refreshToken: string;
+  expiresAt: string;
+  scope?: string;
   [k: string]: unknown;
 }
 
@@ -73,6 +85,67 @@ async function refreshGoogleCredentials(
   return promise;
 }
 
+// Per-connectionId in-flight refresh tracker for Microsoft OAuth tokens.
+// Microsoft rotates refresh tokens on every use — concurrent callers with
+// the same refresh token would all fail with invalid_grant except one.
+// This dedup map ensures only one refresh fires; all concurrent callers
+// share the same Promise and receive the fresh token bundle.
+const inFlightMicrosoftRefreshes = new Map<string, Promise<MicrosoftCredentials>>();
+
+async function refreshMicrosoftCredentials(
+  connectionId: string,
+  current: MicrosoftCredentials
+): Promise<MicrosoftCredentials> {
+  const existing = inFlightMicrosoftRefreshes.get(connectionId);
+  if (existing) return existing;
+
+  const promise = (async () => {
+    try {
+      const oauthSettings = await getOAuthSettings("microsoft");
+      if (!oauthSettings) {
+        console.error("Microsoft OAuth token refresh failed: OAuth settings not configured");
+        return current;
+      }
+
+      const refreshed = await refreshMsAccessToken({
+        tenantId: (oauthSettings as { tenantId?: string }).tenantId ?? "",
+        refreshToken: current.refreshToken,
+        clientId: oauthSettings.clientId,
+        clientSecret: oauthSettings.clientSecret,
+      });
+
+      // Critical: Microsoft rotates the refresh token on every use.
+      // Unlike Google (which only returns a new accessToken), we MUST
+      // persist BOTH the new accessToken AND the new refreshToken.
+      const updated: MicrosoftCredentials = {
+        ...current,
+        accessToken: refreshed.accessToken,
+        refreshToken: refreshed.refreshToken,
+        expiresAt: refreshed.expiresAt,
+      };
+
+      await db
+        .update(integrationConnections)
+        .set({
+          credentials: encrypt(JSON.stringify(updated)),
+          updatedAt: new Date(),
+        })
+        .where(eq(integrationConnections.id, connectionId));
+
+      console.log("Refreshed Microsoft OAuth token for connection", connectionId);
+      return updated;
+    } catch (err) {
+      console.error("Microsoft OAuth token refresh failed:", err);
+      return current;
+    }
+  })().finally(() => {
+    inFlightMicrosoftRefreshes.delete(connectionId);
+  });
+
+  inFlightMicrosoftRefreshes.set(connectionId, promise);
+  return promise;
+}
+
 export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ connectionId: string }> }
@@ -114,6 +187,20 @@ export async function GET(
     isTokenExpired(credentials.expiresAt)
   ) {
     credentials = await refreshGoogleCredentials(connectionId, credentials as GoogleCredentials);
+  }
+
+  // Auto-refresh expired Microsoft OAuth tokens. Microsoft rotates the refresh token on
+  // every use — both accessToken AND refreshToken are updated in the DB on each refresh.
+  // Concurrent callers for the same connectionId share a single refresh via inFlightMicrosoftRefreshes.
+  if (
+    connection.type === "microsoft" &&
+    credentials.expiresAt &&
+    isMsTokenExpired(credentials.expiresAt)
+  ) {
+    credentials = await refreshMicrosoftCredentials(
+      connectionId,
+      credentials as MicrosoftCredentials
+    );
   }
 
   return NextResponse.json({ type: connection.type, credentials });
