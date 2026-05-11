@@ -498,7 +498,23 @@ Pinchy now ships a web-app manifest and platform splash screens, so it can be in
 
 ### Breaking changes
 
-None.
+#### `email_search` now uses a structured DSL instead of a raw Gmail query string
+
+The `email_search` tool previously accepted a raw Gmail query string via a `query` parameter. It now requires a structured filter object. If your agents called `email_search` with a `query` field, update them to use the new fields.
+
+**Before (no longer supported):**
+
+```
+email_search({ query: "from:alice@example.com is:unread" })
+```
+
+**After (structured DSL):**
+
+```
+email_search({ from: "alice@example.com", unread: true })
+```
+
+Available filter fields: `from`, `to`, `subject`, `unread`, `sinceDays`, `folder`, `limit`. See the `email_search` tool description in your agent's tool list for the full field reference.
 
 ### Upgrade notes
 
@@ -792,8 +808,7 @@ Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.2/PINCHY_VERSION=v0.5.3/' .env
-docker compose pull && docker compose up -d
+sed -i 's/PINCHY_VERSION=v0.5.2/PINCHY_VERSION=v0.5.3/' .envdocker compose pull && docker compose up -d
 ```
 
 No database migration, no `docker-compose.yml` change, and no env-var changes are required.
@@ -822,7 +837,7 @@ Non-image attachments (PDFs and other files) now render as a filename chip in th
 
 Chat runs that complete while the user is not actively viewing the agent now emit a `chat.background_run_completed` audit event with the agent identity, run duration, and turn outcome. This makes background activity auditable without leaking conversation content into the audit log.
 
-## Upgrading from v0.5.1 to v0.5.2
+## Upgrading from v0.5.1 to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
@@ -830,13 +845,13 @@ None.
 
 ### Upgrade notes
 
-v0.5.2 is a maintenance release: a security fix for admin access to personal agents, the long-standing Ollama local-provider setup bug, and several robustness improvements in **Settings → Groups**.
+%%PINCHY_VERSION%% is a maintenance release: a security fix for admin access to personal agents, the long-standing Ollama local-provider setup bug, and several robustness improvements in **Settings → Groups**.
 
 Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.1/PINCHY_VERSION=v0.5.2/' .env
+sed -i 's/PINCHY_VERSION=v0.5.1/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d
 ```
 
@@ -844,7 +859,7 @@ No database migration, no `docker-compose.yml` change, and no env-var changes ar
 
 #### Security: admin access scope to personal agents
 
-Before v0.5.2, an admin could read or modify another user's personal agent by calling `GET`/`PATCH`/`DELETE /api/agents/:agentId` directly, even though the UI did not expose those agents. The admin fast-path in `assertAgentAccess` now correctly enforces the personal-agent boundary: personal agents are only accessible to their owner, regardless of role. To share an agent with the team, set its visibility to **All users** (or use a group), which is unaffected by this change.
+Before %%PINCHY_VERSION%%, an admin could read or modify another user's personal agent by calling `GET`/`PATCH`/`DELETE /api/agents/:agentId` directly, even though the UI did not expose those agents. The admin fast-path in `assertAgentAccess` now correctly enforces the personal-agent boundary: personal agents are only accessible to their owner, regardless of role. To share an agent with the team, set its visibility to **All users** (or use a group), which is unaffected by this change.
 
 No action is required on upgrade. If you relied on this behavior in scripts or integrations, switch them to use a shared agent instead.
 

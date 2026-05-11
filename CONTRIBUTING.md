@@ -251,6 +251,7 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 - [ ] All feature/fix PRs for this release are merged to `main`
 - [ ] Dependencies reviewed (`pnpm outdated`) — no critical/security updates pending
 - [ ] If upgrading OpenClaw: version bumped in `Dockerfile.openclaw`
+- [ ] If upgrading from <0.6 and agents used `email_search` with a raw Gmail query string, update agents to use the new structured filter fields (see `email_search` tool description).
 
 **Model resolver** (only if models or templates changed)
 
