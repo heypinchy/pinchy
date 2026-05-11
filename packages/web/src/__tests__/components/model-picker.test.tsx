@@ -1,4 +1,5 @@
 import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, it, expect } from "vitest";
 import "@testing-library/jest-dom";
 import { ModelPicker } from "@/components/model-picker";
@@ -20,5 +21,28 @@ describe("ModelPicker", () => {
       <ModelPicker value="anthropic/claude-opus-4-7" onChange={() => {}} providers={providers} />
     );
     expect(screen.getByText("Claude Opus 4.7")).toBeInTheDocument();
+  });
+
+  it("renders vision icon when model has vision capability", async () => {
+    const providersWithCaps = [
+      {
+        id: "anthropic",
+        name: "Anthropic",
+        models: [
+          {
+            id: "anthropic/claude-opus-4-7",
+            name: "Claude Opus 4.7",
+            capabilities: { vision: true, documents: true, audio: false, video: false },
+          },
+        ],
+      },
+    ];
+    render(<ModelPicker value="" onChange={() => {}} providers={providersWithCaps} />);
+
+    await userEvent.click(screen.getByRole("combobox"));
+
+    expect(screen.getByLabelText("Supports image input")).toBeInTheDocument();
+    expect(screen.getByLabelText("Supports document input")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Supports audio input")).not.toBeInTheDocument();
   });
 });
