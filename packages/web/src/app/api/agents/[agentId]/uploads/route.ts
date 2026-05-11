@@ -114,6 +114,11 @@ export const POST = withAuth<Params>(async (req, { params }, session) => {
   const workspaceRoot = getWorkspacePath(agentId);
   const staged = await persistStagedUpload({ workspaceRoot, filename: safeName, buffer });
 
+  // If the DB insert below throws, the staged file is left on disk without a DB row.
+  // The GC sweep (upload-gc.ts) only removes rows that exist in the DB — a file
+  // without a row is technically unreachable by GC. In practice: disk is cheap and
+  // FS orphans from this race are small. A future hardening task can add cleanup here.
+
   // DB insert.
   const now = new Date();
   const expiresAt = new Date(now.getTime() + STAGED_TTL_MS);

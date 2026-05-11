@@ -228,20 +228,22 @@ export interface StagedUploadRef {
  * Each call generates a fresh UUID for the staging directory, so concurrent
  * uploads of the same filename never collide. This is the first phase of the
  * two-phase upload flow; the file is promoted to its durable path later.
+ *
+ * `filename` must already be sanitized by the caller via `sanitizeFilename`.
+ * This function is internal and trusts its callers.
  */
 export async function persistStagedUpload(
   params: PersistStagedUploadParams
 ): Promise<StagedUploadRef> {
   const { workspaceRoot, filename, buffer } = params;
-  const safeName = sanitizeFilename(filename);
   const uploadId = randomUUID();
   const stagingDir = join(workspaceRoot, ".staging", uploadId);
   await mkdir(stagingDir, { recursive: true });
-  await writeFile(join(stagingDir, safeName), buffer);
+  await writeFile(join(stagingDir, filename), buffer);
   const contentHash = createHash("sha256").update(buffer).digest("hex");
   return {
     uploadId,
-    relativePath: `.staging/${uploadId}/${safeName}`,
+    relativePath: `.staging/${uploadId}/${filename}`,
     contentHash,
   };
 }
