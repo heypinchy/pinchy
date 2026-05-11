@@ -33,7 +33,7 @@ function buildGmailQuery(opts: SearchOptions): string {
   if (opts.subject) parts.push(`subject:${quote(opts.subject)}`);
   if (opts.unread) parts.push("is:unread");
   if (opts.sinceDays != null) parts.push(`newer_than:${opts.sinceDays}d`);
-  if (opts.folder) parts.push(`label:${FOLDER_TO_GMAIL_LABEL[opts.folder]}`);
+  if (opts.folder) parts.push(`label:${mapFolder(opts.folder)}`);
   if (parts.length === 0) throw new Error("search requires at least one filter field");
   return parts.join(" ");
 }
@@ -68,7 +68,8 @@ export class GmailAdapter implements EmailAdapter {
     });
 
     const data = response.data;
-    const payload = data.payload!;
+    if (!data.payload) throw new Error(`Gmail API returned message without payload for id: ${id}`);
+    const payload = data.payload;
 
     return {
       id: data.id!,
