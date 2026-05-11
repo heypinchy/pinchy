@@ -1043,6 +1043,11 @@ describe("Vision capability for read-write Odoo operator templates", () => {
   // override, sometimes landing on unstable Vision+Tools models.
   const READ_WRITE_OPERATOR_IDS = [
     "odoo-bookkeeper",
+    "odoo-project-manager",
+    "odoo-hr-operator",
+    "odoo-warehouse-operator",
+    "odoo-production-operator",
+    "odoo-approval-manager",
     "odoo-crm-assistant",
     "odoo-procurement-agent",
     "odoo-customer-service",
@@ -1055,5 +1060,330 @@ describe("Vision capability for read-write Odoo operator templates", () => {
       expect(t.modelHint, `${id} missing modelHint`).toBeDefined();
       expect(t.modelHint!.capabilities, `${id} missing vision`).toContain("vision");
     }
+  });
+});
+
+describe("Odoo Project Manager template (write counterpart of Project Tracker)", () => {
+  it("exists with id odoo-project-manager", () => {
+    expect(getTemplate("odoo-project-manager")).toBeDefined();
+  });
+
+  it("requires an Odoo connection", () => {
+    expect(getTemplate("odoo-project-manager")!.requiresOdooConnection).toBe(true);
+  });
+
+  it("has read-write access level", () => {
+    expect(getTemplate("odoo-project-manager")!.odooConfig!.accessLevel).toBe("read-write");
+  });
+
+  it("grants read+create+write on project.project and project.task", () => {
+    const t = getTemplate("odoo-project-manager")!;
+    const byModel = new Map(t.odooConfig!.requiredModels.map((m) => [m.model, m.operations]));
+    for (const model of ["project.project", "project.task"]) {
+      const ops = byModel.get(model);
+      expect(ops, `missing ${model}`).toBeDefined();
+      expect(ops).toContain("read");
+      expect(ops).toContain("create");
+      expect(ops).toContain("write");
+    }
+  });
+
+  it("never grants delete on any model", () => {
+    // Project/task deletion would break time tracking and audit trails.
+    // Archive (active=false) is a write — that is the correct lever.
+    const t = getTemplate("odoo-project-manager")!;
+    for (const m of t.odooConfig!.requiredModels) {
+      expect(m.operations, `${m.model} grants delete`).not.toContain("delete");
+    }
+  });
+
+  it("AGENTS.md mandates confirmation before bulk operations", () => {
+    // Reassigning twenty tasks or closing a whole stage is irreversible at
+    // scale — the agent must talk the user through it first.
+    const t = getTemplate("odoo-project-manager")!;
+    expect(t.defaultAgentsMd).toMatch(/bulk|batch|mass/i);
+    expect(t.defaultAgentsMd).toMatch(/confirm|confirmation/i);
+  });
+
+  it("AGENTS.md mandates duplicate-check before creating projects or tasks", () => {
+    const t = getTemplate("odoo-project-manager")!;
+    expect(t.defaultAgentsMd).toMatch(/duplicate|already exists|dedup/i);
+  });
+
+  it("AGENTS.md mentions project.project and project.task with write capabilities", () => {
+    const t = getTemplate("odoo-project-manager")!;
+    expect(t.defaultAgentsMd).toContain("project.project");
+    expect(t.defaultAgentsMd).toContain("project.task");
+    expect(t.defaultAgentsMd).toMatch(/create|update|assign/i);
+  });
+
+  it("appears in getTemplateList", () => {
+    expect(getTemplateList().some((t) => t.id === "odoo-project-manager")).toBe(true);
+  });
+});
+
+describe("Odoo HR Operator template (write counterpart of HR Analyst)", () => {
+  it("exists with id odoo-hr-operator", () => {
+    expect(getTemplate("odoo-hr-operator")).toBeDefined();
+  });
+
+  it("requires an Odoo connection", () => {
+    expect(getTemplate("odoo-hr-operator")!.requiresOdooConnection).toBe(true);
+  });
+
+  it("has read-write access level", () => {
+    expect(getTemplate("odoo-hr-operator")!.odooConfig!.accessLevel).toBe("read-write");
+  });
+
+  it("grants read+create+write on hr.leave and hr.attendance", () => {
+    // These are the day-to-day write surfaces: leave requests and attendance entries.
+    const t = getTemplate("odoo-hr-operator")!;
+    const byModel = new Map(t.odooConfig!.requiredModels.map((m) => [m.model, m.operations]));
+    for (const model of ["hr.leave", "hr.attendance"]) {
+      const ops = byModel.get(model);
+      expect(ops, `missing ${model}`).toBeDefined();
+      expect(ops).toContain("read");
+      expect(ops).toContain("create");
+      expect(ops).toContain("write");
+    }
+  });
+
+  it("grants read but NOT create on hr.contract (contracts are HR-admin territory)", () => {
+    // Contracts touch salary, benefits, legal terms. Operator can read for context
+    // (e.g. to know an employee's working time), but never create or amend.
+    const t = getTemplate("odoo-hr-operator")!;
+    const contract = t.odooConfig!.requiredModels.find((m) => m.model === "hr.contract");
+    expect(contract).toBeDefined();
+    expect(contract!.operations).toContain("read");
+    expect(contract!.operations).not.toContain("create");
+    expect(contract!.operations).not.toContain("write");
+  });
+
+  it("grants read but NOT create on hr.employee (new hires are HR-admin territory)", () => {
+    // Creating an employee record is a HR-admin action — it triggers payroll,
+    // legal contracts, system access. Operator can update existing employees
+    // (e.g. work email) but never onboard new ones.
+    const t = getTemplate("odoo-hr-operator")!;
+    const emp = t.odooConfig!.requiredModels.find((m) => m.model === "hr.employee");
+    expect(emp).toBeDefined();
+    expect(emp!.operations).toContain("read");
+    expect(emp!.operations).not.toContain("create");
+  });
+
+  it("never grants delete on any model", () => {
+    const t = getTemplate("odoo-hr-operator")!;
+    for (const m of t.odooConfig!.requiredModels) {
+      expect(m.operations, `${m.model} grants delete`).not.toContain("delete");
+    }
+  });
+
+  it("AGENTS.md mandates confidentiality and double-check before write", () => {
+    // HR data is highly sensitive — wrong leave / wrong attendance / wrong
+    // employee disrupts payroll. The agent must confirm before any write.
+    const t = getTemplate("odoo-hr-operator")!;
+    expect(t.defaultAgentsMd).toMatch(/confidential|sensitive|private/i);
+    expect(t.defaultAgentsMd).toMatch(/confirm|confirmation/i);
+  });
+
+  it("AGENTS.md flags contract-related questions as out-of-scope for write", () => {
+    // The agent must redirect the user to HR-admin for salary/contract changes.
+    const t = getTemplate("odoo-hr-operator")!;
+    expect(t.defaultAgentsMd).toMatch(/hr.contract/);
+    expect(t.defaultAgentsMd).toMatch(/HR admin|payroll|out of scope|cannot|won.t/i);
+  });
+
+  it("appears in getTemplateList", () => {
+    expect(getTemplateList().some((t) => t.id === "odoo-hr-operator")).toBe(true);
+  });
+});
+
+describe("Odoo Warehouse Operator template (write counterpart of Inventory Scout)", () => {
+  it("exists with id odoo-warehouse-operator", () => {
+    expect(getTemplate("odoo-warehouse-operator")).toBeDefined();
+  });
+
+  it("requires an Odoo connection", () => {
+    expect(getTemplate("odoo-warehouse-operator")!.requiresOdooConnection).toBe(true);
+  });
+
+  it("has read-write access level", () => {
+    expect(getTemplate("odoo-warehouse-operator")!.odooConfig!.accessLevel).toBe("read-write");
+  });
+
+  it("grants read+create+write on stock.picking, stock.move, stock.move.line", () => {
+    // These are the records used to record receipts, internal transfers, deliveries.
+    const t = getTemplate("odoo-warehouse-operator")!;
+    const byModel = new Map(t.odooConfig!.requiredModels.map((m) => [m.model, m.operations]));
+    for (const model of ["stock.picking", "stock.move", "stock.move.line"]) {
+      const ops = byModel.get(model);
+      expect(ops, `missing ${model}`).toBeDefined();
+      expect(ops).toContain("read");
+      expect(ops).toContain("create");
+      expect(ops).toContain("write");
+    }
+  });
+
+  it("grants read+write on stock.quant (no create — quants are auto-managed by Odoo)", () => {
+    // Quants are managed by Odoo itself based on move flows. Manually creating
+    // a quant outside of an inventory adjustment leaves a non-auditable hole.
+    const t = getTemplate("odoo-warehouse-operator")!;
+    const quant = t.odooConfig!.requiredModels.find((m) => m.model === "stock.quant");
+    expect(quant).toBeDefined();
+    expect(quant!.operations).toContain("read");
+    expect(quant!.operations).toContain("write");
+    expect(quant!.operations).not.toContain("create");
+  });
+
+  it("never grants delete on any model", () => {
+    const t = getTemplate("odoo-warehouse-operator")!;
+    for (const m of t.odooConfig!.requiredModels) {
+      expect(m.operations, `${m.model} grants delete`).not.toContain("delete");
+    }
+  });
+
+  it("AGENTS.md emphasises picking-confirmation workflow and validate semantics", () => {
+    // The agent should explain that validating a picking turns "planned" into
+    // "done" and updates stock — irreversible at scale.
+    const t = getTemplate("odoo-warehouse-operator")!;
+    expect(t.defaultAgentsMd).toMatch(/validate|button_validate|button_done/i);
+    expect(t.defaultAgentsMd).toMatch(/confirm|confirmation/i);
+  });
+
+  it("AGENTS.md mentions inventory adjustments and warns against unscoped writes", () => {
+    const t = getTemplate("odoo-warehouse-operator")!;
+    expect(t.defaultAgentsMd).toMatch(/inventory adjustment|stock\.quant/);
+    expect(t.defaultAgentsMd).toMatch(/duplicate|dedup|already|existing/i);
+  });
+
+  it("appears in getTemplateList", () => {
+    expect(getTemplateList().some((t) => t.id === "odoo-warehouse-operator")).toBe(true);
+  });
+});
+
+describe("Odoo Production Operator template (write counterpart of Manufacturing Planner)", () => {
+  it("exists with id odoo-production-operator", () => {
+    expect(getTemplate("odoo-production-operator")).toBeDefined();
+  });
+
+  it("requires an Odoo connection", () => {
+    expect(getTemplate("odoo-production-operator")!.requiresOdooConnection).toBe(true);
+  });
+
+  it("has read-write access level", () => {
+    expect(getTemplate("odoo-production-operator")!.odooConfig!.accessLevel).toBe("read-write");
+  });
+
+  it("grants read+create+write on mrp.production and read+write on mrp.workorder", () => {
+    // Production orders can be created (new MOs); workorders are created by
+    // Odoo from the BOM/routing, so the operator only updates progress.
+    const t = getTemplate("odoo-production-operator")!;
+    const byModel = new Map(t.odooConfig!.requiredModels.map((m) => [m.model, m.operations]));
+
+    const production = byModel.get("mrp.production");
+    expect(production).toBeDefined();
+    expect(production).toContain("read");
+    expect(production).toContain("create");
+    expect(production).toContain("write");
+
+    const workorder = byModel.get("mrp.workorder");
+    expect(workorder).toBeDefined();
+    expect(workorder).toContain("read");
+    expect(workorder).toContain("write");
+  });
+
+  it("grants read-only on mrp.bom (BOMs are engineering territory)", () => {
+    // BOM changes flow from R&D / engineering, not the shop floor.
+    const t = getTemplate("odoo-production-operator")!;
+    const bom = t.odooConfig!.requiredModels.find((m) => m.model === "mrp.bom");
+    expect(bom).toBeDefined();
+    expect(bom!.operations).toContain("read");
+    expect(bom!.operations).not.toContain("create");
+    expect(bom!.operations).not.toContain("write");
+  });
+
+  it("never grants delete on any model", () => {
+    const t = getTemplate("odoo-production-operator")!;
+    for (const m of t.odooConfig!.requiredModels) {
+      expect(m.operations, `${m.model} grants delete`).not.toContain("delete");
+    }
+  });
+
+  it("AGENTS.md covers MO lifecycle (confirm, start, finish) and warns on irreversible steps", () => {
+    const t = getTemplate("odoo-production-operator")!;
+    expect(t.defaultAgentsMd).toMatch(/mrp\.production/);
+    expect(t.defaultAgentsMd).toMatch(/confirm|in_progress|done|button_mark_done/i);
+    expect(t.defaultAgentsMd).toMatch(/irreversible|cannot.*undo|consume|backflush/i);
+  });
+
+  it("AGENTS.md tells the agent to flag BOM mismatches rather than edit BOMs", () => {
+    // BOM is read-only — agent must route discrepancies to engineering.
+    const t = getTemplate("odoo-production-operator")!;
+    expect(t.defaultAgentsMd).toMatch(/engineering|R&D|out of scope/i);
+  });
+
+  it("appears in getTemplateList", () => {
+    expect(getTemplateList().some((t) => t.id === "odoo-production-operator")).toBe(true);
+  });
+});
+
+describe("Odoo Approval Manager template (cross-module approvals)", () => {
+  it("exists with id odoo-approval-manager", () => {
+    expect(getTemplate("odoo-approval-manager")).toBeDefined();
+  });
+
+  it("requires an Odoo connection", () => {
+    expect(getTemplate("odoo-approval-manager")!.requiresOdooConnection).toBe(true);
+  });
+
+  it("has read-write access level", () => {
+    expect(getTemplate("odoo-approval-manager")!.odooConfig!.accessLevel).toBe("read-write");
+  });
+
+  it("grants read+write on the four approval-bearing models", () => {
+    // Approvals are state-transitions on existing records — write, never create.
+    // The four core surfaces are: expenses (sheets), leaves, purchase orders, and
+    // the generic approval.request model when present.
+    const t = getTemplate("odoo-approval-manager")!;
+    const byModel = new Map(t.odooConfig!.requiredModels.map((m) => [m.model, m.operations]));
+    for (const model of ["hr.expense.sheet", "hr.leave", "purchase.order"]) {
+      const ops = byModel.get(model);
+      expect(ops, `missing ${model}`).toBeDefined();
+      expect(ops).toContain("read");
+      expect(ops).toContain("write");
+    }
+  });
+
+  it("does NOT grant create on approval surfaces (approvals act on existing records)", () => {
+    // The agent approves what already exists; it does not file expense reports,
+    // request leave, or create POs. Those originate from other roles.
+    const t = getTemplate("odoo-approval-manager")!;
+    const byModel = new Map(t.odooConfig!.requiredModels.map((m) => [m.model, m.operations]));
+    for (const model of ["hr.expense.sheet", "hr.leave", "purchase.order"]) {
+      const ops = byModel.get(model)!;
+      expect(ops, `${model} should not grant create`).not.toContain("create");
+    }
+  });
+
+  it("never grants delete on any model", () => {
+    const t = getTemplate("odoo-approval-manager")!;
+    for (const m of t.odooConfig!.requiredModels) {
+      expect(m.operations, `${m.model} grants delete`).not.toContain("delete");
+    }
+  });
+
+  it("AGENTS.md prescribes a four-step approval ritual (read → policy-check → confirm → write)", () => {
+    const t = getTemplate("odoo-approval-manager")!;
+    expect(t.defaultAgentsMd).toMatch(/policy|policies|threshold|limit/i);
+    expect(t.defaultAgentsMd).toMatch(/confirm|confirmation/i);
+    expect(t.defaultAgentsMd).toMatch(/reject|refuse/i);
+  });
+
+  it("AGENTS.md warns about authority limits and forwarding above-threshold requests", () => {
+    const t = getTemplate("odoo-approval-manager")!;
+    expect(t.defaultAgentsMd).toMatch(/authority|threshold|escalat|above|exceeds/i);
+  });
+
+  it("appears in getTemplateList", () => {
+    expect(getTemplateList().some((t) => t.id === "odoo-approval-manager")).toBe(true);
   });
 });

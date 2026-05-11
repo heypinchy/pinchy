@@ -23,6 +23,11 @@ import {
   Car,
   Globe,
   Mail,
+  ClipboardList,
+  UsersRound,
+  PackageOpen,
+  Wrench,
+  BadgeCheck,
   type LucideIcon,
 } from "lucide-react";
 
@@ -62,6 +67,11 @@ export const TEMPLATE_ICON_COMPONENTS = {
   Car,
   Globe,
   Mail,
+  ClipboardList,
+  UsersRound,
+  PackageOpen,
+  Wrench,
+  BadgeCheck,
 } as const satisfies Record<string, LucideIcon>;
 
 export type TemplateIconName = keyof typeof TEMPLATE_ICON_COMPONENTS;
