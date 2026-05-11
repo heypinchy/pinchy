@@ -138,7 +138,13 @@ export default defineConfig({
             { label: 'Customizing Your Deployment', slug: 'guides/customizing-deployment' },
             { label: 'Hardening', slug: 'guides/hardening' },
             { label: 'HTTPS & Domain Lock', slug: 'guides/domain-lock' },
-            { label: 'Connect Email (Gmail)', slug: 'guides/connect-email' },
+            {
+              label: 'Connect Email',
+              items: [
+                { label: 'Overview', slug: 'guides/connect-email' },
+                { label: 'Google (Gmail)', slug: 'guides/connect-email-google' },
+              ],
+            },
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
             { label: 'Upload Files in Chat', slug: 'guides/file-uploads' },
             { label: 'Install as an App', slug: 'guides/install-as-app' },
