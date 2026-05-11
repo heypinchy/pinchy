@@ -348,10 +348,10 @@ describe("GmailAdapter", () => {
   });
 
   describe("search", () => {
-    it("passes query to Gmail list API", async () => {
+    it("builds Gmail query from DSL fields", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
 
-      await adapter.search({ query: "from:alice subject:meeting" });
+      await adapter.search({ from: "alice", subject: "meeting" });
 
       expect(mockList).toHaveBeenCalledWith({
         userId: "me",
@@ -364,11 +364,68 @@ describe("GmailAdapter", () => {
     it("respects limit parameter", async () => {
       mockList.mockResolvedValue({ data: { messages: [] } });
 
-      await adapter.search({ query: "test", limit: 5 });
+      await adapter.search({ from: "test", limit: 5 });
 
       expect(mockList).toHaveBeenCalledWith(
         expect.objectContaining({ maxResults: 5 }),
       );
+    });
+  });
+
+  describe("folder mapping", () => {
+    it("maps canonical folders to Gmail label IDs", async () => {
+      mockList.mockResolvedValue({ data: { messages: [] } });
+      await adapter.list({ folder: "DRAFTS", limit: 5 });
+      expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ labelIds: ["DRAFT"] }));
+    });
+
+    it("rejects custom folder names", async () => {
+      await expect(adapter.list({ folder: "CUSTOM_LABEL" as never })).rejects.toThrow(
+        /unknown folder/i,
+      );
+    });
+  });
+
+  describe("search DSL → Gmail query", () => {
+    it("combines from, subject, unread, sinceDays", async () => {
+      mockList.mockResolvedValue({ data: { messages: [] } });
+      await adapter.search({
+        from: "alice@example.com",
+        subject: "invoice",
+        unread: true,
+        sinceDays: 7,
+      });
+      expect(mockList).toHaveBeenCalledWith(
+        expect.objectContaining({ q: "from:alice@example.com subject:invoice is:unread newer_than:7d" }),
+      );
+    });
+
+    it("escapes spaces in subject", async () => {
+      mockList.mockResolvedValue({ data: { messages: [] } });
+      await adapter.search({ subject: "monthly report" });
+      expect(mockList).toHaveBeenCalledWith(
+        expect.objectContaining({ q: 'subject:"monthly report"' }),
+      );
+    });
+
+    it("requires at least one field", async () => {
+      await expect(adapter.search({})).rejects.toThrow(/at least one/i);
+    });
+  });
+
+  describe("replyTo sets In-Reply-To AND References", () => {
+    it("includes both headers in the raw message", async () => {
+      mockDraftsCreate.mockResolvedValue({ data: { id: "draft1" } });
+      await adapter.draft({
+        to: "alice@example.com",
+        subject: "Re: hello",
+        body: "thanks",
+        replyTo: "<original-id@mail.example>",
+      });
+      const raw = mockDraftsCreate.mock.calls[0][0].requestBody.message.raw;
+      const decoded = Buffer.from(raw, "base64url").toString("utf-8");
+      expect(decoded).toContain("In-Reply-To: <original-id@mail.example>");
+      expect(decoded).toContain("References: <original-id@mail.example>");
     });
   });
 

@@ -1,39 +1,44 @@
 import { google } from "googleapis";
+import type {
+  EmailAdapter,
+  Folder,
+  ListOptions,
+  SearchOptions,
+  ComposeOptions,
+  EmailSummary,
+  EmailFull,
+} from "./email-adapter.js";
 
-export interface EmailSummary {
-  id: string;
-  from: string;
-  to: string;
-  subject: string;
-  date: string;
-  snippet: string;
-  unread: boolean;
+export type { EmailSummary, EmailFull };
+
+const FOLDER_TO_GMAIL_LABEL: Record<Folder, string> = {
+  INBOX: "INBOX",
+  SENT: "SENT",
+  DRAFTS: "DRAFT",
+  TRASH: "TRASH",
+  SPAM: "SPAM",
+};
+
+function mapFolder(f: Folder): string {
+  const label = FOLDER_TO_GMAIL_LABEL[f];
+  if (!label) throw new Error(`unknown folder: ${f}. Valid: INBOX, SENT, DRAFTS, TRASH, SPAM.`);
+  return label;
 }
 
-export interface EmailFull extends EmailSummary {
-  cc: string;
-  body: string;
+function buildGmailQuery(opts: SearchOptions): string {
+  const parts: string[] = [];
+  const quote = (v: string) => (/[\s"]/.test(v) ? `"${v.replace(/"/g, '\\"')}"` : v);
+  if (opts.from) parts.push(`from:${quote(opts.from)}`);
+  if (opts.to) parts.push(`to:${quote(opts.to)}`);
+  if (opts.subject) parts.push(`subject:${quote(opts.subject)}`);
+  if (opts.unread) parts.push("is:unread");
+  if (opts.sinceDays != null) parts.push(`newer_than:${opts.sinceDays}d`);
+  if (opts.folder) parts.push(`label:${FOLDER_TO_GMAIL_LABEL[opts.folder]}`);
+  if (parts.length === 0) throw new Error("search requires at least one filter field");
+  return parts.join(" ");
 }
 
-export interface ListOptions {
-  folder?: string;
-  limit?: number;
-  unreadOnly?: boolean;
-}
-
-export interface SearchOptions {
-  query: string;
-  limit?: number;
-}
-
-export interface ComposeOptions {
-  to: string;
-  subject: string;
-  body: string;
-  replyTo?: string;
-}
-
-export class GmailAdapter {
+export class GmailAdapter implements EmailAdapter {
   private gmail: ReturnType<typeof google.gmail>;
 
   constructor(opts: { accessToken: string }) {
@@ -51,7 +56,7 @@ export class GmailAdapter {
     return this.fetchSummaries({
       maxResults: limit,
       q: unreadOnly ? "is:unread" : undefined,
-      labelIds: folder ? [folder] : undefined,
+      labelIds: folder ? [mapFolder(folder)] : undefined,
     });
   }
 
@@ -79,11 +84,12 @@ export class GmailAdapter {
   }
 
   async search(opts: SearchOptions): Promise<EmailSummary[]> {
-    const { query, limit = 20 } = opts;
+    const { limit = 20, ...dslOpts } = opts;
+    const q = buildGmailQuery(dslOpts);
 
     return this.fetchSummaries({
       maxResults: limit,
-      q: query,
+      q,
       labelIds: undefined,
     });
   }
@@ -211,7 +217,9 @@ function buildRawMessage(opts: ComposeOptions): string {
   ];
 
   if (opts.replyTo) {
-    lines.push(`In-Reply-To: ${sanitizeHeader(opts.replyTo)}`);
+    const sanitized = sanitizeHeader(opts.replyTo);
+    lines.push(`In-Reply-To: ${sanitized}`);
+    lines.push(`References: ${sanitized}`);
   }
 
   lines.push("", opts.body);
