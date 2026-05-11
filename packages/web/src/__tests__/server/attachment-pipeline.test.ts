@@ -158,31 +158,27 @@ describe("buildAttachmentBlock", () => {
     expect(buildAttachmentBlock([])).toBe("");
   });
 
-  // sanitizeFilename allows backticks, which would break the markdown code
-  // span that wraps the path in the block — and could let a crafted filename
-  // leak structure into the message sent to the LLM.
-  it("escapes backticks in workspace paths so they cannot break the markdown code span", async () => {
+  // Backticks are rejected by sanitizeFilename — they can never reach this
+  // function via the upload pipeline. But buildAttachmentBlock is also
+  // exported, and a future caller could pass a hand-built ref. If a backtick
+  // somehow lands in the absolute path, the markdown code span would break
+  // and let crafted filename text leak into the message structure the LLM
+  // reads. Fail loud (throw) rather than silently substituting characters
+  // and corrupting the on-disk path the agent must call its tool with.
+  it("throws when absolutePath contains a backtick (defense-in-depth contract)", async () => {
     const { buildAttachmentBlock } = await import("@/server/attachment-pipeline");
-    const block = buildAttachmentBlock([
-      {
-        relativePath: "uploads/foo`bar`.pdf",
-        absolutePath: "/root/.openclaw/workspaces/test/uploads/foo`bar`.pdf",
-        mimeType: "application/pdf",
-        sizeBytes: 100,
-        contentHash: "a".repeat(64),
-        reused: false,
-      },
-    ]);
-    // The path is wrapped in a single ` … ` code span. After escaping,
-    // the path segment itself must not contain any backticks — they are
-    // replaced with the visually-similar U+02BC apostrophe.
-    const lineWithPath = block.split("\n").find((l) => l.includes("uploads/foo")) ?? "";
-    // Extract just the code-span content (text between the first pair of backticks)
-    const codeSpanMatch = lineWithPath.match(/`([^`]*)`/);
-    const pathInCodeSpan = codeSpanMatch?.[1] ?? "";
-    expect(pathInCodeSpan).not.toContain("`");
-    // The original filename text must still be recognisable to the agent.
-    expect(lineWithPath).toMatch(/foo.+bar.+\.pdf/);
+    expect(() =>
+      buildAttachmentBlock([
+        {
+          relativePath: "uploads/foo`bar`.pdf",
+          absolutePath: "/root/.openclaw/workspaces/test/uploads/foo`bar`.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 100,
+          contentHash: "a".repeat(64),
+          reused: false,
+        },
+      ])
+    ).toThrow(/backtick/i);
   });
 
   it("tells the agent which built-in tool to call and uses the absolute workspace path", async () => {

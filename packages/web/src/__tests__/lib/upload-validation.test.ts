@@ -51,6 +51,22 @@ describe("sanitizeFilename", () => {
     expect(() => sanitizeFilename("foo‏.pdf")).toThrow(/invalid/i); // RIGHT-TO-LEFT MARK
     expect(() => sanitizeFilename("﻿file.pdf")).toThrow(/invalid/i); // BOM
   });
+
+  // Backticks would close the markdown code span the agent reads in the
+  // attachment block, opening a prompt-injection trick path. Double quotes
+  // would break the quoted form of the Content-Disposition header emitted by
+  // the uploads route (RFC 6266). Both are vanishingly rare in real filenames
+  // — rejecting them at the trust boundary eliminates two whole classes of
+  // downstream escaping bugs.
+  it("rejects backticks (prompt-injection guard for markdown code spans)", () => {
+    expect(() => sanitizeFilename("invoice`.pdf")).toThrow(/invalid/i);
+    expect(() => sanitizeFilename("`evil.pdf")).toThrow(/invalid/i);
+  });
+
+  it("rejects double quotes (Content-Disposition quoted-string guard)", () => {
+    expect(() => sanitizeFilename('evil"; filename="trojan.exe.pdf')).toThrow(/invalid/i);
+    expect(() => sanitizeFilename('foo".pdf')).toThrow(/invalid/i);
+  });
 });
 
 // Minimal valid file headers for magic-number detection

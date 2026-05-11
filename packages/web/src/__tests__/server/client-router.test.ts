@@ -847,6 +847,43 @@ describe("ClientRouter", () => {
     });
   });
 
+  it("falls back to '<unknown user>' (not the raw UUID) in attachment.uploaded audit when user.name is missing", async () => {
+    // When the uploading user has no name set (or the user row is gone),
+    // the audit row's `uploader.name` field used to be filled with the
+    // user's UUID. That makes audit logs misleading: a UUID-shaped string
+    // appears in a `name` field, indistinguishable from a real legacy
+    // human name. AGENTS.md asks for "human-readable names beside IDs",
+    // so the fallback must be obviously a fallback.
+    async function* fakeStream() {
+      yield { type: "text" as const, text: "ok" };
+      yield { type: "done" as const, text: "" };
+    }
+    mockChat.mockReturnValue(fakeStream());
+
+    // Override default: user row exists but has no `name`.
+    mockUserFindFirst.mockResolvedValue({ id: "user-1", name: null, context: null });
+
+    const structuredContent = [
+      { type: "image_url", image_url: { url: "data:application/pdf;base64,JVBERi0xLjQ=" } },
+    ];
+
+    await router.handleMessage(createMockClientWs() as any, {
+      type: "message",
+      content: structuredContent,
+      agentId: "agent-1",
+      filenames: ["doc.pdf"],
+    });
+
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "attachment.uploaded",
+        detail: expect.objectContaining({
+          uploader: { id: "user-1", name: "<unknown user>" },
+        }),
+      })
+    );
+  });
+
   it("should append a <pinchy:attachments> block to the user text so file metadata is recorded per-message in session history", async () => {
     // Without per-message file metadata, OpenClaw's JSONL only stores the user
     // text — so on Turn 2, when reading history, the agent has no record of
@@ -915,6 +952,45 @@ describe("ClientRouter", () => {
     expect(userMsg.role).toBe("user");
     expect(userMsg.content).toBe("Was steht in dieser Datei?");
     expect(userMsg.files).toEqual([{ filename: "invoice.pdf", mimeType: "application/pdf" }]);
+  });
+
+  it("should preserve user messages that contain ONLY an attachment block (no accompanying text)", async () => {
+    // A common UX flow: the user drops a PDF and hits send without typing
+    // anything. attachment-pipeline.buildAttachmentBlock then produces a
+    // message whose `text` is *just* the block (no leading user prose).
+    //
+    // On reload, parseAttachmentBlock strips the block → cleanText === "".
+    // Without the fix, the `.filter((msg) => msg.content)` step in
+    // handleHistory drops the entire row — and with it the `files`
+    // metadata — so the user's own upload disappears from history.
+    //
+    // The contract: an empty-content message with non-empty `files` MUST
+    // survive history reload so the chip is rendered.
+    const clientWs = createMockClientWs();
+    mockSessionsHistory.mockResolvedValue({
+      messages: [
+        {
+          role: "user",
+          content:
+            "<pinchy:attachments>\n" +
+            "The user attached these files (already saved into your workspace). Read each file with the listed built-in tool, using the exact absolute path:\n" +
+            "- `/root/.openclaw/workspaces/agent-1/uploads/silent-pdf.pdf` (application/pdf, 100 KB) — analyze with `pdf`\n" +
+            "\nIf you delegate this task to a sub-agent or another tool, pass these exact paths verbatim — do not retype from memory.\n" +
+            "</pinchy:attachments>",
+          timestamp: 1708460000000,
+        },
+      ],
+    });
+
+    await router.handleMessage(clientWs as any, { type: "history", agentId: "agent-1" });
+
+    const sent = clientWs.sent.map((s) => JSON.parse(s));
+    expect(sent[0].messages).toHaveLength(1);
+    const userMsg = sent[0].messages[0];
+    expect(userMsg.role).toBe("user");
+    // Text is empty post-strip — that's correct. The chip carries the meaning.
+    expect(userMsg.content).toBe("");
+    expect(userMsg.files).toEqual([{ filename: "silent-pdf.pdf", mimeType: "application/pdf" }]);
   });
 
   it("should omit attachments when content has no images", async () => {

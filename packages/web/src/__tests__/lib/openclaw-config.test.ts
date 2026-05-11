@@ -579,6 +579,57 @@ describe("regenerateOpenClawConfig", () => {
     expect(agentEntry.tools.fs).toEqual({ workspaceOnly: true });
   });
 
+  // Locks the combined chat-attachment security contract (PR #316 review #3):
+  //
+  //   1. `pdf` and `image` MUST be available to every agent — they're the
+  //      built-in tools the upload hint instructs the agent to call. If
+  //      either ends up in `tools.deny`, the entire attachment feature
+  //      silently breaks: the agent receives a path it cannot read.
+  //
+  //   2. `image_generate` MUST remain denied. It produces new content
+  //      (token cost, output side-effects) and belongs behind explicit
+  //      admin opt-in. This is the explicit boundary documented in
+  //      tool-registry.ts § STANDALONE_DENY.
+  //
+  //   3. `tools.fs.workspaceOnly === true` MUST be set. Without it, `pdf`
+  //      and `image` have unrestricted host-filesystem access — an agent
+  //      could read /etc/passwd via the `pdf` tool.
+  //
+  // The three together are the guarantee: agents can read user uploads,
+  // confined to the workspace, but cannot generate new content without
+  // admin permission. Regression in any one of them silently changes the
+  // security posture for every Pinchy install.
+  it("locks the chat-attachment security contract: pdf/image allowed + workspace-confined + image_generate denied", async () => {
+    const agentsData = [
+      {
+        id: "security-contract-agent",
+        name: "Smithers",
+        model: "anthropic/claude-opus-4-7",
+        createdAt: new Date(),
+      },
+    ];
+    mockedDb.select.mockReturnValue({ from: mockFrom(agentsData) } as never);
+    mockedGetSetting.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    const config = JSON.parse(mockedWriteFileSync.mock.calls[0][1] as string);
+    const agentEntry = config.agents.list.find(
+      (a: { id: string }) => a.id === "security-contract-agent"
+    );
+    const deny = (agentEntry.tools?.deny ?? []) as string[];
+
+    // (1) pdf/image MUST be reachable (NOT in the deny list).
+    expect(deny).not.toContain("pdf");
+    expect(deny).not.toContain("image");
+
+    // (2) image_generate MUST stay denied (admin-only).
+    expect(deny).toContain("image_generate");
+
+    // (3) workspace confinement MUST be active.
+    expect(agentEntry.tools.fs).toEqual({ workspaceOnly: true });
+  });
+
   it("writes gateway.auth.token from getOrCreateGatewayToken() (DB wins over existing config)", async () => {
     const existingConfig = {
       gateway: {

@@ -201,16 +201,6 @@ export async function processIncomingAttachments(
   return { chatAttachments, workspaceRefs };
 }
 
-// Filenames are sanitized server-side, but `sanitizeFilename` permits backticks
-// (rare-but-legal in real filenames). When the path is interpolated into a
-// markdown code span in the system prompt, an embedded backtick would close
-// the span and let user-supplied text leak into the prompt structure.
-// Replace `` ` `` with the visually-similar U+02BC MODIFIER LETTER APOSTROPHE
-// so the path stays readable to the agent and the code span stays balanced.
-function escapeForMarkdownCodeSpan(s: string): string {
-  return s.replace(/`/g, "ʼ");
-}
-
 /**
  * Resolve the built-in OpenClaw tool name for a given attachment MIME type.
  *
@@ -229,11 +219,40 @@ function toolNameForMime(mimeType: string): string {
   );
 }
 
-/** Opening / closing markers for the in-message attachment block. The tag is
- * deliberately custom (and namespaced under `pinchy:`) so the strip step on
- * the display side cannot collide with anything the user might type. */
+// ── Attachment-block format — single source of truth ────────────────────
+//
+// The in-message attachment block has two consumers that MUST stay in sync:
+//
+//   buildAttachmentBlock()  — writes the block into the user message text
+//                             before forwarding to OpenClaw.
+//   parseAttachmentBlock()  — strips the block on history-reload and lifts
+//                             the metadata into the wire-level `files` field.
+//
+// Drift between them silently breaks the chip-on-reload UX. To prevent that,
+// both share the constants and helpers below. Update them together, and add
+// a round-trip test in `attachment-pipeline.test.ts` for any format change.
+//
+// The block tag is deliberately custom (namespaced under `pinchy:`) so the
+// strip step cannot collide with anything the user might legitimately type.
 const ATTACHMENT_BLOCK_OPEN = "<pinchy:attachments>";
 const ATTACHMENT_BLOCK_CLOSE = "</pinchy:attachments>";
+
+// One line per attachment, format:
+//   - `<absolute-path>` (<mime>, <size>) — analyze with `<tool>`
+//
+// `<absolute-path>` cannot contain a backtick (sanitizeFilename rejects them,
+// buildAttachmentBlock asserts it), so the simple `[^`]+` capture is sound.
+const LINE_PREFIX = "- ";
+const ATTACHMENT_LINE_RE = /^- `([^`]+)` \(([^,]+),/;
+
+function formatAttachmentLine(
+  absolutePath: string,
+  mimeType: string,
+  sizeBytes: number,
+  toolName: string
+): string {
+  return `${LINE_PREFIX}\`${absolutePath}\` (${mimeType}, ${formatBytes(sizeBytes)}) — analyze with ${toolName}`;
+}
 
 /**
  * Build the per-message attachment metadata block that gets *appended* to the
@@ -261,9 +280,18 @@ const ATTACHMENT_BLOCK_CLOSE = "</pinchy:attachments>";
 export function buildAttachmentBlock(refs: ProcessedWorkspaceRef[]): string {
   if (refs.length === 0) return "";
   const lines = refs.map((r) => {
-    const path = escapeForMarkdownCodeSpan(r.absolutePath);
+    // Defense in depth: sanitizeFilename rejects backticks at the upload trust
+    // boundary, so the path emitted by `persistAttachment` cannot contain one
+    // under normal operation. If a hand-built ref ever does, fail loud — a
+    // silent substitution would corrupt the on-disk path the agent must call
+    // its built-in tool with, and the agent would see "file not found".
+    if (r.absolutePath.includes("`")) {
+      throw new Error(
+        `buildAttachmentBlock: absolutePath contains a backtick which would break the markdown code span: ${r.absolutePath}`
+      );
+    }
     const tool = toolNameForMime(r.mimeType);
-    return `- \`${path}\` (${r.mimeType}, ${formatBytes(r.sizeBytes)}) — analyze with ${tool}`;
+    return formatAttachmentLine(r.absolutePath, r.mimeType, r.sizeBytes, tool);
   });
   return [
     ATTACHMENT_BLOCK_OPEN,
@@ -288,12 +316,6 @@ export interface ParseAttachmentBlockResult {
   cleanText: string;
   attachments: ParsedAttachment[];
 }
-
-// Each list-item line in the block looks like:
-//   - `<absolute-path>` (<mime>, <size>) — analyze with `<tool>`
-// Backticks in the path itself are escaped to U+02BC in `buildAttachmentBlock`,
-// so a bare `[^`]+` capture for the path is safe.
-const ATTACHMENT_LINE_RE = /^- `([^`]+)` \(([^,]+),/;
 
 /**
  * Inverse of `buildAttachmentBlock`: pulls the trailing block (and the blank

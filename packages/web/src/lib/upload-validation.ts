@@ -13,12 +13,28 @@ import { fileTypeFromBuffer } from "file-type";
 const CONTROL_CHAR_RE = /[\x00-\x1f\x7f\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/u;
 const MAX_FILENAME_LEN = 255;
 
+// Reject characters that break downstream string contexts:
+//
+//   `   \u2014 would close the markdown code span the agent reads in the
+//         attachment block, opening a prompt-injection trick path.
+//   "   \u2014 would terminate the quoted form of Content-Disposition
+//         emitted by the uploads route (RFC 6266).
+//
+// Both are vanishingly rare in real filenames. Rejecting them at the trust
+// boundary eliminates two whole classes of downstream escaping bugs and lets
+// us drop the per-context escape helpers that previously papered over the
+// problem (e.g. `escapeForMarkdownCodeSpan` in attachment-pipeline.ts).
+const FORBIDDEN_CHAR_RE = /["`]/;
+
 export function sanitizeFilename(raw: string): string {
   if (typeof raw !== "string") {
     throw new Error("Invalid filename: not a string");
   }
   if (CONTROL_CHAR_RE.test(raw)) {
     throw new Error("Invalid filename: contains control characters");
+  }
+  if (FORBIDDEN_CHAR_RE.test(raw)) {
+    throw new Error("Invalid filename: contains forbidden characters");
   }
   if (raw.startsWith("./") || raw.startsWith(".\\")) {
     throw new Error("Invalid filename: absolute or relative path");

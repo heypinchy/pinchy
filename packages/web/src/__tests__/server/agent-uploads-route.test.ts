@@ -142,6 +142,19 @@ describe("GET /api/agents/[agentId]/uploads/[filename]", () => {
     expect(res.headers.get("x-frame-options")).toBe("SAMEORIGIN");
   });
 
+  // Belt-and-suspenders: `sanitizeFilename` rejects `"` and `` ` `` at the upload
+  // trust boundary, so these characters can't appear in legitimately-stored
+  // filenames. But if a request URL still includes them (manual GET, attacker
+  // probing), the route must refuse without exposing the file lookup path.
+  // The 404 here proves the route's sanitize-first guard is wired correctly.
+  it("returns 404 when the filename param contains characters forbidden by sanitizeFilename (backtick, quote)", async () => {
+    writeUpload("agent-1", "invoice.pdf", PDF_BYTES);
+    const resBacktick = await callGET("agent-1", "evil`.pdf");
+    expect(resBacktick.status).toBe(404);
+    const resQuote = await callGET("agent-1", 'evil".pdf');
+    expect(resQuote.status).toBe(404);
+  });
+
   it("URL-decodes the filename param so files with spaces/parentheses work (regression guard)", async () => {
     // "Profile (38).pdf" round-trips as "Profile%20(38).pdf" through encodeURIComponent.
     writeUpload("agent-1", "Profile (38).pdf", PDF_BYTES);

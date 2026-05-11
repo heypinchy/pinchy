@@ -218,7 +218,12 @@ export class ClientRouter {
       // for both the resource (agent) and the actor (uploader); a name-less
       // user-id row is harder to read months later when the user record may
       // have been renamed or deleted.
-      const uploaderRef = { id: this.userId, name: user?.name ?? this.userId };
+      //
+      // Fallback is `<unknown user>` (not the UUID) so audit readers can tell
+      // at a glance that the name is synthetic. Writing the UUID into a
+      // `name` field would be indistinguishable from a legitimate (if odd)
+      // human name and silently degrade audit-log readability.
+      const uploaderRef = { id: this.userId, name: user?.name ?? "<unknown user>" };
       for (const ref of workspaceRefs) {
         const { relativePath, mimeType, sizeBytes, contentHash, reused } = ref;
         const filename = relativePath.replace(/^uploads\//, "");
@@ -311,62 +316,73 @@ export class ClientRouter {
       const QUEUED_RETRY_PREFIX =
         "[Queued user message that arrived while the previous turn was still active]";
 
-      return rawMessages
-        .filter((msg) => msg.role === "user" || msg.role === "assistant")
-        .map((msg) => {
-          let content: string;
-          if (Array.isArray(msg.content)) {
-            content = msg.content
-              .filter((part: { type: string; text?: string }) => part.type === "text" && part.text)
-              .map((part: { text?: string }) => part.text!)
-              .join(" ");
-          } else {
-            content = typeof msg.content === "string" ? msg.content : "";
-          }
-
-          // Strip protocol tags from assistant responses
-          content = content.replace(/<\/?final>/g, "");
-
-          // For user messages: strip OpenClaw's timestamp prefix AND extract
-          // the per-message <pinchy:attachments> block (see buildAttachmentBlock
-          // in attachment-pipeline.ts). The block lives in the message text in
-          // OpenClaw's session JSONL — we round-trip its metadata into the
-          // wire-level `files` field so the browser can render the chip
-          // without ever seeing the markup.
-          let files: Array<{ filename: string; mimeType: string }> | undefined;
-          if (msg.role === "user") {
-            content = content.replace(/^\[.*?\]\s*/, "");
-            const parsed = parseAttachmentBlock(content);
-            content = parsed.cleanText;
-            if (parsed.attachments.length > 0) {
-              files = parsed.attachments.map((a) => ({
-                filename: a.filename,
-                mimeType: a.mimeType,
-              }));
+      return (
+        rawMessages
+          .filter((msg) => msg.role === "user" || msg.role === "assistant")
+          .map((msg) => {
+            let content: string;
+            if (Array.isArray(msg.content)) {
+              content = msg.content
+                .filter(
+                  (part: { type: string; text?: string }) => part.type === "text" && part.text
+                )
+                .map((part: { text?: string }) => part.text!)
+                .join(" ");
+            } else {
+              content = typeof msg.content === "string" ? msg.content : "";
             }
-          }
 
-          return {
-            role: msg.role as "user" | "assistant",
-            content,
-            files,
-            rawContent:
-              typeof msg.content === "string"
-                ? msg.content
-                : Array.isArray(msg.content)
+            // Strip protocol tags from assistant responses
+            content = content.replace(/<\/?final>/g, "");
+
+            // For user messages: strip OpenClaw's timestamp prefix AND extract
+            // the per-message <pinchy:attachments> block (see buildAttachmentBlock
+            // in attachment-pipeline.ts). The block lives in the message text in
+            // OpenClaw's session JSONL — we round-trip its metadata into the
+            // wire-level `files` field so the browser can render the chip
+            // without ever seeing the markup.
+            let files: Array<{ filename: string; mimeType: string }> | undefined;
+            if (msg.role === "user") {
+              content = content.replace(/^\[.*?\]\s*/, "");
+              const parsed = parseAttachmentBlock(content);
+              content = parsed.cleanText;
+              if (parsed.attachments.length > 0) {
+                files = parsed.attachments.map((a) => ({
+                  filename: a.filename,
+                  mimeType: a.mimeType,
+                }));
+              }
+            }
+
+            return {
+              role: msg.role as "user" | "assistant",
+              content,
+              files,
+              rawContent:
+                typeof msg.content === "string"
                   ? msg.content
-                      .filter(
-                        (part: { type: string; text?: string }) => part.type === "text" && part.text
-                      )
-                      .map((part: { text?: string }) => part.text!)
-                      .join(" ")
-                  : "",
-            timestamp: msg.timestamp,
-          };
-        })
-        .filter((msg) => msg.content)
-        .filter((msg) => !(msg.role === "user" && msg.rawContent.startsWith(QUEUED_RETRY_PREFIX)))
-        .map(({ role, content, files, timestamp }) => ({ role, content, files, timestamp }));
+                  : Array.isArray(msg.content)
+                    ? msg.content
+                        .filter(
+                          (part: { type: string; text?: string }) =>
+                            part.type === "text" && part.text
+                        )
+                        .map((part: { text?: string }) => part.text!)
+                        .join(" ")
+                    : "",
+              timestamp: msg.timestamp,
+            };
+          })
+          // Keep messages that have either text content OR a non-empty `files`
+          // chip list. Attachment-only user messages (PDF dropped without any
+          // accompanying prose) round-trip to `content === ""` after the block
+          // is stripped — dropping them here would silently delete the user's
+          // own upload from history. The chip's `files` metadata is the carrier
+          // of meaning in that case, so it must be enough on its own.
+          .filter((msg) => msg.content || (msg.files && msg.files.length > 0))
+          .filter((msg) => !(msg.role === "user" && msg.rawContent.startsWith(QUEUED_RETRY_PREFIX)))
+          .map(({ role, content, files, timestamp }) => ({ role, content, files, timestamp }))
+      );
     };
 
     const sendGreeting = async () => {
