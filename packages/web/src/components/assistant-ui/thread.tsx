@@ -46,6 +46,7 @@ import {
   RemovePendingUploadContext,
   RetryPendingUploadContext,
   CanEditContext,
+  IsAdminContext,
 } from "@/components/chat";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
 import { Progress } from "@/components/ui/progress";
@@ -366,6 +367,7 @@ export function PendingUploadChips() {
 export const Composer: FC = () => {
   const agentId = useContext(AgentIdContext);
   const canEditAgent = useContext(CanEditContext);
+  const isAdmin = useContext(IsAdminContext);
   const { getAgent } = useAgentsContext();
   const composerRuntime = useComposerRuntime({ optional: true });
   const { data: capabilities } = useModelCapabilities();
@@ -442,11 +444,10 @@ export const Composer: FC = () => {
         <RecoveryPanel
           filename={recoveryState.files[0]?.name ?? "attachment"}
           capability={requiredCapabilityForFile(recoveryState.files[0]?.type ?? "") ?? "vision"}
-          agentId={agentId ?? ""}
           agentName={agentName}
           agentModel={recoveryState.model}
           canEditAgent={canEditAgent}
-          isAdmin={false}
+          isAdmin={isAdmin}
           providers={providers}
           otherCompatibleAgents={[]}
           onUpdateAgent={async (newModel) => {

@@ -55,7 +55,8 @@ export default async function ChatPage({ params }: { params: Promise<{ agentId: 
   }
 
   const avatarUrl = getAgentAvatarSvg({ avatarSeed: agent.avatarSeed, name: agent.name });
-  const canEdit = userRole === "admin" || (agent.isPersonal && agent.ownerId === userId);
+  const isAdmin = userRole === "admin";
+  const canEdit = isAdmin || (agent.isPersonal && agent.ownerId === userId);
 
   return (
     <Chat
@@ -65,6 +66,7 @@ export default async function ChatPage({ params }: { params: Promise<{ agentId: 
       isPersonal={agent.isPersonal}
       avatarUrl={avatarUrl}
       canEdit={canEdit}
+      isAdmin={isAdmin}
     />
   );
 }

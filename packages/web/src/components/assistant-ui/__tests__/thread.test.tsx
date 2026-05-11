@@ -217,7 +217,11 @@ vi.mock("@/components/chat", async () => {
     AddPendingUploadContext: React.createContext<(file: File) => void>(() => {}),
 =======
     CanEditContext: React.createContext<boolean>(false),
+<<<<<<< HEAD
 >>>>>>> d8060f054 (feat(chat): wire blocked send to RecoveryPanel + agent.model update path)
+=======
+    IsAdminContext: React.createContext<boolean>(false),
+>>>>>>> f27428644 (fix(chat): remove dead agentId prop and wire isAdmin in RecoveryPanel)
   };
 });
 

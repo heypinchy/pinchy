@@ -14,7 +14,6 @@ type ProviderGroup = { id: string; name: string; models: ProviderModel[] };
 type RecoveryPanelProps = {
   filename: string;
   capability: ModelCapability;
-  agentId: string;
   agentName: string;
   agentModel: string;
   canEditAgent: boolean;

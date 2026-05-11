@@ -7,7 +7,6 @@ import type { ModelCapabilities } from "@/lib/model-capabilities/cache";
 const baseProps = {
   filename: "screenshot.png",
   capability: "vision" as const,
-  agentId: "a1",
   agentName: "Smithers",
   agentModel: "ollama-cloud/deepseek-v4-pro",
   canEditAgent: true,
