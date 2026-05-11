@@ -154,6 +154,7 @@ export default defineConfig({
               items: [
                 { label: 'Overview', slug: 'guides/connect-email' },
                 { label: 'Google (Gmail)', slug: 'guides/connect-email-google' },
+                { label: 'Microsoft (Outlook / Microsoft 365)', slug: 'guides/connect-email-microsoft' },
               ],
             },
             { label: 'Connect Odoo', slug: 'guides/connect-odoo' },
