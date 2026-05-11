@@ -2142,6 +2142,60 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(mockSearchRead).toHaveBeenCalledTimes(2);
   });
+
+  it("POSTs report-auth-failure when retry-once also returns an auth error", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ type: "odoo", credentials: testCredentials }),
+    } as unknown as Response);
+
+    mockSearchRead
+      .mockRejectedValueOnce(new Error("Access Denied: invalid api key"))
+      .mockRejectedValueOnce(new Error("Access Denied: invalid api key"));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    await tool.execute("call-1", { model: "sale.order", filters: [] });
+
+    const reportCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).includes("report-auth-failure"),
+    );
+    expect(reportCalls).toHaveLength(1);
+    const [url, opts] = reportCalls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "http://pinchy-test:7777/api/internal/integrations/conn-test-1/report-auth-failure",
+    );
+    expect(opts.method).toBe("POST");
+    const headers = opts.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer test-gateway-token");
+    expect(headers["X-Plugin-Id"]).toBe("pinchy-odoo");
+    const body = JSON.parse(opts.body as string) as { reason: string };
+    expect(body.reason).toBeTruthy();
+  });
+
+  it("does not POST report-auth-failure on a transient 5xx error", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ type: "odoo", credentials: testCredentials }),
+    } as unknown as Response);
+
+    mockSearchRead.mockRejectedValueOnce(new Error("HTTP 503 Service Unavailable"));
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    await tool.execute("call-1", { model: "sale.order", filters: [] });
+
+    const reportCalls = fetchMock.mock.calls.filter((c) =>
+      String(c[0]).includes("report-auth-failure"),
+    );
+    expect(reportCalls).toHaveLength(0);
+  });
 });
 
 describe("odoo_attach_file", () => {

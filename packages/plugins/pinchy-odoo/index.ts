@@ -1037,6 +1037,30 @@ function wrapReadResult(
   return result;
 }
 
+async function reportAuthFailure(
+  apiBaseUrl: string,
+  connectionId: string,
+  gatewayToken: string,
+  reason: string,
+): Promise<void> {
+  try {
+    await fetch(
+      `${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${gatewayToken}`,
+          "Content-Type": "application/json",
+          "X-Plugin-Id": "pinchy-odoo",
+        },
+        body: JSON.stringify({ reason: reason.slice(0, 500) }),
+      },
+    );
+  } catch {
+    // best-effort — never mask the original tool error
+  }
+}
+
 function permissionDenied(
   operation: string,
   model: string,
@@ -1155,7 +1179,13 @@ const plugin = {
         if (!isAuthError) throw err;
         invalidate(agentId);
         const fresh = await getOrCreateClient(agentId, config);
-        return fn(fresh);
+        try {
+          return await fn(fresh);
+        } catch (retryErr) {
+          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          await reportAuthFailure(apiBaseUrl, config.connectionId, gatewayToken, retryMsg);
+          throw retryErr;
+        }
       }
     }
 
