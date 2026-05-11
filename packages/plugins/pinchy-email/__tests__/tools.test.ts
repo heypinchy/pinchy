@@ -373,9 +373,53 @@ describe("credential fetching", () => {
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("401");
-    // Two fetches: initial + refetch after first 401
-    expect(mockFetch).toHaveBeenCalledTimes(2);
+    // Two credential fetches: initial + refetch after first 401.
+    // A third fetch goes to report-auth-failure (best-effort).
+    const credentialFetches = mockFetch.mock.calls.filter(
+      (c) => !String(c[0]).includes("report-auth-failure"),
+    );
+    expect(credentialFetches).toHaveLength(2);
     expect(mockList).toHaveBeenCalledTimes(2);
+  });
+
+  it("POSTs report-auth-failure when retry-once also returns an auth error", async () => {
+    mockCredentialResponse();
+    mockList
+      .mockRejectedValueOnce(new Error("HTTP 401: Invalid Credentials"))
+      .mockRejectedValueOnce(new Error("HTTP 401: Invalid Credentials"));
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+    await tool.execute("call-1", {});
+
+    const reportCalls = mockFetch.mock.calls.filter((c) =>
+      String(c[0]).includes("report-auth-failure"),
+    );
+    expect(reportCalls).toHaveLength(1);
+    const [url, opts] = reportCalls[0] as [string, RequestInit];
+    expect(url).toBe(
+      "http://pinchy:7777/api/internal/integrations/conn-1/report-auth-failure",
+    );
+    expect(opts.method).toBe("POST");
+    const headers = opts.headers as Record<string, string>;
+    expect(headers["Authorization"]).toBe("Bearer test-gateway-token");
+    expect(headers["X-Plugin-Id"]).toBe("pinchy-email");
+    const body = JSON.parse(opts.body as string) as { reason: string };
+    expect(body.reason).toBeTruthy();
+  });
+
+  it("does not POST report-auth-failure on a transient 5xx error", async () => {
+    mockCredentialResponse();
+    mockList.mockRejectedValueOnce(new Error("HTTP 503 Service Unavailable"));
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+    await tool.execute("call-1", {});
+
+    const reportCalls = mockFetch.mock.calls.filter((c) =>
+      String(c[0]).includes("report-auth-failure"),
+    );
+    expect(reportCalls).toHaveLength(0);
   });
 });
 
