@@ -24,10 +24,17 @@ vi.mock("@/lib/audit", () => ({
   appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
 }));
 
-const { mockInsertValues, mockDeleteWhere } = vi.hoisted(() => ({
-  mockInsertValues: vi.fn(),
-  mockDeleteWhere: vi.fn(),
-}));
+const { mockInsertValues, mockDeleteWhere, mockSelectLimit, mockSelectFrom } = vi.hoisted(() => {
+  const mockSelectLimit = vi.fn();
+  const mockSelectWhere = vi.fn().mockReturnValue({ limit: mockSelectLimit });
+  const mockSelectFrom = vi.fn().mockReturnValue({ where: mockSelectWhere });
+  return {
+    mockInsertValues: vi.fn(),
+    mockDeleteWhere: vi.fn(),
+    mockSelectLimit,
+    mockSelectFrom,
+  };
+});
 
 vi.mock("@/db", () => ({
   db: {
@@ -39,6 +46,7 @@ vi.mock("@/db", () => ({
     delete: vi.fn().mockReturnValue({
       where: mockDeleteWhere.mockResolvedValue(undefined),
     }),
+    select: vi.fn().mockReturnValue({ from: mockSelectFrom }),
   },
 }));
 
@@ -177,5 +185,113 @@ describe("GET /api/integrations/oauth/start", () => {
     const location = res.headers.get("location") ?? "";
     const redirectUri = new URL(location).searchParams.get("redirect_uri");
     expect(redirectUri).toBe("https://pinchy.example.com/api/integrations/oauth/callback");
+  });
+});
+
+describe("POST /api/integrations/oauth/start (reconnect)", () => {
+  function makePostRequest(
+    body: unknown,
+    url = "https://local.heypinchy.com:8443/api/integrations/oauth/start"
+  ) {
+    return new NextRequest(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+  }
+
+  const adminSession = { user: { id: "user-1", email: "admin@test.com", role: "admin" } };
+  const oauthSettings = { clientId: "client-id-123", clientSecret: "secret-abc" };
+
+  const mockGoogleConnection = {
+    id: "c1",
+    type: "google",
+    name: "user@gmail.com",
+    status: "auth_failed",
+  };
+
+  const mockOdooConnection = {
+    id: "c1",
+    type: "odoo",
+    name: "Odoo connection",
+    status: "auth_failed",
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockGetSession.mockResolvedValue(adminSession);
+    mockGetOAuthSettings.mockResolvedValue(oauthSettings);
+    // Default: select returns the google connection
+    mockSelectLimit.mockResolvedValue([mockGoogleConnection]);
+  });
+
+  it("returns 401 when not authenticated", async () => {
+    mockGetSession.mockResolvedValueOnce(null);
+    const { POST } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 401 when not admin", async () => {
+    mockGetSession.mockResolvedValueOnce({ user: { id: "user-2", role: "member" } });
+    const { POST } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 400 when reconnectConnectionId is missing", async () => {
+    const { POST } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await POST(makePostRequest({}));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when connection does not exist", async () => {
+    mockSelectLimit.mockResolvedValueOnce([]);
+    const { POST } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await POST(makePostRequest({ reconnectConnectionId: "nonexistent" }));
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 400 when connection is not google type", async () => {
+    mockSelectLimit.mockResolvedValueOnce([mockOdooConnection]);
+    const { POST } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body.error).toMatch(/google/i);
+  });
+
+  it("encodes reconnectConnectionId into state when connection exists and is google type", async () => {
+    const { POST } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+    expect(res.status).toBe(200);
+
+    const body = await res.json();
+    expect(body.url).toContain("accounts.google.com");
+
+    // The state param should decode to an object containing reconnectConnectionId
+    const authUrl = new URL(body.url);
+    const stateParam = authUrl.searchParams.get("state");
+    expect(stateParam).toBeTruthy();
+    const decoded = JSON.parse(Buffer.from(stateParam!, "base64url").toString("utf-8"));
+    expect(decoded).toMatchObject({ reconnectConnectionId: "c1" });
+  });
+
+  it("sets oauth_state cookie with the encoded state for CSRF", async () => {
+    const { POST } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+    const body = await res.json();
+    const authUrl = new URL(body.url);
+    const stateParam = authUrl.searchParams.get("state")!;
+
+    const setCookie = res.headers.get("set-cookie") ?? "";
+    expect(setCookie).toContain(`oauth_state=${stateParam}`);
+  });
+
+  it("returns 400 when OAuth is not configured", async () => {
+    mockGetOAuthSettings.mockResolvedValueOnce(null);
+    const { POST } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await POST(makePostRequest({ reconnectConnectionId: "c1" }));
+    expect(res.status).toBe(400);
   });
 });

@@ -11,7 +11,26 @@ import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { redactEmail } from "@/lib/audit";
 import { deferAuditLog } from "@/lib/audit-deferred";
+import { clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 import { eq, and } from "drizzle-orm";
+
+/**
+ * Try to decode the OAuth state as a JSON payload (reconnect flow).
+ * Falls back to null if it's a plain nonce string (existing connect flow).
+ */
+function decodeStatePayload(
+  state: string
+): { nonce?: string; reconnectConnectionId?: string } | null {
+  try {
+    const decoded = Buffer.from(state, "base64url").toString("utf-8");
+    const obj = JSON.parse(decoded);
+    if (typeof obj === "object" && obj !== null)
+      return obj as { nonce?: string; reconnectConnectionId?: string };
+    return null;
+  } catch {
+    return null;
+  }
+}
 
 function errorRedirect(origin: string, error: string) {
   const url = new URL("/settings", origin);
@@ -121,7 +140,7 @@ export async function GET(request: Request) {
   const profileData = await profileResponse.json();
   const { emailAddress } = profileData;
 
-  // 8. Persist integration — UPDATE pending record if possible, otherwise INSERT
+  // 8. Persist integration
   const expiresAt = new Date(Date.now() + expires_in * 1000).toISOString();
   const encryptedCredentials = encrypt(
     JSON.stringify({
@@ -138,30 +157,92 @@ export async function GET(request: Request) {
     connectedAt: new Date().toISOString(),
   };
 
-  const pendingId = cookies["oauth_pending_id"];
   let connection: typeof integrationConnections.$inferSelect;
 
-  if (pendingId) {
-    const rows = await db
-      .select()
-      .from(integrationConnections)
-      .where(
-        and(eq(integrationConnections.id, pendingId), eq(integrationConnections.status, "pending"))
-      )
-      .limit(1);
+  // Check if this is a reconnect (state encodes reconnectConnectionId)
+  const statePayload = decodeStatePayload(state);
+  const reconnectConnectionId = statePayload?.reconnectConnectionId;
 
-    if (rows.length > 0) {
-      [connection] = await db
-        .update(integrationConnections)
-        .set({
-          name: emailAddress,
-          status: "active",
-          credentials: encryptedCredentials,
-          data: connectionData,
-          updatedAt: new Date(),
-        })
-        .where(eq(integrationConnections.id, pendingId))
-        .returning();
+  if (reconnectConnectionId) {
+    // Reconnect path: update the existing connection row so that
+    // agent_connection_permissions referencing it are preserved.
+    // Do NOT set status/lastError/lastErrorAt here — let clearIntegrationAuthError
+    // handle the auth_failed → active transition and write the integration.recovered
+    // audit event. If the connection was already active this is a no-op there.
+    [connection] = await db
+      .update(integrationConnections)
+      .set({
+        name: emailAddress,
+        credentials: encryptedCredentials,
+        data: connectionData,
+        updatedAt: new Date(),
+      })
+      .where(eq(integrationConnections.id, reconnectConnectionId))
+      .returning();
+
+    if (!connection) {
+      return errorRedirect(origin, "connection_not_found");
+    }
+
+    // Clear auth_failed state and write integration.recovered audit if needed
+    // (no-op if the connection was already active)
+    await clearIntegrationAuthError({
+      connectionId: reconnectConnectionId,
+      actor: { type: "user", id: session.user.id! },
+    });
+
+    // 9a. Audit log for reconnect
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "integration.credentials_updated",
+      resource: `integration:${connection.id}`,
+      detail: {
+        id: connection.id,
+        name: connection.name,
+        fields: ["oauth_tokens"],
+      },
+      outcome: "success",
+    });
+  } else {
+    // Original connect path: UPDATE pending record if possible, otherwise INSERT
+    const pendingId = cookies["oauth_pending_id"];
+
+    if (pendingId) {
+      const rows = await db
+        .select()
+        .from(integrationConnections)
+        .where(
+          and(
+            eq(integrationConnections.id, pendingId),
+            eq(integrationConnections.status, "pending")
+          )
+        )
+        .limit(1);
+
+      if (rows.length > 0) {
+        [connection] = await db
+          .update(integrationConnections)
+          .set({
+            name: emailAddress,
+            status: "active",
+            credentials: encryptedCredentials,
+            data: connectionData,
+            updatedAt: new Date(),
+          })
+          .where(eq(integrationConnections.id, pendingId))
+          .returning();
+      } else {
+        [connection] = await db
+          .insert(integrationConnections)
+          .values({
+            type: "google",
+            name: emailAddress,
+            credentials: encryptedCredentials,
+            data: connectionData,
+          })
+          .returning();
+      }
     } else {
       [connection] = await db
         .insert(integrationConnections)
@@ -173,36 +254,26 @@ export async function GET(request: Request) {
         })
         .returning();
     }
-  } else {
-    [connection] = await db
-      .insert(integrationConnections)
-      .values({
-        type: "google",
-        name: emailAddress,
-        credentials: encryptedCredentials,
-        data: connectionData,
-      })
-      .returning();
-  }
 
-  // 9. Audit log
-  // GDPR Art. 17: never record the plaintext Gmail address. The audit row
-  // is HMAC-signed, so we cannot redact later. redactEmail() gives us a
-  // keyed hash + masked preview; the connectionId in `resource` is enough
-  // to look up the live mailbox name from the integrations table while it
-  // exists.
-  deferAuditLog({
-    actorType: "user",
-    actorId: session.user.id!,
-    eventType: "config.changed",
-    resource: `integration:${connection.id}`,
-    detail: {
-      action: "integration_created",
-      type: "google",
-      ...redactEmail(emailAddress),
-    },
-    outcome: "success",
-  });
+    // 9b. Audit log for new connection
+    // GDPR Art. 17: never record the plaintext Gmail address. The audit row
+    // is HMAC-signed, so we cannot redact later. redactEmail() gives us a
+    // keyed hash + masked preview; the connectionId in `resource` is enough
+    // to look up the live mailbox name from the integrations table while it
+    // exists.
+    deferAuditLog({
+      actorType: "user",
+      actorId: session.user.id!,
+      eventType: "config.changed",
+      resource: `integration:${connection.id}`,
+      detail: {
+        action: "integration_created",
+        type: "google",
+        ...redactEmail(emailAddress),
+      },
+      outcome: "success",
+    });
+  }
 
   // 10. Clean up cookies and redirect
   const successUrl = new URL("/settings", origin);

@@ -7,10 +7,8 @@ const {
   mockAppendAuditLog,
   mockValues,
   mockSelectLimit,
-  mockSelectWhere,
   mockSelectFrom,
   mockUpdateReturning,
-  mockUpdateWhere,
   mockUpdateSet,
   mockDeleteWhere,
 } = vi.hoisted(() => {
@@ -28,10 +26,8 @@ const {
     mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
     mockValues: vi.fn(),
     mockSelectLimit,
-    mockSelectWhere,
     mockSelectFrom,
     mockUpdateReturning,
-    mockUpdateWhere,
     mockUpdateSet,
     mockDeleteWhere,
   };
@@ -63,6 +59,11 @@ vi.mock("@/lib/audit", async (importOriginal) => {
     appendAuditLog: (...args: unknown[]) => mockAppendAuditLog(...args),
   };
 });
+
+const mockClearIntegrationAuthError = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/integrations/auth-state", () => ({
+  clearIntegrationAuthError: (...args: unknown[]) => mockClearIntegrationAuthError(...args),
+}));
 
 const mockConnection = {
   id: "conn-new-123",
@@ -567,6 +568,138 @@ describe("GET /api/integrations/oauth/callback", () => {
         })
       );
       expect(mockUpdateSet).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("reconnect flow — state.reconnectConnectionId is set", () => {
+    // Build a state param that encodes reconnectConnectionId (as POST /oauth/start would)
+    function buildReconnectState(reconnectConnectionId: string) {
+      const stateObj = {
+        nonce: "test-nonce-abc123",
+        reconnectConnectionId,
+      };
+      return Buffer.from(JSON.stringify(stateObj)).toString("base64url");
+    }
+
+    const RECONNECT_STATE = buildReconnectState("existing-conn-id");
+
+    beforeEach(() => {
+      mockGetSession.mockResolvedValue(adminSession());
+      mockGetOAuthSettings.mockResolvedValue({
+        clientId: "test-client-id",
+        clientSecret: "test-client-secret",
+      });
+      mockFetch
+        .mockResolvedValueOnce(mockTokenExchange())
+        .mockResolvedValueOnce(mockProfileFetch());
+      mockUpdateReturning.mockResolvedValue([{ ...mockConnection, id: "existing-conn-id" }]);
+    });
+
+    it("updates existing row instead of inserting a new one", async () => {
+      await GET(
+        makeRequest(
+          { code: "auth-code-123", state: RECONNECT_STATE },
+          `oauth_state=${RECONNECT_STATE}`
+        )
+      );
+
+      // Should update credentials only — status/lastError/lastErrorAt are
+      // handled by clearIntegrationAuthError so it can write integration.recovered
+      expect(mockUpdateSet).toHaveBeenCalledWith(
+        expect.objectContaining({
+          credentials: "encrypted-creds",
+        })
+      );
+      expect(mockUpdateSet).toHaveBeenCalledWith(
+        expect.not.objectContaining({
+          status: expect.anything(),
+          lastError: expect.anything(),
+          lastErrorAt: expect.anything(),
+        })
+      );
+      expect(mockValues).not.toHaveBeenCalled();
+    });
+
+    it("calls clearIntegrationAuthError after updating credentials", async () => {
+      await GET(
+        makeRequest(
+          { code: "auth-code-123", state: RECONNECT_STATE },
+          `oauth_state=${RECONNECT_STATE}`
+        )
+      );
+
+      expect(mockClearIntegrationAuthError).toHaveBeenCalledWith(
+        expect.objectContaining({ connectionId: "existing-conn-id" })
+      );
+    });
+
+    it("writes integration.credentials_updated audit log", async () => {
+      vi.stubEnv("AUDIT_HMAC_SECRET", "f".repeat(64));
+      await GET(
+        makeRequest(
+          { code: "auth-code-123", state: RECONNECT_STATE },
+          `oauth_state=${RECONNECT_STATE}`
+        )
+      );
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorId: "admin-1",
+          eventType: "integration.credentials_updated",
+          resource: "integration:existing-conn-id",
+          outcome: "success",
+          detail: expect.objectContaining({ fields: ["oauth_tokens"] }),
+        })
+      );
+    });
+
+    it("does not set oauth_pending_id cookie (no pending row created)", async () => {
+      const response = await GET(
+        makeRequest(
+          { code: "auth-code-123", state: RECONNECT_STATE },
+          `oauth_state=${RECONNECT_STATE}`
+        )
+      );
+
+      const setCookies = response.headers.getSetCookie
+        ? response.headers.getSetCookie().join("; ")
+        : (response.headers.get("Set-Cookie") ?? "");
+      // oauth_pending_id should not appear or should be empty/max-age=0
+      expect(setCookies).not.toMatch(/oauth_pending_id=[^;]+(?!Max-Age=0)/);
+    });
+
+    it("redirects to settings with the reconnected connection id", async () => {
+      const response = await GET(
+        makeRequest(
+          { code: "auth-code-123", state: RECONNECT_STATE },
+          `oauth_state=${RECONNECT_STATE}`
+        )
+      );
+
+      expect(response.status).toBe(302);
+      const location = new URL(response.headers.get("Location")!);
+      expect(location.searchParams.get("tab")).toBe("integrations");
+      expect(location.searchParams.get("created")).toBe("existing-conn-id");
+    });
+
+    it("redirects with error if the connection was deleted before callback", async () => {
+      // UPDATE returns empty array — connection was deleted between OAuth start and callback
+      mockUpdateReturning.mockResolvedValue([]);
+
+      const response = await GET(
+        makeRequest(
+          { code: "auth-code-123", state: RECONNECT_STATE },
+          `oauth_state=${RECONNECT_STATE}`
+        )
+      );
+
+      expect(response.status).toBe(302);
+      const location = new URL(response.headers.get("Location")!);
+      expect(location.pathname).toBe("/settings");
+      expect(location.searchParams.get("tab")).toBe("integrations");
+      expect(location.searchParams.get("error")).toBe("connection_not_found");
+      // clearIntegrationAuthError must NOT be called when connection is gone
+      expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
     });
   });
 });
