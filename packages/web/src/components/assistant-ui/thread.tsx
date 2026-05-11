@@ -52,6 +52,9 @@ import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { RetryButton } from "@/components/chat/retry-button";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft } from "@/lib/draft-store";
+import { useModelCapabilities } from "@/hooks/use-model-capabilities";
+import { useAgentsContext } from "@/components/agents-provider";
+import { requiredCapabilityForFile } from "@/lib/attachment-capability";
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -358,14 +361,52 @@ export function PendingUploadChips() {
 }
 
 export const Composer: FC = () => {
+  const agentId = useContext(AgentIdContext);
+  const { getAgent } = useAgentsContext();
+  const composerRuntime = useComposerRuntime({ optional: true });
+  const { data: capabilities } = useModelCapabilities();
+  const [recoveryState, setRecoveryState] = useState<{
+    files: File[];
+    model: string;
+  } | null>(null);
+
+  const agentModel = agentId ? (getAgent(agentId)?.model ?? "") : "";
+
+  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    const state = composerRuntime?.getState();
+    const attachments = state?.attachments ?? [];
+
+    const blockedFiles = attachments
+      .filter((a): a is typeof a & { file: File } => "file" in a && a.file instanceof File)
+      .map((a) => a.file)
+      .filter((file) => {
+        const cap = requiredCapabilityForFile(file.type);
+        if (!cap) return false;
+        const modelCaps = agentModel ? capabilities?.[agentModel] : undefined;
+        return modelCaps !== undefined && !modelCaps[cap];
+      });
+
+    if (blockedFiles.length > 0) {
+      e.preventDefault();
+      setRecoveryState({ files: blockedFiles, model: agentModel });
+    } else {
+      setRecoveryState(null);
+    }
+  }
+
   // Typing is always allowed — only the send button reflects connection
   // state. A reconnect mid-sentence must not block the user from finishing
   // their thought; submission is what's gated.
   return (
-    <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
+    <ComposerPrimitive.Root
+      className="aui-composer-root relative flex w-full flex-col"
+      onSubmit={handleSubmit}
+    >
       <DraftPersistence />
+      {recoveryState && <div data-testid="recovery-panel-placeholder" className="hidden" />}
       <PinchyDropZone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20">
         <PendingUploadChips />
+        <ComposerAttachments />
         <ComposerPrimitive.Input
           placeholder="Send a message..."
           className="aui-composer-input mb-0.5 md:mb-1 max-h-32 min-h-10 md:min-h-14 w-full resize-none bg-transparent px-4 pt-2 pb-1 md:pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
