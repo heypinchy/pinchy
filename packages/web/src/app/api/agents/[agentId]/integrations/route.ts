@@ -6,6 +6,7 @@ import { db } from "@/db";
 import { agentConnectionPermissions, integrationConnections } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
 import { parseRequestBody } from "@/lib/api-validation";
+import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 
 const setAgentIntegrationsSchema = z.object({
   connectionId: z.string().min(1),
@@ -130,9 +131,9 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
       return existing;
     });
 
-    // Config regeneration is NOT done here — the caller (agent settings save flow)
-    // triggers it via the agent PATCH, which reads the already-updated permissions
-    // from the DB. This avoids double config writes and OpenClaw restarts.
+    // Regenerate config so the plugin entry for this connection is immediately
+    // reflected in OpenClaw without requiring a separate PATCH to the agent.
+    await regenerateOpenClawConfig();
 
     // Build audit diff
     const oldSet = new Set(existingPerms.map((p) => `${p.model}:${p.operation}`));
@@ -192,7 +193,7 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
     .delete(agentConnectionPermissions)
     .where(eq(agentConnectionPermissions.agentId, agentId));
 
-  // Config regeneration is NOT done here — see PUT handler comment.
+  await regenerateOpenClawConfig();
 
   // Audit log
   const removed = existingPerms.map((p) => ({ model: p.model, operation: p.operation }));
