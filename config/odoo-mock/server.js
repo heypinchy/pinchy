@@ -13,6 +13,9 @@ let authConfig = {
   uid: 2,
 };
 
+// Auth failure mode — toggled via /control/auth-mode { mode: "ok" | "fail" }
+let authMode = "ok";
+
 // ---------------------------------------------------------------------------
 // Field schemas per model
 // ---------------------------------------------------------------------------
@@ -465,6 +468,9 @@ function handleJsonRpc(body) {
 
     // common/authenticate
     if (service === "common" && svcMethod === "authenticate") {
+      if (authMode === "fail") {
+        return false;
+      }
       const [db, login, apiKey] = params.args || [];
       if (
         db === authConfig.db &&
@@ -727,6 +733,7 @@ const controlServer = http.createServer(async (req, res) => {
     store = getDefaultRecords();
     resetNextIds();
     accessRights = {};
+    authMode = "ok";
     authConfig = {
       db: "testdb",
       login: "admin",
@@ -798,6 +805,18 @@ const controlServer = http.createServer(async (req, res) => {
       if (body.uid) authConfig.uid = body.uid;
     }
     sendJson(res, 200, { status: "configured", config: authConfig });
+    return;
+  }
+
+  // Toggle auth failure mode: POST /control/auth-mode { mode: "ok" | "fail" }
+  if (req.method === "POST" && path === "/control/auth-mode") {
+    const body = await readBody(req);
+    if (!body || (body.mode !== "ok" && body.mode !== "fail")) {
+      sendJson(res, 400, { error: 'Need { mode: "ok" | "fail" }' });
+      return;
+    }
+    authMode = body.mode;
+    sendJson(res, 200, { status: "ok", authMode });
     return;
   }
 

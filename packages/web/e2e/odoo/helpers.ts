@@ -75,6 +75,20 @@ export async function resetOdooMock(): Promise<void> {
   if (!res.ok) throw new Error(`Failed to reset Odoo mock: ${res.status}`);
 }
 
+/**
+ * Toggle auth failure mode on the Odoo mock.
+ * In "fail" mode the mock returns uid=false (auth rejected) for all authenticate calls.
+ * Call setOdooAuthMode("ok") to restore normal behavior.
+ */
+export async function setOdooAuthMode(mode: "ok" | "fail"): Promise<void> {
+  const res = await fetch(`${MOCK_ODOO_URL}/control/auth-mode`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  if (!res.ok) throw new Error(`Failed to set Odoo auth mode: ${res.status}`);
+}
+
 export async function seedOdooRecords(
   model: string,
   records: Record<string, unknown>[]
