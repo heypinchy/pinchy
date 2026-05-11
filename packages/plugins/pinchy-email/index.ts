@@ -40,6 +40,7 @@ interface PluginConfig {
     {
       connectionId: string;
       permissions: Permissions;
+      tools: string[];
     }
   >;
 }
@@ -47,6 +48,7 @@ interface PluginConfig {
 interface AgentEmailConfig {
   connectionId: string;
   permissions: Permissions;
+  tools: string[];
 }
 
 function getAgentConfig(

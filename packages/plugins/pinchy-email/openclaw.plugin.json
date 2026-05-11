@@ -18,9 +18,10 @@
           "additionalProperties": false,
           "properties": {
             "connectionId": { "type": "string" },
-            "permissions": { "type": "object" }
+            "permissions": { "type": "object" },
+            "tools": { "type": "array", "items": { "type": "string" } }
           },
-          "required": ["connectionId", "permissions"]
+          "required": ["connectionId", "permissions", "tools"]
         }
       }
     },

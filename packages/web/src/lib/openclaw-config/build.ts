@@ -924,16 +924,27 @@ export async function regenerateOpenClawConfig() {
 
   const emailAgentConfigs: Record<
     string,
-    { connectionId: string; permissions: Record<string, string[]> }
+    { connectionId: string; permissions: Record<string, string[]>; tools: string[] }
   > = {};
   for (const [agentId, data] of emailPermsByAgent) {
     const permissions: Record<string, string[]> = {};
     for (const [model, ops] of data.ops) {
       permissions[model] = ops;
     }
+    // Derive tool names from granted email operations. OpenClaw uses this
+    // array to know which plugin-registered tool factories to call for this
+    // agent — without it, no factory is called and no tools are available.
+    // Mirrors the tools-array pattern used by pinchy-web.
+    const emailOps = data.ops.get("email") ?? [];
+    const tools: string[] = [];
+    if (emailOps.includes("read")) tools.push("email_list", "email_read");
+    if (emailOps.includes("search")) tools.push("email_search");
+    if (emailOps.includes("draft")) tools.push("email_draft");
+    if (emailOps.includes("send")) tools.push("email_send");
     emailAgentConfigs[agentId] = {
       connectionId: data.connectionId,
       permissions,
+      tools,
     };
   }
 

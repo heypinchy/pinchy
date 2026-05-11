@@ -5,14 +5,15 @@ import { loadPluginManifest } from "../../web/src/lib/openclaw-config/plugin-man
 
 const manifest = loadPluginManifest("pinchy-email");
 
-// Mirrors build.ts:507-517 — top-level api fields, per-agent connectionId+permissions.
+// Mirrors build.ts — top-level api fields, per-agent connectionId+permissions+tools.
 const REPRESENTATIVE_EMITTED_CONFIG = {
   apiBaseUrl: "http://pinchy:7777",
   gatewayToken: "test-token",
   agents: {
     "agent-uuid": {
       connectionId: "conn-uuid",
-      permissions: { "messages.send": ["send"] },
+      permissions: { email: ["read", "search"] },
+      tools: ["email_list", "email_read", "email_search"],
     },
   },
 };
@@ -34,7 +35,7 @@ describe("pinchy-email manifest contract", () => {
     ).toBe(false);
   });
 
-  it("requires connectionId and permissions per agent", () => {
+  it("requires connectionId, permissions, and tools per agent", () => {
     expect(
       validatePluginEntry(manifest, {
         apiBaseUrl: "http://x",
