@@ -14,13 +14,14 @@ export const MCP_PRESETS: McpPreset[] = [
     defaultUrl: "https://api.githubcopilot.com/mcp/",
     defaultTransport: "http",
     toolPrefix: "github_",
-    tokenInstructions: `Create a **Fine-Grained Personal Access Token** at [github.com/settings/tokens](https://github.com/settings/tokens?type=beta):
+    tokenInstructions: `Create a **Fine-Grained Personal Access Token** at [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens):
 
-1. Click **Generate new token → Fine-grained token**.
+1. Click **Generate new token**.
 2. Set an expiration and choose the repositories the agent should access.
 3. Under **Repository permissions**, grant:
    - **Contents** → Read-only (to read files and code)
    - **Issues** → Read and write (to create and update issues)
+   - **Pull requests** → Read and write (if the agent should manage PRs)
 4. Click **Generate token** and paste the value here.
 
 The token starts with \`github_pat_\`.`,

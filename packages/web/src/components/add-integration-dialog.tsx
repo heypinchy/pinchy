@@ -36,6 +36,9 @@ import { parseOdooSubdomainHint, generateConnectionName } from "@/lib/integratio
 import { normalizeUrl } from "@/lib/url";
 import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { cn } from "@/lib/utils";
 import { docsUrl } from "./docs-link";
 import { MCP_PRESETS, getMcpPreset } from "@/lib/integrations/mcp-presets";
 import type { McpTool } from "@/lib/integrations/types";
@@ -453,11 +456,35 @@ function McpConnectStep({
             />
           )}
 
-          {/* Token instructions — provider-specific copy from the preset registry */}
+          {/* Token instructions — markdown copy from the preset registry.
+              Each preset ships its own setup walkthrough with bold steps,
+              inline code, and links to the provider's token page. */}
           {mcpPreset.tokenInstructions && (
-            <p className="text-sm text-muted-foreground whitespace-pre-line">
-              {mcpPreset.tokenInstructions}
-            </p>
+            <div
+              className={cn(
+                "text-sm text-muted-foreground space-y-2",
+                "[&_a]:underline [&_a]:underline-offset-4 [&_a]:text-foreground [&_a:hover]:text-primary",
+                "[&_strong]:font-medium [&_strong]:text-foreground",
+                "[&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_code]:py-0.5 [&_code]:font-mono [&_code]:text-xs",
+                "[&_ol]:list-decimal [&_ol]:pl-5 [&_ol]:space-y-1",
+                "[&_ul]:list-disc [&_ul]:pl-5 [&_ul]:space-y-1"
+              )}
+            >
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm]}
+                components={{
+                  // External links open in a new tab so the dialog isn't
+                  // navigated away from mid-setup.
+                  a: ({ href, children }) => (
+                    <a href={href} target="_blank" rel="noopener noreferrer">
+                      {children}
+                    </a>
+                  ),
+                }}
+              >
+                {mcpPreset.tokenInstructions}
+              </ReactMarkdown>
+            </div>
           )}
 
           {/* URL field — custom flow only. Named presets ship a fixed URL. */}
@@ -526,7 +553,9 @@ function McpConnectStep({
                     : `${testTools.length} tool${testTools.length === 1 ? "" : "s"} discovered:`}
                 </p>
                 {testTools.length > 0 && (
-                  <ul className="space-y-0.5">
+                  // Cap the list height — large MCP servers (e.g. GitHub has
+                  // ~50 tools) would otherwise blow out the dialog vertically.
+                  <ul className="space-y-0.5 max-h-48 overflow-y-auto">
                     {testTools.map((tool) => (
                       <li key={tool.name} className="text-sm font-mono">
                         {tool.name}
@@ -1026,7 +1055,7 @@ export function AddIntegrationDialog({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="sm:max-w-md max-h-[85vh] overflow-y-auto">
         {/* Step 0: Type Selection */}
         {step === "type" && (
           <>
