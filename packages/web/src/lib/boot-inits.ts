@@ -12,6 +12,7 @@ import { isSetupComplete } from "@/lib/setup";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 import { markOpenClawConfigReady } from "@/lib/openclaw-config-ready";
 import { seedBuiltinModels } from "@/lib/model-capabilities/seed";
+import { loadModelCapabilityCache } from "@/lib/model-capabilities/cache";
 
 /**
  * Runs all one-time boot initializations in the correct order and performs
@@ -127,6 +128,7 @@ export async function bootInits(): Promise<boolean> {
 
   try {
     await seedBuiltinModels();
+    await loadModelCapabilityCache();
   } catch (err) {
     console.error(
       "[pinchy] Failed to seed built-in models:",
