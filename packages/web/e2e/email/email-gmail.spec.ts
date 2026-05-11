@@ -109,10 +109,14 @@ test.describe("pinchy-email — Gmail E2E", () => {
     const connected = await waitForOpenClawConnected(cookie, 120000);
     expect(connected).toBe(true);
 
-    // Hot-reload buffer: config.apply takes ~2s and hot-reload ~0.5s.
-    // Tests 1+2 run in ~100ms — without this wait, test 3 sends its message
-    // before pinchy-email is registered in OpenClaw.
-    await new Promise((r) => setTimeout(r, 5000));
+    // Hot-reload buffer: two purposes.
+    // 1. config.apply takes ~2s and hot-reload ~0.5s; without this wait test 3
+    //    sends its message before pinchy-email is registered in OpenClaw.
+    // 2. Rate-limit: config.apply is rate-limited to one call per ~25s. If
+    //    test 4 fires its grant within 25s of this grant, OC falls back to a
+    //    60s inotify debounce — far too slow. 30s here guarantees test 3 pushes
+    //    the test-4 grant past the 25s window even if test 3 runs in < 5s.
+    await new Promise((r) => setTimeout(r, 30000));
 
     // The Google connection is visible in the integrations list
     const integrations = await pinchyGet("/api/integrations", cookie);

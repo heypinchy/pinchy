@@ -41,26 +41,44 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     await resetGraphMock();
     cookie = await login();
 
-    // Wait for OpenClaw to settle after the setup wizard restart before running
-    // tests. The setup wizard triggers a full gateway restart (plugins/agents
-    // changed); granting integrations in the tests triggers another. We wait
-    // here so the test-body timeout only covers the second restart, not both.
-    const settled = await waitForOpenClawConnected(cookie, 120000);
-    if (!settled) throw new Error("OpenClaw did not reconnect after setup wizard");
-
-    // Allow the config.apply rate-limit window from seedSetup to clear (~25s).
-    // seedSetup fires 3 rapid config.apply calls; the next call from test 1's
-    // permission grant may hit the rate limit and fall back to 60s inotify —
-    // too slow for the chat tests. 35s clears the window with a small buffer.
-    await new Promise((r) => setTimeout(r, 35000));
-
-    // Get Smithers agent
+    // Get Smithers agent ID early — /api/agents is a DB query and does not
+    // require OC to be connected. We need the ID before the DELETE below.
     const agents = await pinchyGet("/api/agents", cookie);
     expect(agents.status).toBe(200);
     const agentList = (await agents.json()) as Array<{ name: string; id: string }>;
     const smithers = agentList.find((a) => a.name === "Smithers");
     if (!smithers) throw new Error("Smithers agent not found — was seedSetup successful?");
     agentId = smithers.id;
+
+    // Clear any pre-existing email integrations for Smithers (e.g. left behind
+    // by the Gmail E2E spec that runs in the same job). Done here — before the
+    // rate-limit sleep — so the resulting regenerateOpenClawConfig call is
+    // covered by the 35s wait below. If this DELETE were inside test 1, the
+    // subsequent permission grant would fire a config.apply within the 25s
+    // rate-limit window and hot-reload would fall back to 60s inotify, causing
+    // test 3 (email_list) to run before pinchy-email is registered in OpenClaw.
+    await fetch(
+      (process.env.PINCHY_URL || "http://localhost:7777") + `/api/agents/${agentId}/integrations`,
+      {
+        method: "DELETE",
+        headers: {
+          Cookie: cookie,
+          Origin: process.env.PINCHY_URL || "http://localhost:7777",
+        },
+      }
+    );
+
+    // Wait for OpenClaw to settle after the setup wizard restart and the DELETE
+    // above (which may trigger a full gateway restart if Gmail permissions were
+    // present). Both restarts are covered by this single wait.
+    const settled = await waitForOpenClawConnected(cookie, 120000);
+    if (!settled) throw new Error("OpenClaw did not reconnect after setup wizard");
+
+    // Allow the config.apply rate-limit window to clear (~25s).
+    // This covers seedSetup's 3 rapid calls AND the DELETE above. The next
+    // config.apply from test 1's permission grant must fire cleanly — a
+    // rate-limited grant falls back to 60s inotify, too slow for the chat tests.
+    await new Promise((r) => setTimeout(r, 35000));
   });
 
   test("pinchy-email plugin loads after Microsoft connection is configured (staging regression)", async () => {
@@ -82,22 +100,6 @@ test.describe("pinchy-email — Microsoft E2E", () => {
         isRead: false,
       },
     ]);
-
-    // Clear any pre-existing email integrations for Smithers (e.g. left behind
-    // by the Gmail E2E spec that runs in the same job). Without this, both Gmail
-    // and Microsoft connections exist simultaneously and regenerateOpenClawConfig
-    // picks Gmail's connectionId (first DB row) — so the plugin calls the Gmail
-    // API instead of the Graph API, causing tests 3+4 to fail.
-    await fetch(
-      (process.env.PINCHY_URL || "http://localhost:7777") + `/api/agents/${agentId}/integrations`,
-      {
-        method: "DELETE",
-        headers: {
-          Cookie: cookie,
-          Origin: process.env.PINCHY_URL || "http://localhost:7777",
-        },
-      }
-    );
 
     // Insert Microsoft connection directly into DB (OAuth flow is not testable in E2E)
     const conn = await createMicrosoftConnectionInDb("Test Microsoft");
@@ -131,10 +133,14 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     const connected = await waitForOpenClawConnected(cookie, 120000);
     expect(connected).toBe(true);
 
-    // Hot-reload buffer: config.apply takes ~2s and hot-reload ~0.5s.
-    // Tests 1+2 run in ~100ms — without this wait, test 3 sends its message
-    // before pinchy-email is registered in OpenClaw.
-    await new Promise((r) => setTimeout(r, 5000));
+    // Hot-reload buffer: two purposes.
+    // 1. config.apply takes ~2s and hot-reload ~0.5s; without this wait test 3
+    //    sends its message before pinchy-email is registered in OpenClaw.
+    // 2. Rate-limit: config.apply is rate-limited to one call per ~25s. If
+    //    test 4 fires its grant within 25s of this grant, OC falls back to a
+    //    60s inotify debounce — far too slow. 30s here guarantees test 3 pushes
+    //    the test-4 grant past the 25s window even if test 3 runs in < 5s.
+    await new Promise((r) => setTimeout(r, 30000));
 
     // The Microsoft connection is visible in the integrations list
     const integrations = await pinchyGet("/api/integrations", cookie);
@@ -236,6 +242,13 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     // Wait for OpenClaw to reconnect after the config change
     const reconnected = await waitForOpenClawConnected(cookie, 120000);
     expect(reconnected).toBe(true);
+
+    // Hot-reload buffer: the permission grant triggers a config hot-reload in
+    // OpenClaw. waitForOpenClawConnected returns immediately (WS stays connected
+    // during a hot-reload), but the factories are only re-registered after the
+    // reload applies (~0.5–1s). Without this wait, the chat session is set up
+    // with stale factories that lack the send permission → permission denied.
+    await new Promise((r) => setTimeout(r, 5000));
 
     // Reset mock so the request log is clean for this assertion
     await resetGraphMock();
