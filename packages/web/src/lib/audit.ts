@@ -66,7 +66,6 @@ export type AuditEventType =
   | "agent.memory_changed"
   | "agent.upstream_format_error"
   | "audit.exported"
-  | "attachment.uploaded"
   | "diagnostics.exported"
   | "integration.created"
   | "integration.updated"
@@ -331,21 +330,6 @@ export type AuditLogEntry =
   | (AuditLogBase & {
       eventType: "audit.exported";
       detail: { format: "csv" | "pdf"; filterSummary: string; rowCount: number };
-    })
-  | (AuditLogBase & {
-      eventType: "attachment.uploaded";
-      detail: {
-        agent: EntityRef;
-        uploader: EntityRef;
-        attachment: {
-          filename: string;
-          detectedMimeType: string;
-          sizeBytes: number;
-          contentHash: string;
-          reused: boolean;
-        };
-        sessionKey: string;
-      };
     })
   | (AuditLogBase & {
       eventType: "diagnostics.exported";

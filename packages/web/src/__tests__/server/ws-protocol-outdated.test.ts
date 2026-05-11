@@ -367,4 +367,23 @@ describe("attachmentIds — new two-phase upload path", () => {
     expect(errorMsg.code).toBe("attachment_already_attached");
     expect(mockChat).not.toHaveBeenCalled();
   });
+
+  it("sends attachment_invalid when materializeAttachments throws unexpected error", async () => {
+    mockMaterializeAttachments.mockRejectedValueOnce(new Error("unexpected disk error"));
+
+    const clientWs = createMockClientWs();
+
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Analyze this",
+      agentId: "agent-1",
+      attachmentIds: ["550e8400-e29b-41d4-a716-446655440000"],
+    });
+
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    const errorMsg = messages.find((m) => m.type === "error");
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.code).toBe("attachment_invalid");
+    expect(mockChat).not.toHaveBeenCalled();
+  });
 });

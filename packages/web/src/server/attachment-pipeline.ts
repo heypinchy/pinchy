@@ -169,7 +169,7 @@ export async function materializeAttachments(
     throw new AttachmentExpiredError(expiredRows.map((r) => r.id));
   }
 
-  // Step 5: promote each staged file
+  // Step 4: promote each staged file
   const workspaceRoot = getWorkspacePath(agentId);
   const openClawWorkspaceRoot = getOpenClawWorkspacePath(agentId);
 
