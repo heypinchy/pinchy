@@ -347,6 +347,29 @@ describe("AddIntegrationDialog", () => {
     });
   });
 
+  describe("Microsoft OAuth type", () => {
+    async function selectMicrosoftType(user: ReturnType<typeof userEvent.setup>) {
+      const microsoftButton = screen.getByText("Microsoft").closest("button")!;
+      await user.click(microsoftButton);
+    }
+
+    it("shows Microsoft as a type option in the dialog", () => {
+      render(<AddIntegrationDialog {...defaultProps} />);
+      expect(screen.getByText("Microsoft")).toBeInTheDocument();
+    });
+
+    it("advances to connect step when Microsoft is clicked", async () => {
+      const user = userEvent.setup();
+      render(<AddIntegrationDialog {...defaultProps} />);
+      await selectMicrosoftType(user);
+
+      // Should no longer be on the type-selection step
+      expect(screen.queryByText("Add Integration")).not.toBeInTheDocument();
+      // Should show the Microsoft connect dialog header
+      expect(screen.getByText("Connect Microsoft")).toBeInTheDocument();
+    });
+  });
+
   describe("initialType prop", () => {
     it("opens directly at Google connect step when initialType='google'", () => {
       render(<AddIntegrationDialog {...defaultProps} initialType="google" />);
