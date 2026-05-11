@@ -11,6 +11,7 @@ const {
   mockGetUserGroupIds,
   mockGetAgentGroupIds,
   mockShouldEmitModelUnavailableAudit,
+  mockShouldEmitSilentStreamAudit,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
@@ -21,6 +22,7 @@ const {
   mockGetUserGroupIds: vi.fn().mockResolvedValue([]),
   mockGetAgentGroupIds: vi.fn().mockResolvedValue([]),
   mockShouldEmitModelUnavailableAudit: vi.fn().mockReturnValue(true),
+  mockShouldEmitSilentStreamAudit: vi.fn().mockReturnValue(true),
 }));
 
 vi.mock("@/lib/agent-access", async (importOriginal) => {
@@ -89,6 +91,7 @@ vi.mock("@/lib/groups", () => ({
 vi.mock("@/server/model-unavailable-throttle", () => ({
   shouldEmitModelUnavailableAudit: (...args: unknown[]) =>
     mockShouldEmitModelUnavailableAudit(...args),
+  shouldEmitSilentStreamAudit: (...args: unknown[]) => mockShouldEmitSilentStreamAudit(...args),
 }));
 
 vi.mock("@/lib/upload-validation", () => ({
@@ -2140,7 +2143,7 @@ describe("ClientRouter", () => {
   // error chunk) reached the client, and emit a synthetic error frame when
   // the stream ends with nothing visible.
   describe("silent stream-end safety net (issue #320)", () => {
-    it("emits a retry-able error frame when stream ends without any text or error chunk", async () => {
+    it("emits a retry-able error frame with the standard transient hint when stream ends without any text or error chunk", async () => {
       const clientWs = createMockClientWs();
       const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
 
@@ -2161,7 +2164,14 @@ describe("ClientRouter", () => {
       const errorMsg = messages.find((m: any) => m.type === "error");
       expect(errorMsg).toBeDefined();
       expect(errorMsg.agentName).toBe("Smithers");
-      expect(errorMsg.providerError).toMatch(/no response|timed out|timeout/i);
+      expect(errorMsg.providerError).toBe(
+        "The model did not produce a response. It may have timed out."
+      );
+      // The "timed out" phrasing must match TRANSIENT_PATTERN in error-hints.ts
+      // so the user gets the standard retry suggestion. If the message phrasing
+      // drifts away from a transient-matching word, the hint silently goes
+      // null — locking it down here so future copy edits stay in sync.
+      expect(errorMsg.hint).toBe("Try again in a moment.");
       expect(errorMsg.messageId).toBeTruthy();
 
       // The synthetic error must precede `complete` so the client's
@@ -2170,6 +2180,74 @@ describe("ClientRouter", () => {
       const completeIdx = messages.findIndex((m: any) => m.type === "complete");
       expect(errorIdx).toBeGreaterThanOrEqual(0);
       expect(completeIdx).toBeGreaterThan(errorIdx);
+
+      consoleSpy.mockRestore();
+    });
+
+    it("writes a chat.silent_stream audit log with outcome failure when stream ends silently", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockFindFirst.mockResolvedValue({
+        ...defaultAgent,
+        model: "ollama-cloud/deepseek-v4-pro",
+      });
+      mockShouldEmitSilentStreamAudit.mockReturnValue(true);
+
+      async function* fakeStream() {
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      expect(mockAppendAuditLog).toHaveBeenCalledWith(
+        expect.objectContaining({
+          actorType: "user",
+          actorId: "user-1",
+          eventType: "chat.silent_stream",
+          resource: "agent:agent-1",
+          outcome: "failure",
+          detail: expect.objectContaining({
+            agent: { id: "agent-1", name: "Smithers" },
+            model: "ollama-cloud/deepseek-v4-pro",
+            providerError: "The model did not produce a response. It may have timed out.",
+            reason: "silent_stream_end",
+          }),
+        })
+      );
+
+      consoleSpy.mockRestore();
+    });
+
+    it("does NOT write a silent-stream audit when the throttle suppresses it", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      mockShouldEmitSilentStreamAudit.mockReturnValue(false);
+
+      async function* fakeStream() {
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      // The retry-able error frame must still reach the client — only the
+      // audit-log write is throttled.
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m: any) => m.type === "error")).toBe(true);
+      expect(mockAppendAuditLog).not.toHaveBeenCalledWith(
+        expect.objectContaining({ eventType: "chat.silent_stream" })
+      );
 
       consoleSpy.mockRestore();
     });

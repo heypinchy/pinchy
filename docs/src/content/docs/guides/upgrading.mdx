@@ -147,7 +147,7 @@ When an agent's model call returns a 5xx from the upstream provider, the chat no
 
 #### Silent model timeouts now surface a retry-able error
 
-Previously, a run that ended without producing any assistant text — typically a model that timed out inside OpenClaw's embedded layer on a cold-path tool call — left the chat indistinguishable from a successful empty reply: spinner gone, no error, no retry button. The chat now detects when a stream completes with no consumer-visible output and shows the standard error bubble with a **Retry** button, so the user isn't left guessing whether anything is still happening.
+Previously, a run that ended without producing any assistant text — typically a model that timed out inside OpenClaw's embedded layer on a cold-path tool call — left the chat indistinguishable from a successful empty reply: spinner gone, no error, no retry button. The chat now detects when a stream completes with no consumer-visible output and shows the standard error bubble with a **Retry** button plus the "Try again in a moment." hint, so the user isn't left guessing whether anything is still happening. Each silent timeout also writes a `chat.silent_stream` audit entry (throttled per `(agentId, model)` so a flaky provider can't flood the trail through user retries), giving admins an operational signal that an embedded run terminated without producing output.
 
 #### Per-agent chat runtimes survive in-app navigation
 

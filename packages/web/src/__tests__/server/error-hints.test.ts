@@ -28,6 +28,8 @@ describe("getErrorHint", () => {
       "Rate limit exceeded",
       "Too many requests",
       "Request timeout",
+      "Request timed out",
+      "The model did not produce a response. It may have timed out.",
       "The server is overloaded",
       "529 overloaded",
     ];

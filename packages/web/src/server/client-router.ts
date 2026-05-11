@@ -5,7 +5,10 @@ import { getUserGroupIds, getAgentGroupIds } from "@/lib/groups";
 import { isEnterprise } from "@/lib/enterprise";
 import { appendAuditLog } from "@/lib/audit";
 import { recordAuditFailure } from "@/lib/audit-deferred";
-import { shouldEmitModelUnavailableAudit } from "@/server/model-unavailable-throttle";
+import {
+  shouldEmitModelUnavailableAudit,
+  shouldEmitSilentStreamAudit,
+} from "@/server/model-unavailable-throttle";
 import { SessionCache } from "@/server/session-cache";
 import { getErrorHint } from "@/server/error-hints";
 import { classifyModelError } from "@/server/model-error-classifier";
@@ -650,6 +653,30 @@ export class ClientRouter {
           hint: getErrorHint(providerError, this.userRole),
           messageId,
         });
+
+        // Operational signal: a silent timeout shouldn't be invisible to
+        // admins reviewing the audit trail. Throttled per (agentId, model)
+        // so a degraded provider can't flood the log via user retries.
+        if (shouldEmitSilentStreamAudit(agent.id, agent.model ?? "")) {
+          const auditEntry = {
+            actorType: "user" as const,
+            actorId: this.userId,
+            eventType: "chat.silent_stream" as const,
+            resource: `agent:${agent.id}`,
+            detail: {
+              agent: { id: agent.id, name: agent.name },
+              model: agent.model ?? null,
+              providerError,
+              reason: "silent_stream_end" as const,
+            },
+            outcome: "failure" as const,
+          };
+          try {
+            await appendAuditLog(auditEntry);
+          } catch (err) {
+            recordAuditFailure(err, auditEntry);
+          }
+        }
       }
 
       // Tell the client the entire request is finished. Unlike "done" events

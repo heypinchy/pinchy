@@ -16,6 +16,7 @@
  *     `(agent_id, model, bucket)` to make this race a no-op.
  */
 const lastEmittedAt = new Map<string, number>();
+const lastSilentStreamAt = new Map<string, number>();
 const TTL_MS = 5 * 60 * 1000;
 
 export function shouldEmitModelUnavailableAudit(
@@ -30,6 +31,26 @@ export function shouldEmitModelUnavailableAudit(
   return true;
 }
 
+/**
+ * Throttle for `chat.silent_stream` audit events (issue #320). Kept separate
+ * from the 5xx throttle so two different failure modes for the same
+ * `(agentId, model)` pair within the TTL still both audit — they're distinct
+ * operational signals (one is a provider-side error event, the other is a
+ * silent timeout where no event ever arrives).
+ */
+export function shouldEmitSilentStreamAudit(
+  agentId: string,
+  model: string,
+  now: number = Date.now()
+): boolean {
+  const key = `${agentId}:${model}`;
+  const last = lastSilentStreamAt.get(key);
+  if (last !== undefined && now - last < TTL_MS) return false;
+  lastSilentStreamAt.set(key, now);
+  return true;
+}
+
 export function __resetModelUnavailableThrottleForTests(): void {
   lastEmittedAt.clear();
+  lastSilentStreamAt.clear();
 }
