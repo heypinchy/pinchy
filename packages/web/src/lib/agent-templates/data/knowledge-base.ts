@@ -17,6 +17,6 @@ export const KNOWLEDGE_BASE_TEMPLATES: Record<string, AgentTemplate> = {
 - If the documents don't contain an answer, say so clearly
 - Prefer quoting relevant passages over paraphrasing
 - Structure longer answers with headings and bullet points`,
-    modelHint: { tier: "balanced", capabilities: ["tools"] },
+    modelHint: { tier: "balanced", capabilities: ["tools", "vision", "documents"] },
   },
 };

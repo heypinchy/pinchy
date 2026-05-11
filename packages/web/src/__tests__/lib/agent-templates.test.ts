@@ -953,6 +953,16 @@ describe("Odoo template drift invariants", () => {
   });
 });
 
+describe("knowledge-base template capabilities", () => {
+  it("knowledge-base template declares vision capability (scanned PDFs need it)", () => {
+    expect(AGENT_TEMPLATES["knowledge-base"].modelHint?.capabilities).toContain("vision");
+  });
+
+  it("knowledge-base template declares documents capability", () => {
+    expect(AGENT_TEMPLATES["knowledge-base"].modelHint?.capabilities).toContain("documents");
+  });
+});
+
 describe("pickSuggestedName", () => {
   it("picks a name from the template's suggestedNames", () => {
     const name = pickSuggestedName("knowledge-base", []);
