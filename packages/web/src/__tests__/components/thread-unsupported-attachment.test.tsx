@@ -148,7 +148,7 @@ import {
 
 function renderAssistantMessage(setRecovery: ReturnType<typeof vi.fn>) {
   return render(
-    <RecoveryContext.Provider value={setRecovery}>
+    <RecoveryContext.Provider value={{ recoveryState: null, setRecoveryState: setRecovery }}>
       <ChatStatusContext.Provider value={{ kind: "ready" }}>
         <AgentIdContext.Provider value="agent-123">
           <CanEditContext.Provider value={false}>
