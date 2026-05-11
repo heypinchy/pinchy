@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, readFile, rm } from "fs/promises";
+import { mkdtemp, readFile, rm, stat } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
 import { createHash } from "crypto";
-import { persistStagedUpload } from "@/lib/uploads";
+import { persistStagedUpload, promoteStagedToAttached } from "@/lib/uploads";
 
 let workspaceRoot: string;
 beforeEach(async () => {
@@ -54,5 +54,50 @@ describe("persistStagedUpload", () => {
     const bBytes = await readFile(join(workspaceRoot, b.relativePath));
     expect(aBytes.toString()).toBe("a");
     expect(bBytes.toString()).toBe("b");
+  });
+});
+
+describe("promoteStagedToAttached", () => {
+  it("renames .staging/<id>/<file> to uploads/<file>", async () => {
+    const staged = await persistStagedUpload({
+      workspaceRoot,
+      filename: "doc.pdf",
+      buffer: Buffer.from("content"),
+    });
+    const result = await promoteStagedToAttached({
+      workspaceRoot,
+      stagedRelativePath: staged.relativePath,
+      filename: "doc.pdf",
+    });
+    expect(result.relativePath).toBe("uploads/doc.pdf");
+    const moved = await readFile(join(workspaceRoot, result.relativePath));
+    expect(moved.toString()).toBe("content");
+    // .staging dir for that uploadId is cleaned up
+    await expect(stat(join(workspaceRoot, ".staging", staged.uploadId))).rejects.toThrow();
+  });
+
+  it("collision-suffixes when uploads/<filename> already exists with different content", async () => {
+    const first = await persistStagedUpload({
+      workspaceRoot,
+      filename: "x.pdf",
+      buffer: Buffer.from("first"),
+    });
+    await promoteStagedToAttached({
+      workspaceRoot,
+      stagedRelativePath: first.relativePath,
+      filename: "x.pdf",
+    });
+
+    const second = await persistStagedUpload({
+      workspaceRoot,
+      filename: "x.pdf",
+      buffer: Buffer.from("second"),
+    });
+    const result = await promoteStagedToAttached({
+      workspaceRoot,
+      stagedRelativePath: second.relativePath,
+      filename: "x.pdf",
+    });
+    expect(result.relativePath).toMatch(/^uploads\/x \(\d+\)\.pdf$/);
   });
 });

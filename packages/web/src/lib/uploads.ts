@@ -1,5 +1,5 @@
 import { createHash, randomBytes, randomUUID } from "crypto";
-import { link, mkdir, readFile, unlink, writeFile } from "fs/promises";
+import { link, mkdir, open, readFile, rename, rm, unlink, writeFile } from "fs/promises";
 import { join, parse as parsePath } from "path";
 import { getWorkspacePath } from "@/lib/workspace";
 import { sanitizeFilename } from "@/lib/upload-validation";
@@ -47,6 +47,39 @@ export class UploadSlotExhaustedError extends Error {
     );
     this.name = "UploadSlotExhaustedError";
   }
+}
+
+/**
+ * Returns the first available filename in `dir` for the given `filename`.
+ *
+ * Tries `filename` first, then `<name> (1)<ext>`, `<name> (2)<ext>`, etc.
+ * A slot is "available" when no file exists at that path. Throws
+ * `UploadSlotExhaustedError` if no free slot is found within `maxCollisions`
+ * tries.
+ *
+ * Used by both `persistAttachment` (write new buffer) and
+ * `promoteStagedToAttached` (rename staged file) so the dedup logic lives in
+ * one place.
+ */
+async function buildNextFreeFilename(
+  dir: string,
+  filename: string,
+  maxCollisions = DEFAULT_MAX_COLLISION_SLOTS
+): Promise<string> {
+  const { name, ext } = parsePath(filename);
+  for (let i = 0; i < maxCollisions; i++) {
+    const candidate = i === 0 ? filename : `${name} (${i})${ext}`;
+    try {
+      // O_CREAT | O_EXCL — atomic probe; close immediately, caller writes/renames.
+      const fh = await open(join(dir, candidate), "wx");
+      await fh.close();
+      return candidate;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+      // Slot is taken — try the next suffix.
+    }
+  }
+  throw new UploadSlotExhaustedError(filename, maxCollisions);
 }
 
 /**
@@ -122,6 +155,53 @@ export async function persistAttachment(
   }
 
   throw new UploadSlotExhaustedError(filename, maxCollisions);
+}
+
+export interface PromoteParams {
+  workspaceRoot: string;
+  stagedRelativePath: string; // e.g. ".staging/<uploadId>/<filename>"
+  filename: string; // the filename to use in the durable uploads/ dir
+}
+
+export interface PromotedRef {
+  relativePath: string; // e.g. "uploads/doc.pdf"
+}
+
+/**
+ * Atomically moves a staged file to its durable `uploads/` path.
+ *
+ * Steps:
+ * 1. Resolve the absolute path of the staged file.
+ * 2. Ensure `uploads/` dir exists.
+ * 3. Use `buildNextFreeFilename` to find a free slot (collision-suffixed if
+ *    needed), which creates an empty placeholder file via `O_CREAT | O_EXCL`.
+ * 4. `rename` the staged file over the placeholder — atomic on the same FS.
+ * 5. Remove the `.staging/<uploadId>/` directory.
+ * 6. Return `{ relativePath: "uploads/<targetName>" }`.
+ */
+export async function promoteStagedToAttached(params: PromoteParams): Promise<PromotedRef> {
+  const { workspaceRoot, stagedRelativePath, filename } = params;
+
+  // Extract uploadId from ".staging/<uploadId>/<filename>"
+  const parts = stagedRelativePath.split("/");
+  const uploadId = parts[1];
+
+  const stagedAbsPath = join(workspaceRoot, stagedRelativePath);
+  const uploadsDir = join(workspaceRoot, UPLOADS_SUBDIR);
+  await mkdir(uploadsDir, { recursive: true });
+
+  // Find (and atomically reserve) a free slot
+  const targetName = await buildNextFreeFilename(uploadsDir, filename);
+  const targetAbsPath = join(uploadsDir, targetName);
+
+  // rename is atomic on the same filesystem; overwrites the placeholder
+  await rename(stagedAbsPath, targetAbsPath);
+
+  // Clean up the staging directory for this upload
+  const stagingDir = join(workspaceRoot, ".staging", uploadId);
+  await rm(stagingDir, { recursive: true, force: true });
+
+  return { relativePath: `${UPLOADS_SUBDIR}/${targetName}` };
 }
 
 export interface PersistStagedUploadParams {
