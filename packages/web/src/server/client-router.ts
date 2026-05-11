@@ -30,12 +30,13 @@ import { db } from "@/db";
 import { agents, users } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import {
-  type ContentPart,
   type ProcessedWorkspaceRef,
   buildAttachmentBlock,
   parseAttachmentBlock,
-  processIncomingAttachments,
-  UploadValidationError,
+  materializeAttachments,
+  AttachmentNotFoundError,
+  AttachmentExpiredError,
+  AttachmentAlreadyAttachedError,
 } from "@/server/attachment-pipeline";
 
 const WS_OPEN = 1;
@@ -54,6 +55,12 @@ const ALLOWED_RETRY_REASONS: ReadonlySet<string> = new Set([
   "send_failure",
 ]);
 
+interface ContentPart {
+  type: string;
+  text?: string;
+  image_url?: { url: string };
+}
+
 interface ChatMessage {
   type: "message";
   content: string | ContentPart[];
@@ -62,7 +69,8 @@ interface ChatMessage {
   isRetry?: boolean;
   /** Recovery scenario behind a retry — surfaced in the audit log. */
   retryReason?: RetryReason;
-  filenames?: string[];
+  /** Two-phase upload IDs from the staged-upload flow. */
+  attachmentIds?: string[];
 }
 
 interface HistoryRequestMessage {
@@ -142,6 +150,18 @@ export class ClientRouter {
       return this.handleHistory(clientWs, agent);
     }
 
+    // Reject legacy attachment shape: clients that still send structured content
+    // parts with image_url base64 payloads are running outdated code. Do NOT
+    // forward to OpenClaw and do NOT write an audit entry — this is a client-side
+    // protocol bug, not a state change.
+    if (
+      Array.isArray(message.content) &&
+      message.content.some((part) => part.type === "image_url")
+    ) {
+      this.sendToClient(clientWs, { type: "error", code: "PROTOCOL_OUTDATED" });
+      return;
+    }
+
     const sessionKey = this.computeSessionKey(message.agentId);
 
     const messageId = crypto.randomUUID();
@@ -161,38 +181,49 @@ export class ClientRouter {
         text = message.content;
       }
 
-      // Process and validate attachments (validation, persistence, dedup)
+      // Materialize staged uploads via the two-phase upload flow.
       let chatAttachments: ChatAttachment[] = [];
       let workspaceRefs: ProcessedWorkspaceRef[] = [];
-      try {
-        const result = await processIncomingAttachments({
-          agentId: message.agentId,
-          contentParts: Array.isArray(message.content) ? message.content : [],
-          claimedFilenames: message.filenames,
-        });
-        chatAttachments = result.chatAttachments;
-        workspaceRefs = result.workspaceRefs;
-      } catch (err) {
-        // Validation errors are caused by client input and are safe to surface
-        // verbatim ("File type mismatch", "Filename too long", etc.). Anything
-        // else is an internal failure (filesystem error, programmer mistake)
-        // that must NOT leak to the client — log it server-side and return a
-        // generic message.
-        if (err instanceof UploadValidationError) {
-          this.sendToClient(clientWs, {
-            type: "error",
-            code: "attachment_invalid",
-            message: err.message,
+      if (message.attachmentIds && message.attachmentIds.length > 0) {
+        try {
+          const result = await materializeAttachments({
+            agentId: message.agentId,
+            userId: this.userId,
+            attachmentIds: message.attachmentIds,
+            messageId,
+            agentName: agent.name,
           });
-        } else {
-          console.error("[client-router] attachment processing failed:", err);
-          this.sendToClient(clientWs, {
-            type: "error",
-            code: "attachment_invalid",
-            message: "Could not process attachment. Please try again.",
-          });
+          chatAttachments = result.chatAttachments;
+          workspaceRefs = result.workspaceRefs;
+        } catch (err) {
+          if (err instanceof AttachmentNotFoundError) {
+            this.sendToClient(clientWs, {
+              type: "error",
+              code: "attachment_not_found",
+              message: err.message,
+            });
+          } else if (err instanceof AttachmentExpiredError) {
+            this.sendToClient(clientWs, {
+              type: "error",
+              code: "attachment_expired",
+              message: err.message,
+            });
+          } else if (err instanceof AttachmentAlreadyAttachedError) {
+            this.sendToClient(clientWs, {
+              type: "error",
+              code: "attachment_already_attached",
+              message: err.message,
+            });
+          } else {
+            console.error("[client-router] attachment materialization failed:", err);
+            this.sendToClient(clientWs, {
+              type: "error",
+              code: "attachment_invalid",
+              message: "Could not process attachment. Please try again.",
+            });
+          }
+          return;
         }
-        return;
       }
 
       const chatOptions: Record<string, unknown> = {
@@ -261,38 +292,8 @@ export class ClientRouter {
         text = text.length > 0 ? `${text}\n\n${attachmentBlock}` : attachmentBlock;
       }
 
-      // Audit each uploaded attachment. AGENTS.md requires {id, name} pairs
-      // for both the resource (agent) and the actor (uploader); a name-less
-      // user-id row is harder to read months later when the user record may
-      // have been renamed or deleted.
-      //
-      // Fallback is `<unknown user>` (not the UUID) so audit readers can tell
-      // at a glance that the name is synthetic. Writing the UUID into a
-      // `name` field would be indistinguishable from a legitimate (if odd)
-      // human name and silently degrade audit-log readability.
-      const uploaderRef = { id: this.userId, name: user?.name ?? "<unknown user>" };
-      for (const ref of workspaceRefs) {
-        const { relativePath, mimeType, sizeBytes, contentHash, reused } = ref;
-        const filename = relativePath.replace(/^uploads\//, "");
-        const auditEntry = {
-          actorType: "user" as const,
-          actorId: this.userId,
-          eventType: "attachment.uploaded" as const,
-          resource: `agent:${message.agentId}`,
-          outcome: "success" as const,
-          detail: {
-            agent: { id: agent.id, name: agent.name },
-            uploader: uploaderRef,
-            attachment: { filename, detectedMimeType: mimeType, sizeBytes, contentHash, reused },
-            sessionKey,
-          },
-        };
-        try {
-          await appendAuditLog(auditEntry);
-        } catch (err) {
-          recordAuditFailure(err, auditEntry);
-        }
-      }
+      // Note: materializeAttachments already writes per-file file.upload.attached
+      // audit events. No additional attachment audit call is needed here.
 
       if (message.isRetry) {
         // Validate retryReason at the trust boundary. The TypeScript union is

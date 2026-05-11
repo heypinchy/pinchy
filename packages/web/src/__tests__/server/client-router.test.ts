@@ -13,6 +13,7 @@ const {
   mockShouldEmitModelUnavailableAudit,
   mockShouldEmitSilentStreamAudit,
   mockShouldEmitUpstreamFormatErrorAudit,
+  mockMaterializeAttachments,
 } = vi.hoisted(() => ({
   mockChat: vi.fn(),
   mockSessionsHistory: vi.fn(),
@@ -25,6 +26,7 @@ const {
   mockShouldEmitModelUnavailableAudit: vi.fn().mockReturnValue(true),
   mockShouldEmitSilentStreamAudit: vi.fn().mockReturnValue(true),
   mockShouldEmitUpstreamFormatErrorAudit: vi.fn().mockReturnValue(true),
+  mockMaterializeAttachments: vi.fn().mockResolvedValue({ chatAttachments: [], workspaceRefs: [] }),
 }));
 
 vi.mock("@/lib/agent-access", async (importOriginal) => {
@@ -114,18 +116,13 @@ vi.mock("@/server/model-unavailable-throttle", () => ({
     mockShouldEmitUpstreamFormatErrorAudit(...args),
 }));
 
-vi.mock("@/lib/upload-validation", () => ({
-  validateUploadBuffer: vi.fn(async (_buf: Buffer, claimedMime: string) => claimedMime),
-  sanitizeFilename: vi.fn((name: string) => name),
-}));
-
-vi.mock("@/lib/uploads", () => ({
-  persistAttachment: vi.fn(async ({ filename }: { filename: string }) => ({
-    relativePath: `uploads/${filename}`,
-    reused: false,
-    contentHash: "fakehash",
-  })),
-}));
+vi.mock("@/server/attachment-pipeline", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/server/attachment-pipeline")>();
+  return {
+    ...actual,
+    materializeAttachments: mockMaterializeAttachments,
+  };
+});
 
 import { ClientRouter } from "@/server/client-router";
 import { SessionCache } from "@/server/session-cache";
@@ -985,37 +982,23 @@ describe("ClientRouter", () => {
     expect(messages.some((m: any) => m.type === "chunk")).toBe(true);
   });
 
-  it("should send images as attachments to openclaw", async () => {
-    async function* fakeStream() {
-      yield { type: "text" as const, text: "I see the image" };
-      yield { type: "done" as const, text: "" };
-    }
-    mockChat.mockReturnValue(fakeStream());
+  it("sends PROTOCOL_OUTDATED and does not forward to OpenClaw when content contains image_url parts", async () => {
+    const clientWs = createMockClientWs();
 
-    const structuredContent = [
-      { type: "text", text: "What is this?" },
-      { type: "image_url", image_url: { url: "data:image/png;base64,abc123" } },
-    ];
-
-    await router.handleMessage(createMockClientWs() as any, {
+    await router.handleMessage(clientWs as any, {
       type: "message",
-      content: structuredContent,
+      content: [
+        { type: "text", text: "What is this?" },
+        { type: "image_url", image_url: { url: "data:image/png;base64,abc123" } },
+      ],
       agentId: "agent-1",
     });
 
-    // The user text now carries an appended <pinchy:attachments> block so the
-    // file metadata is preserved per-message in OpenClaw's session JSONL (see
-    // attachment-pipeline.ts buildAttachmentBlock for the rationale). The
-    // inline `attachments` option is still set for vision models that read
-    // images directly.
-    const [text, options] = mockChat.mock.calls[0];
-    expect(text).toMatch(/^What is this\?\n\n<pinchy:attachments>/);
-    expect(text).toContain("</pinchy:attachments>");
-    expect(options).toMatchObject({
-      agentId: "agent-1",
-      sessionKey: "agent:agent-1:direct:user-1",
-      attachments: [{ mimeType: "image/png", fileName: "upload", content: "abc123" }],
-    });
+    // The legacy attachment path is rejected; chat must NOT be called.
+    expect(mockChat).not.toHaveBeenCalled();
+    const messages = clientWs.sent.map((s) => JSON.parse(s));
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toEqual({ type: "error", code: "PROTOCOL_OUTDATED" });
   });
 
   it("should join multiple text parts from structured content with spaces", async () => {
@@ -1042,39 +1025,32 @@ describe("ClientRouter", () => {
     });
   });
 
-  it("falls back to '<unknown user>' (not the raw UUID) in attachment.uploaded audit when user.name is missing", async () => {
-    // When the uploading user has no name set (or the user row is gone),
-    // the audit row's `uploader.name` field used to be filled with the
-    // user's UUID. That makes audit logs misleading: a UUID-shaped string
-    // appears in a `name` field, indistinguishable from a real legacy
-    // human name. AGENTS.md asks for "human-readable names beside IDs",
-    // so the fallback must be obviously a fallback.
+  it("calls materializeAttachments with correct params when attachmentIds is provided", async () => {
+    // The new two-phase upload path: client first stages files via POST /api/agents/:id/files,
+    // then sends attachmentIds in the WS message. The server materializes them using
+    // materializeAttachments, which handles DB lookup, promotion, and audit logging.
+    const attachmentId = "550e8400-e29b-41d4-a716-446655440000";
+    mockMaterializeAttachments.mockResolvedValue({ chatAttachments: [], workspaceRefs: [] });
+
     async function* fakeStream() {
       yield { type: "text" as const, text: "ok" };
       yield { type: "done" as const, text: "" };
     }
     mockChat.mockReturnValue(fakeStream());
 
-    // Override default: user row exists but has no `name`.
-    mockUserFindFirst.mockResolvedValue({ id: "user-1", name: null, context: null });
-
-    const structuredContent = [
-      { type: "image_url", image_url: { url: "data:application/pdf;base64,JVBERi0xLjQ=" } },
-    ];
-
     await router.handleMessage(createMockClientWs() as any, {
       type: "message",
-      content: structuredContent,
+      content: "Analyze this file",
       agentId: "agent-1",
-      filenames: ["doc.pdf"],
+      attachmentIds: [attachmentId],
     });
 
-    expect(mockAppendAuditLog).toHaveBeenCalledWith(
+    expect(mockMaterializeAttachments).toHaveBeenCalledWith(
       expect.objectContaining({
-        eventType: "attachment.uploaded",
-        detail: expect.objectContaining({
-          uploader: { id: "user-1", name: "<unknown user>" },
-        }),
+        agentId: "agent-1",
+        userId: "user-1",
+        attachmentIds: [attachmentId],
+        agentName: "Smithers",
       })
     );
   });
@@ -1085,20 +1061,34 @@ describe("ClientRouter", () => {
     // which file Turn 1 was about. Embedding the block in the user text fixes
     // both the agent's history view AND chip rendering on reload, without a
     // separate persistence layer.
+    //
+    // This test exercises the new attachmentIds path: materializeAttachments
+    // returns workspaceRefs which buildAttachmentBlock embeds in the message text.
     async function* fakeStream() {
       yield { type: "text" as const, text: "ok" };
       yield { type: "done" as const, text: "" };
     }
     mockChat.mockReturnValue(fakeStream());
 
-    const PDF_DATA = `data:application/pdf;base64,${Buffer.from("%PDF-1.4\n").toString("base64")}`;
+    mockMaterializeAttachments.mockResolvedValue({
+      chatAttachments: [],
+      workspaceRefs: [
+        {
+          relativePath: "uploads/invoice.pdf",
+          absolutePath: "/root/.openclaw/workspaces/agent-1/uploads/invoice.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 12345,
+          contentHash: "a".repeat(64),
+          reused: false,
+        },
+      ],
+    });
+
+    const attachmentId = "550e8400-e29b-41d4-a716-446655440000";
     await router.handleMessage(createMockClientWs() as any, {
       type: "message",
-      content: [
-        { type: "text", text: "Was steht hier?" },
-        { type: "image_url", image_url: { url: PDF_DATA } },
-      ],
-      filenames: ["invoice.pdf"],
+      content: "Was steht hier?",
+      attachmentIds: [attachmentId],
       agentId: "agent-1",
     });
 
