@@ -951,3 +951,109 @@ describe("pickSuggestedName", () => {
     expect(pickSuggestedName("custom", [])).toBe("");
   });
 });
+
+describe("Odoo Bookkeeper template (write counterpart of Finance Controller)", () => {
+  it("exists with id odoo-bookkeeper", () => {
+    expect(getTemplate("odoo-bookkeeper")).toBeDefined();
+  });
+
+  it("requires an Odoo connection", () => {
+    expect(getTemplate("odoo-bookkeeper")!.requiresOdooConnection).toBe(true);
+  });
+
+  it("has read-write access level", () => {
+    expect(getTemplate("odoo-bookkeeper")!.odooConfig!.accessLevel).toBe("read-write");
+  });
+
+  it("grants read+create+write on account.move, account.move.line, res.partner", () => {
+    const t = getTemplate("odoo-bookkeeper")!;
+    const byModel = new Map(t.odooConfig!.requiredModels.map((m) => [m.model, m.operations]));
+    for (const model of ["account.move", "account.move.line", "res.partner"]) {
+      const ops = byModel.get(model);
+      expect(ops, `missing ${model}`).toBeDefined();
+      expect(ops).toContain("read");
+      expect(ops).toContain("create");
+      expect(ops).toContain("write");
+    }
+  });
+
+  it("grants read+write but NOT create on account.payment", () => {
+    // Payments originate from bank imports, not from the bookkeeper agent.
+    // Reconciliation updates an existing payment's state — that's a write,
+    // never a create.
+    const t = getTemplate("odoo-bookkeeper")!;
+    const payment = t.odooConfig!.requiredModels.find((m) => m.model === "account.payment");
+    expect(payment).toBeDefined();
+    expect(payment!.operations).toContain("read");
+    expect(payment!.operations).toContain("write");
+    expect(payment!.operations).not.toContain("create");
+  });
+
+  it("never grants delete on any model", () => {
+    // Posted accounting records must never be deleted — only cancelled
+    // (state → cancel), which is a write. Delete would silently break the
+    // audit trail.
+    const t = getTemplate("odoo-bookkeeper")!;
+    for (const m of t.odooConfig!.requiredModels) {
+      expect(m.operations, `${m.model} grants delete`).not.toContain("delete");
+    }
+  });
+
+  it("declares vision in modelHint capabilities (paper receipts are the core workflow)", () => {
+    const t = getTemplate("odoo-bookkeeper")!;
+    expect(t.modelHint).toBeDefined();
+    expect(t.modelHint!.capabilities).toContain("vision");
+    expect(t.modelHint!.capabilities).toContain("tools");
+  });
+
+  it("AGENTS.md mandates draft-first workflow with explicit user confirmation before posting", () => {
+    // Defense against mid-stream provider failures: draft records stay
+    // reversible if the agent crashes between tool calls. Posting requires
+    // explicit user confirmation as a vier-augen step.
+    const t = getTemplate("odoo-bookkeeper")!;
+    expect(t.defaultAgentsMd).toMatch(/draft/i);
+    expect(t.defaultAgentsMd).toMatch(/confirm|confirmation/i);
+  });
+
+  it("AGENTS.md mandates duplicate-check before creating partners or invoices", () => {
+    // Prevents double-booking when a provider 5xx kills the flow mid-create
+    // and the user retries without realising records were already written.
+    const t = getTemplate("odoo-bookkeeper")!;
+    expect(t.defaultAgentsMd).toMatch(/duplicate|already exists|dedup/i);
+  });
+
+  it("AGENTS.md documents the one-shot invoice_line_ids create pattern", () => {
+    // One create call per invoice: lines go inline via invoice_line_ids on
+    // the account.move create. Separate create calls for account.move.line
+    // leave half-finished invoices if the agent crashes between them.
+    const t = getTemplate("odoo-bookkeeper")!;
+    expect(t.defaultAgentsMd).toContain("invoice_line_ids");
+  });
+
+  it("appears in getTemplateList", () => {
+    expect(getTemplateList().some((t) => t.id === "odoo-bookkeeper")).toBe(true);
+  });
+});
+
+describe("Vision capability for read-write Odoo operator templates", () => {
+  // Pinchy auto-defaults must pick a multimodal model for any agent that can
+  // write records — invoices, delivery notes, CVs, screenshots are the
+  // primary "paper into Odoo" workflow. Without vision in the hint, the
+  // default resolver picks a text-only model and the user has to manually
+  // override, sometimes landing on unstable Vision+Tools models.
+  const READ_WRITE_OPERATOR_IDS = [
+    "odoo-bookkeeper",
+    "odoo-crm-assistant",
+    "odoo-procurement-agent",
+    "odoo-customer-service",
+    "odoo-recruitment-coordinator",
+  ] as const;
+
+  it("every read-write operator template requests vision capability", () => {
+    for (const id of READ_WRITE_OPERATOR_IDS) {
+      const t = getTemplate(id)!;
+      expect(t.modelHint, `${id} missing modelHint`).toBeDefined();
+      expect(t.modelHint!.capabilities, `${id} missing vision`).toContain("vision");
+    }
+  });
+});
