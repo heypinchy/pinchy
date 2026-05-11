@@ -256,6 +256,7 @@ export interface OdooSyncResult {
 export interface OdooSyncError {
   success: false;
   error: string;
+  isAuthError: boolean;
 }
 
 const MAX_CONCURRENCY = 5;
@@ -354,6 +355,7 @@ export async function fetchOdooSchema(credentials: {
     fields: unknown[];
     accessible: boolean;
     access?: AccessRights;
+    hadAccessError?: boolean;
   };
 
   const tasks = ALL_KNOWN_MODELS.map(({ model, name, category }) => {
@@ -389,7 +391,14 @@ export async function fetchOdooSchema(credentials: {
 
           return { model, name, category, fields, accessible: true, access };
         } catch (error) {
-          if (isAccessError(error) || !isTransientOdooProbeError(error)) {
+          if (isAccessError(error)) {
+            // Permanent access denial — flag it so the caller can distinguish
+            // auth-related failures (which should mark the integration as
+            // auth_failed) from transient errors.
+            return { model, name, category, fields: [], accessible: false, hadAccessError: true };
+          }
+          if (!isTransientOdooProbeError(error)) {
+            // Non-transient, non-access error — no point in retrying.
             return { model, name, category, fields: [], accessible: false };
           }
           if (attempt === MAX_RETRIES) {
@@ -407,11 +416,13 @@ export async function fetchOdooSchema(credentials: {
   const accessibleModels = results.filter((r) => r.accessible && r.fields.length > 0);
 
   if (accessibleModels.length === 0) {
+    const anyAccessError = results.some((r) => r.hadAccessError);
     return {
       success: false,
       error:
         "Could not access any Odoo models. Please ensure the API user has at least " +
         "read access to the modules you want to use (e.g. Sales, Inventory, Contacts).",
+      isAuthError: anyAccessError,
     };
   }
 

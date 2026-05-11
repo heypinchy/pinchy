@@ -2,6 +2,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
 
 type Actor = { type: "user" | "system"; id: string };
 
@@ -25,14 +26,19 @@ export async function setIntegrationAuthFailed(args: {
 
   // Only audit the *transition* — not every duplicate failure.
   if (existing.status !== "auth_failed") {
-    await appendAuditLog({
+    const entry = {
       actorType: actor.type,
       actorId: actor.id,
-      eventType: "integration.auth_failed",
+      eventType: "integration.auth_failed" as const,
       resource: `integration:${connectionId}`,
       detail: { id: connectionId, name: existing.name, reason },
-      outcome: "success",
-    });
+      outcome: "success" as const,
+    };
+    try {
+      await appendAuditLog(entry);
+    } catch (err) {
+      recordAuditFailure(err, entry);
+    }
   }
 }
 
@@ -53,12 +59,17 @@ export async function clearIntegrationAuthError(args: {
     .set({ status: "active", lastError: null, lastErrorAt: null, updatedAt: new Date() })
     .where(eq(integrationConnections.id, connectionId));
 
-  await appendAuditLog({
+  const entry = {
     actorType: actor.type,
     actorId: actor.id,
-    eventType: "integration.recovered",
+    eventType: "integration.recovered" as const,
     resource: `integration:${connectionId}`,
     detail: { id: connectionId, name: existing.name },
-    outcome: "success",
-  });
+    outcome: "success" as const,
+  };
+  try {
+    await appendAuditLog(entry);
+  } catch (err) {
+    recordAuditFailure(err, entry);
+  }
 }

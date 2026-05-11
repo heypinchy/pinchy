@@ -73,7 +73,7 @@ function OdooForm({
       apiKey: "",
     });
     setServerError("");
-  }, [connection.id]);
+  }, [connection.id, maskedCreds.url, maskedCreds.db, maskedCreds.login]);
 
   async function onSubmit(values: OdooFormValues) {
     setSaving(true);

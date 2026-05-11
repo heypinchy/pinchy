@@ -41,11 +41,13 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
 
     const result = await fetchOdooSchema(parsed.data);
     if (!result.success) {
-      await setIntegrationAuthFailed({
-        connectionId,
-        reason: result.error,
-        actor: { type: "user", id: session.user.id! },
-      });
+      if (result.isAuthError) {
+        await setIntegrationAuthFailed({
+          connectionId,
+          reason: result.error,
+          actor: { type: "user", id: session.user.id! },
+        });
+      }
       return NextResponse.json(result);
     }
 
@@ -80,13 +82,6 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Sync failed";
-    await setIntegrationAuthFailed({
-      connectionId,
-      reason: message,
-      actor: { type: "user", id: session.user.id! },
-    }).catch(() => {
-      /* don't mask the original error */
-    });
     return NextResponse.json({ success: false, error: message }, { status: 200 });
   }
 });

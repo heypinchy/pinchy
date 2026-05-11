@@ -137,6 +137,32 @@ describe("fetchOdooSchema", () => {
     expect(result.success).toBe(false);
     if (result.success) return;
     expect(result.error).toContain("Could not access any Odoo models");
+    expect(result.isAuthError).toBe(true);
+  });
+
+  it("returns isAuthError: false when all models fail due to transient errors", async () => {
+    vi.useFakeTimers();
+    mockFields.mockRejectedValue(new Error("ETIMEDOUT"));
+
+    const promise = fetchOdooSchema(creds);
+    // Advance past all retry delays (MAX_RETRIES=2: 500ms + 1000ms per model)
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    vi.useRealTimers();
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.isAuthError).toBe(false);
+  });
+
+  it("returns isAuthError: true when all models fail due to auth/permission errors", async () => {
+    mockFields.mockRejectedValue(new Error("access denied"));
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    if (result.success) return;
+    expect(result.isAuthError).toBe(true);
   });
 
   it("retries transient errors instead of treating them as no-access", async () => {

@@ -82,6 +82,7 @@ vi.mock("@/db/schema", () => ({
 
 vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col: unknown, val: unknown) => ({ col, val })),
+  and: vi.fn((...args: unknown[]) => ({ and: args })),
 }));
 
 vi.mock("@/lib/integrations/odoo-schema", () => {
@@ -263,5 +264,30 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
     expect(mockAppendAuditLog).not.toHaveBeenCalledWith(
       expect.objectContaining({ eventType: "integration.credentials_updated" })
     );
+  });
+
+  it("returns 409 when credentials were updated concurrently (optimistic lock)", async () => {
+    // Simulate concurrent update: db.update returns 0 rows
+    mockUpdateSet.mockReturnValueOnce({
+      where: vi.fn().mockReturnValue({
+        returning: vi.fn().mockResolvedValue([]),
+      }),
+    });
+
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    const response = await PATCH(
+      makeRequest("/api/integrations/conn-1", {
+        method: "PATCH",
+        body: JSON.stringify({ credentials: validOdooCredentials }),
+      }),
+      { params: Promise.resolve({ connectionId: "conn-1" }) }
+    );
+    const body = await response.json();
+
+    expect(response.status).toBe(409);
+    expect(body.error).toMatch(/concurrent/i);
+    // Probe still ran before the write
+    expect(mockProbeIntegrationCredentials).toHaveBeenCalled();
   });
 });

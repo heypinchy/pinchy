@@ -137,10 +137,11 @@ describe("POST /api/integrations/[connectionId]/sync — auth state flipping", (
     expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
   });
 
-  it("calls setIntegrationAuthFailed when fetchOdooSchema returns failure", async () => {
+  it("calls setIntegrationAuthFailed when fetchOdooSchema returns failure with isAuthError: true", async () => {
     mockFetchOdooSchema.mockResolvedValue({
       success: false,
       error: "Could not access any Odoo models.",
+      isAuthError: true,
     });
 
     const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
@@ -160,7 +161,27 @@ describe("POST /api/integrations/[connectionId]/sync — auth state flipping", (
     expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
   });
 
-  it("calls setIntegrationAuthFailed when fetchOdooSchema throws", async () => {
+  it("does NOT call setIntegrationAuthFailed when fetchOdooSchema returns isAuthError: false", async () => {
+    mockFetchOdooSchema.mockResolvedValue({
+      success: false,
+      error: "Could not access any Odoo models.",
+      isAuthError: false,
+    });
+
+    const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
+
+    const response = await POST(makeRequest("/api/integrations/conn-1/sync"), {
+      params: Promise.resolve({ connectionId: "conn-1" }),
+    });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.success).toBe(false);
+    expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
+    expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
+  });
+
+  it("does NOT call setIntegrationAuthFailed when fetchOdooSchema throws (transient error)", async () => {
     mockFetchOdooSchema.mockRejectedValue(new Error("Network timeout"));
 
     const { POST } = await import("@/app/api/integrations/[connectionId]/sync/route");
@@ -173,11 +194,7 @@ describe("POST /api/integrations/[connectionId]/sync — auth state flipping", (
     expect(response.status).toBe(200);
     expect(body.success).toBe(false);
     expect(body.error).toBe("Network timeout");
-    expect(mockSetIntegrationAuthFailed).toHaveBeenCalledWith({
-      connectionId: "conn-1",
-      reason: "Network timeout",
-      actor: { type: "user", id: "user-1" },
-    });
+    expect(mockSetIntegrationAuthFailed).not.toHaveBeenCalled();
     expect(mockClearIntegrationAuthError).not.toHaveBeenCalled();
   });
 });

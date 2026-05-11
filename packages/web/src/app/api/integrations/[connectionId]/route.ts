@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { withAdmin } from "@/lib/api-auth";
 import { db } from "@/db";
 import { integrationConnections } from "@/db/schema";
@@ -134,8 +134,27 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
   const [updated] = await db
     .update(integrationConnections)
     .set(updateData)
-    .where(eq(integrationConnections.id, connectionId))
+    .where(
+      parsedCredentials !== undefined
+        ? and(
+            eq(integrationConnections.id, connectionId),
+            eq(integrationConnections.credentials, existing.credentials)
+          )
+        : eq(integrationConnections.id, connectionId)
+    )
     .returning();
+
+  if (!updated) {
+    return NextResponse.json(
+      {
+        error:
+          parsedCredentials !== undefined
+            ? "Credentials were updated concurrently, please try again"
+            : "Connection not found",
+      },
+      { status: parsedCredentials !== undefined ? 409 : 404 }
+    );
+  }
 
   if (Object.keys(changes).length > 0) {
     await appendAuditLog({

@@ -8,15 +8,19 @@ vi.mock("@/db", () => ({
 }));
 vi.mock("@/lib/audit", () => ({
   appendAuditLog: vi.fn(),
+}));
+vi.mock("@/lib/audit-deferred", () => ({
   recordAuditFailure: vi.fn(),
 }));
 
 import { db } from "@/db";
 import { appendAuditLog } from "@/lib/audit";
+import { recordAuditFailure } from "@/lib/audit-deferred";
 import { setIntegrationAuthFailed, clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 
 const mockedDb = vi.mocked(db);
 const mockedAppendAudit = vi.mocked(appendAuditLog);
+const mockedRecordAuditFailure = vi.mocked(recordAuditFailure);
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -156,5 +160,56 @@ describe("clearIntegrationAuthError", () => {
 
     expect(mockedDb.update).not.toHaveBeenCalled();
     expect(mockedAppendAudit).not.toHaveBeenCalled();
+  });
+});
+
+describe("audit failure handling", () => {
+  it("calls recordAuditFailure when appendAuditLog throws during auth_failed transition", async () => {
+    mockedDb.select.mockReturnValue({
+      from: () => ({
+        where: () => Promise.resolve([{ id: "c1", name: "Odoo", status: "active" }]),
+      }),
+    } as never);
+    const fakeUpdate = {
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue(undefined),
+    };
+    mockedDb.update.mockReturnValue(fakeUpdate as never);
+    mockedAppendAudit.mockRejectedValueOnce(new Error("DB write failed"));
+
+    await setIntegrationAuthFailed({
+      connectionId: "c1",
+      reason: "401",
+      actor: { type: "system", id: "plugin:x" },
+    });
+
+    expect(mockedRecordAuditFailure).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ eventType: "integration.auth_failed" })
+    );
+  });
+
+  it("calls recordAuditFailure when appendAuditLog throws during recovery", async () => {
+    mockedDb.select.mockReturnValue({
+      from: () => ({
+        where: () => Promise.resolve([{ id: "c1", name: "Odoo", status: "auth_failed" }]),
+      }),
+    } as never);
+    const fakeUpdate = {
+      set: vi.fn().mockReturnThis(),
+      where: vi.fn().mockResolvedValue(undefined),
+    };
+    mockedDb.update.mockReturnValue(fakeUpdate as never);
+    mockedAppendAudit.mockRejectedValueOnce(new Error("DB write failed"));
+
+    await clearIntegrationAuthError({
+      connectionId: "c1",
+      actor: { type: "user", id: "u1" },
+    });
+
+    expect(mockedRecordAuditFailure).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ eventType: "integration.recovered" })
+    );
   });
 });
