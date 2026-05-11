@@ -3,6 +3,7 @@ import { stackDbUrl } from "../shared/stack-db";
 
 const PINCHY_URL = process.env.PINCHY_URL || "http://localhost:7777";
 const GMAIL_MOCK_URL = process.env.GMAIL_MOCK_URL || "http://localhost:9004";
+const GRAPH_MOCK_URL = process.env.GRAPH_MOCK_URL ?? "http://localhost:9005";
 
 // Admin credentials — set by seedSetup, used by login
 let _adminEmail = "admin@test.local";
@@ -265,4 +266,90 @@ export async function waitForOpenClawConnected(cookie: string, timeout = 60000):
     await new Promise((r) => setTimeout(r, 500));
   }
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// Microsoft Graph mock helpers
+// ---------------------------------------------------------------------------
+
+export async function waitForGraphMock(timeout = 30000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      const res = await fetch(`${GRAPH_MOCK_URL}/control/health`);
+      if (res.ok) {
+        const body = (await res.json()) as { ok?: boolean };
+        if (body.ok) return;
+      }
+    } catch {
+      // not ready yet
+    }
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  throw new Error(`Graph mock not ready after ${timeout}ms`);
+}
+
+export async function resetGraphMock(): Promise<void> {
+  const res = await fetch(`${GRAPH_MOCK_URL}/control/reset`, { method: "POST" });
+  if (!res.ok) throw new Error(`Failed to reset Graph mock: ${res.status}`);
+}
+
+export async function seedGraphMockMessages(
+  messages: Array<{
+    id?: string;
+    subject?: string;
+    from?: string;
+    body?: string;
+    isRead?: boolean;
+  }>
+): Promise<void> {
+  const res = await fetch(`${GRAPH_MOCK_URL}/control/seed`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages }),
+  });
+  if (!res.ok) throw new Error(`Failed to seed Graph mock messages: ${res.status}`);
+}
+
+export async function getGraphMockRequests(): Promise<unknown[]> {
+  const res = await fetch(`${GRAPH_MOCK_URL}/control/requests`);
+  if (!res.ok) throw new Error(`Failed to get Graph mock requests: ${res.status}`);
+  return res.json();
+}
+
+/**
+ * Create a Microsoft (Graph / Outlook) connection directly in the DB,
+ * bypassing the OAuth flow.
+ *
+ * Mirrors createGoogleConnectionInDb but uses type "microsoft" and the
+ * Microsoft-specific OAuth scope.  The seeded access token is intentionally
+ * expired so the credentials route exercises the token-refresh path against
+ * the graph-mock's /token endpoint on first use.
+ */
+export async function createMicrosoftConnectionInDb(
+  name = "Test Microsoft"
+): Promise<{ id: string; type: string; name: string }> {
+  const dbUrl = process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
+  const { default: postgres } = await import("postgres");
+  const sql = postgres(dbUrl);
+
+  const credentials = {
+    accessToken: "mock-initial-access-token",
+    refreshToken: "mock-refresh-token",
+    // Expired so the credentials route triggers a token refresh against graph-mock
+    expiresAt: new Date(Date.now() - 60_000).toISOString(),
+    scope: "offline_access Mail.ReadWrite Mail.Send User.Read",
+  };
+
+  const encryptedCredentials = encryptCredentials(JSON.stringify(credentials));
+
+  const id = randomUUID();
+  const [row] = await sql`
+    INSERT INTO integration_connections (id, type, name, description, credentials, status)
+    VALUES (${id}, 'microsoft', ${name}, 'Test Microsoft connection for E2E', ${encryptedCredentials}, 'active')
+    RETURNING id, type, name
+  `;
+
+  await sql.end();
+  return row as { id: string; type: string; name: string };
 }
