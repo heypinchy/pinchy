@@ -22,7 +22,15 @@ export type MembershipDetail = {
   [key: string]: unknown;
 };
 
-export type AuditResource = "agent" | "group" | "user" | "settings" | "config" | "channel" | "chat";
+export type AuditResource =
+  | "agent"
+  | "group"
+  | "user"
+  | "settings"
+  | "config"
+  | "channel"
+  | "chat"
+  | "integration";
 
 export type AuditEventType =
   | `tool.${string}`
@@ -59,7 +67,10 @@ export type AuditEventType =
   | "agent.upstream_format_error"
   | "audit.exported"
   | "attachment.uploaded"
-  | "diagnostics.exported";
+  | "diagnostics.exported"
+  | "integration.auth_failed"
+  | "integration.recovered"
+  | "integration.credentials_updated";
 
 interface HmacFieldsV1 {
   timestamp: Date;
@@ -340,6 +351,18 @@ export type AuditLogEntry =
         byteSize: number;
         droppedTurns: number;
         truncated: boolean;
+      };
+    })
+  | (AuditLogBase & {
+      eventType:
+        | "integration.auth_failed"
+        | "integration.recovered"
+        | "integration.credentials_updated";
+      detail: {
+        id: string;
+        name: string;
+        reason?: string;
+        fields?: string[];
       };
     });
 

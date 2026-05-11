@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi, expectTypeOf } from "vitest";
 import { createHmac } from "crypto";
 import {
   computeRowHmacV1,
@@ -8,6 +8,7 @@ import {
   redactEmail,
   scrubEmails,
 } from "@/lib/audit";
+import type { AuditLogEntry } from "@/lib/audit";
 
 describe("computeRowHmac", () => {
   const secret = Buffer.from("a".repeat(64), "hex");
@@ -340,5 +341,43 @@ describe("scrubEmails", () => {
     expect(out).not.toContain("clemens.helm");
     expect(out).not.toContain("devcraft.academy");
     expect(out).not.toContain("@");
+  });
+});
+
+describe("AuditLogEntry — integration events", () => {
+  it("accepts integration.auth_failed events", () => {
+    const entry: AuditLogEntry = {
+      actorType: "system",
+      actorId: "plugin:pinchy-odoo",
+      eventType: "integration.auth_failed",
+      resource: "integration:abc",
+      detail: { id: "abc", name: "Odoo Sales", reason: "401 from Odoo" },
+      outcome: "success",
+    };
+    expectTypeOf(entry).toMatchTypeOf<AuditLogEntry>();
+  });
+
+  it("accepts integration.recovered events", () => {
+    const entry: AuditLogEntry = {
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "integration.recovered",
+      resource: "integration:abc",
+      detail: { id: "abc", name: "Odoo Sales" },
+      outcome: "success",
+    };
+    expectTypeOf(entry).toMatchTypeOf<AuditLogEntry>();
+  });
+
+  it("accepts integration.credentials_updated events", () => {
+    const entry: AuditLogEntry = {
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "integration.credentials_updated",
+      resource: "integration:abc",
+      detail: { id: "abc", name: "Odoo Sales", fields: ["password"] },
+      outcome: "success",
+    };
+    expectTypeOf(entry).toMatchTypeOf<AuditLogEntry>();
   });
 });
