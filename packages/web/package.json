@@ -82,7 +82,7 @@
     "@vitejs/plugin-react": "^6.0.1",
     "drizzle-kit": "^0.31.10",
     "eslint": "^9.39.3",
-    "eslint-config-next": "16.2.4",
+    "eslint-config-next": "16.2.6",
     "eslint-plugin-security": "^4.0.0",
     "jsdom": "^29.1.0",
     "openclaw": "2026.5.7",
