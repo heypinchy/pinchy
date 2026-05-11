@@ -239,6 +239,13 @@
       "when": 1779412800000,
       "tag": "0033_remove_implicit_filesystem_tools",
       "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1779412860000,
+      "tag": "0034_auth_failed_integration_columns",
+      "breakpoints": true
     }
   ]
 }
