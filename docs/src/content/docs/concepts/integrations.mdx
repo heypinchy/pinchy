@@ -126,6 +126,19 @@ To re-sync: go to **Settings → Integrations**, select the connection, and clic
 Re-syncing may remove models that are no longer accessible. Agents that were configured to use those models will lose access to them.
 :::
 
+## When credentials expire or get revoked
+
+Pinchy detects permanent authentication failures — an expired API key, a revoked OAuth grant, a changed password — and surfaces them in two places:
+
+- The integration card on **Settings → Integrations** changes from a green checkmark to a red warning, with the failure reason from the upstream service.
+- The **Settings** entry in the sidebar shows a red `!` badge when one or more integrations need attention.
+
+To recover, open the integration's `…` menu and choose **Edit credentials** (or click **Reconnect** on the failed card). Update the affected field — for example, paste in a new API key. Non-secret fields stay pre-filled; secret fields are empty by default and left unchanged if you leave them blank. Pinchy validates the new credentials against the upstream service before saving, and clears the failed state on success. The connection keeps the same ID, so any agent permissions stay attached automatically.
+
+:::note
+Pinchy only marks an integration as failed on **permanent** errors — responses like `401 Unauthorized` or `403 Forbidden`. Transient network errors and rate-limit responses (5xx, 429) are retried and do not surface as a failed state.
+:::
+
 ## Security
 
 All integration credentials are handled with the same rigor as provider API keys:

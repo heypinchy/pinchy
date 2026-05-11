@@ -142,6 +142,16 @@ User fields throughout this section (`user.{id}`) carry the user's id only — n
 | `channel.created` | An agent was connected to an external channel (e.g. a Telegram bot token was added) |
 | `channel.deleted` | An agent was disconnected from a channel (or all channels of one type were removed) |
 
+### Integration management
+
+| Event Type                        | Trigger                                                                         | Detail fields          |
+| --------------------------------- | ------------------------------------------------------------------------------- | ---------------------- |
+| `integration.auth_failed`         | First detection of a permanent auth failure (401/403 from the upstream service) | `id`, `name`, `reason` |
+| `integration.recovered`           | First successful request after an `auth_failed` state                           | `id`, `name`           |
+| `integration.credentials_updated` | Successful PATCH with new credentials or a completed OAuth re-auth              | `id`, `name`, `fields` |
+
+Only the **first** failure event in a sequence is logged — repeated failures while the integration is already in a failed state do not produce additional entries. Similarly, `integration.recovered` is logged once when the integration returns to a healthy state. This keeps the audit log focused on state transitions rather than every retry attempt.
+
 ### Configuration
 
 | Event Type       | Description                                                         |
