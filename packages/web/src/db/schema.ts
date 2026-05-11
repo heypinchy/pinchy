@@ -8,12 +8,12 @@ import {
   uniqueIndex,
   serial,
   integer,
+  bigint,
   numeric,
   pgEnum,
   pgView,
   primaryKey,
   check,
-  uuid,
 } from "drizzle-orm/pg-core";
 import { isNull, sql, relations } from "drizzle-orm";
 
@@ -379,7 +379,9 @@ export const activeAgents = pgView("active_agents").as((qb) =>
 export const uploadedFiles = pgTable(
   "uploaded_files",
   {
-    id: uuid("id").primaryKey().defaultRandom(),
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
     userId: text("user_id")
       .notNull()
       .references(() => users.id, { onDelete: "cascade" }),
@@ -389,7 +391,7 @@ export const uploadedFiles = pgTable(
     draftId: text("draft_id").notNull(),
     filename: text("filename").notNull(),
     mimeType: text("mime_type").notNull(),
-    sizeBytes: integer("size_bytes").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
     contentHash: text("content_hash").notNull(),
     status: text("status", { enum: ["staged", "attached"] }).notNull(),
     stagingPath: text("staging_path"),
@@ -399,7 +401,7 @@ export const uploadedFiles = pgTable(
     attachedAt: timestamp("attached_at"),
   },
   (t) => [
-    index("uploaded_files_gc_idx").on(t.status, t.expiresAt),
-    index("uploaded_files_user_agent_draft_idx").on(t.userId, t.agentId, t.draftId),
+    index("idx_uploaded_files_gc").on(t.status, t.expiresAt),
+    index("idx_uploaded_files_user_agent_draft").on(t.userId, t.agentId, t.draftId),
   ]
 );
