@@ -137,6 +137,23 @@ async function seedStagedUpload(
 // ── Tests ──────────────────────────────────────────────────────────────────
 
 describe("materializeAttachments", () => {
+  it("returns empty result for empty attachmentIds", async () => {
+    const { materializeAttachments } = await import("@/server/attachment-pipeline");
+
+    const user = await seedUser();
+    const agent = await seedAgent(user.id);
+
+    const result = await materializeAttachments({
+      agentId: agent.id,
+      userId: user.id,
+      attachmentIds: [],
+      messageId: "msg-1",
+      agentName: agent.name,
+    });
+    expect(result.chatAttachments).toEqual([]);
+    expect(result.workspaceRefs).toEqual([]);
+  });
+
   it("promotes staged files to attached and returns chatAttachments + workspaceRefs", async () => {
     const { materializeAttachments } = await import("@/server/attachment-pipeline");
 
@@ -166,7 +183,7 @@ describe("materializeAttachments", () => {
     // workspaceRefs has one entry
     expect(result.workspaceRefs).toHaveLength(1);
     expect(result.workspaceRefs[0].relativePath).toBe("uploads/photo.png");
-    expect(result.workspaceRefs[0].absolutePath).toContain("uploads/photo.png");
+    expect(result.workspaceRefs[0].absolutePath).toBe(`${tmpRoot}/${agent.id}/uploads/photo.png`);
     expect(result.workspaceRefs[0].mimeType).toBe("image/png");
 
     // DB row flipped to attached

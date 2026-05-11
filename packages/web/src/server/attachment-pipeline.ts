@@ -95,13 +95,27 @@ export interface MaterializeParams {
  *   `AttachmentNotFoundError`        — id missing or owned by another user/agent
  *   `AttachmentExpiredError`         — staged file has passed `expiresAt`
  *   `AttachmentAlreadyAttachedError` — row is already `attached`
+ *
+ * **Note on partial failure:** If `promoteStagedToAttached` or the subsequent
+ * FS read throws for file N after files 0..N-1 have already been promoted,
+ * earlier files are durably placed in `uploads/` and their rows are `attached`
+ * in the DB. This partial state cannot be automatically rolled back (FS rename
+ * and DB write are not transactional). If this function throws, callers should
+ * treat the entire send as failed and inform the user to retry — any
+ * partially-materialized files will remain attached to the (unsent) messageId
+ * and become reachable by the agent in a future correct send.
  */
 export async function materializeAttachments(
   params: MaterializeParams
 ): Promise<ProcessAttachmentsResult> {
   const { agentId, userId, attachmentIds, messageId, agentName } = params;
 
-  // Step 1: fetch rows owned by (userId, agentId) with the requested IDs.
+  if (attachmentIds.length === 0) {
+    return { chatAttachments: [], workspaceRefs: [] };
+  }
+
+  // Step 1: fetch rows owned by (userId, agentId) with the requested IDs
+  // that are still in `staged` status.
   const rows = await db
     .select()
     .from(uploadedFiles)
@@ -109,15 +123,49 @@ export async function materializeAttachments(
       and(
         inArray(uploadedFiles.id, attachmentIds),
         eq(uploadedFiles.userId, userId),
-        eq(uploadedFiles.agentId, agentId)
+        eq(uploadedFiles.agentId, agentId),
+        eq(uploadedFiles.status, "staged")
       )
     );
 
   const foundIds = new Set(rows.map((r) => r.id));
 
-  // Step 2: check for missing IDs (cross-user attack or wrong agent)
-  const missingIds = attachmentIds.filter((id) => !foundIds.has(id));
-  if (missingIds.length > 0) {
+  // Step 2: check for IDs not returned by the staged query — could be
+  // not-found/wrong-owner, or already attached (different status).
+  const unseenIds = attachmentIds.filter((id) => !foundIds.has(id));
+  if (unseenIds.length > 0) {
+    // Secondary lookup: check if any unseen IDs are already-attached rows
+    // owned by the same (userId, agentId). If so, surface a specific error.
+    const attachedRows = await db
+      .select()
+      .from(uploadedFiles)
+      .where(
+        and(
+          inArray(uploadedFiles.id, unseenIds),
+          eq(uploadedFiles.userId, userId),
+          eq(uploadedFiles.agentId, agentId),
+          eq(uploadedFiles.status, "attached")
+        )
+      );
+    const attachedIds = new Set(attachedRows.map((r) => r.id));
+
+    // Rows that exist as attached
+    const alreadyAttachedIds = unseenIds.filter((id) => attachedIds.has(id));
+    if (alreadyAttachedIds.length > 0) {
+      for (const uploadId of alreadyAttachedIds) {
+        await appendAuditLog({
+          eventType: "file.upload.attached",
+          actorType: "user",
+          actorId: userId,
+          outcome: "failure",
+          detail: { uploadId, reason: "already_attached" },
+        });
+      }
+      throw new AttachmentAlreadyAttachedError(alreadyAttachedIds);
+    }
+
+    // Remaining unseen IDs are genuinely missing (cross-user attack, wrong agent, etc.)
+    const missingIds = unseenIds.filter((id) => !attachedIds.has(id));
     for (const uploadId of missingIds) {
       await appendAuditLog({
         eventType: "file.upload.attached",
@@ -147,21 +195,6 @@ export async function materializeAttachments(
     throw new AttachmentExpiredError(expiredRows.map((r) => r.id));
   }
 
-  // Step 4: check for already-attached rows
-  const alreadyAttached = rows.filter((r) => r.status === "attached");
-  if (alreadyAttached.length > 0) {
-    for (const row of alreadyAttached) {
-      await appendAuditLog({
-        eventType: "file.upload.attached",
-        actorType: "user",
-        actorId: userId,
-        outcome: "failure",
-        detail: { uploadId: row.id, reason: "already_attached" },
-      });
-    }
-    throw new AttachmentAlreadyAttachedError(alreadyAttached.map((r) => r.id));
-  }
-
   // Step 5: promote each staged file
   const workspaceRoot = getWorkspacePath(agentId);
   const openClawWorkspaceRoot = getOpenClawWorkspacePath(agentId);
@@ -172,7 +205,12 @@ export async function materializeAttachments(
   // Process sequentially to keep audit order deterministic and avoid
   // racing two renames into the same collision-suffix slot.
   for (const row of rows) {
-    const stagedRelativePath = row.stagingPath!;
+    if (!row.stagingPath) {
+      throw new Error(
+        `Uploaded file ${row.id} has status='staged' but missing stagingPath — data integrity error`
+      );
+    }
+    const stagedRelativePath = row.stagingPath;
 
     // 5a: promote staged → uploads/
     const promoted = await promoteStagedToAttached({
@@ -201,7 +239,7 @@ export async function materializeAttachments(
     }
 
     // 5d/5e: build workspace ref
-    const absolutePath = `${openClawWorkspaceRoot}/${promoted.relativePath}`;
+    const absolutePath = join(openClawWorkspaceRoot, promoted.relativePath);
     workspaceRefs.push({
       relativePath: promoted.relativePath,
       absolutePath,
