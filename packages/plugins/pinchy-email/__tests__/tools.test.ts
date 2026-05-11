@@ -19,7 +19,19 @@ vi.mock("../gmail-adapter", () => {
   return { GmailAdapter: MockGmailAdapter };
 });
 
+vi.mock("../graph-adapter", () => {
+  const MockGraphAdapter = vi.fn(function (this: Record<string, unknown>) {
+    this.list = mockList;
+    this.read = mockRead;
+    this.search = mockSearch;
+    this.draft = mockDraft;
+    this.send = mockSend;
+  });
+  return { GraphAdapter: MockGraphAdapter };
+});
+
 import { GmailAdapter } from "../gmail-adapter";
+import { GraphAdapter } from "../graph-adapter";
 import plugin from "../index";
 
 interface AgentTool {
@@ -274,23 +286,25 @@ describe("credential fetching", () => {
     expect(GmailAdapter).toHaveBeenCalledWith({ accessToken: "google-token" });
   });
 
-  it("returns error when credentials.type is 'microsoft' (unsupported in Phase 1)", async () => {
+  it("dispatches to GraphAdapter when credentials.type is 'microsoft'", async () => {
     mockFetch.mockResolvedValue({
       ok: true,
       json: async () => ({
         type: "microsoft",
-        credentials: { accessToken: "ms-token" },
+        credentials: { accessToken: "ms-tok" },
       }),
     });
+    mockList.mockResolvedValue([]);
 
     const tools = createApi();
     const tool = findTool(tools, "email_list", agentId)!;
 
     const result = await tool.execute("call-1", {});
 
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("unsupported email provider: microsoft");
-    expect(mockList).not.toHaveBeenCalled();
+    expect(result.isError).toBeFalsy();
+    expect(GraphAdapter).toHaveBeenCalledWith({ accessToken: "ms-tok" });
+    expect(GmailAdapter).not.toHaveBeenCalled();
+    expect(mockList).toHaveBeenCalledTimes(1);
   });
 
   it("returns error when credential fetch fails", async () => {
