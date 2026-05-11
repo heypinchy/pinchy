@@ -2,19 +2,20 @@
 //
 // Minimal Ollama-compatible server for the email E2E Docker stack.
 //
-// Implements the OpenAI-compatible endpoint that OpenClaw uses when
-// Pinchy configures `api: "openai-completions"` for the ollama-local provider:
-//   GET  /api/tags              → model list (for Pinchy's model discovery)
-//   POST /api/show              → model capabilities
-//   POST /v1/chat/completions   → chat (OpenAI-compatible, streaming + non-streaming)
+// Handles both the Ollama-native chat path (used by OpenClaw via api:
+// "openai-completions" as evidenced by the integration test server) and the
+// OpenAI-compatible path, plus the model-discovery endpoints Pinchy calls
+// during config generation:
 //
-// Trigger strings in the last user message select the response type:
+//   GET  /api/tags              → model list
+//   POST /api/show              → capabilities
+//   POST /api/chat              → Ollama-native NDJSON streaming (primary path)
+//   POST /v1/chat/completions   → OpenAI-compatible (SSE / JSON, fallback)
+//
+// Trigger strings in the last user message select the response:
 //   E2E_EMAIL_LIST_TOOL  → tool_call: email_list({ folder: "INBOX" })
 //   E2E_EMAIL_SEND_TOOL  → tool_call: email_send({ to, subject, body })
-//   (default)            → plain text: "Integration test response."
-//
-// After a tool result is present (role: "tool" in messages), the server
-// returns the appropriate follow-up text response.
+//   (default / after tool result) → plain text response
 import * as http from "http";
 import * as crypto from "crypto";
 
@@ -58,7 +59,46 @@ function makeId() {
   return `chatcmpl-${crypto.randomBytes(6).toString("hex")}`;
 }
 
-// --- Streaming (SSE) helpers ---
+// --- Ollama-native NDJSON helpers (POST /api/chat) ---
+
+function writeNdjson(res, chunks) {
+  res.writeHead(200, { "Content-Type": "application/x-ndjson" });
+  for (const chunk of chunks) {
+    res.write(JSON.stringify(chunk) + "\n");
+  }
+  res.end();
+}
+
+function ollamaStreamText(res, text) {
+  const words = text.split(" ");
+  const chunks = words.map((word, i) => ({
+    model: MODEL_NAME,
+    created_at: new Date().toISOString(),
+    message: { role: "assistant", content: i === 0 ? word : " " + word },
+    done: i === words.length - 1,
+    ...(i === words.length - 1 && { done_reason: "stop", total_duration: 1000000 }),
+  }));
+  writeNdjson(res, chunks);
+}
+
+function ollamaToolCall(res, toolName, toolArgs) {
+  writeNdjson(res, [
+    {
+      model: MODEL_NAME,
+      created_at: new Date().toISOString(),
+      message: {
+        role: "assistant",
+        content: "",
+        tool_calls: [{ function: { name: toolName, arguments: toolArgs } }],
+      },
+      done: true,
+      done_reason: "stop",
+      total_duration: 1000000,
+    },
+  ]);
+}
+
+// --- OpenAI-compatible SSE helpers (POST /v1/chat/completions) ---
 
 function writeStreamChunk(res, id, delta, finishReason) {
   const chunk = {
@@ -78,7 +118,7 @@ function startSseResponse(res) {
   });
 }
 
-function streamText(res, text) {
+function openaiStreamText(res, text) {
   const id = makeId();
   startSseResponse(res);
   const words = text.split(" ");
@@ -90,7 +130,7 @@ function streamText(res, text) {
   res.end();
 }
 
-function streamToolCall(res, toolName, toolArgs) {
+function openaiStreamToolCall(res, toolName, toolArgs) {
   const id = makeId();
   const callId = `call_${crypto.randomBytes(4).toString("hex")}`;
   startSseResponse(res);
@@ -117,22 +157,18 @@ function streamToolCall(res, toolName, toolArgs) {
   res.end();
 }
 
-// --- Non-streaming (JSON) helpers ---
-
-function jsonText(res, text) {
+function openaiJsonText(res, text) {
   const body = {
     id: makeId(),
     object: "chat.completion",
     model: MODEL_NAME,
-    choices: [
-      { index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" },
-    ],
+    choices: [{ index: 0, message: { role: "assistant", content: text }, finish_reason: "stop" }],
   };
   res.writeHead(200, { "Content-Type": "application/json" });
   res.end(JSON.stringify(body));
 }
 
-function jsonToolCall(res, toolName, toolArgs) {
+function openaiJsonToolCall(res, toolName, toolArgs) {
   const body = {
     id: makeId(),
     object: "chat.completion",
@@ -159,53 +195,83 @@ function jsonToolCall(res, toolName, toolArgs) {
   res.end(JSON.stringify(body));
 }
 
+// --- Shared trigger logic ---
+
+function resolveTriggers(messages) {
+  const lastUser = [...messages].reverse().find((m) => m?.role === "user");
+  const userText = messageContent(lastUser);
+  const toolResultPresent = hasToolRole(messages);
+  return {
+    isEmailList: userText.includes(EMAIL_LIST_TRIGGER),
+    isEmailSend: userText.includes(EMAIL_SEND_TRIGGER),
+    toolResultPresent,
+  };
+}
+
+function responseText(isEmailList, isEmailSend) {
+  if (isEmailList) return EMAIL_LIST_RESPONSE;
+  if (isEmailSend) return EMAIL_SEND_RESPONSE;
+  return FAKE_RESPONSE;
+}
+
 // --- Request handler ---
 
 async function handleRequest(req, res) {
   const { url, method } = req;
+  console.log(`[fake-ollama] ${method} ${url}`);
 
   if (method === "GET" && url === "/api/tags") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(
-      JSON.stringify({
-        models: [{ name: MODEL_NAME, details: { parameter_size: "1B" } }],
-      })
-    );
+    res.end(JSON.stringify({ models: [{ name: MODEL_NAME, details: { parameter_size: "1B" } }] }));
     return;
   }
 
   if (method === "POST" && url === "/api/show") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(
-      JSON.stringify({
-        capabilities: ["completion", "tools"],
-        details: { parameter_size: "1B" },
-      })
+      JSON.stringify({ capabilities: ["completion", "tools"], details: { parameter_size: "1B" } })
     );
     return;
   }
 
+  // Ollama-native chat path — used by OpenClaw's "openai-completions" provider
+  // (despite the name, OpenClaw routes via /api/chat with the Ollama NDJSON format).
+  if (method === "POST" && url === "/api/chat") {
+    const body = await readBody(req);
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const { isEmailList, isEmailSend, toolResultPresent } = resolveTriggers(messages);
+
+    if (isEmailList && !toolResultPresent) {
+      ollamaToolCall(res, "email_list", { folder: "INBOX" });
+      return;
+    }
+    if (isEmailSend && !toolResultPresent) {
+      ollamaToolCall(res, "email_send", {
+        to: "test@example.com",
+        subject: "E2E test email",
+        body: "This is a test email from the E2E suite.",
+      });
+      return;
+    }
+    ollamaStreamText(res, responseText(isEmailList, isEmailSend));
+    return;
+  }
+
+  // OpenAI-compatible chat path (kept as fallback in case OpenClaw routes here).
   if (method === "POST" && url === "/v1/chat/completions") {
     const body = await readBody(req);
     const messages = Array.isArray(body.messages) ? body.messages : [];
     const useStream = body.stream !== false;
-
-    const lastUser = [...messages].reverse().find((m) => m?.role === "user");
-    const userText = messageContent(lastUser);
-    const toolResultPresent = hasToolRole(messages);
-
-    const isEmailList = userText.includes(EMAIL_LIST_TRIGGER);
-    const isEmailSend = userText.includes(EMAIL_SEND_TRIGGER);
+    const { isEmailList, isEmailSend, toolResultPresent } = resolveTriggers(messages);
 
     if (isEmailList && !toolResultPresent) {
       if (useStream) {
-        streamToolCall(res, "email_list", { folder: "INBOX" });
+        openaiStreamToolCall(res, "email_list", { folder: "INBOX" });
       } else {
-        jsonToolCall(res, "email_list", { folder: "INBOX" });
+        openaiJsonToolCall(res, "email_list", { folder: "INBOX" });
       }
       return;
     }
-
     if (isEmailSend && !toolResultPresent) {
       const args = {
         to: "test@example.com",
@@ -213,27 +279,22 @@ async function handleRequest(req, res) {
         body: "This is a test email from the E2E suite.",
       };
       if (useStream) {
-        streamToolCall(res, "email_send", args);
+        openaiStreamToolCall(res, "email_send", args);
       } else {
-        jsonToolCall(res, "email_send", args);
+        openaiJsonToolCall(res, "email_send", args);
       }
       return;
     }
-
-    // Default: plain text response (also used after tool round-trips)
-    const responseText = isEmailList
-      ? EMAIL_LIST_RESPONSE
-      : isEmailSend
-        ? EMAIL_SEND_RESPONSE
-        : FAKE_RESPONSE;
+    const text = responseText(isEmailList, isEmailSend);
     if (useStream) {
-      streamText(res, responseText);
+      openaiStreamText(res, text);
     } else {
-      jsonText(res, responseText);
+      openaiJsonText(res, text);
     }
     return;
   }
 
+  console.log(`[fake-ollama] 404 — unhandled: ${method} ${url}`);
   res.writeHead(404);
   res.end();
 }
