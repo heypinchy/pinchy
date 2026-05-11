@@ -194,6 +194,15 @@ export function SettingsIntegrations() {
                             </>
                           ) : (
                             <>
+                              {conn.status === "auth_failed" && (
+                                <DropdownMenuItem
+                                  onClick={() => {
+                                    // TODO(Task 14): open edit-credentials dialog
+                                  }}
+                                >
+                                  Reconnect
+                                </DropdownMenuItem>
+                              )}
                               <DropdownMenuItem
                                 onClick={() => {
                                   setRenameTarget(conn);
@@ -246,6 +255,24 @@ export function SettingsIntegrations() {
                           <>
                             <CheckCircle2 className="h-3.5 w-3.5 text-green-600 dark:text-green-400" />
                             <span>Connected</span>
+                          </>
+                        ) : conn.status === "auth_failed" ? (
+                          <>
+                            <AlertTriangle
+                              className="h-3.5 w-3.5 text-destructive"
+                              aria-label="Authentication failed"
+                            />
+                            <span className="text-sm text-destructive font-medium">
+                              Authentication failed
+                            </span>
+                            {conn.lastError && (
+                              <span
+                                className="text-xs text-muted-foreground truncate"
+                                title={conn.lastError}
+                              >
+                                {conn.lastError}
+                              </span>
+                            )}
                           </>
                         ) : testing === conn.id ? (
                           <>
