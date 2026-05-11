@@ -484,6 +484,9 @@ function handleJsonRpc(body) {
 
     // object/execute_kw
     if (service === "object" && svcMethod === "execute_kw") {
+      if (authMode === "fail") {
+        return { __jsonrpc_error: true, message: "access denied: invalid credentials" };
+      }
       const args = params.args || [];
       // args: [db, uid, apiKey, model, method, positionalArgs, kwArgs]
       const model = args[3];
