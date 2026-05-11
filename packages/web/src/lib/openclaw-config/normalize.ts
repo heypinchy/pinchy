@@ -40,7 +40,8 @@ const isPinchyPlugin = (id: string) => id.startsWith("pinchy-");
  * OC in-memory config returned by `config.get()`.
  *
  * Fields supplemented (source wins only for keys absent from payload):
- *   - `meta`: entire block (absent when readExistingConfig returns {} on EACCES)
+ *   - `meta`: entire block (absent when readExistingConfig returned {} during a cold start
+ *     — ENOENT or parse error; EACCES is no longer a {}-return path, it throws since #314)
  *   - `plugins.allow`: non-pinchy-* entries appended at end
  *   - `plugins.entries.*`: non-pinchy-* entries not already in payload
  *   - `gateway.controlUi.*`: fields not already in payload gateway.controlUi

@@ -218,6 +218,15 @@ export async function regenerateOpenClawConfig() {
           "OC-restart race documented in #314 — the next regenerate (or " +
           "boot-inits) will heal once 0666 is restored. No write performed."
       );
+      // Silent return: callers (POST /api/agents, POST /api/settings/*) treat this
+      // as success because the file on disk is intentionally left untouched and
+      // still represents the previous good state. This assumes another regenerate
+      // *will* run later — true for change-on-change flows (subsequent setting
+      // edits, channel pair/unpair, agent CRUD), and boot-inits re-regenerate
+      // unconditionally. One-shot actions with no follow-up mutation are the
+      // only blind spot; targeted writes (updateTelegramChannelConfig,
+      // updateIdentityLinks) still throw under EACCES so those callers surface
+      // 5xx and the user can retry.
       return;
     }
   }

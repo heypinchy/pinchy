@@ -4914,6 +4914,32 @@ describe("telegram botToken plain string (OpenClaw 2026.4.26 does not support Se
     const config = JSON.parse(written);
     expect(config.channels.telegram.accounts["agent-99"].botToken).toBe("tg-secret-token");
   });
+
+  it("updateTelegramChannelConfig throws if existing config is unreadable (avoids clobber from EACCES, #314)", () => {
+    // Parallel to the updateIdentityLinks EACCES regression test. The
+    // original telegram-e2e cascade hit this exact path: bot connect →
+    // updateTelegramChannelConfig → readExistingConfig EACCES → previously
+    // returned {} → channels/bindings written without gateway → OC refuses
+    // to start. Two layers of defence apply (same as updateIdentityLinks):
+    //   1. readExistingConfig propagates persistent EACCES (#314).
+    //   2. updateTelegramChannelConfig independently guards on missing
+    //      gateway.mode (covers ENOENT / parse-error empty objects).
+    // Throwing surfaces a 5xx so the bot-connect API route lets the user
+    // retry rather than silently dropping the channel update.
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mockedExistsSync.mockReturnValue(true);
+    mockedReadFileSync.mockImplementation(() => {
+      const err = new Error("EACCES: permission denied") as Error & { code: string };
+      err.code = "EACCES";
+      throw err;
+    });
+
+    expect(() =>
+      updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null)
+    ).toThrow(/EACCES|gateway\.mode/);
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
 });
 
 describe("regenerateOpenClawConfig validation guard", () => {
