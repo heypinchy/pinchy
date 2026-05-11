@@ -200,11 +200,17 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     const input = page.getByPlaceholder(/send a message/i);
     await expect(input).toBeVisible({ timeout: 10000 });
 
+    // Count pre-existing occurrences to handle stale chat history from prior tests
+    // (Microsoft and Gmail tests share the same Smithers agent session).
+    const priorListCount = await page.getByText(FAKE_OLLAMA_EMAIL_LIST_RESPONSE).count();
+
     await input.fill(FAKE_OLLAMA_EMAIL_LIST_TRIGGER);
     await input.press("Enter");
 
-    // Wait for the LLM's follow-up text response after the tool round-trip
-    await expect(page.getByText(FAKE_OLLAMA_EMAIL_LIST_RESPONSE)).toBeVisible({ timeout: 60000 });
+    // Wait for a NEW occurrence of the response text (not a pre-existing one)
+    await expect(page.getByText(FAKE_OLLAMA_EMAIL_LIST_RESPONSE)).toHaveCount(priorListCount + 1, {
+      timeout: 60000,
+    });
 
     // The plugin must have called the Graph messages endpoint
     const requests = await getGraphMockRequests();
@@ -259,11 +265,16 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     const input = page.getByPlaceholder(/send a message/i);
     await expect(input).toBeVisible({ timeout: 10000 });
 
+    // Count pre-existing occurrences to handle stale chat history from prior tests.
+    const priorSendCount = await page.getByText(FAKE_OLLAMA_EMAIL_SEND_RESPONSE).count();
+
     await input.fill(FAKE_OLLAMA_EMAIL_SEND_TRIGGER);
     await input.press("Enter");
 
-    // Wait for the LLM's follow-up text response after the tool round-trip
-    await expect(page.getByText(FAKE_OLLAMA_EMAIL_SEND_RESPONSE)).toBeVisible({ timeout: 60000 });
+    // Wait for a NEW occurrence of the response text (not a pre-existing one)
+    await expect(page.getByText(FAKE_OLLAMA_EMAIL_SEND_RESPONSE)).toHaveCount(priorSendCount + 1, {
+      timeout: 60000,
+    });
 
     // The plugin must have posted to the sendMail endpoint
     const requests = await getGraphMockRequests();
