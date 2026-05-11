@@ -187,3 +187,71 @@ export function updateTelegramChannelConfig(
 
   writeConfigAtomic(newContent);
 }
+
+/**
+ * Ensure Pinchy's restart-class overrides are present in openclaw.json BEFORE
+ * OpenClaw starts. Writes ONLY the fields that, when missing-then-added later
+ * via WS config.apply, hit OC 5.3's BASE_RELOAD_RULES_TAIL `gateway` /
+ * `discovery` / `canvasHost` / `update` rules (kind:"restart") and trigger
+ * a SIGUSR1 → in-process restart that crashes with
+ * `ConfigMutationConflictError: config changed since last load` (OC 5.3
+ * stale-snapshot bug in `prepareGatewayStartupConfig → ensureGatewayStartupAuth →
+ * replaceConfigFile`). The cascade is the failure mode behind the Telegram
+ * E2E `agent-create-no-restart.spec.ts` "OpenClaw never quiet for 30000ms"
+ * flake on this branch.
+ *
+ * Why a targeted write rather than running full `regenerateOpenClawConfig()`
+ * unconditionally in bootInits: the full regenerate broke the integration
+ * test's basic chat (`Pinchy agent responds via OpenClaw`) — the agent failed
+ * with `404 status code (no body)` from fake-ollama on `ollama/llama3.2`,
+ * apparently because the bootInits-time regenerate's models/agents block
+ * (built from an empty DB) interfered with later setup-wizard regenerate +
+ * OC's model registry refresh on hot-reload. Restricting the bootInits write
+ * to ONLY the gateway/discovery/canvasHost/update fields avoids that
+ * interaction while still aligning OC's compare baseline.
+ *
+ * This function is idempotent: if the file already has all four overrides
+ * with their expected values, no write happens. The skip path also handles
+ * the production case (Docker-managed named volume populated from the image's
+ * baked-in `config/openclaw.json`, which already carries these fields) — the
+ * volume content matches Pinchy's expected overrides → no write → no diff
+ * surface for OC to react to.
+ */
+export function seedRestartClassOverridesIfMissing(): boolean {
+  let existing: Record<string, unknown>;
+  try {
+    existing = readExistingConfig();
+  } catch {
+    existing = {};
+  }
+
+  const gateway = (existing.gateway as Record<string, unknown>) || {};
+  const controlUi = (gateway.controlUi as Record<string, unknown>) || {};
+  const discovery = (existing.discovery as Record<string, unknown>) || {};
+  const mdns = (discovery.mdns as Record<string, unknown>) || {};
+  const update = (existing.update as Record<string, unknown>) || {};
+  const canvasHost = (existing.canvasHost as Record<string, unknown>) || {};
+
+  const needsControlUi = controlUi.enabled !== false;
+  const needsMdnsOff = mdns.mode !== "off";
+  const needsUpdateCheck = update.checkOnStart !== false;
+  const needsCanvasHostOff = canvasHost.enabled !== false;
+
+  if (!needsControlUi && !needsMdnsOff && !needsUpdateCheck && !needsCanvasHostOff) {
+    return false;
+  }
+
+  const updated: Record<string, unknown> = {
+    ...existing,
+    gateway: {
+      ...gateway,
+      controlUi: { ...controlUi, enabled: false },
+    },
+    discovery: { ...discovery, mdns: { ...mdns, mode: "off" } },
+    update: { ...update, checkOnStart: false },
+    canvasHost: { ...canvasHost, enabled: false },
+  };
+
+  writeConfigAtomic(JSON.stringify(updated, null, 2).trimEnd() + "\n");
+  return true;
+}

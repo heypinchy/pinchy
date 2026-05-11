@@ -1,4 +1,5 @@
 import { readFileSync } from "fs";
+import { isDeepStrictEqual } from "node:util";
 import { CONFIG_PATH } from "./paths";
 
 /**
@@ -10,6 +11,17 @@ import { CONFIG_PATH } from "./paths";
  *
  * Currently normalized: `meta.lastTouchedAt` (a write-time timestamp).
  * Add other OpenClaw-managed metadata fields here if they ever surface.
+ *
+ * Equality is via `isDeepStrictEqual` so key order doesn't matter — Pinchy
+ * builds its payload with one object-literal order and OC's `config.get()`
+ * returns a config it serialized in another, so a string-equality check
+ * (the previous implementation) reported "differ" on payloads that OC's
+ * own `diffConfigPaths` (tree-walking) sees as identical (`changedPaths=
+ * <none>`). When that gap exists the no-op-apply guard in write.ts can't
+ * fire, the wasted apply still consumes a slot in OC 5.3's ~3-per-45 s
+ * config.apply rate-limit, and the next legitimate apply (e.g. enabling
+ * Telegram or creating an agent in the same window) comes back with
+ * "rate limit exceeded for config.apply; retry after Ns".
  */
 export function configsAreEquivalentUpToOpenClawMetadata(a: string, b: string): boolean {
   try {
@@ -26,13 +38,45 @@ export function configsAreEquivalentUpToOpenClawMetadata(a: string, b: string): 
     };
     stripMeta(pa);
     stripMeta(pb);
-    return JSON.stringify(pa) === JSON.stringify(pb);
+    return isDeepStrictEqual(pa, pb);
   } catch {
     return false;
   }
 }
 
 const isPinchyPlugin = (id: string) => id.startsWith("pinchy-");
+
+/**
+ * Deep-supplement: recursively add keys from `source` that are absent from
+ * `target`. For keys present in both where both values are plain objects,
+ * recurse. Where either side is a scalar/array, the `target` value wins
+ * (payload is authoritative for its own keys).
+ * Returns true if any change was made to `target`.
+ */
+function deepSupplement(target: Record<string, unknown>, source: Record<string, unknown>): boolean {
+  let changed = false;
+  for (const [k, v] of Object.entries(source)) {
+    if (!(k in target)) {
+      target[k] = v;
+      changed = true;
+    } else if (
+      v !== null &&
+      typeof v === "object" &&
+      !Array.isArray(v) &&
+      target[k] !== null &&
+      typeof target[k] === "object" &&
+      !Array.isArray(target[k])
+    ) {
+      // Both sides are plain objects — recurse to fill missing nested keys.
+      if (deepSupplement(target[k] as Record<string, unknown>, v as Record<string, unknown>)) {
+        changed = true;
+      }
+    }
+    // else: target already has the key and at least one side is a scalar or
+    // array — payload value wins, nothing to do.
+  }
+  return changed;
+}
 
 /**
  * Core supplement logic — merges OpenClaw-auto-configured fields from `source`
@@ -44,6 +88,9 @@ const isPinchyPlugin = (id: string) => id.startsWith("pinchy-");
  *   - `plugins.allow`: non-pinchy-* entries appended at end
  *   - `plugins.entries.*`: non-pinchy-* entries not already in payload
  *   - `gateway.controlUi.*`: fields not already in payload gateway.controlUi
+ *   - `discovery`, `update`, `canvasHost`: deep-supplemented (OC 5.x enriches
+ *     these sections with runtime state; missing subfields → config-reloader
+ *     diff → ConfigMutationConflictError on in-process restart)
  *
  * Pinchy-owned fields are NEVER overwritten — payload is the source of truth.
  */
@@ -114,6 +161,32 @@ function supplementFromSource(payload: string, source: Record<string, unknown>):
       for (const [k, v] of Object.entries(sourceTelegram)) {
         if (!(k in payloadTelegram)) {
           payloadTelegram[k] = v;
+          changed = true;
+        }
+      }
+    }
+
+    // Supplement discovery, update, canvasHost: OC 5.x enriches these sections
+    // with runtime state (lastAnnouncedAt, lastCheckedAt, boundPort, peers …).
+    // config.apply writes the payload to the file; the config reloader then
+    // diffs OC's enriched currentCompareConfig against the new file content.
+    // Missing subfields trigger a restart (BASE_RELOAD_RULES_TAIL classifies
+    // `gateway`, `discovery`, `canvasHost` as kind:"restart"; `update` has no
+    // rule and defaults to restart). On OC 5.3, the in-process SIGUSR1 path
+    // then hits ConfigMutationConflictError because startupConfigSnapshotRead
+    // is stale. Deep-supplement preserves OC-enriched subfields while keeping
+    // Pinchy-owned values (mdns.mode, checkOnStart, enabled) authoritative.
+    for (const section of ["discovery", "update", "canvasHost"] as const) {
+      const sourceSection = source[section] as Record<string, unknown> | undefined;
+      if (sourceSection) {
+        const payloadSection = payloadObj[section] as Record<string, unknown> | undefined;
+        if (payloadSection) {
+          if (deepSupplement(payloadSection, sourceSection)) {
+            changed = true;
+          }
+        } else {
+          // Section not in payload at all — add the whole OC block as-is.
+          payloadObj[section] = sourceSection;
           changed = true;
         }
       }

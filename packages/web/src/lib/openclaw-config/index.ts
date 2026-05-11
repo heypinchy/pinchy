@@ -12,6 +12,7 @@
 export { regenerateOpenClawConfig } from "./build";
 export {
   sanitizeOpenClawConfig,
+  seedRestartClassOverridesIfMissing,
   updateIdentityLinks,
   updateTelegramChannelConfig,
 } from "./targeted";

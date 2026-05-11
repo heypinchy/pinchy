@@ -20,7 +20,7 @@ import { getModelCatalogForProvider } from "@/lib/openclaw-builtin-models";
 import { getOpenClawWorkspacePath } from "@/lib/workspace";
 import { CONFIG_PATH } from "./paths";
 import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
-import { writeConfigAtomic, readExistingConfig, pushConfigInBackground } from "./write";
+import { readExistingConfig, pushConfigInBackground } from "./write";
 import {
   buildSecretsBundle,
   collectProviderSecrets,
@@ -787,6 +787,21 @@ export async function regenerateOpenClawConfig() {
 
   const modelProviders: Record<string, unknown> = {};
 
+  // OC 5.x changed models.providers.* to require `baseUrl` for ALL built-in
+  // providers (breaking change from 4.x where it was optional). Without
+  // baseUrl, the gateway fails to start on health-check restarts:
+  //   "models.providers.anthropic.baseUrl: Invalid input: expected string, received undefined"
+  // Priority: env var override > existing file value > OC's known default.
+  // The env var path supports custom API proxies; the existing-file path
+  // preserves anything OC has enriched; the default is OC's hardcoded fallback.
+  const PROVIDER_DEFAULT_BASE_URLS: Record<string, string> = {
+    anthropic: "https://api.anthropic.com",
+    openai: "https://api.openai.com/v1",
+    google: "https://generativelanguage.googleapis.com/v1beta",
+  };
+  const existingModelProviders =
+    ((existing.models as Record<string, unknown>)?.providers as Record<string, unknown>) ?? {};
+
   for (const providerName of ["anthropic", "openai", "google"] as const) {
     const apiKey = await getSetting(PROVIDERS[providerName].settingsKey);
     if (apiKey) {
@@ -1070,11 +1085,6 @@ export async function regenerateOpenClawConfig() {
     // File doesn't exist yet — write it
   }
 
-  // The file is the canonical source of truth. OpenClaw's inotify watcher
-  // will eventually pick it up — slowly on production volumes (~60 s),
-  // which is the latency `pushConfigInBackground` exists to hide.
-  writeConfigAtomic(newContent);
-
   // Write per-agent auth-profiles.json for agents that use API-key-based
   // providers. Required by OpenClaw ≥ 4.15: each agent directory must
   // contain agents/<id>/agent/auth-profiles.json. We scope each agent to
@@ -1127,11 +1137,13 @@ export async function regenerateOpenClawConfig() {
     });
   }
 
-  // Best-effort RPC push for faster runtime propagation. Fire-and-forget:
-  // the user-visible POST that triggered this regenerate must return as
-  // soon as the file is on disk, since `config.apply` can block 10–30 s
-  // when the change requires a gateway restart. Blocking that long broke
-  // interactive save flows (Odoo permissions Save & Restart, where the
-  // UI waits for "All changes saved").
+  // Push config to OpenClaw. When a WS client is available, config.apply
+  // is used for immediate runtime propagation and persists the file itself
+  // via OC's inner writeConfigFile. When no WS client (or config.apply
+  // fails all retries), writeConfigAtomic writes the file so inotify
+  // picks it up (~200 ms in CI, ~60 s on production volumes).
+  // Fire-and-forget: the caller must not block on this — config.apply
+  // can take 10–30 s when a gateway restart is needed, which broke
+  // interactive save flows (Odoo "Save & Restart", UI waits for 200 OK).
   pushConfigInBackground(newContent);
 }

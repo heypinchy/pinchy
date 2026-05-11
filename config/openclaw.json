@@ -1,6 +1,20 @@
 {
   "gateway": {
     "mode": "local",
-    "bind": "lan"
+    "bind": "lan",
+    "controlUi": {
+      "enabled": false
+    }
+  },
+  "discovery": {
+    "mdns": {
+      "mode": "off"
+    }
+  },
+  "update": {
+    "checkOnStart": false
+  },
+  "canvasHost": {
+    "enabled": false
   }
 }

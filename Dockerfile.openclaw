@@ -15,7 +15,7 @@ RUN apt-get update && apt-get install -y \
       build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g openclaw@2026.4.27
+RUN npm install -g openclaw@2026.5.3
 
 # Install pinchy-files plugin dependencies (native modules must be built in the container)
 COPY packages/plugins/pinchy-files/package.json /tmp/pinchy-files/package.json

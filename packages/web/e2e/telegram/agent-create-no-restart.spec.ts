@@ -84,6 +84,40 @@ function openClawLogsSince(sinceIso: string): string {
 }
 
 /**
+ * TCP-probe OpenClaw's gateway port via `docker compose exec`. A successful
+ * TCP connect is a definitive "the Node.js event loop is processing
+ * accept()s" signal — independent of log activity, which goes silent when
+ * OC is genuinely idle (no SIGUSR1, no reloads, no WS traffic from Pinchy).
+ *
+ * Used by `waitForOpenClawQuiet` to disambiguate "OC is quiet because nothing
+ * is happening" (✓ test should return) from "OC's event loop is blocked"
+ * (✗ keep waiting). The previous heuristic was "any log line in the last
+ * 10 s" — that broke after the restart-cascade fix because the test's
+ * subject (idle OC) genuinely produces zero logs for 30+ s once Pinchy
+ * stops issuing applies, and the heuristic interpreted that as a hang.
+ *
+ * Implementation note: probe via the OpenClaw container's bundled `node`
+ * (always present in the openclaw image — `npm install -g openclaw@…`).
+ * Don't reach for `sh -c 'echo > /dev/tcp/...'` — Debian/Ubuntu base images
+ * symlink `/bin/sh` to `dash`, which does NOT implement bash's `/dev/tcp`
+ * pseudo-device, so the redirect would silently fail with "No such file or
+ * directory" and the probe would report unresponsive even when the port is
+ * up. node's `net.connect` works regardless of shell.
+ */
+function isOpenClawPortResponsive(): boolean {
+  try {
+    execSync(
+      `docker compose ${COMPOSE_FILES} exec -T openclaw node -e ` +
+        `"require('net').createConnection(18789,'127.0.0.1').on('connect',function(){this.end();process.exit(0)}).on('error',function(){process.exit(1)})"`,
+      { cwd: REPO_ROOT, env: COMPOSE_ENV, stdio: "pipe", timeout: 5000 }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Wait until the OpenClaw gateway has been quiet (no restart events) for
  * at least `quietMs`. WS connectivity alone is unreliable: a hot-reload
  * doesn't drop the WS, but a full restart 10–20 s later still ruins the
@@ -100,11 +134,15 @@ function openClawLogsSince(sinceIso: string): string {
  *     correctly wait `quietMs` after the gateway becomes operational, not
  *     just after the SIGUSR1 fires.
  *
- * Liveness guard: if the log window is completely empty (no output at all),
- * OpenClaw's Node.js event loop may be blocked (seen in CI: up to 32 s of
- * zero log output with eventLoopDelayMaxMs=6526 ms). An empty window looks
- * identical to "quiet" without the guard. We require at least one log line
- * in the last 10 s before declaring quiet.
+ * Liveness guard: an empty log window is ambiguous — could be "OC's Node.js
+ * event loop blocked" (CI load, 30+ s zero-log stalls observed at
+ * eventLoopDelayMaxMs=6526 ms) or "OC is genuinely idle, doing nothing
+ * because nothing is happening on the gateway". The cascade-restart fix on
+ * this branch eliminated the SIGUSR1 storm that previously kept producing
+ * log activity, so post-fix idle OC sustains 30+ s of zero logs in the
+ * normal happy path. We can't distinguish via logs — so we TCP-probe the
+ * gateway port as the definitive liveness signal. A successful connect
+ * means the Node.js event loop is processing accept()s, ergo not blocked.
  */
 async function waitForOpenClawQuiet(quietMs = 30000, timeout = 240000): Promise<void> {
   const start = Date.now();
@@ -116,14 +154,9 @@ async function waitForOpenClawQuiet(quietMs = 30000, timeout = 240000): Promise<
         /received SIGUSR1|received SIGTERM|requires gateway restart|\[gateway\] ready/.test(l)
       );
     if (restartMarkers.length === 0) {
-      // No restart-related events in the look-back window. Before declaring quiet,
-      // verify OpenClaw is actually alive: under extreme CI load the Node.js event
-      // loop can block for 30+ seconds producing zero log output. An empty log
-      // window is indistinguishable from "quiet" otherwise — so we require at
-      // least one log line in the last 10 s as a liveness signal.
-      const liveness = openClawLogsSince(new Date(Date.now() - 10000).toISOString());
-      if (!liveness.trim()) {
-        // No logs at all → event loop probably blocked. Keep waiting.
+      if (!isOpenClawPortResponsive()) {
+        // Port unreachable → event loop blocked or container down. Keep
+        // waiting (a real container crash will surface as the outer timeout).
         await new Promise((r) => setTimeout(r, 1000));
         continue;
       }

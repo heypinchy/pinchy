@@ -21,6 +21,7 @@ import { registerShutdownHandlers } from "./src/lib/shutdown";
 import { seedSessionCache } from "./src/server/session-cache-seeder";
 import { readGatewayToken } from "./src/lib/gateway-token-reader";
 import { getBetterAuthUrlStartupWarning } from "./src/lib/auth-env-warning";
+import { regenerateOpenClawConfig } from "./src/lib/openclaw-config";
 import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
 
 logCapture.install();
@@ -305,10 +306,10 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
         restartState.notifyReady();
       }
 
-      // Signal to OpenClaw container that device approval succeeded.
-      // The auto_approve_devices loop watches for this file and stops,
-      // preventing continuous CLI calls that kill Telegram polling.
       if (firstConnect) {
+        // Signal to OpenClaw container that device approval succeeded.
+        // The auto_approve_devices loop watches for this file and stops,
+        // preventing continuous CLI calls that kill Telegram polling.
         try {
           const fs = await import("fs");
           const path = await import("path");
@@ -319,12 +320,19 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
         } catch {
           // Non-critical — approval loop has a safety timeout
         }
-      }
 
-      // No startup config push needed — regenerateOpenClawConfig() writes the
-      // config file at Pinchy startup, and OpenClaw reads it on its own startup.
-      // Pushing via config.patch would cause an unnecessary internal restart
-      // that breaks Telegram polling (openclaw/openclaw#47458).
+        // Push full config via config.apply on the FIRST connection only. This
+        // seeds OC's currentCompareConfig with the complete Pinchy payload so
+        // subsequent config.apply calls show only field-level diffs — not a
+        // massive diff against the baked-in startup config that triggers
+        // gateway/discovery/update/canvasHost restart rules (openclaw#75534,
+        // PR #279). Scoped to firstConnect to prevent a cascade: if this push
+        // triggers an OC restart (large diff on fresh install), the reconnect
+        // (firstConnect=false) won't fire again, terminating the loop.
+        regenerateOpenClawConfig().catch((err) => {
+          console.warn("[server] on-connected regenerateOpenClawConfig failed:", err);
+        });
+      }
 
       // Start global usage poller. Idempotent — a reconnect won't spawn a
       // second poller. The poller handles sessions.list() failures gracefully.

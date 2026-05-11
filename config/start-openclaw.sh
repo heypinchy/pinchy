@@ -161,15 +161,21 @@ auto_approve_devices() {
         # `openclaw devices approve --latest` is preview-only since 2026.4.10.
         # It prints the requestId but exits with code 1 without approving.
         # We parse the requestId from the output and approve explicitly.
+        #
+        # In OpenClaw 5.x, scope upgrades (operator.pairing → operator.admin)
+        # from non-loopback clients trigger a second approval round that the
+        # CLI cannot approve via WebSocket (it would need operator.admin itself,
+        # causing infinite scope-upgrade loops). The fix: omit --url so the CLI
+        # reads the gateway URL from openclaw.json and, on WS rejection, falls
+        # back to direct local-file approval (shouldUseLocalPairingFallback).
+        # The local fallback bypasses WebSocket auth entirely and writes the
+        # approval directly into /root/.openclaw/ — safe because this script
+        # runs inside the OpenClaw container with the same filesystem.
         local approve_output request_id
-        approve_output=$(openclaw devices approve --latest \
-            --url ws://127.0.0.1:18789 \
-            --token "$token" 2>&1 || true)
+        approve_output=$(openclaw devices approve --latest 2>&1 || true)
         request_id=$(echo "$approve_output" | grep -oE 'openclaw devices approve [a-zA-Z0-9_=-]+' | awk '{print $NF}' || true)
         if [ -n "$request_id" ]; then
-            openclaw devices approve "$request_id" \
-                --url ws://127.0.0.1:18789 \
-                --token "$token" >/dev/null 2>&1 || true
+            openclaw devices approve "$request_id" >/dev/null 2>&1 || true
         fi
         elapsed=$((elapsed + 5))
         sleep 5
@@ -187,7 +193,16 @@ scan_data_directories
 # budget (5 × 100ms). Was 3s previously, which let Pinchy give up before
 # the chmod caught up and silently wrote a stripped config (see
 # fix(openclaw-config): guard targeted writes against EACCES read).
-(while true; do sleep 0.2; fix_config_permissions; done) &
+# 0.05 s tick (was 0.2 s): tightened in May 2026 after the Docker smoke
+# test's `Verify OpenClaw config writable by Pinchy` step caught the race
+# more often once Pinchy started writing openclaw.json earlier in
+# bootInits (cascade-prevention seed in `seedRestartClassOverridesIfMissing`,
+# more file activity = more 600-mode windows for OpenClaw's restart writes).
+# 50 ms is well under the 5 s `docker compose exec stat` round-trip the
+# test uses, so the race is effectively closed. Cost is ~80 chmod calls/s
+# on an idle gateway — measured negligible (chmod on a known path is a
+# kernel-only operation, no syscalls past inode lookup).
+(while true; do sleep 0.05; fix_config_permissions; done) &
 
 # Defense in depth for the secrets owner race (#200): the 0.2 s tick above
 # averages ~100 ms behind a Pinchy write, but OpenClaw's inotify-driven

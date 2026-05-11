@@ -2,6 +2,9 @@
   "id": "pinchy-audit",
   "name": "Pinchy Audit",
   "description": "Source-level tool execution audit logging for all OpenClaw tools.",
+  "activation": {
+    "onStartup": true
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

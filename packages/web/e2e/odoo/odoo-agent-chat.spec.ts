@@ -40,6 +40,16 @@ test.describe("Odoo Agent Chat", () => {
     await resetOdooMock();
     cookie = await login();
 
+    // Wait for the OpenClaw WS bridge to connect before any test runs.
+    // Fix D (skip writeConfigAtomic in WS path) removes the OC internal SIGUSR1
+    // restart that previously forced a reconnect event early in startup. In slow
+    // CI environments the initial connect can now take longer than the 10 s window
+    // inside individual tests — guard it here once, with a generous timeout.
+    const ocConnected = await pollUntilOpenClawConnected(cookie, 60_000);
+    if (!ocConnected) {
+      throw new Error("OpenClaw WS bridge not connected after 60 s — aborting test suite");
+    }
+
     // Create Odoo connection
     const connRes = await createOdooConnection(cookie);
     expect(connRes.status).toBe(201);

@@ -2,6 +2,9 @@
   "id": "pinchy-docs",
   "name": "Pinchy Docs",
   "description": "On-demand access to Pinchy platform documentation for personal assistants.",
+  "contracts": {
+    "tools": ["docs_list", "docs_read"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

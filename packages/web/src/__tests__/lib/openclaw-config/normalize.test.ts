@@ -10,6 +10,7 @@ import * as fs from "fs";
 import {
   supplementPayloadWithFileFields,
   supplementPayloadWithOcConfig,
+  configsAreEquivalentUpToOpenClawMetadata,
 } from "@/lib/openclaw-config/normalize";
 
 const mockedReadFileSync = vi.mocked(fs.readFileSync);
@@ -253,5 +254,174 @@ describe("supplementPayloadWithOcConfig", () => {
     const result = JSON.parse(supplementPayloadWithFileFields(payload));
 
     expect(result.models.providers.anthropic.baseUrl).toBe("https://mock.api:443");
+  });
+
+  // OC 5.x enriches discovery, update, canvasHost with runtime subfields.
+  // config.apply writes the payload to the file, and the config reloader diffs
+  // OC's enriched currentCompareConfig against the new file. Missing subfields
+  // → diff detected → restart triggered → ConfigMutationConflictError on in-
+  // process restart (stale hash). These tests verify that supplementation
+  // preserves OC-enriched subfields for all three sections.
+
+  it("deep-supplements discovery from OC config — preserves OC-enriched subfields while keeping Pinchy values", () => {
+    // OC 5.x enriches discovery.mdns with runtime state (lastAnnouncedAt, etc.)
+    // and writes discovery.peers. Pinchy only writes { mdns: { mode: "off" } }.
+    // Without supplementing, config.apply payload → file → reloader diff
+    // detects discovery change → restart.
+    const ocConfig = {
+      hash: "x",
+      discovery: {
+        mdns: {
+          mode: "off", // Pinchy owns this
+          lastAnnouncedAt: "2026-05-04T10:00:00Z", // OC-enriched
+          peers: ["peer1"], // OC-enriched
+        },
+        peers: [{ id: "p1" }], // OC-enriched top-level
+      },
+    };
+    // Pinchy's payload: only sets mdns.mode
+    const payload = JSON.stringify({
+      discovery: { mdns: { mode: "off" } },
+    });
+    const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
+
+    // Pinchy-owned value preserved
+    expect(result.discovery.mdns.mode).toBe("off");
+    // OC-enriched nested subfields added
+    expect(result.discovery.mdns.lastAnnouncedAt).toBe("2026-05-04T10:00:00Z");
+    expect(result.discovery.mdns.peers).toEqual(["peer1"]);
+    // OC-enriched top-level discovery field added
+    expect(result.discovery.peers).toEqual([{ id: "p1" }]);
+  });
+
+  it("deep-supplements update from OC config — preserves Pinchy checkOnStart: false", () => {
+    const ocConfig = {
+      hash: "x",
+      update: {
+        checkOnStart: false, // Pinchy owns this
+        lastCheckedAt: "2026-05-04T10:00:00Z", // OC-enriched
+        channel: "stable", // OC default
+      },
+    };
+    const payload = JSON.stringify({
+      update: { checkOnStart: false },
+    });
+    const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
+
+    expect(result.update.checkOnStart).toBe(false); // Pinchy value preserved
+    expect(result.update.lastCheckedAt).toBe("2026-05-04T10:00:00Z");
+    expect(result.update.channel).toBe("stable");
+  });
+
+  it("deep-supplements canvasHost from OC config — preserves Pinchy enabled: false", () => {
+    const ocConfig = {
+      hash: "x",
+      canvasHost: {
+        enabled: false, // Pinchy owns this
+        port: 18790, // OC-enriched
+        boundAddr: "0.0.0.0", // OC-enriched
+      },
+    };
+    const payload = JSON.stringify({
+      canvasHost: { enabled: false },
+    });
+    const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
+
+    expect(result.canvasHost.enabled).toBe(false); // Pinchy value preserved
+    expect(result.canvasHost.port).toBe(18790);
+    expect(result.canvasHost.boundAddr).toBe("0.0.0.0");
+  });
+
+  it("does NOT overwrite Pinchy-set values in discovery/update/canvasHost with OC values", () => {
+    // Even if OC has a different value for a key Pinchy explicitly sets,
+    // the payload (Pinchy's intent) takes precedence.
+    const ocConfig = {
+      hash: "x",
+      discovery: { mdns: { mode: "on" } }, // OC says "on"
+      update: { checkOnStart: true }, // OC says "true"
+      canvasHost: { enabled: true }, // OC says "true"
+    };
+    const payload = JSON.stringify({
+      discovery: { mdns: { mode: "off" } },
+      update: { checkOnStart: false },
+      canvasHost: { enabled: false },
+    });
+    const result = JSON.parse(supplementPayloadWithOcConfig(payload, ocConfig));
+
+    expect(result.discovery.mdns.mode).toBe("off");
+    expect(result.update.checkOnStart).toBe(false);
+    expect(result.canvasHost.enabled).toBe(false);
+  });
+
+  it("supplements discovery/update/canvasHost via file fallback (supplementPayloadWithFileFields)", () => {
+    const file = JSON.stringify({
+      discovery: {
+        mdns: { mode: "off", lastAnnouncedAt: "2026-05-04T10:00:00Z" },
+      },
+      update: { checkOnStart: false, lastCheckedAt: "T1" },
+      canvasHost: { enabled: false, port: 18790 },
+    });
+    mockedReadFileSync.mockReturnValue(file as unknown as Buffer);
+
+    const payload = JSON.stringify({
+      discovery: { mdns: { mode: "off" } },
+      update: { checkOnStart: false },
+      canvasHost: { enabled: false },
+    });
+    const result = JSON.parse(supplementPayloadWithFileFields(payload));
+
+    expect(result.discovery.mdns.lastAnnouncedAt).toBe("2026-05-04T10:00:00Z");
+    expect(result.update.lastCheckedAt).toBe("T1");
+    expect(result.canvasHost.port).toBe(18790);
+  });
+});
+
+describe("configsAreEquivalentUpToOpenClawMetadata", () => {
+  it("returns true for identical configs", () => {
+    const cfg = JSON.stringify({ gateway: { mode: "local" }, agents: [] });
+    expect(configsAreEquivalentUpToOpenClawMetadata(cfg, cfg)).toBe(true);
+  });
+
+  it("ignores meta.lastTouchedAt differences", () => {
+    const a = JSON.stringify({
+      meta: { version: "5.3", lastTouchedAt: "T1" },
+      gateway: { mode: "local" },
+    });
+    const b = JSON.stringify({
+      meta: { version: "5.3", lastTouchedAt: "T2" },
+      gateway: { mode: "local" },
+    });
+    expect(configsAreEquivalentUpToOpenClawMetadata(a, b)).toBe(true);
+  });
+
+  it("compares semantically — key order does NOT matter", () => {
+    // Pinchy builds its payload with object-literal ordering
+    // (gateway/discovery/update/canvasHost/secrets/...). OC's
+    // `config.get()` returns a snapshot OC serialized in its own order
+    // (often differs by field). Both objects are semantically equal but
+    // string-equality (the previous JSON.stringify==JSON.stringify
+    // implementation) reported "differ" — the no-op-apply guard then
+    // failed to fire and the wasted apply consumed an OC 5.3
+    // config.apply rate-limit slot. isDeepStrictEqual tree-walks like
+    // OC's own diff function and ignores key order.
+    const a = JSON.stringify({
+      gateway: { mode: "local", bind: "lan" },
+      discovery: { mdns: { mode: "off" } },
+    });
+    const b = JSON.stringify({
+      discovery: { mdns: { mode: "off" } },
+      gateway: { bind: "lan", mode: "local" },
+    });
+    expect(configsAreEquivalentUpToOpenClawMetadata(a, b)).toBe(true);
+  });
+
+  it("detects real value differences", () => {
+    const a = JSON.stringify({ gateway: { controlUi: { enabled: false } } });
+    const b = JSON.stringify({ gateway: { controlUi: { enabled: true } } });
+    expect(configsAreEquivalentUpToOpenClawMetadata(a, b)).toBe(false);
+  });
+
+  it("returns false on parse error", () => {
+    expect(configsAreEquivalentUpToOpenClawMetadata("{not json", "{}")).toBe(false);
   });
 });

@@ -122,6 +122,7 @@ import {
   regenerateOpenClawConfig,
   updateIdentityLinks,
   sanitizeOpenClawConfig,
+  seedRestartClassOverridesIfMissing,
   updateTelegramChannelConfig,
 } from "@/lib/openclaw-config";
 import { pushConfigInBackground, _resetPushGeneration } from "@/lib/openclaw-config/write";
@@ -173,6 +174,17 @@ async function drainBackgroundCoroutine(): Promise<void> {
   await new Promise((r) => setImmediate(r));
   await new Promise((r) => setImmediate(r));
 }
+
+// Top-level guard: vi.clearAllMocks() in each describe's beforeEach clears
+// call history but NOT mock implementations. A test that calls
+// mockGetClient.mockReturnValue({...}) to simulate a connected client would
+// pollute subsequent sibling describe blocks. This runs before every
+// describe-level beforeEach, resetting to "no WS client" as the baseline.
+beforeEach(() => {
+  mockGetClient.mockImplementation(() => {
+    throw new Error("OpenClaw client not initialized");
+  });
+});
 
 /**
  * Mirror of OpenClaw's `isLocalBaseUrl` predicate
@@ -242,12 +254,21 @@ describe("regenerateOpenClawConfig", () => {
     _resetPushGeneration();
   });
 
-  it("should write config with restrictive file permissions", async () => {
+  it("should write config with shared-volume file permissions (Pinchy + OpenClaw both r/w)", async () => {
+    // Mode 0o666 (was 0o644 until May 2026): both Pinchy (uid 999) and
+    // OpenClaw (root) need to read AND write openclaw.json on the shared
+    // /openclaw-config volume. With 0o644, every Pinchy write set the file
+    // back to mode 644, then OpenClaw's next internal SIGUSR1 restart wrote
+    // it as root:0600, then start-openclaw.sh's chmod-loop ran 0o666 →
+    // 200 ms race window where Pinchy could read 600 in the Docker smoke
+    // test's `Verify OpenClaw config writable by Pinchy` check. Writing
+    // 0o666 directly closes Pinchy's contribution to that race. (OpenClaw's
+    // 600 writes still need the chmod-loop, which now ticks at 50 ms.)
     await regenerateOpenClawConfig();
 
     expect(mockedWriteFileSync).toHaveBeenCalledWith(expect.any(String), expect.any(String), {
       encoding: "utf-8",
-      mode: 0o644,
+      mode: 0o666,
     });
   });
 
@@ -745,6 +766,24 @@ describe("regenerateOpenClawConfig", () => {
     } finally {
       delete process.env.ANTHROPIC_BASE_URL;
     }
+  });
+
+  it("should always include baseUrl in anthropic provider config (OC 5.x requires it)", async () => {
+    // OC 5.x changed models.providers.* to require baseUrl for all providers.
+    // When ANTHROPIC_BASE_URL is not set, Pinchy writes the OC default so
+    // health-check gateway restarts don't fail with
+    // "anthropic.baseUrl: Invalid input: expected string, received undefined".
+    delete process.env.ANTHROPIC_BASE_URL;
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "anthropic_api_key") return "sk-ant-key";
+      if (key === "default_provider") return "anthropic";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    expect(config?.models?.providers?.anthropic?.baseUrl).toBe("https://api.anthropic.com");
   });
 
   it("includes default baseUrl in openai provider config when OPENAI_BASE_URL is unset", async () => {
@@ -2206,29 +2245,46 @@ describe("regenerateOpenClawConfig", () => {
     // internal inotify watcher, which on production volumes had ~60 s of
     // pickup latency. Users sending messages right after creating an
     // agent saw `unknown agent id "<uuid>"` because the runtime didn't
-    // yet know the agent. The fix is twofold:
-    //  1. Always write the file synchronously so the slow inotify path is
-    //     guaranteed to eventually pick it up.
-    //  2. Trigger a fire-and-forget `config.apply` RPC for faster runtime
-    //     propagation when the WS is connected. Fire-and-forget keeps POST
-    //     /api/agents (and any other regenerate caller) responsive even
-    //     when the apply itself blocks on a gateway restart (10–30 s).
+    // yet know the agent.
+    //
+    // Strategy (openclaw#75534 / PR #279): when a WS client is available,
+    // config.apply is used exclusively — no prior writeConfigAtomic. This
+    // avoids the inotify race: writing the file before config.apply triggers
+    // chokidar, which updates currentCompareConfig to the raw Pinchy payload.
+    // config.apply then writes a slightly transformed file (OC's merge
+    // applies startup-era defaults) → reload handler detects a diff in
+    // gateway/discovery/update/canvasHost → restart → ConfigMutationConflictError.
+    // When no WS client (or config.apply fails all retries), writeConfigAtomic
+    // writes the file directly so inotify picks it up.
 
-    it("writes the config file synchronously regardless of OpenClaw connection state", async () => {
+    it("writes the config file synchronously on cold start (no WS client)", async () => {
       // Default beforeEach has mockGetClient throwing — cold start path.
+      // pushConfigInBackground falls through to writeConfigAtomic synchronously
+      // (no await before the write), so the file is on disk before returning.
       await regenerateOpenClawConfig();
       expect(mockedWriteFileSync).toHaveBeenCalled();
+    });
 
-      vi.clearAllMocks();
-
-      // Now the connected path.
+    it("uses config.apply (not writeConfigAtomic) when WS client is available", async () => {
+      // When a WS client is available, the file write is delegated to config.apply's
+      // inner writeConfigFile. Pinchy must NOT call writeConfigAtomic synchronously,
+      // as that triggers the inotify race (openclaw#75534).
       mockConfigGet.mockResolvedValue({ hash: "abc123" });
       mockConfigApply.mockResolvedValue(undefined);
       mockGetClient.mockReturnValue({
         config: { get: mockConfigGet, apply: mockConfigApply },
       });
+
       await regenerateOpenClawConfig();
-      expect(mockedWriteFileSync).toHaveBeenCalled();
+      await vi.waitFor(() => expect(mockConfigApply).toHaveBeenCalledOnce());
+      await drainBackgroundCoroutine();
+
+      // config.apply was used for the write — writeFileSync must NOT have been
+      // called with the openclaw.json path (only auth-profiles.json is written).
+      const openclawWrite = mockedWriteFileSync.mock.calls.find(
+        (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+      );
+      expect(openclawWrite).toBeUndefined();
     });
 
     it("triggers the background RPC push when the OpenClaw client is connected", async () => {
@@ -2255,21 +2311,21 @@ describe("regenerateOpenClawConfig", () => {
 
     it("does not throw when the client is connected but config.apply fails", async () => {
       // Background apply errors must not bubble up. POST /api/agents must
-      // succeed even if the runtime push can't be delivered — inotify
-      // remains the safety net.
+      // succeed even if the runtime push can't be delivered — writeConfigAtomic
+      // fires as a fallback after all retries are exhausted.
       mockConfigGet.mockRejectedValue(new Error("Not connected to OpenClaw Gateway"));
       mockGetClient.mockReturnValue({
         config: { get: mockConfigGet, apply: mockConfigApply },
       });
 
       await expect(regenerateOpenClawConfig()).resolves.not.toThrow();
-      expect(mockedWriteFileSync).toHaveBeenCalled();
+      // The fallback writeConfigAtomic fires asynchronously after all retry
+      // backoffs (~3.5 s total); only verify no throw here.
     });
 
     it("does not call config.apply at cold start before the OpenClaw client is initialised", async () => {
       // beforeEach sets mockGetClient to throw — exercises the no-client
-      // path. We must still write the file (verified above) but must NOT
-      // attempt the RPC.
+      // path. The file IS written via writeConfigAtomic but no RPC is attempted.
       await regenerateOpenClawConfig();
       // Background coroutine bails immediately when client unavailable;
       // drain to confirm no microtask-deferred RPC slipped through.
@@ -2354,8 +2410,18 @@ describe("regenerateOpenClawConfig", () => {
       // (e.g. pollingMode, or other new OC-managed fields). Pinchy's payload
       // omits these fields. Without supplement, config.apply sees a channels
       // diff → full gateway restart even for agents-only changes.
+      //
+      // To exercise this end-to-end through pushConfigInBackground we need
+      // the payload to ALSO contain a real change beyond just the supplement
+      // merge — otherwise the no-op-apply guard (added to avoid wasting
+      // OC 5.3's ~3-per-45 s config.apply rate-limit) would correctly short-
+      // circuit before the supplemented payload reaches config.apply. Here
+      // the real change is `agents.list` (new); the supplement assertion
+      // confirms `pollingMode` gets carried over from OC into the apply'd
+      // payload alongside the agents change.
       const ocConfig = {
         meta: { version: "4.27.0", lastTouchedAt: "2025-01-01T00:00:00Z" },
+        agents: { list: [] },
         channels: {
           telegram: {
             enabled: true,
@@ -2371,9 +2437,12 @@ describe("regenerateOpenClawConfig", () => {
         config: { get: mockConfigGet, apply: mockConfigApply },
       });
 
-      // Pinchy's payload has channels.telegram WITHOUT pollingMode
+      // Pinchy's payload has channels.telegram WITHOUT pollingMode AND
+      // a brand-new agent — the agent guarantees the supplemented payload
+      // diverges from current.config so config.apply actually fires.
       const pinchyPayload = JSON.stringify({
         meta: { version: "4.27.0" },
+        agents: { list: [{ id: "agent-new", name: "New" }] },
         channels: {
           telegram: {
             enabled: true,
@@ -2388,6 +2457,63 @@ describe("regenerateOpenClawConfig", () => {
 
       const applied = JSON.parse(String(mockConfigApply.mock.calls[0][0]));
       expect(applied.channels?.telegram?.pollingMode).toBe("long_poll");
+    });
+
+    it("skips config.apply when supplemented payload is semantically equivalent to OC's current config (rate-limit conservation)", async () => {
+      // OC 5.3 rate-limits config.apply (~3 per 45 s window). With
+      // regenerateOpenClawConfig() running unconditionally on boot AND on
+      // every settings/agent mutation, several back-to-back regens can pile
+      // up in the rate-limit window — the bootInits-alignment + setup-wizard
+      // + connectBot + warmup chain in the Telegram E2E setup is exactly
+      // that shape. Each wasted no-op apply consumes a slot and pushes the
+      // next legitimate apply over the budget into "rate limit exceeded;
+      // retry after Ns".
+      //
+      // The early-return guard in build.ts compares Pinchy's RAW payload to
+      // the file. It can't see the SUPPLEMENTED payload — which is what
+      // config.apply actually sends and which often equals OC's runtime even
+      // when the raw payload differs (because Pinchy's payload omits OC-
+      // managed fields the supplement then re-adds). This guard catches
+      // those.
+      const ocConfig = {
+        meta: { version: "5.3.0", lastTouchedAt: "2026-01-01T00:00:00Z" },
+        gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
+        channels: {
+          telegram: {
+            enabled: true,
+            accounts: { a1: { botToken: "tok" } },
+            pollingMode: "long_poll",
+          },
+        },
+      };
+      mockConfigGet.mockResolvedValue({ hash: "h1", config: ocConfig });
+      mockConfigApply.mockResolvedValue(undefined);
+      mockGetClient.mockReturnValue({
+        config: { get: mockConfigGet, apply: mockConfigApply },
+      });
+
+      // Pinchy's payload omits pollingMode (OC-managed) and lastTouchedAt
+      // (auto-stamped). After supplement, payload == ocConfig semantically.
+      const pinchyPayload = JSON.stringify({
+        meta: { version: "5.3.0" },
+        gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
+        channels: {
+          telegram: {
+            enabled: true,
+            accounts: { a1: { botToken: "tok" } },
+          },
+        },
+      });
+
+      pushConfigInBackground(pinchyPayload);
+      // Drain microtasks so the coroutine reaches and hits the guard.
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+      await new Promise((r) => setImmediate(r));
+
+      // No config.apply call — supplement made the payload equivalent to
+      // OC's runtime, so we conserved the rate-limit slot.
+      expect(mockConfigApply).not.toHaveBeenCalled();
     });
 
     it("skips config.apply when OC in-memory config and file both lack meta (missing-meta-before-write cascade guard)", async () => {
@@ -2502,6 +2628,160 @@ describe("regenerateOpenClawConfig", () => {
       }
     });
 
+    it("waits past the WS-disconnected window before the inotify fallback", async () => {
+      // Scenario: a successful config.apply triggered SIGUSR1 in OC; OC is now
+      // restarting in-process and the WS is dropped. config.get() rejects
+      // with "Not connected to OpenClaw Gateway" on each retry. The default
+      // 3.85 s backoff is shorter than any plausible OC restart, and the
+      // resulting writeConfigAtomic races OC's startup-time
+      // `ensureGatewayStartupAuth → replaceConfigFile` (Telegram E2E
+      // `agent-create-no-restart.spec.ts` cascade — file hash changes mid-
+      // restart, OC fails startup with ConfigMutationConflictError).
+      // The fix: extend the budget to 30 s for "Not connected" specifically,
+      // so the WS reconnect during the restart lands the apply via the next
+      // config.apply rather than via inotify-into-restart.
+      // This test simulates the OC restart resolving partway through the
+      // 30 s budget: config.get() rejects for the first ~6 s, then a
+      // simulated reconnect makes config.apply succeed, and we assert that
+      // no file write happened.
+      vi.useFakeTimers();
+      try {
+        // Fail with "Not connected" 3 times (3 × 2 s = 6 s of restart),
+        // then succeed (OC came back).
+        mockConfigGet
+          .mockRejectedValueOnce(new Error("Not connected to OpenClaw Gateway"))
+          .mockRejectedValueOnce(new Error("Not connected to OpenClaw Gateway"))
+          .mockRejectedValueOnce(new Error("Not connected to OpenClaw Gateway"))
+          .mockResolvedValue({
+            hash: "h-after-restart",
+            config: {
+              meta: { version: "5.3.0", lastTouchedAt: "2026-01-01T00:00:00Z" },
+              gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
+            },
+          });
+        mockConfigApply.mockResolvedValue(undefined);
+        mockGetClient.mockReturnValue({
+          config: { get: mockConfigGet, apply: mockConfigApply },
+        });
+
+        pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
+
+        // Each retry sleeps NOT_CONNECTED_RETRY_DELAY_MS = 2000 ms before
+        // calling config.get() again. Advance through the 6 s restart.
+        for (let i = 0; i < 4; i++) {
+          await vi.advanceTimersByTimeAsync(2_100);
+        }
+        // Drain remaining microtasks for the successful apply.
+        for (let i = 0; i < 10; i++) {
+          await vi.advanceTimersByTimeAsync(0);
+        }
+
+        // config.apply succeeded after the 4th config.get() resolved —
+        // delivered via WS, no inotify file write.
+        expect(mockConfigApply).toHaveBeenCalledTimes(1);
+        const openclawWrite = mockedWriteFileSync.mock.calls.find(
+          (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+        );
+        expect(
+          openclawWrite,
+          "writeFileSync must NOT be called for openclaw.json when WS reconnects within the 30 s budget"
+        ).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("falls back to inotify after the 30 s WS-disconnected budget exhausts", async () => {
+      // Scenario: OC is genuinely down (not just restarting). config.get()
+      // keeps rejecting with "Not connected" past the 30 s extended budget.
+      // We must eventually fall back to writeConfigAtomic so the change
+      // reaches OC whenever it does come back — losing the update silently
+      // is worse than the inotify race that originally motivated the
+      // extended budget.
+      vi.useFakeTimers();
+      try {
+        const existingOcConfig = {
+          meta: { version: "5.3.0", lastTouchedAt: "2026-01-01T00:00:00Z" },
+          gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
+        };
+        mockConfigGet.mockRejectedValue(new Error("Not connected to OpenClaw Gateway"));
+        mockGetClient.mockReturnValue({
+          config: { get: mockConfigGet, apply: mockConfigApply },
+        });
+        mockedReadFileSync.mockReturnValue(JSON.stringify(existingOcConfig) as unknown as Buffer);
+
+        pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
+
+        // Advance past 30 s budget + final backoff slot (2 s) + safety.
+        for (let i = 0; i < 35; i++) {
+          await vi.advanceTimersByTimeAsync(2_100);
+        }
+        for (let i = 0; i < 10; i++) {
+          await vi.advanceTimersByTimeAsync(0);
+        }
+
+        // config.apply was never called — every config.get() rejected.
+        expect(mockConfigApply).not.toHaveBeenCalled();
+        // After the budget exhausted, the file fallback fired.
+        const openclawWrite = mockedWriteFileSync.mock.calls.find(
+          (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+        );
+        expect(
+          openclawWrite,
+          "writeFileSync MUST be called for openclaw.json once the 30 s budget is exhausted (OC is genuinely down)"
+        ).toBeDefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("skips the file write immediately when OC rate-limits config.apply", async () => {
+      // Scenario: OC 5.3 rejects the apply call with "rate limit exceeded for
+      // config.apply; retry after 45s". Consuming backoff slots would delay
+      // the eventual inotify fallback by up to 3.85 s with no benefit.
+      // More importantly, OC already has the correct config in memory from
+      // the last successful config.apply — writing to disk would trigger an
+      // inotify hot-reload that causes OC to add built-in plugins (e.g.
+      // memory-core) and reorder meta, producing spurious config drift.
+      // The fix: skip the write entirely. The next config.apply (after the
+      // 45 s window resets) will deliver any pending changes.
+      vi.useFakeTimers();
+      try {
+        const existingOcConfig = {
+          meta: { version: "5.3.0", lastTouchedAt: "2026-01-01T00:00:00Z" },
+          gateway: { mode: "local", bind: "lan", auth: { token: "tok" } },
+        };
+        mockConfigGet.mockResolvedValue({ hash: "h1" });
+        mockConfigApply.mockRejectedValue(
+          new Error("rate limit exceeded for config.apply; retry after 45s")
+        );
+        mockGetClient.mockReturnValue({
+          config: { get: mockConfigGet, apply: mockConfigApply },
+        });
+        mockedReadFileSync.mockReturnValue(JSON.stringify(existingOcConfig) as unknown as Buffer);
+
+        pushConfigInBackground(JSON.stringify({ env: { X: "1" } }));
+
+        // Drain microtasks — the rate-limit path must NOT hit any setTimeout.
+        for (let i = 0; i < 10; i++) {
+          await vi.advanceTimersByTimeAsync(0);
+        }
+
+        // config.apply was called once (first attempt), then we gave up immediately.
+        expect(mockConfigApply).toHaveBeenCalledTimes(1);
+        // No file write — OC already has the correct config in memory.
+        const openclawWrite = mockedWriteFileSync.mock.calls.find(
+          (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
+        );
+        expect(
+          openclawWrite,
+          "writeFileSync must NOT be called for openclaw.json on rate-limit"
+        ).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("uses generic backoff (not the stale-hash bypass) for unrelated config.apply errors", async () => {
       // Regression guard: only the OC-specific "config changed since last
       // load" message gets the immediate-refetch path. Any other error
@@ -2594,6 +2874,101 @@ describe("sanitizeOpenClawConfig", () => {
 
     expect(changed).toBe(false);
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
+  });
+});
+
+describe("seedRestartClassOverridesIfMissing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockedExistsSync.mockReturnValue(true);
+  });
+
+  it("writes overrides when the file is empty / missing all four fields", () => {
+    // Bind-mount-empty scenario: e.g. Pinchy on the host writing into
+    // /tmp/pinchy-integration-openclaw before OC's first start, where the
+    // bind-mount target doesn't carry the image's baked-in config.
+    mockedReadFileSync.mockImplementation(() => {
+      throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+    });
+
+    const changed = seedRestartClassOverridesIfMissing();
+
+    expect(changed).toBe(true);
+    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
+    );
+    expect(writtenAtomic).toBeDefined();
+    const written = JSON.parse(String(writtenAtomic![1]));
+    expect(written.gateway?.controlUi?.enabled).toBe(false);
+    expect(written.discovery?.mdns?.mode).toBe("off");
+    expect(written.update?.checkOnStart).toBe(false);
+    expect(written.canvasHost?.enabled).toBe(false);
+  });
+
+  it("returns false (no write) when file already has all four overrides — production case", () => {
+    // Production case: Docker-managed named volume populated from the image's
+    // baked-in `config/openclaw.json` already carries these. No write needed.
+    const existing = {
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        controlUi: { enabled: false },
+      },
+      discovery: { mdns: { mode: "off" } },
+      update: { checkOnStart: false },
+      canvasHost: { enabled: false },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing) as unknown as Buffer);
+
+    const changed = seedRestartClassOverridesIfMissing();
+
+    expect(changed).toBe(false);
+    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
+    );
+    expect(writtenAtomic).toBeUndefined();
+  });
+
+  it("preserves existing fields outside the four restart-class paths", () => {
+    // Don't clobber other Pinchy/OC state — only flip the four restart-class
+    // overrides. The agents/plugins/secrets/models blocks must round-trip
+    // unchanged.
+    const existing = {
+      meta: { version: "5.3.0", lastTouchedAt: "T1" },
+      gateway: {
+        mode: "local",
+        bind: "lan",
+        auth: { mode: "token", token: "preserved-token" },
+        controlUi: { enabled: true, allowedOrigins: ["http://localhost:18789"] },
+      },
+      discovery: { mdns: { mode: "auto" } }, // OC default — needs flip
+      // update + canvasHost missing entirely
+      agents: { list: [{ id: "preserved-agent", name: "Preserved" }] },
+      plugins: { allow: ["pinchy-audit"], entries: { "pinchy-audit": { enabled: true } } },
+    };
+    mockedReadFileSync.mockReturnValue(JSON.stringify(existing) as unknown as Buffer);
+
+    seedRestartClassOverridesIfMissing();
+
+    const writtenAtomic = mockedWriteFileSync.mock.calls.find(
+      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json.tmp")
+    );
+    const written = JSON.parse(String(writtenAtomic![1]));
+
+    // Restart-class overrides flipped to Pinchy values:
+    expect(written.gateway.controlUi.enabled).toBe(false);
+    expect(written.discovery.mdns.mode).toBe("off");
+    expect(written.update.checkOnStart).toBe(false);
+    expect(written.canvasHost.enabled).toBe(false);
+
+    // Non-restart-class fields preserved byte-for-byte:
+    expect(written.meta).toEqual(existing.meta);
+    expect(written.gateway.mode).toBe("local");
+    expect(written.gateway.bind).toBe("lan");
+    expect(written.gateway.auth).toEqual(existing.gateway.auth);
+    expect(written.gateway.controlUi.allowedOrigins).toEqual(["http://localhost:18789"]);
+    expect(written.agents).toEqual(existing.agents);
+    expect(written.plugins).toEqual(existing.plugins);
   });
 });
 
@@ -3963,17 +4338,6 @@ describe("restart-state integration", () => {
     mockConfigGet.mockResolvedValue({ hash: "h1" });
     mockConfigApply.mockResolvedValue(undefined);
 
-    const baseConfig = {
-      meta: { lastTouchedAt: "2026-05-01T10:00:00.000Z" },
-      gateway: { mode: "local", bind: "lan", auth: { token: "t" } },
-      env: { ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}" },
-      agents: { list: [] },
-      plugins: {
-        allow: ["pinchy-audit"],
-        entries: { "pinchy-audit": { enabled: true, config: {} } },
-      },
-    };
-
     mockedDb.select.mockReturnValue({
       from: mockFrom([]),
     } as never);
@@ -3983,19 +4347,16 @@ describe("restart-state integration", () => {
       return null;
     });
 
-    // First generate with no existing file — Pinchy writes the initial config
-    // and kicks off a background config.apply.
+    // First generate with no existing file — with a WS client, config.apply is
+    // used instead of a direct file write (Fix D: avoids the inotify race that
+    // causes ConfigMutationConflictError on OC restarts, openclaw#75534).
     await regenerateOpenClawConfig();
-    const firstWrite = mockedWriteFileSync.mock.calls.find(
-      (c) => typeof c[0] === "string" && (c[0] as string).includes("openclaw.json")
-    );
-    expect(firstWrite).toBeDefined();
-    const firstContent = firstWrite![1] as string;
 
-    // Drain the first generate's background coroutine. Without this, its
-    // delayed config.apply call would race with the post-test assertion.
+    // Drain the first generate's background coroutine to let config.apply complete.
     await drainBackgroundCoroutine();
     const applyCallsBeforeSecondGenerate = mockConfigApply.mock.calls.length;
+    // firstContent: payload sent to config.apply (file not written directly with WS client)
+    const firstContent = mockConfigApply.mock.calls[0][0] as string;
 
     // Now simulate OpenClaw having stamped a NEW lastTouchedAt onto the file
     // (the only difference; everything else byte-identical).

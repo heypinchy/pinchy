@@ -1,24 +1,21 @@
 #!/bin/bash
-# Pre-warm the bundled-plugin runtime-deps cache for the OpenClaw image.
+# Pre-warm the OpenClaw image — validates gateway startup and populates
+# any internal caches created on first boot.
 #
-# OpenClaw 2026.4.x runs `npm install` of ~15 packages into
+# OpenClaw 2026.4.x ran `npm install` of ~15 packages into
 # /root/.openclaw/plugin-runtime-deps/<openclaw-version>-<hash>/ on the
 # first gateway boot. On a 2-vCPU host this took ~48 s, blocking the
 # gateway HTTP listener and stalling Pinchy's first sessions.list /
-# chat.history calls.
+# chat.history calls. This prewarm pre-populated that cache at image
+# build time so production containers started fast.
 #
-# We do that install at image build time by booting the gateway once
-# with a minimal allow-listed config (browser/memory-core/talk-voice
-# only — see ../packages/web/src/lib/openclaw-config/build.ts for why
-# we disable acpx/bonjour/device-pair/phone-control) so OpenClaw
-# materializes only the deps Pinchy actually needs. After the cache is
-# built we kill the gateway and strip every other build-artefact under
-# /root/.openclaw — only plugin-runtime-deps/ survives into the image.
-#
-# On first user start, Docker populates the openclaw-config named
-# volume from this image (volumes inherit image contents only when
-# empty), giving the warm cache to fresh installs without leaking the
-# prewarm gateway-token, devices/, or agents/ state.
+# OpenClaw 2026.5.x removed the plugin-runtime-deps directory entirely,
+# adopting a symlink-backed approach during npm postinstall instead. The
+# per-boot npm install is gone, so the startup cost is now negligible.
+# The prewarm boot still serves two purposes in 5.x:
+#   1. Validates that the gateway binary starts correctly inside our image.
+#   2. Pre-generates /root/.openclaw state (identity, logs/, tasks/) that
+#      the named volume can inherit so fresh installs skip first-boot setup.
 #
 # bash explicit because we use `/dev/tcp/...` to wait for the gateway
 # port; on debian-slim `RUN` uses dash by default, which has no
@@ -52,26 +49,30 @@ if [ "$ready" = "0" ]; then
   exit 1
 fi
 
-# Give plugin loading a beat to settle past the listening-but-not-quite-
-# ready window before we tear down. Two seconds is plenty in practice
-# (CI prewarm typically completes in 5-15 s total).
+# Give the gateway a brief moment to settle past the listening-but-not-
+# quite-ready window before we tear down.
 sleep 2
 
 kill "$gw_pid" 2>/dev/null || true
 wait "$gw_pid" 2>/dev/null || true
 echo "[prewarm] gateway stopped"
 
-# Strip everything except the runtime-deps cache. Pinchy regenerates
-# openclaw.json on first boot via regenerateOpenClawConfig(); leaving
-# the prewarm token / devices / agents state behind would either leak
-# build-time secrets into runtime or confuse the cold-start cascade.
-find /root/.openclaw -mindepth 1 -maxdepth 1 \
-  ! -name plugin-runtime-deps -exec rm -rf {} +
-rm -f /tmp/prewarm.log
-
-if ! ls -d /root/.openclaw/plugin-runtime-deps/openclaw-* >/dev/null 2>&1; then
-  echo "[prewarm] FATAL: plugin-runtime-deps cache was not produced"
-  exit 1
+# Strip all prewarm build-time artifacts. Pinchy regenerates openclaw.json
+# on first boot via regenerateOpenClawConfig(); leaving the prewarm token,
+# devices/, or agents/ state behind would either leak build-time secrets or
+# confuse the cold-start cascade.
+#
+# OpenClaw 4.x: preserve plugin-runtime-deps/ (the prewarm populated it).
+# OpenClaw 5.x: no plugin-runtime-deps/ exists — the symlink-based model
+#   means nothing to preserve; clean up everything and move on.
+if ls -d /root/.openclaw/plugin-runtime-deps/openclaw-* >/dev/null 2>&1; then
+  echo "[prewarm] plugin-runtime-deps cache produced (OC 4.x path)"
+  find /root/.openclaw -mindepth 1 -maxdepth 1 \
+    ! -name plugin-runtime-deps -exec rm -rf {} +
+  du -sh /root/.openclaw/plugin-runtime-deps/openclaw-*/
+else
+  echo "[prewarm] plugin-runtime-deps not present (expected for OC 5.x+ — symlink model)"
+  rm -rf /root/.openclaw
 fi
 
-du -sh /root/.openclaw/plugin-runtime-deps/openclaw-*/
+rm -f /tmp/prewarm.log
