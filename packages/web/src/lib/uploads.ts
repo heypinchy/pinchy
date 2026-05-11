@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "crypto";
+import { createHash, randomBytes, randomUUID } from "crypto";
 import { link, mkdir, readFile, unlink, writeFile } from "fs/promises";
 import { join, parse as parsePath } from "path";
 import { getWorkspacePath } from "@/lib/workspace";
@@ -121,4 +121,39 @@ export async function persistAttachment(
   }
 
   throw new UploadSlotExhaustedError(filename, maxCollisions);
+}
+
+export interface PersistStagedUploadParams {
+  workspaceRoot: string;
+  filename: string;
+  buffer: Buffer;
+}
+
+export interface StagedUploadRef {
+  uploadId: string;
+  relativePath: string;
+  contentHash: string;
+}
+
+/**
+ * Writes the buffer to `<workspaceRoot>/.staging/<uploadId>/<filename>`.
+ *
+ * Each call generates a fresh UUID for the staging directory, so concurrent
+ * uploads of the same filename never collide. This is the first phase of the
+ * two-phase upload flow; the file is promoted to its durable path later.
+ */
+export async function persistStagedUpload(
+  params: PersistStagedUploadParams
+): Promise<StagedUploadRef> {
+  const { workspaceRoot, filename, buffer } = params;
+  const uploadId = randomUUID();
+  const stagingDir = join(workspaceRoot, ".staging", uploadId);
+  await mkdir(stagingDir, { recursive: true });
+  await writeFile(join(stagingDir, filename), buffer);
+  const contentHash = createHash("sha256").update(buffer).digest("hex");
+  return {
+    uploadId,
+    relativePath: `.staging/${uploadId}/${filename}`,
+    contentHash,
+  };
 }
