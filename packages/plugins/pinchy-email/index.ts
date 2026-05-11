@@ -275,36 +275,15 @@ const plugin = {
     // 1. email_list
     api.registerTool(
       (ctx: PluginToolContext) => {
-        // ctx may be undefined when OpenClaw probes the factory at registerTool()
-        // time (before any session context is available — observed on hot-reload
-        // in OC 5.3). Use optional chaining to prevent a TypeError crash, which
-        // would silently unregister the tool for the rest of the gateway's life.
+        // ctx?.agentId: optional chaining guards against OC calling the factory
+        // with undefined ctx at registerTool() probe time. Returning null at
+        // probe time is correct — it signals to OC that this is a per-session
+        // factory (called again at session start with the real agentId). A
+        // non-null return at probe time causes OC to register a static tool and
+        // never invoke the factory per-session, making the tool permanently
+        // unavailable. Matches the pinchy-web / pinchy-odoo factory pattern.
         const agentId = ctx?.agentId;
-        console.log(
-          `[pinchy-email] email_list factory — ctx=${ctx === undefined ? "undefined" : ctx === null ? "null" : JSON.stringify(ctx)} agentId=${agentId ?? "none"} known=${JSON.stringify(Object.keys(agentConfigs))}`,
-        );
-        if (!agentId) {
-          // Return a valid descriptor so OC keeps the tool in its registry.
-          // execute() will be superseded by the session-time factory call that
-          // carries the real agentId; if somehow called without one, it fails fast.
-          return {
-            name: "email_list",
-            label: "Email List",
-            description:
-              "List emails from a mailbox folder. Returns email summaries with sender, subject, date, and snippet. Canonical folder names: INBOX, SENT, DRAFTS, TRASH, SPAM.",
-            parameters: {
-              type: "object",
-              properties: {
-                folder: { type: "string", enum: ["INBOX", "SENT", "DRAFTS", "TRASH", "SPAM"] },
-                limit: { type: "number" },
-                unreadOnly: { type: "boolean" },
-              },
-            },
-            async execute() {
-              return errorResult(new Error("email_list: no agent session context"));
-            },
-          };
-        }
+        if (!agentId) return null;
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
@@ -364,15 +343,7 @@ const plugin = {
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx?.agentId;
-        if (!agentId) {
-          return {
-            name: "email_read",
-            label: "Email Read",
-            description: "Read the full content of a specific email by its ID.",
-            parameters: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
-            async execute() { return errorResult(new Error("email_read: no agent session context")); },
-          };
-        }
+        if (!agentId) return null;
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
@@ -419,15 +390,7 @@ const plugin = {
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx?.agentId;
-        if (!agentId) {
-          return {
-            name: "email_search",
-            label: "Email Search",
-            description: "Search emails using structured DSL fields.",
-            parameters: { type: "object", properties: {} },
-            async execute() { return errorResult(new Error("email_search: no agent session context")); },
-          };
-        }
+        if (!agentId) return null;
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
@@ -513,15 +476,7 @@ const plugin = {
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx?.agentId;
-        if (!agentId) {
-          return {
-            name: "email_draft",
-            label: "Email Draft",
-            description: "Create a draft email (not sent).",
-            parameters: { type: "object", properties: { to: { type: "string" }, subject: { type: "string" }, body: { type: "string" } }, required: ["to", "subject", "body"] },
-            async execute() { return errorResult(new Error("email_draft: no agent session context")); },
-          };
-        }
+        if (!agentId) return null;
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
@@ -580,15 +535,7 @@ const plugin = {
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx?.agentId;
-        if (!agentId) {
-          return {
-            name: "email_send",
-            label: "Email Send",
-            description: "Send an email immediately.",
-            parameters: { type: "object", properties: { to: { type: "string" }, subject: { type: "string" }, body: { type: "string" } }, required: ["to", "subject", "body"] },
-            async execute() { return errorResult(new Error("email_send: no agent session context")); },
-          };
-        }
+        if (!agentId) return null;
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
