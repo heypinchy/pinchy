@@ -1,6 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { isOpenClawLocalBaseUrl } from "@/lib/openclaw-local-url";
 
+vi.mock("@/lib/model-vision", () => ({
+  isModelVisionCapable: vi.fn((modelId: string) => {
+    const provider = modelId.split("/")[0];
+    return ["anthropic", "google", "openai", "ollama-cloud"].includes(provider);
+  }),
+  setOllamaLocalVisionModels: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("fs")>();
   const writeFileSyncMock = vi.fn();

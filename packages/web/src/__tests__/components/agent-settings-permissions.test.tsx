@@ -19,6 +19,11 @@ let capturedOdooOnChange:
   | null = null;
 let capturedWebSearchOnChange: ((v: AgentPluginConfig["pinchy-web"]) => void) | null = null;
 
+vi.mock("@/lib/model-vision", () => ({
+  isModelVisionCapable: vi.fn((modelId: string) => modelId.startsWith("anthropic/")),
+  setOllamaLocalVisionModels: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("@/components/odoo-permission-section", () => ({
   OdooPermissionSection: ({
     onChange,

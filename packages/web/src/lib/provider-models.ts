@@ -2,8 +2,7 @@ import { PROVIDERS, resolveProviderBaseUrl, type ProviderName } from "@/lib/prov
 import { getSetting } from "@/lib/settings";
 import { TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS } from "@/lib/ollama-cloud-models";
 
-// Re-export vision utilities for backwards compatibility
-export { VISION_CAPABLE_PROVIDERS, isModelVisionCapable } from "@/lib/model-vision";
+export { isModelVisionCapable } from "@/lib/model-vision";
 import { setOllamaLocalVisionModels } from "@/lib/model-vision";
 
 let cachedResult: ProviderModels[] | null = null;
@@ -464,7 +463,7 @@ export async function fetchProviderModels(): Promise<ProviderModels[]> {
       const visionModels = new Set(
         ollamaModels.filter((m) => m.capabilities.vision).map((m) => m.id.replace("ollama/", ""))
       );
-      setOllamaLocalVisionModels(visionModels);
+      await setOllamaLocalVisionModels(visionModels);
 
       results.push({
         id: "ollama-local" as ProviderName,

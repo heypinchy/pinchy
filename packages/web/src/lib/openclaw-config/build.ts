@@ -208,7 +208,7 @@ function deepMerge(
  * `ollama-local` is intentionally absent: vision capability depends on
  * which model the user has pulled, and `getDefaultModel("ollama-local")`
  * returns `ollama/llama3.2` which is text-only. A future change could
- * inspect `ollamaLocalVisionCache` here.
+ * call `isModelVisionCapable` against the configured default here.
  */
 const PDF_MODEL_PREFERENCE: readonly ProviderName[] = [
   "anthropic", // native PDF
