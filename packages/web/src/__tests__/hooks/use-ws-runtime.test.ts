@@ -86,6 +86,15 @@ function makeUserMessage(text: string) {
   };
 }
 
+vi.mock("@/lib/upload-attachment", () => ({
+  uploadAttachment: vi.fn(),
+}));
+
+const mockToast = vi.fn();
+vi.mock("sonner", () => ({
+  toast: (...args: unknown[]) => mockToast(...args),
+}));
+
 const mockTriggerRestart = vi.fn();
 vi.mock("@/components/restart-provider", () => ({
   useRestart: () => ({ isRestarting: false, triggerRestart: mockTriggerRestart }),
@@ -4848,5 +4857,210 @@ describe("useWsRuntime", () => {
       );
       expect(errorBubbles).toHaveLength(0);
     });
+  });
+});
+
+// ── Two-phase upload send path (attachmentIds) ────────────────────────────────
+
+import * as uploadModule from "@/lib/upload-attachment";
+
+const localStorageStore: Record<string, string> = {};
+
+describe("Two-phase upload: attachmentIds in WS payload", () => {
+  let spyCreateObjectURL: ReturnType<typeof vi.spyOn>;
+  let spyRevokeObjectURL: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    wsInstances = [];
+    // Re-stub WebSocket each time since afterEach calls vi.unstubAllGlobals()
+    vi.stubGlobal("WebSocket", MockWebSocket);
+    spyCreateObjectURL = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:mock-url");
+    spyRevokeObjectURL = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => localStorageStore[key] ?? null,
+      setItem: (key: string, value: string) => {
+        localStorageStore[key] = value;
+      },
+      removeItem: (key: string) => {
+        delete localStorageStore[key];
+      },
+      clear: () => {
+        Object.keys(localStorageStore).forEach((k) => delete localStorageStore[k]);
+      },
+    });
+    Object.keys(localStorageStore).forEach((k) => delete localStorageStore[k]);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    spyCreateObjectURL.mockRestore();
+    spyRevokeObjectURL.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("includes attachmentIds from ready pendingUploads in the WS payload", async () => {
+    vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
+      id: "upload-id-1",
+      filename: "test.pdf",
+    });
+
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    // Add a file via addPendingUpload and wait for it to reach "ready"
+    await act(async () => {
+      result.current.addPendingUpload(new File(["data"], "test.pdf", { type: "application/pdf" }));
+    });
+
+    expect(result.current.pendingUploads[0]?.state).toBe("ready");
+
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "see this" }],
+        parentId: "root",
+      });
+    });
+
+    // calls[0] is the history request, calls[1] is the user message
+    const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
+    expect(sentMessage.type).toBe("message");
+    expect(sentMessage.attachmentIds).toEqual(["upload-id-1"]);
+  });
+
+  it("clears ready pendingUploads after send", async () => {
+    vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
+      id: "upload-id-2",
+      filename: "doc.pdf",
+    });
+
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    await act(async () => {
+      result.current.addPendingUpload(new File(["data"], "doc.pdf", { type: "application/pdf" }));
+    });
+
+    expect(result.current.pendingUploads).toHaveLength(1);
+
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "send it" }],
+        parentId: "root",
+      });
+    });
+
+    expect(result.current.pendingUploads).toHaveLength(0);
+  });
+
+  it("does not send when only uploading (not ready) uploads exist and text is empty", async () => {
+    vi.mocked(uploadModule.uploadAttachment).mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    // calls[0] is the history request — clear it
+    ws.send.mockClear();
+
+    await act(async () => {
+      result.current.addPendingUpload(new File(["data"], "doc.pdf", { type: "application/pdf" }));
+    });
+
+    // File is still "uploading" (promise never resolves) — send with empty text
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "" }],
+        parentId: "root",
+      });
+    });
+
+    // No WS message frame should have been sent
+    expect(ws.send).not.toHaveBeenCalled();
+  });
+});
+
+describe("PROTOCOL_OUTDATED error handling", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    wsInstances = [];
+    // Re-stub WebSocket because "Two-phase upload" afterEach calls vi.unstubAllGlobals()
+    vi.stubGlobal("WebSocket", MockWebSocket);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("shows toast with reload action and stops running when PROTOCOL_OUTDATED is received", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+
+    expect(result.current.isRunning).toBe(true);
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({ type: "error", code: "PROTOCOL_OUTDATED" }),
+      });
+    });
+
+    expect(result.current.isRunning).toBe(false);
+    expect(mockToast).toHaveBeenCalledOnce();
+    const [toastMsg, toastOpts] = mockToast.mock.calls[0] as [
+      string,
+      { action?: { label: string } },
+    ];
+    expect(toastMsg).toMatch(/reload/i);
+    expect(toastOpts?.action?.label).toMatch(/reload/i);
+  });
+
+  it("does NOT add PROTOCOL_OUTDATED to the message list", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+
+    const messagesBefore = result.current.runtime.messages.length;
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({ type: "error", code: "PROTOCOL_OUTDATED" }),
+      });
+    });
+
+    expect(result.current.runtime.messages).toHaveLength(messagesBefore);
   });
 });

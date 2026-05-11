@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { toast } from "sonner";
 import { useRestart } from "@/components/restart-provider";
 import { uuid } from "@/lib/uuid";
 import { uploadAttachment } from "@/lib/upload-attachment";
@@ -1299,6 +1300,23 @@ export function useWsRuntime(agentId: string): {
           clearStuckTimer();
           setIsDelayed(false);
 
+          // PROTOCOL_OUTDATED: the server rejected a legacy frame shape.
+          // Surface a persistent reload toast — the tab needs the new bundle
+          // before the user can send anything. Resetting hasReceivedChunkRef
+          // ensures a follow-up retry classifies as "send_failure", not
+          // "partial_stream_failure" (issue #324).
+          if (data.code === "PROTOCOL_OUTDATED") {
+            toast("Protocol outdated. Please reload the page.", {
+              description: "Your client is using an old message format.",
+              action: { label: "Reload", onClick: () => window.location.reload() },
+              duration: Infinity,
+            });
+            isRunningRef.current = false;
+            hasReceivedChunkRef.current = false;
+            setIsRunning(false);
+            return;
+          }
+
           // Tier 2b: cross-check runId on watchdog-timeout error frames
           // against the in-flight runId we recorded from the activeRun
           // signal. A mismatch means the server forcibly aborted some
@@ -1332,6 +1350,15 @@ export function useWsRuntime(agentId: string): {
             ? upstreamFormatErrorParsed.data
             : undefined;
 
+          // All attachment-related server error codes map onto the dedicated
+          // "Invalid file" UI so the user sees the server's actionable message
+          // instead of a generic "unknown error" fallback (issue #324).
+          const isAttachmentErrorCode =
+            data.code === "attachment_invalid" ||
+            data.code === "attachment_not_found" ||
+            data.code === "attachment_expired" ||
+            data.code === "attachment_already_attached";
+
           const error: ChatError = data.providerError
             ? {
                 agentName: data.agentName,
@@ -1340,7 +1367,7 @@ export function useWsRuntime(agentId: string): {
                 modelUnavailable: data.modelUnavailable,
                 upstreamFormatError,
               }
-            : data.code === "attachment_invalid"
+            : isAttachmentErrorCode
               ? { attachmentInvalid: true, message: data.message }
               : { message: data.message || "An unknown error occurred." };
 
@@ -1592,12 +1619,22 @@ export function useWsRuntime(agentId: string): {
         compressedImages.push(await fileToDataUrl(result.file));
       }
 
-      if (!text.trim() && compressedImages.length === 0 && binaryFiles.length === 0) return;
+      // Gather ready two-phase uploads for the new attachmentIds path.
+      const readyUploads = pendingUploads.filter((u) => u.state === "ready");
+      const attachmentIds = readyUploads
+        .map((u) => u.uploadId)
+        .filter((id): id is string => Boolean(id));
+
+      if (
+        !text.trim() &&
+        compressedImages.length === 0 &&
+        binaryFiles.length === 0 &&
+        attachmentIds.length === 0
+      )
+        return;
       setPayloadRejected(false);
 
       // Combine images and binary files into a single content array for the WS payload.
-      // TODO(#task-7.2): migrate to two-phase upload (attachmentIds) path; the server
-      // now rejects image_url content parts with PROTOCOL_OUTDATED.
       const allFileUrls = [...compressedImages, ...binaryFiles.map((f) => f.url)];
       const allFilenames = [
         // Images don't have meaningful filenames in the current flow; empty strings
@@ -1633,12 +1670,18 @@ export function useWsRuntime(agentId: string): {
             timestamp: new Date().toISOString(),
             status: "sending",
             ...(compressedImages.length > 0 && { images: compressedImages }),
-            ...(binaryFiles.length > 0 && {
-              files: binaryFiles.map((f) => ({
-                filename: f.name,
-                // f.url is `data:<mime>;base64,<data>` — extract mime up to the `;`
-                mimeType: f.url.slice("data:".length, f.url.indexOf(";")),
-              })),
+            ...((binaryFiles.length > 0 || readyUploads.length > 0) && {
+              files: [
+                ...binaryFiles.map((f) => ({
+                  filename: f.name,
+                  // f.url is `data:<mime>;base64,<data>` — extract mime up to the `;`
+                  mimeType: f.url.slice("data:".length, f.url.indexOf(";")),
+                })),
+                ...readyUploads.map((u) => ({
+                  filename: u.file.name,
+                  mimeType: u.file.type,
+                })),
+              ],
             }),
           },
         ])
@@ -1663,11 +1706,25 @@ export function useWsRuntime(agentId: string): {
         type: "message",
         content: buildWsContent(text, allFileUrls.length > 0 ? allFileUrls : undefined),
         ...(hasFilenames && { filenames: allFilenames }),
+        ...(attachmentIds.length > 0 && { attachmentIds }),
         agentId,
         clientMessageId,
       });
 
       sendOrQueue(payload);
+
+      // Clear sent uploads and revoke their object URLs
+      if (readyUploads.length > 0) {
+        const sentIds = new Set(readyUploads.map((u) => u.localId));
+        setPendingUploads((prev) => {
+          prev
+            .filter((u) => sentIds.has(u.localId))
+            .forEach((u) => {
+              if (u.objectUrl) URL.revokeObjectURL(u.objectUrl);
+            });
+          return prev.filter((u) => !sentIds.has(u.localId));
+        });
+      }
 
       // Start a 10-second ack timeout. If no ack arrives before the timer
       // fires, dispatch a "timeout" action to transition the message to "failed".
@@ -1679,7 +1736,7 @@ export function useWsRuntime(agentId: string): {
       }, 10_000);
       pendingAckTimers.current.set(clientMessageId, ackTimer);
     },
-    [agentId, dispatchMessages, sendOrQueue]
+    [agentId, dispatchMessages, sendOrQueue, pendingUploads] // setPendingUploads is stable (useState setter)
   );
 
   const onRetryContinue = useCallback(
