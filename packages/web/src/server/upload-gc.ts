@@ -146,3 +146,35 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
 
   return { swept, sweepId };
 }
+
+const GC_INTERVAL_MS = 60 * 60 * 1000;
+
+let _gcInterval: ReturnType<typeof setInterval> | null = null;
+let _gcStartupTimeout: ReturnType<typeof setTimeout> | null = null;
+
+export function startUploadGc(): void {
+  _gcInterval = setInterval(() => {
+    sweepExpiredUploads().catch((err) => console.error("[upload-gc] sweep failed:", err));
+  }, GC_INTERVAL_MS);
+
+  _gcStartupTimeout = setTimeout(() => {
+    _gcStartupTimeout = null;
+    sweepExpiredUploads().catch((err) => console.error("[upload-gc] sweep failed:", err));
+  }, 30_000);
+}
+
+export function stopUploadGc(): void {
+  if (_gcInterval !== null) {
+    clearInterval(_gcInterval);
+    _gcInterval = null;
+  }
+  if (_gcStartupTimeout !== null) {
+    clearTimeout(_gcStartupTimeout);
+    _gcStartupTimeout = null;
+  }
+}
+
+// Test-only helper (mirrors usage-poller pattern)
+export function _isGcRunning(): boolean {
+  return _gcInterval !== null;
+}
