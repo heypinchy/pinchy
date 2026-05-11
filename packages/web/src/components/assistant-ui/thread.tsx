@@ -62,7 +62,13 @@ import { apiPatch } from "@/lib/api-client";
 import { parseUnsupportedAttachmentError } from "@/lib/chat-errors";
 
 export type RecoveryStateSetter = (state: { files: File[]; model: string } | null) => void;
-export const RecoveryContext = createContext<RecoveryStateSetter>(() => {});
+
+type RecoveryContextValue = {
+  recoveryState: { files: File[]; model: string } | null;
+  setRecoveryState: RecoveryStateSetter;
+};
+
+export const RecoveryContext = createContext<RecoveryContextValue | null>(null);
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -96,7 +102,7 @@ const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMess
   } | null>(null);
 
   return (
-    <RecoveryContext.Provider value={setRecoveryState}>
+    <RecoveryContext.Provider value={{ recoveryState, setRecoveryState }}>
       <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4">
         {!isReconcilingMessages && (
           <>
@@ -115,7 +121,7 @@ const ThreadInner: FC<{ isReconcilingMessages: boolean }> = ({ isReconcilingMess
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-3xl bg-background pb-4 md:pb-6">
           <ThreadScrollToBottom />
-          <Composer recoveryState={recoveryState} setRecoveryState={setRecoveryState} />
+          <Composer />
         </ThreadPrimitive.ViewportFooter>
       </ThreadPrimitive.Viewport>
     </RecoveryContext.Provider>
@@ -378,12 +384,21 @@ export function PendingUploadChips() {
   );
 }
 
-interface ComposerProps {
-  recoveryState: { files: File[]; model: string } | null;
-  setRecoveryState: RecoveryStateSetter;
-}
+export const Composer: FC = () => {
+  const recoveryCtx = useContext(RecoveryContext);
+  const [localRecoveryState, setLocalRecoveryState] = useState<{
+    files: File[];
+    model: string;
+  } | null>(null);
 
-export const Composer: FC<ComposerProps> = ({ recoveryState, setRecoveryState }) => {
+  // When rendered inside ThreadInner, use the shared context state so that
+  // AssistantErrorOrContent can also trigger the recovery panel. When rendered
+  // standalone (e.g. in tests), fall back to local state.
+  const recoveryState = recoveryCtx ? recoveryCtx.recoveryState : localRecoveryState;
+  const setRecoveryState: RecoveryStateSetter = recoveryCtx
+    ? recoveryCtx.setRecoveryState
+    : setLocalRecoveryState;
+
   const agentId = useContext(AgentIdContext);
   const canEditAgent = useContext(CanEditContext);
   const isAdmin = useContext(IsAdminContext);
@@ -541,7 +556,8 @@ const AssistantErrorOrContent: FC<{ actionSlot?: React.ReactNode }> = ({ actionS
   const error = useMessage((s) => s.metadata?.custom?.error as ChatError | undefined);
   const agentId = useContext(AgentIdContext) ?? "";
   const { getAgent } = useAgentsContext();
-  const setRecoveryState = useContext(RecoveryContext);
+  const recoveryCtx = useContext(RecoveryContext);
+  const setRecoveryState = recoveryCtx?.setRecoveryState ?? (() => {});
 
   const providerError = error?.providerError;
   const unsupported = providerError ? parseUnsupportedAttachmentError(providerError) : null;
