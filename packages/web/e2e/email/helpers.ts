@@ -53,24 +53,9 @@ export async function seedSetup(): Promise<void> {
     return;
   }
 
-  // Seed provider config BEFORE calling the setup API so that regenerateOpenClawConfig()
-  // (called inside POST /api/setup) picks up the ollama-local provider and creates
-  // Smithers with model "ollama/llama3.2". The fake-ollama Docker service is already
-  // healthy at this point (depends_on: service_healthy in docker-compose.email-test.yml).
-  const ollamaUrl = process.env.OLLAMA_LOCAL_URL || "http://fake-ollama:11435";
-  await sql`
-    INSERT INTO settings (key, value, encrypted)
-    VALUES ('ollama_local_url', ${ollamaUrl}, false)
-    ON CONFLICT (key) DO UPDATE SET value = ${ollamaUrl}
-  `;
-  await sql`
-    INSERT INTO settings (key, value, encrypted)
-    VALUES ('default_provider', 'ollama-local', false)
-    ON CONFLICT (key) DO UPDATE SET value = 'ollama-local'
-  `;
+  await sql.end();
 
   // Create admin via Pinchy's setup API.
-  // This calls regenerateOpenClawConfig() which reads the settings seeded above.
   const setupRes = await fetch(`${PINCHY_URL}/api/setup`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Origin: PINCHY_URL },
@@ -83,11 +68,26 @@ export async function seedSetup(): Promise<void> {
 
   if (!setupRes.ok) {
     const text = await setupRes.text();
-    await sql.end();
     throw new Error(`Setup failed: ${setupRes.status} ${text}`);
   }
 
-  await sql.end();
+  // Configure ollama-local provider via the setup/provider API.
+  // Using Pinchy's own write path (setSetting + regenerateOpenClawConfig) ensures the
+  // settings cache is populated correctly before config generation — direct DB inserts
+  // would be invisible to the in-memory cache and produce a config with no models section.
+  const cookie = await login();
+  const ollamaUrl = process.env.OLLAMA_LOCAL_URL || "http://fake-ollama:11435";
+  const providerRes = await fetch(`${PINCHY_URL}/api/setup/provider`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: cookie, Origin: PINCHY_URL },
+    body: JSON.stringify({ provider: "ollama-local", url: ollamaUrl }),
+  });
+
+  if (!providerRes.ok) {
+    const text = await providerRes.text();
+    throw new Error(`Provider setup failed: ${providerRes.status} ${text}`);
+  }
+
   await new Promise((r) => setTimeout(r, 3000));
   console.log(`[email-setup] Admin created: ${_adminEmail}`);
 }
