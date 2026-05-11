@@ -36,107 +36,16 @@ import { parseOdooSubdomainHint, generateConnectionName } from "@/lib/integratio
 import { normalizeUrl } from "@/lib/url";
 import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
-import {
-  OdooIcon,
-  GoogleIcon,
-  BraveIcon,
-  GitHubIcon,
-  NotionIcon,
-  LinearIcon,
-} from "./integration-icons";
 import { docsUrl } from "./docs-link";
 import { MCP_PRESETS, getMcpPreset } from "@/lib/integrations/mcp-presets";
 import type { McpTool } from "@/lib/integrations/types";
 import { isMcpEnabledClient } from "@/lib/feature-flags";
-
-// Simple MCP plug icon
-function McpIcon({ className }: { className?: string }) {
-  return (
-    <svg
-      xmlns="http://www.w3.org/2000/svg"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      className={className}
-    >
-      <path d="M12 2L2 7l10 5 10-5-10-5z" />
-      <path d="M2 17l10 5 10-5" />
-      <path d="M2 12l10 5 10-5" />
-    </svg>
-  );
-}
-
-interface IntegrationType {
-  id: string;
-  name: string;
-  description: string;
-  icon: React.ComponentType<{ className?: string }>;
-}
-
-const INTEGRATION_TYPES: IntegrationType[] = [
-  {
-    id: "odoo",
-    name: "Odoo",
-    description: "Connect your Odoo ERP to query sales, inventory, and customer data.",
-    icon: OdooIcon,
-  },
-  {
-    id: "google",
-    name: "Google",
-    description: "Connect your Google account to sync email via Gmail.",
-    icon: GoogleIcon,
-  },
-  {
-    id: "web-search",
-    name: "Web Search (Brave)",
-    description: "Search the web and fetch pages via Brave Search API.",
-    icon: BraveIcon,
-  },
-  // MCP integrations — surface popular providers as first-class options.
-  // All four route through the same MCP connect step; the internal `preset`
-  // discriminator (github/notion/linear/generic) drives URL, transport,
-  // tool prefix, and token instructions.
-  {
-    id: "mcp-github",
-    name: "GitHub",
-    description: "Manage repos, issues, and PRs through GitHub's MCP server.",
-    icon: GitHubIcon,
-  },
-  {
-    id: "mcp-notion",
-    name: "Notion",
-    description: "Read and update pages and databases in your Notion workspace.",
-    icon: NotionIcon,
-  },
-  {
-    id: "mcp-linear",
-    name: "Linear",
-    description: "Query issues, projects, and teams from your Linear workspace.",
-    icon: LinearIcon,
-  },
-  {
-    id: "mcp-custom",
-    name: "Custom MCP server",
-    description: "Bring your own MCP-compatible server URL and token.",
-    icon: McpIcon,
-  },
-];
-
-// Map an INTEGRATION_TYPES.id like `mcp-github` to the internal preset
-// discriminator used by the backend / mcp-presets registry.
-const MCP_TYPE_TO_PRESET: Record<string, "github" | "notion" | "linear" | "generic"> = {
-  "mcp-github": "github",
-  "mcp-notion": "notion",
-  "mcp-linear": "linear",
-  "mcp-custom": "generic",
-};
-
-function isMcpType(type: string | null | undefined): type is keyof typeof MCP_TYPE_TO_PRESET {
-  return typeof type === "string" && type in MCP_TYPE_TO_PRESET;
-}
+import {
+  INTEGRATION_TYPES,
+  MCP_TYPE_TO_PRESET,
+  isMcpType,
+  type IntegrationTypeId,
+} from "./integration-types";
 
 // --- Wizard state ---
 
@@ -667,7 +576,13 @@ interface AddIntegrationDialogProps {
   onOpenChange: (open: boolean) => void;
   onSuccess: () => void;
   existingTypes?: string[];
-  initialType?: "google";
+  /**
+   * Pre-selects a type and skips the in-dialog type picker. The dialog still
+   * renders its own picker step when this is undefined (used by the legacy
+   * full-modal flow). New callers (e.g. the /settings/integrations/new page)
+   * should always supply this so the dialog only ever shows the connect step.
+   */
+  initialType?: IntegrationTypeId;
 }
 
 export function AddIntegrationDialog({
@@ -686,6 +601,14 @@ export function AddIntegrationDialog({
     : INTEGRATION_TYPES.filter((t) => !isMcpType(t.id));
   const [step, setStep] = useState<WizardStep>(initialType ? "connect" : "type");
   const [selectedType, setSelectedType] = useState<string | null>(initialType ?? null);
+
+  // When initialType is an MCP type, seed the mcp form with the preset's
+  // fixed URL/transport so the connect step renders the right named-preset
+  // shape from the first render. Without this the form would briefly show
+  // the empty "generic" defaults until the user touched the dropdown.
+  const mcpInitialPreset =
+    initialType && isMcpType(initialType) ? MCP_TYPE_TO_PRESET[initialType] : "generic";
+  const mcpInitialPresetCfg = getMcpPreset(mcpInitialPreset);
 
   // Connect step results
   const [connectionResult, setConnectionResult] = useState<{
@@ -737,9 +660,9 @@ export function AddIntegrationDialog({
   const mcpForm = useForm<McpFormValues>({
     resolver: zodResolver(mcpFormSchema),
     defaultValues: {
-      preset: "generic",
-      url: "",
-      transport: "http",
+      preset: mcpInitialPreset,
+      url: mcpInitialPresetCfg.defaultUrl ?? "",
+      transport: mcpInitialPresetCfg.defaultTransport,
       token: "",
       name: "",
     },
@@ -767,7 +690,13 @@ export function AddIntegrationDialog({
     setMcpTestError(null);
     form.reset();
     webSearchForm.reset();
-    mcpForm.reset({ preset: "generic", url: "", transport: "http", token: "", name: "" });
+    mcpForm.reset({
+      preset: mcpInitialPreset,
+      url: mcpInitialPresetCfg.defaultUrl ?? "",
+      transport: mcpInitialPresetCfg.defaultTransport,
+      token: "",
+      name: "",
+    });
   }
 
   function handleClose(isOpen: boolean) {
