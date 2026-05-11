@@ -1042,7 +1042,10 @@ describe("POST /api/agents", () => {
     expect(getDefaultModel).toHaveBeenCalledWith("anthropic");
   });
 
-  it("returns 400 with template_capability_unavailable when resolver throws", async () => {
+  it("returns 422 with template_capability_unavailable when resolver throws", async () => {
+    const { appendAuditLog } = await import("@/lib/audit");
+    const spy = vi.mocked(appendAuditLog);
+
     mockResolveModelForTemplate.mockRejectedValueOnce(
       new TemplateCapabilityUnavailableError(
         ["vision"],
@@ -1061,11 +1064,21 @@ describe("POST /api/agents", () => {
     });
 
     const response = await POST(request);
-    expect(response.status).toBe(400);
+    expect(response.status).toBe(422);
     const body = await response.json();
     expect(body.error).toBe("template_capability_unavailable");
     expect(body.missingCapabilities).toContain("vision");
     expect(body.docsUrl).toContain("ollama-setup");
+
+    // Should write a failure audit log
+    const failureCall = spy.mock.calls.find(
+      ([arg]) =>
+        (arg as { eventType: string }).eventType === "agent.create" &&
+        (arg as { outcome: string }).outcome === "failure"
+    );
+    expect(failureCall).toBeDefined();
+    const detail = (failureCall![0] as { detail: Record<string, unknown> }).detail;
+    expect(detail.missingCapabilities).toContain("vision");
   });
 
   it("merges defaultAllowedTools from request body into template allowedTools", async () => {

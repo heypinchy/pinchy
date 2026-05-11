@@ -124,6 +124,17 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       modelSelectionSource = "template-hint";
     } catch (err) {
       if (err instanceof TemplateCapabilityUnavailableError) {
+        await appendAuditLog({
+          actorType: "user",
+          actorId: session.user.id!,
+          eventType: "agent.create",
+          outcome: "failure",
+          detail: {
+            templateId,
+            missingCapabilities: err.missingCapabilities,
+            provider: err.provider,
+          },
+        });
         return NextResponse.json(
           {
             error: "template_capability_unavailable",
@@ -131,7 +142,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
             missingCapabilities: err.missingCapabilities,
             docsUrl: err.docsUrl,
           },
-          { status: 400 }
+          { status: 422 }
         );
       }
       throw err;
