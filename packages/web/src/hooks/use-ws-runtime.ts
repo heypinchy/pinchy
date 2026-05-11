@@ -427,6 +427,7 @@ export function useWsRuntime(agentId: string): {
       const connectionAgentId = agentId;
 
       ws.onopen = () => {
+        if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
         setIsConnected(true);
         setReconnectExhausted(false);
         setPayloadRejected(false);
@@ -441,7 +442,7 @@ export function useWsRuntime(agentId: string): {
       };
 
       ws.onclose = (event?: CloseEvent) => {
-        if (connectionAgentId !== agentIdRef.current) return;
+        if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
         if (wsRef.current === ws) wsRef.current = null;
         setIsConnected(false);
         setIsDelayed(false);
@@ -540,7 +541,7 @@ export function useWsRuntime(agentId: string): {
       };
 
       ws.onerror = () => {
-        if (connectionAgentId !== agentIdRef.current) return;
+        if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
         // onclose always fires after onerror — let onclose handle isRunning and
         // the disconnect error injection so the user sees the right feedback.
         setIsConnected(false);
@@ -548,7 +549,7 @@ export function useWsRuntime(agentId: string): {
       };
 
       ws.onmessage = (event) => {
-        if (connectionAgentId !== agentIdRef.current) return;
+        if (connectionAgentId !== agentIdRef.current || wsRef.current !== ws) return;
         try {
           const data = JSON.parse(event.data);
 
@@ -840,7 +841,13 @@ export function useWsRuntime(agentId: string): {
       ws.send(payload);
     } else {
       pendingMessageRef.current = payload;
-      if (ws?.readyState === WebSocket.CONNECTING || reconnectTimerRef.current) return;
+      if (
+        ws?.readyState === WebSocket.CONNECTING ||
+        ws?.readyState === WebSocket.CLOSING ||
+        reconnectTimerRef.current
+      ) {
+        return;
+      }
       connectRef.current?.();
     }
   }, []);

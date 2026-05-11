@@ -1789,6 +1789,43 @@ describe("useWsRuntime", () => {
       expect(sentMessages).toHaveLength(1);
       expect(JSON.parse(sentMessages[0][0]).content).toBe("Sent while offline");
     });
+
+    it("queues while the WebSocket is closing without opening an overlapping connection", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws1 = wsInstances[0];
+
+      act(() => {
+        ws1.onopen?.();
+      });
+
+      ws1.readyState = MockWebSocket.CLOSING;
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Sent while closing" }],
+          parentId: "root",
+        });
+      });
+
+      expect(wsInstances).toHaveLength(1);
+
+      act(() => {
+        ws1.simulateClose();
+        vi.advanceTimersByTime(1000);
+      });
+
+      const ws2 = wsInstances[1];
+      ws2.readyState = MockWebSocket.OPEN;
+      act(() => {
+        ws2.onopen?.();
+      });
+
+      const sentMessages = ws2.send.mock.calls.filter(
+        (call: string[]) => JSON.parse(call[0]).type === "message"
+      );
+      expect(sentMessages).toHaveLength(1);
+      expect(JSON.parse(sentMessages[0][0]).content).toBe("Sent while closing");
+    });
   });
 
   describe("disconnect during active stream", () => {
@@ -2099,7 +2136,7 @@ describe("useWsRuntime", () => {
           hasInitialContent: ws.hasInitialContent,
           isRunning: ws.isRunning,
           reconnectExhausted: ws.reconnectExhausted,
-          payloadRejected: Boolean((ws as { payloadRejected?: boolean }).payloadRejected),
+          payloadRejected: ws.payloadRejected,
           configuring: false,
         });
         return { ws, status };

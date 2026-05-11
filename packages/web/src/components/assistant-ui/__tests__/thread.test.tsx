@@ -468,6 +468,12 @@ describe("Composer input vs send disabled state", () => {
     expect(screen.getByRole("button", { name: /send message/i })).not.toBeDisabled();
   });
 
+  it("enables send when the previous payload was rejected", async () => {
+    await renderComposerWith({ kind: "payloadRejected" });
+    expect(screen.getByRole("textbox")).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: /send message/i })).not.toBeDisabled();
+  });
+
   it("keeps input enabled but disables send when 'starting'", async () => {
     // Same intent as the 'unavailable' case: let users start typing while
     // history loads; submission stays gated until the runtime is ready.

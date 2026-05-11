@@ -277,7 +277,7 @@ export const Composer: FC = () => {
 
 const ComposerAction: FC = () => {
   const chatStatus = useContext(ChatStatusContext);
-  const sendAllowed = chatStatus.kind === "ready";
+  const sendAllowed = chatStatus.kind === "ready" || chatStatus.kind === "payloadRejected";
 
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-1 md:mb-2 flex items-center justify-between">
