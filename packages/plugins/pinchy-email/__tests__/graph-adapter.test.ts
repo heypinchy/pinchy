@@ -135,3 +135,60 @@ describe("GraphAdapter.search", () => {
     );
   });
 });
+
+describe("GraphAdapter.draft", () => {
+  beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("draft({to,subject,body}) POSTs to /me/messages and returns draftId", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ id: "draft1" }) });
+    const result = await adapter.draft({ to: "bob@example.com", subject: "Test", body: "Hello" });
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/me/messages"),
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result.draftId).toBe("draft1");
+  });
+
+  it("draft({...,replyTo}) uses createReply endpoint", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "reply1" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) });
+    const result = await adapter.draft({ to: "bob@example.com", subject: "Re: Test", body: "Thanks", replyTo: "original-msg-id" });
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/me/messages/original-msg-id/createReply"),
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(result.draftId).toBe("reply1");
+  });
+});
+
+describe("GraphAdapter.send", () => {
+  beforeEach(() => vi.stubGlobal("fetch", vi.fn()));
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("send({to,subject,body}) POSTs to /me/sendMail", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({ ok: true, headers: { get: () => null }, json: async () => ({}) });
+    await adapter.send({ to: "bob@example.com", subject: "Test", body: "Hello" });
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/me/sendMail"),
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("send({...,replyTo}) creates draft + sends it", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock)
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ id: "reply1" }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({}) })
+      .mockResolvedValueOnce({ ok: true, headers: { get: () => null }, json: async () => ({}) });
+    await adapter.send({ to: "bob@example.com", subject: "Re: Test", body: "Thanks", replyTo: "original-id" });
+    expect(fetch).toHaveBeenCalledWith(
+      expect.stringContaining("/me/messages/reply1/send"),
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+});

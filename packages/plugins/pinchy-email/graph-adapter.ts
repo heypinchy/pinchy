@@ -140,11 +140,59 @@ export class GraphAdapter implements EmailAdapter {
     return data.value.map(toSummary);
   }
 
-  async draft(_opts: ComposeOptions): Promise<{ draftId: string }> {
-    throw new Error("not yet implemented");
+  async draft(opts: ComposeOptions): Promise<{ draftId: string }> {
+    if (opts.replyTo) {
+      const reply = await this.req(
+        `/me/messages/${encodeURIComponent(opts.replyTo)}/createReply`,
+        {
+          method: "POST",
+          body: JSON.stringify({}),
+        },
+      );
+      const created = (await reply.json()) as { id: string };
+      await this.req(`/me/messages/${encodeURIComponent(created.id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          subject: opts.subject,
+          body: { contentType: "text", content: opts.body },
+          toRecipients: [{ emailAddress: { address: opts.to } }],
+        }),
+      });
+      return { draftId: created.id };
+    }
+    const res = await this.req(`/me/messages`, {
+      method: "POST",
+      body: JSON.stringify({
+        subject: opts.subject,
+        body: { contentType: "text", content: opts.body },
+        toRecipients: [{ emailAddress: { address: opts.to } }],
+      }),
+    });
+    const created = (await res.json()) as { id: string };
+    return { draftId: created.id };
   }
 
-  async send(_opts: ComposeOptions): Promise<{ messageId: string }> {
-    throw new Error("not yet implemented");
+  async send(opts: ComposeOptions): Promise<{ messageId: string }> {
+    if (opts.replyTo) {
+      const { draftId } = await this.draft(opts);
+      await this.req(`/me/messages/${encodeURIComponent(draftId)}/send`, {
+        method: "POST",
+        body: JSON.stringify({}),
+      });
+      return { messageId: draftId };
+    }
+    const res = await this.req(`/me/sendMail`, {
+      method: "POST",
+      body: JSON.stringify({
+        message: {
+          subject: opts.subject,
+          body: { contentType: "text", content: opts.body },
+          toRecipients: [{ emailAddress: { address: opts.to } }],
+        },
+        saveToSentItems: true,
+      }),
+    });
+    const loc = res.headers.get("location") ?? "";
+    return { messageId: loc.split("/").pop() ?? "" };
   }
 }
