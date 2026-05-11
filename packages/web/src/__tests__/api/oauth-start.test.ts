@@ -186,6 +186,76 @@ describe("GET /api/integrations/oauth/start", () => {
     const redirectUri = new URL(location).searchParams.get("redirect_uri");
     expect(redirectUri).toBe("https://pinchy.example.com/api/integrations/oauth/callback");
   });
+
+  describe("Microsoft provider (?provider=microsoft)", () => {
+    const microsoftSettings = {
+      clientId: "ms-client-id",
+      clientSecret: "ms-client-secret",
+      tenantId: "my-tenant",
+    };
+
+    function makeMicrosoftRequest(tenantId?: string) {
+      const settings = tenantId
+        ? { ...microsoftSettings, tenantId }
+        : { clientId: microsoftSettings.clientId, clientSecret: microsoftSettings.clientSecret };
+      mockGetOAuthSettings.mockImplementation((provider: string) => {
+        if (provider === "microsoft") return Promise.resolve(settings);
+        return Promise.resolve(null);
+      });
+      return new NextRequest(
+        "https://local.heypinchy.com:8443/api/integrations/oauth/start?provider=microsoft"
+      );
+    }
+
+    it("redirects to login.microsoftonline.com with tenant from settings", async () => {
+      const { GET } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await GET(makeMicrosoftRequest("my-tenant"));
+      expect(res.status).toBe(302);
+      const location = res.headers.get("location") ?? "";
+      const locationUrl = new URL(location);
+      expect(locationUrl.host).toBe("login.microsoftonline.com");
+      expect(locationUrl.pathname).toBe("/my-tenant/oauth2/v2.0/authorize");
+    });
+
+    it("tenant defaults to 'organizations' when tenantId is omitted", async () => {
+      const { GET } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await GET(makeMicrosoftRequest(undefined));
+      expect(res.status).toBe(302);
+      const location = res.headers.get("location") ?? "";
+      const locationUrl = new URL(location);
+      expect(locationUrl.host).toBe("login.microsoftonline.com");
+      expect(locationUrl.pathname).toBe("/organizations/oauth2/v2.0/authorize");
+    });
+
+    it("scope contains Mail.ReadWrite and offline_access", async () => {
+      const { GET } = await import("@/app/api/integrations/oauth/start/route");
+      const res = await GET(makeMicrosoftRequest("my-tenant"));
+      const location = res.headers.get("location") ?? "";
+      const scope = new URL(location).searchParams.get("scope") ?? "";
+      expect(scope).toContain("Mail.ReadWrite");
+      expect(scope).toContain("offline_access");
+    });
+
+    it("pending connection row is created with type='microsoft'", async () => {
+      const { GET } = await import("@/app/api/integrations/oauth/start/route");
+      await GET(makeMicrosoftRequest("my-tenant"));
+      expect(mockInsertValues).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: "microsoft",
+          status: "pending",
+        })
+      );
+    });
+  });
+
+  it("default behaviour (no provider param) still produces a Google flow", async () => {
+    mockGetOAuthSettings.mockResolvedValue(oauthSettings);
+    const { GET } = await import("@/app/api/integrations/oauth/start/route");
+    const res = await GET(makeRequest());
+    expect(res.status).toBe(302);
+    const location = res.headers.get("location") ?? "";
+    expect(new URL(location).host).toBe("accounts.google.com");
+  });
 });
 
 describe("POST /api/integrations/oauth/start (reconnect)", () => {
