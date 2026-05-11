@@ -72,7 +72,18 @@ const webSearchFormSchema = z.object({
 type WebSearchFormValues = z.infer<typeof webSearchFormSchema>;
 
 const mcpFormSchema = z.object({
-  preset: z.enum(["github", "notion", "linear", "generic"]),
+  preset: z.enum([
+    "github",
+    "notion",
+    "linear",
+    "atlassian",
+    "gitlab",
+    "stripe",
+    "cloudflare",
+    "intercom",
+    "highlevel",
+    "generic",
+  ]),
   url: z.string().url("Must be a valid URL"),
   transport: z.enum(["http", "sse"]),
   token: z.string().min(1, "Token is required"),

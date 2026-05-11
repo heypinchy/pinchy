@@ -177,6 +177,77 @@ describe("AddIntegrationDialog — GitHub named-preset flow", () => {
   });
 });
 
+// ── Additional named presets ────────────────────────────────────────────────
+
+describe("AddIntegrationDialog — additional named presets", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "1");
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  // We pick three representative new presets — Atlassian (admin-enable
+  // disclaimer + Jira/Confluence shared token), Stripe (restricted API key),
+  // and HighLevel (Private Integration Token + Sub-Account). The other three
+  // (GitLab, Cloudflare, Intercom) follow the same flow and are covered by
+  // the preset-registry tests in lib/integrations/__tests__/mcp-presets.test.ts.
+
+  it("Atlassian card surfaces the API-token admin-enable note and the canonical token URL", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /Atlassian/i }));
+
+    expect(screen.getByRole("heading", { name: /Connect Atlassian/i })).toBeInTheDocument();
+    expect(
+      screen.getByText(/admin must first enable API-token authentication/i)
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", {
+        name: /id\.atlassian\.com\/manage-profile\/security\/api-tokens/i,
+      })
+    ).toBeInTheDocument();
+  });
+
+  it("Stripe card submits with preset=stripe and the Stripe MCP URL", async () => {
+    const user = userEvent.setup();
+
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ id: "conn-stripe", type: "mcp" }),
+    } as unknown as Response);
+
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /Stripe/i }));
+    await user.type(screen.getByLabelText(/token/i), "rk_test_abc123def456ghi789");
+    await user.click(screen.getByRole("button", { name: /^Connect$/i }));
+
+    await waitFor(() => {
+      const body = fetchMock.mock.calls.at(-1)?.[1]?.body as string;
+      expect(body).toContain('"preset":"stripe"');
+      expect(body).toContain("https://mcp.stripe.com");
+    });
+  });
+
+  it("HighLevel card mentions Private Integration Tokens and Sub-Accounts", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.click(screen.getByRole("button", { name: /HighLevel/i }));
+
+    expect(screen.getByRole("heading", { name: /Connect HighLevel/i })).toBeInTheDocument();
+    // "Private Integration Token" appears more than once in the copy (once as
+    // a bold callout, once as plural in the cap-limit note) — getAllByText
+    // tolerates that.
+    expect(screen.getAllByText(/Private Integration Token/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Sub-Account/i).length).toBeGreaterThan(0);
+  });
+});
+
 // ── Custom server flow ──────────────────────────────────────────────────────
 
 describe("AddIntegrationDialog — Custom MCP server flow", () => {

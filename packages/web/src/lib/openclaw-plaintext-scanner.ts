@@ -21,6 +21,20 @@ const PATTERNS: Array<{ name: string; regex: RegExp }> = [
   { name: "notion-integration", regex: /^secret_[a-zA-Z0-9]{32,}/ },
   // Linear personal API keys start with "lin_api_".
   { name: "linear-api-key", regex: /^lin_api_[a-zA-Z0-9]{8,}/ },
+  // GitLab personal access tokens start with "glpat-"; project tokens with "glptt-".
+  { name: "gitlab-pat", regex: /^glpat-[a-zA-Z0-9_-]{16,}/ },
+  { name: "gitlab-project-token", regex: /^glptt-[a-zA-Z0-9_-]{16,}/ },
+  // Stripe restricted keys (rk_live_/rk_test_) and secret keys (sk_live_/sk_test_).
+  // "sk-" anthropic-style is already covered above; here we match "sk_" Stripe-style.
+  { name: "stripe-restricted-key", regex: /^rk_(live|test)_[a-zA-Z0-9]{16,}/ },
+  { name: "stripe-secret-key", regex: /^sk_(live|test)_[a-zA-Z0-9]{16,}/ },
+  // HighLevel Private Integration Tokens start with "pit-".
+  { name: "highlevel-pit", regex: /^pit-[a-f0-9]{8,}/ },
+  // Atlassian, Cloudflare, Intercom tokens are opaque strings with no fixed
+  // prefix — there's nothing to match defensively. The Pattern-B fetch contract
+  // is the primary guarantee; the manifest's `additionalProperties: false` is
+  // the secondary one. Reach for the audit trail if either of those slips.
+  //
   // telegram-bot tokens omitted: OpenClaw 2026.4.26 does not resolve SecretRef
   // in channels.telegram.accounts.*.botToken — tokens stay as plain strings.
 ];

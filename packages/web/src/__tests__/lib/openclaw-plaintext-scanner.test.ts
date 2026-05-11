@@ -107,6 +107,70 @@ describe("findPlaintextSecrets", () => {
       ).toEqual([{ path: "plugins.mcp.token", pattern: "linear-api-key" }]);
     });
 
+    it("flags GitLab personal access token (glpat-)", () => {
+      expect(
+        findPlaintextSecrets({
+          plugins: { mcp: { token: "glpat-abcdefghijklmnopqrstuvwx" } },
+        })
+      ).toEqual([{ path: "plugins.mcp.token", pattern: "gitlab-pat" }]);
+    });
+
+    it("flags GitLab project access token (glptt-)", () => {
+      expect(
+        findPlaintextSecrets({
+          plugins: { mcp: { token: "glptt-abcdefghijklmnopqrstuvwx" } },
+        })
+      ).toEqual([{ path: "plugins.mcp.token", pattern: "gitlab-project-token" }]);
+    });
+
+    // Stripe live-mode fixtures are built via string concat so GitHub's
+    // push-protection static scanner doesn't flag them as real keys. The
+    // assembled values at runtime still match the regex we're testing.
+    it("flags Stripe restricted key (rk_live_)", () => {
+      const stripeLiveRestricted = "rk_" + "live_" + "abcdefghijklmnopqrstuvwxyz";
+      expect(
+        findPlaintextSecrets({
+          plugins: { mcp: { token: stripeLiveRestricted } },
+        })
+      ).toEqual([{ path: "plugins.mcp.token", pattern: "stripe-restricted-key" }]);
+    });
+
+    it("flags Stripe restricted test key (rk_test_)", () => {
+      expect(
+        findPlaintextSecrets({
+          plugins: { mcp: { token: "rk_test_abcdefghijklmnopqrstuvwxyz" } },
+        })
+      ).toEqual([{ path: "plugins.mcp.token", pattern: "stripe-restricted-key" }]);
+    });
+
+    it("flags Stripe secret key (sk_live_)", () => {
+      const stripeLiveSecret = "sk_" + "live_" + "abcdefghijklmnopqrstuvwxyz";
+      expect(
+        findPlaintextSecrets({
+          plugins: { mcp: { token: stripeLiveSecret } },
+        })
+      ).toEqual([{ path: "plugins.mcp.token", pattern: "stripe-secret-key" }]);
+    });
+
+    it("flags HighLevel Private Integration Token (pit-)", () => {
+      expect(
+        findPlaintextSecrets({
+          plugins: { mcp: { token: "pit-0123456789abcdef0123456789abcdef" } },
+        })
+      ).toEqual([{ path: "plugins.mcp.token", pattern: "highlevel-pit" }]);
+    });
+
+    it("does not flag harmless strings that start with similar prefixes", () => {
+      // Tighten the regression net — "rk_" alone shouldn't trip Stripe, and a
+      // short "pit-" shouldn't trip HighLevel either.
+      expect(
+        findPlaintextSecrets({
+          notes: "rk_live_short",
+          tag: "pit-short",
+        })
+      ).toEqual([]);
+    });
+
     it("does not flag a clean config with no MCP tokens", () => {
       const cleanCfg = {
         plugins: {

@@ -6,6 +6,12 @@ import {
   GitHubIcon,
   NotionIcon,
   LinearIcon,
+  AtlassianIcon,
+  GitLabIcon,
+  StripeIcon,
+  CloudflareIcon,
+  IntercomIcon,
+  HighLevelIcon,
   McpIcon,
 } from "./integration-icons";
 
@@ -60,6 +66,42 @@ export const INTEGRATION_TYPES: IntegrationType[] = [
     icon: LinearIcon,
   },
   {
+    id: "mcp-atlassian",
+    name: "Atlassian",
+    description: "Read and update Jira issues and Confluence pages with one Atlassian token.",
+    icon: AtlassianIcon,
+  },
+  {
+    id: "mcp-gitlab",
+    name: "GitLab",
+    description: "Manage GitLab projects, merge requests, and issues.",
+    icon: GitLabIcon,
+  },
+  {
+    id: "mcp-stripe",
+    name: "Stripe",
+    description: "Query customers, payments, and subscriptions with a restricted API key.",
+    icon: StripeIcon,
+  },
+  {
+    id: "mcp-cloudflare",
+    name: "Cloudflare",
+    description: "Manage Workers, DNS, KV, R2, and other Cloudflare resources.",
+    icon: CloudflareIcon,
+  },
+  {
+    id: "mcp-intercom",
+    name: "Intercom",
+    description: "Search conversations and update tickets across your support workspace.",
+    icon: IntercomIcon,
+  },
+  {
+    id: "mcp-highlevel",
+    name: "HighLevel",
+    description: "Manage contacts, conversations, and opportunities in your sub-account.",
+    icon: HighLevelIcon,
+  },
+  {
     id: "mcp-custom",
     name: "Custom MCP server",
     description: "Bring your own MCP-compatible server URL and token.",
@@ -73,10 +115,28 @@ export type IntegrationTypeId = (typeof INTEGRATION_TYPES)[number]["id"];
  * Map an INTEGRATION_TYPES.id like `mcp-github` to the internal preset
  * discriminator used by the backend and the mcp-presets registry.
  */
-export const MCP_TYPE_TO_PRESET: Record<string, "github" | "notion" | "linear" | "generic"> = {
+export const MCP_TYPE_TO_PRESET: Record<
+  string,
+  | "github"
+  | "notion"
+  | "linear"
+  | "atlassian"
+  | "gitlab"
+  | "stripe"
+  | "cloudflare"
+  | "intercom"
+  | "highlevel"
+  | "generic"
+> = {
   "mcp-github": "github",
   "mcp-notion": "notion",
   "mcp-linear": "linear",
+  "mcp-atlassian": "atlassian",
+  "mcp-gitlab": "gitlab",
+  "mcp-stripe": "stripe",
+  "mcp-cloudflare": "cloudflare",
+  "mcp-intercom": "intercom",
+  "mcp-highlevel": "highlevel",
   "mcp-custom": "generic",
 };
 

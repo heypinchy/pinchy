@@ -26,12 +26,22 @@ describe("IntegrationTypePicker — tile rendering", () => {
   it("renders every integration tile when the MCP flag is on", () => {
     render(<IntegrationTypePicker onSelect={vi.fn()} />);
 
+    // Native / non-MCP integrations
     expect(screen.getByRole("button", { name: /Odoo/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Google/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Web Search/i })).toBeInTheDocument();
+    // MCP integrations — first round
     expect(screen.getByRole("button", { name: /^GitHub/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Notion/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Linear/i })).toBeInTheDocument();
+    // MCP integrations — second round
+    expect(screen.getByRole("button", { name: /^Atlassian/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^GitLab/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Stripe/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Cloudflare/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Intercom/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^HighLevel/i })).toBeInTheDocument();
+    // Catch-all
     expect(screen.getByRole("button", { name: /Custom MCP server/i })).toBeInTheDocument();
   });
 
@@ -39,11 +49,18 @@ describe("IntegrationTypePicker — tile rendering", () => {
     vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "0");
     render(<IntegrationTypePicker onSelect={vi.fn()} />);
 
+    // Every MCP-backed tile is gone …
     expect(screen.queryByRole("button", { name: /^GitHub/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Notion/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Linear/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Atlassian/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^GitLab/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Stripe/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Cloudflare/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Intercom/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^HighLevel/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Custom MCP server/i })).not.toBeInTheDocument();
-    // Non-MCP tiles still render
+    // … non-MCP tiles still render
     expect(screen.getByRole("button", { name: /Odoo/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Google/i })).toBeInTheDocument();
   });
