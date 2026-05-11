@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import React from "react";
 import "@testing-library/jest-dom";
 import { sendingOpacityClass } from "@/components/assistant-ui/thread";
@@ -525,6 +525,12 @@ describe("ComposerAction Send/Stop mutual exclusion (#207)", () => {
 
 describe("FilePart component (re-exported AttachmentPreview)", () => {
   it("renders a PDF preview with embed thumbnail when MIME is application/pdf", async () => {
+    // AttachmentPreview HEAD-probes the upload URL before mounting <embed>;
+    // mock fetch so the probe resolves to 200 and the embed is rendered.
+    global.fetch = vi
+      .fn()
+      .mockResolvedValue(new Response(null, { status: 200 })) as unknown as typeof fetch;
+
     const { useMessagePartFile } = await import("@assistant-ui/react");
     vi.mocked(useMessagePartFile).mockReturnValue({
       mimeType: "application/pdf",
@@ -538,7 +544,9 @@ describe("FilePart component (re-exported AttachmentPreview)", () => {
         <FilePart />
       </AgentIdContext.Provider>
     );
-    expect(container.querySelector("embed[type='application/pdf']")).toBeTruthy();
+    await waitFor(() => {
+      expect(container.querySelector("embed[type='application/pdf']")).toBeTruthy();
+    });
   });
 
   it("renders a plain chip for an unknown MIME (regression: never silently drop the file)", async () => {
