@@ -11,8 +11,6 @@ import {
   getAdminPassword,
   login,
   pinchyGet,
-  pinchyPost,
-  pinchyPatch,
   waitForOpenClawConnected,
 } from "./helpers";
 import {
@@ -104,11 +102,6 @@ test.describe("pinchy-email — Microsoft E2E", () => {
       }
     );
     expect(permRes.status).toBe(200);
-
-    // Trigger config regeneration by PATCHing the agent
-    // (the integrations PUT does NOT regenerate config on its own)
-    const patchRes = await pinchyPatch(`/api/agents/${agentId}`, {}, cookie);
-    expect(patchRes.status).toBe(200);
 
     // Poll OpenClaw until connected (config was hot-reloaded and accepted).
     // Granting pinchy-email adds a new plugin entry — OpenClaw does a full
@@ -213,10 +206,6 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     );
     expect(permRes.status).toBe(200);
 
-    // Trigger config regeneration
-    const patchRes = await pinchyPatch(`/api/agents/${agentId}`, {}, cookie);
-    expect(patchRes.status).toBe(200);
-
     // Wait for OpenClaw to reconnect after the config change
     const reconnected = await waitForOpenClawConnected(cookie, 120000);
     expect(reconnected).toBe(true);
@@ -244,6 +233,3 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     expect(sendReq).toBeDefined();
   });
 });
-
-// Silence unused-import warnings for helpers used only in the send test
-void pinchyPost;

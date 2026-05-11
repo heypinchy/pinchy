@@ -97,11 +97,6 @@ test.describe("pinchy-email — Gmail E2E", () => {
     );
     expect(permRes.status).toBe(200);
 
-    // Trigger config regeneration by PATCHing the agent
-    // (the integrations PUT does NOT regenerate config on its own)
-    const patchRes = await pinchyPatch(`/api/agents/${agentId}`, {}, cookie);
-    expect(patchRes.status).toBe(200);
-
     // Poll OpenClaw until connected (config was hot-reloaded and accepted).
     // Granting pinchy-email adds a new plugin entry — OpenClaw does a full
     // restart. Give 120s to cover the restart + reconnect window.
