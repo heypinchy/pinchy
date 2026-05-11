@@ -370,6 +370,63 @@ export type AuditLogEntry =
         fields?: string[];
         modelCount?: number;
       };
+    })
+  | (AuditLogBase & {
+      eventType: "file.upload.staged";
+      detail:
+        | {
+            // success: file was stored and hashed
+            uploadId: string;
+            filename: string;
+            mimeType: string;
+            sizeBytes: number;
+            contentHash: string;
+            agent: EntityRef;
+          }
+        | {
+            // failure: file was rejected before an uploadId was assigned
+            filename: string;
+            claimedMime: string;
+            reason: string;
+            agent: EntityRef;
+          };
+    })
+  | (AuditLogBase & {
+      eventType: "file.upload.attached";
+      detail:
+        | {
+            // success: staged file materialised into a message
+            uploadId: string;
+            messageId: string;
+            filename: string;
+            agent: EntityRef;
+          }
+        | {
+            // failure: cross-user, already-attached, or expired attachment attempt
+            uploadId: string;
+            reason: string;
+          };
+    })
+  | (AuditLogBase & {
+      eventType: "file.upload.expired";
+      detail:
+        | {
+            // success: GC sweep deleted the orphaned staged file
+            uploadId: string;
+            filename: string;
+            sizeBytes: number;
+            /** Age of the file at sweep time, in seconds */
+            agedSeconds: number;
+            /** Correlates all files from a single GC run (OCSF metadata.correlation_uid) */
+            sweepId: string;
+          }
+        | {
+            // failure: GC sweep could not delete the orphaned staged file
+            uploadId: string;
+            filename: string;
+            sweepId: string;
+            reason: string;
+          };
     });
 
 export async function appendAuditLog(entry: AuditLogEntry): Promise<void> {
