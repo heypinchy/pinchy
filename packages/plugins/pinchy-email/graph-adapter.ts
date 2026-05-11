@@ -105,8 +105,39 @@ export class GraphAdapter implements EmailAdapter {
     };
   }
 
-  async search(_opts: SearchOptions): Promise<EmailSummary[]> {
-    throw new Error("not yet implemented");
+  async search(opts: SearchOptions): Promise<EmailSummary[]> {
+    const filters: string[] = [];
+    const searchTerms: string[] = [];
+    if (opts.from) searchTerms.push(`from:${opts.from}`);
+    if (opts.to) searchTerms.push(`to:${opts.to}`);
+    if (opts.subject) searchTerms.push(`subject:${opts.subject}`);
+    if (opts.unread) filters.push("isRead eq false");
+    if (opts.sinceDays != null) {
+      const cutoff = new Date(Date.now() - opts.sinceDays * 86_400_000).toISOString();
+      filters.push(`receivedDateTime ge ${cutoff}`);
+    }
+    if (searchTerms.length === 0 && filters.length === 0) {
+      throw new Error("search requires at least one filter field");
+    }
+    const path = opts.folder
+      ? `/me/mailFolders/${mapFolder(opts.folder)}/messages`
+      : `/me/messages`;
+    const parts: string[] = [
+      `$top=${encodeURIComponent(String(opts.limit ?? 20))}`,
+      `$select=${encodeURIComponent(SUMMARY_SELECT)}`,
+    ];
+    if (searchTerms.length) {
+      parts.push(`%24search=${encodeURIComponent(`"${searchTerms.join(" ")}"`)}`);
+    }
+    if (filters.length) {
+      parts.push(`$filter=${encodeURIComponent(filters.join(" and "))}`);
+    }
+    if (!searchTerms.length) {
+      parts.push(`$orderby=${encodeURIComponent("receivedDateTime desc")}`);
+    }
+    const res = await this.req(`${path}?${parts.join("&")}`);
+    const data = (await res.json()) as { value: GraphMessage[] };
+    return data.value.map(toSummary);
   }
 
   async draft(_opts: ComposeOptions): Promise<{ draftId: string }> {
