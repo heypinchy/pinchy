@@ -151,6 +151,7 @@ Audit logging rules:
 - Include resource names in delete-event details because deleted rows may no longer be queryable.
 - Keep audit `detail` under 2048 bytes. Summarize bulk operations.
 - Never write plaintext email addresses or other PII into audit `detail`. Use `redactEmail()` from `@/lib/audit` when email identity is required.
+- For batched maintenance operations (e.g. GC sweeps), include a `sweepId` UUID in every emitted audit row so analysts can correlate the full sweep from one drill-down query.
 
 Checklist for state-changing routes:
 
