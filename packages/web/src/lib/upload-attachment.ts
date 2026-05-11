@@ -1,0 +1,72 @@
+import { ApiError } from "@/lib/api-client";
+import { uploadResponseSchema, type UploadResponse } from "@/lib/schemas/uploads";
+
+/**
+ * Upload a file attachment to the server using XMLHttpRequest so that upload
+ * progress events are available (fetch does not expose upload progress).
+ *
+ * @param agentId  - The agent this upload is associated with.
+ * @param draftId  - Draft ID sent as the `x-pinchy-draft-id` request header.
+ * @param file     - The File to upload.
+ * @param onProgress - Optional callback receiving upload progress as a 0–100 percent value.
+ * @returns Parsed `UploadResponse` from the server on a 201 response.
+ * @throws {ApiError} on non-2xx responses or network errors.
+ */
+export async function uploadAttachment(
+  agentId: string,
+  draftId: string,
+  file: File,
+  onProgress?: (percent: number) => void
+): Promise<UploadResponse> {
+  return new Promise<UploadResponse>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+
+    xhr.open("POST", `/api/agents/${agentId}/uploads`);
+    xhr.setRequestHeader("x-pinchy-draft-id", draftId);
+
+    if (onProgress) {
+      xhr.upload.onprogress = (event: ProgressEvent) => {
+        if (event.lengthComputable) {
+          onProgress(Math.round((event.loaded / event.total) * 100));
+        }
+      };
+    }
+
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        let body: unknown;
+        try {
+          body = JSON.parse(xhr.responseText);
+        } catch {
+          reject(new ApiError(xhr.status, "Invalid response from server"));
+          return;
+        }
+        const parsed = uploadResponseSchema.safeParse(body);
+        if (!parsed.success) {
+          reject(new ApiError(xhr.status, "Invalid response shape from server"));
+          return;
+        }
+        resolve(parsed.data);
+      } else {
+        let errMessage = "Something went wrong. Please try again.";
+        try {
+          const errBody = JSON.parse(xhr.responseText) as { error?: string };
+          if (errBody.error) {
+            errMessage = errBody.error;
+          }
+        } catch {
+          // leave fallback message
+        }
+        reject(new ApiError(xhr.status, errMessage));
+      }
+    };
+
+    xhr.onerror = () => {
+      reject(new ApiError(0, "Network error. Please check your connection."));
+    };
+
+    const formData = new FormData();
+    formData.append("file", file);
+    xhr.send(formData);
+  });
+}
