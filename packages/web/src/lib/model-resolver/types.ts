@@ -2,7 +2,11 @@ import type { ProviderName } from "@/lib/providers";
 
 export type ModelTier = "fast" | "balanced" | "reasoning";
 export type ModelTaskType = "general" | "coder" | "vision" | "reasoning";
-export type ModelCapability = "vision" | "long-context" | "tools";
+// Input modalities the model accepts as attachments.
+type InputModality = "vision" | "documents" | "audio" | "video";
+// Model traits orthogonal to input modality.
+type ModelTrait = "long-context" | "tools";
+export type ModelCapability = InputModality | ModelTrait;
 
 export interface ModelHint {
   tier: ModelTier;
