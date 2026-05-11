@@ -200,8 +200,13 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     const input = page.getByPlaceholder(/send a message/i);
     await expect(input).toBeVisible({ timeout: 10000 });
 
-    // Count pre-existing occurrences to handle stale chat history from prior tests
-    // (Microsoft and Gmail tests share the same Smithers agent session).
+    // Wait for chat history to settle before capturing the baseline count.
+    // Without this, priorCount may be 0 while history is still rendering.
+    await page
+      .getByText(FAKE_OLLAMA_EMAIL_LIST_RESPONSE)
+      .first()
+      .waitFor({ state: "visible", timeout: 3000 })
+      .catch(() => {}); // OK if no prior history exists yet
     const priorListCount = await page.getByText(FAKE_OLLAMA_EMAIL_LIST_RESPONSE).count();
 
     await input.fill(FAKE_OLLAMA_EMAIL_LIST_TRIGGER);
@@ -265,7 +270,12 @@ test.describe("pinchy-email — Microsoft E2E", () => {
     const input = page.getByPlaceholder(/send a message/i);
     await expect(input).toBeVisible({ timeout: 10000 });
 
-    // Count pre-existing occurrences to handle stale chat history from prior tests.
+    // Wait for chat history to settle before capturing the baseline count.
+    await page
+      .getByText(FAKE_OLLAMA_EMAIL_SEND_RESPONSE)
+      .first()
+      .waitFor({ state: "visible", timeout: 3000 })
+      .catch(() => {});
     const priorSendCount = await page.getByText(FAKE_OLLAMA_EMAIL_SEND_RESPONSE).count();
 
     await input.fill(FAKE_OLLAMA_EMAIL_SEND_TRIGGER);
