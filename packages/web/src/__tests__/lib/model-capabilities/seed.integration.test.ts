@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { it, expect, beforeEach } from "vitest";
 import { seedBuiltinModels } from "@/lib/model-capabilities/seed";
 import { db } from "@/db";
 import { models } from "@/db/schema";
