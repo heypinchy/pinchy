@@ -620,7 +620,7 @@ interface AddIntegrationDialogProps {
   onOpenChange: (open: boolean) => void;
   onSuccess: () => void;
   existingTypes?: string[];
-  initialType?: "google";
+  initialType?: "google" | "microsoft";
 }
 
 export function AddIntegrationDialog({
