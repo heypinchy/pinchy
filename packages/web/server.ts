@@ -278,6 +278,20 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     console.error("[pinchy] failed to start memory audit watcher", err);
   }
 
+  const { sweepExpiredUploads } = await import("./src/server/upload-gc");
+
+  // Sweep expired staged uploads hourly. Also fire once 30s after boot so
+  // any orphans from a previous crashed process are cleaned up quickly.
+  const GC_INTERVAL_MS = 60 * 60 * 1000;
+  setInterval(() => {
+    sweepExpiredUploads().catch((err) => console.error("[upload-gc] sweep failed:", err));
+  }, GC_INTERVAL_MS);
+  setTimeout(() => {
+    sweepExpiredUploads().catch((err) =>
+      console.error("[upload-gc] delayed startup sweep failed:", err)
+    );
+  }, 30_000);
+
   // Graceful shutdown: stop the usage poller interval, close the memory-audit
   // watcher, then close the HTTP server. Without this, a SIGTERM (e.g. from
   // Docker Compose) leaves the setInterval dangling and the process hangs
