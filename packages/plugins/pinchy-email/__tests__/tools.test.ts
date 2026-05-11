@@ -318,6 +318,22 @@ describe("credential fetching", () => {
     expect(result.isError).toBe(true);
   });
 
+  it("throws a clear error when credentials API returns no type field", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ credentials: { accessToken: "tok" } }),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("credentials API returned no type field");
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
   it("REGRESSION (#209): rejects SecretRef-shaped credentials with a clear hint, never reaching Gmail", async () => {
     // The credentials API returns the unresolved SecretRef object instead
     // of decrypted credentials (the bug shape from #209). The plugin must
