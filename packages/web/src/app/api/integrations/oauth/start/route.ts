@@ -46,6 +46,7 @@ export async function GET(request: Request) {
   const forwardedHost = request.headers.get("x-forwarded-host") || request.headers.get("host");
   const origin =
     forwardedProto && forwardedHost ? `${forwardedProto}://${forwardedHost}` : requestUrl.origin;
+  const isSecure = (forwardedProto ?? requestUrl.protocol.replace(":", "")) === "https";
 
   // Validate admin session — render failures as redirects, not JSON, because
   // this is reached via browser navigation.
@@ -110,7 +111,6 @@ export async function GET(request: Request) {
       .returning({ id: integrationConnections.id });
 
     const response = NextResponse.redirect(authUrl.toString(), 302);
-    const isSecure = requestUrl.protocol === "https:";
     response.cookies.set("oauth_state", state, {
       httpOnly: true,
       secure: isSecure,
@@ -151,7 +151,6 @@ export async function GET(request: Request) {
   authUrl.searchParams.set("state", state);
 
   const response = NextResponse.redirect(authUrl.toString(), 302);
-  const isSecure = requestUrl.protocol === "https:";
   response.cookies.set("oauth_state", state, {
     httpOnly: true,
     secure: isSecure,
