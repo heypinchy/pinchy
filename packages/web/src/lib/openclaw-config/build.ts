@@ -948,6 +948,7 @@ export async function regenerateOpenClawConfig() {
         preset?: string;
         transport?: string;
         url?: string;
+        extraHeaders?: Record<string, string>;
       };
 
       // Resolve toolPrefix from the preset registry — the prefix is not
@@ -964,6 +965,13 @@ export async function regenerateOpenClawConfig() {
         // agentTools maps agentId → list of tool names the agent is allowed to call.
         // Never include credentials here — they are fetched at runtime.
         agentTools,
+        // extraHeaders is non-secret metadata (e.g. HighLevel locationId)
+        // that the plugin sends alongside Authorization: Bearer. Only emit
+        // when present so the entry stays minimal for connections that
+        // don't need it.
+        ...(data.extraHeaders && Object.keys(data.extraHeaders).length > 0
+          ? { extraHeaders: data.extraHeaders }
+          : {}),
       });
     }
 

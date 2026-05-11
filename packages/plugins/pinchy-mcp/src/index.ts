@@ -58,6 +58,24 @@ interface ConnectionConfig {
   url: string;
   toolPrefix: string;
   agentTools: Record<string, string[]>; // agentId → allowed tool names
+  // Non-secret HTTP headers added alongside Authorization: Bearer. Today
+  // HighLevel uses this for `locationId`. Reserved headers (Authorization,
+  // Content-Type, Accept) are filtered out at request time.
+  extraHeaders?: Record<string, string>;
+}
+
+// Headers the plugin sets itself — caller-supplied values with these names
+// are dropped to avoid breaking JSON-RPC framing.
+const RESERVED_HEADERS = new Set(["authorization", "content-type", "accept"]);
+
+function sanitiseExtraHeaders(extra?: Record<string, string>): Record<string, string> {
+  if (!extra) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(extra)) {
+    if (RESERVED_HEADERS.has(k.toLowerCase())) continue;
+    out[k] = v;
+  }
+  return out;
 }
 
 interface PluginConfig {
@@ -97,13 +115,15 @@ async function callMcpTool(
   url: string,
   toolName: string,
   args: Record<string, unknown>,
-  token: string
+  token: string,
+  extraHeaders?: Record<string, string>
 ): Promise<ToolResult> {
   const res = await fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${token}`,
+      ...sanitiseExtraHeaders(extraHeaders),
     },
     body: JSON.stringify({
       jsonrpc: "2.0",
@@ -176,7 +196,7 @@ const plugin = {
     const credCache = new CredentialCache();
 
     for (const connection of connections) {
-      const { connectionId, url, toolPrefix, agentTools } = connection;
+      const { connectionId, url, toolPrefix, agentTools, extraHeaders } = connection;
 
       // Collect the union of all tool names across all agents for this connection
       const allToolNames = new Set<string>();
@@ -251,7 +271,7 @@ const plugin = {
 
                 // Call MCP server, retry once on 401 (stale credentials)
                 try {
-                  return await callMcpTool(url, toolName, params, token);
+                  return await callMcpTool(url, toolName, params, token, extraHeaders);
                 } catch (err) {
                   const status = (err as Error & { status?: number }).status;
                   if (status === 401) {
@@ -261,7 +281,7 @@ const plugin = {
                       token = await credCache.get(connectionId, () =>
                         fetchCredentials(apiBaseUrl, gatewayToken, connectionId)
                       );
-                      return await callMcpTool(url, toolName, params, token);
+                      return await callMcpTool(url, toolName, params, token, extraHeaders);
                     } catch (retryErr) {
                       const message =
                         retryErr instanceof Error ? retryErr.message : "Unknown error";

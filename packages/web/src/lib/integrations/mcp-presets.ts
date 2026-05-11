@@ -1,9 +1,11 @@
+// Note: `notion` and `gitlab` are deliberately absent — their hosted MCP
+// servers are OAuth-only as of 2026-05, which Phase 1 doesn't support. See
+// issues #339 (Notion via REST plugin) and #340 (GitLab via OAuth / PAT
+// once GitLab Issue #586184 ships) for the planned follow-ups.
 export type McpPresetId =
   | "github"
-  | "notion"
   | "linear"
   | "atlassian"
-  | "gitlab"
   | "stripe"
   | "cloudflare"
   | "intercom"
@@ -26,7 +28,7 @@ export const MCP_PRESETS: McpPreset[] = [
     defaultUrl: "https://api.githubcopilot.com/mcp/",
     defaultTransport: "http",
     toolPrefix: "github_",
-    tokenInstructions: `Create a **Fine-Grained Personal Access Token** at [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens):
+    tokenInstructions: `Create a **Personal Access Token** at [github.com/settings/personal-access-tokens](https://github.com/settings/personal-access-tokens). Both classic and fine-grained PATs work — fine-grained is recommended for tighter per-repo scopes.
 
 1. Click **Generate new token**.
 2. Set an expiration and choose the repositories the agent should access.
@@ -36,28 +38,16 @@ export const MCP_PRESETS: McpPreset[] = [
    - **Pull requests** → Read and write (if the agent should manage PRs)
 4. Click **Generate token** and paste the value here.
 
-The token starts with \`github_pat_\`.`,
-  },
-  {
-    id: "notion",
-    displayName: "Notion",
-    defaultUrl: "https://api.notion.com/mcp/",
-    defaultTransport: "http",
-    toolPrefix: "notion_",
-    tokenInstructions: `Create an **Internal Integration token** at [notion.so/my-integrations](https://www.notion.so/my-integrations):
-
-1. Click **New integration** and give it a name.
-2. Select the workspace and set the required **Capabilities** (Read content, Update content, Insert content).
-3. Click **Submit** and copy the **Internal Integration Token**.
-4. Open each Notion page or database the agent needs access to, click **⋯ → Add connections**, and add your integration.
-
-Paste the token (starts with \`secret_\`) here.`,
+Fine-grained tokens start with \`github_pat_\`, classic with \`ghp_\`.`,
   },
   {
     id: "linear",
+    // Linear migrated from /sse to /mcp (Streamable HTTP) in Feb 2026. The
+    // old SSE endpoint is deprecated and emits warnings; new connections
+    // should use HTTP. See https://linear.app/changelog/2026-02-05-linear-mcp.
     displayName: "Linear",
-    defaultUrl: "https://mcp.linear.app/sse",
-    defaultTransport: "sse",
+    defaultUrl: "https://mcp.linear.app/mcp",
+    defaultTransport: "http",
     toolPrefix: "linear_",
     tokenInstructions: `Create a **Personal API key** at [linear.app/settings/api](https://linear.app/settings/api):
 
@@ -73,34 +63,29 @@ Paste the key here. Linear API keys start with \`lin_api_\`.`,
     defaultUrl: "https://mcp.atlassian.com/v1/mcp",
     defaultTransport: "http",
     toolPrefix: "atlassian_",
-    tokenInstructions: `Connects **Jira and Confluence** through Atlassian's MCP server. Your Atlassian org admin must first enable API-token authentication: **Atlassian Administration → \\<org\\> → Rovo → Rovo MCP server → Authentication → toggle API token on.**
+    // IMPORTANT: Atlassian's MCP server accepts \`Authorization: Bearer\` only
+    // for service-account API keys. Personal user tokens require Basic auth
+    // (email:token base64), which Phase 1 doesn't support. We instruct the
+    // admin to provision a service account so the Bearer flow works.
+    tokenInstructions: `Connects **Jira and Confluence** through Atlassian's MCP server with one token.
 
-Then create a token at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens):
+⚠️ **Two prerequisites** (both require an Atlassian org admin):
 
-1. Click **Create API token with scopes**.
-2. Pick an expiration (1–365 days). Tokens older than Dec 2024 were force-expired.
-3. Select the scopes the agent needs, for example:
+1. **Enable API-token authentication** for the org:
+   **Atlassian Administration → \\<org\\> → Rovo → Rovo MCP server → Authentication → toggle API token on.**
+2. **Create a service-account user** and generate an **API key** for it. Personal user tokens use a different auth scheme (Basic) that Pinchy doesn't support yet — use a service account, not a personal token.
+
+To generate the service-account API key:
+
+1. Sign in as the service account at [id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens).
+2. Click **Create API token with scopes**.
+3. Pick an expiration (1–365 days).
+4. Select scopes the agent needs, for example:
    - \`read:jira-work\`, \`write:jira-work\` (Jira read+write)
    - \`read:confluence-content.all\`, \`write:confluence-content\` (Confluence read+write)
-4. Click **Create** and copy the token immediately.
+5. Click **Create** and copy the API key immediately.
 
-Paste the token here. One token covers both Jira and Confluence.`,
-  },
-  {
-    id: "gitlab",
-    displayName: "GitLab",
-    defaultUrl: "https://gitlab.com/api/v4/mcp",
-    defaultTransport: "http",
-    toolPrefix: "gitlab_",
-    tokenInstructions: `Create a **Personal Access Token** at [gitlab.com/-/user_settings/personal_access_tokens](https://gitlab.com/-/user_settings/personal_access_tokens):
-
-1. Click **Add new token**.
-2. Set a name, expiration date (max 365 days on GitLab.com), and select the **\`api\`** scope (read+write). Use \`read_api\` for a read-only agent.
-3. Click **Create personal access token** and copy the value immediately — it is only shown once.
-
-For a tighter scope, prefer a **Project Access Token** under Project → Settings → Access Tokens — it limits the blast radius to one project.
-
-The token starts with \`glpat-\`. For self-managed GitLab, use the **Custom MCP server** tile and point it at \`https://<your-host>/api/v4/mcp\`.`,
+Paste the key here. One key covers both Jira and Confluence.`,
   },
   {
     id: "stripe",
@@ -120,7 +105,10 @@ Use a test-mode key (\`rk_test_…\`) while evaluating; switch to live (\`rk_liv
   {
     id: "cloudflare",
     displayName: "Cloudflare",
-    defaultUrl: "https://mcp.cloudflare.com/mcp",
+    // `?codemode=false` disables Cloudflare's experimental Code Mode, which
+    // surfaces a JS sandbox instead of the regular tool list. OpenClaw's MCP
+    // client doesn't speak Code Mode, so we opt out at the URL level.
+    defaultUrl: "https://mcp.cloudflare.com/mcp?codemode=false",
     defaultTransport: "http",
     toolPrefix: "cloudflare_",
     tokenInstructions: `Create an **API Token** at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens):

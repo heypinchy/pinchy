@@ -28,7 +28,16 @@
             },
             "preset": {
               "type": "string",
-              "enum": ["github", "notion", "linear", "generic"]
+              "enum": [
+                "github",
+                "linear",
+                "atlassian",
+                "stripe",
+                "cloudflare",
+                "intercom",
+                "highlevel",
+                "generic"
+              ]
             },
             "transport": {
               "type": "string",
@@ -49,6 +58,13 @@
                 "items": {
                   "type": "string"
                 }
+              }
+            },
+            "extraHeaders": {
+              "type": "object",
+              "description": "Non-secret HTTP headers to send alongside Authorization: Bearer. Today HighLevel uses this for locationId. Reserved headers (Authorization, Content-Type, Accept) are dropped at runtime.",
+              "additionalProperties": {
+                "type": "string"
               }
             }
           }

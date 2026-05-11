@@ -3,16 +3,17 @@ import { MCP_PRESETS, getMcpPreset } from "../mcp-presets";
 
 describe("MCP_PRESETS", () => {
   it("exposes every Phase-1 preset", () => {
+    // Notion and GitLab are intentionally absent — their hosted MCP servers
+    // are OAuth-only as of May 2026. Tracked in #339 (Notion REST plugin)
+    // and #340 (GitLab MCP when OAuth or upstream PAT support ships).
     expect(MCP_PRESETS.map((p) => p.id).sort()).toEqual([
       "atlassian",
       "cloudflare",
       "generic",
       "github",
-      "gitlab",
       "highlevel",
       "intercom",
       "linear",
-      "notion",
       "stripe",
     ]);
   });
@@ -22,6 +23,9 @@ describe("MCP_PRESETS", () => {
     expect(getMcpPreset("atlassian").id).toBe("atlassian");
     expect(getMcpPreset("highlevel").id).toBe("highlevel");
     expect(getMcpPreset("unknown" as never).id).toBe("generic");
+    // Notion and GitLab fall back to generic since they're not in Phase 1.
+    expect(getMcpPreset("notion" as never).id).toBe("generic");
+    expect(getMcpPreset("gitlab" as never).id).toBe("generic");
   });
 
   it("non-generic presets have a defaultUrl", () => {
@@ -49,10 +53,8 @@ describe("MCP_PRESETS", () => {
     // with GitHub's old ?type=beta URL.
     const links: Record<string, RegExp> = {
       github: /github\.com\/settings\/personal-access-tokens/,
-      notion: /notion\.so\/my-integrations/,
       linear: /linear\.app\/settings\/api/,
       atlassian: /id\.atlassian\.com\/manage-profile\/security\/api-tokens/,
-      gitlab: /gitlab\.com\/-\/user_settings\/personal_access_tokens/,
       stripe: /dashboard\.stripe\.com\/apikeys/,
       cloudflare: /dash\.cloudflare\.com\/profile\/api-tokens/,
     };

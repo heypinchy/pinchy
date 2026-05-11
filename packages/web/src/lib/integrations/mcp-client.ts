@@ -59,6 +59,28 @@ export interface ListMcpToolsOptions {
   url: string;
   transport: "http" | "sse";
   token: string;
+  /**
+   * Extra HTTP headers to send alongside `Authorization: Bearer <token>`.
+   * Used today by the HighLevel preset (sends `locationId` Sub-Account ID).
+   * Reserved header names (Authorization, Content-Type, Accept) cannot be
+   * overridden — they are set by the client.
+   */
+  extraHeaders?: Record<string, string>;
+}
+
+// Headers the client owns — caller-supplied values with these names are
+// silently dropped to avoid foot-guns (e.g. a caller forcing a different
+// Content-Type that breaks JSON-RPC parsing).
+const RESERVED_HEADERS = new Set(["authorization", "content-type", "accept"]);
+
+function sanitiseExtraHeaders(extra?: Record<string, string>): Record<string, string> {
+  if (!extra) return {};
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(extra)) {
+    if (RESERVED_HEADERS.has(k.toLowerCase())) continue;
+    out[k] = v;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -124,6 +146,7 @@ async function listToolsViaHttp(
     "Content-Type": "application/json",
     Accept: "application/json, text/event-stream",
     Authorization: `Bearer ${opts.token}`,
+    ...sanitiseExtraHeaders(opts.extraHeaders),
   };
 
   // Step 1: initialize
@@ -279,6 +302,7 @@ async function listToolsViaSse(opts: ListMcpToolsOptions, signal: AbortSignal): 
   const requestInit: RequestInit = {
     headers: {
       Authorization: `Bearer ${opts.token}`,
+      ...sanitiseExtraHeaders(opts.extraHeaders),
     },
   };
 

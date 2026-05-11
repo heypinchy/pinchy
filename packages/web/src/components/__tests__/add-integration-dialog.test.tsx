@@ -56,21 +56,21 @@ describe("AddIntegrationDialog — MCP type cards", () => {
     vi.unstubAllEnvs();
   });
 
-  it("shows GitHub, Notion, Linear and Custom MCP server cards", () => {
+  it("shows GitHub, Linear, Atlassian and Custom MCP server cards", () => {
     renderDialog();
     expect(screen.getByRole("button", { name: /GitHub/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /Notion/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Linear/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Atlassian/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Custom MCP server/i })).toBeInTheDocument();
   });
 
   it("hides every MCP card when the flag is off", () => {
     vi.stubEnv("NEXT_PUBLIC_PINCHY_MCP_ENABLED", "0");
     renderDialog();
-    // None of the four MCP cards should be present.
+    // None of the MCP cards should be present.
     expect(screen.queryByRole("button", { name: /^GitHub$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /^Notion$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^Linear$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Atlassian$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /Custom MCP server/i })).not.toBeInTheDocument();
     // Odoo (non-MCP) is still listed.
     expect(screen.getByRole("button", { name: /Odoo/i })).toBeInTheDocument();
@@ -123,7 +123,11 @@ describe("AddIntegrationDialog — GitHub named-preset flow", () => {
 
     await user.click(screen.getByRole("button", { name: /GitHub/i }));
 
-    expect(screen.getByText(/Fine-Grained Personal Access Token/i)).toBeInTheDocument();
+    // Both classic and fine-grained PATs are now documented as valid —
+    // the heading mentions Personal Access Token at the top.
+    expect(screen.getByText(/Personal Access Token/i)).toBeInTheDocument();
+    // And the prefix hint covers both forms.
+    expect(screen.getByText(/github_pat_/i)).toBeInTheDocument();
   });
 
   it("token field is type=password", async () => {
@@ -195,16 +199,18 @@ describe("AddIntegrationDialog — additional named presets", () => {
   // (GitLab, Cloudflare, Intercom) follow the same flow and are covered by
   // the preset-registry tests in lib/integrations/__tests__/mcp-presets.test.ts.
 
-  it("Atlassian card surfaces the API-token admin-enable note and the canonical token URL", async () => {
+  it("Atlassian card surfaces the admin-enable note, service-account caveat, and canonical token URL", async () => {
     const user = userEvent.setup();
     renderDialog();
 
     await user.click(screen.getByRole("button", { name: /Atlassian/i }));
 
     expect(screen.getByRole("heading", { name: /Connect Atlassian/i })).toBeInTheDocument();
-    expect(
-      screen.getByText(/admin must first enable API-token authentication/i)
-    ).toBeInTheDocument();
+    // Phase-1 copy explains both prerequisites: admin enables API-token auth,
+    // and the user provisions a service account (personal tokens require
+    // Basic auth which Phase 1 doesn't support).
+    expect(screen.getByText(/Enable API-token authentication/i)).toBeInTheDocument();
+    expect(screen.getByText(/service-account user/i)).toBeInTheDocument();
     expect(
       screen.getByRole("link", {
         name: /id\.atlassian\.com\/manage-profile\/security\/api-tokens/i,

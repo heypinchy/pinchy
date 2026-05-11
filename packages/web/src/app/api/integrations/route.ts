@@ -18,12 +18,12 @@ const mcpBodySchema = z.object({
   type: z.literal("mcp"),
   name: z.string().min(1),
   description: z.string().optional(),
+  // Notion and GitLab deliberately absent — both are OAuth-only on their
+  // hosted MCP servers. See issues #339 and #340.
   preset: z.enum([
     "github",
-    "notion",
     "linear",
     "atlassian",
-    "gitlab",
     "stripe",
     "cloudflare",
     "intercom",
@@ -33,6 +33,11 @@ const mcpBodySchema = z.object({
   transport: z.enum(["http", "sse"]),
   url: z.string().url(),
   token: z.string().min(1),
+  // Per-connection metadata emitted as HTTP headers by the pinchy-mcp plugin
+  // alongside Authorization: Bearer <token>. Today only HighLevel needs this
+  // (locationId Sub-Account ID); other presets ignore it. Values are non-secret
+  // — they end up in plugin config plaintext.
+  extraHeaders: z.record(z.string(), z.string()).optional(),
 });
 
 const createIntegrationSchema = z.discriminatedUnion("type", [
@@ -97,12 +102,21 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   // ── MCP branch ─────────────────────────────────────────────────────────────
   if (parsed.data.type === "mcp") {
     if (!isMcpEnabled()) return NextResponse.json({ error: "Not found" }, { status: 404 });
-    const { name, description, preset, transport, url, token } = parsed.data;
+    const { name, description, preset, transport, url, token, extraHeaders } = parsed.data;
+
+    // HighLevel needs `locationId` alongside the token; without it tools/list
+    // returns 400. Catch the typo before we even try the upstream call.
+    if (preset === "highlevel" && !extraHeaders?.locationId) {
+      return NextResponse.json(
+        { error: "HighLevel requires a locationId (Sub-Account ID)" },
+        { status: 400 }
+      );
+    }
 
     // Discover tools synchronously — on failure, do NOT save and return 502
     let tools: Awaited<ReturnType<typeof listMcpTools>>;
     try {
-      tools = await listMcpTools({ url, transport, token });
+      tools = await listMcpTools({ url, transport, token, extraHeaders });
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       deferAuditLog({
@@ -133,6 +147,9 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       url,
       tools,
       lastSyncAt: new Date().toISOString(),
+      // Only persist extraHeaders when non-empty so the JSON column stays
+      // lean and the config-emit path can `??=` cleanly.
+      ...(extraHeaders && Object.keys(extraHeaders).length > 0 ? { extraHeaders } : {}),
     };
 
     const [connection] = await db

@@ -4,15 +4,16 @@ import {
   GoogleIcon,
   BraveIcon,
   GitHubIcon,
-  NotionIcon,
   LinearIcon,
   AtlassianIcon,
-  GitLabIcon,
   StripeIcon,
   CloudflareIcon,
   IntercomIcon,
   HighLevelIcon,
   McpIcon,
+  // NotionIcon and GitLabIcon are kept exported by integration-icons.tsx —
+  // they'll come back when Notion ships as a REST plugin (#339) and GitLab
+  // ships via OAuth or upstream PAT support (#340).
 } from "./integration-icons";
 
 export interface IntegrationType {
@@ -54,12 +55,6 @@ export const INTEGRATION_TYPES: IntegrationType[] = [
     icon: GitHubIcon,
   },
   {
-    id: "mcp-notion",
-    name: "Notion",
-    description: "Read and update pages and databases in your Notion workspace.",
-    icon: NotionIcon,
-  },
-  {
     id: "mcp-linear",
     name: "Linear",
     description: "Query issues, projects, and teams from your Linear workspace.",
@@ -70,12 +65,6 @@ export const INTEGRATION_TYPES: IntegrationType[] = [
     name: "Atlassian",
     description: "Read and update Jira issues and Confluence pages with one Atlassian token.",
     icon: AtlassianIcon,
-  },
-  {
-    id: "mcp-gitlab",
-    name: "GitLab",
-    description: "Manage GitLab projects, merge requests, and issues.",
-    icon: GitLabIcon,
   },
   {
     id: "mcp-stripe",
@@ -98,7 +87,8 @@ export const INTEGRATION_TYPES: IntegrationType[] = [
   {
     id: "mcp-highlevel",
     name: "HighLevel",
-    description: "Manage contacts, conversations, and opportunities in your sub-account.",
+    description:
+      "Manage contacts, conversations, and opportunities. Needs a Sub-Account (Location) ID alongside the token.",
     icon: HighLevelIcon,
   },
   {
@@ -117,22 +107,11 @@ export type IntegrationTypeId = (typeof INTEGRATION_TYPES)[number]["id"];
  */
 export const MCP_TYPE_TO_PRESET: Record<
   string,
-  | "github"
-  | "notion"
-  | "linear"
-  | "atlassian"
-  | "gitlab"
-  | "stripe"
-  | "cloudflare"
-  | "intercom"
-  | "highlevel"
-  | "generic"
+  "github" | "linear" | "atlassian" | "stripe" | "cloudflare" | "intercom" | "highlevel" | "generic"
 > = {
   "mcp-github": "github",
-  "mcp-notion": "notion",
   "mcp-linear": "linear",
   "mcp-atlassian": "atlassian",
-  "mcp-gitlab": "gitlab",
   "mcp-stripe": "stripe",
   "mcp-cloudflare": "cloudflare",
   "mcp-intercom": "intercom",

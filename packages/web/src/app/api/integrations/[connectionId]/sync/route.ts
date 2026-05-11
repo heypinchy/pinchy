@@ -38,6 +38,9 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
 
     const { token } = JSON.parse(decrypt(connection.credentials)) as { token: string };
     const before = (data.tools ?? []) as McpTool[];
+    // Reuse any extra headers (e.g. HighLevel's locationId) the connection
+    // was created with — otherwise sync would 400 on those servers.
+    const extraHeaders = (data.extraHeaders ?? undefined) as Record<string, string> | undefined;
 
     let after: McpTool[];
     try {
@@ -45,6 +48,7 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
         url: data.url as string,
         transport: data.transport as "http" | "sse",
         token,
+        extraHeaders,
       });
     } catch (err) {
       // 401 from the upstream MCP server → flag the connection as auth_failed

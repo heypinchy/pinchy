@@ -30,19 +30,26 @@ describe("IntegrationTypePicker — tile rendering", () => {
     expect(screen.getByRole("button", { name: /Odoo/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Google/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Web Search/i })).toBeInTheDocument();
-    // MCP integrations — first round
+    // MCP integrations shipped in Phase 1 (static-token auth).
+    // Notion + GitLab are intentionally absent (#339, #340 — OAuth-only).
     expect(screen.getByRole("button", { name: /^GitHub/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^Notion/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Linear/i })).toBeInTheDocument();
-    // MCP integrations — second round
     expect(screen.getByRole("button", { name: /^Atlassian/i })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^GitLab/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Stripe/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Cloudflare/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^Intercom/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^HighLevel/i })).toBeInTheDocument();
     // Catch-all
     expect(screen.getByRole("button", { name: /Custom MCP server/i })).toBeInTheDocument();
+  });
+
+  it("does NOT render Notion or GitLab tiles in Phase 1", () => {
+    // Both presets were removed because their hosted MCP servers require OAuth
+    // (#339, #340). Guard against accidental re-introduction without the
+    // corresponding OAuth or REST-plugin landing.
+    render(<IntegrationTypePicker onSelect={vi.fn()} />);
+    expect(screen.queryByRole("button", { name: /^Notion/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^GitLab/i })).not.toBeInTheDocument();
   });
 
   it("hides every MCP-backed tile when the MCP flag is off", () => {

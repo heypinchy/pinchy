@@ -329,14 +329,14 @@ describe("pinchy-mcp config generation", () => {
     const agent = makeAgent({ id: "agent-multi" });
     const conn1 = makeMcpConnection({ id: "conn-github-1", preset: "github" });
     const conn2 = makeMcpConnection({
-      id: "conn-notion-1",
-      preset: "notion",
-      url: "https://api.notion.com/mcp/",
-      toolPrefix: "notion_",
+      id: "conn-linear-1",
+      preset: "linear",
+      url: "https://mcp.linear.app/mcp",
+      toolPrefix: "linear_",
     });
     const perms = [
       makeMcpPerm("agent-multi", "conn-github-1", "create_issue"),
-      makeMcpPerm("agent-multi", "conn-notion-1", "search_pages"),
+      makeMcpPerm("agent-multi", "conn-linear-1", "search_pages"),
     ];
 
     setupDbMock([agent], [conn1, conn2], perms);
@@ -356,7 +356,37 @@ describe("pinchy-mcp config generation", () => {
     );
     expect(new Set(connectionIds).size).toBe(2);
     expect(connectionIds).toContain("conn-github-1");
-    expect(connectionIds).toContain("conn-notion-1");
+    expect(connectionIds).toContain("conn-linear-1");
+  });
+
+  it("emits extraHeaders for HighLevel connections (locationId)", async () => {
+    const agent = makeAgent({ id: "agent-ghl" });
+    const conn = makeMcpConnection({
+      id: "conn-ghl-1",
+      preset: "highlevel",
+      url: "https://services.leadconnectorhq.com/mcp/",
+      toolPrefix: "ghl_",
+    });
+    // Inject locationId via the data.extraHeaders field — the dialog
+    // captures it as a separate form input and stores it here.
+    (conn.data as { extraHeaders?: Record<string, string> }).extraHeaders = {
+      locationId: "110411007T",
+    };
+    // Use a tool name that's in DEFAULT_TEST_TOOLS so the drift filter in
+    // build.ts doesn't strip the grant before emission.
+    const perms = [makeMcpPerm("agent-ghl", "conn-ghl-1", "create_issue")];
+
+    setupDbMock([agent], [conn], perms);
+    mockedReadFileSync.mockReturnValue(JSON.stringify(gatewayConfig));
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const mcpConfig = config.plugins?.entries?.["pinchy-mcp"]?.config;
+
+    expect(mcpConfig.connections).toHaveLength(1);
+    expect(mcpConfig.connections[0].extraHeaders).toEqual({ locationId: "110411007T" });
   });
 
   it("omits pinchy-mcp entirely when an agent exists but has no MCP permissions", async () => {

@@ -71,24 +71,31 @@ const webSearchFormSchema = z.object({
 
 type WebSearchFormValues = z.infer<typeof webSearchFormSchema>;
 
-const mcpFormSchema = z.object({
-  preset: z.enum([
-    "github",
-    "notion",
-    "linear",
-    "atlassian",
-    "gitlab",
-    "stripe",
-    "cloudflare",
-    "intercom",
-    "highlevel",
-    "generic",
-  ]),
-  url: z.string().url("Must be a valid URL"),
-  transport: z.enum(["http", "sse"]),
-  token: z.string().min(1, "Token is required"),
-  name: z.string().optional(),
-});
+const mcpFormSchema = z
+  .object({
+    preset: z.enum([
+      "github",
+      "linear",
+      "atlassian",
+      "stripe",
+      "cloudflare",
+      "intercom",
+      "highlevel",
+      "generic",
+    ]),
+    url: z.string().url("Must be a valid URL"),
+    transport: z.enum(["http", "sse"]),
+    token: z.string().min(1, "Token is required"),
+    name: z.string().optional(),
+    // HighLevel needs a Sub-Account (Location) ID alongside the token —
+    // sent as a `locationId` header. Required only for the `highlevel`
+    // preset; other presets ignore this field.
+    locationId: z.string().optional(),
+  })
+  .refine((v) => v.preset !== "highlevel" || (v.locationId && v.locationId.trim().length > 0), {
+    message: "Sub-Account (Location) ID is required for HighLevel",
+    path: ["locationId"],
+  });
 
 type McpFormValues = z.infer<typeof mcpFormSchema>;
 
@@ -530,6 +537,28 @@ function McpConnectStep({
             )}
           />
 
+          {/* HighLevel-only: Sub-Account (Location) ID. The MCP server requires
+              this as a separate `locationId` header — token alone isn't enough. */}
+          {preset === "highlevel" && (
+            <FormField
+              control={form.control}
+              name="locationId"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Sub-Account (Location) ID</FormLabel>
+                  <FormControl>
+                    <Input placeholder="e.g. 110411007T" {...field} />
+                  </FormControl>
+                  <p className="text-xs text-muted-foreground">
+                    Find this in HighLevel under Settings → Business Info, or in the URL of your
+                    Sub-Account.
+                  </p>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
+
           {form.formState.errors.root && (
             <p className="text-sm text-destructive">{form.formState.errors.root.message}</p>
           )}
@@ -705,6 +734,7 @@ export function AddIntegrationDialog({
       transport: mcpInitialPresetCfg.defaultTransport,
       token: "",
       name: "",
+      locationId: "",
     },
   });
 
@@ -736,6 +766,7 @@ export function AddIntegrationDialog({
       transport: mcpInitialPresetCfg.defaultTransport,
       token: "",
       name: "",
+      locationId: "",
     });
   }
 
@@ -982,13 +1013,22 @@ export function AddIntegrationDialog({
     }
   }
 
-  // --- MCP: Test connection (generic preset only) ---
+  // --- MCP: Test connection ---
 
   async function handleMcpTestConnection() {
     const values = mcpForm.getValues();
     setMcpTesting(true);
     setMcpTestTools(null);
     setMcpTestError(null);
+
+    // Translate per-preset form fields into the generic `extraHeaders` map
+    // that the MCP client + plugin both speak. Today only HighLevel adds
+    // one (`locationId`); future presets can extend this without changing
+    // the wire format.
+    const extraHeaders =
+      values.preset === "highlevel" && values.locationId?.trim()
+        ? { locationId: values.locationId.trim() }
+        : undefined;
 
     try {
       const res = await fetch("/api/integrations/test", {
@@ -998,6 +1038,7 @@ export function AddIntegrationDialog({
           url: values.url,
           transport: values.transport,
           token: values.token,
+          ...(extraHeaders ? { extraHeaders } : {}),
         }),
       });
       const data = await res.json();
@@ -1023,6 +1064,13 @@ export function AddIntegrationDialog({
     const preset = getMcpPreset(values.preset);
     const autoName = values.name?.trim() || `${preset.displayName} MCP`;
 
+    // Same per-preset → extraHeaders translation as the Test-Connection path
+    // — both endpoints accept the same generic shape.
+    const extraHeaders =
+      values.preset === "highlevel" && values.locationId?.trim()
+        ? { locationId: values.locationId.trim() }
+        : undefined;
+
     try {
       const res = await fetch("/api/integrations", {
         method: "POST",
@@ -1035,6 +1083,7 @@ export function AddIntegrationDialog({
           transport: values.transport,
           url: values.url,
           token: values.token,
+          ...(extraHeaders ? { extraHeaders } : {}),
         }),
       });
 
@@ -1099,6 +1148,7 @@ export function AddIntegrationDialog({
                           transport: presetCfg.defaultTransport,
                           token: "",
                           name: "",
+                          locationId: "",
                         });
                       }
                       setStep("connect");

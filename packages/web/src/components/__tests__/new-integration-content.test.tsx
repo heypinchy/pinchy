@@ -124,7 +124,7 @@ describe("NewIntegrationContent — dialog callbacks", () => {
     const NewIntegrationContent = await importComponent();
     render(<NewIntegrationContent />);
 
-    await user.click(screen.getByRole("button", { name: /^Notion/i }));
+    await user.click(screen.getByRole("button", { name: /^Atlassian/i }));
     expect(screen.getByTestId("add-integration-dialog")).toBeInTheDocument();
 
     await user.click(screen.getByTestId("dialog-close"));
