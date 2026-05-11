@@ -1,6 +1,6 @@
 import { rmSync } from "fs";
 import { join, dirname } from "path";
-import { and, eq, lt } from "drizzle-orm";
+import { and, eq, isNotNull, lt } from "drizzle-orm";
 import { db } from "@/db";
 import { uploadedFiles } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
@@ -34,7 +34,13 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
   const expiredRows = await db
     .select()
     .from(uploadedFiles)
-    .where(and(eq(uploadedFiles.status, "staged"), lt(uploadedFiles.expiresAt, now)));
+    .where(
+      and(
+        eq(uploadedFiles.status, "staged"),
+        lt(uploadedFiles.expiresAt, now),
+        isNotNull(uploadedFiles.stagingPath)
+      )
+    );
 
   let swept = 0;
 
@@ -46,19 +52,16 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
     // stagingPath format: `.staging/<uploadId>/<filename>`
     // The directory to remove is: `<workspaceRoot>/.staging/<uploadId>/`
     const workspaceRoot = getWorkspacePath(row.agentId);
-    let stagingDir: string;
-    if (row.stagingPath) {
-      // stagingPath = `.staging/<uploadId>/<filename>` — take the dir portion
-      stagingDir = join(workspaceRoot, dirname(row.stagingPath));
-    } else {
-      // Fallback: construct the expected dir from the uploadId
-      stagingDir = join(workspaceRoot, ".staging", uploadId);
-    }
+    // stagingPath = `.staging/<uploadId>/<filename>` — take the dir portion.
+    // isNotNull filter in the query guarantees stagingPath is set here.
+    const stagingDir = join(workspaceRoot, dirname(row.stagingPath!));
 
     // Attempt to remove the staging directory
     let rmFailed = false;
     let rmError: unknown;
     try {
+      // force: false so a missing directory surfaces as an error and triggers
+      // the audit failure path below rather than silently succeeding.
       rmSync(stagingDir, { recursive: true, force: false });
     } catch (err) {
       rmFailed = true;
