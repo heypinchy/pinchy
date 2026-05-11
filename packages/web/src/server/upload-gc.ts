@@ -1,5 +1,5 @@
 import { rmSync } from "fs";
-import { join, dirname } from "path";
+import { join } from "path";
 import { and, eq, isNotNull, lt } from "drizzle-orm";
 import { db } from "@/db";
 import { uploadedFiles } from "@/db/schema";
@@ -52,9 +52,11 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
     // stagingPath format: `.staging/<uploadId>/<filename>`
     // The directory to remove is: `<workspaceRoot>/.staging/<uploadId>/`
     const workspaceRoot = getWorkspacePath(row.agentId);
-    // stagingPath = `.staging/<uploadId>/<filename>` — take the dir portion.
-    // isNotNull filter in the query guarantees stagingPath is set here.
-    const stagingDir = join(workspaceRoot, dirname(row.stagingPath!));
+    // stagingPath format: `.staging/<uploadId>/<filename>` — extract the uploadId
+    // segment explicitly rather than relying on dirname(), which would silently
+    // target the wrong level if the format ever gains additional path components.
+    const stagingUploadId = row.stagingPath!.split("/")[1];
+    const stagingDir = join(workspaceRoot, ".staging", stagingUploadId);
 
     // Attempt to remove the staging directory
     let rmFailed = false;
@@ -90,8 +92,34 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
       continue;
     }
 
-    // FS rm succeeded — delete the DB row
-    await db.delete(uploadedFiles).where(eq(uploadedFiles.id, uploadId));
+    // FS rm succeeded — delete the DB row.
+    // If the delete fails (transient DB error), the file is already gone from
+    // disk. We emit a failure audit row and skip the success audit + swept++
+    // so the operator is alerted. The row will be retried on the next GC
+    // cycle, where rmSync will throw ENOENT and produce another failure audit
+    // until the DB row is manually removed or the DB recovers.
+    try {
+      await db.delete(uploadedFiles).where(eq(uploadedFiles.id, uploadId));
+    } catch (dbErr) {
+      const dbFailEntry = {
+        eventType: "file.upload.expired" as const,
+        actorType: "system" as const,
+        actorId: "upload-gc",
+        outcome: "failure" as const,
+        detail: {
+          uploadId,
+          filename: row.filename,
+          sweepId,
+          reason: `DB delete failed after rm: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`,
+        },
+      };
+      try {
+        await appendAuditLog(dbFailEntry);
+      } catch (auditErr) {
+        recordAuditFailure(auditErr, dbFailEntry);
+      }
+      continue;
+    }
 
     // Emit success audit row
     const successEntry = {
