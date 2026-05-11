@@ -1,4 +1,5 @@
 import { GmailAdapter } from "./gmail-adapter.js";
+import type { EmailAdapter } from "./email-adapter.js";
 import { checkPermission, type Permissions } from "./permissions.js";
 
 interface PluginToolContext {
@@ -150,7 +151,7 @@ async function fetchCredentials(
   apiBaseUrl: string,
   gatewayToken: string,
   connectionId: string,
-): Promise<EmailCredentials> {
+): Promise<{ type: string; credentials: EmailCredentials }> {
   const response = await fetch(
     `${apiBaseUrl}/api/internal/integrations/${connectionId}/credentials`,
     { headers: { Authorization: `Bearer ${gatewayToken}` } },
@@ -162,15 +163,15 @@ async function fetchCredentials(
     );
   }
 
-  const data = (await response.json()) as { credentials?: unknown };
+  const data = (await response.json()) as { type?: unknown; credentials?: unknown };
   assertCredentialsShape(data.credentials);
-  return data.credentials;
+  return { type: String(data.type ?? ""), credentials: data.credentials };
 }
 
 const plugin = {
   id: "pinchy-email",
   name: "Pinchy Email",
-  description: "Email integration (Gmail) with per-agent permissions.",
+  description: "Email integration (Google, and more providers coming) with per-agent permissions.",
 
   register(api: PluginApi) {
     const pluginConfig = api.pluginConfig;
@@ -178,15 +179,16 @@ const plugin = {
     const apiBaseUrl = pluginConfig?.apiBaseUrl ?? "";
     const gatewayToken = pluginConfig?.gatewayToken ?? "";
 
-    // GmailAdapter cache per agent. Built lazily on first tool call:
-    // fetch credentials from Pinchy → instantiate GmailAdapter. TTL keeps
-    // the cache fresh enough that token rotation propagates within
-    // CREDENTIALS_TTL_MS without anyone restarting OpenClaw — and on a
-    // 401 from Gmail (which happens immediately after the access token
-    // expires, since the Pinchy-side OAuth refresh races the call) we
-    // invalidate eagerly and refetch once before surfacing the error.
+    // EmailAdapter cache per agent. Built lazily on first tool call:
+    // fetch credentials from Pinchy → instantiate the appropriate adapter
+    // based on credentials.type. TTL keeps the cache fresh enough that
+    // token rotation propagates within CREDENTIALS_TTL_MS without anyone
+    // restarting OpenClaw — and on a 401 from the provider (which happens
+    // immediately after the access token expires, since the Pinchy-side
+    // OAuth refresh races the call) we invalidate eagerly and refetch once
+    // before surfacing the error.
     const CREDENTIALS_TTL_MS = 5 * 60 * 1000; // 5 minutes
-    const cache = new Map<string, { gmail: GmailAdapter; expiresAt: number }>();
+    const cache = new Map<string, { adapter: EmailAdapter; expiresAt: number }>();
 
     function invalidate(agentId: string) {
       cache.delete(agentId);
@@ -195,30 +197,39 @@ const plugin = {
     async function getOrCreateClient(
       agentId: string,
       config: AgentEmailConfig,
-    ): Promise<GmailAdapter> {
+    ): Promise<EmailAdapter> {
       const hit = cache.get(agentId);
-      if (hit && hit.expiresAt > Date.now()) return hit.gmail;
-      const creds = await fetchCredentials(apiBaseUrl, gatewayToken, config.connectionId);
-      const gmail = new GmailAdapter({ accessToken: creds.accessToken });
-      cache.set(agentId, { gmail, expiresAt: Date.now() + CREDENTIALS_TTL_MS });
-      return gmail;
+      if (hit && hit.expiresAt > Date.now()) return hit.adapter;
+      const { type, credentials: creds } = await fetchCredentials(
+        apiBaseUrl,
+        gatewayToken,
+        config.connectionId,
+      );
+      let adapter: EmailAdapter;
+      if (type === "google") {
+        adapter = new GmailAdapter({ accessToken: creds.accessToken });
+      } else {
+        throw new Error(`unsupported email provider: ${type}`);
+      }
+      cache.set(agentId, { adapter, expiresAt: Date.now() + CREDENTIALS_TTL_MS });
+      return adapter;
     }
 
     /**
-     * Run a Gmail call with one transparent retry on auth failure.
-     * Gmail returns a 401 (or "Invalid Credentials") when the access
-     * token is stale. Pinchy's credentials API auto-refreshes Google
-     * OAuth tokens server-side, so on a 401 we invalidate the local
-     * cache, refetch (which triggers the refresh), and retry once.
+     * Run an email adapter call with one transparent retry on auth failure.
+     * The provider returns a 401 (or "Invalid Credentials") when the access
+     * token is stale. Pinchy's credentials API auto-refreshes OAuth tokens
+     * server-side, so on a 401 we invalidate the local cache, refetch
+     * (which triggers the refresh), and retry once.
      */
     async function withAuthRetry<T>(
       agentId: string,
       config: AgentEmailConfig,
-      fn: (gmail: GmailAdapter) => Promise<T>,
+      fn: (adapter: EmailAdapter) => Promise<T>,
     ): Promise<T> {
-      const gmail = await getOrCreateClient(agentId, config);
+      const adapter = await getOrCreateClient(agentId, config);
       try {
-        return await fn(gmail);
+        return await fn(adapter);
       } catch (err) {
         const msg = err instanceof Error ? err.message.toLowerCase() : "";
         const isAuthError =
@@ -252,14 +263,15 @@ const plugin = {
           name: "email_list",
           label: "Email List",
           description:
-            "List emails from a mailbox folder. Returns email summaries with sender, subject, date, and snippet. Use folder parameter for specific folders (INBOX, SENT, DRAFTS) and unreadOnly to filter unread messages.",
+            "List emails from a mailbox folder. Returns email summaries with sender, subject, date, and snippet. Canonical folder names: INBOX, SENT, DRAFTS, TRASH, SPAM.",
           parameters: {
             type: "object",
             properties: {
               folder: {
                 type: "string",
+                enum: ["INBOX", "SENT", "DRAFTS", "TRASH", "SPAM"],
                 description:
-                  "Mailbox folder to list. E.g. 'INBOX', 'SENT', 'DRAFTS'. Defaults to INBOX.",
+                  "Canonical folder name to list (INBOX, SENT, DRAFTS, TRASH, SPAM). Defaults to INBOX.",
               },
               limit: {
                 type: "number",
@@ -277,8 +289,8 @@ const plugin = {
                 return permissionDenied("read");
               }
 
-              const result = await withAuthRetry(agentId, config, (gmail) =>
-                gmail.list({
+              const result = await withAuthRetry(agentId, config, (adapter) =>
+                adapter.list({
                   folder: params.folder as string | undefined,
                   limit: params.limit as number | undefined,
                   unreadOnly: params.unreadOnly as boolean | undefined,
@@ -328,8 +340,8 @@ const plugin = {
                 return permissionDenied("read");
               }
 
-              const result = await withAuthRetry(agentId, config, (gmail) =>
-                gmail.read(params.id as string),
+              const result = await withAuthRetry(agentId, config, (adapter) =>
+                adapter.read(params.id as string),
               );
 
               return {
@@ -358,21 +370,41 @@ const plugin = {
           name: "email_search",
           label: "Email Search",
           description:
-            "Search emails using Gmail search syntax. Supports queries like 'from:user@example.com', 'subject:invoice', 'is:unread', 'newer_than:7d', and combinations.",
+            "Search emails using structured DSL fields. All fields are optional — combine them to narrow results. Canonical folder names: INBOX, SENT, DRAFTS, TRASH, SPAM.",
           parameters: {
             type: "object",
             properties: {
-              query: {
+              from: {
                 type: "string",
+                description: "Filter by sender email address",
+              },
+              to: {
+                type: "string",
+                description: "Filter by recipient email address",
+              },
+              subject: {
+                type: "string",
+                description: "Filter by subject text",
+              },
+              unread: {
+                type: "boolean",
+                description: "If true, return only unread emails",
+              },
+              sinceDays: {
+                type: "number",
+                description: "Return emails newer than this many days",
+              },
+              folder: {
+                type: "string",
+                enum: ["INBOX", "SENT", "DRAFTS", "TRASH", "SPAM"],
                 description:
-                  "Gmail search query. E.g. 'from:user@example.com subject:invoice'",
+                  "Canonical folder name to scope the search (INBOX, SENT, DRAFTS, TRASH, SPAM)",
               },
               limit: {
                 type: "number",
                 description: "Maximum number of results (default: 20)",
               },
             },
-            required: ["query"],
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
@@ -380,9 +412,20 @@ const plugin = {
                 return permissionDenied("read");
               }
 
-              const result = await withAuthRetry(agentId, config, (gmail) =>
-                gmail.search({
-                  query: params.query as string,
+              const result = await withAuthRetry(agentId, config, (adapter) =>
+                adapter.search({
+                  from: params.from as string | undefined,
+                  to: params.to as string | undefined,
+                  subject: params.subject as string | undefined,
+                  unread: params.unread as boolean | undefined,
+                  sinceDays: params.sinceDays as number | undefined,
+                  folder: params.folder as
+                    | "INBOX"
+                    | "SENT"
+                    | "DRAFTS"
+                    | "TRASH"
+                    | "SPAM"
+                    | undefined,
                   limit: params.limit as number | undefined,
                 }),
               );
@@ -437,8 +480,8 @@ const plugin = {
                 return permissionDenied("draft");
               }
 
-              const result = await withAuthRetry(agentId, config, (gmail) =>
-                gmail.draft({
+              const result = await withAuthRetry(agentId, config, (adapter) =>
+                adapter.draft({
                   to: params.to as string,
                   subject: params.subject as string,
                   body: params.body as string,
@@ -496,8 +539,8 @@ const plugin = {
                 return permissionDenied("send");
               }
 
-              const result = await withAuthRetry(agentId, config, (gmail) =>
-                gmail.send({
+              const result = await withAuthRetry(agentId, config, (adapter) =>
+                adapter.send({
                   to: params.to as string,
                   subject: params.subject as string,
                   body: params.body as string,

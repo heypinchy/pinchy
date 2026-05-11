@@ -256,6 +256,43 @@ describe("credential fetching", () => {
     });
   });
 
+  it("dispatches to GmailAdapter when credentials.type is 'google'", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        type: "google",
+        credentials: { accessToken: "google-token" },
+      }),
+    });
+    mockList.mockResolvedValue([]);
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    await tool.execute("call-1", {});
+
+    expect(GmailAdapter).toHaveBeenCalledWith({ accessToken: "google-token" });
+  });
+
+  it("returns error when credentials.type is 'microsoft' (unsupported in Phase 1)", async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        type: "microsoft",
+        credentials: { accessToken: "ms-token" },
+      }),
+    });
+
+    const tools = createApi();
+    const tool = findTool(tools, "email_list", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("unsupported email provider: microsoft");
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
   it("returns error when credential fetch fails", async () => {
     mockCredentialFailure(401, "Unauthorized");
 
@@ -493,7 +530,7 @@ describe("email_search", () => {
     mockCredentialResponse();
   });
 
-  it("searches emails with query", async () => {
+  it("searches emails with DSL fields", async () => {
     const emails = [
       {
         id: "msg-2",
@@ -507,11 +544,19 @@ describe("email_search", () => {
     const tools = createApi();
     const tool = findTool(tools, "email_search", agentId)!;
 
-    const result = await tool.execute("call-1", { query: "invoice", limit: 5 });
+    const result = await tool.execute("call-1", {
+      from: "b@test.com",
+      subject: "invoice",
+      limit: 5,
+    });
 
     const data = JSON.parse(result.content[0].text);
     expect(data).toHaveLength(1);
-    expect(mockSearch).toHaveBeenCalledWith({ query: "invoice", limit: 5 });
+    expect(mockSearch).toHaveBeenCalledWith({
+      from: "b@test.com",
+      subject: "invoice",
+      limit: 5,
+    });
   });
 });
 
