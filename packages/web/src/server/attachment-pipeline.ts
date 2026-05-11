@@ -63,8 +63,7 @@ export interface MaterializeParams {
  * validates expiry + status, atomically promotes each staged file to its
  * durable `uploads/` path, flips the DB row to `attached`, emits per-file
  * `file.upload.attached` audit events, and returns the same
- * `ProcessAttachmentsResult` shape that `processIncomingAttachments` returns
- * so the WS send-path can remain uniform.
+ * `ProcessAttachmentsResult` shape used by the WS send-path.
  *
  * Throws:
  *   `AttachmentNotFoundError`        — id missing or owned by another user/agent

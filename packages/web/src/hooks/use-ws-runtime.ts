@@ -1569,7 +1569,8 @@ export function useWsRuntime(agentId: string): {
       setPayloadRejected(false);
 
       // Combine images and binary files into a single content array for the WS payload.
-      // Server-side processIncomingAttachments processes all image_url parts uniformly.
+      // TODO(#task-7.2): migrate to two-phase upload (attachmentIds) path; the server
+      // now rejects image_url content parts with PROTOCOL_OUTDATED.
       const allFileUrls = [...compressedImages, ...binaryFiles.map((f) => f.url)];
       const allFilenames = [
         // Images don't have meaningful filenames in the current flow; empty strings

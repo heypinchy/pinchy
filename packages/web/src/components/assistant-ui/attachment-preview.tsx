@@ -15,13 +15,13 @@ function buildUploadUrl(agentId: string, filename: string): string {
   return `/api/agents/${encodeURIComponent(agentId)}/uploads/${encodeURIComponent(filename)}`;
 }
 
-// Why a probe + retry? The server persists the uploaded file AFTER the WS
-// message lands (processIncomingAttachments runs the buffer write inline),
-// but the browser renders this component as soon as the user message hits
-// local state. A naive <embed src=…> hits the GET route before the file is
-// on disk and the browser paints "Not found". Page reload works only because
-// the message then replays from OpenClaw history with the file already there.
-// The structural fix lives in #324 (multipart pre-upload); this probe is the
+// Why a probe + retry? The two-phase upload flow (POST /api/agents/:id/files,
+// then send attachmentIds via WS) means the file is staged before the WS
+// message lands, but materializeAttachments promotes it atomically on the
+// WS path. A naive <embed src=…> might still briefly hit the GET route before
+// promotion completes. Page reload works only because the message then replays
+// from OpenClaw history with the file already there.
+// This probe is the
 // hotfix that papers over the race for v0.5.3.
 const PROBE_SCHEDULE_MS = [200, 400, 800, 1600] as const;
 
