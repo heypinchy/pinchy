@@ -48,4 +48,13 @@ describe("pinchy-email manifest contract", () => {
   it("uses additionalProperties: false", () => {
     expect((manifest.configSchema as Record<string, unknown>).additionalProperties).toBe(false);
   });
+
+  it("declares contracts.tools with all email tool names", () => {
+    const contracts = (manifest as Record<string, unknown>).contracts as
+      | { tools?: string[] }
+      | undefined;
+    expect(contracts?.tools?.toSorted()).toEqual(
+      ["email_draft", "email_list", "email_read", "email_search", "email_send"],
+    );
+  });
 });

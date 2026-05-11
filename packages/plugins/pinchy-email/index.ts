@@ -190,9 +190,19 @@ const plugin = {
     // inside execute(), where the config reference is still live, so those can be
     // read dynamically without issue.
     const agentConfigs = api.pluginConfig?.agents ?? {};
-    console.log(
-      `[pinchy-email] register() called — agents: ${JSON.stringify(Object.keys(agentConfigs))}`,
-    );
+
+    // When OC calls the factory with no session context (probe call during hot-reload
+    // or tool-discovery mode), return a minimal stub so OC keeps the tool registered.
+    // A real session call (with agentId) will supersede this.
+    function probeStub(name: string): AgentTool {
+      return {
+        name,
+        label: name,
+        description: "",
+        parameters: { type: "object", properties: {} },
+        execute: async () => ({ content: [{ type: "text", text: "" }], isError: true as const }),
+      };
+    }
 
     // EmailAdapter cache per agent. Built lazily on first tool call:
     // fetch credentials from Pinchy → instantiate the appropriate adapter
@@ -276,14 +286,8 @@ const plugin = {
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx?.agentId;
-        console.log(
-          `[pinchy-email] email_list factory — agentId=${agentId ?? "none"} knownAgents=${JSON.stringify(Object.keys(agentConfigs))}`,
-        );
-        if (!agentId) return null;
+        if (!agentId) return probeStub("email_list");
         const config = getAgentConfig(agentConfigs, agentId);
-        console.log(
-          `[pinchy-email] email_list factory session — agentId=${agentId} config=${config ? "found" : "NOT FOUND"}`,
-        );
         if (!config) return null;
 
         return {
@@ -342,7 +346,7 @@ const plugin = {
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx?.agentId;
-        if (!agentId) return null;
+        if (!agentId) return probeStub("email_read");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
@@ -389,7 +393,7 @@ const plugin = {
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx?.agentId;
-        if (!agentId) return null;
+        if (!agentId) return probeStub("email_search");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
@@ -475,7 +479,7 @@ const plugin = {
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx?.agentId;
-        if (!agentId) return null;
+        if (!agentId) return probeStub("email_draft");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
@@ -534,7 +538,7 @@ const plugin = {
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx?.agentId;
-        if (!agentId) return null;
+        if (!agentId) return probeStub("email_send");
         const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
