@@ -171,12 +171,25 @@ function renderStepWithLink(label: string, link: { text: string; url: string }) 
   );
 }
 
+// Providers whose default models are always vision-capable
+const VISION_CAPABLE_PROVIDERS: ReadonlySet<ProviderName> = new Set([
+  "anthropic",
+  "openai",
+  "google",
+  "ollama-cloud",
+]);
+
 interface ProviderKeyFormProps {
   onSuccess: (provider?: ProviderName) => void;
   submitLabel?: string;
   configuredProviders?: Record<string, { configured: boolean; hint?: string }>;
   defaultProvider?: string | null;
   onDirtyChange?: (isDirty: boolean) => void;
+  /**
+   * Called after a successful save. Receives the provider name and whether
+   * the provider's default models include vision capability.
+   */
+  onSaved?: (provider: ProviderName, hasVision: boolean) => void;
 }
 
 export function ProviderKeyForm({
@@ -185,6 +198,7 @@ export function ProviderKeyForm({
   configuredProviders,
   defaultProvider,
   onDirtyChange,
+  onSaved,
 }: ProviderKeyFormProps) {
   const [provider, setProvider] = useState<ProviderName | null>(null);
   const [loading, setLoading] = useState(false);
@@ -276,6 +290,7 @@ export function ProviderKeyForm({
       form.reset();
       toast.success(isUrlProvider ? "URL saved" : "API key saved");
       triggerRestart();
+      onSaved?.(provider, VISION_CAPABLE_PROVIDERS.has(provider));
       onSuccess(provider);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Setup failed";
