@@ -138,10 +138,19 @@ describe("tool registration", () => {
     expect(names).toContain("email_send");
   });
 
-  it("returns null for all tools when no agentId", () => {
+  it("returns a non-null stub for all tools when no agentId (OC probe call)", async () => {
+    // When OpenClaw calls the factory without session context (e.g. at registerTool()
+    // time during hot-reload), returning null would permanently unregister the tool.
+    // We return a minimal stub so OC keeps the tool in its registry; the real
+    // session-time factory call (with agentId) supersedes it.
     const tools = createApi();
     for (const tool of tools) {
-      expect(tool.factory({})).toBeNull();
+      const stub = tool.factory({});
+      expect(stub).not.toBeNull();
+      expect(stub!.name).toBe(tool.name);
+      // Stub execute() must fail fast rather than call external services
+      const result = await stub!.execute("call-probe", {});
+      expect(result.isError).toBe(true);
     }
   });
 
