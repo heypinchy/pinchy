@@ -148,13 +148,27 @@ describe("GraphAdapter.search", () => {
     (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ value: [] }) });
     await adapter.search({ unread: true, sinceDays: 7 });
     const url = (fetch as Mock).mock.calls[0][0] as string;
-    expect(decodeURIComponent(url)).toContain("isRead eq false");
-    expect(decodeURIComponent(url)).toContain("receivedDateTime ge");
+    // URLSearchParams encodes spaces as +; decode both %xx and + before asserting
+    const decoded = decodeURIComponent(url).replace(/\+/g, " ");
+    expect(decoded).toContain("isRead eq false");
+    expect(decoded).toContain("receivedDateTime ge");
   });
 
   it("search({}) throws 'at least one filter'", async () => {
     const adapter = new GraphAdapter({ accessToken: "tok" });
     await expect(adapter.search({})).rejects.toThrow(/at least one/i);
+  });
+
+  it("search({from, unread}) uses only $filter (not $search) when both present", async () => {
+    const adapter = new GraphAdapter({ accessToken: "tok" });
+    (fetch as Mock).mockResolvedValueOnce({ ok: true, json: async () => ({ value: [] }) });
+    await adapter.search({ from: "alice@example.com", unread: true });
+    const url = (fetch as Mock).mock.calls[0][0] as string;
+    // URLSearchParams encodes spaces as +; decode both %xx and + before asserting
+    const decoded = decodeURIComponent(url).replace(/\+/g, " ");
+    expect(decoded).not.toContain("$search");
+    expect(decoded).toContain("from/emailAddress/address eq 'alice@example.com'");
+    expect(decoded).toContain("isRead eq false");
   });
 
   it("folder scopes via mailFolders path", async () => {

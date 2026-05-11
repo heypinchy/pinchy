@@ -122,20 +122,29 @@ export class GraphAdapter implements EmailAdapter {
     const path = opts.folder
       ? `/me/mailFolders/${mapFolder(opts.folder)}/messages`
       : `/me/messages`;
-    const parts: string[] = [
-      `$top=${encodeURIComponent(String(opts.limit ?? 20))}`,
-      `$select=${encodeURIComponent(SUMMARY_SELECT)}`,
-    ];
-    if (searchTerms.length) {
-      parts.push(`%24search=${encodeURIComponent(`"${searchTerms.join(" ")}"`)}`);
+    const params = new URLSearchParams({
+      $top: String(opts.limit ?? 20),
+      $select: SUMMARY_SELECT,
+    });
+
+    if (searchTerms.length > 0 && filters.length > 0) {
+      // Microsoft Graph v1.0 does not allow $search and $filter together.
+      // Convert text terms to OData $filter predicates instead.
+      if (opts.from) filters.push(`from/emailAddress/address eq '${opts.from}'`);
+      if (opts.to) filters.push(`toRecipients/any(r: r/emailAddress/address eq '${opts.to}')`);
+      if (opts.subject) filters.push(`contains(subject, '${opts.subject}')`);
+      params.set("$filter", filters.join(" and "));
+      params.set("$orderby", "receivedDateTime desc");
+    } else if (searchTerms.length > 0) {
+      // Only text terms — use $search (note: $orderby is not allowed with $search)
+      params.set("$search", `"${searchTerms.join(" ")}"`);
+    } else {
+      // Only OData filters — use $filter
+      params.set("$filter", filters.join(" and "));
+      params.set("$orderby", "receivedDateTime desc");
     }
-    if (filters.length) {
-      parts.push(`$filter=${encodeURIComponent(filters.join(" and "))}`);
-    }
-    if (!searchTerms.length) {
-      parts.push(`$orderby=${encodeURIComponent("receivedDateTime desc")}`);
-    }
-    const res = await this.req(`${path}?${parts.join("&")}`);
+
+    const res = await this.req(`${path}?${params.toString()}`);
     const data = (await res.json()) as { value: GraphMessage[] };
     return data.value.map(toSummary);
   }
