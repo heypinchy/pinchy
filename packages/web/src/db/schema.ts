@@ -13,6 +13,7 @@ import {
   pgView,
   primaryKey,
   check,
+  uuid,
 } from "drizzle-orm/pg-core";
 import { isNull, sql, relations } from "drizzle-orm";
 
@@ -371,4 +372,34 @@ export const usageRecords = pgTable(
 
 export const activeAgents = pgView("active_agents").as((qb) =>
   qb.select().from(agents).where(isNull(agents.deletedAt))
+);
+
+// ── File uploads ──────────────────────────────────────────────────────
+
+export const uploadedFiles = pgTable(
+  "uploaded_files",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    agentId: text("agent_id")
+      .notNull()
+      .references(() => agents.id, { onDelete: "cascade" }),
+    draftId: text("draft_id").notNull(),
+    filename: text("filename").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: integer("size_bytes").notNull(),
+    contentHash: text("content_hash").notNull(),
+    status: text("status", { enum: ["staged", "attached"] }).notNull(),
+    stagingPath: text("staging_path"),
+    expiresAt: timestamp("expires_at"),
+    messageId: text("message_id"),
+    createdAt: timestamp("created_at").notNull().defaultNow(),
+    attachedAt: timestamp("attached_at"),
+  },
+  (t) => [
+    index("uploaded_files_gc_idx").on(t.status, t.expiresAt),
+    index("uploaded_files_user_agent_draft_idx").on(t.userId, t.agentId, t.draftId),
+  ]
 );
