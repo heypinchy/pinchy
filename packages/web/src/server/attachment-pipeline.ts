@@ -5,19 +5,8 @@ import { eq, and, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import { uploadedFiles } from "@/db/schema";
 import { appendAuditLog } from "@/lib/audit";
-import { sanitizeFilename, validateUploadBuffer } from "@/lib/upload-validation";
-import {
-  persistAttachment,
-  promoteStagedToAttached,
-  UploadSlotExhaustedError,
-} from "@/lib/uploads";
+import { promoteStagedToAttached } from "@/lib/uploads";
 import { getWorkspacePath, getOpenClawWorkspacePath } from "@/lib/workspace";
-
-export interface ContentPart {
-  type: string;
-  text?: string;
-  image_url?: { url: string };
-}
 
 export interface ProcessedWorkspaceRef {
   relativePath: string;
@@ -32,20 +21,6 @@ export interface ProcessAttachmentsResult {
   chatAttachments: ChatAttachment[];
   workspaceRefs: ProcessedWorkspaceRef[];
 }
-
-export interface ProcessAttachmentsParams {
-  agentId: string;
-  contentParts: ContentPart[];
-  claimedFilenames?: string[];
-  /**
-   * Test-only override forwarded to `persistAttachment.maxCollisions`.
-   * Production callers MUST NOT set this — it exists so the slot-exhaustion
-   * branch can be exercised without writing the full 1000 collision files.
-   */
-  maxCollisionsForTesting?: number;
-}
-
-const DATA_URL_RE = /^data:([^;]+);base64,(.+)$/;
 
 // ── materializeAttachments ───────────────────────────────────────────────────
 
@@ -261,170 +236,6 @@ export async function materializeAttachments(
         filename: row.filename,
         agent: { id: agentId, name: agentName },
       },
-    });
-  }
-
-  return { chatAttachments, workspaceRefs };
-}
-
-/**
- * Error class for attachment problems caused by client input we should report
- * back verbatim (MIME mismatch, unsupported type, bad filename). Anything
- * thrown that is NOT a `UploadValidationError` is treated as an internal
- * server error and replaced with a generic message at the trust boundary —
- * never leaks `EACCES`/`ENOSPC`/etc to the client.
- */
-export class UploadValidationError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "UploadValidationError";
-  }
-}
-
-/**
- * Validates, persists, and dedups every attachment in a chat message.
- *
- * - Decodes each `image_url` content part with a `data:<mime>;base64,…` URL.
- * - Validates the buffer against the claimed MIME via `file-type` magic bytes.
- * - Sanitises the filename (or falls back to "upload").
- * - Writes the buffer to the agent's workspace via `persistAttachment`
- *   (atomic, dedup-on-content-hash, collision-suffix on different content).
- *
- * All persistence runs in parallel — N attachments × up to 15 MB each would
- * otherwise serialise the WS request path. The `for` loop below pre-computes
- * filenames in send-order to keep `claimedFilenames[i]` aligned with each
- * attachment's position in the source array, regardless of how the parallel
- * promises settle.
- *
- * Returns `chatAttachments` for inline image dispatch and `workspaceRefs`
- * for the upload hint that points the agent at the right built-in tool.
- *
- * Throws `UploadValidationError` for input the client should see; any other
- * thrown error is internal and the caller should map it to a generic message.
- */
-export async function processIncomingAttachments(
-  params: ProcessAttachmentsParams
-): Promise<ProcessAttachmentsResult> {
-  const { agentId, contentParts } = params;
-  // Defensive: strip non-array values at the trust boundary so a malformed
-  // payload can never reach the per-index lookup below.
-  const claimedFilenames = Array.isArray(params.claimedFilenames)
-    ? params.claimedFilenames
-    : undefined;
-  const workspaceRoot = getOpenClawWorkspacePath(agentId);
-
-  // First pass — collect everything we need to persist, in order. This pass
-  // is sync (sanitiseFilename) and quick CPU work (base64 decode), so we do
-  // it serially. The expensive validation + I/O is parallelised below.
-  interface PreparedAttachment {
-    safeName: string;
-    base64: string;
-    buffer: Buffer;
-    claimedMime: string;
-  }
-  const prepared: PreparedAttachment[] = [];
-  let attachmentIdx = 0;
-  for (const part of contentParts) {
-    // Non-attachment parts (notably the leading `text` part — see
-    // `buildWsContent` in use-ws-runtime.ts) are ignored entirely; they
-    // have no slot in `claimedFilenames` so they don't advance the index.
-    if (part.type !== "image_url") continue;
-
-    // Every `image_url` part MUST carry a base64 `data:` URL. Anything
-    // else (missing url, https/file URL, plain text without `;base64,`)
-    // is a client-payload bug. Failing closed here keeps the
-    // `image_url[i]` ↔ `claimedFilenames[i]` alignment invariant intact —
-    // silently skipping a malformed slot would shift every subsequent
-    // filename onto the WRONG attachment.
-    if (!part.image_url?.url) {
-      throw new UploadValidationError(
-        `Invalid attachment payload at index ${attachmentIdx}: image_url part is missing url.`
-      );
-    }
-    const match = part.image_url.url.match(DATA_URL_RE);
-    if (!match) {
-      throw new UploadValidationError(
-        `Invalid attachment payload at index ${attachmentIdx}: ` +
-          `image_url must be a base64 data: URL.`
-      );
-    }
-
-    const claimedMime = match[1];
-    const base64 = match[2];
-    const buffer = Buffer.from(base64, "base64");
-
-    // The client sends `""` for image slots in mixed image+binary messages
-    // (images don't carry a meaningful filename). Treat empty/whitespace
-    // strings as nullish here — `??` alone misses the empty-string case.
-    const rawName = claimedFilenames?.[attachmentIdx];
-    const claimedName = typeof rawName === "string" && rawName.trim() ? rawName : "upload";
-    let safeName: string;
-    try {
-      safeName = sanitizeFilename(claimedName);
-    } catch (err) {
-      throw new UploadValidationError(err instanceof Error ? err.message : String(err));
-    }
-
-    prepared.push({ safeName, base64, buffer, claimedMime });
-    attachmentIdx++;
-  }
-
-  // Validate + persist in parallel — order is preserved by Promise.all.
-  const persisted = await Promise.all(
-    prepared.map(async ({ safeName, buffer, claimedMime }) => {
-      let detectedMime: string;
-      try {
-        detectedMime = await validateUploadBuffer(buffer, claimedMime);
-      } catch (err) {
-        throw new UploadValidationError(err instanceof Error ? err.message : String(err));
-      }
-      let ref;
-      try {
-        ref = await persistAttachment({
-          agentId,
-          filename: safeName,
-          buffer,
-          // `maxCollisionsForTesting` is undefined in production → falls back
-          // to the persistAttachment default (1000). Tests pass a small value
-          // to exercise the slot-exhaustion branch without writing 1000 files.
-          ...(params.maxCollisionsForTesting !== undefined
-            ? { maxCollisions: params.maxCollisionsForTesting }
-            : {}),
-        });
-      } catch (err) {
-        // Slot exhaustion is caused by client input (uploading thousands of
-        // distinct files under one name) and is recoverable by renaming.
-        // Surface it verbatim — see UploadValidationError jsdoc above.
-        if (err instanceof UploadSlotExhaustedError) {
-          throw new UploadValidationError(err.message);
-        }
-        throw err;
-      }
-      return { detectedMime, ref };
-    })
-  );
-
-  const chatAttachments: ChatAttachment[] = [];
-  const workspaceRefs: ProcessedWorkspaceRef[] = [];
-  for (let i = 0; i < prepared.length; i++) {
-    const { safeName, base64, buffer } = prepared[i];
-    const { detectedMime, ref } = persisted[i];
-
-    // Only images can be sent inline to the LLM (vision models accept them).
-    // PDFs and other binary files go workspace-only — the agent reads them
-    // via the built-in `pdf` / `image` tools using the workspace path from
-    // the upload hint. OpenClaw's `agent` entrypoint rejects non-image
-    // inline attachments anyway (`acceptNonImage: false`).
-    if (detectedMime.startsWith("image/")) {
-      chatAttachments.push({ mimeType: detectedMime, fileName: safeName, content: base64 });
-    }
-    workspaceRefs.push({
-      relativePath: ref.relativePath,
-      absolutePath: `${workspaceRoot}/${ref.relativePath}`,
-      mimeType: detectedMime,
-      sizeBytes: buffer.length,
-      contentHash: ref.contentHash,
-      reused: ref.reused,
     });
   }
 
