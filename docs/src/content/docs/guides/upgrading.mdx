@@ -115,7 +115,7 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.5.1 to %%PINCHY_VERSION%%
+## Upgrading from v0.5.2 to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
@@ -123,13 +123,57 @@ None.
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% is a maintenance release: a security fix for admin access to personal agents, the long-standing Ollama local-provider setup bug, and several robustness improvements in **Settings → Groups**.
+%%PINCHY_VERSION%% is a maintenance release focused on chat reliability: the recommended Ollama Cloud reasoning model was swapped after the previous default soft-deprecated upstream, model errors now surface as actionable in-chat bubbles instead of raw HTTP 500s, and the chat layout was restructured so per-agent runtimes survive in-app navigation. File attachments also got a proper preview surface.
 
 Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.1/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=v0.5.2/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d
+```
+
+No database migration, no `docker-compose.yml` change, and no env-var changes are required.
+
+#### Default Ollama Cloud reasoning model swapped
+
+`ollama-cloud/kimi-k2-thinking` is removed from the curated model list. The model began returning silent HTTP 500s from Ollama Cloud and is no longer a safe default. Agents that resolve via `tier=reasoning` now fall through to `deepseek-v4-pro`, which is already configured and tested.
+
+Existing agents that pinned `kimi-k2-thinking` explicitly keep loading from the database — but the next request will fail upstream. Open **Settings → Agent → Model** for each affected agent and pick a working model. The new in-chat error surface (below) makes those agents easy to spot.
+
+#### Actionable model-error bubbles in chat
+
+When an agent's model call returns a 5xx from the upstream provider, the chat now shows a structured error bubble (`<Agent> couldn't respond.` + provider/model + a deep-link to the agent's model picker) instead of the raw `HTTP 500: "Internal Server Error (ref: …)"` string. The original error stays available under a collapsible **Technical details** section so support requests can still cite the upstream `ref` ID. Every flip into this error state writes an `agent.model_unavailable` audit entry.
+
+#### Per-agent chat runtimes survive in-app navigation
+
+Switching between agents in the sidebar no longer tears down and recreates the chat runtime: a new `ChatSessionProvider` mounts one runtime per agent at the `(app)` layout level, so streams in-flight on agent A keep running while you read agent B's history. The sidebar shows a subtle pulse on agents with an active turn and a red dot on agents that ended in an error, so background activity is visible without opening every chat.
+
+Existing behavior is preserved on full page reloads: history still rehydrates from OpenClaw, the bundled history cap is now 200 messages, and a transient disconnect bubble shows when the WebSocket drops mid-stream.
+
+#### Attachment preview and composer chips
+
+Non-image attachments (PDFs and other files) now render as a filename chip in the composer and on sent messages, with the full filename available on hover. Clicking an attachment opens an in-app **AttachmentPreview** modal with PDF and image preview, instead of forcing a download. The uploads route is now authenticated for both `POST` and `GET`, and PDFs/images are routed through OpenClaw's built-in tools rather than inlined.
+
+#### Background-run audit telemetry
+
+Chat runs that complete while the user is not actively viewing the agent now emit a `chat.background_run_completed` audit event with the agent identity, run duration, and turn outcome. This makes background activity auditable without leaking conversation content into the audit log.
+
+## Upgrading from v0.5.1 to v0.5.2
+
+### Breaking changes
+
+None.
+
+### Upgrade notes
+
+v0.5.2 is a maintenance release: a security fix for admin access to personal agents, the long-standing Ollama local-provider setup bug, and several robustness improvements in **Settings → Groups**.
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.5.1/PINCHY_VERSION=v0.5.2/' .env
 docker compose pull && docker compose up -d
 ```
 
@@ -137,7 +181,7 @@ No database migration, no `docker-compose.yml` change, and no env-var changes ar
 
 #### Security: admin access scope to personal agents
 
-Before %%PINCHY_VERSION%%, an admin could read or modify another user's personal agent by calling `GET`/`PATCH`/`DELETE /api/agents/:agentId` directly, even though the UI did not expose those agents. The admin fast-path in `assertAgentAccess` now correctly enforces the personal-agent boundary: personal agents are only accessible to their owner, regardless of role. To share an agent with the team, set its visibility to **All users** (or use a group), which is unaffected by this change.
+Before v0.5.2, an admin could read or modify another user's personal agent by calling `GET`/`PATCH`/`DELETE /api/agents/:agentId` directly, even though the UI did not expose those agents. The admin fast-path in `assertAgentAccess` now correctly enforces the personal-agent boundary: personal agents are only accessible to their owner, regardless of role. To share an agent with the team, set its visibility to **All users** (or use a group), which is unaffected by this change.
 
 No action is required on upgrade. If you relied on this behavior in scripts or integrations, switch them to use a shared agent instead.
 
