@@ -57,9 +57,14 @@ export class UploadSlotExhaustedError extends Error {
  * `UploadSlotExhaustedError` if no free slot is found within `maxCollisions`
  * tries.
  *
- * Used by both `persistAttachment` (write new buffer) and
- * `promoteStagedToAttached` (rename staged file) so the dedup logic lives in
- * one place.
+ * Used by `promoteStagedToAttached` to find the first free slot before
+ * renaming a staged file into `uploads/`.
+ *
+ * NOT used by `persistAttachment`: that function has its own inline loop with
+ * content-hash dedup semantics (it returns `reused: true` when an existing
+ * file's content matches the incoming buffer, which requires reading each
+ * candidate to compare hashes — a different behavior that cannot be delegated
+ * to this helper).
  */
 async function buildNextFreeFilename(
   dir: string,
@@ -180,7 +185,8 @@ export interface PromotedRef {
  * 6. Return `{ relativePath: "uploads/<targetName>" }`.
  */
 export async function promoteStagedToAttached(params: PromoteParams): Promise<PromotedRef> {
-  const { workspaceRoot, stagedRelativePath, filename } = params;
+  const { workspaceRoot, stagedRelativePath } = params;
+  const filename = sanitizeFilename(params.filename);
 
   // Extract uploadId from ".staging/<uploadId>/<filename>"
   const parts = stagedRelativePath.split("/");

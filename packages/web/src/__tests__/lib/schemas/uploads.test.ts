@@ -38,4 +38,15 @@ describe("uploads schemas", () => {
   it("uploadResponseSchema rejects missing required fields", () => {
     expect(() => uploadResponseSchema.parse({ filename: "x.pdf" })).toThrow();
   });
+
+  it("uploadResponseSchema rejects empty filename", () => {
+    expect(() =>
+      uploadResponseSchema.parse({
+        id: crypto.randomUUID(),
+        filename: "",
+        mimeType: "application/pdf",
+        sizeBytes: 100,
+      })
+    ).toThrow();
+  });
 });

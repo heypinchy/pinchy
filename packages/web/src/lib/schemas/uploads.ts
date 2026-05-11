@@ -8,7 +8,7 @@ export const attachmentIdsSchema = z
 
 export const uploadResponseSchema = z.object({
   id: z.string().uuid(),
-  filename: z.string(),
+  filename: z.string().min(1),
   mimeType: z.string(),
   sizeBytes: z.number().int().nonnegative(),
 });
