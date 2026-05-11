@@ -8,6 +8,7 @@ import { odooCredentialsSchema } from "@/lib/integrations/odoo-schema";
 import { deferAuditLog } from "@/lib/audit-deferred";
 import { fetchOdooSchema } from "@/lib/integrations/odoo-sync";
 import { validateExternalUrl } from "@/lib/integrations/url-validation";
+import { setIntegrationAuthFailed, clearIntegrationAuthError } from "@/lib/integrations/auth-state";
 
 type RouteContext = { params: Promise<{ connectionId: string }> };
 
@@ -40,6 +41,11 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
 
     const result = await fetchOdooSchema(parsed.data);
     if (!result.success) {
+      await setIntegrationAuthFailed({
+        connectionId,
+        reason: result.error,
+        actor: { type: "user", id: session.user.id! },
+      });
       return NextResponse.json(result);
     }
 
@@ -47,6 +53,11 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
       .update(integrationConnections)
       .set({ data: result.data, updatedAt: new Date() })
       .where(eq(integrationConnections.id, connectionId));
+
+    await clearIntegrationAuthError({
+      connectionId,
+      actor: { type: "user", id: session.user.id! },
+    });
 
     deferAuditLog({
       actorType: "user",
@@ -69,6 +80,13 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Sync failed";
+    await setIntegrationAuthFailed({
+      connectionId,
+      reason: message,
+      actor: { type: "user", id: session.user.id! },
+    }).catch(() => {
+      /* don't mask the original error */
+    });
     return NextResponse.json({ success: false, error: message }, { status: 200 });
   }
 });
