@@ -11,6 +11,7 @@ import {
 import { isSetupComplete } from "@/lib/setup";
 import { migrateExistingSmithers } from "@/lib/migrate-onboarding";
 import { markOpenClawConfigReady } from "@/lib/openclaw-config-ready";
+import { seedBuiltinModels } from "@/lib/model-capabilities/seed";
 
 /**
  * Runs all one-time boot initializations in the correct order and performs
@@ -120,6 +121,15 @@ export async function bootInits(): Promise<boolean> {
     console.error(
       "[pinchy] FATAL: gateway token seed failed — OpenClaw will refuse to bind " +
         "until the token is written. Underlying error:",
+      err instanceof Error ? err.message : err
+    );
+  }
+
+  try {
+    await seedBuiltinModels();
+  } catch (err) {
+    console.error(
+      "[pinchy] Failed to seed built-in models:",
       err instanceof Error ? err.message : err
     );
   }
