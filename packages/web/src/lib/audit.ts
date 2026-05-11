@@ -74,7 +74,10 @@ export type AuditEventType =
   | "integration.synced"
   | "integration.auth_failed"
   | "integration.auth_recovered"
-  | "integration.credentials_updated";
+  | "integration.credentials_updated"
+  | "file.upload.staged"
+  | "file.upload.attached"
+  | "file.upload.expired";
 
 interface HmacFieldsV1 {
   timestamp: Date;

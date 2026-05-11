@@ -52,4 +52,20 @@ describe("file.upload audit events", () => {
     };
     expect(entry.eventType).toBe("file.upload.expired");
   });
+
+  it("file.upload.staged failure uses claimedMime not mimeType", () => {
+    const entry: AuditLogEntry = {
+      eventType: "file.upload.staged",
+      actorType: "user",
+      actorId: "user-1",
+      outcome: "failure",
+      detail: {
+        filename: "evil.exe",
+        claimedMime: "application/pdf",
+        reason: "mime",
+        agent: { id: "agent-1", name: "Smithers" },
+      },
+    };
+    expect(entry.eventType).toBe("file.upload.staged");
+  });
 });

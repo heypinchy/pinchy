@@ -2,6 +2,7 @@ import { createHash, randomBytes, randomUUID } from "crypto";
 import { link, mkdir, readFile, unlink, writeFile } from "fs/promises";
 import { join, parse as parsePath } from "path";
 import { getWorkspacePath } from "@/lib/workspace";
+import { sanitizeFilename } from "@/lib/upload-validation";
 
 const UPLOADS_SUBDIR = "uploads";
 const DEFAULT_MAX_COLLISION_SLOTS = 1000;
@@ -146,14 +147,15 @@ export async function persistStagedUpload(
   params: PersistStagedUploadParams
 ): Promise<StagedUploadRef> {
   const { workspaceRoot, filename, buffer } = params;
+  const safeName = sanitizeFilename(filename);
   const uploadId = randomUUID();
   const stagingDir = join(workspaceRoot, ".staging", uploadId);
   await mkdir(stagingDir, { recursive: true });
-  await writeFile(join(stagingDir, filename), buffer);
+  await writeFile(join(stagingDir, safeName), buffer);
   const contentHash = createHash("sha256").update(buffer).digest("hex");
   return {
     uploadId,
-    relativePath: `.staging/${uploadId}/${filename}`,
+    relativePath: `.staging/${uploadId}/${safeName}`,
     contentHash,
   };
 }

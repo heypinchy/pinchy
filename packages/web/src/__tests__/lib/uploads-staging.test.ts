@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtemp, readFile, rm } from "fs/promises";
 import { tmpdir } from "os";
 import { join } from "path";
+import { createHash } from "crypto";
 import { persistStagedUpload } from "@/lib/uploads";
 
 let workspaceRoot: string;
@@ -33,7 +34,8 @@ describe("persistStagedUpload", () => {
       filename: "x.txt",
       buffer,
     });
-    expect(result.contentHash).toMatch(/^[a-f0-9]{64}$/);
+    const expected = createHash("sha256").update(buffer).digest("hex");
+    expect(result.contentHash).toBe(expected);
   });
 
   it("isolates uploads under distinct uploadIds even with same filename", async () => {
