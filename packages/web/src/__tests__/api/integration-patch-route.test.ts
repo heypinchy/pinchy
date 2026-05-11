@@ -84,8 +84,16 @@ vi.mock("drizzle-orm", () => ({
   eq: vi.fn((col: unknown, val: unknown) => ({ col, val })),
 }));
 
-vi.mock("@/lib/integrations/odoo-schema", () => ({
-  odooCredentialsSchema: {
+vi.mock("@/lib/integrations/odoo-schema", () => {
+  // The route calls odooCredentialsSchema.partial() to allow partial updates.
+  // The partial schema accepts any subset of odoo fields (no required fields check).
+  const partialSchema = {
+    safeParse: (data: unknown) => {
+      return { success: true, data };
+    },
+  };
+  const odooCredentialsSchema = {
+    partial: () => partialSchema,
     safeParse: (data: unknown) => {
       const d = data as Record<string, unknown>;
       if (
@@ -99,8 +107,9 @@ vi.mock("@/lib/integrations/odoo-schema", () => ({
       }
       return { success: false, error: { errors: [{ message: "Invalid credentials" }] } };
     },
-  },
-}));
+  };
+  return { odooCredentialsSchema };
+});
 
 vi.mock("@/lib/integrations/url-validation", () => ({
   validateExternalUrl: (url: string) => {
