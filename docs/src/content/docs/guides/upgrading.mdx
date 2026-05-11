@@ -145,6 +145,10 @@ Existing agents that pinned `kimi-k2-thinking` explicitly keep loading from the 
 
 When an agent's model call returns a 5xx from the upstream provider, the chat now shows a structured error bubble (`<Agent> couldn't respond.` + provider/model + a deep-link to the agent's model picker) instead of the raw `HTTP 500: "Internal Server Error (ref: …)"` string. The original error stays available under a collapsible **Technical details** section so support requests can still cite the upstream `ref` ID. Every flip into this error state writes an `agent.model_unavailable` audit entry.
 
+#### Silent model timeouts now surface a retry-able error
+
+Previously, a run that ended without producing any assistant text — typically a model that timed out inside OpenClaw's embedded layer on a cold-path tool call — left the chat indistinguishable from a successful empty reply: spinner gone, no error, no retry button. The chat now detects when a stream completes with no consumer-visible output and shows the standard error bubble with a **Retry** button, so the user isn't left guessing whether anything is still happening.
+
 #### Per-agent chat runtimes survive in-app navigation
 
 Switching between agents in the sidebar no longer tears down and recreates the chat runtime: a new `ChatSessionProvider` mounts one runtime per agent at the `(app)` layout level, so streams in-flight on agent A keep running while you read agent B's history. The sidebar shows a subtle pulse on agents with an active turn and a red dot on agents that ended in an error, so background activity is visible without opening every chat.

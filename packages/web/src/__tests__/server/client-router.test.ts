@@ -2130,6 +2130,116 @@ describe("ClientRouter", () => {
     consoleSpy.mockRestore();
   });
 
+  // Defensive safety-net for issue #320: OpenClaw's embedded runner silently
+  // falls through to `continue_normal` when `surface_error` fires with
+  // `params.timedOut === true` (see pi-embedded-runner/run/assistant-failover.ts).
+  // No `lifecycle.phase=error` event reaches openclaw-node, so Pinchy's
+  // forwarder never sees an error chunk. From the user's perspective the
+  // stream ends silently — no error bubble, no retry button. We detect this
+  // server-side by tracking whether any consumer-visible output (text or
+  // error chunk) reached the client, and emit a synthetic error frame when
+  // the stream ends with nothing visible.
+  describe("silent stream-end safety net (issue #320)", () => {
+    it("emits a retry-able error frame when stream ends without any text or error chunk", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      // Mimics the OC surface_error+timedOut path: no text, no error chunk,
+      // run just terminates with a bare `done`.
+      async function* fakeStream() {
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const errorMsg = messages.find((m: any) => m.type === "error");
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg.agentName).toBe("Smithers");
+      expect(errorMsg.providerError).toMatch(/no response|timed out|timeout/i);
+      expect(errorMsg.messageId).toBeTruthy();
+
+      // The synthetic error must precede `complete` so the client's
+      // error handler runs before the spinner is cleared.
+      const errorIdx = messages.findIndex((m: any) => m.type === "error");
+      const completeIdx = messages.findIndex((m: any) => m.type === "complete");
+      expect(errorIdx).toBeGreaterThanOrEqual(0);
+      expect(completeIdx).toBeGreaterThan(errorIdx);
+
+      consoleSpy.mockRestore();
+    });
+
+    it("does NOT emit a synthetic error when the stream produced any text", async () => {
+      const clientWs = createMockClientWs();
+
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "Hello!" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m: any) => m.type === "error")).toBe(false);
+      expect(messages.some((m: any) => m.type === "chunk")).toBe(true);
+    });
+
+    it("does NOT emit a synthetic error for an intentional silent reply", async () => {
+      const clientWs = createMockClientWs();
+
+      // SILENT_REPLY_TOKEN = "NO_REPLY" is a legitimate "agent chose silence"
+      // signal — text chunks did arrive, they're just suppressed at flush time.
+      async function* fakeStream() {
+        yield { type: "text" as const, text: "NO_REPLY" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      expect(messages.some((m: any) => m.type === "error")).toBe(false);
+    });
+
+    it("does NOT emit a second error frame when the stream already emitted an error chunk", async () => {
+      const clientWs = createMockClientWs();
+      const consoleSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      async function* fakeStream() {
+        yield { type: "error" as const, text: "Rate limit exceeded" };
+        yield { type: "done" as const, text: "" };
+      }
+      mockChat.mockReturnValue(fakeStream());
+
+      await router.handleMessage(clientWs as any, {
+        type: "message",
+        content: "Hi",
+        agentId: "agent-1",
+      });
+
+      const messages = clientWs.sent.map((s) => JSON.parse(s));
+      const errorMessages = messages.filter((m: any) => m.type === "error");
+      expect(errorMessages).toHaveLength(1);
+      expect(errorMessages[0].providerError).toContain("Rate limit exceeded");
+
+      consoleSpy.mockRestore();
+    });
+  });
+
   describe("per-user context injection for shared agents", () => {
     it("should include user context in extraSystemPrompt for shared agents", async () => {
       mockUserFindFirst.mockResolvedValue({

@@ -501,6 +501,17 @@ export class ClientRouter {
     // suppress it when the turn ends.
     let textBuffer = "";
 
+    // Safety net for issue #320: OpenClaw's embedded runner falls through to
+    // `continue_normal` when `surface_error` fires with `params.timedOut`,
+    // emitting no lifecycle error event. The stream ends silently and the
+    // user is left with no error bubble and no retry button. We track
+    // whether any consumer-visible output reached the client and synthesize
+    // an error frame if the stream ends with nothing visible. Heartbeats
+    // and lifecycle/tool chunks don't count — only text the user would see
+    // or an explicit error chunk closes the safety net.
+    let sawText = false;
+    let sawError = false;
+
     // Heartbeat is intentionally deferred until the first chunk arrives.
     // Starting it immediately would reset the client-side stuck timer even
     // when OpenClaw's stream hangs before producing any output (e.g. after a
@@ -551,6 +562,7 @@ export class ClientRouter {
               clientMessageId: chunk.clientMessageId,
             });
           } else if (chunk.type === "text") {
+            sawText = true;
             textBuffer = stripFinalEnvelope(textBuffer + chunk.text);
             const safeLen = safeEmitLength(textBuffer);
             if (safeLen > 0) {
@@ -559,6 +571,7 @@ export class ClientRouter {
               this.sendToClient(clientWs, { type: "chunk", content: emit, messageId });
             }
           } else if (chunk.type === "error") {
+            sawError = true;
             const modelUnavailable = classifyModelError(chunk.text, agent.model ?? "");
             this.sendToClient(clientWs, {
               type: "error",
@@ -620,6 +633,23 @@ export class ClientRouter {
           textBuffer = "";
           messageId = crypto.randomUUID();
         }
+      }
+
+      // Issue #320 safety net: stream ended without any consumer-visible
+      // output. Surface a retry-able error so the user isn't stranded with
+      // an empty assistant turn (most likely cause: OC's embedded runner
+      // swallowed a `surface_error reason=timeout` into `continue_normal`).
+      // Must precede the `complete` frame so the client's error handler
+      // runs before the spinner is cleared.
+      if (!sawText && !sawError && clientWs.readyState === WS_OPEN) {
+        const providerError = "The model did not produce a response. It may have timed out.";
+        this.sendToClient(clientWs, {
+          type: "error",
+          agentName: agent.name,
+          providerError,
+          hint: getErrorHint(providerError, this.userRole),
+          messageId,
+        });
       }
 
       // Tell the client the entire request is finished. Unlike "done" events
