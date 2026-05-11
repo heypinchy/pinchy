@@ -180,14 +180,16 @@ const plugin = {
   description: "Email integration (Gmail and Microsoft 365) with per-agent permissions.",
 
   register(api: PluginApi) {
-    // Read api.pluginConfig dynamically on each factory/execute call rather than
-    // capturing it once at register() time. OpenClaw may call register() before
-    // plugins.entries.pinchy-email is fully applied during a hot-reload that adds
-    // the plugin for the first time, leaving a stale empty agentConfigs in the
-    // closure. Dynamic access via api.pluginConfig ensures the factory always sees
-    // the current config when OpenClaw invokes it per chat session.
+    // Capture agentConfigs at register() time. OpenClaw calls register() with a
+    // fully-populated api.pluginConfig; the reference may be reset after the call
+    // returns, so factories must not read api.pluginConfig?.agents dynamically —
+    // they would see an empty map and return null, causing tools to vanish from
+    // the tool list for every session. apiBaseUrl and gatewayToken are only needed
+    // inside execute(), where the config reference is still live, so those can be
+    // read dynamically without issue.
+    const agentConfigs = api.pluginConfig?.agents ?? {};
     console.log(
-      `[pinchy-email] register() called — agents: ${JSON.stringify(Object.keys(api.pluginConfig?.agents ?? {}))}`,
+      `[pinchy-email] register() called — agents: ${JSON.stringify(Object.keys(agentConfigs))}`,
     );
 
     // EmailAdapter cache per agent. Built lazily on first tool call:
@@ -272,11 +274,11 @@ const plugin = {
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx.agentId;
-        if (!agentId) return null;
-        const config = getAgentConfig(api.pluginConfig?.agents ?? {}, agentId);
         console.log(
-          `[pinchy-email] email_list factory — agentId=${agentId} configured=${config !== null} known=${JSON.stringify(Object.keys(api.pluginConfig?.agents ?? {}))}`,
+          `[pinchy-email] email_list factory — agentId=${agentId ?? "undefined"} known=${JSON.stringify(Object.keys(agentConfigs))}`,
         );
+        if (!agentId) return null;
+        const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
         return {
@@ -336,7 +338,7 @@ const plugin = {
       (ctx: PluginToolContext) => {
         const agentId = ctx.agentId;
         if (!agentId) return null;
-        const config = getAgentConfig(api.pluginConfig?.agents ?? {}, agentId);
+        const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
         return {
@@ -383,7 +385,7 @@ const plugin = {
       (ctx: PluginToolContext) => {
         const agentId = ctx.agentId;
         if (!agentId) return null;
-        const config = getAgentConfig(api.pluginConfig?.agents ?? {}, agentId);
+        const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
         return {
@@ -469,7 +471,7 @@ const plugin = {
       (ctx: PluginToolContext) => {
         const agentId = ctx.agentId;
         if (!agentId) return null;
-        const config = getAgentConfig(api.pluginConfig?.agents ?? {}, agentId);
+        const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
         return {
@@ -528,7 +530,7 @@ const plugin = {
       (ctx: PluginToolContext) => {
         const agentId = ctx.agentId;
         if (!agentId) return null;
-        const config = getAgentConfig(api.pluginConfig?.agents ?? {}, agentId);
+        const config = getAgentConfig(agentConfigs, agentId);
         if (!config) return null;
 
         return {
