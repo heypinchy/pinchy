@@ -1,9 +1,21 @@
 # docker-compose.email-test.yml
-# Test overlay: adds mock Gmail server for pinchy-email E2E tests.
+# Test overlay: adds mock Gmail server, mock Graph server, and fake Ollama
+# for pinchy-email E2E tests.
 # Usage:
 #   docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml up --build -d
 
 services:
+  fake-ollama:
+    build:
+      context: config/fake-ollama
+    ports:
+      - "11435:11435"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:11435/api/tags').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   gmail-mock:
     build:
       context: config/gmail-mock
@@ -32,6 +44,9 @@ services:
       - GMAIL_OAUTH_BASE_URL=http://gmail-mock:9004
       - GRAPH_API_BASE_URL=http://graph-mock:9005
       - MICROSOFT_OAUTH_BASE_URL=http://graph-mock:9005
+    depends_on:
+      fake-ollama:
+        condition: service_healthy
 
   pinchy:
     environment:
@@ -45,3 +60,6 @@ services:
       # the host during regenerateOpenClawConfig(). OpenClaw already has this
       # mapping via the base docker-compose.yml extra_hosts block.
       - "ollama.local:host-gateway"
+    depends_on:
+      fake-ollama:
+        condition: service_healthy
