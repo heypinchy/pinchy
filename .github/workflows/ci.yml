@@ -1483,6 +1483,7 @@ jobs:
         env:
           CI: true
           ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+          GRAPH_MOCK_URL: http://localhost:9005
 
       - name: Capture diagnostics on failure
         if: failure()

@@ -177,7 +177,7 @@ async function fetchCredentials(
 const plugin = {
   id: "pinchy-email",
   name: "Pinchy Email",
-  description: "Email integration (Google, and more providers coming) with per-agent permissions.",
+  description: "Email integration (Gmail and Microsoft 365) with per-agent permissions.",
 
   register(api: PluginApi) {
     const pluginConfig = api.pluginConfig;
