@@ -368,6 +368,29 @@ export const usageRecords = pgTable(
   ]
 );
 
+// ── Model Catalogue ──────────────────────────────────────────────────
+
+export const models = pgTable(
+  "models",
+  {
+    id: text("id")
+      .primaryKey()
+      .$defaultFn(() => crypto.randomUUID()),
+    provider: text("provider").notNull(),
+    modelId: text("model_id").notNull(),
+    displayName: text("display_name").notNull(),
+    vision: boolean("vision"),
+    documents: boolean("documents"),
+    audio: boolean("audio"),
+    video: boolean("video"),
+    longContext: boolean("long_context"),
+    tools: boolean("tools"),
+    source: text("source").notNull(),
+    updatedAt: timestamp("updated_at").defaultNow(),
+  },
+  (t) => [uniqueIndex("uq_models_provider_modelid").on(t.provider, t.modelId)]
+);
+
 // ── Views ────────────────────────────────────────────────────────────
 
 export const activeAgents = pgView("active_agents").as((qb) =>
