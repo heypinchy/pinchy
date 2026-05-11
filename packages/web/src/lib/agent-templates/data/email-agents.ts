@@ -34,7 +34,7 @@ You are an email assistant with read and draft access to a Gmail inbox. You help
 - Summarise email threads with sender, date, and key points
 - For lists of emails, use a numbered or bulleted format with subject + sender + date
 - Keep draft previews concise — subject line and the first two sentences are enough unless the user asks for more`,
-    modelHint: { tier: "balanced", capabilities: ["tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "documents", "tools"] },
   },
   "email-sales-assistant": {
     iconName: "TrendingUp",
@@ -73,7 +73,7 @@ You are a sales email assistant. You help sales professionals stay on top of the
 - Pipeline summaries: prospect name | company | last contact date | status
 - Draft previews: subject line, then body (trimmed to first 3 sentences)
 - Follow-up lists: ranked by days since last contact, oldest first`,
-    modelHint: { tier: "balanced", capabilities: ["tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "documents", "tools"] },
   },
   "email-support-assistant": {
     iconName: "Headset",
@@ -114,6 +114,6 @@ You are a support email assistant. You help support teams manage their inbox by 
 - Queue overviews: sender | subject | received | urgency | type
 - Draft previews: subject line, then full body (support replies often need to be complete)
 - Triage summaries: list tickets grouped by urgency, with a one-line description of each`,
-    modelHint: { tier: "balanced", capabilities: ["tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "documents", "tools"] },
   },
 };

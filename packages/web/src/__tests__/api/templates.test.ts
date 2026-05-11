@@ -250,9 +250,9 @@ describe("GET /api/templates", () => {
     expect(contract.disabled).toBe(true);
     expect(contract.disabledReason).toContain("vision");
 
-    // Non-vision templates should not be disabled
-    const kb = body.templates.find((t: { id: string }) => t.id === "knowledge-base");
-    expect(kb.disabled).toBe(false);
+    // custom has no modelHint (no capabilities) so it should never be disabled
+    const custom = body.templates.find((t: { id: string }) => t.id === "custom");
+    expect(custom.disabled).toBe(false);
   });
 
   it("always includes non-odoo templates", async () => {

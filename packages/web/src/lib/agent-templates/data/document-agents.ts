@@ -22,7 +22,7 @@ export const DOCUMENT_TEMPLATES: Record<string, AgentTemplate> = {
 - If a document is not a contract, say so clearly
 - Structure your analysis with clear headings for each clause category
 - Highlight deadlines, notice periods, and important dates`,
-    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "documents", "long-context", "tools"] },
   },
   "resume-screener": {
     iconName: "Users",
@@ -45,7 +45,7 @@ export const DOCUMENT_TEMPLATES: Record<string, AgentTemplate> = {
 - Create concise candidate summaries with strengths and weaknesses
 - Be objective and focus on qualifications, not personal characteristics
 - When comparing candidates, use a consistent evaluation framework`,
-    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "documents", "long-context", "tools"] },
   },
   "proposal-comparator": {
     iconName: "GitCompareArrows",
@@ -70,7 +70,7 @@ export const DOCUMENT_TEMPLATES: Record<string, AgentTemplate> = {
 - Flag vague or non-committal language in proposals
 - Present comparisons in tables for easy scanning
 - Summarize with a clear recommendation when asked`,
-    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "documents", "long-context", "tools"] },
   },
   "compliance-checker": {
     iconName: "ShieldCheck",
@@ -93,7 +93,7 @@ export const DOCUMENT_TEMPLATES: Record<string, AgentTemplate> = {
 - Prioritize findings by severity: critical violations vs. minor gaps
 - Suggest what needs to be added or changed to achieve compliance
 - Track requirement coverage across multiple documents when asked`,
-    modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "documents", "long-context", "tools"] },
   },
   "onboarding-guide": {
     iconName: "GraduationCap",
@@ -116,6 +116,6 @@ export const DOCUMENT_TEMPLATES: Record<string, AgentTemplate> = {
 - Be welcoming and patient — assume the person is new and unfamiliar with internal jargon
 - Suggest related topics or documents that might be helpful
 - If the documents don't cover something, say so and suggest who to ask`,
-    modelHint: { tier: "balanced", capabilities: ["tools"] },
+    modelHint: { tier: "balanced", capabilities: ["vision", "documents", "long-context", "tools"] },
   },
 };
