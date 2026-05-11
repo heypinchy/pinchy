@@ -66,6 +66,14 @@ export const RetryPendingUploadContext = createContext<(localId: string) => void
  */
 export const ChatStatusContext = createContext<ChatStatus>({ kind: "starting" });
 
+/**
+ * Whether the current user has permission to edit the agent's settings
+ * (model, personality, permissions, etc.). True for admins and the personal
+ * agent owner; false for read-only members. Used in the RecoveryPanel to
+ * decide whether to show the model switcher.
+ */
+export const CanEditContext = createContext<boolean>(false);
+
 interface ChatStatusBannerProps {
   status: ChatStatus;
   isDelayed: boolean;
@@ -203,6 +211,7 @@ export function Chat({
   return (
     <AgentIdContext.Provider value={agentId}>
       <AgentNameContext.Provider value={displayName}>
+        <CanEditContext.Provider value={canEdit}>
         <AssistantRuntimeProvider runtime={runtime}>
           <ChatStatusContext.Provider value={chatStatus}>
             <RetryContinueContext.Provider value={onRetryContinue}>
@@ -289,6 +298,7 @@ export function Chat({
             </RetryContinueContext.Provider>
           </ChatStatusContext.Provider>
         </AssistantRuntimeProvider>
+        </CanEditContext.Provider>
       </AgentNameContext.Provider>
     </AgentIdContext.Provider>
   );

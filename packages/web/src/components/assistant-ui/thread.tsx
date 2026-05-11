@@ -45,6 +45,7 @@ import {
   PendingUploadsContext,
   RemovePendingUploadContext,
   RetryPendingUploadContext,
+  CanEditContext,
 } from "@/components/chat";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
 import { Progress } from "@/components/ui/progress";
@@ -55,6 +56,8 @@ import { getDraft, saveDraft } from "@/lib/draft-store";
 import { useModelCapabilities } from "@/hooks/use-model-capabilities";
 import { useAgentsContext } from "@/components/agents-provider";
 import { requiredCapabilityForFile } from "@/lib/attachment-capability";
+import { RecoveryPanel } from "@/components/recovery-panel";
+import { apiPatch } from "@/lib/api-client";
 
 function formatTimestamp(iso: string): string {
   const date = new Date(iso);
@@ -362,6 +365,7 @@ export function PendingUploadChips() {
 
 export const Composer: FC = () => {
   const agentId = useContext(AgentIdContext);
+  const canEditAgent = useContext(CanEditContext);
   const { getAgent } = useAgentsContext();
   const composerRuntime = useComposerRuntime({ optional: true });
   const { data: capabilities } = useModelCapabilities();
@@ -370,7 +374,9 @@ export const Composer: FC = () => {
     model: string;
   } | null>(null);
 
-  const agentModel = agentId ? (getAgent(agentId)?.model ?? "") : "";
+  const agent = agentId ? getAgent(agentId) : undefined;
+  const agentModel = agent?.model ?? "";
+  const agentName = agent?.name ?? "";
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     const state = composerRuntime?.getState();
@@ -394,6 +400,30 @@ export const Composer: FC = () => {
     }
   }
 
+  // Shape flat capability map into ProviderGroup[] for ModelPicker
+  const providers = (() => {
+    if (!capabilities) return [];
+    const groups = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        models: { id: string; name: string; capabilities: (typeof capabilities)[string] }[];
+      }
+    >();
+    for (const [qualifiedId, caps] of Object.entries(capabilities)) {
+      const slashIdx = qualifiedId.indexOf("/");
+      if (slashIdx === -1) continue;
+      const providerId = qualifiedId.slice(0, slashIdx);
+      const modelId = qualifiedId.slice(slashIdx + 1);
+      if (!groups.has(providerId)) {
+        groups.set(providerId, { id: providerId, name: providerId, models: [] });
+      }
+      groups.get(providerId)!.models.push({ id: qualifiedId, name: modelId, capabilities: caps });
+    }
+    return Array.from(groups.values());
+  })();
+
   // Typing is always allowed — only the send button reflects connection
   // state. A reconnect mid-sentence must not block the user from finishing
   // their thought; submission is what's gated.
@@ -403,9 +433,34 @@ export const Composer: FC = () => {
       onSubmit={handleSubmit}
     >
       <DraftPersistence />
+<<<<<<< HEAD
       {recoveryState && <div data-testid="recovery-panel-placeholder" className="hidden" />}
       <PinchyDropZone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20">
         <PendingUploadChips />
+=======
+      {recoveryState && (
+        <RecoveryPanel
+          filename={recoveryState.files[0]?.name ?? "attachment"}
+          capability={requiredCapabilityForFile(recoveryState.files[0]?.type ?? "") ?? "vision"}
+          agentId={agentId ?? ""}
+          agentName={agentName}
+          agentModel={recoveryState.model}
+          canEditAgent={canEditAgent}
+          isAdmin={false}
+          providers={providers}
+          otherCompatibleAgents={[]}
+          onUpdateAgent={async (newModel) => {
+            if (agentId) {
+              await apiPatch(`/api/agents/${agentId}`, { model: newModel });
+            }
+            setRecoveryState(null);
+          }}
+          onRemoveAttachment={() => setRecoveryState(null)}
+          onDismiss={() => setRecoveryState(null)}
+        />
+      )}
+      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-accent/50">
+>>>>>>> d8060f054 (feat(chat): wire blocked send to RecoveryPanel + agent.model update path)
         <ComposerAttachments />
         <ComposerPrimitive.Input
           placeholder="Send a message..."

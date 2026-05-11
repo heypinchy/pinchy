@@ -127,6 +127,14 @@ vi.mock("@/lib/draft-store", () => ({
   saveDraft: vi.fn(),
 }));
 
+vi.mock("@/lib/api-client", () => ({
+  apiPatch: vi.fn().mockResolvedValue({}),
+  apiPost: vi.fn().mockResolvedValue({}),
+  apiPut: vi.fn().mockResolvedValue({}),
+  apiDelete: vi.fn().mockResolvedValue({}),
+  apiGet: vi.fn().mockResolvedValue({}),
+}));
+
 vi.mock("@/hooks/use-model-capabilities", () => ({
   useModelCapabilities: vi.fn(() => ({
     data: undefined,
@@ -174,6 +182,26 @@ vi.mock("@/components/assistant-ui/chat-error-message", () => ({
   ),
 }));
 
+vi.mock("@/components/recovery-panel", () => ({
+  RecoveryPanel: ({
+    filename,
+    onDismiss,
+    onRemoveAttachment,
+  }: {
+    filename: string;
+    onDismiss: () => void;
+    onRemoveAttachment: () => void;
+  }) => (
+    <div role="region" aria-label="Can't be sent" data-testid="recovery-panel">
+      <span>{filename}</span>
+      <button aria-label="Dismiss" onClick={onDismiss}>
+        Dismiss
+      </button>
+      <button onClick={onRemoveAttachment}>Remove attachment</button>
+    </div>
+  ),
+}));
+
 vi.mock("@/components/chat", async () => {
   const React = await import("react");
   return {
@@ -182,10 +210,14 @@ vi.mock("@/components/chat", async () => {
     RetryResendContext: React.createContext<(messageId: string) => void>(() => {}),
     RetryContinueContext: React.createContext<() => void>(() => {}),
     ChatStatusContext: React.createContext<{ kind: string; reason?: string }>({ kind: "ready" }),
+<<<<<<< HEAD
     PendingUploadsContext: React.createContext([]),
     RemovePendingUploadContext: React.createContext<(localId: string) => void>(() => {}),
     RetryPendingUploadContext: React.createContext<(localId: string) => void>(() => {}),
     AddPendingUploadContext: React.createContext<(file: File) => void>(() => {}),
+=======
+    CanEditContext: React.createContext<boolean>(false),
+>>>>>>> d8060f054 (feat(chat): wire blocked send to RecoveryPanel + agent.model update path)
   };
 });
 
@@ -666,7 +698,7 @@ describe("Composer attachment capability hard-block", () => {
     auiState.isRunning = false;
   });
 
-  it("prevents send and sets recoveryState when PNG is attached to a vision-incapable model", async () => {
+  it("prevents send and renders RecoveryPanel when PNG is attached to a vision-incapable model", async () => {
     const pngFile = new File(["data"], "photo.png", { type: "image/png" });
 
     const { useComposerRuntime } = await import("@assistant-ui/react");
@@ -714,8 +746,54 @@ describe("Composer attachment capability hard-block", () => {
 
     expect(submitEvent.defaultPrevented).toBe(true);
     await waitFor(() => {
-      expect(screen.getByTestId("recovery-panel-placeholder")).toBeInTheDocument();
+      expect(screen.getByRole("region", { name: /can't be sent/i })).toBeInTheDocument();
     });
+  });
+
+  it("renders RecoveryPanel with diagnostic after blocked send", async () => {
+    const pngFile = new File(["data"], "screenshot.png", { type: "image/png" });
+
+    const { useComposerRuntime } = await import("@assistant-ui/react");
+    vi.mocked(useComposerRuntime).mockReturnValue({
+      getState: () => ({
+        text: "",
+        attachments: [{ file: pngFile }],
+      }),
+      setText: vi.fn(),
+      addAttachment: vi.fn(),
+    } as never);
+
+    const { useModelCapabilities } = await import("@/hooks/use-model-capabilities");
+    vi.mocked(useModelCapabilities).mockReturnValue({
+      data: { "openai/gpt-4o-mini": { vision: false, documents: false } },
+      isLoading: false,
+      error: undefined,
+      refetch: vi.fn(),
+    });
+
+    const { useAgentsContext } = await import("@/components/agents-provider");
+    vi.mocked(useAgentsContext).mockReturnValue({
+      agents: [],
+      sortedAgents: [],
+      getAgent: vi.fn(() => ({ id: "agent-1", model: "openai/gpt-4o-mini" }) as never),
+    });
+
+    const { ChatStatusContext, AgentIdContext } = await import("@/components/chat");
+    const { Composer } = await import("@/components/assistant-ui/thread");
+
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <ChatStatusContext.Provider value={{ kind: "ready" }}>
+          <Composer />
+        </ChatStatusContext.Provider>
+      </AgentIdContext.Provider>
+    );
+
+    const form = document.querySelector("form")!;
+    form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+
+    expect(await screen.findByRole("region", { name: /can't be sent/i })).toBeInTheDocument();
+    expect(screen.getByText("screenshot.png")).toBeInTheDocument();
   });
 
   it("allows send when PNG is attached to a vision-capable model", async () => {
@@ -763,6 +841,6 @@ describe("Composer attachment capability hard-block", () => {
     form.dispatchEvent(submitEvent);
 
     expect(submitEvent.defaultPrevented).toBe(false);
-    expect(screen.queryByTestId("recovery-panel-placeholder")).not.toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: /can't be sent/i })).not.toBeInTheDocument();
   });
 });
