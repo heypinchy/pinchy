@@ -16,6 +16,7 @@ import { db } from "@/db";
 // we use TRUNCATE ... CASCADE.
 const APPLICATION_TABLES = [
   "audit_log",
+  "uploaded_files",
   "usage_records",
   "agent_connection_permissions",
   "integration_connections",

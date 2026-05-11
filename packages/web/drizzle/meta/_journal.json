@@ -178,6 +178,13 @@
       "breakpoints": true
     },
     {
+      "idx": 29,
+      "version": "7",
+      "when": 1775564953393,
+      "tag": "0024_dark_captain_marvel",
+      "breakpoints": true
+    },
+    {
       "idx": 25,
       "version": "7",
       "when": 1775564953393,
