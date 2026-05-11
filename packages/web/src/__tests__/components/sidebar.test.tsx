@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import "@testing-library/jest-dom";
@@ -18,6 +18,17 @@ const { mockSignOut, mockRouterPush, mockUsePathname, mockAgentsContextValue } =
     getAgent: vi.fn(),
   },
 }));
+
+function mockHealthFetch(authFailedCount: number) {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue({
+    ok: true,
+    json: async () => ({ authFailedCount }),
+  } as Response);
+}
+
+function clearHealthFetch() {
+  vi.restoreAllMocks();
+}
 
 vi.mock("@/components/agents-provider", () => ({
   useAgentsContext: () => mockAgentsContextValue,
@@ -72,6 +83,10 @@ describe("AppSidebar", () => {
     vi.clearAllMocks();
     mockUsePathname.mockReturnValue("/chat/1");
     setAgents([]);
+  });
+
+  afterEach(() => {
+    clearHealthFetch();
   });
 
   it("should render Pinchy branding", () => {
@@ -329,6 +344,40 @@ describe("AppSidebar", () => {
       "noopener,noreferrer"
     );
     openSpy.mockRestore();
+  });
+
+  describe("Settings badge for auth-failed integrations", () => {
+    it("renders a badge on the Settings link when authFailedCount > 0", async () => {
+      mockHealthFetch(1);
+      renderSidebar(true);
+      const badge = await screen.findByLabelText(/integration.*needs attention/i);
+      expect(badge).toBeInTheDocument();
+      expect(badge).toHaveTextContent("!");
+    });
+
+    it("renders badge with correct plural label when authFailedCount > 1", async () => {
+      mockHealthFetch(3);
+      renderSidebar(true);
+      const badge = await screen.findByLabelText(/3 integrations need attention/i);
+      expect(badge).toBeInTheDocument();
+    });
+
+    it("does not render a badge when authFailedCount is 0", async () => {
+      mockHealthFetch(0);
+      renderSidebar(true);
+      await waitFor(() => {
+        expect(screen.queryByLabelText(/integration.*need/i)).not.toBeInTheDocument();
+      });
+    });
+
+    it("does not fetch /api/integrations/health for non-admin users", () => {
+      const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({} as Response);
+      renderSidebar(false);
+      expect(fetchSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("/api/integrations/health"),
+        expect.anything()
+      );
+    });
   });
 
   describe("agent ordering", () => {
