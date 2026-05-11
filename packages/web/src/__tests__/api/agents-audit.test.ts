@@ -323,6 +323,51 @@ describe("PATCH /api/agents/[agentId] audit logging", () => {
     });
   });
 
+  it("PATCH with model-only change writes audit entry with before/after snapshot", async () => {
+    vi.mocked(auth.api.getSession).mockResolvedValueOnce({
+      user: { id: "user-1", role: "admin" },
+      expires: "",
+    } as any);
+
+    mockAgent({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "anthropic/claude-sonnet-4-6",
+      isPersonal: false,
+      ownerId: null,
+    });
+
+    vi.mocked(updateAgent).mockResolvedValueOnce({
+      id: "agent-1",
+      name: "Test Agent",
+      model: "openai/gpt-4o",
+    } as never);
+
+    const request = new NextRequest("http://localhost:7777/api/agents/agent-1", {
+      method: "PATCH",
+      body: JSON.stringify({ model: "openai/gpt-4o" }),
+      headers: { "Content-Type": "application/json" },
+    });
+
+    const response = await PATCH(request, {
+      params: Promise.resolve({ agentId: "agent-1" }),
+    });
+    expect(response.status).toBe(200);
+
+    expect(appendAuditLog).toHaveBeenCalledWith({
+      actorType: "user",
+      actorId: "user-1",
+      eventType: "agent.updated",
+      resource: "agent:agent-1",
+      outcome: "success",
+      detail: {
+        changes: {
+          model: { from: "anthropic/claude-sonnet-4-6", to: "openai/gpt-4o" },
+        },
+      },
+    });
+  });
+
   it("logs pluginConfig changes in audit log", async () => {
     vi.mocked(auth.api.getSession).mockResolvedValueOnce({
       user: { id: "user-1", role: "admin" },
