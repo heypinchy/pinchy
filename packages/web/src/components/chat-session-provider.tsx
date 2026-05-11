@@ -3,6 +3,7 @@
 import { createContext, useContext, useMemo, useState } from "react";
 import { create, type StoreApi, useStore } from "zustand";
 import type { AssistantRuntime } from "@assistant-ui/react";
+import type { PendingUpload } from "@/hooks/use-ws-runtime";
 
 export interface RuntimeBundle {
   runtime: AssistantRuntime;
@@ -19,6 +20,10 @@ export interface RuntimeBundle {
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
   lastError: string | null;
+  pendingUploads: PendingUpload[];
+  addPendingUpload: (file: File) => void;
+  removePendingUpload: (localId: string) => void;
+  retryPendingUpload: (localId: string) => void;
 }
 
 interface ChatSessionStoreState {

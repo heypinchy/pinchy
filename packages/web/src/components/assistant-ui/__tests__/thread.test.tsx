@@ -165,6 +165,10 @@ vi.mock("@/components/chat", async () => {
     RetryResendContext: React.createContext<(messageId: string) => void>(() => {}),
     RetryContinueContext: React.createContext<() => void>(() => {}),
     ChatStatusContext: React.createContext<{ kind: string; reason?: string }>({ kind: "ready" }),
+    PendingUploadsContext: React.createContext([]),
+    RemovePendingUploadContext: React.createContext<(localId: string) => void>(() => {}),
+    RetryPendingUploadContext: React.createContext<(localId: string) => void>(() => {}),
+    AddPendingUploadContext: React.createContext<(file: File) => void>(() => {}),
   };
 });
 

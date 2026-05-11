@@ -22,14 +22,20 @@ import {
   useMessage,
 } from "@assistant-ui/react";
 import {
+  AlertCircle,
   ArrowDownIcon,
   ArrowUpIcon,
   BugIcon,
+  CheckCircle,
   CheckIcon,
   CopyIcon,
   DownloadIcon,
+  FileText,
+  Loader2,
   MoreHorizontalIcon,
+  RotateCw,
   SquareIcon,
+  X,
 } from "lucide-react";
 import { type FC, useState, useEffect, useRef, useContext } from "react";
 import {
@@ -38,8 +44,13 @@ import {
   RetryResendContext,
   RetryContinueContext,
   ChatStatusContext,
+  PendingUploadsContext,
+  RemovePendingUploadContext,
+  RetryPendingUploadContext,
 } from "@/components/chat";
 import { DiagnosticsExportDialog } from "@/components/diagnostics-export-dialog";
+import { Progress } from "@/components/ui/progress";
+import type { PendingUpload } from "@/hooks/use-ws-runtime";
 import { RetryButton } from "@/components/chat/retry-button";
 import { useComposerRuntime } from "@assistant-ui/react";
 import { getDraft, saveDraft } from "@/lib/draft-store";
@@ -262,6 +273,90 @@ const DraftPersistence: FC = () => {
   return null;
 };
 
+function UploadChip({ upload }: { upload: PendingUpload }) {
+  const removePendingUpload = useContext(RemovePendingUploadContext);
+  const retryPendingUpload = useContext(RetryPendingUploadContext);
+  const isImage = upload.file.type.startsWith("image/");
+  const previewSrc =
+    upload.state === "ready" && upload.previewUrl ? upload.previewUrl : upload.objectUrl;
+
+  return (
+    <div className="relative flex items-start gap-1.5 rounded-lg border bg-muted/40 p-1.5 text-xs w-28 shrink-0">
+      <div className="flex flex-col gap-1 w-full min-w-0">
+        <div className="flex items-center justify-between gap-1">
+          <div className="flex items-center gap-1 min-w-0">
+            {upload.state === "uploading" && (
+              <Loader2 className="size-3 shrink-0 animate-spin text-muted-foreground" />
+            )}
+            {upload.state === "ready" && <CheckCircle className="size-3 shrink-0 text-green-600" />}
+            {upload.state === "failed" && (
+              <AlertCircle className="size-3 shrink-0 text-destructive" />
+            )}
+            <span className="truncate text-muted-foreground">{upload.file.name}</span>
+          </div>
+          <button
+            type="button"
+            aria-label="Remove upload"
+            onClick={() => removePendingUpload(upload.localId)}
+            className="shrink-0 rounded p-0.5 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <X className="size-3" />
+          </button>
+        </div>
+        {isImage ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={previewSrc}
+            alt={upload.file.name}
+            className="h-14 w-full rounded object-cover"
+          />
+        ) : (
+          <div className="flex h-14 w-full items-center justify-center rounded bg-muted">
+            <FileText className="size-6 text-muted-foreground" />
+          </div>
+        )}
+        {upload.state === "uploading" && (
+          <Progress
+            role="progressbar"
+            aria-valuenow={upload.progress}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            value={upload.progress}
+            className="h-1"
+          />
+        )}
+        {upload.state === "failed" && (
+          <div className="flex items-center justify-between gap-1">
+            <span className="truncate text-destructive">{upload.error}</span>
+            <button
+              type="button"
+              aria-label="Retry upload"
+              onClick={() => retryPendingUpload(upload.localId)}
+              className="shrink-0 rounded p-0.5 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+            >
+              <RotateCw className="size-3" />
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function PendingUploadChips() {
+  const pendingUploads = useContext(PendingUploadsContext);
+
+  if (pendingUploads.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap gap-2 px-2 pt-1 pb-1">
+      {pendingUploads.map((upload) => (
+        <UploadChip key={upload.localId} upload={upload} />
+      ))}
+    </div>
+  );
+}
+
 export const Composer: FC = () => {
   // Typing is always allowed — only the send button reflects connection
   // state. A reconnect mid-sentence must not block the user from finishing
@@ -270,6 +365,7 @@ export const Composer: FC = () => {
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <DraftPersistence />
       <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-accent/50">
+        <PendingUploadChips />
         <ComposerAttachments />
         <ComposerPrimitive.Input
           placeholder="Send a message..."
