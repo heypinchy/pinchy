@@ -283,6 +283,64 @@ describe("pinchy-web plugin", () => {
       expect(result.content[0].text).toContain("API rate limit");
     });
 
+    it("POSTs report-auth-failure when retry-once also returns a 401 from Brave", async () => {
+      braveSearchMock
+        .mockRejectedValueOnce(new Error("401 Unauthorized"))
+        .mockRejectedValueOnce(new Error("401 Unauthorized"));
+
+      const fetchMock = vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        statusText: "OK",
+        json: async () => ({ credentials: { apiKey: "brave-key-123" } }),
+      }));
+      vi.stubGlobal("fetch", fetchMock);
+
+      const factories = collectFactories(
+        credentialsPluginConfig({
+          "agent-1": { tools: ["pinchy_web_search"] },
+        }),
+      );
+
+      const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
+      await tool.execute("call-1", { query: "test" });
+
+      const reportCalls = fetchMock.mock.calls.filter((c) =>
+        String(c[0]).includes("report-auth-failure"),
+      );
+      expect(reportCalls).toHaveLength(1);
+      const [url, opts] = reportCalls[0] as [string, RequestInit];
+      expect(url).toBe(
+        "https://pinchy.test/api/internal/integrations/conn-1/report-auth-failure",
+      );
+      expect(opts.method).toBe("POST");
+      const headers = opts.headers as Record<string, string>;
+      expect(headers["Authorization"]).toBe("Bearer gw-token");
+      expect(headers["X-Plugin-Id"]).toBe("pinchy-web");
+      const body = JSON.parse(opts.body as string) as { reason: string };
+      expect(body.reason).toBeTruthy();
+    });
+
+    it("does not POST report-auth-failure on a transient 5xx error from Brave", async () => {
+      braveSearchMock.mockRejectedValueOnce(new Error("503 Service Unavailable"));
+
+      const fetchMock = stubCredentialsFetch("brave-key-123");
+
+      const factories = collectFactories(
+        credentialsPluginConfig({
+          "agent-1": { tools: ["pinchy_web_search"] },
+        }),
+      );
+
+      const tool = factories.pinchy_web_search({ agentId: "agent-1" })!;
+      await tool.execute("call-1", { query: "test" });
+
+      const reportCalls = fetchMock.mock.calls.filter((c) =>
+        String(c[0]).includes("report-auth-failure"),
+      );
+      expect(reportCalls).toHaveLength(0);
+    });
+
     it("handles non-Error throws from braveSearch", async () => {
       braveSearchMock.mockRejectedValue("string error");
       stubCredentialsFetch("brave-key-123");

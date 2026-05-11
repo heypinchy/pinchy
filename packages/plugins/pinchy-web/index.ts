@@ -87,6 +87,38 @@ async function fetchBraveCredentials(
   return data.credentials;
 }
 
+/**
+ * Best-effort POST to Pinchy's report-auth-failure endpoint when a
+ * retry-once cycle fails with a permanent auth error. This lets Pinchy
+ * surface a clear "re-authorise" banner to admins rather than requiring
+ * them to trawl through agent error messages.
+ *
+ * Errors are swallowed — never mask the original tool error.
+ */
+async function reportAuthFailure(
+  apiBaseUrl: string,
+  connectionId: string,
+  gatewayToken: string,
+  reason: string,
+): Promise<void> {
+  try {
+    await fetch(
+      `${apiBaseUrl}/api/internal/integrations/${connectionId}/report-auth-failure`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${gatewayToken}`,
+          "Content-Type": "application/json",
+          "X-Plugin-Id": "pinchy-web",
+        },
+        body: JSON.stringify({ reason: reason.slice(0, 500) }),
+      },
+    );
+  } catch {
+    // best-effort — never mask the original tool error
+  }
+}
+
 const plugin = {
   id: "pinchy-web",
   name: "Pinchy Web",
@@ -133,7 +165,13 @@ const plugin = {
         }
         invalidateCache();
         const fresh = await getBraveApiKey();
-        return fn(fresh);
+        try {
+          return await fn(fresh);
+        } catch (retryErr) {
+          const retryMsg = retryErr instanceof Error ? retryErr.message : String(retryErr);
+          await reportAuthFailure(apiBaseUrl, connectionId, gatewayToken, retryMsg);
+          throw retryErr;
+        }
       }
     }
 
