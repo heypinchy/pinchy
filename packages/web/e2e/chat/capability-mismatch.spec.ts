@@ -288,17 +288,21 @@ test.describe("capability-mismatch — block + recovery", () => {
     // ── 6. Type a message in the composer ────────────────────────────────────
     await input.fill("Can you describe this image?");
 
-    // ── 7. Attach a PNG via the hidden file input ─────────────────────────────
-    //    ComposerPrimitive.AddAttachment renders a hidden <input type="file"> inside
-    //    the ComposerPrimitive.AttachmentDropzone. Playwright's setInputFiles()
-    //    targets it directly without needing to click the visible + button.
-    //    We create a minimal 1×1 PNG from a base64 literal — no fixture files.
+    // ── 7. Attach a PNG via the AddAttachment button ──────────────────────────
+    //    ComposerPrimitive.AddAttachment creates a hidden <input type="file">
+    //    on click (not at mount), so there is no element in the DOM for
+    //    setInputFiles() to target ahead of time. Playwright's filechooser
+    //    event is the right primitive here — wait for the chooser, click the
+    //    button, then deliver the file. We create a minimal 1×1 PNG from a
+    //    base64 literal — no fixture files.
     const pngBuffer = Buffer.from(
       "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
       "base64"
     );
-    const fileInput = page.locator('input[type="file"]').first();
-    await fileInput.setInputFiles({
+    const fileChooserPromise = page.waitForEvent("filechooser");
+    await page.getByRole("button", { name: "Add Attachment" }).click();
+    const fileChooser = await fileChooserPromise;
+    await fileChooser.setFiles({
       name: PNG_FILENAME,
       mimeType: "image/png",
       buffer: pngBuffer,
