@@ -65,7 +65,11 @@ test.describe("upload and send — happy path", () => {
     await page.keyboard.press("Enter");
 
     // ── 7. Wait for the fake Ollama response to appear ────────────────────────
-    await expect(page.getByText(FAKE_OLLAMA_RESPONSE)).toBeVisible({ timeout: 30000 });
+    // .first() — the response may briefly render twice (streamed chunk + history
+    // reconcile) before the canonical version settles. Strict-mode locator
+    // matchers fail on >1 match; `.first()` is consistent with the same
+    // assertion in agent-chat.spec.ts.
+    await expect(page.getByText(FAKE_OLLAMA_RESPONSE).first()).toBeVisible({ timeout: 30000 });
 
     // ── 8. Assert the user message contains the filename ─────────────────────
     // After send the composer chip disappears and the message bubble renders

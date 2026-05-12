@@ -123,38 +123,66 @@ test.describe("Agent chat — full integration", () => {
       },
     ]);
 
+    // Wait for the upload chip to flip to ready (CheckCircle, text-green-600).
+    // Without this, the WS frame can be sent before POST /uploads finishes —
+    // the message goes through without attachmentIds and no file.upload.attached
+    // audit event fires, making this test race-flaky.
+    const readyChip = page
+      .locator(".text-green-600")
+      .locator("xpath=ancestor::*[@class and contains(@class,'rounded-lg')]")
+      .first();
+    await expect(readyChip).toBeVisible({ timeout: 20000 });
+
     // Send a message alongside the PDF
     await input.fill("What does this document say?");
     await page.keyboard.press("Enter");
 
-    // The fake Ollama responds regardless of attachment content
-    await expect(page.getByText(FAKE_OLLAMA_RESPONSE)).toBeVisible({ timeout: 30000 });
+    // The fake Ollama responds regardless of attachment content. Use .first()
+    // because the response may appear in both the streaming chunk render and
+    // the canonical history reconcile within the test window.
+    await expect(page.getByText(FAKE_OLLAMA_RESPONSE).first()).toBeVisible({ timeout: 30000 });
 
-    // Verify the attachment.uploaded audit entry was written with the correct details
+    // Verify the two-phase upload audit chain was written:
+    //  - file.upload.staged on POST /uploads
+    //  - file.upload.attached on send-time materialization
+    // Detail shape is flat (filename / mimeType on the entry itself) — the
+    // legacy `detail.attachment.{filename,detectedMimeType}` shape went away
+    // with the rewrite.
     const deadline = Date.now() + 15000;
-    let foundAuditEntry = false;
+    let foundStaged = false;
+    let foundAttached = false;
     while (Date.now() < deadline) {
-      const auditRes = await page.request.get("/api/audit?eventType=attachment.uploaded&limit=10");
-      expect(auditRes.status()).toBe(200);
-      const audit = await auditRes.json();
-      foundAuditEntry = audit.entries.some(
+      const stagedRes = await page.request.get("/api/audit?eventType=file.upload.staged&limit=10");
+      expect(stagedRes.status()).toBe(200);
+      const staged = await stagedRes.json();
+      foundStaged = staged.entries.some(
         (entry: {
           resource: string | null;
           outcome: string | null;
-          detail: {
-            attachment?: { filename?: string; detectedMimeType?: string };
-          } | null;
+          detail: { filename?: string; mimeType?: string } | null;
         }) =>
           entry.resource === `agent:${agentId}` &&
           entry.outcome === "success" &&
-          entry.detail?.attachment?.filename === "test-document.pdf" &&
-          entry.detail?.attachment?.detectedMimeType === "application/pdf"
+          entry.detail?.filename === "test-document.pdf" &&
+          entry.detail?.mimeType === "application/pdf"
       );
-      if (foundAuditEntry) break;
+
+      const attachedRes = await page.request.get(
+        "/api/audit?eventType=file.upload.attached&limit=10"
+      );
+      expect(attachedRes.status()).toBe(200);
+      const attached = await attachedRes.json();
+      foundAttached = attached.entries.some(
+        (entry: { outcome: string | null; detail: { filename?: string } | null }) =>
+          entry.outcome === "success" && entry.detail?.filename === "test-document.pdf"
+      );
+
+      if (foundStaged && foundAttached) break;
       await new Promise((r) => setTimeout(r, 500));
     }
 
-    expect(foundAuditEntry).toBe(true);
+    expect(foundStaged).toBe(true);
+    expect(foundAttached).toBe(true);
   });
 
   test("Domain Lock allows OpenClaw tool calls to write audit entries", async ({ page }) => {
