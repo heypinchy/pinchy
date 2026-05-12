@@ -51,8 +51,8 @@ function messageContent(message) {
   return "";
 }
 
-function hasToolRole(messages) {
-  return messages.some((m) => m?.role === "tool");
+function hasToolRole(m) {
+  return !!m && m.role === "tool";
 }
 
 function makeId() {
@@ -200,7 +200,13 @@ function openaiJsonToolCall(res, toolName, toolArgs) {
 function resolveTriggers(messages) {
   const lastUser = [...messages].reverse().find((m) => m?.role === "user");
   const userText = messageContent(lastUser);
-  const toolResultPresent = hasToolRole(messages);
+  // Only check the CURRENT turn (after the last user message) for tool results.
+  // Checking the full history incorrectly flags prior turns when tests share the same session.
+  const lastUserMsgIdx = messages.reduce((acc, m, i) => (m?.role === "user" ? i : acc), -1);
+  const toolResultPresent =
+    lastUserMsgIdx >= 0
+      ? messages.slice(lastUserMsgIdx + 1).some(hasToolRole)
+      : messages.some(hasToolRole);
   return {
     isEmailList: userText.includes(EMAIL_LIST_TRIGGER),
     isEmailSend: userText.includes(EMAIL_SEND_TRIGGER),
