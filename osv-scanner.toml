@@ -3,13 +3,13 @@
 
 # Vulnerabilities in devDependencies that do not ship in the production Docker
 # image. These packages are only present in the lockfile because
-# openclaw@2026.4.27 (added as a devDependency for the schema-validation
+# openclaw (added as a devDependency for the schema-validation
 # integration test) pulls them in. They have no impact on Pinchy users.
 
 [[IgnoredVulns]]
-id = "GHSA-p7fg-763f-g4gf"
-reason = "Transitive devDep via openclaw@2026.4.27 (test tool only — not in production build)"
+id = "GHSA-v2v4-37r5-5v8g"
+reason = "Transitive devDep via openclaw (test tool only — not in production build)"
 
 [[IgnoredVulns]]
-id = "GHSA-v2v4-37r5-5v8g"
-reason = "Transitive devDep via openclaw@2026.4.27 (test tool only — not in production build)"
+id = "MAL-2026-3432"
+reason = "Transitive devDep via openclaw (test tool only — not in production build)"
