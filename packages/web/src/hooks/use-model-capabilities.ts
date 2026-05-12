@@ -6,10 +6,12 @@ import type { ModelCapabilities } from "@/lib/model-capabilities/cache";
 export type ModelCapabilityMap = Record<string, ModelCapabilities>;
 
 let moduleCache: ModelCapabilityMap | undefined;
+let inflight: Promise<ModelCapabilityMap> | null = null;
 const listeners = new Set<() => void>();
 
 export function _resetModuleCacheForTest(): void {
   moduleCache = undefined;
+  inflight = null;
   listeners.clear();
 }
 
@@ -21,6 +23,23 @@ async function fetchCapabilities(): Promise<ModelCapabilityMap> {
   const res = await fetch("/api/models/capabilities");
   if (!res.ok) throw new Error(`Failed to load model capabilities: ${res.status}`);
   return res.json();
+}
+
+// Coalesces concurrent loads — multiple components mounting on the same tick
+// share a single in-flight request instead of each triggering their own GET.
+function loadShared(): Promise<ModelCapabilityMap> {
+  if (inflight) return inflight;
+  inflight = (async () => {
+    try {
+      const caps = await fetchCapabilities();
+      moduleCache = caps;
+      notifyListeners();
+      return caps;
+    } finally {
+      inflight = null;
+    }
+  })();
+  return inflight;
 }
 
 export function useModelCapabilities(): {
@@ -37,10 +56,8 @@ export function useModelCapabilities(): {
     setIsLoading(true);
     setError(undefined);
     try {
-      const caps = await fetchCapabilities();
-      moduleCache = caps;
+      const caps = await loadShared();
       setData(caps);
-      notifyListeners();
     } catch (e) {
       setError(e instanceof Error ? e : new Error(String(e)));
     } finally {

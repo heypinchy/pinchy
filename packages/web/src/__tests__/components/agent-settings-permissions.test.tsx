@@ -24,6 +24,34 @@ vi.mock("@/lib/model-vision", () => ({
   setOllamaLocalVisionModels: vi.fn().mockResolvedValue(undefined),
 }));
 
+// The component now derives vision capability from useModelCapabilities,
+// not from a sync helper. Mirror that by mocking the hook to return a map
+// where anthropic models have vision and everything else doesn't.
+vi.mock("@/hooks/use-model-capabilities", () => ({
+  useModelCapabilities: () => ({
+    data: new Proxy(
+      {},
+      {
+        get(_target, prop: string) {
+          if (typeof prop !== "string") return undefined;
+          const isVision = prop.startsWith("anthropic/");
+          return {
+            vision: isVision,
+            documents: isVision,
+            audio: false,
+            video: false,
+            longContext: isVision,
+            tools: true,
+          };
+        },
+      }
+    ),
+    isLoading: false,
+    error: undefined,
+    refetch: vi.fn(),
+  }),
+}));
+
 vi.mock("@/components/odoo-permission-section", () => ({
   OdooPermissionSection: ({
     onChange,

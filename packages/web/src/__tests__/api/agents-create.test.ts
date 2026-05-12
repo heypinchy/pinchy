@@ -1073,7 +1073,7 @@ describe("POST /api/agents", () => {
     // Should write a failure audit log
     const failureCall = spy.mock.calls.find(
       ([arg]) =>
-        (arg as { eventType: string }).eventType === "agent.create" &&
+        (arg as { eventType: string }).eventType === "agent.created" &&
         (arg as { outcome: string }).outcome === "failure"
     );
     expect(failureCall).toBeDefined();

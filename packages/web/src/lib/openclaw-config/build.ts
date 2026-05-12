@@ -5,6 +5,7 @@ import { writeSecretsFile, secretRef, type SecretsBundle } from "@/lib/openclaw-
 import { PROVIDERS, type ProviderName, resolveProviderBaseUrl } from "@/lib/providers";
 import { getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { isModelVisionCapable } from "@/lib/model-vision";
+import { ensureModelCapabilityCacheLoaded } from "@/lib/model-capabilities/cache";
 import { eq, ne } from "drizzle-orm";
 import { db } from "@/db";
 import {
@@ -218,6 +219,11 @@ const PDF_MODEL_PREFERENCE: readonly ProviderName[] = [
 ];
 
 async function resolveDefaultPdfModel(): Promise<string | null> {
+  // Guard against a regenerate call landing before bootInits has loaded the
+  // cache. `isModelVisionCapable` is sync and would otherwise return false
+  // for every model, silently picking the last (untyped) provider in the
+  // preference order.
+  await ensureModelCapabilityCacheLoaded();
   for (const provider of PDF_MODEL_PREFERENCE) {
     // `provider` is a typed ProviderName from the const tuple above, never
     // user input — `PROVIDERS[provider]` is safe key access on a finite map.

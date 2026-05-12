@@ -44,4 +44,23 @@ describe("useModelCapabilities", () => {
     await waitFor(() => expect(result.current.error).toBeTruthy());
     expect(result.current.isLoading).toBe(false);
   });
+
+  it("coalesces concurrent mounts into a single fetch", async () => {
+    // Two components mounting on the same tick must not each trigger their
+    // own GET — that's wasted bandwidth and produces redundant load on the
+    // server's models table.
+    const fetchSpy = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => MOCK_CAPABILITIES,
+    } as unknown as Response);
+    globalThis.fetch = fetchSpy;
+
+    const { result: r1 } = renderHook(() => useModelCapabilities());
+    const { result: r2 } = renderHook(() => useModelCapabilities());
+
+    await waitFor(() => expect(r1.current.data).toBeTruthy());
+    await waitFor(() => expect(r2.current.data).toBeTruthy());
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
 });
