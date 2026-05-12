@@ -23,6 +23,7 @@ vi.mock("odoo-node", () => {
 });
 
 import { OdooClient } from "odoo-node";
+import { encodeRef } from "../integration-ref";
 import plugin from "../index";
 
 interface AgentTool {
@@ -34,7 +35,11 @@ interface AgentTool {
     toolCallId: string,
     params: Record<string, unknown>,
     signal?: AbortSignal,
-  ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean; details?: unknown }>;
+  ) => Promise<{
+    content: Array<{ type: string; text: string }>;
+    isError?: boolean;
+    details?: unknown;
+  }>;
 }
 
 // The plugin no longer takes credentials in its config — it fetches them
@@ -62,7 +67,10 @@ const fetchMock = vi.fn(async () => ({
 globalThis.fetch = fetchMock as unknown as typeof fetch;
 
 function createApi(agentConfigs: Record<string, unknown> = {}) {
-  const tools: Array<{ factory: (ctx: { agentId?: string }) => AgentTool | null; name: string }> = [];
+  const tools: Array<{
+    factory: (ctx: { agentId?: string }) => AgentTool | null;
+    name: string;
+  }> = [];
 
   const api = {
     pluginConfig: {
@@ -70,7 +78,10 @@ function createApi(agentConfigs: Record<string, unknown> = {}) {
       gatewayToken: "test-gateway-token",
       agents: agentConfigs,
     },
-    registerTool: (factory: (ctx: { agentId?: string }) => AgentTool | null, opts?: { name?: string }) => {
+    registerTool: (
+      factory: (ctx: { agentId?: string }) => AgentTool | null,
+      opts?: { name?: string },
+    ) => {
       tools.push({ factory, name: opts?.name ?? "" });
     },
   };
@@ -79,7 +90,11 @@ function createApi(agentConfigs: Record<string, unknown> = {}) {
   return tools;
 }
 
-function findTool(tools: ReturnType<typeof createApi>, name: string, agentId?: string): AgentTool | null {
+function findTool(
+  tools: ReturnType<typeof createApi>,
+  name: string,
+  agentId?: string,
+): AgentTool | null {
   const entry = tools.find((t) => t.name === name);
   if (!entry) return null;
   return entry.factory({ agentId });
@@ -141,9 +156,28 @@ describe("odoo_schema", () => {
 
   it("returns fields for a specific permitted model", async () => {
     const expectedFields = [
-      { name: "name", string: "Order Reference", type: "char", required: true, readonly: true },
-      { name: "partner_id", string: "Customer", type: "many2one", required: true, readonly: false, relation: "res.partner" },
-      { name: "amount_total", string: "Total", type: "monetary", required: false, readonly: true },
+      {
+        name: "name",
+        string: "Order Reference",
+        type: "char",
+        required: true,
+        readonly: true,
+      },
+      {
+        name: "partner_id",
+        string: "Customer",
+        type: "many2one",
+        required: true,
+        readonly: false,
+        relation: "res.partner",
+      },
+      {
+        name: "amount_total",
+        string: "Total",
+        type: "monetary",
+        required: false,
+        readonly: true,
+      },
     ];
     mockFields.mockResolvedValue(expectedFields);
 
@@ -171,6 +205,7 @@ describe("odoo_schema", () => {
 describe("odoo_read", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
   });
 
   it("reads records with correct parameters", async () => {
@@ -200,7 +235,12 @@ describe("odoo_read", () => {
     expect(mockSearchRead).toHaveBeenCalledWith(
       "sale.order",
       [["state", "=", "sale"]],
-      { fields: ["name", "amount_total"], limit: 10, offset: 0, order: "date_order desc" },
+      {
+        fields: ["name", "amount_total"],
+        limit: 10,
+        offset: 0,
+        order: "date_order desc",
+      },
     );
   });
 
@@ -217,6 +257,43 @@ describe("odoo_read", () => {
     expect(result.content[0].text).toContain("account.move");
     expect(result.isError).toBe(true);
     expect(mockSearchRead).not.toHaveBeenCalled();
+  });
+
+  it("returns many2one values as opaque refs with labels", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", string: "ID", type: "integer" },
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 7, name: "Wien Partner", country_id: [14, "Austria"] }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-ref-read", {
+      model: "res.partner",
+      filters: [],
+      fields: ["name", "country_id"],
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse(result.content[0].text);
+    expect(data.records[0].country_id).toEqual({
+      ref: expect.stringMatching(/^pinchy_ref:v1:/),
+      label: "Austria",
+      model: "res.country",
+    });
+    expect(data.records[0].country_id.ref).not.toContain("14");
   });
 });
 
@@ -238,7 +315,9 @@ describe("odoo_count", () => {
 
     const data = JSON.parse(result.content[0].text);
     expect(data.count).toBe(42);
-    expect(mockSearchCount).toHaveBeenCalledWith("sale.order", [["state", "=", "sale"]]);
+    expect(mockSearchCount).toHaveBeenCalledWith("sale.order", [
+      ["state", "=", "sale"],
+    ]);
   });
 
   it("denies count on unpermitted model", async () => {
@@ -262,7 +341,9 @@ describe("odoo_aggregate", () => {
 
   it("aggregates data for a permitted model", async () => {
     mockReadGroup.mockResolvedValue({
-      groups: [{ partner_id: [1, "Customer A"], amount_total: 1500, __count: 3 }],
+      groups: [
+        { partner_id: [1, "Customer A"], amount_total: 1500, __count: 3 },
+      ],
     });
 
     const tools = createApi({ [agentId]: agentConfig });
@@ -305,6 +386,7 @@ describe("odoo_aggregate", () => {
 describe("odoo_create", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
   });
 
   it("creates a record on a permitted model", async () => {
@@ -320,7 +402,244 @@ describe("odoo_create", () => {
 
     const data = JSON.parse(result.content[0].text);
     expect(data.id).toBe(42);
-    expect(mockCreate).toHaveBeenCalledWith("res.partner", { name: "New Partner", email: "new@example.com" });
+    expect(mockCreate).toHaveBeenCalledWith("res.partner", {
+      name: "New Partner",
+      email: "new@example.com",
+    });
+  });
+
+  it("resolves country_id by exact country name instead of using the first same-letter country", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [
+        { id: 1, name: "Aruba", code: "AW" },
+        { id: 14, name: "Austria", code: "AT" },
+      ],
+      total: 2,
+      limit: 1000,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(42);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-name", {
+      model: "res.partner",
+      values: { name: "Wien Partner", country_id: "Austria" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("res.partner", {
+      name: "Wien Partner",
+      country_id: 14,
+    });
+  });
+
+  it("rejects raw numeric country_id values", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-raw-id", {
+      model: "res.partner",
+      values: { name: "Wien Partner", country_id: 14 },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(
+      "Raw numeric IDs are not accepted",
+    );
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("resolves country_id from an explicit code lookup", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [
+        { id: 1, name: "Aruba", code: "AW" },
+        { id: 14, name: "Austria", code: "AT" },
+      ],
+      total: 2,
+      limit: 1000,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(44);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-code-lookup", {
+      model: "res.partner",
+      values: { name: "Wien Partner", country_id: { lookup: { code: "AT" } } },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("res.partner", {
+      name: "Wien Partner",
+      country_id: 14,
+    });
+  });
+
+  it("resolves country_id from an opaque ref", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    mockCreate.mockResolvedValue(45);
+    const ref = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.country",
+      id: 14,
+      label: "Austria",
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-ref", {
+      model: "res.partner",
+      values: { name: "Wien Partner", country_id: { ref } },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("res.partner", {
+      name: "Wien Partner",
+      country_id: 14,
+    });
+  });
+
+  it("rejects an opaque ref for the wrong relation model", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    const ref = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "res.partner",
+      id: 7,
+      label: "Wien Partner",
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-wrong-ref", {
+      model: "res.partner",
+      values: { name: "Wien Partner", country_id: { ref } },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("expected res.country");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("resolves USA as the United States country code instead of the first U country", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [
+        { id: 230, name: "Uzbekistan", code: "UZ" },
+        { id: 233, name: "United States", code: "US" },
+      ],
+      total: 2,
+      limit: 1000,
+      offset: 0,
+    });
+    mockCreate.mockResolvedValue(43);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-usa", {
+      model: "res.partner",
+      values: { name: "US Partner", country_id: "USA" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("res.partner", {
+      name: "US Partner",
+      country_id: 233,
+    });
+  });
+
+  it("rejects ambiguous country text instead of creating with an arbitrary match", async () => {
+    mockFields.mockResolvedValue([
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [
+        { id: 220, name: "Uganda", code: "UG" },
+        { id: 230, name: "Uzbekistan", code: "UZ" },
+      ],
+      total: 2,
+      limit: 1000,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-country-ambiguous", {
+      model: "res.partner",
+      values: { name: "Unknown Partner", country_id: "U" },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Could not resolve country_id");
+    expect(result.content[0].text).toContain("Uganda");
+    expect(result.content[0].text).toContain("Uzbekistan");
+    expect(mockCreate).not.toHaveBeenCalled();
   });
 
   it("denies create on model without create permission", async () => {
@@ -358,7 +677,9 @@ describe("odoo_write", () => {
 
     const data = JSON.parse(result.content[0].text);
     expect(data.success).toBe(true);
-    expect(mockWrite).toHaveBeenCalledWith("res.partner", [1, 2], { email: "updated@example.com" });
+    expect(mockWrite).toHaveBeenCalledWith("res.partner", [1, 2], {
+      email: "updated@example.com",
+    });
   });
 
   it("denies write on model without write permission", async () => {
@@ -388,7 +709,10 @@ describe("odoo_delete", () => {
     // Add delete permission for this test
     const configWithDelete = {
       ...agentConfig,
-      permissions: { ...testPermissions, "res.partner": ["read", "write", "create", "delete"] },
+      permissions: {
+        ...testPermissions,
+        "res.partner": ["read", "write", "create", "delete"],
+      },
     };
     const tools = createApi({ [agentId]: configWithDelete });
     const tool = findTool(tools, "odoo_delete", agentId)!;
@@ -439,7 +763,9 @@ describe("error handling", () => {
   });
 
   it("returns permission message for Odoo access errors", async () => {
-    mockSearchRead.mockRejectedValue(new Error("AccessError: no read access on sale.order"));
+    mockSearchRead.mockRejectedValue(
+      new Error("AccessError: no read access on sale.order"),
+    );
 
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_read", agentId)!;
@@ -497,7 +823,12 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
   });
 
   it("fetches credentials once and reuses the OdooClient across multiple tool calls for the same agent", async () => {
-    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
+    mockSearchRead.mockResolvedValue({
+      records: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
     mockSearchCount.mockResolvedValue(0);
 
     const tools = createApi({ [agentId]: agentConfig });
@@ -515,13 +846,21 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
   });
 
   it("fetches credentials separately for different agents (no cross-agent leakage)", async () => {
-    mockSearchRead.mockResolvedValue({ records: [], total: 0, limit: 100, offset: 0 });
+    mockSearchRead.mockResolvedValue({
+      records: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
 
     const agent2Config = {
       connectionId: "conn-test-2",
       permissions: testPermissions,
     };
-    const tools = createApi({ [agentId]: agentConfig, "agent-2": agent2Config });
+    const tools = createApi({
+      [agentId]: agentConfig,
+      "agent-2": agent2Config,
+    });
 
     const tool1 = findTool(tools, "odoo_read", agentId)!;
     const tool2 = findTool(tools, "odoo_read", "agent-2")!;
@@ -545,14 +884,21 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
       json: async () => ({
         type: "odoo",
         // Exactly the broken shape from staging: an unresolved SecretRef.
-        credentials: { source: "file", provider: "pinchy", id: "/integrations/x/odooApiKey" },
+        credentials: {
+          source: "file",
+          provider: "pinchy",
+          id: "/integrations/x/odooApiKey",
+        },
       }),
     } as unknown as Response);
 
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_count", agentId)!;
 
-    const result = await tool.execute("call-1", { model: "sale.order", filters: [] });
+    const result = await tool.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
 
     expect(result.isError).toBe(true);
     const text = result.content[0].text;
@@ -561,13 +907,23 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
   });
 
   it("invalidates the cache and refetches credentials on auth error", async () => {
-    mockSearchRead.mockRejectedValueOnce(new Error("Access Denied: invalid api key"));
-    mockSearchRead.mockResolvedValueOnce({ records: [], total: 0, limit: 100, offset: 0 });
+    mockSearchRead.mockRejectedValueOnce(
+      new Error("Access Denied: invalid api key"),
+    );
+    mockSearchRead.mockResolvedValueOnce({
+      records: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+    });
 
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_read", agentId)!;
 
-    const result = await tool.execute("call-1", { model: "sale.order", filters: [] });
+    const result = await tool.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
 
     expect(result.isError).toBeFalsy();
     // First call fetched, error invalidated cache, second call refetched

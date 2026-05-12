@@ -32,8 +32,11 @@ interface AgentTool {
   name: string;
   execute: (
     toolCallId: string,
-    params: Record<string, unknown>
-  ) => Promise<{ content: Array<{ type: string; text: string }>; isError?: boolean }>;
+    params: Record<string, unknown>,
+  ) => Promise<{
+    content: Array<{ type: string; text: string }>;
+    isError?: boolean;
+  }>;
 }
 
 let mockOdoo: MockOdooHandle;
@@ -46,11 +49,20 @@ const PINCHY_GATEWAY_TOKEN = "test-gateway-token-integration";
 const credentialsByConnectionId = new Map<string, unknown>();
 
 beforeAll(async () => {
+  process.env.PINCHY_REF_TOKEN_KEY = "a".repeat(64);
   // Mock Odoo on an OS-picked port (no collision with the docker-compose service)
   const mockServer = require("../../../../config/odoo-mock/server.js") as {
-    start: (opts: { jsonRpcPort: number; controlPort: number }) => Promise<MockOdooHandle>;
+    start: (opts: {
+      jsonRpcPort: number;
+      controlPort: number;
+      host?: string;
+    }) => Promise<MockOdooHandle>;
   };
-  mockOdoo = await mockServer.start({ jsonRpcPort: 0, controlPort: 0 });
+  mockOdoo = await mockServer.start({
+    jsonRpcPort: 0,
+    controlPort: 0,
+    host: "127.0.0.1",
+  });
 
   // Mock Pinchy: implements just the credentials endpoint with the same
   // auth contract Pinchy itself uses (Bearer gateway token).
@@ -61,7 +73,9 @@ beforeAll(async () => {
       res.end(JSON.stringify({ error: "Unauthorized" }));
       return;
     }
-    const match = req.url?.match(/^\/api\/internal\/integrations\/([^/]+)\/credentials$/);
+    const match = req.url?.match(
+      /^\/api\/internal\/integrations\/([^/]+)\/credentials$/,
+    );
     if (!match) {
       res.writeHead(404);
       res.end();
@@ -77,7 +91,9 @@ beforeAll(async () => {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({ type: "odoo", credentials }));
   });
-  await new Promise<void>((resolve) => mockPinchy.listen(0, resolve));
+  await new Promise<void>((resolve) =>
+    mockPinchy.listen(0, "127.0.0.1", resolve),
+  );
   mockPinchyPort = (mockPinchy.address() as AddressInfo).port;
 });
 
@@ -85,14 +101,16 @@ afterAll(async () => {
   await mockOdoo?.stop();
   if (mockPinchy) {
     await new Promise<void>((resolve, reject) =>
-      mockPinchy.close((err) => (err ? reject(err) : resolve()))
+      mockPinchy.close((err) => (err ? reject(err) : resolve())),
     );
   }
 });
 
 function createApi(agentConfigs: Record<string, unknown> = {}) {
-  const tools: Array<{ factory: (ctx: { agentId?: string }) => AgentTool | null; name: string }> =
-    [];
+  const tools: Array<{
+    factory: (ctx: { agentId?: string }) => AgentTool | null;
+    name: string;
+  }> = [];
   const api = {
     pluginConfig: {
       apiBaseUrl: `http://127.0.0.1:${mockPinchyPort}`,
@@ -101,7 +119,7 @@ function createApi(agentConfigs: Record<string, unknown> = {}) {
     },
     registerTool: (
       factory: (ctx: { agentId?: string }) => AgentTool | null,
-      opts?: { name?: string }
+      opts?: { name?: string },
     ) => {
       tools.push({ factory, name: opts?.name ?? "" });
     },
@@ -111,18 +129,26 @@ function createApi(agentConfigs: Record<string, unknown> = {}) {
   return tools;
 }
 
-function findTool(tools: ReturnType<typeof createApi>, name: string, agentId: string): AgentTool {
+function findTool(
+  tools: ReturnType<typeof createApi>,
+  name: string,
+  agentId: string,
+): AgentTool {
   const entry = tools.find((t) => t.name === name);
   if (!entry) throw new Error(`Tool ${name} not registered`);
   const tool = entry.factory({ agentId });
-  if (!tool) throw new Error(`Tool ${name} factory returned null for agent ${agentId}`);
+  if (!tool)
+    throw new Error(`Tool ${name} factory returned null for agent ${agentId}`);
   return tool;
 }
 
 const agentId = "agent-integration";
 const agentConfig = {
   connectionId: "conn-integration",
-  permissions: { "sale.order": ["read"], "res.partner": ["read"] },
+  permissions: {
+    "sale.order": ["read"],
+    "res.partner": ["read", "create", "write"],
+  },
   modelNames: { "sale.order": "Sales Order", "res.partner": "Contact" },
 };
 
@@ -147,14 +173,19 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
     const data = JSON.parse(result.content[0].text);
     expect(data.name).toBe("Sales Order");
     expect(data.fields.length).toBeGreaterThan(0);
-    expect(data.fields.some((f: { name: string }) => f.name === "name")).toBe(true);
+    expect(data.fields.some((f: { name: string }) => f.name === "name")).toBe(
+      true,
+    );
   });
 
   it("odoo_count returns { count: number } for an empty filter", async () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_count", agentId);
 
-    const result = await tool.execute("call-1", { model: "sale.order", filters: [] });
+    const result = await tool.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
 
     expect(result.isError).toBeFalsy();
     const data = JSON.parse(result.content[0].text);
@@ -165,12 +196,93 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_read", agentId);
 
-    const result = await tool.execute("call-1", { model: "sale.order", filters: [] });
+    const result = await tool.execute("call-1", {
+      model: "sale.order",
+      filters: [],
+    });
 
     expect(result.isError).toBeFalsy();
     const data = JSON.parse(result.content[0].text);
     expect(Array.isArray(data.records)).toBe(true);
     expect(typeof data.total).toBe("number");
+  });
+
+  it("creates a partner with a country code lookup after a real Odoo round-trip", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId);
+
+    const result = await tool.execute("call-create-country-lookup", {
+      model: "res.partner",
+      values: {
+        name: "Lookup Partner",
+        country_id: { lookup: { code: "AT" } },
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    const { id } = JSON.parse(result.content[0].text) as { id: number };
+    const records = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=res.partner`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    expect(records.find((record) => record.id === id)).toMatchObject({
+      name: "Lookup Partner",
+      country_id: 14,
+    });
+  });
+
+  it("reuses an emitted country ref in a subsequent write", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const readTool = findTool(tools, "odoo_read", agentId);
+    const writeTool = findTool(tools, "odoo_write", agentId);
+
+    const readResult = await readTool.execute("call-read-country-ref", {
+      model: "res.partner",
+      filters: [["id", "=", 1]],
+      fields: ["name", "country_id"],
+    });
+    expect(readResult.isError).toBeFalsy();
+    const readData = JSON.parse(readResult.content[0].text);
+    const country = readData.records[0].country_id;
+    expect(country).toMatchObject({
+      ref: expect.stringMatching(/^pinchy_ref:v1:/),
+      label: "Austria",
+      model: "res.country",
+    });
+
+    const writeResult = await writeTool.execute("call-write-country-ref", {
+      model: "res.partner",
+      ids: [2],
+      values: { country_id: { ref: country.ref } },
+    });
+
+    expect(writeResult.isError).toBeFalsy();
+    const records = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=res.partner`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    expect(records.find((record) => record.id === 2)).toMatchObject({
+      country_id: 14,
+    });
+  });
+
+  it("rejects raw numeric relation IDs before creating a record in Odoo", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId);
+
+    const result = await tool.execute("call-create-raw-country", {
+      model: "res.partner",
+      values: { name: "Raw Numeric Partner", country_id: 14 },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain(
+      "Raw numeric IDs are not accepted",
+    );
+    const records = (await fetch(
+      `http://127.0.0.1:${mockOdoo.controlPort}/control/records?model=res.partner`,
+    ).then((res) => res.json())) as Array<Record<string, unknown>>;
+    expect(
+      records.some((record) => record.name === "Raw Numeric Partner"),
+    ).toBe(false);
   });
 
   it("REGRESSION (#209): if Pinchy returns the SecretRef-shaped dict instead of credentials, the plugin fails fast WITHOUT producing a Python crash", async () => {

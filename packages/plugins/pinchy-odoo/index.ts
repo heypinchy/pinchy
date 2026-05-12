@@ -1,5 +1,10 @@
 import { OdooClient } from "odoo-node";
-import { checkPermission, getPermittedModels, type Permissions } from "./permissions";
+import {
+  checkPermission,
+  getPermittedModels,
+  type Permissions,
+} from "./permissions";
+import { decodeRef, encodeRef } from "./integration-ref";
 
 interface PluginToolContext {
   agentId?: string;
@@ -27,7 +32,11 @@ interface AgentTool {
     toolCallId: string,
     params: Record<string, unknown>,
     signal?: AbortSignal,
-  ) => Promise<{ content: ContentBlock[]; isError?: boolean; details?: unknown }>;
+  ) => Promise<{
+    content: ContentBlock[];
+    isError?: boolean;
+    details?: unknown;
+  }>;
 }
 
 interface PluginConfig {
@@ -49,6 +58,34 @@ interface OdooCredentials {
   apiKey: string;
 }
 
+interface OdooField {
+  name: string;
+  string?: string;
+  type?: string;
+  relation?: string;
+}
+
+type OdooRecord = Record<string, unknown>;
+
+interface OdooRefValue {
+  ref: string;
+  label: string;
+  model: string;
+}
+
+interface RelationLookup {
+  name?: string;
+  code?: string;
+}
+
+const COUNTRY_ALIASES_TO_CODE: Record<string, string> = {
+  america: "US",
+  usa: "US",
+  us: "US",
+  unitedstates: "US",
+  unitedstatesofamerica: "US",
+};
+
 function getAgentConfig(
   agentConfigs: Record<string, AgentOdooConfig>,
   agentId: string,
@@ -63,16 +100,22 @@ function getAgentConfig(
  * `unhashable type: 'dict'`, see issue #209). Without this assertion a
  * malformed payload would propagate all the way to Odoo before erroring.
  */
-function assertCredentialsShape(creds: unknown): asserts creds is OdooCredentials {
+function assertCredentialsShape(
+  creds: unknown,
+): asserts creds is OdooCredentials {
   if (!creds || typeof creds !== "object") {
-    throw new Error(`pinchy-odoo: credentials must be an object, got ${typeof creds}`);
+    throw new Error(
+      `pinchy-odoo: credentials must be an object, got ${typeof creds}`,
+    );
   }
   const obj = creds as Record<string, unknown>;
   // Detect the SecretRef-shaped payload (#209) up front so the error
   // message points at the actual root cause instead of a "field missing"
   // symptom that's harder to debug.
   const looksLikeSecretRef =
-    typeof obj.source === "string" && typeof obj.provider === "string" && typeof obj.id === "string";
+    typeof obj.source === "string" &&
+    typeof obj.provider === "string" &&
+    typeof obj.id === "string";
   const expected: Array<[keyof OdooCredentials, "string" | "number"]> = [
     ["url", "string"],
     ["db", "string"],
@@ -134,7 +177,341 @@ function createClient(creds: OdooCredentials): OdooClient {
   });
 }
 
-function permissionDenied(operation: string, model: string): { content: ContentBlock[]; isError: true } {
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function getSearchReadRecords(result: unknown): OdooRecord[] {
+  if (Array.isArray(result)) return result.filter(isRecord);
+  if (isRecord(result) && Array.isArray(result.records)) {
+    return result.records.filter(isRecord);
+  }
+  return [];
+}
+
+function normalizeFields(fields: unknown): OdooField[] {
+  if (Array.isArray(fields)) {
+    return fields.filter(isRecord).flatMap((field) => {
+      if (typeof field.name !== "string") return [];
+      return [
+        {
+          name: field.name,
+          string: typeof field.string === "string" ? field.string : undefined,
+          type: typeof field.type === "string" ? field.type : undefined,
+          relation:
+            typeof field.relation === "string" ? field.relation : undefined,
+        },
+      ];
+    });
+  }
+
+  if (!isRecord(fields)) return [];
+
+  return Object.entries(fields).flatMap(([name, field]) => {
+    if (!isRecord(field)) return [];
+    return [
+      {
+        name,
+        string: typeof field.string === "string" ? field.string : undefined,
+        type: typeof field.type === "string" ? field.type : undefined,
+        relation:
+          typeof field.relation === "string" ? field.relation : undefined,
+      },
+    ];
+  });
+}
+
+function normalizeLookupText(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function normalizeCountryAliasKey(value: string): string {
+  return normalizeLookupText(value).replace(/[\s._-]/g, "");
+}
+
+function countryCodeForInput(value: string): string | null {
+  const trimmed = value.trim();
+  if (/^[a-z]{2}$/i.test(trimmed)) return trimmed.toUpperCase();
+  return COUNTRY_ALIASES_TO_CODE[normalizeCountryAliasKey(trimmed)] ?? null;
+}
+
+function recordId(record: OdooRecord): number | null {
+  return typeof record.id === "number" ? record.id : null;
+}
+
+function recordText(record: OdooRecord, field: string): string | null {
+  const value = record[field];
+  return typeof value === "string" ? value : null;
+}
+
+function uniqueIds(records: OdooRecord[]): number[] {
+  return [
+    ...new Set(records.map(recordId).filter((id): id is number => id !== null)),
+  ];
+}
+
+function recordLabel(record: OdooRecord): string {
+  return (
+    recordText(record, "display_name") ??
+    recordText(record, "name") ??
+    String(record.id ?? "")
+  );
+}
+
+function formatSuggestions(records: OdooRecord[]): string {
+  const labels = [
+    ...new Set(records.map(recordLabel).filter((label) => label.length > 0)),
+  ].slice(0, 5);
+  return labels.length > 0 ? ` Suggestions: ${labels.join(", ")}.` : "";
+}
+
+function rankedSuggestions(input: string, records: OdooRecord[]): OdooRecord[] {
+  const requested = normalizeLookupText(input);
+  const startsWith = records.filter((record) => {
+    const name = recordText(record, "name");
+    const displayName = recordText(record, "display_name");
+    return (
+      (name !== null && normalizeLookupText(name).startsWith(requested)) ||
+      (displayName !== null &&
+        normalizeLookupText(displayName).startsWith(requested))
+    );
+  });
+  return startsWith.length > 0 ? startsWith : records;
+}
+
+function parseLookup(field: OdooField, value: unknown): RelationLookup | null {
+  if (typeof value === "string") {
+    const input = value.trim();
+    if (input === "") return { name: "" };
+    const countryCode =
+      field.relation === "res.country" ? countryCodeForInput(input) : null;
+    return countryCode ? { code: countryCode } : { name: input };
+  }
+
+  if (!isRecord(value) || !isRecord(value.lookup)) return null;
+  const lookup = value.lookup;
+  return {
+    name: typeof lookup.name === "string" ? lookup.name.trim() : undefined,
+    code:
+      typeof lookup.code === "string"
+        ? lookup.code.trim().toUpperCase()
+        : undefined,
+  };
+}
+
+function resolveReferenceFromRecords(
+  field: OdooField,
+  lookup: RelationLookup,
+  records: OdooRecord[],
+): number {
+  const label = field.string ?? field.name;
+  const input = lookup.code ?? lookup.name ?? "";
+
+  if (field.relation === "res.country" && lookup.code) {
+    const codeMatches = records.filter(
+      (record) => recordText(record, "code")?.toUpperCase() === lookup.code,
+    );
+    const ids = uniqueIds(codeMatches);
+    if (ids.length === 1) return ids[0];
+    if (ids.length > 1) {
+      throw new Error(
+        `Could not resolve ${field.name}: multiple countries match code "${lookup.code}".`,
+      );
+    }
+  }
+
+  if (!lookup.name) {
+    throw new Error(
+      `Could not resolve ${field.name} from "${input}".${formatSuggestions(records)} Provide an exact ${label} name or ref.`,
+    );
+  }
+
+  const requested = normalizeLookupText(lookup.name);
+  const exactMatches = records.filter((record) => {
+    const name = recordText(record, "name");
+    const displayName = recordText(record, "display_name");
+    return (
+      (name !== null && normalizeLookupText(name) === requested) ||
+      (displayName !== null && normalizeLookupText(displayName) === requested)
+    );
+  });
+  const ids = uniqueIds(exactMatches);
+  if (ids.length === 1) return ids[0];
+  if (ids.length > 1) {
+    throw new Error(
+      `Could not resolve ${field.name}: multiple ${label} records match "${input}".`,
+    );
+  }
+
+  throw new Error(
+    `Could not resolve ${field.name} from "${input}".${formatSuggestions(
+      rankedSuggestions(input, records),
+    )} Provide an exact ${label} name or ref.`,
+  );
+}
+
+function refToId(
+  connectionId: string,
+  field: OdooField,
+  value: Record<string, unknown>,
+): number | null {
+  if (typeof value.ref !== "string") return null;
+  const ref = decodeRef(value.ref);
+  if (ref.integrationType !== "odoo") {
+    throw new Error(`Invalid ref for ${field.name}: expected odoo.`);
+  }
+  if (ref.connectionId !== connectionId) {
+    throw new Error(
+      `Invalid ref for ${field.name}: connection does not match.`,
+    );
+  }
+  if (ref.model !== field.relation) {
+    throw new Error(
+      `Invalid ref for ${field.name}: expected ${field.relation}, got ${ref.model}.`,
+    );
+  }
+  return ref.id;
+}
+
+async function resolveRelationValue(
+  client: OdooClient,
+  connectionId: string,
+  field: OdooField,
+  value: unknown,
+): Promise<unknown> {
+  if (value == null || value === false) return value;
+  if (typeof value === "number") {
+    throw new Error(
+      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`,
+    );
+  }
+  if (Array.isArray(value) && typeof value[0] === "number") {
+    throw new Error(
+      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`,
+    );
+  }
+  if (isRecord(value)) {
+    const refId = refToId(connectionId, field, value);
+    if (refId !== null) return refId;
+    if (typeof value.id === "number") {
+      throw new Error(
+        `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`,
+      );
+    }
+  }
+
+  const lookup = parseLookup(field, value);
+  if (!lookup) return value;
+  if (lookup.name === "") return false;
+  if (lookup.name && /^\d+$/.test(lookup.name)) {
+    throw new Error(
+      `Raw numeric IDs are not accepted for ${field.name}. Use an opaque ref or lookup.`,
+    );
+  }
+  if (!field.relation) return value;
+
+  const result =
+    field.relation === "res.country"
+      ? await client.searchRead(field.relation, [], {
+          fields: ["id", "name", "display_name", "code"],
+          limit: 1000,
+        })
+      : await client.searchRead(
+          field.relation,
+          [["name", "ilike", lookup.name ?? ""]],
+          {
+            fields: ["id", "name", "display_name"],
+            limit: 20,
+          },
+        );
+
+  return resolveReferenceFromRecords(
+    field,
+    lookup,
+    getSearchReadRecords(result),
+  );
+}
+
+async function normalizeMany2OneValues(
+  client: OdooClient,
+  connectionId: string,
+  model: string,
+  values: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const fields = normalizeFields(await client.fields(model));
+  if (fields.length === 0) return values;
+
+  const normalized = { ...values };
+  for (const field of fields) {
+    if (field.type !== "many2one" || !(field.name in normalized)) continue;
+    normalized[field.name] = await resolveRelationValue(
+      client,
+      connectionId,
+      field,
+      normalized[field.name],
+    );
+  }
+  return normalized;
+}
+
+function wrapMany2OneValue(
+  connectionId: string,
+  field: OdooField,
+  value: unknown,
+): unknown {
+  if (
+    field.type !== "many2one" ||
+    !field.relation ||
+    !Array.isArray(value) ||
+    typeof value[0] !== "number"
+  ) {
+    return value;
+  }
+  const label = typeof value[1] === "string" ? value[1] : String(value[0]);
+  return {
+    ref: encodeRef({
+      integrationType: "odoo",
+      connectionId,
+      model: field.relation,
+      id: value[0],
+      label,
+    }),
+    label,
+    model: field.relation,
+  } satisfies OdooRefValue;
+}
+
+function wrapReadResult(
+  connectionId: string,
+  fields: OdooField[],
+  result: unknown,
+): unknown {
+  const byName = new Map(fields.map((field) => [field.name, field]));
+  const wrapRecord = (record: OdooRecord): OdooRecord => {
+    const wrapped = { ...record };
+    for (const [name, value] of Object.entries(wrapped)) {
+      const field = byName.get(name);
+      if (field) {
+        wrapped[name] = wrapMany2OneValue(connectionId, field, value);
+      }
+    }
+    return wrapped;
+  };
+
+  if (Array.isArray(result)) return result.filter(isRecord).map(wrapRecord);
+  if (isRecord(result) && Array.isArray(result.records)) {
+    return {
+      ...result,
+      records: result.records.filter(isRecord).map(wrapRecord),
+    };
+  }
+  return result;
+}
+
+function permissionDenied(
+  operation: string,
+  model: string,
+): { content: ContentBlock[]; isError: true } {
   return {
     isError: true,
     content: [
@@ -157,7 +534,10 @@ function isOdooAccessError(error: unknown): boolean {
   );
 }
 
-function errorResult(error: unknown, context?: { operation?: string; model?: string }): { content: ContentBlock[]; isError: true } {
+function errorResult(
+  error: unknown,
+  context?: { operation?: string; model?: string },
+): { content: ContentBlock[]; isError: true } {
   if (isOdooAccessError(error) && context?.model) {
     const op = context.operation ?? "access";
     return {
@@ -171,7 +551,10 @@ function errorResult(error: unknown, context?: { operation?: string; model?: str
     };
   }
   const message = error instanceof Error ? error.message : "Unknown error";
-  return { isError: true, content: [{ type: "text", text: `Error: ${message}` }] };
+  return {
+    isError: true,
+    content: [{ type: "text", text: `Error: ${message}` }],
+  };
 }
 
 const plugin = {
@@ -205,9 +588,16 @@ const plugin = {
     ): Promise<OdooClient> {
       const hit = cache.get(agentId);
       if (hit && hit.expiresAt > Date.now()) return hit.client;
-      const creds = await fetchCredentials(apiBaseUrl, gatewayToken, config.connectionId);
+      const creds = await fetchCredentials(
+        apiBaseUrl,
+        gatewayToken,
+        config.connectionId,
+      );
       const client = createClient(creds);
-      cache.set(agentId, { client, expiresAt: Date.now() + CREDENTIALS_TTL_MS });
+      cache.set(agentId, {
+        client,
+        expiresAt: Date.now() + CREDENTIALS_TTL_MS,
+      });
       return client;
     }
 
@@ -258,7 +648,8 @@ const plugin = {
             properties: {
               model: {
                 type: "string",
-                description: "Model name to get fields for. Omit to list all available models.",
+                description:
+                  "Model name to get fields for. Omit to list all available models.",
               },
             },
           },
@@ -269,12 +660,17 @@ const plugin = {
 
               if (!model) {
                 // List all permitted models with human-readable names
-                const permittedModels = getPermittedModels(config.permissions, "read");
+                const permittedModels = getPermittedModels(
+                  config.permissions,
+                  "read",
+                );
                 const models = permittedModels.map((m) => ({
                   model: m,
                   name: names[m] ?? m,
                 }));
-                return { content: [{ type: "text", text: JSON.stringify(models) }] };
+                return {
+                  content: [{ type: "text", text: JSON.stringify(models) }],
+                };
               }
 
               // Check if model is in permissions
@@ -282,7 +678,10 @@ const plugin = {
                 return {
                   isError: true,
                   content: [
-                    { type: "text", text: `Model "${model}" is not available for this agent.` },
+                    {
+                      type: "text",
+                      text: `Model "${model}" is not available for this agent.`,
+                    },
                   ],
                 };
               }
@@ -297,7 +696,10 @@ const plugin = {
                 content: [
                   {
                     type: "text",
-                    text: JSON.stringify({ name: names[model] ?? model, fields }),
+                    text: JSON.stringify({
+                      name: names[model] ?? model,
+                      fields,
+                    }),
                   },
                 ],
               };
@@ -326,12 +728,16 @@ const plugin = {
           parameters: {
             type: "object",
             properties: {
-              model: { type: "string", description: "Odoo model name, e.g. 'sale.order'" },
+              model: {
+                type: "string",
+                description: "Odoo model name, e.g. 'sale.order'",
+              },
               filters: {
                 type: "array",
                 items: {
                   type: "array",
-                  description: "A [field, operator, value] tuple, e.g. ['state', '=', 'sale']",
+                  description:
+                    "A [field, operator, value] tuple, e.g. ['state', '=', 'sale']",
                 },
                 description:
                   "Odoo domain filter. Array of [field, operator, value] tuples. Operators: =, !=, >, >=, <, <=, in, not in, like, ilike. Use [] for no filter.",
@@ -341,9 +747,18 @@ const plugin = {
                 items: { type: "string" },
                 description: "Fields to return. Omit for default fields.",
               },
-              limit: { type: "number", description: "Max records (default: 100)" },
-              offset: { type: "number", description: "Skip N records for pagination" },
-              order: { type: "string", description: "Sort order, e.g. 'date_order desc'" },
+              limit: {
+                type: "number",
+                description: "Max records (default: 100)",
+              },
+              offset: {
+                type: "number",
+                description: "Skip N records for pagination",
+              },
+              order: {
+                type: "string",
+                description: "Sort order, e.g. 'date_order desc'",
+              },
             },
             required: ["model", "filters"],
           },
@@ -354,18 +769,39 @@ const plugin = {
                 return permissionDenied("read", model);
               }
 
-              const result = await withAuthRetry(agentId, config, (client) =>
-                client.searchRead(model, params.filters as unknown[], {
-                  fields: params.fields as string[] | undefined,
-                  limit: params.limit as number | undefined,
-                  offset: params.offset as number | undefined,
-                  order: params.order as string | undefined,
-                }),
+              const result = await withAuthRetry(
+                agentId,
+                config,
+                async (client) => {
+                  const modelFields = normalizeFields(
+                    await client.fields(model),
+                  );
+                  const records = await client.searchRead(
+                    model,
+                    params.filters as unknown[],
+                    {
+                      fields: params.fields as string[] | undefined,
+                      limit: params.limit as number | undefined,
+                      offset: params.offset as number | undefined,
+                      order: params.order as string | undefined,
+                    },
+                  );
+                  return wrapReadResult(
+                    config.connectionId,
+                    modelFields,
+                    records,
+                  );
+                },
               );
 
-              return { content: [{ type: "text", text: JSON.stringify(result) }] };
+              return {
+                content: [{ type: "text", text: JSON.stringify(result) }],
+              };
             } catch (error) {
-              return errorResult(error, { operation: "read", model: params.model as string });
+              return errorResult(error, {
+                operation: "read",
+                model: params.model as string,
+              });
             }
           },
         };
@@ -392,7 +828,10 @@ const plugin = {
               model: { type: "string", description: "Odoo model name" },
               filters: {
                 type: "array",
-                items: { type: "array", description: "A [field, operator, value] tuple" },
+                items: {
+                  type: "array",
+                  description: "A [field, operator, value] tuple",
+                },
                 description: "Odoo domain filter. Use [] for no filter.",
               },
             },
@@ -409,9 +848,14 @@ const plugin = {
                 client.searchCount(model, params.filters as unknown[]),
               );
 
-              return { content: [{ type: "text", text: JSON.stringify({ count }) }] };
+              return {
+                content: [{ type: "text", text: JSON.stringify({ count }) }],
+              };
             } catch (error) {
-              return errorResult(error, { operation: "count", model: params.model as string });
+              return errorResult(error, {
+                operation: "count",
+                model: params.model as string,
+              });
             }
           },
         };
@@ -438,7 +882,10 @@ const plugin = {
               model: { type: "string", description: "Odoo model name" },
               filters: {
                 type: "array",
-                items: { type: "array", description: "A [field, operator, value] tuple" },
+                items: {
+                  type: "array",
+                  description: "A [field, operator, value] tuple",
+                },
                 description: "Odoo domain filter. Use [] for no filter.",
               },
               fields: {
@@ -450,10 +897,14 @@ const plugin = {
               groupby: {
                 type: "array",
                 items: { type: "string" },
-                description: "Fields to group by, e.g. ['partner_id'] or ['date_order:month']",
+                description:
+                  "Fields to group by, e.g. ['partner_id'] or ['date_order:month']",
               },
               limit: { type: "number", description: "Max groups to return" },
-              offset: { type: "number", description: "Skip N groups for pagination" },
+              offset: {
+                type: "number",
+                description: "Skip N groups for pagination",
+              },
               orderby: { type: "string", description: "Sort order for groups" },
             },
             required: ["model", "filters", "fields", "groupby"],
@@ -479,9 +930,14 @@ const plugin = {
                 ),
               );
 
-              return { content: [{ type: "text", text: JSON.stringify(result) }] };
+              return {
+                content: [{ type: "text", text: JSON.stringify(result) }],
+              };
             } catch (error) {
-              return errorResult(error, { operation: "aggregate", model: params.model as string });
+              return errorResult(error, {
+                operation: "aggregate",
+                model: params.model as string,
+              });
             }
           },
         };
@@ -500,12 +956,17 @@ const plugin = {
         return {
           name: "odoo_create",
           label: "Odoo Create",
-          description: "Create a new record in Odoo. Returns the ID of the created record.",
+          description:
+            "Create a new record in Odoo. Returns the ID of the created record. For many2one fields, pass numeric IDs only when you already have an exact record ID; otherwise pass an exact display name or country code and the tool will resolve it safely.",
           parameters: {
             type: "object",
             properties: {
               model: { type: "string", description: "Odoo model name" },
-              values: { type: "object", description: "Field values for the new record" },
+              values: {
+                type: "object",
+                description:
+                  "Field values for the new record. Many2one text values must be exact names or supported codes, not partial/fuzzy matches.",
+              },
             },
             required: ["model", "values"],
           },
@@ -516,13 +977,30 @@ const plugin = {
                 return permissionDenied("create", model);
               }
 
-              const id = await withAuthRetry(agentId, config, (client) =>
-                client.create(model, params.values as Record<string, unknown>),
+              const id = await withAuthRetry(
+                agentId,
+                config,
+                async (client) => {
+                  const values = isRecord(params.values)
+                    ? await normalizeMany2OneValues(
+                        client,
+                        config.connectionId,
+                        model,
+                        params.values,
+                      )
+                    : (params.values as Record<string, unknown>);
+                  return client.create(model, values);
+                },
               );
 
-              return { content: [{ type: "text", text: JSON.stringify({ id }) }] };
+              return {
+                content: [{ type: "text", text: JSON.stringify({ id }) }],
+              };
             } catch (error) {
-              return errorResult(error, { operation: "create", model: params.model as string });
+              return errorResult(error, {
+                operation: "create",
+                model: params.model as string,
+              });
             }
           },
         };
@@ -541,7 +1019,8 @@ const plugin = {
         return {
           name: "odoo_write",
           label: "Odoo Write",
-          description: "Update an existing record in Odoo.",
+          description:
+            "Update an existing record in Odoo. For many2one fields, pass numeric IDs only when you already have an exact record ID; otherwise pass an exact display name or country code and the tool will resolve it safely.",
           parameters: {
             type: "object",
             properties: {
@@ -551,7 +1030,11 @@ const plugin = {
                 items: { type: "number" },
                 description: "IDs of records to update",
               },
-              values: { type: "object", description: "Field values to update" },
+              values: {
+                type: "object",
+                description:
+                  "Field values to update. Many2one text values must be exact names or supported codes, not partial/fuzzy matches.",
+              },
             },
             required: ["model", "ids", "values"],
           },
@@ -562,17 +1045,30 @@ const plugin = {
                 return permissionDenied("write", model);
               }
 
-              const success = await withAuthRetry(agentId, config, (client) =>
-                client.write(
-                  model,
-                  params.ids as number[],
-                  params.values as Record<string, unknown>,
-                ),
+              const success = await withAuthRetry(
+                agentId,
+                config,
+                async (client) => {
+                  const values = isRecord(params.values)
+                    ? await normalizeMany2OneValues(
+                        client,
+                        config.connectionId,
+                        model,
+                        params.values,
+                      )
+                    : (params.values as Record<string, unknown>);
+                  return client.write(model, params.ids as number[], values);
+                },
               );
 
-              return { content: [{ type: "text", text: JSON.stringify({ success }) }] };
+              return {
+                content: [{ type: "text", text: JSON.stringify({ success }) }],
+              };
             } catch (error) {
-              return errorResult(error, { operation: "write", model: params.model as string });
+              return errorResult(error, {
+                operation: "write",
+                model: params.model as string,
+              });
             }
           },
         };
@@ -615,9 +1111,14 @@ const plugin = {
                 client.unlink(model, params.ids as number[]),
               );
 
-              return { content: [{ type: "text", text: JSON.stringify({ success }) }] };
+              return {
+                content: [{ type: "text", text: JSON.stringify({ success }) }],
+              };
             } catch (error) {
-              return errorResult(error, { operation: "delete", model: params.model as string });
+              return errorResult(error, {
+                operation: "delete",
+                model: params.model as string,
+              });
             }
           },
         };

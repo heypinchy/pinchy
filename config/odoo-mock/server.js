@@ -92,6 +92,28 @@ const MODEL_FIELDS = {
       readonly: false,
       relation: "res.country.state",
     },
+    country_id: {
+      string: "Country",
+      type: "many2one",
+      required: false,
+      readonly: false,
+      relation: "res.country",
+    },
+  },
+  "res.country": {
+    id: { string: "ID", type: "integer", required: false, readonly: true },
+    name: {
+      string: "Country Name",
+      type: "char",
+      required: true,
+      readonly: false,
+    },
+    code: {
+      string: "Country Code",
+      type: "char",
+      required: true,
+      readonly: false,
+    },
   },
   "product.product": {
     id: { string: "ID", type: "integer", required: false, readonly: true },
@@ -194,6 +216,7 @@ function getDefaultRecords() {
         is_company: true,
         zip: "1010",
         state_id: [1, "Wien"],
+        country_id: [14, "Austria"],
       },
       {
         id: 2,
@@ -203,6 +226,7 @@ function getDefaultRecords() {
         is_company: true,
         zip: "8010",
         state_id: [2, "Steiermark"],
+        country_id: [14, "Austria"],
       },
       {
         id: 3,
@@ -212,6 +236,7 @@ function getDefaultRecords() {
         is_company: true,
         zip: "4020",
         state_id: [3, "Oberösterreich"],
+        country_id: [14, "Austria"],
       },
       {
         id: 4,
@@ -221,7 +246,15 @@ function getDefaultRecords() {
         is_company: true,
         zip: "5020",
         state_id: [4, "Salzburg"],
+        country_id: [14, "Austria"],
       },
+    ],
+    "res.country": [
+      { id: 1, name: "Aruba", code: "AW" },
+      { id: 14, name: "Austria", code: "AT" },
+      { id: 220, name: "Uganda", code: "UG" },
+      { id: 230, name: "Uzbekistan", code: "UZ" },
+      { id: 233, name: "United States", code: "US" },
     ],
     "product.product": [
       {
@@ -250,6 +283,7 @@ function getDefaultRecords() {
       { id: 1, model: "sale.order", name: "Sales Order" },
       { id: 2, model: "res.partner", name: "Contact" },
       { id: 3, model: "product.product", name: "Product" },
+      { id: 4, model: "res.country", name: "Country" },
     ],
   };
 }
@@ -328,10 +362,7 @@ function evaluateLeaf(record, leaf) {
     case "not in":
       return !Array.isArray(value) || !value.includes(recordValue);
     case "like":
-      return (
-        typeof recordValue === "string" &&
-        recordValue.includes(value)
-      );
+      return typeof recordValue === "string" && recordValue.includes(value);
     case "ilike":
       return (
         typeof recordValue === "string" &&
@@ -393,7 +424,10 @@ function sortRecords(records, orderStr) {
   if (!orderStr) return records;
   const parts = orderStr.split(",").map((s) => {
     const tokens = s.trim().split(/\s+/);
-    return { field: tokens[0], desc: (tokens[1] || "asc").toLowerCase() === "desc" };
+    return {
+      field: tokens[0],
+      desc: (tokens[1] || "asc").toLowerCase() === "desc",
+    };
   });
   return [...records].sort((a, b) => {
     for (const { field, desc } of parts) {
@@ -492,36 +526,38 @@ function handleJsonRpc(body) {
           groups[groupKey].records.push(record);
         }
 
-        let results = Object.entries(groups).map(([key, { records, rawKey }]) => {
-          const result = {};
-          result[groupByField] = rawKey;
-          result[groupByField + "_count"] = records.length;
-          result["__count"] = records.length;
+        let results = Object.entries(groups).map(
+          ([key, { records, rawKey }]) => {
+            const result = {};
+            result[groupByField] = rawKey;
+            result[groupByField + "_count"] = records.length;
+            result["__count"] = records.length;
 
-          // Sum numeric fields if requested
-          if (groupFields) {
-            for (const f of groupFields) {
-              const fieldName = f.includes(":") ? f.split(":")[0] : f;
-              if (fieldName === groupByField) continue;
-              const fieldSchema =
-                MODEL_FIELDS[model] && MODEL_FIELDS[model][fieldName];
-              if (
-                fieldSchema &&
-                (fieldSchema.type === "float" ||
-                  fieldSchema.type === "monetary" ||
-                  fieldSchema.type === "integer")
-              ) {
-                result[fieldName] = records.reduce(
-                  (sum, r) => sum + (r[fieldName] || 0),
-                  0
-                );
+            // Sum numeric fields if requested
+            if (groupFields) {
+              for (const f of groupFields) {
+                const fieldName = f.includes(":") ? f.split(":")[0] : f;
+                if (fieldName === groupByField) continue;
+                const fieldSchema =
+                  MODEL_FIELDS[model] && MODEL_FIELDS[model][fieldName];
+                if (
+                  fieldSchema &&
+                  (fieldSchema.type === "float" ||
+                    fieldSchema.type === "monetary" ||
+                    fieldSchema.type === "integer")
+                ) {
+                  result[fieldName] = records.reduce(
+                    (sum, r) => sum + (r[fieldName] || 0),
+                    0,
+                  );
+                }
               }
             }
-          }
 
-          result["__domain"] = [[groupByField, "=", rawKey]];
-          return result;
-        });
+            result["__domain"] = [[groupByField, "=", rawKey]];
+            return result;
+          },
+        );
 
         const start = offset || 0;
         const end = limit ? start + limit : results.length;
@@ -574,7 +610,10 @@ function handleJsonRpc(body) {
         const modelRights = accessRights[model];
         const hasAccess = modelRights ? (modelRights[operation] ?? true) : true;
         if (!hasAccess && raiseException) {
-          return { __jsonrpc_error: true, message: "AccessError: permission denied" };
+          return {
+            __jsonrpc_error: true,
+            message: "AccessError: permission denied",
+          };
         }
         return hasAccess;
       }
@@ -652,7 +691,11 @@ const jsonRpcServer = http.createServer(async (req, res) => {
       sendJson(res, 200, {
         jsonrpc: "2.0",
         id: body.id || null,
-        error: { message: result.message, code: 200, data: { message: result.message } },
+        error: {
+          message: result.message,
+          code: 200,
+          data: { message: result.message },
+        },
       });
     } else {
       sendJson(res, 200, {
@@ -705,9 +748,7 @@ const controlServer = http.createServer(async (req, res) => {
     for (const record of body.records) {
       if (record.id) {
         // Remove existing record with same id
-        store[body.model] = store[body.model].filter(
-          (r) => r.id !== record.id
-        );
+        store[body.model] = store[body.model].filter((r) => r.id !== record.id);
         store[body.model].push(record);
         if (record.id >= (nextIds[body.model] || 1)) {
           nextIds[body.model] = record.id + 1;
@@ -773,9 +814,13 @@ const controlServer = http.createServer(async (req, res) => {
 // ---------------------------------------------------------------------------
 resetNextIds();
 
-async function start({ jsonRpcPort = 8069, controlPort = 9002 } = {}) {
-  await new Promise((resolve) => jsonRpcServer.listen(jsonRpcPort, resolve));
-  await new Promise((resolve) => controlServer.listen(controlPort, resolve));
+async function start({ jsonRpcPort = 8069, controlPort = 9002, host } = {}) {
+  await new Promise((resolve) =>
+    jsonRpcServer.listen(jsonRpcPort, host, resolve),
+  );
+  await new Promise((resolve) =>
+    controlServer.listen(controlPort, host, resolve),
+  );
   return {
     jsonRpcPort: jsonRpcServer.address().port,
     controlPort: controlServer.address().port,
