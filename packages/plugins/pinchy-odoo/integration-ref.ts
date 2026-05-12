@@ -7,12 +7,14 @@ const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
 
 export interface IntegrationRefPayload {
-  integrationType: string;
+  integrationType: "odoo";
   connectionId: string;
   model: string;
   id: number;
   label: string;
 }
+
+let cachedKey: Buffer | null = null;
 
 function isPayload(value: unknown): value is IntegrationRefPayload {
   if (!value || typeof value !== "object") return false;
@@ -30,31 +32,47 @@ function isPayload(value: unknown): value is IntegrationRefPayload {
   );
 }
 
+function readKeyFile(keyPath: string): Buffer {
+  const fileKey = readFileSync(keyPath, "utf-8").trim();
+  if (fileKey.length !== 64 || !/^[0-9a-fA-F]+$/.test(fileKey)) {
+    throw new Error(`Invalid secret in ${keyPath}: expected 64 hex characters`);
+  }
+  return Buffer.from(fileKey, "hex");
+}
+
 function getKey(): Buffer {
+  if (cachedKey) return cachedKey;
+
   const envKey = process.env.PINCHY_REF_TOKEN_KEY;
   if (envKey) {
     if (envKey.length !== 64 || !/^[0-9a-fA-F]+$/.test(envKey)) {
       throw new Error("PINCHY_REF_TOKEN_KEY must be 64 hex characters");
     }
-    return Buffer.from(envKey, "hex");
+    cachedKey = Buffer.from(envKey, "hex");
+    return cachedKey;
   }
 
   const keyDir = process.env.ENCRYPTION_KEY_DIR || "/app/secrets";
   const keyPath = join(keyDir, ".integration_ref_key");
   if (existsSync(keyPath)) {
-    const fileKey = readFileSync(keyPath, "utf-8").trim();
-    if (fileKey.length !== 64 || !/^[0-9a-fA-F]+$/.test(fileKey)) {
-      throw new Error(
-        `Invalid secret in ${keyPath}: expected 64 hex characters`,
-      );
-    }
-    return Buffer.from(fileKey, "hex");
+    cachedKey = readKeyFile(keyPath);
+    return cachedKey;
   }
 
   if (existsSync(keyDir)) {
     const newKey = randomBytes(32).toString("hex");
-    writeFileSync(keyPath, newKey, { mode: 0o600 });
-    return Buffer.from(newKey, "hex");
+    try {
+      writeFileSync(keyPath, newKey, { mode: 0o600, flag: "wx" });
+      cachedKey = Buffer.from(newKey, "hex");
+    } catch (error) {
+      const code =
+        error && typeof error === "object" && "code" in error
+          ? String((error as { code: unknown }).code)
+          : "";
+      if (code !== "EEXIST") throw error;
+      cachedKey = readKeyFile(keyPath);
+    }
+    return cachedKey;
   }
 
   throw new Error(

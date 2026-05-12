@@ -957,7 +957,7 @@ const plugin = {
           name: "odoo_create",
           label: "Odoo Create",
           description:
-            "Create a new record in Odoo. Returns the ID of the created record. For many2one fields, pass numeric IDs only when you already have an exact record ID; otherwise pass an exact display name or country code and the tool will resolve it safely.",
+            "Create a new record in Odoo. Returns the ID of the created record. For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code.",
           parameters: {
             type: "object",
             properties: {
@@ -1020,7 +1020,7 @@ const plugin = {
           name: "odoo_write",
           label: "Odoo Write",
           description:
-            "Update an existing record in Odoo. For many2one fields, pass numeric IDs only when you already have an exact record ID; otherwise pass an exact display name or country code and the tool will resolve it safely.",
+            "Update an existing record in Odoo. For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code.",
           parameters: {
             type: "object",
             properties: {

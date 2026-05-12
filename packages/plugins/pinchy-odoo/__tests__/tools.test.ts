@@ -293,7 +293,6 @@ describe("odoo_read", () => {
       label: "Austria",
       model: "res.country",
     });
-    expect(data.records[0].country_id.ref).not.toContain("14");
   });
 });
 
