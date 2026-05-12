@@ -72,10 +72,13 @@ export const MODEL_CATEGORIES: ModelCategory[] = [
       { model: "account.move", name: "Invoices & Entries" },
       { model: "account.move.line", name: "Journal Items" },
       { model: "account.payment", name: "Payments" },
+      { model: "account.journal", name: "Journals" },
+      { model: "account.account", name: "Accounts" },
+      { model: "account.tax", name: "Taxes" },
+      { model: "account.payment.term", name: "Payment Terms" },
       { model: "account.analytic.account", name: "Analytic Accounts" },
       { model: "account.analytic.line", name: "Analytic Lines" },
-      { model: "account.tax", name: "Taxes" },
-      { model: "account.journal", name: "Journals" },
+      { model: "res.currency", name: "Currencies" },
     ],
   },
   {
@@ -160,6 +163,14 @@ export const MODEL_CATEGORIES: ModelCategory[] = [
       { model: "fleet.vehicle.log.services", name: "Service Logs" },
       { model: "fleet.vehicle.log.contract", name: "Contract Logs" },
       { model: "fleet.service.type", name: "Service Types" },
+    ],
+  },
+  {
+    id: "approvals",
+    label: "Approvals",
+    models: [
+      { model: "approval.request", name: "Approval Requests" },
+      { model: "approval.category", name: "Approval Categories" },
     ],
   },
   {
@@ -260,6 +271,33 @@ function isAccessError(error: unknown): boolean {
   );
 }
 
+/** Returns true when retrying the fields_get probe could plausibly succeed. */
+function isTransientOdooProbeError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const msg = error.message.toLowerCase();
+  return (
+    msg.includes("etimedout") ||
+    msg.includes("timeout") ||
+    msg.includes("econnreset") ||
+    msg.includes("econnrefused") ||
+    msg.includes("econnaborted") ||
+    msg.includes("socket hang up") ||
+    msg.includes("network") ||
+    msg.includes("fetch failed") ||
+    msg.includes("failed to access host") ||
+    msg.includes("rate limit") ||
+    msg.includes("too many requests") ||
+    msg.includes("429") ||
+    msg.includes("500") ||
+    msg.includes("502") ||
+    msg.includes("503") ||
+    msg.includes("504") ||
+    msg.includes("service unavailable") ||
+    msg.includes("gateway timeout") ||
+    msg.includes("temporarily unavailable")
+  );
+}
+
 /** Run async tasks with limited concurrency. */
 async function runWithConcurrency<T>(
   tasks: (() => Promise<T>)[],
@@ -283,7 +321,7 @@ async function runWithConcurrency<T>(
  * Fetch schema from an Odoo instance by probing curated models via fields_get().
  * Does NOT require admin/ir.model access — only needs read access on individual models.
  * Models the user cannot access are silently skipped.
- * Retries transient errors (timeouts, rate limits) up to MAX_RETRIES times.
+ * Retries transient errors (timeouts, rate limits, 5xx) up to MAX_RETRIES times.
  * Limits concurrency to MAX_CONCURRENCY to avoid overwhelming the server.
  * Does NOT save anything — returns the data for the caller to handle.
  */
@@ -349,7 +387,7 @@ export async function fetchOdooSchema(credentials: {
 
           return { model, name, category, fields, accessible: true, access };
         } catch (error) {
-          if (isAccessError(error)) {
+          if (isAccessError(error) || !isTransientOdooProbeError(error)) {
             return { model, name, category, fields: [], accessible: false };
           }
           if (attempt === MAX_RETRIES) {

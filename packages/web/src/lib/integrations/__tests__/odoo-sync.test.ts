@@ -12,9 +12,43 @@ vi.mock("odoo-node", () => {
   };
 });
 
-import { fetchOdooSchema, getAccessibleCategoryLabels } from "../odoo-sync";
+import { ODOO_TEMPLATES } from "@/lib/agent-templates/data/odoo-agents";
+import { fetchOdooSchema, getAccessibleCategoryLabels, MODEL_CATEGORIES } from "../odoo-sync";
 
 const creds = { url: "https://odoo.example.com", db: "test", uid: 2, apiKey: "key" };
+
+function syncedModelNames(): Set<string> {
+  return new Set(MODEL_CATEGORIES.flatMap((category) => category.models.map((m) => m.model)));
+}
+
+describe("MODEL_CATEGORIES", () => {
+  it("includes every Odoo template required model", () => {
+    const syncedModels = syncedModelNames();
+    const templateModels = new Set(
+      Object.values(ODOO_TEMPLATES).flatMap((template) =>
+        (template.odooConfig?.requiredModels ?? []).map((m) => m.model)
+      )
+    );
+
+    const missing = [...templateModels].filter((model) => !syncedModels.has(model)).sort();
+
+    expect(missing).toEqual([]);
+  });
+
+  it("includes supporting accounting models used when agents create invoices and bills", () => {
+    const syncedModels = syncedModelNames();
+
+    expect([...syncedModels].sort()).toEqual(
+      expect.arrayContaining([
+        "account.account",
+        "account.journal",
+        "account.payment.term",
+        "account.tax",
+        "res.currency",
+      ])
+    );
+  });
+});
 
 describe("fetchOdooSchema", () => {
   beforeEach(() => {
@@ -34,6 +68,44 @@ describe("fetchOdooSchema", () => {
 
     expect(mockFields).toHaveBeenCalled();
     expect(result.models).toBeGreaterThan(0);
+  });
+
+  it("includes ir.attachment so admins can grant receipt upload permissions", async () => {
+    mockFields.mockImplementation((model: string) => {
+      if (model === "ir.attachment") {
+        return Promise.resolve([
+          { name: "name", string: "Name", type: "char", required: true, readonly: false },
+          {
+            name: "datas",
+            string: "File Content",
+            type: "binary",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "res_model",
+            string: "Resource Model",
+            type: "char",
+            required: false,
+            readonly: false,
+          },
+          {
+            name: "res_id",
+            string: "Resource ID",
+            type: "integer",
+            required: false,
+            readonly: false,
+          },
+        ]);
+      }
+      return Promise.reject(new Error("AccessError"));
+    });
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(result.data.models.map((m) => m.model)).toContain("ir.attachment");
   });
 
   it("skips models the user has no access to", async () => {
@@ -67,41 +139,29 @@ describe("fetchOdooSchema", () => {
     expect(result.error).toContain("Could not access any Odoo models");
   });
 
-  // Each model fails once then retries after a 500ms backoff. With ~80 models
-  // and 5-way concurrency, that's >8s of wall time — well above vitest's
-  // default 5s. The retry behavior itself is what we're testing, so we let
-  // the test take the real wait. Same applies to the sibling "retries errors
-  // containing 'access'" test below.
-  const RETRY_TEST_TIMEOUT_MS = 15_000;
+  it("retries transient errors instead of treating them as no-access", async () => {
+    let saleOrderCalls = 0;
+    mockFields.mockImplementation((model: string) => {
+      if (model !== "sale.order") {
+        return Promise.reject(new Error("AccessError"));
+      }
 
-  it(
-    "retries transient errors instead of treating them as no-access",
-    async () => {
-      // Per-model retry tracking — the earlier global-callCount approach broke
-      // once MODEL_CATEGORIES grew past ~40 models because the 5-way concurrency
-      // makes call-ordering non-deterministic (you can't say "first call for
-      // each model" with a single shared counter).
-      const callCounts = new Map<string, number>();
-      mockFields.mockImplementation((model: string) => {
-        const count = (callCounts.get(model) ?? 0) + 1;
-        callCounts.set(model, count);
-        if (count === 1) {
-          return Promise.reject(new Error("ETIMEDOUT"));
-        }
-        return Promise.resolve([
-          { name: "id", string: "ID", type: "integer", required: true, readonly: true },
-        ]);
-      });
+      saleOrderCalls++;
+      if (saleOrderCalls === 1) {
+        return Promise.reject(new Error("ETIMEDOUT"));
+      }
+      return Promise.resolve([
+        { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+      ]);
+    });
 
-      const result = await fetchOdooSchema(creds);
+    const result = await fetchOdooSchema(creds);
 
-      expect(result.success).toBe(true);
-      if (!result.success) return;
-      // Models should be accessible after retry
-      expect(result.models).toBeGreaterThan(0);
-    },
-    RETRY_TEST_TIMEOUT_MS
-  );
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(saleOrderCalls).toBe(2);
+    expect(result.models).toBeGreaterThan(0);
+  });
 
   it("limits concurrency to avoid overwhelming the Odoo server", async () => {
     let concurrentCalls = 0;
@@ -120,33 +180,49 @@ describe("fetchOdooSchema", () => {
 
     await fetchOdooSchema(creds);
 
-    // Should not fire all ~40 requests at once
+    // Should not fire all model probes at once.
     expect(maxConcurrent).toBeLessThanOrEqual(5);
   });
 
-  it(
-    "retries errors containing 'access' that are not Odoo access errors",
-    async () => {
-      const callCounts = new Map<string, number>();
-      mockFields.mockImplementation((model: string) => {
-        const count = (callCounts.get(model) ?? 0) + 1;
-        callCounts.set(model, count);
-        if (count === 1) {
-          return Promise.reject(new Error("Failed to access host"));
-        }
-        return Promise.resolve([
-          { name: "id", string: "ID", type: "integer", required: true, readonly: true },
-        ]);
-      });
+  it("retries errors containing 'access' that are not Odoo access errors", async () => {
+    let saleOrderCalls = 0;
+    mockFields.mockImplementation((model: string) => {
+      if (model !== "sale.order") {
+        return Promise.reject(new Error("AccessError"));
+      }
 
-      const result = await fetchOdooSchema(creds);
+      saleOrderCalls++;
+      if (saleOrderCalls === 1) {
+        return Promise.reject(new Error("Failed to access host"));
+      }
+      return Promise.resolve([
+        { name: "id", string: "ID", type: "integer", required: true, readonly: true },
+      ]);
+    });
 
-      expect(result.success).toBe(true);
-      if (!result.success) return;
-      expect(result.models).toBeGreaterThan(0);
-    },
-    RETRY_TEST_TIMEOUT_MS
-  );
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(true);
+    if (!result.success) return;
+    expect(saleOrderCalls).toBe(2);
+    expect(result.models).toBeGreaterThan(0);
+  });
+
+  it("does not retry missing-model errors", async () => {
+    let saleOrderCalls = 0;
+    mockFields.mockImplementation((model: string) => {
+      if (model === "sale.order") {
+        saleOrderCalls++;
+        return Promise.reject(new Error("Unknown model: sale.order"));
+      }
+      return Promise.reject(new Error("AccessError"));
+    });
+
+    const result = await fetchOdooSchema(creds);
+
+    expect(result.success).toBe(false);
+    expect(saleOrderCalls).toBe(1);
+  });
 
   it("does not retry 'access denied' errors", async () => {
     mockFields.mockRejectedValue(new Error("access denied"));

@@ -81,6 +81,10 @@ Open the agent's chat and try a few queries:
 
 The agent uses the Odoo tools to query your data in real time. If something doesn't work, check that the Odoo user has the right permissions for the models you're querying.
 
+:::note
+Agents that attach files to Odoo records, such as saving a receipt on an invoice or bill, also need access to `ir.attachment`. Finance agents that create invoices or bills may also need supporting models such as `account.journal`, `account.account`, `account.tax`, `account.payment.term`, and `res.currency`. Grant only the models and operations the agent needs, and make sure the Odoo API user has the matching access rights in Odoo.
+:::
+
 ## Agent Templates
 
 Pinchy ships with 16 pre-configured agent templates for common Odoo use cases. Instead of building an agent from scratch and manually assigning permissions, you can pick a template and have everything set up in seconds.
