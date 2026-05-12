@@ -23,6 +23,8 @@ overrides:
   postcss@<8.5.10: '>=8.5.10'
   fast-uri@<3.1.2: '>=3.1.2'
 
+packageExtensionsChecksum: sha256-Z4t9Uf0HcxYkO7zWHwm3rH14i6p+ghtNFOa7bSyEucY=
+
 importers:
 
   .:
@@ -50,7 +52,7 @@ importers:
         version: 9.4.2(@dicebear/core@9.4.2)
       '@hookform/resolvers':
         specifier: ^5.2.2
-        version: 5.2.2(react-hook-form@7.74.0(react@19.2.5))
+        version: 5.2.2(react-hook-form@7.74.0(react@19.2.5))(zod@4.4.3)
       '@types/pdfkit':
         specifier: ^0.17.6
         version: 0.17.6
@@ -1164,6 +1166,10 @@ packages:
     resolution: {integrity: sha512-A/IxlMLShx3KjV/HeTcTfaMxdwy690+L/ZADoeaTltLx+CVuzkeVIPuybK3jrRfw7YZnmdKsVVHAlEPIAEUNlA==}
     peerDependencies:
       react-hook-form: ^7.55.0
+      zod: ^3.25.0 || ^4.0.0
+    peerDependenciesMeta:
+      zod:
+        optional: true
 
   '@humanfs/core@0.19.1':
     resolution: {integrity: sha512-5DyQ4+1JEUzejeK1JGICcideyfUbGixgS9jNgex5nqkW+cY7WZhxBigmieN5Qnw9ZosSNVC9KQKyb+GUaGyKUA==}
@@ -8313,10 +8319,12 @@ snapshots:
     dependencies:
       hono: 4.12.18
 
-  '@hookform/resolvers@5.2.2(react-hook-form@7.74.0(react@19.2.5))':
+  '@hookform/resolvers@5.2.2(react-hook-form@7.74.0(react@19.2.5))(zod@4.4.3)':
     dependencies:
       '@standard-schema/utils': 0.3.0
       react-hook-form: 7.74.0(react@19.2.5)
+    optionalDependencies:
+      zod: 4.4.3
 
   '@humanfs/core@0.19.1': {}
 
