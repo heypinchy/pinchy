@@ -487,6 +487,23 @@ describe("Composer input vs send disabled state", () => {
     expect(screen.getByRole("textbox")).not.toBeDisabled();
     expect(screen.getByRole("button", { name: /send message/i })).toBeDisabled();
   });
+
+  it("keeps syncing text after a dead-key composition start does not emit compositionend", async () => {
+    const { useComposerRuntime } = await import("@assistant-ui/react");
+    const setText = vi.fn();
+    vi.mocked(useComposerRuntime).mockReturnValue({
+      getState: () => ({ isEditing: true }),
+      setText,
+    } as never);
+
+    await renderComposerWith({ kind: "ready" });
+
+    const input = screen.getByRole("textbox");
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: "é" } });
+
+    expect(setText).toHaveBeenCalledWith("é");
+  });
 });
 
 describe("ComposerAction Send/Stop mutual exclusion (#207)", () => {
