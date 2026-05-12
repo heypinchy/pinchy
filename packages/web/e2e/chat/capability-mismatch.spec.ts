@@ -44,7 +44,13 @@
 import { test, expect } from "@playwright/test";
 import { seedProviderConfig } from "../helpers";
 
-const TEXT_ONLY_MODEL = "ollama-cloud/deepseek-v4-pro";
+// Must match the model the seeded Smithers agent actually has — see
+// seedDefaultAgent → PROVIDERS.anthropic.defaultModel. The mocked
+// /api/models/capabilities lies about this model's capabilities (claims
+// vision: false) so the composer's hard-block logic kicks in even though the
+// real model is vision-capable. Using a real model id avoids needing a
+// separate API/DB write to flip the agent's model before the test runs.
+const TEXT_ONLY_MODEL = "anthropic/claude-sonnet-4-6";
 const VISION_MODEL = "vision-provider/gpt-4o";
 const AGENT_NAME = "Smithers";
 const PNG_FILENAME = "test-image.png";
