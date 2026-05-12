@@ -71,6 +71,7 @@ vi.mock("@/lib/groups", () => ({
 
 vi.mock("@/server/model-unavailable-throttle", () => ({
   shouldEmitModelUnavailableAudit: vi.fn().mockReturnValue(false),
+  shouldEmitSilentStreamAudit: vi.fn().mockReturnValue(false),
 }));
 
 vi.mock("@/server/attachment-pipeline", async (importOriginal) => {
