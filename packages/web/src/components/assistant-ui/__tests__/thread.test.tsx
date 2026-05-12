@@ -848,4 +848,56 @@ describe("Composer attachment capability hard-block", () => {
     expect(submitEvent.defaultPrevented).toBe(false);
     expect(screen.queryByRole("region", { name: /can't be sent/i })).not.toBeInTheDocument();
   });
+
+  // Regression: clicking the Send button hits an onClick handler that
+  // assistant-ui composes with its internal `send()` callback. The onClick
+  // path runs BEFORE the form's submit phase, so the form-level onSubmit
+  // alone is too late — the runtime has already fired. The send button's
+  // onClick must call preventDefault to stop both the in-onClick send() and
+  // the subsequent form-submit. This test pins that the click path triggers
+  // the recovery panel just like the form-submit path does.
+  it("blocks the send button click and renders RecoveryPanel", async () => {
+    const pngFile = new File(["data"], "photo.png", { type: "image/png" });
+
+    const { useComposerRuntime } = await import("@assistant-ui/react");
+    vi.mocked(useComposerRuntime).mockReturnValue({
+      getState: () => ({
+        text: "hello",
+        attachments: [{ file: pngFile }],
+      }),
+      setText: vi.fn(),
+      addAttachment: vi.fn(),
+    } as never);
+
+    const { useModelCapabilities } = await import("@/hooks/use-model-capabilities");
+    vi.mocked(useModelCapabilities).mockReturnValue({
+      data: { "openai/gpt-4o-mini": { vision: false, documents: false } },
+      isLoading: false,
+      error: undefined,
+      refetch: vi.fn(),
+    });
+
+    const { useAgentsContext } = await import("@/components/agents-provider");
+    vi.mocked(useAgentsContext).mockReturnValue({
+      agents: [],
+      sortedAgents: [],
+      getAgent: vi.fn(() => ({ id: "agent-1", model: "openai/gpt-4o-mini" }) as never),
+    });
+
+    const { ChatStatusContext, AgentIdContext } = await import("@/components/chat");
+    const { Composer } = await import("@/components/assistant-ui/thread");
+
+    render(
+      <AgentIdContext.Provider value="agent-1">
+        <ChatStatusContext.Provider value={{ kind: "ready" }}>
+          <Composer />
+        </ChatStatusContext.Provider>
+      </AgentIdContext.Provider>
+    );
+
+    const sendButton = screen.getByRole("button", { name: /send message/i });
+    fireEvent.click(sendButton);
+
+    expect(await screen.findByRole("region", { name: /can't be sent/i })).toBeInTheDocument();
+  });
 });
