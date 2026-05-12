@@ -85,10 +85,18 @@ export async function promoteStagedToAttached(params: PromoteParams): Promise<Pr
   const uploadId = parts[1];
 
   const stagedAbsPath = join(workspaceRoot, stagedRelativePath);
-  const targetAbsPath = join(workspaceRoot, UPLOADS_SUBDIR, filename);
+  const uploadsDir = join(workspaceRoot, UPLOADS_SUBDIR);
+  const targetAbsPath = join(uploadsDir, filename);
+
+  // Belt-and-braces: persistStagedUpload normally creates uploads/ when it
+  // reserves the slot, but tests (and any direct caller skipping the staging
+  // helper) may seed rows without the placeholder. Without this mkdir, rename
+  // throws ENOENT for the missing directory in those code paths.
+  await mkdir(uploadsDir, { recursive: true });
 
   // rename is atomic on the same filesystem; overwrites the placeholder that
-  // persistStagedUpload created at upload time.
+  // persistStagedUpload created at upload time (or creates a fresh file when
+  // the placeholder is absent — same end state).
   await rename(stagedAbsPath, targetAbsPath);
 
   // Clean up the staging directory for this upload
