@@ -58,7 +58,10 @@ test.describe.serial("Odoo Wizard Flow", () => {
     await page.getByRole("link", { name: /add integration/i }).click();
     await expect(page).toHaveURL(/\/settings\/integrations\/new$/);
 
-    await page.getByRole("button", { name: /^Odoo$/ }).click();
+    // The card's accessible name concatenates its <h3> + <p> (name +
+    // description), so we match on the leading "Odoo" prefix rather than
+    // the full string. No other tile mentions Odoo, so this is unambiguous.
+    await page.getByRole("button", { name: /^Odoo\b/ }).click();
 
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
@@ -115,7 +118,10 @@ test.describe.serial("Odoo Wizard Flow", () => {
     await page.getByRole("link", { name: /add integration/i }).click();
     await expect(page).toHaveURL(/\/settings\/integrations\/new$/);
 
-    await page.getByRole("button", { name: /^Odoo$/ }).click();
+    // The card's accessible name concatenates its <h3> + <p> (name +
+    // description), so we match on the leading "Odoo" prefix rather than
+    // the full string. No other tile mentions Odoo, so this is unambiguous.
+    await page.getByRole("button", { name: /^Odoo\b/ }).click();
 
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
