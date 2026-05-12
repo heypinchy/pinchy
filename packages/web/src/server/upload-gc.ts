@@ -1,4 +1,4 @@
-import { rmSync } from "fs";
+import { rm } from "fs/promises";
 import { join } from "path";
 import { and, eq, isNotNull, lt } from "drizzle-orm";
 import { db } from "@/db";
@@ -58,16 +58,35 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
     const stagingUploadId = row.stagingPath!.split("/")[1];
     const stagingDir = join(workspaceRoot, ".staging", stagingUploadId);
 
-    // Attempt to remove the staging directory
+    // Attempt to remove the staging directory. Uses async `rm` so a backlog
+    // of expired uploads doesn't block the event loop for the entire sweep —
+    // each iteration yields between FS calls.
     let rmFailed = false;
     let rmError: unknown;
     try {
       // force: false so a missing directory surfaces as an error and triggers
       // the audit failure path below rather than silently succeeding.
-      rmSync(stagingDir, { recursive: true, force: false });
+      await rm(stagingDir, { recursive: true, force: false });
     } catch (err) {
       rmFailed = true;
       rmError = err;
+    }
+
+    // Also remove the uploads/<filename> placeholder that persistStagedUpload
+    // reserved at upload time. If the file was never promoted (the normal
+    // expiry case), the placeholder is still empty and needs to go. If by
+    // some race the file was promoted between the SELECT and now, status
+    // would have flipped to "attached" and the row wouldn't be in this loop
+    // — so deleting `uploads/<filename>` here is always the right call for
+    // staged rows. `force: true` swallows ENOENT in case it was already
+    // removed externally; we don't want a missing placeholder to abort the
+    // sweep of the rest of the disk.
+    try {
+      await rm(join(getWorkspacePath(row.agentId), "uploads", row.filename), { force: true });
+    } catch {
+      // The staging-dir failure is the one that matters — if the placeholder
+      // delete fails, the next sweep will retry once the DB row is back in
+      // the expired set (which only happens if we didn't delete it below).
     }
 
     if (rmFailed) {
@@ -96,7 +115,7 @@ export async function sweepExpiredUploads(): Promise<SweepResult> {
     // If the delete fails (transient DB error), the file is already gone from
     // disk. We emit a failure audit row and skip the success audit + swept++
     // so the operator is alerted. The row will be retried on the next GC
-    // cycle, where rmSync will throw ENOENT and produce another failure audit
+    // cycle, where rm will throw ENOENT and produce another failure audit
     // until the DB row is manually removed or the DB recovers.
     try {
       await db.delete(uploadedFiles).where(eq(uploadedFiles.id, uploadId));

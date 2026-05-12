@@ -266,7 +266,7 @@ describe("sweepExpiredUploads", () => {
     });
 
     // Simulate an rm failure by pre-removing the staging directory for failRow.
-    // sweepExpiredUploads uses rmSync with force:false, so an ENOENT on the
+    // sweepExpiredUploads uses async rm with force:false, so an ENOENT on the
     // missing directory is a genuine rm failure — the GC must emit an audit
     // failure row and continue to the next file.
     const failUploadId = failRow.id;

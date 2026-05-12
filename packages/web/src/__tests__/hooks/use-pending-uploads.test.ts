@@ -14,6 +14,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
 import { useWsRuntime, type PendingUpload } from "@/hooks/use-ws-runtime";
 import * as uploadModule from "@/lib/upload-attachment";
+import * as imageCompression from "@/lib/image-compression";
+import { CLIENT_IMAGE_COMPRESSION_TARGET_BYTES } from "@/lib/limits";
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
@@ -152,7 +154,7 @@ describe("PendingUpload state machine", () => {
     expect(result.current.pendingUploads[0].progress).toBe(42);
   });
 
-  it("upload success → state flips to 'ready', uploadId and previewUrl set", async () => {
+  it("upload success → state flips to 'ready', uploadId set, objectUrl preserved", async () => {
     vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
       id: "upload-id-123",
       filename: "test.pdf",
@@ -167,10 +169,13 @@ describe("PendingUpload state machine", () => {
     const upload = result.current.pendingUploads[0] as PendingUpload;
     expect(upload.state).toBe("ready");
     expect(upload.uploadId).toBe("upload-id-123");
-    expect(upload.previewUrl).toBe("/api/agents/agent-1/uploads/test.pdf");
     expect(upload.progress).toBe(100);
-    // Object URL should be revoked after successful upload (swapped for server URL)
-    expect(mockRevokeObjectURL).toHaveBeenCalledWith("blob:mock-url");
+    // Object URL must NOT be revoked yet — the chip still renders it as the
+    // image preview while the user composes the message. The file is only
+    // promoted into <workspace>/uploads/ at WS-send time, so the server URL
+    // would 404 here. The blob is revoked on send or on explicit remove.
+    expect(upload.objectUrl).toBe("blob:mock-url");
+    expect(mockRevokeObjectURL).not.toHaveBeenCalled();
   });
 
   it("upload failure → state flips to 'failed', error message set", async () => {
@@ -323,19 +328,111 @@ describe("PendingUpload state machine", () => {
     expect(mockRevokeObjectURL).toHaveBeenCalledWith("blob:mock-url");
   });
 
-  it("encodes agentId and filename in previewUrl", async () => {
+  // previewUrl was retired — see "upload success" above. URL encoding for the
+  // post-send message-bubble preview is covered in:
+  //   src/components/assistant-ui/__tests__/attachment-preview.test.tsx
+  // which exercises `buildUploadUrl()` with paths containing spaces and
+  // special characters.
+
+  // ── Image compression — must run client-side BEFORE upload ────────────────
+  // OpenClaw silently converts anything over its 2 MB inline threshold into a
+  // text-only marker that the model can't actually look at. To keep the model
+  // seeing the image, we shrink it to WebP < ~1.9 MB here. PDFs go through
+  // untouched.
+
+  function makeImageFile(name = "photo.jpg", size = 1024): File {
+    return new File([new Uint8Array(size)], name, { type: "image/jpeg" });
+  }
+
+  it("compresses image files before calling uploadAttachment", async () => {
+    const webpFile = new File([new Uint8Array(128)], "photo.webp", { type: "image/webp" });
+    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce({
+      ok: true,
+      file: webpFile,
+      skipped: false,
+    });
     vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
-      id: "upload-id-789",
-      filename: "my file.pdf",
+      id: "x",
+      filename: "photo.webp",
     });
 
-    const { result } = renderHook(() => useWsRuntime("agent/with spaces"));
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    const original = makeImageFile("photo.jpg");
+    await act(async () => {
+      result.current.addPendingUpload(original);
+    });
+
+    expect(imageCompression.compressImageForChat).toHaveBeenCalledWith(original);
+    // Second positional arg is the file passed to uploadAttachment — must be the
+    // compressed WebP, not the original JPEG.
+    const uploadCall = vi.mocked(uploadModule.uploadAttachment).mock.calls[0];
+    expect(uploadCall[2]).toBe(webpFile);
+  });
+
+  it("does not call compression for non-image files (PDF)", async () => {
+    vi.mocked(uploadModule.uploadAttachment).mockReturnValue(new Promise(() => {}));
+
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
 
     await act(async () => {
-      result.current.addPendingUpload(makeFile("my file.pdf"));
+      result.current.addPendingUpload(makeFile("doc.pdf"));
     });
 
+    expect(imageCompression.compressImageForChat).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when compression fails AND original is larger than the inline threshold", async () => {
+    const oversize = {
+      size: CLIENT_IMAGE_COMPRESSION_TARGET_BYTES + 1,
+      type: "image/heic",
+      name: "photo.heic",
+    } as unknown as File;
+    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce({
+      ok: false,
+      file: oversize,
+      reason: "compression-failed",
+      error: new Error("HEIC decode failed"),
+    });
+
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      result.current.addPendingUpload(oversize);
+    });
+
+    // The upload must NOT have been attempted, and the chip should be in
+    // "failed" state with a message that points the user at supported formats.
+    expect(uploadModule.uploadAttachment).not.toHaveBeenCalled();
     const upload = result.current.pendingUploads[0] as PendingUpload;
-    expect(upload.previewUrl).toBe("/api/agents/agent%2Fwith%20spaces/uploads/my%20file.pdf");
+    expect(upload.state).toBe("failed");
+    expect(upload.error).toMatch(/format|jpeg|png|webp/i);
+  });
+
+  it("uploads original image when compression fails but file is under the inline threshold", async () => {
+    const smallOriginal = new File([new Uint8Array(100 * 1024)], "small.jpg", {
+      type: "image/jpeg",
+    });
+    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce({
+      ok: false,
+      file: smallOriginal,
+      reason: "compression-failed",
+      error: new Error("Worker crashed"),
+    });
+    vi.mocked(uploadModule.uploadAttachment).mockResolvedValue({
+      id: "x",
+      filename: "small.jpg",
+    });
+
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+
+    await act(async () => {
+      result.current.addPendingUpload(smallOriginal);
+    });
+
+    // Upload was attempted with the original file (compression-failed result
+    // returns the original — addPendingUpload trusts it because size is small).
+    const uploadCall = vi.mocked(uploadModule.uploadAttachment).mock.calls[0];
+    expect(uploadCall[2]).toBe(smallOriginal);
   });
 });

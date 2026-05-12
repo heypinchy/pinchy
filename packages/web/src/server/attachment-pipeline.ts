@@ -331,7 +331,7 @@ export function buildAttachmentBlock(refs: ProcessedWorkspaceRef[]): string {
   if (refs.length === 0) return "";
   const lines = refs.map((r) => {
     // Defense in depth: sanitizeFilename rejects backticks at the upload trust
-    // boundary, so the path emitted by `persistAttachment` cannot contain one
+    // boundary, so the path emitted by `persistStagedUpload` cannot contain one
     // under normal operation. If a hand-built ref ever does, fail loud — a
     // silent substitution would corrupt the on-disk path the agent must call
     // its built-in tool with, and the agent would see "file not found".

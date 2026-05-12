@@ -110,40 +110,51 @@ export const POST = withAuth<Params>(async (req, { params }, session) => {
     return NextResponse.json({ error: message }, { status: 415 });
   }
 
-  // Persist to staging.
+  // Persist to staging. The returned `filename` is the slot reserved in
+  // uploads/ — collision-suffixed up front so the client's preview URL is
+  // already correct when the upload completes.
   const workspaceRoot = getWorkspacePath(agentId);
   const staged = await persistStagedUpload({ workspaceRoot, filename: safeName, buffer });
 
-  // If the DB insert below throws, the staged file is left on disk without a DB row.
-  // The GC sweep (upload-gc.ts) only removes rows that exist in the DB — a file
-  // without a row is technically unreachable by GC. In practice: disk is cheap and
-  // FS orphans from this race are small. A future hardening task can add cleanup here.
-
-  // DB insert.
+  // DB insert. If it fails after the FS write, we roll back both the
+  // staging file AND the uploads/ placeholder so the disk doesn't leak.
   const now = new Date();
   const expiresAt = new Date(now.getTime() + STAGED_TTL_MS);
-  const [row] = await db
-    .insert(uploadedFiles)
-    .values({
-      userId: session.user.id!,
-      agentId,
-      draftId,
-      filename: safeName,
-      mimeType: detectedMime,
-      sizeBytes: buffer.length,
-      contentHash: staged.contentHash,
-      status: "staged",
-      stagingPath: staged.relativePath,
-      expiresAt,
-    })
-    .returning();
+  let row: typeof uploadedFiles.$inferSelect;
+  try {
+    const inserted = await db
+      .insert(uploadedFiles)
+      .values({
+        userId: session.user.id!,
+        agentId,
+        draftId,
+        filename: staged.filename,
+        mimeType: detectedMime,
+        sizeBytes: buffer.length,
+        contentHash: staged.contentHash,
+        status: "staged",
+        stagingPath: staged.relativePath,
+        expiresAt,
+      })
+      .returning();
+    row = inserted[0];
+  } catch (err) {
+    // Best-effort cleanup — these may legitimately not exist if the FS write
+    // partially failed earlier, so we swallow ENOENT.
+    const { rm } = await import("fs/promises");
+    await Promise.allSettled([
+      rm(`${workspaceRoot}/.staging/${staged.uploadId}`, { recursive: true, force: true }),
+      rm(`${workspaceRoot}/uploads/${staged.filename}`, { force: true }),
+    ]);
+    throw err;
+  }
 
   // Emit success audit.
   await appendAuditLog({
     ...auditBase,
     detail: {
       uploadId: row.id,
-      filename: safeName,
+      filename: staged.filename,
       mimeType: detectedMime,
       sizeBytes: buffer.length,
       contentHash: staged.contentHash,
@@ -153,7 +164,7 @@ export const POST = withAuth<Params>(async (req, { params }, session) => {
   });
 
   return NextResponse.json(
-    { id: row.id, filename: safeName, mimeType: detectedMime, sizeBytes: buffer.length },
+    { id: row.id, filename: staged.filename, mimeType: detectedMime, sizeBytes: buffer.length },
     { status: 201 }
   );
 });

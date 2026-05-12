@@ -38,6 +38,7 @@ import {
   AttachmentExpiredError,
   AttachmentAlreadyAttachedError,
 } from "@/server/attachment-pipeline";
+import { attachmentIdsSchema } from "@/lib/schemas/uploads";
 
 const WS_OPEN = 1;
 const CONNECTION_TIMEOUT_MS = 10_000;
@@ -185,11 +186,23 @@ export class ClientRouter {
       let chatAttachments: ChatAttachment[] = [];
       let workspaceRefs: ProcessedWorkspaceRef[] = [];
       if (message.attachmentIds && message.attachmentIds.length > 0) {
+        // Validate at the WS trust boundary — clients are bounded to UUIDs and
+        // at most 10 attachments per message by attachmentIdsSchema. A frame
+        // that breaks either is rejected without touching the DB.
+        const parsedIds = attachmentIdsSchema.safeParse(message.attachmentIds);
+        if (!parsedIds.success) {
+          this.sendToClient(clientWs, {
+            type: "error",
+            code: "attachment_invalid",
+            message: parsedIds.error.issues[0]?.message ?? "Invalid attachmentIds",
+          });
+          return;
+        }
         try {
           const result = await materializeAttachments({
             agentId: message.agentId,
             userId: this.userId,
-            attachmentIds: message.attachmentIds,
+            attachmentIds: parsedIds.data,
             messageId,
             agentName: agent.name,
           });

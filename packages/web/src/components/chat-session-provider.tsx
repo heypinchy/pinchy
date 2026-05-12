@@ -21,7 +21,7 @@ export interface RuntimeBundle {
   onRetryResend: (messageId: string) => void;
   lastError: string | null;
   pendingUploads: PendingUpload[];
-  addPendingUpload: (file: File) => void;
+  addPendingUpload: (file: File) => Promise<void>;
   removePendingUpload: (localId: string) => void;
   retryPendingUpload: (localId: string) => void;
 }

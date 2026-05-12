@@ -1055,6 +1055,45 @@ describe("ClientRouter", () => {
     );
   });
 
+  it("rejects attachmentIds with more than the configured maximum (10)", async () => {
+    // Clients are bounded by attachmentIdsSchema to 10 ids/message. A frame
+    // that exceeds this is almost certainly malicious (or a buggy client) and
+    // must be rejected without calling materializeAttachments — otherwise the
+    // server burns DB queries on a payload the schema already disallows.
+    const tooMany = Array.from(
+      { length: 11 },
+      (_, i) => `550e8400-e29b-41d4-a716-44665544000${i % 10}`
+    );
+
+    const clientWs = createMockClientWs();
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Analyze",
+      agentId: "agent-1",
+      attachmentIds: tooMany,
+    });
+
+    expect(mockMaterializeAttachments).not.toHaveBeenCalled();
+    const sentFrame = JSON.parse(clientWs.sent.at(-1) ?? "{}");
+    expect(sentFrame.type).toBe("error");
+    expect(sentFrame.code).toBe("attachment_invalid");
+  });
+
+  it("rejects attachmentIds containing non-UUID strings", async () => {
+    const clientWs = createMockClientWs();
+    await router.handleMessage(clientWs as any, {
+      type: "message",
+      content: "Analyze",
+      agentId: "agent-1",
+      attachmentIds: ["not-a-uuid"],
+    });
+
+    expect(mockMaterializeAttachments).not.toHaveBeenCalled();
+    const sentFrame = JSON.parse(clientWs.sent.at(-1) ?? "{}");
+    expect(sentFrame.type).toBe("error");
+    expect(sentFrame.code).toBe("attachment_invalid");
+  });
+
   it("should append a <pinchy:attachments> block to the user text so file metadata is recorded per-message in session history", async () => {
     // Without per-message file metadata, OpenClaw's JSONL only stores the user
     // text — so on Turn 2, when reading history, the agent has no record of

@@ -1,8 +1,6 @@
-import {
-  ComposerAddAttachment,
-  ComposerAttachments,
-  UserMessageAttachments,
-} from "@/components/assistant-ui/attachment";
+import { UserMessageAttachments } from "@/components/assistant-ui/attachment";
+import { PinchyAttachmentButton } from "@/components/assistant-ui/pinchy-attachment-button";
+import { PinchyDropZone } from "@/components/assistant-ui/pinchy-drop-zone";
 import { ChatErrorMessage, type ChatError } from "@/components/assistant-ui/chat-error-message";
 import { AttachmentPreview } from "@/components/assistant-ui/attachment-preview";
 import { ChatImage } from "@/components/assistant-ui/chat-image";
@@ -277,8 +275,10 @@ function UploadChip({ upload }: { upload: PendingUpload }) {
   const removePendingUpload = useContext(RemovePendingUploadContext);
   const retryPendingUpload = useContext(RetryPendingUploadContext);
   const isImage = upload.file.type.startsWith("image/");
-  const previewSrc =
-    upload.state === "ready" && upload.previewUrl ? upload.previewUrl : upload.objectUrl;
+  // Always render from the local blob URL — the server URL is only valid
+  // after the file has been promoted into the workspace, which happens
+  // server-side at WS-send time. Until then a /uploads/<name> request 404s.
+  const previewSrc = upload.objectUrl;
 
   return (
     <div className="relative flex items-start gap-1.5 rounded-lg border bg-muted/40 p-1.5 text-xs w-28 shrink-0">
@@ -364,9 +364,8 @@ export const Composer: FC = () => {
   return (
     <ComposerPrimitive.Root className="aui-composer-root relative flex w-full flex-col">
       <DraftPersistence />
-      <ComposerPrimitive.AttachmentDropzone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20 data-[dragging=true]:border-ring data-[dragging=true]:border-dashed data-[dragging=true]:bg-accent/50">
+      <PinchyDropZone className="aui-composer-attachment-dropzone flex w-full flex-col rounded-2xl border border-input bg-background px-1 pt-2 outline-none transition-shadow has-[textarea:focus-visible]:border-ring has-[textarea:focus-visible]:ring-2 has-[textarea:focus-visible]:ring-ring/20">
         <PendingUploadChips />
-        <ComposerAttachments />
         <ComposerPrimitive.Input
           placeholder="Send a message..."
           className="aui-composer-input mb-0.5 md:mb-1 max-h-32 min-h-10 md:min-h-14 w-full resize-none bg-transparent px-4 pt-2 pb-1 md:pb-3 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-0"
@@ -375,7 +374,7 @@ export const Composer: FC = () => {
           aria-label="Message input"
         />
         <ComposerAction />
-      </ComposerPrimitive.AttachmentDropzone>
+      </PinchyDropZone>
     </ComposerPrimitive.Root>
   );
 };
@@ -386,7 +385,7 @@ const ComposerAction: FC = () => {
 
   return (
     <div className="aui-composer-action-wrapper relative mx-2 mb-1 md:mb-2 flex items-center justify-between">
-      <ComposerAddAttachment />
+      <PinchyAttachmentButton />
       {/* Send and Stop are mutually exclusive: rendering both at once
           (one disabled, the other inert) produces the dead-end UI from #207. */}
       <AuiIf condition={(s) => !s.thread.isRunning}>

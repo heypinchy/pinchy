@@ -77,7 +77,11 @@ describe("PendingUploadChips", () => {
     expect(img).toHaveAttribute("src", "blob:http://localhost/abc");
   });
 
-  it("shows previewUrl as image src when state is ready", () => {
+  it("keeps the local objectUrl as image src when state flips to ready", () => {
+    // The /api/agents/.../uploads/<filename> URL would 404 here — the file
+    // sits in .staging/<uploadId>/ until the user actually sends. The chip
+    // must therefore keep using the in-memory blob URL throughout its
+    // entire lifetime (the pendingUploads entry is cleared on send anyway).
     const upload: PendingUpload = {
       localId: "abc",
       file: new File(["data"], "photo.png", { type: "image/png" }),
@@ -85,11 +89,10 @@ describe("PendingUploadChips", () => {
       state: "ready",
       progress: 100,
       uploadId: "upload-1",
-      previewUrl: "/api/agents/agent-1/uploads/photo.png",
     };
     renderWithContexts([upload]);
     const img = screen.getByRole("img");
-    expect(img).toHaveAttribute("src", "/api/agents/agent-1/uploads/photo.png");
+    expect(img).toHaveAttribute("src", "blob:http://localhost/abc");
   });
 
   it("shows filename in chip when in ready state", () => {
@@ -100,7 +103,6 @@ describe("PendingUploadChips", () => {
       state: "ready",
       progress: 100,
       uploadId: "upload-1",
-      previewUrl: "/api/agents/agent-1/uploads/document.pdf",
     };
     renderWithContexts([upload]);
     expect(screen.getByText("document.pdf")).toBeInTheDocument();

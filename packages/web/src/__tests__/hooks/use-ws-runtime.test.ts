@@ -573,7 +573,7 @@ describe("useWsRuntime", () => {
     expect(sentMessage.sessionKey).toBeUndefined();
   });
 
-  it("should register an attachment adapter with image and code file support", () => {
+  it("registers a text/code-only attachment adapter (images/PDFs go via two-phase upload)", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const runtime = result.current.runtime;
 
@@ -581,46 +581,15 @@ describe("useWsRuntime", () => {
     expect(runtime.adapters.attachments).toBeDefined();
 
     const acceptedTypes = runtime.adapters.attachments.accept;
-    expect(acceptedTypes).toContain("image/*");
     expect(acceptedTypes).toContain("text/plain");
     expect(acceptedTypes).toContain(".ts");
     expect(acceptedTypes).toContain(".js");
     expect(acceptedTypes).toContain(".py");
-  });
-
-  it("should send structured content array when message has image attachment", async () => {
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
-    const ws = wsInstances[0];
-
-    act(() => {
-      ws.onopen?.();
-    });
-
-    // assistant-ui puts images in attachments, not content
-    // Use valid base64 ("YWJj" encodes "abc") so the atob/FileReader round-trip
-    // preserves the data URL exactly.
-    await act(async () => {
-      await result.current.runtime.onNew({
-        content: [{ type: "text", text: "What is this?" }],
-        attachments: [
-          {
-            id: "img-1",
-            type: "image",
-            name: "photo.png",
-            status: { type: "complete" },
-            content: [{ type: "image", image: "data:image/png;base64,YWJj" }],
-          },
-        ],
-        parentId: "root",
-      });
-    });
-
-    // calls[0] is the history request, calls[1] is the user message
-    const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
-    expect(sentMessage.content).toEqual([
-      { type: "text", text: "What is this?" },
-      { type: "image_url", image_url: { url: "data:image/png;base64,YWJj" } },
-    ]);
+    // Image and PDF MIMEs must NOT be in the assistant-ui adapter — they
+    // would be turned into legacy `image_url` content parts that the server
+    // now rejects with PROTOCOL_OUTDATED.
+    expect(acceptedTypes).not.toContain("image/*");
+    expect(acceptedTypes).not.toContain("application/pdf");
   });
 
   it("should send plain string when message has no image attachment", () => {
@@ -643,217 +612,13 @@ describe("useWsRuntime", () => {
     expect(sentMessage.content).toBe("Hello plain");
   });
 
-  it("should reject image attachments larger than the client size limit", async () => {
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
-    const ws = wsInstances[0];
-
-    act(() => {
-      ws.onopen?.();
-    });
-
-    // Mock compressImageForChat to return a File that is still too large after compression.
-    // The compressed file's size is checked before converting to data URL, so we can use
-    // a plain object with the right size rather than allocating megabytes of real data.
-    const stillOversizedAfterCompression = {
-      size: CLIENT_MAX_ATTACHMENT_SIZE_BYTES + 1,
-      type: "image/webp",
-      name: "compressed.webp",
-    } as unknown as File;
-    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce({
-      ok: true,
-      file: stillOversizedAfterCompression,
-      skipped: false,
-    });
-
-    // Small input — the rejection is based on compressed output size, not input size
-    const smallInput = "data:image/png;base64,YWJj";
-
-    await act(async () => {
-      await result.current.runtime.onNew({
-        content: [{ type: "text", text: "Big image" }],
-        attachments: [
-          {
-            id: "img-1",
-            type: "image",
-            name: "big.png",
-            status: { type: "complete" },
-            content: [{ type: "image", image: smallInput }],
-          },
-        ],
-        parentId: "root",
-      });
-    });
-
-    // Should only have sent the history request on connect, not the user message
-    expect(ws.send).toHaveBeenCalledTimes(1);
-    const sentMessage = JSON.parse(ws.send.mock.calls[0][0]);
-    expect(sentMessage.type).toBe("history");
-
-    // Should surface the size error as a structured `payloadTooLarge` error
-    // (NOT as a plain assistant content message). Both image and binary paths
-    // now share `emitAttachmentTooLargeError` so the error UI renders
-    // consistently — the icon, heading ("File too large"), and inline error
-    // styling all rely on this error variant being set.
-    const expectedMb = Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024);
-    const messages = result.current.runtime.messages;
-    const errorMessage = messages.find(
-      (m: {
-        role: string;
-        metadata?: { custom?: { error?: { payloadTooLarge?: boolean; message?: string } } };
-      }) => m.role === "assistant" && m.metadata?.custom?.error?.payloadTooLarge === true
-    ) as
-      | {
-          metadata?: { custom?: { error?: { payloadTooLarge?: boolean; message?: string } } };
-        }
-      | undefined;
-    expect(errorMessage).toBeDefined();
-    expect(errorMessage?.metadata?.custom?.error?.message).toMatch(new RegExp(`${expectedMb} MB`));
-  });
-
-  it("compresses images to WebP before sending over the WebSocket", async () => {
-    // Arrange: spy on compressImageForChat and return a small WebP file
-    const webpBytes = new Uint8Array([0x52, 0x49, 0x46, 0x46]); // "RIFF" stub
-    const webpFile = new File([webpBytes], "photo.webp", { type: "image/webp" });
-    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce({
-      ok: true,
-      file: webpFile,
-      skipped: false,
-    });
-
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
-    const ws = wsInstances[0];
-
-    act(() => {
-      ws.onopen?.();
-    });
-
-    // Send a message with a JPEG image (valid base64: "YWJj" = "abc")
-    await act(async () => {
-      await result.current.runtime.onNew({
-        content: [{ type: "text", text: "What is this?" }],
-        attachments: [
-          {
-            id: "img-1",
-            type: "image",
-            name: "photo.jpg",
-            status: { type: "complete" },
-            content: [{ type: "image", image: "data:image/jpeg;base64,YWJj" }],
-          },
-        ],
-        parentId: "root",
-      });
-    });
-
-    // compressImageForChat must have been called with a File of JPEG type
-    expect(imageCompression.compressImageForChat).toHaveBeenCalledOnce();
-    const [receivedFile] = vi.mocked(imageCompression.compressImageForChat).mock.calls[0];
-    expect(receivedFile.type).toBe("image/jpeg");
-
-    // The WS frame must carry the compressed WebP data URL, not the original JPEG
-    const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
-    const imageUrl = sentMessage.content.find((p: { type: string }) => p.type === "image_url")
-      ?.image_url?.url as string;
-    expect(imageUrl).toMatch(/^data:image\/webp;base64,/);
-  });
-
-  it("fails closed when compression failed AND the original is larger than the OpenClaw inline threshold", async () => {
-    // OpenClaw silently offloads images > 2 MB to text-only markers — sending an
-    // uncompressed 3 MB HEIC would mean the model never sees it. Better to fail
-    // loudly than to send a "ghost" image.
-    const oversizedHeic = {
-      size: CLIENT_IMAGE_COMPRESSION_TARGET_BYTES + 1,
-      type: "image/heic",
-      name: "photo.heic",
-    } as unknown as File;
-    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce({
-      ok: false,
-      file: oversizedHeic,
-      reason: "compression-failed",
-      error: new Error("Unable to decode HEIC"),
-    });
-
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
-    const ws = wsInstances[0];
-
-    act(() => {
-      ws.onopen?.();
-    });
-
-    await act(async () => {
-      await result.current.runtime.onNew({
-        content: [{ type: "text", text: "Look at this" }],
-        attachments: [
-          {
-            id: "img-1",
-            type: "image",
-            name: "photo.heic",
-            status: { type: "complete" },
-            content: [{ type: "image", image: "data:image/heic;base64,YWJj" }],
-          },
-        ],
-        parentId: "root",
-      });
-    });
-
-    // Only the history request was sent — the user message must NOT have been transmitted.
-    expect(ws.send).toHaveBeenCalledTimes(1);
-    expect(JSON.parse(ws.send.mock.calls[0][0]).type).toBe("history");
-
-    // The user must see an error mentioning the unsupported format.
-    const messages = result.current.runtime.messages;
-    const errorMessage = messages.find(
-      (m: any) =>
-        m.role === "assistant" && /process|format|unsupported/i.test(m.content[0]?.text ?? "")
-    );
-    expect(errorMessage).toBeDefined();
-  });
-
-  it("sends the original file when compression failed but the file is small enough to be inlined", async () => {
-    // A small JPEG (under the offload threshold) that for some reason failed
-    // compression should still go through — OpenClaw will inline it as-is and
-    // the model will see it. No reason to fail closed here.
-    const smallOriginal = new File([new Uint8Array(100 * 1024)], "small.jpg", {
-      type: "image/jpeg",
-    });
-    vi.mocked(imageCompression.compressImageForChat).mockResolvedValueOnce({
-      ok: false,
-      file: smallOriginal,
-      reason: "compression-failed",
-      error: new Error("Worker crashed"),
-    });
-
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
-    const ws = wsInstances[0];
-
-    act(() => {
-      ws.onopen?.();
-    });
-
-    await act(async () => {
-      await result.current.runtime.onNew({
-        content: [{ type: "text", text: "Look at this" }],
-        attachments: [
-          {
-            id: "img-1",
-            type: "image",
-            name: "small.jpg",
-            status: { type: "complete" },
-            content: [{ type: "image", image: "data:image/jpeg;base64,YWJj" }],
-          },
-        ],
-        parentId: "root",
-      });
-    });
-
-    // The message must have been sent with the original file, NOT rejected.
-    expect(ws.send).toHaveBeenCalledTimes(2);
-    const sentMessage = JSON.parse(ws.send.mock.calls[1][0]);
-    expect(sentMessage.type).toBe("message");
-    const imageUrl = sentMessage.content.find((p: { type: string }) => p.type === "image_url")
-      ?.image_url?.url as string;
-    // Original was JPEG — without compression it stays JPEG.
-    expect(imageUrl).toMatch(/^data:image\/jpeg;base64,/);
-  });
+  // Image/PDF send-path behaviour (size limits, compression, fail-closed on
+  // unsupported formats) moved to addPendingUpload / POST /uploads when the
+  // legacy base64 `image_url` flow was retired. Coverage lives in:
+  //   - src/__tests__/hooks/use-pending-uploads.test.ts (client-side compression
+  //     and the "fails closed for oversized non-JPEG/PNG" path)
+  //   - src/__tests__/api/uploads-post.integration.test.ts (server-side size
+  //     and MIME rejection — POST returns 413 / 415)
 
   it("should send history request on connect with agentId", () => {
     renderHook(() => useWsRuntime("agent-1"));
@@ -1128,41 +893,12 @@ describe("useWsRuntime", () => {
     });
   });
 
-  it("should store image data on user message for display", async () => {
-    const { result } = renderHook(() => useWsRuntime("agent-1"));
-    const ws = wsInstances[0];
-
-    act(() => {
-      ws.onopen?.();
-    });
-
-    // Use valid base64 ("dGVzdA==" encodes "test") so the atob/FileReader round-trip
-    // preserves the data URL exactly. After compression (identity mock), the stored URL
-    // must match the compressed output — which equals the input when compression is no-op.
-    await act(async () => {
-      await result.current.runtime.onNew({
-        content: [{ type: "text", text: "Describe this" }],
-        attachments: [
-          {
-            id: "img-1",
-            type: "image",
-            name: "photo.png",
-            status: { type: "complete" },
-            content: [{ type: "image", image: "data:image/png;base64,dGVzdA==" }],
-          },
-        ],
-        parentId: "root",
-      });
-    });
-
-    const messages = result.current.runtime.messages;
-    const userMsg = messages.find((m: any) => m.role === "user");
-    expect(userMsg).toBeDefined();
-
-    const imageContent = userMsg.content.find((c: any) => c.type === "image");
-    expect(imageContent).toBeDefined();
-    expect(imageContent.image).toBe("data:image/png;base64,dGVzdA==");
-  });
+  // "should store image data on user message for display" — removed. With the
+  // two-phase upload pipeline, images on user messages are shown via the
+  // `files` field (filename + mimeType) and an /api/agents/<id>/uploads/...
+  // URL, not via an inline `image` part. The file-chip render is covered by
+  // src/components/assistant-ui/__tests__/attachment-preview.test.tsx and the
+  // upload-and-send E2E spec.
 
   describe("isDelayed", () => {
     it("should return isDelayed as false initially", () => {
@@ -2950,6 +2686,42 @@ describe("useWsRuntime", () => {
       message: "File type mismatch: claimed application/pdf, content is image/png",
     });
   });
+
+  it.each([
+    ["attachment_not_found", "Attachment(s) not found or not accessible: foo"],
+    ["attachment_expired", "Attachment(s) have expired: foo"],
+    ["attachment_already_attached", "Attachment(s) have already been attached: foo"],
+  ])(
+    "maps server code %s onto attachmentInvalid so the chat shows the dedicated 'Invalid file' UI",
+    (code, message) => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+      });
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Send a file" }],
+          parentId: "root",
+        });
+      });
+
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({ type: "error", code, message }),
+        });
+      });
+
+      const messages = result.current.runtime.messages;
+      const errorMsg = messages.find(
+        (m: any) => m.role === "assistant" && m.metadata?.custom?.error
+      );
+      expect(errorMsg).toBeDefined();
+      expect(errorMsg.metadata.custom.error.attachmentInvalid).toBe(true);
+      expect(errorMsg.metadata.custom.error.message).toBe(message);
+    }
+  );
 
   // ── status reducer + orphan detector ────────────────────────────────────────
   describe("status reducer + orphan detector", () => {

@@ -8,7 +8,6 @@ import { uploadAttachment } from "@/lib/upload-attachment";
 import { useDraftId } from "@/hooks/use-draft-id";
 import {
   useExternalStoreRuntime,
-  SimpleImageAttachmentAdapter,
   SimpleTextAttachmentAdapter,
   CompositeAttachmentAdapter,
   type ThreadMessageLike,
@@ -25,8 +24,6 @@ import {
   CLIENT_MAX_ATTACHMENT_SIZE_BYTES,
 } from "@/lib/limits";
 import { compressImageForChat } from "@/lib/image-compression";
-import { dataUrlToFile, fileToDataUrl } from "@/lib/data-url";
-import { mimeFromFilename } from "@/lib/attachment-mime";
 
 /** Lightweight metadata for binary file attachments shown next to user messages. */
 export interface WsFileMeta {
@@ -38,10 +35,9 @@ export interface WsFileMeta {
 export interface PendingUpload {
   localId: string; // crypto.randomUUID() — client-side stable key
   file: File;
-  objectUrl: string; // URL.createObjectURL — instant local preview, revoke on cleanup
+  objectUrl: string; // URL.createObjectURL — local preview, revoked on remove/send
   state: "uploading" | "ready" | "failed";
   uploadId?: string; // server-assigned, set when state = "ready"
-  previewUrl?: string; // /api/agents/<id>/uploads/<filename>, set when state = "ready"
   progress: number; // 0-100
   error?: string; // set when state = "failed"
 }
@@ -50,7 +46,6 @@ export interface WsMessage {
   id: string;
   role: "user" | "assistant";
   content: string;
-  images?: string[];
   /**
    * Non-image attachments shown as chips next to the user message. Only the
    * filename + mimeType are kept here — the actual bytes already live in the
@@ -78,44 +73,11 @@ const STUCK_TIMEOUT_MS = 60_000;
  */
 const FRAME_BUFFER_MAX = 1000;
 
-/**
- * Append the canonical "payload too large" error bubble to the message list.
- *
- * Three independent code paths can reject an oversize attachment:
- *   1. `SimpleBinaryFileAttachmentAdapter.add()` — pre-encode, throws to the
- *      composer (handled outside this hook).
- *   2. `onNew` binary-file size check — after the adapter has produced
- *      content but before the WS payload is built.
- *   3. `onNew` image size check — after client-side compression couldn't get
- *      the file under the limit.
- *   4. WS close-code 1009 ("Message too big") — the server rejected the
- *      frame at the transport layer.
- *
- * All UI-visible rejections share the same shape so the inline error
- * renderer in `ChatErrorMessage` always picks up the correct icon, heading
- * ("File too large"), and styling. The plain-content fallback that used to
- * live on the image path was visually inconsistent and is gone.
- */
-export function buildAttachmentTooLargeError(): ChatError {
-  const limitMb = Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024);
-  return {
-    payloadTooLarge: true,
-    message: `File exceeds the ${limitMb} MB size limit. Please use a smaller file.`,
-  };
-}
-
 function convertMessage(msg: WsMessage): ThreadMessageLike {
   const parts: Array<
     | { type: "text"; text: string }
-    | { type: "image"; image: string }
     | { type: "file"; data: string; mimeType: string; filename: string }
   > = [{ type: "text", text: msg.content }];
-
-  if (msg.images) {
-    for (const image of msg.images) {
-      parts.push({ type: "image", image });
-    }
-  }
 
   if (msg.files) {
     for (const file of msg.files) {
@@ -142,146 +104,27 @@ function convertMessage(msg: WsMessage): ThreadMessageLike {
   };
 }
 
-type WsContent = string | Array<{ type: string; text?: string; image_url?: { url: string } }>;
-
 /**
- * Build the WebSocket content payload — plain string when there are no images,
- * structured parts array when images need to be carried alongside text.
+ * Text-file attachment adapter — produces text content parts that get
+ * concatenated into the user's message text. Kept because it's the only path
+ * that doesn't go through the (removed) base64 `image_url` flow; image and
+ * PDF uploads now go through the two-phase upload pipeline
+ * (`addPendingUpload` → POST /uploads → `attachmentIds` on send).
  */
-function buildWsContent(text: string, images: string[] | undefined): WsContent {
-  if (!images || images.length === 0) {
-    return text;
-  }
-  const parts: Array<{ type: string; text?: string; image_url?: { url: string } }> = [];
-  if (text) {
-    parts.push({ type: "text", text });
-  }
-  for (const img of images) {
-    parts.push({ type: "image_url", image_url: { url: img } });
-  }
-  return parts;
-}
-
 /**
  * Adapter for source-code files whose content the model reads inline as text.
  *
  * The plain-text / CSV / Markdown / JSON / YAML types are deliberately NOT
- * listed here: those are workspace data files (issue #392) handled by
- * SimpleBinaryFileAttachmentAdapter, which uploads them so the agent can read
- * them with `pinchy_read`. Because CompositeAttachmentAdapter dispatches to the
- * FIRST adapter whose `accept` matches and this adapter precedes the binary
- * one, leaving those types here would inline them and bypass the workspace.
+ * listed here: those are workspace data files (issue #392) routed through the
+ * two-phase upload pipeline (`addPendingUpload` → POST /uploads → server
+ * staging), the same path used for images and PDFs. Because the assistant-ui
+ * `CompositeAttachmentAdapter` would inline anything matching its `accept`
+ * mask, listing those types here would short-circuit the upload and bypass
+ * the agent's workspace.
  */
 class CodeTextAttachmentAdapter extends SimpleTextAttachmentAdapter {
   public override accept =
     "text/html,text/xml,text/css,application/javascript,application/typescript,.js,.ts,.tsx,.jsx,.py,.rs,.go,.sh,.sql,.toml";
-}
-
-/**
- * Adapter for files uploaded to the agent workspace, read there via
- * `pinchy_read`.
- *
- * Handles PDFs plus the text data formats the server accepts as workspace
- * uploads (issue #392): CSV, plain text, Markdown, JSON, YAML. These mirror
- * `ALLOWED_TEXT_MIMES` in upload-validation.ts. Both MIME types and extensions
- * are listed because browsers assign an empty `File.type` to some of them
- * (notably .yaml/.md) — the extension is then the only signal.
- *
- * Audio is tracked in #321 — it requires a transcription pipeline that does
- * not yet exist; accepting audio here without it would persist files the agent
- * has no way to read.
- *
- * Lifecycle:
- *   add()  — validates size up front, then returns a PendingAttachment.
- *            File reading (base64 encode) is deferred to send() so picking
- *            the file is cheap.
- *   send() — reads the file, extracts base64 data + mimeType, returns a
- *            CompleteAttachment with a FileMessagePart in content.
- *   remove() — no-op (local files need no cleanup).
- *
- * onNew then reconstructs the data URL from content[].data + content[].mimeType.
- * onNew also re-checks size as defense in depth (a stale attachment that
- * predates a limit change, or a programmatic add() that bypasses the
- * composer flow, would otherwise slip through).
- *
- * Exported only so the size-rejection contract can be unit-tested in isolation.
- */
-export class SimpleBinaryFileAttachmentAdapter {
-  public accept =
-    "application/pdf,.pdf,text/csv,.csv,text/plain,.txt,text/markdown,.md,.markdown,application/json,.json,text/yaml,.yaml,.yml";
-
-  async add(state: { file: File }) {
-    const { file } = state;
-    // Reject oversized files BEFORE any base64 encoding runs in send().
-    // For a 100 MB pick this saves ~130 MB of string allocation and the
-    // user gets the "too big" feedback instantly instead of after a freeze.
-    if (file.size > CLIENT_MAX_ATTACHMENT_SIZE_BYTES) {
-      const limitMb = Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024);
-      throw new Error(
-        `File "${file.name}" is too large (${Math.round(file.size / 1024 / 1024)} MB). The limit is ${limitMb} MB.`
-      );
-    }
-    return {
-      id: uuid(),
-      type: "file" as const,
-      name: file.name,
-      file,
-      status: { type: "requires-action" as const, reason: "composer-send" as const },
-    };
-  }
-
-  async send(attachment: { id?: string; name?: string; file: File }) {
-    const dataUrl = await fileToDataUrl(attachment.file);
-    // Validated parse — fail closed on anything that isn't a base64 data: URL.
-    // Earlier raw `indexOf(",")` / `indexOf(";")` parsing silently produced a
-    // garbage mimeType for malformed URLs (no `data:` prefix, `;` before `:`,
-    // non-base64 encoding) which would then ship to the server.
-    // The mime group is `*` (not the server DATA_URL_RE's `+`) because browsers
-    // leave `File.type` empty for some text formats — that case is recovered
-    // from the extension below, and a non-empty mime is always sent onward.
-    const match = /^data:([^;,]*);base64,(.+)$/.exec(dataUrl);
-    if (!match) {
-      throw new Error(
-        `SimpleBinaryFileAttachmentAdapter: invalid data URL from fileToDataUrl — ` +
-          `expected "data:<mime>;base64,<data>", got "${dataUrl.slice(0, 32)}…"`
-      );
-    }
-    const data = match[2];
-    const name = attachment.name ?? "";
-    // Prefer the canonical text MIME derived from the extension: browsers leave
-    // File.type empty for .yaml/.md and sometimes mislabel text files as
-    // application/octet-stream. Both forms fail the server's text allowlist, so
-    // the extension is the more reliable signal. PDFs/images have no extension
-    // entry, so they keep the data-URL MIME. Fail closed if neither yields a
-    // MIME — a workspace upload with an empty content-type is rejected anyway.
-    const mimeType = mimeFromFilename(name) ?? match[1];
-    if (!mimeType) {
-      throw new Error(
-        `SimpleBinaryFileAttachmentAdapter: could not determine a MIME type for ` +
-          `"${name}" — File.type was empty and the extension is not a known text format.`
-      );
-    }
-    return {
-      id: attachment.id ?? uuid(),
-      type: "file" as const,
-      name,
-      // Carry file through so onNew can read file.size for the size check
-      file: attachment.file,
-      status: { type: "complete" as const },
-      content: [
-        {
-          type: "file" as const,
-          data,
-          mimeType,
-          filename: name || undefined,
-        },
-      ],
-    };
-  }
-
-  async remove(_attachment: unknown): Promise<void> {
-    // No-op — local files require no cleanup
-  }
 }
 
 /**
@@ -412,11 +255,15 @@ function escapeXmlAttribute(value: string): string {
     .replace(/"/g, "&quot;");
 }
 
-export const attachmentAdapter = new CompositeAttachmentAdapter([
-  new SimpleImageAttachmentAdapter(),
+// Image and PDF MIMEs (and the workspace-data formats CSV/JSON/YAML/MD/TXT)
+// are NOT here — they go through the two-phase upload pipeline
+// (PinchyAttachmentButton → addPendingUpload → POST /uploads), not through
+// the assistant-ui adapter chain. Code-text + .docx still go through adapters
+// because they inline extracted text into the message content (no `image_url`
+// base64 frame, no PROTOCOL_OUTDATED rejection).
+const attachmentAdapter = new CompositeAttachmentAdapter([
   new CodeTextAttachmentAdapter(),
   new OfficeDocumentAttachmentAdapter(),
-  new SimpleBinaryFileAttachmentAdapter(),
 ]);
 
 const MAX_RECONNECT_ATTEMPTS = 10;
@@ -548,7 +395,7 @@ export function useWsRuntime(agentId: string): {
   onRetryContinue: (reason: "orphan" | "partial_stream_failure" | "send_failure") => void;
   onRetryResend: (messageId: string) => void;
   pendingUploads: PendingUpload[];
-  addPendingUpload: (file: File) => void;
+  addPendingUpload: (file: File) => Promise<void>;
   removePendingUpload: (localId: string) => void;
   retryPendingUpload: (localId: string) => void;
 } {
@@ -932,7 +779,7 @@ export function useWsRuntime(agentId: string): {
                 content: "",
                 error: {
                   payloadTooLarge: true,
-                  message: `File too large to send. Please use a file smaller than ${Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024)} MB.`,
+                  message: "Message too large to send. Try a shorter message or fewer attachments.",
                 },
               },
             ])
@@ -1503,148 +1350,18 @@ export function useWsRuntime(agentId: string): {
       const textParts = message.content.filter((part) => part.type === "text");
       const text = textParts.map((part) => ("text" in part ? part.text : "")).join("");
 
-      // Extract attachments (assistant-ui puts them there, not in content)
-      const attachments =
-        (
-          message as {
-            attachments?: Array<{
-              type: string;
-              name?: string;
-              /** Original File object — carried through send() so onNew can read file.size */
-              file?: File;
-              content?: Array<{
-                type: string;
-                image?: string;
-                /** Image data URL (SimpleImageAttachmentAdapter) */
-                url?: string;
-                /** Binary file base64 data (SimpleBinaryFileAttachmentAdapter FileMessagePart) */
-                data?: string;
-                mimeType?: string;
-                filename?: string;
-              }>;
-            }>;
-          }
-        ).attachments ?? [];
-      const images: string[] = [];
-      for (const att of attachments) {
-        if (att.type === "image" && att.content) {
-          for (const c of att.content) {
-            if (c.type === "image" && c.image) {
-              images.push(c.image);
-            }
-          }
-        }
-      }
-
-      // Extract binary file attachments (PDF) added by SimpleBinaryFileAttachmentAdapter.
-      // After send(), content parts carry base64 `data` + `mimeType` (FileMessagePart shape).
-      // Reconstruct the data URL here so the WS payload stays the same for the server.
-      const binaryFiles: Array<{ url: string; name: string; sizeBytes: number }> = [];
-      for (const att of attachments) {
-        if (att.type === "file" && att.content) {
-          for (const c of att.content) {
-            if (c.type === "file" && c.data) {
-              const dataUrl = `data:${c.mimeType};base64,${c.data}`;
-              binaryFiles.push({
-                url: dataUrl,
-                name: att.name ?? c.filename ?? "file",
-                // Use the original File's byte count when available; fall back to
-                // computing from base64 length (within a few bytes of actual size).
-                sizeBytes: att.file?.size ?? Math.ceil((c.data.length * 3) / 4),
-              });
-            }
-          }
-        }
-      }
-
-      // Size check for binary files (no compression path — reject immediately if over limit)
-      for (const f of binaryFiles) {
-        if (f.sizeBytes > CLIENT_MAX_ATTACHMENT_SIZE_BYTES) {
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: uuid(),
-              role: "assistant",
-              content: "",
-              error: buildAttachmentTooLargeError(),
-            },
-          ]);
-          return;
-        }
-      }
-
-      // Compress client-side to WebP < 1.9 MB before sending.
-      // OpenClaw's agent.run path offloads images > 2 MB as text-only markers.
-      const compressedImages: string[] = [];
-      for (const img of images) {
-        const file = dataUrlToFile(img);
-        const result = await compressImageForChat(file);
-
-        // Fail closed when compression failed AND the original would be silently
-        // offloaded by OpenClaw (size > inline threshold). Sending a "ghost" image
-        // the model can't see is worse than refusing to send.
-        if (!result.ok && result.file.size > CLIENT_IMAGE_COMPRESSION_TARGET_BYTES) {
-          setMessages((prev) =>
-            capMessages([
-              ...prev,
-              {
-                id: uuid(),
-                role: "assistant",
-                content:
-                  "Couldn't process this image format. Please convert it to JPEG, PNG, or WebP and try again.",
-              },
-            ])
-          );
-          return;
-        }
-
-        // Check size AFTER compression — reject if still too large for the WS frame.
-        // Checking file.size (bytes) avoids materialising the full data URL string
-        // just to count characters.
-        if (result.file.size > CLIENT_MAX_ATTACHMENT_SIZE_BYTES) {
-          setMessages((prev) =>
-            capMessages([
-              ...prev,
-              {
-                id: uuid(),
-                role: "assistant",
-                content: "",
-                error: buildAttachmentTooLargeError(),
-              },
-            ])
-          );
-          return;
-        }
-
-        compressedImages.push(await fileToDataUrl(result.file));
-      }
-
-      // Gather ready two-phase uploads for the new attachmentIds path.
+      // Image/PDF attachments come in via the two-phase upload pipeline
+      // (`addPendingUpload`) — they are NOT carried in the message content.
+      // The only attachments we look at here are text/code files that the
+      // SimpleTextAttachmentAdapter inlines as additional text parts (already
+      // concatenated into `text` above).
       const readyUploads = pendingUploads.filter((u) => u.state === "ready");
       const attachmentIds = readyUploads
         .map((u) => u.uploadId)
         .filter((id): id is string => Boolean(id));
 
-      if (
-        !text.trim() &&
-        compressedImages.length === 0 &&
-        binaryFiles.length === 0 &&
-        attachmentIds.length === 0
-      )
-        return;
+      if (!text.trim() && attachmentIds.length === 0) return;
       setPayloadRejected(false);
-
-      // Combine images and binary files into a single content array for the WS payload.
-      const allFileUrls = [...compressedImages, ...binaryFiles.map((f) => f.url)];
-      const allFilenames = [
-        // Images don't have meaningful filenames in the current flow; empty strings
-        // tell the server to fall back to its "upload" default for those indices.
-        ...compressedImages.map(() => ""),
-        ...binaryFiles.map((f) => f.name),
-      ];
-      // Only pass filenames when at least one binary file is present — image-only
-      // sends don't benefit from the filename array (server falls back to "upload").
-      const hasFilenames = binaryFiles.length > 0;
 
       const clientMessageId = uuid();
 
@@ -1669,19 +1386,11 @@ export function useWsRuntime(agentId: string): {
             content: text,
             timestamp: new Date().toISOString(),
             status: "sending",
-            ...(compressedImages.length > 0 && { images: compressedImages }),
-            ...((binaryFiles.length > 0 || readyUploads.length > 0) && {
-              files: [
-                ...binaryFiles.map((f) => ({
-                  filename: f.name,
-                  // f.url is `data:<mime>;base64,<data>` — extract mime up to the `;`
-                  mimeType: f.url.slice("data:".length, f.url.indexOf(";")),
-                })),
-                ...readyUploads.map((u) => ({
-                  filename: u.file.name,
-                  mimeType: u.file.type,
-                })),
-              ],
+            ...(readyUploads.length > 0 && {
+              files: readyUploads.map((u) => ({
+                filename: u.file.name,
+                mimeType: u.file.type,
+              })),
             }),
           },
         ])
@@ -1704,8 +1413,7 @@ export function useWsRuntime(agentId: string): {
 
       const payload = JSON.stringify({
         type: "message",
-        content: buildWsContent(text, allFileUrls.length > 0 ? allFileUrls : undefined),
-        ...(hasFilenames && { filenames: allFilenames }),
+        content: text,
         ...(attachmentIds.length > 0 && { attachmentIds }),
         agentId,
         clientMessageId,
@@ -1761,7 +1469,7 @@ export function useWsRuntime(agentId: string): {
       const payload = JSON.stringify({
         type: "message",
         agentId,
-        content: buildWsContent(lastUserMsg.content, lastUserMsg.images),
+        content: lastUserMsg.content,
         clientMessageId: lastUserMsg.id,
         isRetry: true,
         retryReason: reason,
@@ -1799,7 +1507,7 @@ export function useWsRuntime(agentId: string): {
       const payload = JSON.stringify({
         type: "message",
         agentId,
-        content: buildWsContent(failedMsg.content, failedMsg.images),
+        content: failedMsg.content,
         clientMessageId: messageId,
         isRetry: true,
       });
@@ -1817,7 +1525,7 @@ export function useWsRuntime(agentId: string): {
   );
 
   const addPendingUpload = useCallback(
-    (file: File) => {
+    async (file: File) => {
       const localId = crypto.randomUUID();
       const objectUrl = URL.createObjectURL(file);
 
@@ -1831,14 +1539,44 @@ export function useWsRuntime(agentId: string): {
 
       setPendingUploads((prev) => [...prev, upload]);
 
-      uploadAttachment(agentId, draftId, file, (progress) => {
+      // Images need to be shrunk client-side because OpenClaw silently
+      // converts anything over its 2 MB inline threshold into a text-only
+      // marker that the model can't actually read. PDFs (and any other
+      // non-image MIME) go through untouched — they're served from disk to
+      // the agent's built-in `pdf` tool, not inlined.
+      let fileToUpload = file;
+      if (file.type.startsWith("image/")) {
+        const result = await compressImageForChat(file);
+        if (!result.ok && result.file.size > CLIENT_IMAGE_COMPRESSION_TARGET_BYTES) {
+          URL.revokeObjectURL(objectUrl);
+          setPendingUploads((prev) =>
+            prev.map((u) =>
+              u.localId === localId
+                ? {
+                    ...u,
+                    state: "failed" as const,
+                    objectUrl: "",
+                    error:
+                      "Couldn't process this image format. Please convert it to JPEG, PNG, or WebP and try again.",
+                  }
+                : u
+            )
+          );
+          return;
+        }
+        fileToUpload = result.file;
+      }
+
+      uploadAttachment(agentId, draftId, fileToUpload, (progress) => {
         setPendingUploads((prev) =>
           prev.map((u) => (u.localId === localId ? { ...u, progress } : u))
         );
       })
         .then((response) => {
-          const previewUrl = `/api/agents/${encodeURIComponent(agentId)}/uploads/${encodeURIComponent(response.filename)}`;
-          URL.revokeObjectURL(objectUrl);
+          // Keep `objectUrl` alive: the file is only promoted from .staging/
+          // to uploads/ on WS send, so a /api/agents/.../uploads/<name> URL
+          // would 404 until then. The chip continues to render the blob URL
+          // while the user composes. Revoke happens on remove or after send.
           setPendingUploads((prev) =>
             prev.map((u) =>
               u.localId === localId
@@ -1846,9 +1584,7 @@ export function useWsRuntime(agentId: string): {
                     ...u,
                     state: "ready",
                     uploadId: response.id,
-                    previewUrl,
                     progress: 100,
-                    objectUrl: "", // revoked above — clear to prevent double-revoke in remove/cleanup
                   }
                 : u
             )
@@ -1881,7 +1617,7 @@ export function useWsRuntime(agentId: string): {
   }, []);
 
   const retryPendingUpload = useCallback(
-    (localId: string) => {
+    async (localId: string) => {
       const upload = pendingUploads.find((u) => u.localId === localId);
       if (!upload) return;
 
@@ -1891,15 +1627,38 @@ export function useWsRuntime(agentId: string): {
         )
       );
 
-      const { file } = upload;
-      uploadAttachment(agentId, draftId, file, (progress) => {
+      // Same compression dance as addPendingUpload — see notes there.
+      let fileToUpload = upload.file;
+      if (upload.file.type.startsWith("image/")) {
+        const result = await compressImageForChat(upload.file);
+        if (!result.ok && result.file.size > CLIENT_IMAGE_COMPRESSION_TARGET_BYTES) {
+          if (upload.objectUrl) URL.revokeObjectURL(upload.objectUrl);
+          setPendingUploads((prev) =>
+            prev.map((u) =>
+              u.localId === localId
+                ? {
+                    ...u,
+                    state: "failed" as const,
+                    objectUrl: "",
+                    error:
+                      "Couldn't process this image format. Please convert it to JPEG, PNG, or WebP and try again.",
+                  }
+                : u
+            )
+          );
+          return;
+        }
+        fileToUpload = result.file;
+      }
+
+      uploadAttachment(agentId, draftId, fileToUpload, (progress) => {
         setPendingUploads((prev) =>
           prev.map((u) => (u.localId === localId ? { ...u, progress } : u))
         );
       })
         .then((response) => {
-          const previewUrl = `/api/agents/${encodeURIComponent(agentId)}/uploads/${encodeURIComponent(response.filename)}`;
-          if (upload.objectUrl) URL.revokeObjectURL(upload.objectUrl);
+          // See addPendingUpload — objectUrl stays alive so the chip preview
+          // keeps working while the file is still staged on the server.
           setPendingUploads((prev) =>
             prev.map((u) =>
               u.localId === localId
@@ -1907,9 +1666,7 @@ export function useWsRuntime(agentId: string): {
                     ...u,
                     state: "ready",
                     uploadId: response.id,
-                    previewUrl,
                     progress: 100,
-                    objectUrl: "", // revoked above — clear to prevent double-revoke
                   }
                 : u
             )

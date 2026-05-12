@@ -1,39 +1,16 @@
-import { createHash, randomBytes, randomUUID } from "crypto";
-import { link, mkdir, open, readFile, rename, rm, unlink, writeFile } from "fs/promises";
+import { createHash, randomUUID } from "crypto";
+import { mkdir, open, rename, rm, writeFile } from "fs/promises";
 import { join, parse as parsePath } from "path";
-import { getWorkspacePath } from "@/lib/workspace";
 import { sanitizeFilename } from "@/lib/upload-validation";
 
 const UPLOADS_SUBDIR = "uploads";
 const DEFAULT_MAX_COLLISION_SLOTS = 1000;
 
-export interface PersistAttachmentParams {
-  agentId: string;
-  filename: string;
-  buffer: Buffer;
-  /**
-   * Maximum number of `<name> (N).<ext>` slots to try before giving up with
-   * `UploadSlotExhaustedError`. Defaults to 1000. Exposed mainly so tests can
-   * exercise the exhaustion path without writing thousands of files; in
-   * production this should always use the default.
-   */
-  maxCollisions?: number;
-}
-
-export interface PersistAttachmentResult {
-  relativePath: string;
-  reused: boolean;
-  contentHash: string;
-}
-
 /**
- * Thrown when `persistAttachment` cannot find a free slot for a filename
- * with *different* content from every existing slot, within `maxCollisions`
- * tries. This is a client-input problem (uploading thousands of distinct
- * files under the same filename) — the caller maps it to a typed
- * validation error so the user sees an actionable message instead of a
- * generic "internal error". Carrying `filename` lets the caller include
- * it in the user-facing string.
+ * Thrown when no free slot is found in `uploads/` for a given filename
+ * within `maxCollisions` tries. Surfaces an actionable message instead of a
+ * generic "internal error" so the user can rename the file or clean up
+ * stale uploads.
  */
 export class UploadSlotExhaustedError extends Error {
   constructor(
@@ -50,21 +27,15 @@ export class UploadSlotExhaustedError extends Error {
 }
 
 /**
- * Returns the first available filename in `dir` for the given `filename`.
+ * Returns the first available filename in `dir` for the given `filename` and
+ * atomically reserves it by creating an empty placeholder via
+ * `O_CREAT | O_EXCL`. Tries `filename`, then `<name> (1)<ext>`,
+ * `<name> (2)<ext>`, ... up to `maxCollisions`. Throws
+ * `UploadSlotExhaustedError` if every slot is taken.
  *
- * Tries `filename` first, then `<name> (1)<ext>`, `<name> (2)<ext>`, etc.
- * A slot is "available" when no file exists at that path. Throws
- * `UploadSlotExhaustedError` if no free slot is found within `maxCollisions`
- * tries.
- *
- * Used by `promoteStagedToAttached` to find the first free slot before
- * renaming a staged file into `uploads/`.
- *
- * NOT used by `persistAttachment`: that function has its own inline loop with
- * content-hash dedup semantics (it returns `reused: true` when an existing
- * file's content matches the incoming buffer, which requires reading each
- * candidate to compare hashes — a different behavior that cannot be delegated
- * to this helper).
+ * Used by `persistStagedUpload` to lock in the eventual `uploads/<name>`
+ * slot at upload time, so the client's preview URL is already non-colliding
+ * by the time POST /uploads returns.
  */
 async function buildNextFreeFilename(
   dir: string,
@@ -87,85 +58,10 @@ async function buildNextFreeFilename(
   throw new UploadSlotExhaustedError(filename, maxCollisions);
 }
 
-/**
- * Writes the buffer to `<workspace>/<agentId>/uploads/<filename>`.
- *
- * - If the target slot is free, writes there.
- * - If the slot is taken by identical content, returns `reused: true`.
- * - If the slot is taken by *different* content, tries `<name> (1)<ext>`,
- *   `<name> (2)<ext>`, ... up to `MAX_COLLISION_SLOTS`.
- *
- * Concurrency-safe: each candidate is opened with `O_CREAT | O_EXCL` (`wx`),
- * so two concurrent writers of *different* content under the same filename
- * can never clobber each other — the loser of the race sees `EEXIST`,
- * compares hashes, and either dedups or moves to the next slot.
- *
- * All FS work uses `fs/promises` so the event loop stays responsive while
- * hashing and writing the (up to 15 MB) attachment.
- */
-export async function persistAttachment(
-  params: PersistAttachmentParams
-): Promise<PersistAttachmentResult> {
-  const { agentId, filename, buffer } = params;
-  const maxCollisions = params.maxCollisions ?? DEFAULT_MAX_COLLISION_SLOTS;
-
-  const agentWorkspace = getWorkspacePath(agentId); // throws on bad agentId
-  const uploadsDir = join(agentWorkspace, UPLOADS_SUBDIR);
-  await mkdir(uploadsDir, { recursive: true });
-
-  const contentHash = createHash("sha256").update(buffer).digest("hex");
-  const { name, ext } = parsePath(filename);
-
-  for (let i = 0; i < maxCollisions; i++) {
-    const candidate = i === 0 ? filename : `${name} (${i})${ext}`;
-    const candidatePath = join(uploadsDir, candidate);
-
-    // Write to a unique temp file first, then atomically hard-link it to the
-    // slot. `link(tmp, final)` succeeds only when `final` does not exist —
-    // and crucially, it only runs AFTER the temp file is fully written. This
-    // closes the TOCTOU window where a concurrent caller could `open(slot,
-    // "wx")` first but then race the `EEXIST`-loser's `readFile(slot)` on an
-    // empty file (mis-deduping to a fresh slot instead of joining).
-    const tmpName = `.${candidate}.${process.pid}-${randomBytes(6).toString("hex")}.tmp`;
-    const tmpPath = join(uploadsDir, tmpName);
-    await writeFile(tmpPath, buffer);
-
-    try {
-      await link(tmpPath, candidatePath);
-      return {
-        relativePath: `${UPLOADS_SUBDIR}/${candidate}`,
-        reused: false,
-        contentHash,
-      };
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      // Slot taken. Because `link` only succeeds after the winner's temp file
-      // was fully written, `candidatePath` is guaranteed to hold the winner's
-      // complete content — safe to read and compare hashes.
-      const existing = await readFile(candidatePath);
-      if (createHash("sha256").update(existing).digest("hex") === contentHash) {
-        return {
-          relativePath: `${UPLOADS_SUBDIR}/${candidate}`,
-          reused: true,
-          contentHash,
-        };
-      }
-      // Different content occupies this slot — try the next one.
-    } finally {
-      // Clean up the temp file in all paths. On the success branch, the inode
-      // still lives via the hard link at `candidatePath`; we are only removing
-      // the extra name, not the content.
-      await unlink(tmpPath).catch(() => {});
-    }
-  }
-
-  throw new UploadSlotExhaustedError(filename, maxCollisions);
-}
-
 export interface PromoteParams {
   workspaceRoot: string;
   stagedRelativePath: string; // e.g. ".staging/<uploadId>/<filename>"
-  filename: string; // the filename to use in the durable uploads/ dir
+  filename: string; // the reserved uploads/ filename (already collision-free)
 }
 
 export interface PromotedRef {
@@ -175,14 +71,10 @@ export interface PromotedRef {
 /**
  * Atomically moves a staged file to its durable `uploads/` path.
  *
- * Steps:
- * 1. Resolve the absolute path of the staged file.
- * 2. Ensure `uploads/` dir exists.
- * 3. Use `buildNextFreeFilename` to find a free slot (collision-suffixed if
- *    needed), which creates an empty placeholder file via `O_CREAT | O_EXCL`.
- * 4. `rename` the staged file over the placeholder — atomic on the same FS.
- * 5. Remove the `.staging/<uploadId>/` directory.
- * 6. Return `{ relativePath: "uploads/<targetName>" }`.
+ * The destination slot was reserved at stage time by `persistStagedUpload`
+ * via `O_CREAT | O_EXCL`, so this function does NOT need to probe for a
+ * free filename — the reservation is already there as an empty placeholder,
+ * and `rename` overwrites it atomically.
  */
 export async function promoteStagedToAttached(params: PromoteParams): Promise<PromotedRef> {
   const { workspaceRoot, stagedRelativePath } = params;
@@ -193,21 +85,17 @@ export async function promoteStagedToAttached(params: PromoteParams): Promise<Pr
   const uploadId = parts[1];
 
   const stagedAbsPath = join(workspaceRoot, stagedRelativePath);
-  const uploadsDir = join(workspaceRoot, UPLOADS_SUBDIR);
-  await mkdir(uploadsDir, { recursive: true });
+  const targetAbsPath = join(workspaceRoot, UPLOADS_SUBDIR, filename);
 
-  // Find (and atomically reserve) a free slot
-  const targetName = await buildNextFreeFilename(uploadsDir, filename);
-  const targetAbsPath = join(uploadsDir, targetName);
-
-  // rename is atomic on the same filesystem; overwrites the placeholder
+  // rename is atomic on the same filesystem; overwrites the placeholder that
+  // persistStagedUpload created at upload time.
   await rename(stagedAbsPath, targetAbsPath);
 
   // Clean up the staging directory for this upload
   const stagingDir = join(workspaceRoot, ".staging", uploadId);
   await rm(stagingDir, { recursive: true, force: true });
 
-  return { relativePath: `${UPLOADS_SUBDIR}/${targetName}` };
+  return { relativePath: `${UPLOADS_SUBDIR}/${filename}` };
 }
 
 export interface PersistStagedUploadParams {
@@ -218,32 +106,51 @@ export interface PersistStagedUploadParams {
 
 export interface StagedUploadRef {
   uploadId: string;
+  /** Final filename to be used in `uploads/`. Collision-suffixed if needed. */
+  filename: string;
+  /** Path to the staged file: `.staging/<uploadId>/<filename>`. */
   relativePath: string;
   contentHash: string;
 }
 
 /**
- * Writes the buffer to `<workspaceRoot>/.staging/<uploadId>/<filename>`.
+ * Stages an upload AND atomically reserves its eventual `uploads/<name>` slot
+ * in one step:
  *
- * Each call generates a fresh UUID for the staging directory, so concurrent
- * uploads of the same filename never collide. This is the first phase of the
- * two-phase upload flow; the file is promoted to its durable path later.
+ * 1. Walk `name`, `name (1)`, `name (2)`, ... in `uploads/` and create the
+ *    first free entry via `O_CREAT | O_EXCL` (the placeholder).
+ * 2. Write the file into `.staging/<uploadId>/<reservedName>` for later
+ *    promotion via `rename` over the placeholder.
+ *
+ * Reserving up front (instead of at promote time) means the
+ * `/api/agents/<id>/uploads/<reservedName>` URL the client gets back from the
+ * POST response is already collision-free — no broken chip preview while the
+ * file sits in staging and no rename surprises at send time.
  *
  * `filename` must already be sanitized by the caller via `sanitizeFilename`.
- * This function is internal and trusts its callers.
  */
 export async function persistStagedUpload(
   params: PersistStagedUploadParams
 ): Promise<StagedUploadRef> {
   const { workspaceRoot, filename, buffer } = params;
+
+  // 1. Reserve a free slot in uploads/ via O_CREAT | O_EXCL.
+  const uploadsDir = join(workspaceRoot, UPLOADS_SUBDIR);
+  await mkdir(uploadsDir, { recursive: true });
+  const reservedFilename = await buildNextFreeFilename(uploadsDir, filename);
+
+  // 2. Write the file to staging under the SAME reserved name so promote is a
+  //    plain rename without filename juggling.
   const uploadId = randomUUID();
   const stagingDir = join(workspaceRoot, ".staging", uploadId);
   await mkdir(stagingDir, { recursive: true });
-  await writeFile(join(stagingDir, filename), buffer);
+  await writeFile(join(stagingDir, reservedFilename), buffer);
+
   const contentHash = createHash("sha256").update(buffer).digest("hex");
   return {
     uploadId,
-    relativePath: `.staging/${uploadId}/${filename}`,
+    filename: reservedFilename,
+    relativePath: `.staging/${uploadId}/${reservedFilename}`,
     contentHash,
   };
 }
