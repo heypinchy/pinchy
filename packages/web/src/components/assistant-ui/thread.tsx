@@ -428,11 +428,16 @@ export const Composer: FC = () => {
           .map((a) => ({ id: a.id, name: a.name }))
       : [];
 
-  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+  // Inspects the current attachments and returns any files whose required
+  // capability the current model doesn't support. Used by both the Send
+  // button onClick path (assistant-ui's Send is type=submit but invokes
+  // `send()` directly via its onClick handler, BEFORE the form submit fires;
+  // intercepting onClick is the only way to stop the runtime from firing the
+  // request) and the form-level onSubmit path (Enter-key).
+  function getBlockedFiles(): File[] {
     const state = composerRuntime?.getState();
     const attachments = state?.attachments ?? [];
-
-    const blockedFiles = attachments
+    return attachments
       .filter((a): a is typeof a & { file: File } => "file" in a && a.file instanceof File)
       .map((a) => a.file)
       .filter((file) => {
@@ -441,13 +446,25 @@ export const Composer: FC = () => {
         const modelCaps = agentModel ? capabilities?.[agentModel] : undefined;
         return modelCaps !== undefined && !modelCaps[cap];
       });
+  }
 
+  function maybeBlock(e: { preventDefault: () => void }): boolean {
+    const blockedFiles = getBlockedFiles();
     if (blockedFiles.length > 0) {
       e.preventDefault();
       setRecoveryState({ files: blockedFiles, model: agentModel });
-    } else {
-      setRecoveryState(null);
+      return true;
     }
+    setRecoveryState(null);
+    return false;
+  }
+
+  function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    maybeBlock(e);
+  }
+
+  function handleSendClick(e: React.MouseEvent<HTMLButtonElement>) {
+    maybeBlock(e);
   }
 
   // Shape flat capability map into ProviderGroup[] for ModelPicker
@@ -513,13 +530,15 @@ export const Composer: FC = () => {
           autoFocus
           aria-label="Message input"
         />
-        <ComposerAction />
+        <ComposerAction onSendClick={handleSendClick} />
       </PinchyDropZone>
     </ComposerPrimitive.Root>
   );
 };
 
-const ComposerAction: FC = () => {
+const ComposerAction: FC<{ onSendClick?: (e: React.MouseEvent<HTMLButtonElement>) => void }> = ({
+  onSendClick,
+}) => {
   const chatStatus = useContext(ChatStatusContext);
   const sendAllowed = chatStatus.kind === "ready" || chatStatus.kind === "payloadRejected";
 
@@ -529,7 +548,7 @@ const ComposerAction: FC = () => {
       {/* Send and Stop are mutually exclusive: rendering both at once
           (one disabled, the other inert) produces the dead-end UI from #207. */}
       <AuiIf condition={(s) => !s.thread.isRunning}>
-        <ComposerPrimitive.Send asChild disabled={!sendAllowed}>
+        <ComposerPrimitive.Send asChild disabled={!sendAllowed} onClick={onSendClick}>
           <TooltipIconButton
             tooltip="Send message"
             side="bottom"
