@@ -3,7 +3,9 @@ import {
   groupTemplatesByCategory,
   getAccessBadgeProps,
   getPermissionPreviewItems,
+  type TemplateItem,
 } from "../template-grouping";
+import { AGENT_TEMPLATES } from "@/lib/agent-templates";
 
 describe("getAccessBadgeProps", () => {
   it("returns green 'Documents · Read-only' for a documents template", () => {
@@ -289,6 +291,28 @@ describe("groupTemplatesByCategory", () => {
   it("returns null custom when no custom template exists", () => {
     const result = groupTemplatesByCategory([salesTemplate]);
     expect(result.custom).toBeNull();
+  });
+
+  it("every registered template (except 'custom') maps to a category", () => {
+    // Regression guard: a template that doesn't have an entry in
+    // TEMPLATE_CATEGORY_MAP is silently dropped by groupTemplatesByCategory
+    // and therefore never appears in the new-agent template picker. New
+    // templates added to AGENT_TEMPLATES must also be categorized.
+    const items: TemplateItem[] = Object.entries(AGENT_TEMPLATES)
+      .filter(([id]) => id !== "custom")
+      .map(([id, t]) => ({
+        id,
+        name: t.name,
+        description: t.description,
+        requiresDirectories: false,
+        defaultTagline: t.defaultTagline,
+        available: true,
+      }));
+
+    const result = groupTemplatesByCategory(items);
+    const placed = new Set(result.categories.flatMap((c) => c.templates.map((t) => t.id)));
+    const missing = items.map((i) => i.id).filter((id) => !placed.has(id));
+    expect(missing, `templates without a category mapping: ${missing.join(", ")}`).toEqual([]);
   });
 
   it("assigns email-assistant to Email category", () => {

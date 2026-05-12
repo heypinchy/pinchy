@@ -732,3 +732,113 @@ describe("NewAgentForm — suggested name", () => {
     });
   });
 });
+
+describe("NewAgentForm — optional Odoo models do not block creation", () => {
+  // End-to-end guard that the `optional: true` flag on a template's
+  // requiredModels is honored by the UI gate. The Approval Manager template
+  // lists `approval.request` and `approval.category` (Odoo Enterprise's
+  // Approvals module) as optional, so a Community connection that lacks
+  // those models must still allow agent creation.
+  let fetchSpy: ReturnType<typeof vi.spyOn>;
+
+  const approvalManagerInList = [
+    ...mockTemplates,
+    {
+      id: "odoo-approval-manager",
+      name: "Approval Manager",
+      description:
+        "Review and approve expenses, leaves, purchases — with policy checks and clear escalation",
+      requiresDirectories: false,
+      requiresOdooConnection: true,
+      odooAccessLevel: "read-write",
+      defaultTagline:
+        "Review and approve expenses, leaves, purchases — with policy checks and clear escalation",
+    },
+  ];
+
+  // Connection lists every non-optional model required by Approval Manager,
+  // but deliberately omits `approval.request` and `approval.category` (the
+  // two optional, Enterprise-only ones).
+  const communityConnectionModels = [
+    { model: "hr.expense.sheet", name: "Expense Reports", access: rwAccess() },
+    { model: "hr.expense", name: "Expenses", access: readAccess() },
+    { model: "hr.leave", name: "Time Off", access: rwAccess() },
+    { model: "purchase.order", name: "Purchase Order", access: rwAccess() },
+    { model: "hr.employee", name: "Employee", access: readAccess() },
+    { model: "res.partner", name: "Contact", access: readAccess() },
+    { model: "mail.activity", name: "Activity", access: fullAccess() },
+    { model: "mail.message", name: "Message", access: { ...readAccess(), create: true } },
+  ];
+
+  function readAccess() {
+    return { read: true, create: false, write: false, delete: false };
+  }
+  function rwAccess() {
+    return { read: true, create: false, write: true, delete: false };
+  }
+  function fullAccess() {
+    return { read: true, create: true, write: true, delete: false };
+  }
+
+  beforeEach(() => {
+    mockSearchParams.current = new URLSearchParams();
+    fetchSpy = vi.spyOn(global, "fetch").mockImplementation(async (url) => {
+      if (String(url) === "/api/templates") {
+        return {
+          ok: true,
+          json: async () => ({ templates: approvalManagerInList }),
+        } as Response;
+      }
+      if (String(url) === "/api/data-directories") {
+        return { ok: true, json: async () => ({ directories: [] }) } as Response;
+      }
+      if (String(url) === "/api/integrations") {
+        return {
+          ok: true,
+          json: async () => [
+            {
+              id: "conn-community",
+              name: "Odoo Community",
+              type: "odoo",
+              data: { models: communityConnectionModels },
+            },
+          ],
+        } as Response;
+      }
+      if (String(url) === "/api/agents") {
+        return { ok: true, json: async () => [] } as Response;
+      }
+      return { ok: false, json: async () => ({}) } as Response;
+    });
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+  });
+
+  it("keeps the Create button enabled when only optional models are missing", async () => {
+    render(<NewAgentForm />);
+
+    await waitFor(() => {
+      expect(screen.getByText("Approval Manager")).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByText("Approval Manager"));
+
+    // The single connection auto-selects, which triggers validation. We wait
+    // for the form view (Cancel button confirms we're past template selection)
+    // and then assert the Create button is interactable.
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: /cancel/i })).toBeInTheDocument();
+    });
+
+    const createButton = await screen.findByRole("button", { name: /create/i });
+    await waitFor(() => {
+      expect(createButton).not.toBeDisabled();
+    });
+
+    // The "Missing Odoo modules" alert must NOT appear — optional misses are
+    // not gating, and the alert is only for blocking (non-optional) misses.
+    expect(screen.queryByText(/Missing Odoo modules/i)).not.toBeInTheDocument();
+  });
+});

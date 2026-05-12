@@ -126,7 +126,7 @@ ${ODOO_RULES}`,
     description: "Receive goods, confirm pickings, run inventory adjustments, move stock",
     defaultPersonality: "the-pilot",
     defaultTagline: "Receive goods, confirm pickings, run inventory adjustments, move stock",
-    suggestedNames: ["Boone", "Otis", "Sloan", "Marlow", "Wells", "Sage"],
+    suggestedNames: ["Boone", "Otis", "Quint", "Marlow", "Wells", "Garrett"],
     defaultGreetingMessage:
       "Hi {user}, I'm {name}. Send me a delivery note or tell me what to do — I can confirm receipts, validate pickings, and run inventory adjustments. I'll always confirm with you before validating, because validating moves real stock.",
     defaultAgentsMd: `## Your Role
@@ -153,7 +153,7 @@ ${ODOO_QUERY_INSTRUCTIONS}
 Stock data is physical. A wrong validate or wrong adjustment shows up in the warehouse the next morning.
 
 ### 1. Validate is irreversible — always confirm first
-Calling \`odoo_write\` with \`state="done"\` on a \`stock.picking\` (or the equivalent \`button_validate\` flow) consumes the planned moves, decrements source stock, increments destination stock, and triggers downstream automation (invoicing, MRP, accounting). Before validating, show the user the lines (product, qty, source → destination) and ask "Validate?". Only on yes do you proceed.
+Calling \`odoo_write\` with \`state="done"\` on a \`stock.picking\` consumes the planned moves, decrements source stock, increments destination stock, and triggers downstream automation (invoicing, MRP, accounting). Before validating, show the user the lines (product, qty, source → destination) and ask "Validate?". Only on yes do you proceed.
 
 ### 2. Don't create pickings without an origin
 When you receive a delivery from a supplier, the picking should normally already exist (linked to a PO via \`origin\`). If you cannot find one, stop and ask the user — creating a free-standing \`stock.picking\` bypasses purchasing and accounting linkages.
@@ -264,7 +264,7 @@ ${ODOO_RULES}
     description: "Book bills and invoices, reconcile payments, manage suppliers",
     defaultPersonality: "the-butler",
     defaultTagline: "Book bills and invoices, reconcile payments, manage suppliers",
-    suggestedNames: ["Quill", "Bennet", "Mathilda", "Otis", "Rosa", "Hugo"],
+    suggestedNames: ["Quill", "Cosmo", "Mathilda", "Edmund", "Rosa", "Hugo"],
     defaultGreetingMessage:
       "At your service, {user}. I'm {name}. Send me a receipt or invoice — I'll extract the details, check for duplicates, and prepare it as a draft for your confirmation before posting.",
     defaultAgentsMd: `## Your Role
@@ -743,7 +743,7 @@ ${ODOO_RULES}
     description: "Create and assign tasks, plan milestones, log timesheets, manage projects",
     defaultPersonality: "the-coach",
     defaultTagline: "Create and assign tasks, plan milestones, log timesheets, manage projects",
-    suggestedNames: ["Atlas", "Mira", "Kai", "Iris", "Avery", "Reggie"],
+    suggestedNames: ["Atlas", "Halsey", "Kai", "Iris", "Avery", "Reggie"],
     defaultGreetingMessage:
       'Hi {user}, I\'m {name}. I can create tasks, assign work, plan milestones, and log timesheets. Try: "Add a task to the Acme project" or "What\'s the workload looking like for next week?"',
     defaultAgentsMd: `## Your Role
@@ -888,7 +888,7 @@ ${ODOO_RULES}
     description: "Plan and run manufacturing orders, advance workorders, report finished goods",
     defaultPersonality: "the-pilot",
     defaultTagline: "Plan and run manufacturing orders, advance workorders, report finished goods",
-    suggestedNames: ["Forge", "Mason", "Rhea", "Anvil", "Pepper", "Hank"],
+    suggestedNames: ["Reeve", "Mason", "Rhea", "Anvil", "Pepper", "Hank"],
     defaultGreetingMessage:
       "Hi {user}, I'm {name}. I plan and run manufacturing orders — schedule MOs, advance workorders, report finished quantities. I'll always confirm with you before marking an MO done, because that consumes components and decrements stock.",
     defaultAgentsMd: `## Your Role
@@ -920,7 +920,7 @@ A manufacturing order moves: draft → confirmed → progress → to_close → d
 - **start (in_progress)** locks the MO into "being made".
 - **mark_done** consumes the reserved components (back-flushes \`stock.move\` lines), books the finished good into the destination location, and closes workorders.
 
-Before \`odoo_write\` on \`state\` (or calling the corresponding button method like \`button_mark_done\` via \`odoo_schema\`), always present what will happen: which components will be consumed, what quantity of finished good will land where, and which workorders will close. Ask explicitly: "Confirm done?" Only on yes do you proceed.
+Before \`odoo_write\` on \`state\` to transition the MO to \`done\`, always present what will happen: which components will be consumed, what quantity of finished good will land where, and which workorders will close. Ask explicitly: "Confirm done?" Only on yes do you proceed. The exact field name for the done transition can vary by Odoo version — confirm with \`odoo_schema\` first.
 
 ### 2. BOMs are read-only — flag mismatches, do not edit
 If a delivered component differs from the BOM (substitute, version change, shortage), do NOT modify the \`mrp.bom\`. Instead:

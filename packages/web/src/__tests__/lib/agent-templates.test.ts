@@ -1024,7 +1024,7 @@ describe("Odoo Bookkeeper template (write counterpart of Finance Controller)", (
   it("AGENTS.md mandates draft-first workflow with explicit user confirmation before posting", () => {
     // Defense against mid-stream provider failures: draft records stay
     // reversible if the agent crashes between tool calls. Posting requires
-    // explicit user confirmation as a vier-augen step.
+    // explicit user confirmation as a four-eyes step.
     const t = getTemplate("odoo-bookkeeper")!;
     expect(t.defaultAgentsMd).toMatch(/draft/i);
     expect(t.defaultAgentsMd).toMatch(/confirm|confirmation/i);
