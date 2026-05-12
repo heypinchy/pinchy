@@ -207,6 +207,7 @@ vi.mock("@/components/chat", async () => {
   return {
     AgentAvatarContext: React.createContext<string | null>(null),
     AgentIdContext: React.createContext<string | null>(null),
+    AgentModelContext: React.createContext<string | null>(null),
     RetryResendContext: React.createContext<(messageId: string) => void>(() => {}),
     RetryContinueContext: React.createContext<() => void>(() => {}),
     ChatStatusContext: React.createContext<{ kind: string; reason?: string }>({ kind: "ready" }),

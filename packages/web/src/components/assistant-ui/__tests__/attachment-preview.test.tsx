@@ -3,11 +3,12 @@ import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
 
-// Mock the chat module — we only need AgentIdContext from there. Recreating
-// the context locally keeps the test independent of unrelated chat-component
-// state.
+// Mock the chat module — we only need AgentIdContext and AgentModelContext
+// from there. Recreating the contexts locally keeps the test independent of
+// unrelated chat-component state.
 vi.mock("@/components/chat", () => ({
   AgentIdContext: React.createContext<string | null>(null),
+  AgentModelContext: React.createContext<string | null>(null),
 }));
 
 // useMessagePartFile is the assistant-ui hook the component reads from.
@@ -16,14 +17,32 @@ vi.mock("@assistant-ui/react", () => ({
   useMessagePartFile: () => mockUseMessagePartFile(),
 }));
 
-const originalFetch = global.fetch;
+// Capability data comes from the useModelCapabilities hook.
+const mockUseModelCapabilities = vi.fn();
+vi.mock("@/hooks/use-model-capabilities", () => ({
+  useModelCapabilities: () => mockUseModelCapabilities(),
+}));
+
+// All previewable MIME types go through a HEAD probe before the <embed>/<img>
+// is mounted (race-fix in #324). Default fetch mock returns 200.
+function mockFetchOk() {
+  global.fetch = vi
+    .fn()
+    .mockResolvedValue(new Response(null, { status: 200 })) as unknown as typeof fetch;
+}
+
 beforeEach(() => {
-  global.fetch = vi.fn();
+  mockFetchOk();
+  mockUseModelCapabilities.mockReturnValue({
+    data: undefined,
+    isLoading: false,
+    error: undefined,
+    refetch: vi.fn(),
+  });
 });
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
-  global.fetch = originalFetch;
 });
 
 async function renderWithAgent(agentId: string | null) {
@@ -157,29 +176,46 @@ describe("AttachmentPreview — fallback chip", () => {
 //
 // When the current model lacks the capability required by the attached file,
 // the preview should display a soft amber warning so the user knows the
-// attachment won't be understood by the model.
+// attachment won't be understood by the model. The component derives its
+// capability data from AgentModelContext + useModelCapabilities — these tests
+// provide both so the warning logic is actually exercised.
 describe("AttachmentPreview — amber capability warning", () => {
+  const TEXT_ONLY_MODEL = "ollama-cloud/text-only";
+  const VISION_MODEL = "anthropic/claude-sonnet";
+
+  async function renderWithModel(agentModel: string | null) {
+    const { AgentIdContext, AgentModelContext } = await import("@/components/chat");
+    const { AttachmentPreview } = await import("@/components/assistant-ui/attachment-preview");
+    return render(
+      <AgentIdContext.Provider value="agent-1">
+        <AgentModelContext.Provider value={agentModel}>
+          <AttachmentPreview />
+        </AgentModelContext.Provider>
+      </AgentIdContext.Provider>
+    );
+  }
+
   it("shows amber warning when image attached and model has no vision", async () => {
     mockUseMessagePartFile.mockReturnValue({
       mimeType: "image/png",
       filename: "screenshot.png",
     });
-    const { AgentIdContext } = await import("@/components/chat");
-    const { AttachmentPreview } = await import("@/components/assistant-ui/attachment-preview");
-    render(
-      <AgentIdContext.Provider value="agent-1">
-        <AttachmentPreview
-          modelCapabilities={{
-            vision: false,
-            documents: false,
-            audio: false,
-            video: false,
-            longContext: false,
-            tools: true,
-          }}
-        />
-      </AgentIdContext.Provider>
-    );
+    mockUseModelCapabilities.mockReturnValue({
+      data: {
+        [TEXT_ONLY_MODEL]: {
+          vision: false,
+          documents: false,
+          audio: false,
+          video: false,
+          longContext: false,
+          tools: true,
+        },
+      },
+      isLoading: false,
+      error: undefined,
+      refetch: vi.fn(),
+    });
+    await renderWithModel(TEXT_ONLY_MODEL);
     expect(await screen.findByText(/doesn't support image input/i)).toBeInTheDocument();
   });
 
@@ -188,22 +224,22 @@ describe("AttachmentPreview — amber capability warning", () => {
       mimeType: "application/pdf",
       filename: "report.pdf",
     });
-    const { AgentIdContext } = await import("@/components/chat");
-    const { AttachmentPreview } = await import("@/components/assistant-ui/attachment-preview");
-    render(
-      <AgentIdContext.Provider value="agent-1">
-        <AttachmentPreview
-          modelCapabilities={{
-            vision: false,
-            documents: false,
-            audio: false,
-            video: false,
-            longContext: false,
-            tools: true,
-          }}
-        />
-      </AgentIdContext.Provider>
-    );
+    mockUseModelCapabilities.mockReturnValue({
+      data: {
+        [TEXT_ONLY_MODEL]: {
+          vision: false,
+          documents: false,
+          audio: false,
+          video: false,
+          longContext: false,
+          tools: true,
+        },
+      },
+      isLoading: false,
+      error: undefined,
+      refetch: vi.fn(),
+    });
+    await renderWithModel(TEXT_ONLY_MODEL);
     expect(await screen.findByText(/doesn't support document input/i)).toBeInTheDocument();
   });
 
@@ -212,39 +248,62 @@ describe("AttachmentPreview — amber capability warning", () => {
       mimeType: "image/png",
       filename: "screenshot.png",
     });
-    const { AgentIdContext } = await import("@/components/chat");
-    const { AttachmentPreview } = await import("@/components/assistant-ui/attachment-preview");
-    render(
-      <AgentIdContext.Provider value="agent-1">
-        <AttachmentPreview
-          modelCapabilities={{
-            vision: true,
-            documents: true,
-            audio: false,
-            video: false,
-            longContext: false,
-            tools: true,
-          }}
-        />
-      </AgentIdContext.Provider>
-    );
+    mockUseModelCapabilities.mockReturnValue({
+      data: {
+        [VISION_MODEL]: {
+          vision: true,
+          documents: true,
+          audio: false,
+          video: false,
+          longContext: false,
+          tools: true,
+        },
+      },
+      isLoading: false,
+      error: undefined,
+      refetch: vi.fn(),
+    });
+    await renderWithModel(VISION_MODEL);
     await waitFor(() => {
       expect(screen.queryByText(/doesn't support/i)).not.toBeInTheDocument();
     });
   });
 
-  it("shows no warning when modelCapabilities is not provided", async () => {
+  it("shows no warning when capability map is not yet loaded", async () => {
+    // Default beforeEach mock already returns data: undefined.
     mockUseMessagePartFile.mockReturnValue({
       mimeType: "image/png",
       filename: "screenshot.png",
     });
-    const { AgentIdContext } = await import("@/components/chat");
-    const { AttachmentPreview } = await import("@/components/assistant-ui/attachment-preview");
-    render(
-      <AgentIdContext.Provider value="agent-1">
-        <AttachmentPreview />
-      </AgentIdContext.Provider>
-    );
+    await renderWithModel(TEXT_ONLY_MODEL);
+    await waitFor(() => {
+      expect(screen.queryByText(/doesn't support/i)).not.toBeInTheDocument();
+    });
+  });
+
+  it("shows no warning when no agent model is in context", async () => {
+    // Without a model we can't know what the agent supports — withhold the
+    // warning rather than guessing.
+    mockUseMessagePartFile.mockReturnValue({
+      mimeType: "image/png",
+      filename: "screenshot.png",
+    });
+    mockUseModelCapabilities.mockReturnValue({
+      data: {
+        [TEXT_ONLY_MODEL]: {
+          vision: false,
+          documents: false,
+          audio: false,
+          video: false,
+          longContext: false,
+          tools: true,
+        },
+      },
+      isLoading: false,
+      error: undefined,
+      refetch: vi.fn(),
+    });
+    await renderWithModel(null);
     await waitFor(() => {
       expect(screen.queryByText(/doesn't support/i)).not.toBeInTheDocument();
     });

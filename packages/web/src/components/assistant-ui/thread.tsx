@@ -402,13 +402,31 @@ export const Composer: FC = () => {
   const agentId = useContext(AgentIdContext);
   const canEditAgent = useContext(CanEditContext);
   const isAdmin = useContext(IsAdminContext);
-  const { getAgent } = useAgentsContext();
+  const { getAgent, sortedAgents } = useAgentsContext();
   const composerRuntime = useComposerRuntime({ optional: true });
   const { data: capabilities } = useModelCapabilities();
 
   const agent = agentId ? getAgent(agentId) : undefined;
   const agentModel = agent?.model ?? "";
   const agentName = agent?.name ?? "";
+
+  // Agents (other than the current one) whose model satisfies the capability
+  // the blocked attachment needs. Surfaces in RecoveryPanel as a fallback for
+  // users who cannot edit the current agent's model (e.g. non-admins viewing
+  // a shared agent).
+  const recoveryCapability = recoveryState?.files[0]
+    ? requiredCapabilityForFile(recoveryState.files[0].type)
+    : null;
+  const otherCompatibleAgents =
+    recoveryCapability && capabilities
+      ? sortedAgents
+          .filter((a) => a.id !== agentId)
+          .filter((a) => {
+            const caps = capabilities[a.model];
+            return caps?.[recoveryCapability] === true;
+          })
+          .map((a) => ({ id: a.id, name: a.name }))
+      : [];
 
   function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     const state = composerRuntime?.getState();
@@ -474,7 +492,7 @@ export const Composer: FC = () => {
           canEditAgent={canEditAgent}
           isAdmin={isAdmin}
           providers={providers}
-          otherCompatibleAgents={[]}
+          otherCompatibleAgents={otherCompatibleAgents}
           onUpdateAgent={async (newModel) => {
             if (agentId) {
               await apiPatch(`/api/agents/${agentId}`, { model: newModel });
