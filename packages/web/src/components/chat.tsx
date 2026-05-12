@@ -49,6 +49,7 @@ function getStatusIndicator(status: ChatStatus): { colorClass: string; label: st
 export const AgentAvatarContext = createContext<string | null>(null);
 export const AgentIdContext = createContext<string | null>(null);
 export const AgentNameContext = createContext<string | null>(null);
+export const AgentModelContext = createContext<string | null>(null);
 export const RetryResendContext = createContext<(messageId: string) => void>(() => {});
 export const RetryContinueContext = createContext<
   (reason: "orphan" | "partial_stream_failure" | "send_failure") => void
@@ -220,6 +221,7 @@ export function Chat({
   return (
     <AgentIdContext.Provider value={agentId}>
       <AgentNameContext.Provider value={displayName}>
+        <AgentModelContext.Provider value={liveAgent?.model ?? null}>
         <IsAdminContext.Provider value={isAdmin}>
           <CanEditContext.Provider value={canEdit}>
             <AssistantRuntimeProvider runtime={runtime}>
@@ -310,6 +312,7 @@ export function Chat({
             </AssistantRuntimeProvider>
           </CanEditContext.Provider>
         </IsAdminContext.Provider>
+        </AgentModelContext.Provider>
       </AgentNameContext.Provider>
     </AgentIdContext.Provider>
   );

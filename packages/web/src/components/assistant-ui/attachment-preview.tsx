@@ -3,14 +3,14 @@
 import { useContext, useEffect, useRef, useState, type FC } from "react";
 import { useMessagePartFile } from "@assistant-ui/react";
 import { FileText, Loader2 } from "lucide-react";
-import { AgentIdContext } from "@/components/chat";
+import { AgentIdContext, AgentModelContext } from "@/components/chat";
 import { Dialog, DialogContent, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { requiredCapabilityForFile } from "@/lib/attachment-capability";
 
-// See a32cd2c7b for the probe rationale (HEAD-probe the upload URL before
-// mounting <embed>/<img> to avoid the post-WS-message file-not-yet-persisted
-// race on v0.5.3). The main race is resolved by multipart pre-upload (#324)
-// but the probe stays as a defence against server-side dedup delays.
+import { useModelCapabilities } from "@/hooks/use-model-capabilities";
+
+// See a32cd2c7b for the probe rationale. The main race is resolved by multipart
+// pre-upload (#324) but the probe stays as a defence against server-side delays.
 const PROBE_SCHEDULE_MS = [200, 400, 800, 1600] as const;
 type ProbeState = "probing" | "ready" | "failed";
 
@@ -88,13 +88,12 @@ function buildUploadUrl(agentId: string, filename: string): string {
  * - `image/*` → inline `<img>`; click opens a modal with the full image.
  * - anything else (or missing agentId / filename) → a plain chip.
  */
-type AttachmentPreviewProps = {
-  modelCapabilities?: ModelCapabilities | null;
-};
-
-export const AttachmentPreview: FC<AttachmentPreviewProps> = ({ modelCapabilities }) => {
+export const AttachmentPreview: FC = () => {
   const { mimeType, filename } = useMessagePartFile();
   const agentId = useContext(AgentIdContext);
+  const agentModel = useContext(AgentModelContext);
+  const { data: capabilityMap } = useModelCapabilities();
+  const modelCapabilities = agentModel ? (capabilityMap?.[agentModel] ?? null) : null;
 
   const isPreviewable =
     !!agentId && !!filename && (mimeType === "application/pdf" || mimeType.startsWith("image/"));

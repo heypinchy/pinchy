@@ -127,7 +127,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
         await appendAuditLog({
           actorType: "user",
           actorId: session.user.id!,
-          eventType: "agent.create",
+          eventType: "agent.created",
           outcome: "failure",
           detail: {
             templateId,
