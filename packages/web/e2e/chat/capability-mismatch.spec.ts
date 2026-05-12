@@ -53,7 +53,6 @@ import { seedProviderConfig } from "../helpers";
 // before the test runs.
 const TEXT_ONLY_MODEL = "anthropic/claude-haiku-4-5-20251001";
 const VISION_MODEL = "vision-provider/gpt-4o";
-const AGENT_NAME = "Smithers";
 const PNG_FILENAME = "test-image.png";
 
 test.describe("capability-mismatch — block + recovery", () => {
@@ -84,6 +83,15 @@ test.describe("capability-mismatch — block + recovery", () => {
     const agentIdMatch = chatUrl.match(/\/chat\/([^/?#]+)/);
     expect(agentIdMatch).toBeTruthy();
     const agentId = agentIdMatch![1];
+
+    // The seeded agent's name may not be "Smithers" — earlier tests in the
+    // suite share the test DB and can rename or replace the default agent.
+    // Fetch the actual name so the RecoveryPanel assertion is robust against
+    // test-ordering, not against a fragile constant.
+    const agentRes = await page.request.get(`/api/agents/${agentId}`);
+    expect(agentRes.ok()).toBe(true);
+    const agentBody = (await agentRes.json()) as { name: string };
+    const agentName = agentBody.name;
 
     // ── 3. Inject mock fetch (capabilities + PATCH) before navigation ─────────
     //    addInitScript serialises the closure; constants must be inlined via the
@@ -277,7 +285,7 @@ test.describe("capability-mismatch — block + recovery", () => {
       },
       {
         targetAgentId: agentId,
-        agentName: AGENT_NAME,
+        agentName,
       }
     );
 
@@ -327,7 +335,7 @@ test.describe("capability-mismatch — block + recovery", () => {
     const recoveryPanel = page.getByRole("region", { name: "Can't be sent" });
     await expect(recoveryPanel).toBeVisible({ timeout: 5000 });
     await expect(recoveryPanel).toContainText("Attachment can't be sent");
-    await expect(recoveryPanel).toContainText(AGENT_NAME);
+    await expect(recoveryPanel).toContainText(agentName);
     await expect(recoveryPanel).toContainText(PNG_FILENAME);
 
     // ── 10. Select a vision-capable model via the embedded ModelPicker ────────
