@@ -70,6 +70,7 @@ const DEFAULT_BUNDLE = {
   isConnected: true,
   isDelayed: false,
   isHistoryLoaded: true,
+  isReconcilingMessages: false,
   hasInitialContent: true,
   isOpenClawConnected: true,
   isRunning: false,

@@ -66,7 +66,9 @@ const MessageTimestamp: FC = () => {
   return <span className="text-xs text-muted-foreground/60">{formatTimestamp(timestamp)}</span>;
 };
 
-export const Thread: FC = () => {
+export const Thread: FC<{ isReconcilingMessages?: boolean }> = ({
+  isReconcilingMessages = false,
+}) => {
   return (
     <ThreadPrimitive.Root
       className="aui-root aui-thread-root @container flex h-full flex-col bg-background"
@@ -75,16 +77,20 @@ export const Thread: FC = () => {
       }}
     >
       <ThreadPrimitive.Viewport className="aui-thread-viewport relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth px-4 pt-4">
-        <AuiIf condition={(s) => s.thread.isEmpty}>
-          <ThreadWelcome />
-        </AuiIf>
+        {!isReconcilingMessages && (
+          <>
+            <AuiIf condition={(s) => s.thread.isEmpty}>
+              <ThreadWelcome />
+            </AuiIf>
 
-        <ThreadPrimitive.Messages
-          components={{
-            UserMessage,
-            AssistantMessage,
-          }}
-        />
+            <ThreadPrimitive.Messages
+              components={{
+                UserMessage,
+                AssistantMessage,
+              }}
+            />
+          </>
+        )}
 
         <ThreadPrimitive.ViewportFooter className="aui-thread-viewport-footer sticky bottom-0 mx-auto mt-auto flex w-full max-w-(--thread-max-width) flex-col gap-4 overflow-visible rounded-t-3xl bg-background pb-4 md:pb-6">
           <ThreadScrollToBottom />

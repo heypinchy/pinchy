@@ -135,6 +135,7 @@ export function Chat({
         isRunning: false,
         isConnected: false,
         isHistoryLoaded: false,
+        isReconcilingMessages: false,
         hasInitialContent: false,
         isOpenClawConnected: false,
         isDelayed: false,
@@ -159,6 +160,7 @@ export function Chat({
   const isConnected = chatBundle?.isConnected ?? false;
   const isDelayed = chatBundle?.isDelayed ?? false;
   const isHistoryLoaded = chatBundle?.isHistoryLoaded ?? false;
+  const isReconcilingMessages = chatBundle?.isReconcilingMessages ?? false;
   const hasInitialContent = chatBundle?.hasInitialContent ?? false;
   const isOpenClawConnected = chatBundle?.isOpenClawConnected ?? false;
   const reconnectExhausted = chatBundle?.reconnectExhausted ?? false;
@@ -248,7 +250,7 @@ export function Chat({
                     </div>
                   </header>
                   <div className="flex-1 min-h-0 animate-in fade-in duration-300">
-                    <Thread />
+                    <Thread isReconcilingMessages={isReconcilingMessages} />
                   </div>
                   {!displayIsPersonal && (
                     <p className="text-xs text-muted-foreground px-3 py-1">

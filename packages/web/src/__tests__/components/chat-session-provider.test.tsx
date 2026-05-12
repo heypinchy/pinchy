@@ -18,6 +18,7 @@ function fakeBundle(overrides: Partial<RuntimeBundle> = {}): RuntimeBundle {
     isRunning: false,
     isConnected: true,
     isHistoryLoaded: true,
+    isReconcilingMessages: false,
     hasInitialContent: true,
     isOpenClawConnected: true,
     isDelayed: false,

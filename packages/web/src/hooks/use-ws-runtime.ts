@@ -265,6 +265,7 @@ export function useWsRuntime(agentId: string): {
   isConnected: boolean;
   isDelayed: boolean;
   isHistoryLoaded: boolean;
+  isReconcilingMessages: boolean;
   /**
    * Upstream OpenClaw connectivity. Independent from `isConnected` (which only
    * tracks the browser↔Pinchy WS). Defaults to false — green must be earned
@@ -293,6 +294,7 @@ export function useWsRuntime(agentId: string): {
   const [isConnected, setIsConnected] = useState(false);
   const [isDelayed, setIsDelayed] = useState(false);
   const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
+  const [isReconcilingMessages, setIsReconcilingMessages] = useState(false);
   /**
    * Set when the server confirms a session exists but its history is
    * temporarily unavailable (e.g. during an OpenClaw restart). Lets the chat
@@ -311,7 +313,11 @@ export function useWsRuntime(agentId: string): {
   const mountedRef = useRef(true);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconcileApplyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconcileFinishTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const messagesRef = useRef<WsMessage[]>([]);
   const shouldRecoverFromHistoryRef = useRef(false);
+  const lifecycleSuspendedRef = useRef(false);
   /**
    * Pending-disconnect-error timer. Set by `onclose` when a stream is
    * interrupted; cleared when a successful history reconcile lands within
@@ -361,13 +367,26 @@ export function useWsRuntime(agentId: string): {
     setIsRunning(false);
     setIsDelayed(false);
     setIsHistoryLoaded(false);
+    setIsReconcilingMessages(false);
     setKnownEmptyHistory(false);
     setPayloadRejected(false);
+    if (reconcileApplyTimerRef.current) {
+      clearTimeout(reconcileApplyTimerRef.current);
+      reconcileApplyTimerRef.current = null;
+    }
+    if (reconcileFinishTimerRef.current) {
+      clearTimeout(reconcileFinishTimerRef.current);
+      reconcileFinishTimerRef.current = null;
+    }
     if (pendingDisconnectErrorRef.current) {
       clearTimeout(pendingDisconnectErrorRef.current.timer);
       pendingDisconnectErrorRef.current = null;
     }
   }
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const dispatchMessages = useCallback((action: Action) => {
     setMessages((prev) => capMessages(reduceMessages(prev, action)));
@@ -392,6 +411,96 @@ export function useWsRuntime(agentId: string): {
         clearTimeout(stuckTimerRef.current);
         stuckTimerRef.current = null;
       }
+    }
+
+    function clearReconcileTimers() {
+      if (reconcileApplyTimerRef.current) {
+        clearTimeout(reconcileApplyTimerRef.current);
+        reconcileApplyTimerRef.current = null;
+      }
+      if (reconcileFinishTimerRef.current) {
+        clearTimeout(reconcileFinishTimerRef.current);
+        reconcileFinishTimerRef.current = null;
+      }
+    }
+
+    function clearUiTimers() {
+      clearStuckTimer();
+      clearReconcileTimers();
+      setIsReconcilingMessages(false);
+      if (delayTimerRef.current) {
+        clearTimeout(delayTimerRef.current);
+        delayTimerRef.current = null;
+      }
+      if (pendingDisconnectErrorRef.current) {
+        clearTimeout(pendingDisconnectErrorRef.current.timer);
+        pendingDisconnectErrorRef.current = null;
+      }
+      for (const timer of pendingAckTimers.current.values()) {
+        clearTimeout(timer);
+      }
+      pendingAckTimers.current.clear();
+    }
+
+    function stageDestructiveHistoryReconcile(historyMessages: WsMessage[]) {
+      clearReconcileTimers();
+      setIsReconcilingMessages(true);
+      reconcileApplyTimerRef.current = setTimeout(() => {
+        reconcileApplyTimerRef.current = null;
+        setMessages(capMessages(historyMessages));
+        reconcileFinishTimerRef.current = setTimeout(() => {
+          reconcileFinishTimerRef.current = null;
+          setIsReconcilingMessages(false);
+        }, 16);
+      }, 0);
+    }
+
+    function suspendForPageLifecycle() {
+      lifecycleSuspendedRef.current = true;
+      clearUiTimers();
+      setIsDelayed(false);
+      setIsConnected(false);
+      if (reconnectTimerRef.current) {
+        clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+      shouldRecoverFromHistoryRef.current = true;
+      wsRef.current?.close();
+    }
+
+    function recoverFromPageLifecycle() {
+      if (!lifecycleSuspendedRef.current) return;
+      lifecycleSuspendedRef.current = false;
+      shouldRecoverFromHistoryRef.current = true;
+      if (wsRef.current?.readyState === WebSocket.OPEN) {
+        wsRef.current.send(JSON.stringify({ type: "history", agentId }));
+      } else {
+        connect();
+      }
+    }
+
+    function handleVisibilityChange() {
+      if (document.visibilityState === "hidden") {
+        suspendForPageLifecycle();
+      } else if (document.visibilityState === "visible") {
+        recoverFromPageLifecycle();
+      }
+    }
+
+    function handlePageHide() {
+      suspendForPageLifecycle();
+    }
+
+    function handlePageShow() {
+      recoverFromPageLifecycle();
+    }
+
+    function handleOffline() {
+      suspendForPageLifecycle();
+    }
+
+    function handleOnline() {
+      recoverFromPageLifecycle();
     }
 
     function resetStuckTimer() {
@@ -450,6 +559,14 @@ export function useWsRuntime(agentId: string): {
         if (delayTimerRef.current) {
           clearTimeout(delayTimerRef.current);
           delayTimerRef.current = null;
+        }
+
+        if (lifecycleSuspendedRef.current) {
+          isRunningRef.current = false;
+          setIsRunning(false);
+          setIsHistoryLoaded(false);
+          setKnownEmptyHistory(false);
+          return;
         }
 
         // Close-code 1009: the incoming frame exceeded maxPayload. The frame
@@ -599,6 +716,23 @@ export function useWsRuntime(agentId: string): {
               ...(msg.files && msg.files.length > 0 ? { files: msg.files } : {}),
             }));
             const shouldRecoverFromHistory = shouldRecoverFromHistoryRef.current;
+            const prevMessages = messagesRef.current;
+            const shouldReplaceWithHistory =
+              shouldRecoverFromHistory &&
+              historyMessages.length > 0 &&
+              [...prevMessages].reverse().find((m) => !m.error)?.role === "assistant";
+            const shouldStageReplace =
+              shouldReplaceWithHistory &&
+              prevMessages.length > 0 &&
+              (historyMessages.length < prevMessages.length || prevMessages.some((m) => m.error));
+
+            if (shouldStageReplace) {
+              stageDestructiveHistoryReconcile(historyMessages);
+              shouldRecoverFromHistoryRef.current = false;
+              setIsHistoryLoaded(true);
+              return;
+            }
+
             setMessages((prev) => {
               if (prev.length === 0) {
                 return capMessages(historyMessages);
@@ -780,16 +914,31 @@ export function useWsRuntime(agentId: string): {
 
     connectRef.current = connect;
     connect();
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("pagehide", handlePageHide);
+    window.addEventListener("pageshow", handlePageShow);
+    document.addEventListener("freeze", handlePageHide);
+    document.addEventListener("resume", handlePageShow);
+    window.addEventListener("offline", handleOffline);
+    window.addEventListener("online", handleOnline);
 
     return () => {
       mountedRef.current = false;
       if (connectRef.current === connect) {
         connectRef.current = null;
       }
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("pagehide", handlePageHide);
+      window.removeEventListener("pageshow", handlePageShow);
+      document.removeEventListener("freeze", handlePageHide);
+      document.removeEventListener("resume", handlePageShow);
+      window.removeEventListener("offline", handleOffline);
+      window.removeEventListener("online", handleOnline);
       if (reconnectTimerRef.current) {
         clearTimeout(reconnectTimerRef.current);
         reconnectTimerRef.current = null;
       }
+      clearReconcileTimers();
       if (delayTimerRef.current) {
         clearTimeout(delayTimerRef.current);
       }
@@ -1176,6 +1325,7 @@ export function useWsRuntime(agentId: string): {
     isConnected,
     isDelayed,
     isHistoryLoaded,
+    isReconcilingMessages,
     hasInitialContent,
     isOpenClawConnected,
     reconnectExhausted,

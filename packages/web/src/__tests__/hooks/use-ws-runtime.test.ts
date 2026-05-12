@@ -2086,6 +2086,126 @@ describe("useWsRuntime", () => {
       expect(disconnectError).toBeDefined();
     });
 
+    it("stages a destructive history reconcile behind a message-subtree remount", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws1 = wsInstances[0];
+
+      act(() => {
+        ws1.onopen?.();
+        ws1.onmessage?.({ data: JSON.stringify({ type: "history", messages: [] }) });
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Summarize this profile" }],
+          parentId: "root",
+        });
+      });
+      act(() => {
+        ws1.onmessage?.({
+          data: JSON.stringify({
+            type: "chunk",
+            messageId: "asst-late",
+            content: "Partial summary",
+          }),
+        });
+        ws1.onclose?.();
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(2000);
+      });
+
+      const localLength = result.current.runtime.messages.length;
+      expect(localLength).toBeGreaterThan(2);
+
+      const ws2 = wsInstances[1];
+      act(() => {
+        ws2.onopen?.();
+        ws2.onmessage?.({
+          data: JSON.stringify({
+            type: "history",
+            messages: [
+              { role: "user", content: "Summarize this profile" },
+              { role: "assistant", content: "Final summary" },
+            ],
+          }),
+        });
+      });
+
+      expect(result.current.isReconcilingMessages).toBe(true);
+      expect(result.current.runtime.messages).toHaveLength(localLength);
+
+      act(() => {
+        vi.advanceTimersByTime(0);
+      });
+
+      expect(result.current.runtime.messages).toHaveLength(2);
+      expect(result.current.runtime.messages[1].content[0].text).toBe("Final summary");
+      expect(result.current.isReconcilingMessages).toBe(true);
+
+      act(() => {
+        vi.advanceTimersByTime(16);
+      });
+
+      expect(result.current.isReconcilingMessages).toBe(false);
+    });
+
+    it("does not replay a disconnect bubble after the page resumes from sleep", () => {
+      const { result } = renderHook(() => useWsRuntime("agent-1"));
+      const ws = wsInstances[0];
+
+      act(() => {
+        ws.onopen?.();
+        ws.onmessage?.({ data: JSON.stringify({ type: "history", messages: [] }) });
+      });
+
+      act(() => {
+        result.current.runtime.onNew({
+          content: [{ type: "text", text: "Keep working while I close my laptop" }],
+          parentId: "root",
+        });
+      });
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            type: "chunk",
+            messageId: "asst-sleep",
+            content: "Working on it...",
+          }),
+        });
+      });
+
+      act(() => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          value: "hidden",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+        ws.onclose?.();
+      });
+
+      act(() => {
+        vi.advanceTimersByTime(10_000);
+      });
+
+      expect(
+        result.current.runtime.messages.find(
+          (m: any) => m.role === "assistant" && m.metadata?.custom?.error?.disconnected === true
+        )
+      ).toBeUndefined();
+
+      act(() => {
+        Object.defineProperty(document, "visibilityState", {
+          configurable: true,
+          value: "visible",
+        });
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      expect(wsInstances.length).toBeGreaterThan(1);
+    });
+
     it("close-code 1009 surfaces 'Image too large' instead of generic disconnect", () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
       const ws = wsInstances[0];

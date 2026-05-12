@@ -9,6 +9,7 @@ export interface RuntimeBundle {
   isRunning: boolean;
   isConnected: boolean;
   isHistoryLoaded: boolean;
+  isReconcilingMessages: boolean;
   hasInitialContent: boolean;
   isOpenClawConnected: boolean;
   isDelayed: boolean;

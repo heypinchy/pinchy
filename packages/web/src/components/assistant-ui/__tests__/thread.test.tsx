@@ -70,6 +70,33 @@ vi.mock("@assistant-ui/react", () => ({
     Attachments: () => null,
     AddAttachment: () => null,
   },
+  ThreadPrimitive: {
+    Root: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => (
+      <div data-testid="thread-root" {...props}>
+        {children}
+      </div>
+    ),
+    Viewport: ({ children, ...props }: { children?: React.ReactNode; [key: string]: unknown }) => (
+      <div data-testid="thread-viewport" {...props}>
+        {children}
+      </div>
+    ),
+    Messages: () => <div data-testid="thread-messages" />,
+    ViewportFooter: ({
+      children,
+      ...props
+    }: {
+      children?: React.ReactNode;
+      [key: string]: unknown;
+    }) => <div {...props}>{children}</div>,
+    ScrollToBottom: ({
+      children,
+      asChild: _asChild,
+    }: {
+      children?: React.ReactNode;
+      asChild?: boolean;
+    }) => <>{children}</>,
+  },
   AuiIf: ({
     children,
     condition,
@@ -316,6 +343,16 @@ describe("ThreadWelcome", () => {
     await renderWith({ kind: "payloadRejected" });
     expect(screen.getByText(/image too large/i)).toBeInTheDocument();
     expect(screen.queryByTestId("loading-spinner")).not.toBeInTheDocument();
+  });
+});
+
+describe("Thread reconciling state", () => {
+  it("unmounts messages while keeping the composer visible during guarded reconcile", async () => {
+    const { Thread } = await import("@/components/assistant-ui/thread");
+    render(<Thread isReconcilingMessages />);
+
+    expect(screen.queryByTestId("thread-messages")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Message input")).toBeInTheDocument();
   });
 });
 
