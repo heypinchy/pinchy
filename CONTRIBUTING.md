@@ -226,44 +226,15 @@ Before cutting a tag, the maintainer runs the pre-release build on a dedicated s
 
 Same for `pinchy-openclaw`.
 
-**One-time staging setup** on your staging host:
+The staging instance is set up once (see [Staging instance setup](#staging-instance-setup) below for the one-time bootstrap) and pins `PINCHY_VERSION=next`.
 
-1. Deploy Pinchy normally, but pin `:next` in your `.env`:
+**Before each release**, refresh staging to pick up the latest `:next` build, then click through the key flows: Smithers chat, one live integration, one custom agent with chat history.
 
-   ```env
-   PINCHY_VERSION=next
-   ```
+```bash
+ssh root@<staging-host> "cd /opt/pinchy && docker compose pull && docker compose up -d"
+```
 
-2. Install `/usr/local/bin/update-pinchy`:
-
-   ```bash
-   #!/usr/bin/env bash
-   set -euo pipefail
-   cd /srv/pinchy
-   LOG=/var/log/pinchy-update.log
-   echo "[$(date -Iseconds)] pulling" | tee -a "$LOG"
-   docker compose pull 2>&1 | tee -a "$LOG"
-   echo "[$(date -Iseconds)] restarting" | tee -a "$LOG"
-   docker compose up -d 2>&1 | tee -a "$LOG"
-   echo "[$(date -Iseconds)] waiting for health" | tee -a "$LOG"
-   for i in $(seq 1 30); do
-     curl -sf http://localhost:7777/api/health \
-       && { echo "healthy" | tee -a "$LOG"; exit 0; }
-     sleep 2
-   done
-   echo "health check failed" | tee -a "$LOG"
-   docker compose ps | tee -a "$LOG"
-   exit 1
-   ```
-
-   Make it executable: `chmod +x /usr/local/bin/update-pinchy`.
-
-3. Schedule nightly updates via cron or systemd timer:
-   ```cron
-   0 4 * * *  root  /usr/local/bin/update-pinchy
-   ```
-
-**Before each release**, run `sudo update-pinchy` manually during business hours to pull the latest `:next` build, then click through the key flows on staging: Smithers chat, one live integration, one custom agent with chat history.
+Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184) and lands in v0.6.0.
 
 **Use synthetic data in staging.** Do not restore prod dumps — unnecessary privacy surface.
 
