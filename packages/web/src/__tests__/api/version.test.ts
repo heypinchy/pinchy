@@ -1,28 +1,38 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { GET } from "@/app/api/version/route";
 
+const ENV_KEYS = [
+  "NEXT_PUBLIC_PINCHY_VERSION",
+  "NEXT_PUBLIC_OPENCLAW_VERSION",
+  "PINCHY_BUILD_SHA",
+  "NODE_ENV",
+] as const;
+
 describe("GET /api/version", () => {
-  const original = {
-    pinchyVersion: process.env.NEXT_PUBLIC_PINCHY_VERSION,
-    openclawVersion: process.env.NEXT_PUBLIC_OPENCLAW_VERSION,
-    buildSha: process.env.PINCHY_BUILD_SHA,
-    nodeEnv: process.env.NODE_ENV,
-  };
+  // Snapshot includes `undefined` for keys that weren't set, so restoreEnv()
+  // can `delete` them instead of restoring them as the literal string "undefined".
+  // Without this, tests that set NODE_ENV (originally unset) would leak it into
+  // sibling test files and cause hard-to-debug ordering flakes.
+  const snapshot: Record<string, string | undefined> = {};
+  for (const key of ENV_KEYS) snapshot[key] = process.env[key];
 
-  beforeEach(() => {
-    delete process.env.NEXT_PUBLIC_PINCHY_VERSION;
-    delete process.env.NEXT_PUBLIC_OPENCLAW_VERSION;
-    delete process.env.PINCHY_BUILD_SHA;
-  });
+  function resetEnv() {
+    for (const key of ENV_KEYS) delete process.env[key];
+  }
 
-  afterEach(() => {
-    if (original.pinchyVersion !== undefined)
-      process.env.NEXT_PUBLIC_PINCHY_VERSION = original.pinchyVersion;
-    if (original.openclawVersion !== undefined)
-      process.env.NEXT_PUBLIC_OPENCLAW_VERSION = original.openclawVersion;
-    if (original.buildSha !== undefined) process.env.PINCHY_BUILD_SHA = original.buildSha;
-    if (original.nodeEnv !== undefined) process.env.NODE_ENV = original.nodeEnv;
-  });
+  function restoreEnv() {
+    for (const key of ENV_KEYS) {
+      const value = snapshot[key];
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
+
+  beforeEach(resetEnv);
+  afterEach(restoreEnv);
 
   it("returns 200 with JSON", async () => {
     const response = await GET();

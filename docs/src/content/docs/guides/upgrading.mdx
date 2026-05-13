@@ -28,7 +28,7 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
    docker compose exec -T db pg_dump -U pinchy pinchy > backups/pinchy-$(date +%Y%m%d-%H%M%S).sql
    ```
 
-   The `backups/` directory keeps backups out of `/opt/pinchy/` itself so they don't get mistaken for compose files, and is easy to add to your own off-host backup rotation.
+   Keeping backups under `backups/` instead of loose in `/opt/pinchy/` means they don't sit next to your `docker-compose.yml` / `.env`, and the directory is easy to target with your off-host backup rotation.
 
 2. **Bump the version pin**
 
@@ -103,9 +103,12 @@ If you need to roll back after an upgrade:
 
 2. **Restore the database**
 
+   Pick the backup you want from `backups/` (the most recent one is usually what you want):
+
    ```bash
    docker compose up db -d
-   docker compose exec -T db psql -U pinchy pinchy < backup-YYYYMMDD.sql
+   ls -lt backups/             # newest first
+   docker compose exec -T db psql -U pinchy pinchy < backups/pinchy-YYYYMMDD-HHMMSS.sql
    ```
 
 3. **Pull the previous version**
