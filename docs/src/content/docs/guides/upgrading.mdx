@@ -115,7 +115,7 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.5.2 to %%PINCHY_VERSION%%
+## Upgrading from v0.5.3 to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
@@ -123,13 +123,73 @@ None.
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% is a maintenance release focused on chat reliability: the recommended Ollama Cloud reasoning model was swapped after the previous default soft-deprecated upstream, model errors now surface as actionable in-chat bubbles instead of raw HTTP 500s, and the chat layout was restructured so per-agent runtimes survive in-app navigation. File attachments also got a proper preview surface.
+%%PINCHY_VERSION%% extends the Odoo template library with read-write operator agents, hardens how those agents reference Odoo records, and irons out several chat-reliability edges. It also picks up Next.js security patches and OpenClaw 2026.5.7.
 
 Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.2/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=v0.5.3/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+docker compose pull && docker compose up -d
+```
+
+No database migration, no `docker-compose.yml` change, and no env-var changes are required.
+
+#### Six new Odoo agent templates
+
+The agent picker now includes a Bookkeeper template and five read-write Odoo operator counterparts to the existing read-only Analysts:
+
+| Analyst (read-only)   | Operator (read + create + write) |
+| --------------------- | -------------------------------- |
+| Project Tracker       | Project Manager                  |
+| HR Analyst            | HR Operator                      |
+| Inventory Scout       | Warehouse Operator               |
+| Manufacturing Planner | Production Operator              |
+| —                     | Approval Manager (cross-module)  |
+
+Each operator template follows a safety pattern: mandatory user confirmation before any side-effecting write, duplicate-check on every create, no delete on any model (cancellations are write transitions, never hard deletes), and read-only access to records that belong to a different role. The new Bookkeeper template covers the "book this receipt" workflow with a draft-first, dedupe-first, one-shot-create flow.
+
+The Approval Manager works on Odoo Community as well as Enterprise — the `approval.request` and `approval.category` models are flagged optional, so the Create button stays enabled on Community installs and the agent discovers availability at runtime via `odoo_schema`.
+
+#### Vision capability is now standard for read-write Odoo templates
+
+Every read-write Odoo operator template now declares the `vision` capability in its model hint. Previously this had to be set manually after agent creation, which often landed users on unstable Vision+Tools models. A new drift invariant in the test suite enforces this for any future write-capable Odoo template.
+
+#### Hardened Odoo relation references
+
+When an Odoo tool returns a record, related-record references are now emitted as opaque, encrypted tokens (`pinchy_ref:v1:…`) rather than raw `(id, label)` tuples. The pinchy-odoo plugin transparently resolves these tokens on subsequent calls, so an agent can no longer fabricate or substitute a numeric ID it never saw. Existing agents pick up the new behavior automatically; no configuration change is required.
+
+#### Chat reliability fixes
+
+- **Browser sleep recovery.** Chats now reattach cleanly when a tab returns from background sleep instead of getting stuck on a stale stream.
+- **Dead-key composer freeze.** Typing characters that involve dead keys (e.g. `^` + `e` → `ê`) no longer desyncs the composer input.
+- **Payload rejection visibility.** When OpenClaw rejects a payload mid-stream, the chat now surfaces a clear error status instead of leaving the spinner running.
+- **Silent stream-end retry.** A run that finishes without producing any assistant text — typically a cold-path tool call that timed out inside OpenClaw's embedded layer — now shows the standard error bubble with a **Retry** button instead of an indistinguishable "successful empty reply". Each occurrence writes a throttled `chat.silent_stream` audit entry so admins get an operational signal.
+
+#### Permissions tab no longer reports false-positive dirty state
+
+If an Odoo or Email connection was configured on an agent, the **Settings → Agent → Permissions** tab kept showing "Unsaved changes" and a **Save & Restart** button after a successful save. The dirty-state check now re-syncs against the persisted state once the post-save refetch lands, so a clean save shows as clean.
+
+#### Runtime and dependency updates
+
+- **OpenClaw 2026.5.7** (was 2026.5.3) — picked up via `Dockerfile.openclaw` and the bundled `openclaw-node 0.8.0`.
+- **Next.js 16.2.6** (was 16.2.4) — addresses [GHSA-wfc6-r584-vfw7](https://github.com/advisories/GHSA-wfc6-r584-vfw7) and [GHSA-26hh-7cqf-hhc6](https://github.com/advisories/GHSA-26hh-7cqf-hhc6).
+
+## Upgrading from v0.5.2 to v0.5.3
+
+### Breaking changes
+
+None.
+
+### Upgrade notes
+
+v0.5.3 is a maintenance release focused on chat reliability: the recommended Ollama Cloud reasoning model was swapped after the previous default soft-deprecated upstream, model errors now surface as actionable in-chat bubbles instead of raw HTTP 500s, and the chat layout was restructured so per-agent runtimes survive in-app navigation. File attachments also got a proper preview surface.
+
+Upgrade with the standard flow:
+
+```bash
+cd /opt/pinchy
+sed -i 's/PINCHY_VERSION=v0.5.2/PINCHY_VERSION=v0.5.3/' .env
 docker compose pull && docker compose up -d
 ```
 
@@ -144,10 +204,6 @@ Existing agents that pinned `kimi-k2-thinking` explicitly keep loading from the 
 #### Actionable model-error bubbles in chat
 
 When an agent's model call returns a 5xx from the upstream provider, the chat now shows a structured error bubble (`<Agent> couldn't respond.` + provider/model + a deep-link to the agent's model picker) instead of the raw `HTTP 500: "Internal Server Error (ref: …)"` string. The original error stays available under a collapsible **Technical details** section so support requests can still cite the upstream `ref` ID. Every flip into this error state writes an `agent.model_unavailable` audit entry.
-
-#### Silent model timeouts now surface a retry-able error
-
-Previously, a run that ended without producing any assistant text — typically a model that timed out inside OpenClaw's embedded layer on a cold-path tool call — left the chat indistinguishable from a successful empty reply: spinner gone, no error, no retry button. The chat now detects when a stream completes with no consumer-visible output and shows the standard error bubble with a **Retry** button plus the "Try again in a moment." hint, so the user isn't left guessing whether anything is still happening. Each silent timeout also writes a `chat.silent_stream` audit entry (throttled per `(agentId, model)` so a flaky provider can't flood the trail through user retries), giving admins an operational signal that an embedded run terminated without producing output.
 
 #### Per-agent chat runtimes survive in-app navigation
 
