@@ -44,6 +44,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Resolve release tag (drops leading 'v' for image labels)
+        id: release-tag
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          VERSION=${RELEASE_TAG#v}
+          echo "tag=${RELEASE_TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
       - name: Extract metadata (tags, labels)
         id: meta-pinchy
         uses: docker/metadata-action@v5
@@ -68,6 +77,9 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            PINCHY_VERSION=${{ steps.release-tag.outputs.version }}
+            PINCHY_BUILD_SHA=${{ github.sha }}
 
       - name: Extract metadata for OpenClaw image
         id: meta-openclaw
@@ -93,6 +105,9 @@ jobs:
           platforms: linux/amd64
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          build-args: |
+            PINCHY_VERSION=${{ steps.release-tag.outputs.version }}
+            PINCHY_BUILD_SHA=${{ github.sha }}
 
   end-user-install-published:
     name: End-user install (published images)

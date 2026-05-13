@@ -3,6 +3,20 @@
 # pull-through cache for `library/*` images on Docker Hub.
 FROM mirror.gcr.io/library/node:22-slim
 
+# Build-time metadata. CI passes --build-arg PINCHY_VERSION + PINCHY_BUILD_SHA;
+# local builds without --build-arg get "dev" so `/api/version` makes that obvious.
+ARG PINCHY_VERSION=dev
+ARG PINCHY_BUILD_SHA=dev
+# PINCHY_BUILD_SHA also reaches runtime so /api/version can surface it.
+ENV PINCHY_BUILD_SHA=$PINCHY_BUILD_SHA
+
+LABEL org.opencontainers.image.source="https://github.com/heypinchy/pinchy" \
+      org.opencontainers.image.title="Pinchy" \
+      org.opencontainers.image.description="Enterprise AI Agent Platform" \
+      org.opencontainers.image.licenses="AGPL-3.0" \
+      org.opencontainers.image.version="$PINCHY_VERSION" \
+      org.opencontainers.image.revision="$PINCHY_BUILD_SHA"
+
 # Cache pnpm in a shared location so the non-root pinchy user can use it
 # without re-downloading on every container start.
 ENV COREPACK_HOME=/app/.cache/corepack

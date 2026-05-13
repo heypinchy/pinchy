@@ -46,6 +46,12 @@ describe("domain restriction host check", () => {
     expect(isHostAllowed("evil.example.com", "/api/setup/status")).toBe(true);
   });
 
+  it("always allows /api/version regardless of host", () => {
+    vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
+    expect(isHostAllowed("evil.example.com", "/api/version")).toBe(true);
+    expect(isHostAllowed("localhost:7777", "/api/version")).toBe(true);
+  });
+
   it("allows pinchy-audit hook calls from Docker-internal hostnames", () => {
     vi.mocked(getCachedDomain).mockReturnValue("pinchy.example.com");
     expect(isHostAllowed("pinchy:7777", "/api/internal/audit/tool-use")).toBe(true);

@@ -34,6 +34,7 @@ const PUBLIC_ROUTES = [
   "api/health/route.ts",
   "api/health/openclaw/route.ts",
   "api/diagnostics/route.ts",
+  "api/version/route.ts",
   "api/internal/openclaw-config-ready/route.ts",
 ];
 

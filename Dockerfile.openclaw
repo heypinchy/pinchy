@@ -3,6 +3,19 @@
 # pull-through cache for `library/*` images on Docker Hub.
 FROM mirror.gcr.io/library/node:22-slim
 
+# Build-time metadata. CI passes --build-arg PINCHY_VERSION + PINCHY_BUILD_SHA;
+# local builds without --build-arg get "dev". OpenClaw's own version is the
+# `openclaw@…` pin below and surfaces via Pinchy's /api/version response.
+ARG PINCHY_VERSION=dev
+ARG PINCHY_BUILD_SHA=dev
+
+LABEL org.opencontainers.image.source="https://github.com/heypinchy/pinchy" \
+      org.opencontainers.image.title="Pinchy OpenClaw runtime" \
+      org.opencontainers.image.description="OpenClaw agent runtime + Pinchy plugin dependencies" \
+      org.opencontainers.image.licenses="AGPL-3.0" \
+      org.opencontainers.image.version="$PINCHY_VERSION" \
+      org.opencontainers.image.revision="$PINCHY_BUILD_SHA"
+
 # python3 + build-essential are needed for native npm modules (better-sqlite3
 # in pinchy-files) to compile from source when the prebuilt binary doesn't
 # match the current node:22-slim point release. Without them the image build

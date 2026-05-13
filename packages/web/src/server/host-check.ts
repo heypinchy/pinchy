@@ -5,7 +5,7 @@ import { getCachedDomain, normalizeHost } from "@/lib/domain-cache";
 // plugin endpoints are called through Docker-internal hostnames, so they also
 // bypass host matching. The unauthenticated OpenClaw readiness endpoint is
 // only exempt for same-container loopback healthchecks.
-const EXEMPT_PATHS = ["/api/health", "/api/setup/status"];
+const EXEMPT_PATHS = ["/api/health", "/api/setup/status", "/api/version"];
 const LOOPBACK_ONLY_EXEMPT_PATHS = ["/api/internal/openclaw-config-ready"];
 
 function isLoopbackHost(host: string | undefined): boolean {
