@@ -85,12 +85,14 @@ describe("auth config consistency", () => {
     );
   });
 
-  it("startup warning should explain BETTER_AUTH_URL still controls Better Auth callbacks", () => {
+  it("startup warning should name what BETTER_AUTH_URL still controls (not the vague 'callback URLs')", () => {
     const content = readFileSync(
       resolve(PROJECT_ROOT, "packages/web/src/lib/auth-env-warning.ts"),
       "utf-8"
     );
-    expect(content).toContain("still controls Better Auth callback URLs");
+    // Must call out the concrete user-visible thing — email/password-reset
+    // links — so admins can decide if the var is still needed for their setup.
+    expect(content).toMatch(/email verification|password reset/i);
     expect(content).not.toContain("BETTER_AUTH_URL is set but no longer used");
   });
 
