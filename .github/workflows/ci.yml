@@ -753,9 +753,31 @@ jobs:
           # Missing previous-version images make the upgrade test impossible
           # to run, but they are not a regression in *this* PR — skip with a
           # warning instead of failing.
+          #
+          # Transient GHCR token-endpoint timeouts ("request canceled
+          # (Client.Timeout exceeded while awaiting headers)") are not the
+          # registry being down — they're brief network blips that retry away.
+          # The pull is retried up to 3 times with 10s backoff before any
+          # skip/fail classification kicks in. See #351 for the incident.
           set +e
-          docker compose pull 2>&1 | tee pull.log
-          status=${PIPESTATUS[0]}
+          attempt=1
+          max_attempts=3
+          while [ "$attempt" -le "$max_attempts" ]; do
+            docker compose pull 2>&1 | tee pull.log
+            status=${PIPESTATUS[0]}
+            if [ "$status" -eq 0 ]; then
+              break
+            fi
+            # Don't retry skippable conditions — they won't change on retry.
+            if grep -qE "manifest unknown|not found|toomanyrequests|pull rate limit" pull.log; then
+              break
+            fi
+            if [ "$attempt" -lt "$max_attempts" ]; then
+              echo "::warning::docker compose pull failed (attempt ${attempt}/${max_attempts}). Retrying in 10s..."
+              sleep 10
+            fi
+            attempt=$((attempt + 1))
+          done
           set -e
           if [ "$status" -ne 0 ]; then
             if grep -qE "manifest unknown|not found" pull.log; then
@@ -768,7 +790,7 @@ jobs:
               echo "skip=true" >> "$GITHUB_OUTPUT"
               exit 0
             fi
-            echo "::error::docker compose pull failed for an unexpected reason (not a missing-image or rate-limit condition). See pull.log above."
+            echo "::error::docker compose pull failed ${max_attempts}× for an unexpected reason (not missing-image, not rate-limit). See pull.log above."
             exit 1
           fi
           echo "skip=false" >> "$GITHUB_OUTPUT"
