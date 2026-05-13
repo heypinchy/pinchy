@@ -5,7 +5,7 @@ import { AgentsProvider, useAgentsContext } from "@/components/agents-provider";
 import type { Agent } from "@/components/agent-list";
 
 const { mockUseAgents, mockUsePathname, mockRouterPush, mockToast } = vi.hoisted(() => ({
-  mockUseAgents: vi.fn((agents: Agent[]) => agents),
+  mockUseAgents: vi.fn((agents: Agent[]) => ({ agents, refresh: vi.fn() })),
   mockUsePathname: vi.fn().mockReturnValue("/chat/a1"),
   mockRouterPush: vi.fn(),
   mockToast: vi.fn(),
@@ -44,7 +44,7 @@ function wrapper({ children }: { children: React.ReactNode }) {
 describe("AgentsProvider", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockUseAgents.mockImplementation((a: Agent[]) => a);
+    mockUseAgents.mockImplementation((a: Agent[]) => ({ agents: a, refresh: vi.fn() }));
     mockUsePathname.mockReturnValue("/chat/a1");
   });
 
@@ -83,7 +83,7 @@ describe("AgentsProvider", () => {
     it("should redirect and toast when current agent disappears", () => {
       mockUsePathname.mockReturnValue("/chat/a3");
       // useAgents returns list without a3
-      mockUseAgents.mockReturnValue([agents[0], agents[1]]);
+      mockUseAgents.mockReturnValue({ agents: [agents[0], agents[1]], refresh: vi.fn() });
 
       render(
         <AgentsProvider initialAgents={agents}>
@@ -100,7 +100,7 @@ describe("AgentsProvider", () => {
 
     it("should not redirect when current agent is still visible", () => {
       mockUsePathname.mockReturnValue("/chat/a1");
-      mockUseAgents.mockReturnValue(agents);
+      mockUseAgents.mockReturnValue({ agents, refresh: vi.fn() });
 
       render(
         <AgentsProvider initialAgents={agents}>
@@ -114,7 +114,7 @@ describe("AgentsProvider", () => {
 
     it("should not redirect when not on a chat page", () => {
       mockUsePathname.mockReturnValue("/settings");
-      mockUseAgents.mockReturnValue([]);
+      mockUseAgents.mockReturnValue({ agents: [], refresh: vi.fn() });
 
       render(
         <AgentsProvider initialAgents={agents}>
@@ -147,7 +147,7 @@ describe("AgentsProvider", () => {
           avatarSeed: null,
         },
       ];
-      mockUseAgents.mockReturnValue(nonPersonal);
+      mockUseAgents.mockReturnValue({ agents: nonPersonal, refresh: vi.fn() });
 
       render(
         <AgentsProvider initialAgents={agents}>
@@ -161,7 +161,7 @@ describe("AgentsProvider", () => {
 
     it("should not redirect when agent list is empty", () => {
       mockUsePathname.mockReturnValue("/chat/a1");
-      mockUseAgents.mockReturnValue([]);
+      mockUseAgents.mockReturnValue({ agents: [], refresh: vi.fn() });
 
       render(
         <AgentsProvider initialAgents={agents}>

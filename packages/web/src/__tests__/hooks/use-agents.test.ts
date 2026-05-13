@@ -44,7 +44,7 @@ describe("useAgents", () => {
 
   it("should return initial agents immediately", () => {
     const { result } = renderHook(() => useAgents(mockAgents));
-    expect(result.current).toEqual(mockAgents);
+    expect(result.current.agents).toEqual(mockAgents);
   });
 
   it("should poll /api/agents every 30 seconds", async () => {
@@ -59,7 +59,7 @@ describe("useAgents", () => {
     });
 
     expect(fetchSpy).toHaveBeenCalledWith("/api/agents");
-    expect(result.current).toEqual(updatedAgents);
+    expect(result.current.agents).toEqual(updatedAgents);
   });
 
   it("should refetch when window regains focus", async () => {
@@ -74,7 +74,7 @@ describe("useAgents", () => {
     });
 
     expect(fetchSpy).toHaveBeenCalledWith("/api/agents");
-    expect(result.current).toEqual(updatedAgents);
+    expect(result.current.agents).toEqual(updatedAgents);
   });
 
   it("should not update agents when fetch fails", async () => {
@@ -87,7 +87,7 @@ describe("useAgents", () => {
     });
 
     // Should keep initial agents on failure
-    expect(result.current).toEqual(mockAgents);
+    expect(result.current.agents).toEqual(mockAgents);
   });
 
   it("should clean up interval and listener on unmount", () => {
@@ -105,13 +105,13 @@ describe("useAgents", () => {
       initialProps: { agents: mockAgents },
     });
 
-    expect(result.current).toEqual(mockAgents);
+    expect(result.current.agents).toEqual(mockAgents);
 
     const newAgents: Agent[] = [
       { id: "a3", name: "New", model: "gpt-4", isPersonal: false, tagline: null, avatarSeed: null },
     ];
     rerender({ agents: newAgents });
 
-    expect(result.current).toEqual(newAgents);
+    expect(result.current.agents).toEqual(newAgents);
   });
 });

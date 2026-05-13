@@ -5,7 +5,10 @@ import type { Agent } from "@/components/agent-list";
 
 const POLL_INTERVAL_MS = 30_000;
 
-export function useAgents(initialAgents: Agent[]): Agent[] {
+export function useAgents(initialAgents: Agent[]): {
+  agents: Agent[];
+  refresh: () => Promise<void>;
+} {
   const [agents, setAgents] = useState(initialAgents);
 
   // Sync with SSR prop changes (e.g. after router.refresh())
@@ -40,5 +43,5 @@ export function useAgents(initialAgents: Agent[]): Agent[] {
     };
   }, [refetch]);
 
-  return agents;
+  return { agents, refresh: refetch };
 }

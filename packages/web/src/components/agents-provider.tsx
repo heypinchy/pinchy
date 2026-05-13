@@ -11,6 +11,7 @@ interface AgentsContextValue {
   agents: Agent[];
   sortedAgents: Agent[];
   getAgent: (id: string) => Agent | undefined;
+  refresh: () => Promise<void>;
 }
 
 const AgentsContext = createContext<AgentsContextValue | null>(null);
@@ -55,15 +56,15 @@ export function AgentsProvider({
   initialAgents: Agent[];
   children: React.ReactNode;
 }) {
-  const agents = useAgents(initialAgents);
+  const { agents, refresh } = useAgents(initialAgents);
   const sortedAgents = useMemo(() => sortAgents(agents), [agents]);
   const getAgent = useMemo(() => (id: string) => agents.find((a) => a.id === id), [agents]);
 
   useAccessGuard(agents, sortedAgents);
 
   const value = useMemo(
-    () => ({ agents, sortedAgents, getAgent }),
-    [agents, sortedAgents, getAgent]
+    () => ({ agents, sortedAgents, getAgent, refresh }),
+    [agents, sortedAgents, getAgent, refresh]
   );
 
   return <AgentsContext.Provider value={value}>{children}</AgentsContext.Provider>;

@@ -402,7 +402,7 @@ export const Composer: FC = () => {
   const agentId = useContext(AgentIdContext);
   const canEditAgent = useContext(CanEditContext);
   const isAdmin = useContext(IsAdminContext);
-  const { getAgent, sortedAgents } = useAgentsContext();
+  const { getAgent, sortedAgents, refresh: refreshAgents } = useAgentsContext();
   const composerRuntime = useComposerRuntime({ optional: true });
   const { data: capabilities } = useModelCapabilities();
 
@@ -513,6 +513,12 @@ export const Composer: FC = () => {
           onUpdateAgent={async (newModel) => {
             if (agentId) {
               await apiPatch(`/api/agents/${agentId}`, { model: newModel });
+              // Pull the fresh agent state so the live model in
+              // useAgentsContext reflects the change immediately. Without
+              // this, the hard-block check in handleSendClick still sees
+              // the old model and re-blocks the next send until the 30s
+              // poll fires.
+              await refreshAgents();
             }
             setRecoveryState(null);
           }}

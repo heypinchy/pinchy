@@ -108,6 +108,12 @@ test.describe("capability-mismatch — block + recovery", () => {
       }) => {
         const realFetch = window.fetch.bind(window);
 
+        // Tracks what model the agent should appear to have after a mocked
+        // PATCH. The Composer's refreshAgents() then sees the new model and
+        // stops re-blocking the next send. Starts as null = pass through to
+        // the real /api/agents response.
+        let patchedAgentModel: string | null = null;
+
         window.fetch = async function (
           input: RequestInfo | URL,
           init?: RequestInit
@@ -142,15 +148,51 @@ test.describe("capability-mismatch — block + recovery", () => {
             });
           }
 
-          // Intercept PATCH /api/agents/:id — return 200 so onUpdateAgent resolves
+          // Intercept PATCH /api/agents/:id — record the new model so the
+          // /api/agents list reflects the change on the next refresh, and
+          // return 200 so onUpdateAgent resolves.
           if (
             url.includes(`/api/agents/${targetAgentId}`) &&
             init?.method?.toUpperCase() === "PATCH"
           ) {
+            try {
+              const body = init?.body ? JSON.parse(String(init.body)) : {};
+              if (typeof body?.model === "string") {
+                patchedAgentModel = body.model;
+              }
+            } catch {
+              // Ignore malformed body — test only sends well-formed JSON.
+            }
             return new Response(JSON.stringify({ id: targetAgentId }), {
               status: 200,
               headers: { "Content-Type": "application/json" },
             });
+          }
+
+          // After a PATCH, the Composer calls refreshAgents() which hits
+          // GET /api/agents. Lie about the target agent's model so the
+          // refreshed local state lets the next send go through.
+          if (
+            patchedAgentModel &&
+            url.endsWith("/api/agents") &&
+            (init?.method ?? "GET").toUpperCase() === "GET"
+          ) {
+            const realRes = await realFetch(input, init);
+            try {
+              const list = (await realRes.clone().json()) as Array<{
+                id: string;
+                model: string;
+              }>;
+              const patched = list.map((a) =>
+                a.id === targetAgentId ? { ...a, model: patchedAgentModel } : a
+              );
+              return new Response(JSON.stringify(patched), {
+                status: 200,
+                headers: { "Content-Type": "application/json" },
+              });
+            } catch {
+              return realRes;
+            }
           }
 
           return realFetch(input, init);
