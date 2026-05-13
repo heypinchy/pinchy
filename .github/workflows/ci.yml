@@ -134,6 +134,25 @@ jobs:
           git fetch --no-tags --deepen=200 origin || true
           node scripts/check-test-deletions.mjs --base "origin/${{ github.base_ref }}"
 
+      - name: Drizzle snapshot integrity
+        # Catches the PR #334 class of bug: a committed migration .sql whose
+        # _snapshot.json is missing from drizzle/meta/, silently breaking the
+        # snapshot chain. Same script runs in the pre-commit hook locally.
+        run: node scripts/check-drizzle-snapshots.mjs
+
+      - name: Drizzle schema drift check
+        # Catches the inverse: schema.ts diverged from the latest snapshot
+        # without a corresponding migration. `drizzle-kit generate` is a no-op
+        # when in sync; any new files mean someone changed schema.ts and
+        # forgot to commit the migration drizzle would generate.
+        run: |
+          pnpm -C packages/web exec drizzle-kit generate
+          if ! git diff --exit-code -- packages/web/drizzle/; then
+            echo "❌ schema.ts has uncommitted changes that drizzle-kit would generate a migration for."
+            echo "   Run \`pnpm -C packages/web db:generate\` locally and commit the result."
+            exit 1
+          fi
+
       - name: Test
         run: pnpm test
 

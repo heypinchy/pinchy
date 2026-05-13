@@ -17,4 +17,9 @@ if [ ! -w "$HOME" ]; then
   mkdir -p "$PNPM_HOME"
 fi
 
+# Drizzle snapshot integrity: every journal entry must have a snapshot file,
+# and a staged migration .sql must come with its companion _snapshot.json.
+# See scripts/check-drizzle-snapshots.mjs for the rationale (PR #334 incident).
+node scripts/check-drizzle-snapshots.mjs || exit 1
+
 npx lint-staged
