@@ -24,8 +24,11 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
    Before any upgrade, create a database backup. This lets you roll back if anything goes wrong.
 
    ```bash
-   docker compose exec db pg_dump -U pinchy pinchy > backup-$(date +%Y%m%d).sql
+   mkdir -p backups
+   docker compose exec -T db pg_dump -U pinchy pinchy > backups/pinchy-$(date +%Y%m%d-%H%M%S).sql
    ```
+
+   The `backups/` directory keeps backups out of `/opt/pinchy/` itself so they don't get mistaken for compose files, and is easy to add to your own off-host backup rotation.
 
 2. **Bump the version pin**
 
@@ -52,11 +55,24 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
 
 4. **Verify**
 
-   Open [http://localhost:7777](http://localhost:7777) and confirm everything works. Check the logs for any warnings:
+   Confirm the new version is running by hitting `/api/version` — this endpoint is public and ignores Domain Lock, so it works from inside the server even when external access is locked to a specific domain:
+
+   ```bash
+   curl -s http://localhost:7777/api/version
+   # {"pinchyVersion":"0.5.4","openclawVersion":"2026.5.7","build":"<git sha>","nodeEnv":"production"}
+   ```
+
+   Then open Pinchy in your browser at the URL you normally use (e.g. `https://your-domain.example`) and check the logs for any warnings:
 
    ```bash
    docker compose logs pinchy --tail 50
    ```
+
+   <Aside type="tip">
+     If you have Domain Lock configured, `http://localhost:7777` (the legacy
+     verification URL) will return **403 Forbidden** for any page other than
+     `/api/health` and `/api/version` — use your locked domain instead.
+   </Aside>
 
 </Steps>
 
@@ -169,6 +185,12 @@ When an Odoo tool returns a record, related-record references are now emitted as
 #### Permissions tab no longer reports false-positive dirty state
 
 If an Odoo or Email connection was configured on an agent, the **Settings → Agent → Permissions** tab kept showing "Unsaved changes" and a **Save & Restart** button after a successful save. The dirty-state check now re-syncs against the persisted state once the post-save refetch lands, so a clean save shows as clean.
+
+#### New `/api/version` endpoint + OCI image labels
+
+You can now confirm which Pinchy and OpenClaw versions are actually running without opening the UI. `GET /api/version` returns `{ pinchyVersion, openclawVersion, build, nodeEnv }` and is exempt from Domain Lock so it works from monitoring tools and the host shell. Docker images now also carry standard OCI labels (`org.opencontainers.image.version`, `org.opencontainers.image.revision`, …), so `docker inspect ghcr.io/heypinchy/pinchy:%%PINCHY_VERSION%%` reports the version and git SHA the image was built from.
+
+The upgrading guide's "Verify" step is updated to use `/api/version` instead of opening `http://localhost:7777` directly — the old instruction returned 403 on Domain-Lock-enabled deployments.
 
 #### Runtime and dependency updates
 
