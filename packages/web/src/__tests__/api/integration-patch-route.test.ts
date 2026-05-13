@@ -266,6 +266,36 @@ describe("PATCH /api/integrations/[connectionId] — credential probe", () => {
     );
   });
 
+  it("persists freshCredentials returned by probe (e.g. new uid after login change)", async () => {
+    // When the user changes their Odoo login, the stored uid becomes stale.
+    // The probe re-authenticates and returns the fresh uid; the route must
+    // merge that into the encrypted credentials so future syncs use it.
+    mockProbeIntegrationCredentials.mockResolvedValue({
+      success: true,
+      freshCredentials: { uid: 99 },
+    });
+
+    const { PATCH } = await import("@/app/api/integrations/[connectionId]/route");
+
+    await PATCH(
+      makeRequest("/api/integrations/conn-1", {
+        method: "PATCH",
+        body: JSON.stringify({
+          credentials: { ...validOdooCredentials, login: "new-user", apiKey: "new-key" },
+        }),
+      }),
+      { params: Promise.resolve({ connectionId: "conn-1" }) }
+    );
+
+    // encrypt() must have been called with JSON containing the FRESH uid (99),
+    // not the stale stored uid (2).
+    const encryptedPayload = mockEncrypt.mock.calls[0]?.[0] as string;
+    const persistedCreds = JSON.parse(encryptedPayload);
+    expect(persistedCreds.uid).toBe(99);
+    expect(persistedCreds.login).toBe("new-user");
+    expect(persistedCreds.apiKey).toBe("new-key");
+  });
+
   it("returns 409 when credentials were updated concurrently (optimistic lock)", async () => {
     // Simulate concurrent update: db.update returns 0 rows
     mockUpdateSet.mockReturnValueOnce({

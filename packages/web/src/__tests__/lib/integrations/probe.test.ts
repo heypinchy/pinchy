@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+const { mockAuthenticate } = vi.hoisted(() => ({ mockAuthenticate: vi.fn() }));
+
+vi.mock("odoo-node", () => ({
+  OdooClient: Object.assign(class {}, { authenticate: mockAuthenticate }),
+}));
 vi.mock("@/lib/integrations/odoo-sync", () => ({
   fetchOdooSchema: vi.fn(),
 }));
@@ -13,6 +18,7 @@ import { probeIntegrationCredentials } from "@/lib/integrations/probe";
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockAuthenticate.mockResolvedValue(2);
 });
 
 describe("probeIntegrationCredentials", () => {
@@ -24,7 +30,7 @@ describe("probeIntegrationCredentials", () => {
     uid: 1,
   };
 
-  it("odoo: returns success when fetchOdooSchema succeeds", async () => {
+  it("odoo: returns success with freshCredentials when fetchOdooSchema succeeds", async () => {
     vi.mocked(fetchOdooSchema).mockResolvedValue({
       success: true,
       models: 5,
@@ -32,7 +38,7 @@ describe("probeIntegrationCredentials", () => {
       lastSyncAt: new Date().toISOString(),
     } as never);
     const res = await probeIntegrationCredentials("odoo", validOdooCreds);
-    expect(res).toEqual({ success: true });
+    expect(res).toEqual({ success: true, freshCredentials: { uid: 2 } });
   });
 
   it("odoo: returns failure with reason from fetchOdooSchema", async () => {
@@ -72,6 +78,56 @@ describe("probeIntegrationCredentials", () => {
     expect(res).toEqual({
       success: false,
       reason: "Cannot probe credentials for unknown type: unknown-type",
+    });
+  });
+
+  describe("odoo authentication", () => {
+    it("returns clear auth-failed message when OdooClient.authenticate throws", async () => {
+      mockAuthenticate.mockRejectedValue(new Error("Invalid credentials"));
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+      expect(res.success).toBe(false);
+      if (res.success) return;
+      expect(res.reason).toMatch(/authentication failed/i);
+      expect(res.reason).toMatch(/login.*api key|api key.*login/i);
+      expect(fetchOdooSchema).not.toHaveBeenCalled();
+    });
+
+    it("re-resolves uid by re-authenticating with login + apiKey, passes fresh uid to fetchOdooSchema", async () => {
+      mockAuthenticate.mockResolvedValue(42); // fresh uid from Odoo
+      vi.mocked(fetchOdooSchema).mockResolvedValue({
+        success: true,
+        models: 5,
+        data: {} as never,
+        lastSyncAt: new Date().toISOString(),
+      } as never);
+
+      await probeIntegrationCredentials("odoo", {
+        ...validOdooCreds,
+        uid: 2, // stale, should be replaced by 42
+      });
+
+      expect(mockAuthenticate).toHaveBeenCalledWith({
+        url: validOdooCreds.url,
+        db: validOdooCreds.db,
+        login: validOdooCreds.login,
+        apiKey: validOdooCreds.apiKey,
+      });
+      expect(fetchOdooSchema).toHaveBeenCalledWith(expect.objectContaining({ uid: 42 }));
+    });
+
+    it("returns the fresh uid on success so caller can persist it (login change)", async () => {
+      mockAuthenticate.mockResolvedValue(42);
+      vi.mocked(fetchOdooSchema).mockResolvedValue({ success: true } as never);
+
+      const res = await probeIntegrationCredentials("odoo", validOdooCreds);
+
+      expect(res).toEqual({ success: true, freshCredentials: { uid: 42 } });
+    });
+
+    it("does NOT call fetchOdooSchema when authentication fails (avoids opaque 'no models' message)", async () => {
+      mockAuthenticate.mockRejectedValue(new Error("AccessDenied"));
+      await probeIntegrationCredentials("odoo", validOdooCreds);
+      expect(fetchOdooSchema).not.toHaveBeenCalled();
     });
   });
 });

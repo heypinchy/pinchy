@@ -127,7 +127,12 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
       return NextResponse.json({ error: probe.reason }, { status: 400 });
     }
 
-    updateData.credentials = encrypt(JSON.stringify(merged));
+    // Apply fields the probe resolved (e.g. fresh `uid` after a login change).
+    const finalCredentials = probe.freshCredentials
+      ? { ...merged, ...probe.freshCredentials }
+      : merged;
+
+    updateData.credentials = encrypt(JSON.stringify(finalCredentials));
     changes.credentials = { from: "[redacted]", to: "[redacted]" };
   }
 
