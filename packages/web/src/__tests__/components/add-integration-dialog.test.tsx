@@ -132,8 +132,11 @@ describe("AddIntegrationDialog", () => {
       render(<AddIntegrationDialog {...defaultProps} />);
       await selectOdooType(user);
 
+      // Whitespace in the input means UrlInput's normalizer cannot repair it
+      // (URL constructor rejects whitespace in hostnames), so zod's url()
+      // rejects it and the dependent DB field stays hidden.
       const urlInput = screen.getByLabelText("URL");
-      await user.type(urlInput, "not-a-url");
+      await user.type(urlInput, "not a url");
       await user.tab();
 
       expect(screen.queryByLabelText("Database")).not.toBeInTheDocument();

@@ -1,5 +1,5 @@
-import { createHash } from "crypto";
-import { mkdir, open, readFile } from "fs/promises";
+import { createHash, randomBytes } from "crypto";
+import { link, mkdir, readFile, unlink, writeFile } from "fs/promises";
 import { join, parse as parsePath } from "path";
 import { getWorkspacePath } from "@/lib/workspace";
 
@@ -81,14 +81,18 @@ export async function persistAttachment(
     const candidate = i === 0 ? filename : `${name} (${i})${ext}`;
     const candidatePath = join(uploadsDir, candidate);
 
+    // Write to a unique temp file first, then atomically hard-link it to the
+    // slot. `link(tmp, final)` succeeds only when `final` does not exist —
+    // and crucially, it only runs AFTER the temp file is fully written. This
+    // closes the TOCTOU window where a concurrent caller could `open(slot,
+    // "wx")` first but then race the `EEXIST`-loser's `readFile(slot)` on an
+    // empty file (mis-deduping to a fresh slot instead of joining).
+    const tmpName = `.${candidate}.${process.pid}-${randomBytes(6).toString("hex")}.tmp`;
+    const tmpPath = join(uploadsDir, tmpName);
+    await writeFile(tmpPath, buffer);
+
     try {
-      // O_CREAT | O_EXCL — atomic create-or-fail. Wins the slot or throws EEXIST.
-      const fh = await open(candidatePath, "wx");
-      try {
-        await fh.writeFile(buffer);
-      } finally {
-        await fh.close();
-      }
+      await link(tmpPath, candidatePath);
       return {
         relativePath: `${UPLOADS_SUBDIR}/${candidate}`,
         reused: false,
@@ -96,7 +100,9 @@ export async function persistAttachment(
       };
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-      // Existing file under this name — does it match our content?
+      // Slot taken. Because `link` only succeeds after the winner's temp file
+      // was fully written, `candidatePath` is guaranteed to hold the winner's
+      // complete content — safe to read and compare hashes.
       const existing = await readFile(candidatePath);
       if (createHash("sha256").update(existing).digest("hex") === contentHash) {
         return {
@@ -106,6 +112,11 @@ export async function persistAttachment(
         };
       }
       // Different content occupies this slot — try the next one.
+    } finally {
+      // Clean up the temp file in all paths. On the success branch, the inode
+      // still lives via the hard link at `candidatePath`; we are only removing
+      // the extra name, not the content.
+      await unlink(tmpPath).catch(() => {});
     }
   }
 
