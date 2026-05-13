@@ -133,7 +133,11 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
       : merged;
 
     updateData.credentials = encrypt(JSON.stringify(finalCredentials));
-    changes.credentials = { from: "[redacted]", to: "[redacted]" };
+    // NOTE: credential changes intentionally do NOT go into `changes` — they
+    // get their own dedicated `integration.credentials_updated` event below,
+    // which gives CISOs a clean filter for "all credential touches" without
+    // having to also union "config.changed where details.changes.credentials
+    // exists". One mutation → one audit row.
   }
 
   const [updated] = await db
@@ -165,9 +169,9 @@ export const PATCH = withAdmin<RouteContext>(async (request, { params }, session
     await appendAuditLog({
       actorType: "user",
       actorId: session.user.id!,
-      eventType: "config.changed",
+      eventType: "integration.updated",
       resource: `integration:${connectionId}`,
-      detail: { action: "integration_updated", id: connectionId, changes },
+      detail: { id: connectionId, name: updated.name, changes },
       outcome: "success",
     });
   }
@@ -226,9 +230,9 @@ export const DELETE = withAdmin<RouteContext>(async (_req, { params }, session) 
   await appendAuditLog({
     actorType: "user",
     actorId: session.user.id!,
-    eventType: "config.changed",
+    eventType: "integration.deleted",
     resource: `integration:${connectionId}`,
-    detail: { action: "integration_deleted", type: existing.type, name: existing.name },
+    detail: { id: connectionId, name: existing.name, type: existing.type },
     outcome: "success",
   });
 

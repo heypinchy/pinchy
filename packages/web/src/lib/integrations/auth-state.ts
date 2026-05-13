@@ -62,7 +62,7 @@ export async function clearIntegrationAuthError(args: {
   const entry = {
     actorType: actor.type,
     actorId: actor.id,
-    eventType: "integration.recovered" as const,
+    eventType: "integration.auth_recovered" as const,
     resource: `integration:${connectionId}`,
     detail: { id: connectionId, name: existing.name },
     outcome: "success" as const,

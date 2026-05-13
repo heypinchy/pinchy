@@ -64,10 +64,9 @@ export const POST = withAdmin<RouteContext>(async (_req, { params }, session) =>
     deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
-      eventType: "config.changed",
+      eventType: "integration.synced",
       resource: `integration:${connectionId}`,
       detail: {
-        action: "integration_schema_synced",
         id: connectionId,
         name: connection.name,
         modelCount: result.models,

@@ -342,6 +342,22 @@ A single SQL query grouped by `detail->>'errorClass'` now aggregates every failu
 
 - **`odoo_schema` tool replaced** — see [Bookkeeper / Odoo schema discovery](#bookkeeper--odoo-schema-discovery-auto-migrated) below. Existing agents are auto-migrated on startup; no manual action is required.
 
+#### Integration audit event names
+
+Integration lifecycle events have moved out of the generic `config.changed` bucket and into their own resource namespace, matching the convention already used for `agent.*`, `group.*`, and `user.*`.
+
+| Before                                                        | After                        |
+| ------------------------------------------------------------- | ---------------------------- |
+| `config.changed` (`detail.action: integration_created`)       | `integration.created`        |
+| `config.changed` (`detail.action: integration_updated`)       | `integration.updated`        |
+| `config.changed` (`detail.action: integration_deleted`)       | `integration.deleted`        |
+| `config.changed` (`detail.action: integration_schema_synced`) | `integration.synced`         |
+| `integration.recovered`                                       | `integration.auth_recovered` |
+
+`integration.auth_failed` and `integration.credentials_updated` are unchanged. Credential changes no longer emit a paired `config.changed` row alongside `integration.credentials_updated` — one mutation now produces one audit row. See [Audit trail → Integration management](/concepts/audit-trail/#integration-management) for the full list and detail-field reference.
+
+Existing audit rows from v0.5.3 and earlier keep their original event names — the log is HMAC-signed and immutable. Any alerting or compliance pipelines that filter on `eventType` need to be updated to match both old and new names during the transition window. A single filter that covers both is `eventType IN ('integration.created', 'integration.updated', 'integration.deleted', 'config.changed') AND resource LIKE 'integration:%'`.
+
 ### Upgrade notes
 
 v0.5.4 extends the Odoo template library with read-write operator agents, hardens how those agents reference Odoo records, and irons out several chat-reliability edges. It also picks up Next.js security patches and OpenClaw 2026.5.7.

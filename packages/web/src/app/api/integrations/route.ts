@@ -108,9 +108,9 @@ export const POST = withAdmin(async (request, _ctx, session) => {
   deferAuditLog({
     actorType: "user",
     actorId: session.user.id!,
-    eventType: "config.changed",
+    eventType: "integration.created",
     resource: `integration:${connection.id}`,
-    detail: { action: "integration_created", type, name },
+    detail: { type, name },
     outcome: "success",
   });
 

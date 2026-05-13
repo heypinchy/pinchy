@@ -125,7 +125,7 @@ describe("clearIntegrationAuthError", () => {
     );
     expect(mockedAppendAudit).toHaveBeenCalledWith(
       expect.objectContaining({
-        eventType: "integration.recovered",
+        eventType: "integration.auth_recovered",
         resource: "integration:c1",
         outcome: "success",
       })
@@ -209,7 +209,7 @@ describe("audit failure handling", () => {
 
     expect(mockedRecordAuditFailure).toHaveBeenCalledWith(
       expect.any(Error),
-      expect.objectContaining({ eventType: "integration.recovered" })
+      expect.objectContaining({ eventType: "integration.auth_recovered" })
     );
   });
 });

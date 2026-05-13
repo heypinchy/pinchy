@@ -15,9 +15,9 @@ import {
 const validEntry = {
   actorType: "user" as const,
   actorId: "user-1",
-  eventType: "config.changed" as const,
+  eventType: "integration.created" as const,
   resource: "integration:abc",
-  detail: { action: "integration_created", type: "odoo", name: "Test" },
+  detail: { type: "odoo", name: "Test" },
   outcome: "success" as const,
 };
 
@@ -69,7 +69,7 @@ describe("deferAuditLog", () => {
     expect(parsed).toMatchObject({
       level: "error",
       event: "audit_log_write_failed",
-      eventType: "config.changed",
+      eventType: "integration.created",
       actorId: "user-1",
       resource: "integration:abc",
       outcome: "success",
@@ -126,7 +126,7 @@ describe("recordAuditFailure", () => {
     expect(parsed).toMatchObject({
       level: "error",
       event: "audit_log_write_failed",
-      eventType: "config.changed",
+      eventType: "integration.created",
       actorType: "user",
       actorId: "user-1",
       resource: "integration:abc",

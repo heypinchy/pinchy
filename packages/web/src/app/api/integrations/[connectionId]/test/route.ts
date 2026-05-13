@@ -1,5 +1,5 @@
 // audit-exempt: audit writes happen indirectly via setIntegrationAuthFailed (integration.auth_failed)
-// and clearIntegrationAuthError (integration.recovered) on status transitions. The Odoo uid
+// and clearIntegrationAuthError (integration.auth_recovered) on status transitions. The Odoo uid
 // self-heal path intentionally writes no audit entry — it is a one-time bootstrap, not a
 // user-initiated change.
 import { NextResponse } from "next/server";

@@ -101,12 +101,11 @@ export async function GET(request: Request) {
     deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
-      eventType: "config.changed",
+      eventType: "integration.created",
       resource: "integration:google",
       detail: {
-        action: "integration_oauth_failed",
         type: "google",
-        error: { message: "token_exchange_failed" },
+        reason: "token_exchange_failed",
       },
       outcome: "failure",
     });
@@ -125,12 +124,11 @@ export async function GET(request: Request) {
     deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
-      eventType: "config.changed",
+      eventType: "integration.created",
       resource: "integration:google",
       detail: {
-        action: "integration_oauth_failed",
         type: "google",
-        error: { message: "profile_fetch_failed" },
+        reason: "profile_fetch_failed",
       },
       outcome: "failure",
     });
@@ -167,7 +165,7 @@ export async function GET(request: Request) {
     // Reconnect path: update the existing connection row so that
     // agent_connection_permissions referencing it are preserved.
     // Do NOT set status/lastError/lastErrorAt here — let clearIntegrationAuthError
-    // handle the auth_failed → active transition and write the integration.recovered
+    // handle the auth_failed → active transition and write the integration.auth_recovered
     // audit event. If the connection was already active this is a no-op there.
     [connection] = await db
       .update(integrationConnections)
@@ -184,7 +182,7 @@ export async function GET(request: Request) {
       return errorRedirect(origin, "connection_not_found");
     }
 
-    // Clear auth_failed state and write integration.recovered audit if needed
+    // Clear auth_failed state and write integration.auth_recovered audit if needed
     // (no-op if the connection was already active)
     await clearIntegrationAuthError({
       connectionId: reconnectConnectionId,
@@ -264,10 +262,9 @@ export async function GET(request: Request) {
     deferAuditLog({
       actorType: "user",
       actorId: session.user.id!,
-      eventType: "config.changed",
+      eventType: "integration.created",
       resource: `integration:${connection.id}`,
       detail: {
-        action: "integration_created",
         type: "google",
         ...redactEmail(emailAddress),
       },

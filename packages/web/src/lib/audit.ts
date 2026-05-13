@@ -68,8 +68,12 @@ export type AuditEventType =
   | "audit.exported"
   | "attachment.uploaded"
   | "diagnostics.exported"
+  | "integration.created"
+  | "integration.updated"
+  | "integration.deleted"
+  | "integration.synced"
   | "integration.auth_failed"
-  | "integration.recovered"
+  | "integration.auth_recovered"
   | "integration.credentials_updated";
 
 interface HmacFieldsV1 {
@@ -356,13 +360,15 @@ export type AuditLogEntry =
   | (AuditLogBase & {
       eventType:
         | "integration.auth_failed"
-        | "integration.recovered"
-        | "integration.credentials_updated";
+        | "integration.auth_recovered"
+        | "integration.credentials_updated"
+        | "integration.synced";
       detail: {
         id: string;
         name: string;
         reason?: string;
         fields?: string[];
+        modelCount?: number;
       };
     });
 

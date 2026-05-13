@@ -357,11 +357,11 @@ describe("AuditLogEntry — integration events", () => {
     expectTypeOf(entry).toMatchTypeOf<AuditLogEntry>();
   });
 
-  it("accepts integration.recovered events", () => {
+  it("accepts integration.auth_recovered events", () => {
     const entry: AuditLogEntry = {
       actorType: "user",
       actorId: "user-1",
-      eventType: "integration.recovered",
+      eventType: "integration.auth_recovered",
       resource: "integration:abc",
       detail: { id: "abc", name: "Odoo Sales" },
       outcome: "success",

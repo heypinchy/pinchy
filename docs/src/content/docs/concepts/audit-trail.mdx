@@ -144,19 +144,29 @@ User fields throughout this section (`user.{id}`) carry the user's id only — n
 
 ### Integration management
 
-| Event Type                        | Trigger                                                                         | Detail fields          |
-| --------------------------------- | ------------------------------------------------------------------------------- | ---------------------- |
-| `integration.auth_failed`         | First detection of a permanent auth failure (401/403 from the upstream service) | `id`, `name`, `reason` |
-| `integration.recovered`           | First successful request after an `auth_failed` state                           | `id`, `name`           |
-| `integration.credentials_updated` | Successful PATCH with new credentials or a completed OAuth re-auth              | `id`, `name`, `fields` |
+| Event Type                        | Trigger                                                                         | Detail fields              |
+| --------------------------------- | ------------------------------------------------------------------------------- | -------------------------- |
+| `integration.created`             | A new integration connection was added (Odoo, Web Search, Google, …)            | `type`, `name`             |
+| `integration.updated`             | Name or description of an existing connection changed                           | `id`, `name`, `changes`    |
+| `integration.deleted`             | A connection was removed                                                        | `id`, `name`, `type`       |
+| `integration.credentials_updated` | Successful PATCH with new credentials or a completed OAuth re-auth              | `id`, `name`, `fields`     |
+| `integration.synced`              | Schema was successfully re-synced from the upstream service (Odoo)              | `id`, `name`, `modelCount` |
+| `integration.auth_failed`         | First detection of a permanent auth failure (401/403 from the upstream service) | `id`, `name`, `reason`     |
+| `integration.auth_recovered`      | First successful request after an `auth_failed` state                           | `id`, `name`               |
 
-Only the **first** failure event in a sequence is logged — repeated failures while the integration is already in a failed state do not produce additional entries. Similarly, `integration.recovered` is logged once when the integration returns to a healthy state. This keeps the audit log focused on state transitions rather than every retry attempt.
+Credential changes always emit only `integration.credentials_updated` — even when name or description change in the same PATCH call. The `integration.updated` event covers metadata-only edits. This split lets CISOs filter the trail for "every credential touch" with a single `eventType =` predicate, without having to also union over generic `*.updated` events.
+
+Only the **first** failure event in a sequence is logged — repeated failures while the integration is already in a failed state do not produce additional entries. Similarly, `integration.auth_recovered` is logged once when the integration returns to a healthy state. This keeps the audit log focused on state transitions rather than every retry attempt.
+
+:::note[Pre-0.5.4 history]
+Before Pinchy 0.5.4, integration lifecycle events were logged under `config.changed` with a discriminator field (`detail.action: "integration_created" | "integration_updated" | …`), and `integration.recovered` was named without the `auth_` prefix. Existing audit rows from earlier versions still use the old names — the log is HMAC-signed and immutable. New rows use the names in the table above.
+:::
 
 ### Configuration
 
-| Event Type       | Description                                                         |
-| ---------------- | ------------------------------------------------------------------- |
-| `config.changed` | A system configuration setting was changed (e.g., provider API key) |
+| Event Type       | Description                                                                                                                                        |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config.changed` | A system-level configuration setting was changed — provider keys, OAuth-app secrets, Smithers defaults, plugin toggles. Not used for integrations. |
 
 ### Audit trail access
 

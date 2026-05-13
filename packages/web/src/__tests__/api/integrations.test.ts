@@ -432,9 +432,8 @@ describe("POST /api/integrations", () => {
       expect.objectContaining({
         actorType: "user",
         actorId: "user-1",
-        eventType: "config.changed",
+        eventType: "integration.created",
         detail: expect.objectContaining({
-          action: "integration_created",
           type: "odoo",
           name: "Prod Odoo",
         }),
@@ -611,9 +610,8 @@ describe("PATCH /api/integrations/[connectionId]", () => {
     expect(mockUpdateSet).toHaveBeenCalledWith(expect.objectContaining({ name: "Updated Odoo" }));
     expect(mockAppendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
-        eventType: "config.changed",
+        eventType: "integration.updated",
         detail: expect.objectContaining({
-          action: "integration_updated",
           id: "conn-1",
           changes: expect.objectContaining({
             name: { from: "Test Odoo", to: "Updated Odoo" },
@@ -773,9 +771,9 @@ describe("DELETE /api/integrations/[connectionId]", () => {
     expect(mockDeleteWhere).toHaveBeenCalled();
     expect(mockAppendAuditLog).toHaveBeenCalledWith(
       expect.objectContaining({
-        eventType: "config.changed",
+        eventType: "integration.deleted",
         detail: expect.objectContaining({
-          action: "integration_deleted",
+          id: "conn-1",
           type: "odoo",
           name: "Test Odoo",
         }),
@@ -1349,9 +1347,8 @@ describe("POST /api/integrations (web-search)", () => {
       expect.objectContaining({
         actorType: "user",
         actorId: "user-1",
-        eventType: "config.changed",
+        eventType: "integration.created",
         detail: expect.objectContaining({
-          action: "integration_created",
           type: "web-search",
           name: "Brave Search",
         }),

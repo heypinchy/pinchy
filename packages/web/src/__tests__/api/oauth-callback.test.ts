@@ -413,10 +413,9 @@ describe("GET /api/integrations/oauth/callback", () => {
       expect(mockAppendAuditLog).toHaveBeenCalledWith({
         actorType: "user",
         actorId: "admin-1",
-        eventType: "config.changed",
+        eventType: "integration.created",
         resource: `integration:${mockConnection.id}`,
         detail: {
-          action: "integration_created",
           type: "google",
           emailHash: expect.stringMatching(/^[0-9a-f]{64}$/),
           emailPreview: "user@gmail.com",
@@ -604,7 +603,7 @@ describe("GET /api/integrations/oauth/callback", () => {
       );
 
       // Should update credentials only — status/lastError/lastErrorAt are
-      // handled by clearIntegrationAuthError so it can write integration.recovered
+      // handled by clearIntegrationAuthError so it can write integration.auth_recovered
       expect(mockUpdateSet).toHaveBeenCalledWith(
         expect.objectContaining({
           credentials: "encrypted-creds",
