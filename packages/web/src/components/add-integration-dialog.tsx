@@ -20,6 +20,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { UrlInput } from "@/components/ui/url-input";
 import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import {
@@ -31,11 +32,8 @@ import {
 } from "@/components/ui/select";
 import { toast } from "sonner";
 import { PasswordInput } from "@/components/password-input";
-import {
-  normalizeOdooUrl,
-  parseOdooSubdomainHint,
-  generateConnectionName,
-} from "@/lib/integrations/odoo-url";
+import { parseOdooSubdomainHint, generateConnectionName } from "@/lib/integrations/odoo-url";
+import { normalizeUrl } from "@/lib/url";
 import { Loader2, CheckCircle2, AlertTriangle, Copy, Check } from "lucide-react";
 import { useCopyToClipboard } from "@/hooks/use-copy-to-clipboard";
 import { OdooIcon, GoogleIcon, BraveIcon } from "./integration-icons";
@@ -484,7 +482,7 @@ export function AddIntegrationDialog({
   // --- URL blur: fetch databases ---
 
   async function handleUrlBlur(raw: string) {
-    const url = normalizeOdooUrl(raw);
+    const url = normalizeUrl(raw);
     if (!url) return;
 
     if (url !== raw) {
@@ -841,8 +839,8 @@ export function AddIntegrationDialog({
                     <FormItem>
                       <FormLabel>URL</FormLabel>
                       <FormControl>
-                        <Input
-                          placeholder="https://odoo.example.com"
+                        <UrlInput
+                          placeholder="odoo.example.com"
                           {...field}
                           onBlur={(e) => {
                             field.onBlur();

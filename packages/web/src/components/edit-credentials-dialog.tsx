@@ -20,6 +20,7 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { Input } from "@/components/ui/input";
+import { UrlInput } from "@/components/ui/url-input";
 import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertTriangle, Loader2 } from "lucide-react";
@@ -119,7 +120,7 @@ function OdooForm({
             <FormItem>
               <FormLabel>URL</FormLabel>
               <FormControl>
-                <Input placeholder="Leave empty to keep current" {...field} />
+                <UrlInput placeholder="Leave empty to keep current" {...field} />
               </FormControl>
               <FormMessage />
             </FormItem>

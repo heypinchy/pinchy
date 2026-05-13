@@ -1,47 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normalizeOdooUrl, parseOdooSubdomainHint, generateConnectionName } from "../odoo-url";
-
-describe("normalizeOdooUrl", () => {
-  it("strips trailing slash", () => {
-    expect(normalizeOdooUrl("https://odoo.example.com/")).toBe("https://odoo.example.com");
-  });
-
-  it("strips path", () => {
-    expect(normalizeOdooUrl("https://odoo.example.com/odoo")).toBe("https://odoo.example.com");
-  });
-
-  it("strips /web/login path", () => {
-    expect(normalizeOdooUrl("https://odoo.example.com/web/login")).toBe("https://odoo.example.com");
-  });
-
-  it("strips query string", () => {
-    expect(normalizeOdooUrl("https://odoo.example.com/web?db=prod")).toBe(
-      "https://odoo.example.com"
-    );
-  });
-
-  it("returns origin as-is when already clean", () => {
-    expect(normalizeOdooUrl("https://odoo.example.com")).toBe("https://odoo.example.com");
-  });
-
-  it("preserves port", () => {
-    expect(normalizeOdooUrl("https://odoo.example.com:8069/web")).toBe(
-      "https://odoo.example.com:8069"
-    );
-  });
-
-  it("handles http", () => {
-    expect(normalizeOdooUrl("http://localhost:8069/")).toBe("http://localhost:8069");
-  });
-
-  it("returns null for invalid URL", () => {
-    expect(normalizeOdooUrl("not-a-url")).toBeNull();
-  });
-
-  it("returns null for empty string", () => {
-    expect(normalizeOdooUrl("")).toBeNull();
-  });
-});
+import { parseOdooSubdomainHint, generateConnectionName } from "../odoo-url";
 
 describe("parseOdooSubdomainHint", () => {
   it("extracts subdomain from *.odoo.com", () => {
