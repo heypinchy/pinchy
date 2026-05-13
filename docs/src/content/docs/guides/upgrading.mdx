@@ -154,6 +154,18 @@ docker compose pull && docker compose up -d
 
 No database migration, no `docker-compose.yml` change, and no env-var changes are required.
 
+<Aside type="tip">
+  **Odoo users: re-sync your schema after upgrade.** %%PINCHY_VERSION%% adds six
+  new agent templates (Bookkeeper, Project Manager, HR Operator, Warehouse
+  Operator, Production Operator, Approval Manager) whose `requiredModels`
+  reference Odoo models that previous Pinchy versions didn't probe (e.g.
+  `hr.expense.sheet`, `account.tax`, `project.project`, `mrp.production`).
+  Existing connections still hold the old narrow schema cache, so the new
+  templates' **Create** buttons stay disabled even though your Odoo instance
+  exposes the models. Open **Settings → Integrations → Odoo → ⋯ → Sync now**
+  once after the upgrade to refresh the cache.
+</Aside>
+
 #### Six new Odoo agent templates
 
 The agent picker now includes a Bookkeeper template and five read-write Odoo operator counterparts to the existing read-only Analysts:

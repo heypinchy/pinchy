@@ -68,11 +68,15 @@ describe("fetchOdooSchema", () => {
   });
 
   it("retries transient errors instead of treating them as no-access", async () => {
-    let callCount = 0;
-    mockFields.mockImplementation(() => {
-      callCount++;
-      // Simulate: first call for each model fails with timeout, second succeeds
-      if (callCount % 2 === 1) {
+    // Per-model retry tracking — the earlier global-callCount approach broke
+    // once MODEL_CATEGORIES grew past ~40 models because the 5-way concurrency
+    // makes call-ordering non-deterministic (you can't say "first call for
+    // each model" with a single shared counter).
+    const callCounts = new Map<string, number>();
+    mockFields.mockImplementation((model: string) => {
+      const count = (callCounts.get(model) ?? 0) + 1;
+      callCounts.set(model, count);
+      if (count === 1) {
         return Promise.reject(new Error("ETIMEDOUT"));
       }
       return Promise.resolve([
@@ -86,7 +90,11 @@ describe("fetchOdooSchema", () => {
     if (!result.success) return;
     // Models should be accessible after retry
     expect(result.models).toBeGreaterThan(0);
-  });
+  }, // Each model fails once then retries after a 500ms backoff. With ~80
+  // models and 5-way concurrency, that's >8s of wall time — well above
+  // vitest's default 5s. The retry behavior itself is what we're testing,
+  // so we let the test take the real wait.
+  15_000);
 
   it("limits concurrency to avoid overwhelming the Odoo server", async () => {
     let concurrentCalls = 0;
@@ -127,7 +135,9 @@ describe("fetchOdooSchema", () => {
     expect(result.success).toBe(true);
     if (!result.success) return;
     expect(result.models).toBeGreaterThan(0);
-  });
+  }, // See timeout note on the sibling "retries transient errors" test —
+  // ~80 models × 500ms backoff / 5 workers ≈ 8s of real wait.
+  15_000);
 
   it("does not retry 'access denied' errors", async () => {
     mockFields.mockRejectedValue(new Error("access denied"));
