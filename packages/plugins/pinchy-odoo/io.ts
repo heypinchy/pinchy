@@ -1,1 +1,1 @@
-export { readFile } from "fs/promises";
+export { readFile, stat } from "fs/promises";

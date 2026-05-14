@@ -1,5 +1,5 @@
-import { readFile } from "./io";
-import { extname } from "path";
+import { readFile, stat } from "./io";
+import { basename, extname } from "path";
 import { OdooClient } from "odoo-node";
 import {
   checkPermission,
@@ -10,6 +10,11 @@ import { decodeRef, encodeRef } from "./integration-ref";
 
 const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
 
+// 25 MB matches Odoo's default `web.max_file_upload_size` setting. Keeps the
+// plugin process from OOMing on a single attachment (readFile + base64 string
+// roughly triple the file's footprint in memory).
+const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+
 const MIME_BY_EXT: Record<string, string> = {
   ".jpg": "image/jpeg",
   ".jpeg": "image/jpeg",
@@ -18,7 +23,8 @@ const MIME_BY_EXT: Record<string, string> = {
   ".webp": "image/webp",
   ".pdf": "application/pdf",
   ".doc": "application/msword",
-  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".docx":
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   ".xls": "application/vnd.ms-excel",
   ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
   ".txt": "text/plain",
@@ -26,7 +32,21 @@ const MIME_BY_EXT: Record<string, string> = {
 };
 
 function mimeForFilename(filename: string): string {
-  return MIME_BY_EXT[extname(filename).toLowerCase()] ?? "application/octet-stream";
+  return (
+    MIME_BY_EXT[extname(filename).toLowerCase()] ?? "application/octet-stream"
+  );
+}
+
+// Reject filenames that could escape the agent's uploads directory.
+// `basename` strips POSIX path components; the extra checks catch
+// Windows-style backslashes, leading-dot hidden files, and ".." / "."
+// segments that survive basename on Linux.
+function isSafeFilename(filename: string): boolean {
+  if (typeof filename !== "string" || filename.length === 0) return false;
+  if (filename !== basename(filename)) return false;
+  if (filename.startsWith(".")) return false;
+  if (filename.includes("\\")) return false;
+  return true;
 }
 
 interface PluginToolContext {
@@ -1161,17 +1181,19 @@ const plugin = {
           name: "odoo_attach_file",
           label: "Odoo Attach File",
           description:
-            "Attach an uploaded file to an existing Odoo record. Pass the opaque ref of the target record and the filename of a file in the agent's uploads directory. Returns the encrypted ref of the new ir.attachment record.",
+            "Attach an uploaded file to an existing Odoo record. Pass the opaque ref of the target record and a plain filename (no path components, no leading dot, max 25 MB) of a file in the agent's uploads directory. Returns the encrypted ref of the new ir.attachment record.",
           parameters: {
             type: "object",
             properties: {
               targetRef: {
                 type: "string",
-                description: "Opaque ref of the Odoo record to attach the file to (e.g. from odoo_read or odoo_create)",
+                description:
+                  "Opaque ref of the Odoo record to attach the file to (e.g. from odoo_read or odoo_create)",
               },
               filename: {
                 type: "string",
-                description: "Filename of an existing upload in the agent's workspace uploads directory",
+                description:
+                  "Plain filename of an existing upload in the agent's workspace uploads directory. Must not contain path separators ('/', '\\') or '..' and must not start with '.'",
               },
             },
             required: ["targetRef", "filename"],
@@ -1180,31 +1202,77 @@ const plugin = {
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             const filename = params.filename as string;
             try {
+              // Filename validation runs first — independent of targetRef
+              // decoding or permission checks — because it defends against
+              // prompt-injection-driven file exfiltration. A compromised
+              // agent could otherwise pass `../../etc/passwd` and have the
+              // plugin attach arbitrary container files to an Odoo record.
+              if (!isSafeFilename(filename)) {
+                return {
+                  isError: true as const,
+                  content: [
+                    {
+                      type: "text",
+                      text: `Invalid filename: "${filename}". Must be a plain file name without path components (no "/", no "\\", no "..", no leading ".").`,
+                    },
+                  ],
+                };
+              }
+
               const targetRef = params.targetRef as string;
               const decoded = decodeRef(targetRef);
 
-              if (!checkPermission(config.permissions, "ir.attachment", "create")) {
+              if (
+                !checkPermission(config.permissions, "ir.attachment", "create")
+              ) {
                 return permissionDenied("create", "ir.attachment");
               }
-              if (!checkPermission(config.permissions, decoded.model, "write")) {
+              if (
+                !checkPermission(config.permissions, decoded.model, "write")
+              ) {
                 return permissionDenied("write", decoded.model);
               }
 
               const filePath = `${WORKSPACE_ROOT}/${agentId}/uploads/${filename}`;
-              let fileBuffer: Buffer;
+
+              let fileSize: number;
               try {
-                fileBuffer = await readFile(filePath) as Buffer;
+                const fileStat = await stat(filePath);
+                fileSize = fileStat.size;
               } catch (err) {
-                const code = err && typeof err === "object" && "code" in err ? String((err as { code: unknown }).code) : "";
+                const code =
+                  err && typeof err === "object" && "code" in err
+                    ? String((err as { code: unknown }).code)
+                    : "";
                 if (code === "ENOENT") {
                   return {
                     isError: true as const,
-                    content: [{ type: "text", text: `File not found: ${filename}. Make sure the file was uploaded before calling odoo_attach_file.` }],
+                    content: [
+                      {
+                        type: "text",
+                        text: `File not found: ${filename}. Make sure the file was uploaded before calling odoo_attach_file.`,
+                      },
+                    ],
                   };
                 }
                 throw err;
               }
 
+              if (fileSize > MAX_ATTACHMENT_BYTES) {
+                const sizeMb = (fileSize / 1024 / 1024).toFixed(1);
+                const maxMb = (MAX_ATTACHMENT_BYTES / 1024 / 1024).toFixed(0);
+                return {
+                  isError: true as const,
+                  content: [
+                    {
+                      type: "text",
+                      text: `File too large: ${filename} is ${sizeMb} MB, max allowed is ${maxMb} MB.`,
+                    },
+                  ],
+                };
+              }
+
+              const fileBuffer = await readFile(filePath);
               const mimetype = mimeForFilename(filename);
               const datas = fileBuffer.toString("base64");
 
@@ -1235,7 +1303,10 @@ const plugin = {
                 ],
               };
             } catch (error) {
-              return errorResult(error, { operation: "attach", model: "ir.attachment" });
+              return errorResult(error, {
+                operation: "attach",
+                model: "ir.attachment",
+              });
             }
           },
         };

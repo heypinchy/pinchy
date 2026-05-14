@@ -23,9 +23,11 @@ vi.mock("odoo-node", () => {
 });
 
 // Mock the io wrapper for odoo_attach_file tests
-const { mockReadFile } = vi.hoisted(() => ({ mockReadFile: vi.fn() }));
-vi.mock("../io", () => ({ readFile: mockReadFile }));
-
+const { mockReadFile, mockStat } = vi.hoisted(() => ({
+  mockReadFile: vi.fn(),
+  mockStat: vi.fn(),
+}));
+vi.mock("../io", () => ({ readFile: mockReadFile, stat: mockStat }));
 
 import { OdooClient } from "odoo-node";
 import { encodeRef } from "../integration-ref";
@@ -950,6 +952,8 @@ describe("odoo_attach_file", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+    // Default: small file (1 KB). Override per-test for size-limit checks.
+    mockStat.mockResolvedValue({ size: 1024 });
     fetchMock.mockResolvedValue({
       ok: true,
       status: 200,
@@ -1019,7 +1023,10 @@ describe("odoo_attach_file", () => {
     const tools = createApi({ [attachAgentId]: configNoAttach });
     const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
 
-    const result = await tool.execute("call-1", { targetRef, filename: "receipt.jpg" });
+    const result = await tool.execute("call-1", {
+      targetRef,
+      filename: "receipt.jpg",
+    });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Permission denied");
@@ -1046,7 +1053,10 @@ describe("odoo_attach_file", () => {
     const tools = createApi({ [attachAgentId]: configReadOnly });
     const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
 
-    const result = await tool.execute("call-1", { targetRef, filename: "receipt.jpg" });
+    const result = await tool.execute("call-1", {
+      targetRef,
+      filename: "receipt.jpg",
+    });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Permission denied");
@@ -1062,16 +1072,22 @@ describe("odoo_attach_file", () => {
       label: "INV/2025/0001",
     });
 
-    const notFound = Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
-    mockReadFile.mockRejectedValue(notFound);
+    const notFound = Object.assign(new Error("ENOENT: no such file"), {
+      code: "ENOENT",
+    });
+    mockStat.mockRejectedValue(notFound);
 
     const tools = createApi({ [attachAgentId]: attachAgentConfig });
     const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
 
-    const result = await tool.execute("call-1", { targetRef, filename: "missing.jpg" });
+    const result = await tool.execute("call-1", {
+      targetRef,
+      filename: "missing.jpg",
+    });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("missing.jpg");
+    expect(mockReadFile).not.toHaveBeenCalled();
   });
 
   it("returns an error for an invalid targetRef", async () => {
@@ -1115,5 +1131,113 @@ describe("odoo_attach_file", () => {
       "ir.attachment",
       expect.objectContaining({ mimetype: expectedMime }),
     );
+  });
+
+  // Security: prevents prompt-injection-driven file exfiltration. A
+  // compromised agent could otherwise request `filename: "../../etc/passwd"`
+  // and the plugin would attach arbitrary container files to an Odoo record.
+  describe("filename validation (prevents path traversal)", () => {
+    const validTargetRef = () =>
+      encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "account.move",
+        id: 42,
+        label: "INV/2025/0001",
+      });
+
+    it.each([
+      ["../etc/passwd", "parent directory traversal"],
+      ["../../etc/passwd", "deep parent traversal"],
+      ["/etc/passwd", "absolute path"],
+      ["subdir/file.txt", "subdirectory"],
+      [".env", "hidden file"],
+      ["..", "just dots"],
+      [".", "single dot"],
+      ["..\\windows\\system32", "Windows-style backslash traversal"],
+    ])('rejects filename "%s" (%s)', async (badFilename) => {
+      mockReadFile.mockResolvedValue(Buffer.from("bytes"));
+      mockCreate.mockResolvedValue(1);
+
+      const tools = createApi({ [attachAgentId]: attachAgentConfig });
+      const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+      const result = await tool.execute("call-1", {
+        targetRef: validTargetRef(),
+        filename: badFilename,
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/invalid filename/i);
+      expect(mockStat).not.toHaveBeenCalled();
+      expect(mockReadFile).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("accepts a plain filename with spaces, digits, and dashes", async () => {
+      mockReadFile.mockResolvedValue(Buffer.from("bytes"));
+      mockCreate.mockResolvedValue(7);
+
+      const tools = createApi({ [attachAgentId]: attachAgentConfig });
+      const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+      const result = await tool.execute("call-1", {
+        targetRef: validTargetRef(),
+        filename: "Receipt 2026-Q1.pdf",
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalled();
+    });
+  });
+
+  // Defense against memory exhaustion: readFile loads the entire file plus a
+  // base64 representation into memory. Without an upper bound a single
+  // upload could OOM the plugin process.
+  describe("file size limit", () => {
+    const validTargetRef = () =>
+      encodeRef({
+        integrationType: "odoo",
+        connectionId: "conn-test-1",
+        model: "account.move",
+        id: 42,
+        label: "INV/2025/0001",
+      });
+
+    it("rejects files larger than 25 MB", async () => {
+      mockStat.mockResolvedValue({ size: 26 * 1024 * 1024 });
+      mockReadFile.mockResolvedValue(Buffer.from("bytes"));
+      mockCreate.mockResolvedValue(1);
+
+      const tools = createApi({ [attachAgentId]: attachAgentConfig });
+      const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+      const result = await tool.execute("call-1", {
+        targetRef: validTargetRef(),
+        filename: "huge.pdf",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/too large/i);
+      expect(mockReadFile).not.toHaveBeenCalled();
+      expect(mockCreate).not.toHaveBeenCalled();
+    });
+
+    it("accepts files at exactly 25 MB", async () => {
+      mockStat.mockResolvedValue({ size: 25 * 1024 * 1024 });
+      mockReadFile.mockResolvedValue(Buffer.from("bytes"));
+      mockCreate.mockResolvedValue(1);
+
+      const tools = createApi({ [attachAgentId]: attachAgentConfig });
+      const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+      const result = await tool.execute("call-1", {
+        targetRef: validTargetRef(),
+        filename: "edge.pdf",
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(mockCreate).toHaveBeenCalled();
+    });
   });
 });
