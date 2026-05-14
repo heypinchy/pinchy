@@ -198,6 +198,12 @@ The new `odoo_attach_file` tool is automatically included in the `read-write` pe
 
 **After upgrading**: existing Odoo connections need a schema re-sync to pick up `ir.attachment`. Open **Settings → Integrations → Odoo → ⋯ → Sync now**. Until you sync, the **Create** buttons for operator templates that reference `ir.attachment` will remain disabled.
 
+The tool rejects filenames containing path separators or leading dots, and caps attachments at 25 MB (matching Odoo's default `web.max_file_upload_size`). These guardrails prevent a prompt-injection-influenced agent from referencing files outside the agent's uploads directory.
+
+#### Background chats
+
+Open chats keep running in the background while you navigate within Pinchy — agents no longer reset when you switch to another part of the app. A pulse dot in the sidebar marks each agent with an active run; if the last turn errored, the dot turns red so you see at a glance which chats need attention. ([#199](https://github.com/heypinchy/pinchy/issues/199))
+
 #### Chat reliability fixes
 
 - **Browser sleep recovery.** Chats now reattach cleanly when a tab returns from background sleep instead of getting stuck on a stale stream.
