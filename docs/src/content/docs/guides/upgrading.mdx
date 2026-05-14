@@ -159,11 +159,11 @@ No database migration, no `docker-compose.yml` change, and no env-var changes ar
   new agent templates (Bookkeeper, Project Manager, HR Operator, Warehouse
   Operator, Production Operator, Approval Manager) whose `requiredModels`
   reference Odoo models that previous Pinchy versions didn't probe (e.g.
-  `hr.expense.sheet`, `account.tax`, `project.project`, `mrp.production`).
-  Existing connections still hold the old narrow schema cache, so the new
-  templates' **Create** buttons stay disabled even though your Odoo instance
-  exposes the models. Open **Settings → Integrations → Odoo → ⋯ → Sync now**
-  once after the upgrade to refresh the cache.
+  `hr.expense.sheet`, `account.tax`, `project.project`, `mrp.production`,
+  `ir.attachment`). Existing connections still hold the old narrow schema cache,
+  so the new templates' **Create** buttons stay disabled even though your Odoo
+  instance exposes the models. Open **Settings → Integrations → Odoo → ⋯ → Sync
+  now** once after the upgrade to refresh the cache.
 </Aside>
 
 #### Six new Odoo agent templates
@@ -189,6 +189,14 @@ Every read-write Odoo operator template now declares the `vision` capability in 
 #### Hardened Odoo relation references
 
 When an Odoo tool returns a record, related-record references are now emitted as opaque, encrypted tokens (`pinchy_ref:v1:…`) rather than raw `(id, label)` tuples. The pinchy-odoo plugin transparently resolves these tokens on subsequent calls, so an agent can no longer fabricate or substitute a numeric ID it never saw. Existing agents pick up the new behavior automatically; no configuration change is required.
+
+#### Odoo file attachment (new `odoo_attach_file` tool)
+
+Read-write Odoo operator templates can now attach uploaded files to Odoo records as `ir.attachment`. The Bookkeeper template uses this to link receipt images to the corresponding vendor bill; the Warehouse Operator can attach delivery notes to pickings; the HR Operator can attach medical certificates to leave requests; and so on for the Project Manager, Production Operator, and Approval Manager.
+
+The new `odoo_attach_file` tool is automatically included in the `read-write` permission tier alongside `odoo_create` and `odoo_write`. When you create any read-write Odoo agent, the tool is pre-enabled — no manual permission change is required.
+
+**After upgrading**: existing Odoo connections need a schema re-sync to pick up `ir.attachment`. Open **Settings → Integrations → Odoo → ⋯ → Sync now**. Until you sync, the **Create** buttons for operator templates that reference `ir.attachment` will remain disabled.
 
 #### Chat reliability fixes
 

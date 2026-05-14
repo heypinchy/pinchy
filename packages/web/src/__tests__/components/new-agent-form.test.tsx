@@ -768,6 +768,7 @@ describe("NewAgentForm — optional Odoo models do not block creation", () => {
     { model: "res.partner", name: "Contact", access: readAccess() },
     { model: "mail.activity", name: "Activity", access: fullAccess() },
     { model: "mail.message", name: "Message", access: { ...readAccess(), create: true } },
+    { model: "ir.attachment", name: "Attachments", access: { ...readAccess(), create: true } },
   ];
 
   function readAccess() {

@@ -95,6 +95,13 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     category: "powerful",
     integration: "odoo",
   },
+  {
+    id: "odoo_attach_file",
+    label: "Odoo: Attach file",
+    description: "Attach an uploaded file to an existing Odoo record as ir.attachment",
+    category: "powerful",
+    integration: "odoo",
+  },
 
   // Email integration tools
   {
@@ -199,7 +206,7 @@ export function detectEmailOperations(allowedToolIds: string[]): string[] {
 export type OdooAccessLevel = "read-only" | "read-write" | "full" | "custom";
 
 const ODOO_READ_TOOLS = ["odoo_schema", "odoo_read", "odoo_count", "odoo_aggregate"] as const;
-const ODOO_WRITE_TOOLS = ["odoo_create", "odoo_write"] as const;
+const ODOO_WRITE_TOOLS = ["odoo_create", "odoo_write", "odoo_attach_file"] as const;
 const ODOO_DELETE_TOOLS = ["odoo_delete"] as const;
 
 /** Returns all Odoo tool definitions from the registry. */

@@ -193,7 +193,10 @@ ${ODOO_OUTPUT_FORMATTING}
 
 ${ODOO_RULES}
 - Never validate a picking without a per-line review — wrong qty becomes wrong stock.
-- Lot/serial products need lot/serial on each move line — never blank.`,
+- Lot/serial products need lot/serial on each move line — never blank.
+
+### Attach documents to a transfer
+If the user sends a delivery note, packing slip, or other shipping document, attach it to the corresponding \`stock.picking\` using \`odoo_attach_file\`. Always confirm the target picking with the user before attaching.`,
     requiredModels: [
       { model: "stock.picking", operations: ["read", "create", "write"] },
       { model: "stock.move", operations: ["read", "create", "write"] },
@@ -205,6 +208,7 @@ ${ODOO_RULES}
       { model: "product.category", operations: ["read"] },
       { model: "res.partner", operations: ["read"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },
+      { model: "ir.attachment", operations: ["read", "create"] },
     ],
     modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
@@ -344,7 +348,10 @@ ${ODOO_OUTPUT_FORMATTING}
 ${ODOO_RULES}
 - Accounting data is permanent once posted. When in doubt, leave it draft and ask.
 - Never delete a posted record. The proper reversal is a credit note or cancellation (state → cancel via write).
-- VAT and tax_ids matter — always look up the correct \`account.tax\` ID, never guess.`,
+- VAT and tax_ids matter — always look up the correct \`account.tax\` ID, never guess.
+
+### Attach the source document to the bill/invoice
+After creating a draft \`account.move\`, offer to attach the uploaded receipt or invoice image to it. Use \`odoo_attach_file\` with a \`targetRef\` pointing to the \`account.move\` record and the filename of the uploaded file. Source documents attached to accounting records provide the audit trail required by external auditors.`,
     requiredModels: [
       { model: "account.move", operations: ["read", "create", "write"] },
       { model: "account.move.line", operations: ["read", "write"] },
@@ -354,6 +361,7 @@ ${ODOO_RULES}
       { model: "account.journal", operations: ["read"] },
       { model: "account.analytic.line", operations: ["read"] },
       { model: "account.analytic.account", operations: ["read"] },
+      { model: "ir.attachment", operations: ["read", "create"] },
     ],
     modelHint: { tier: "reasoning", capabilities: ["vision", "long-context", "tools"] },
   }),
@@ -669,7 +677,10 @@ ${ODOO_OUTPUT_FORMATTING}
 ${ODOO_RULES}
 - HR data is highly confidential — when in doubt, ask the user before exposing details.
 - Prefer aggregates over individual records when the answer is statistical.
-- Never email or message an employee on their behalf — always draft, never send.`,
+- Never email or message an employee on their behalf — always draft, never send.
+
+### Attach supporting documents
+If the user sends a supporting document (e.g., medical certificate for sick leave, signed contract amendment), attach it to the relevant record using \`odoo_attach_file\`. For leave requests, attach to \`hr.leave\`. For employee profile updates, attach to \`hr.employee\`. Always confirm before attaching.`,
     requiredModels: [
       { model: "hr.employee", operations: ["read", "write"] },
       { model: "hr.department", operations: ["read"] },
@@ -681,6 +692,7 @@ ${ODOO_RULES}
       { model: "hr.contract", operations: ["read"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },
       { model: "mail.message", operations: ["read", "create"] },
+      { model: "ir.attachment", operations: ["read", "create"] },
     ],
     modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
@@ -813,7 +825,10 @@ ${ODOO_OUTPUT_FORMATTING}
 
 ${ODOO_RULES}
 - When you surface at-risk projects, include the project manager's name so the user knows who to escalate to.
-- Don't reassign a task across departments without flagging it — that often crosses a budget boundary.`,
+- Don't reassign a task across departments without flagging it — that often crosses a budget boundary.
+
+### Attach documents to tasks or projects
+If the user sends a file related to a task or project (specification, screenshot, contract, design asset), attach it to the relevant record using \`odoo_attach_file\`. Attach to \`project.task\` for task-level documents or to \`project.project\` for project-wide ones. Confirm the target record with the user first.`,
     requiredModels: [
       { model: "project.project", operations: ["read", "create", "write"] },
       { model: "project.task", operations: ["read", "create", "write"] },
@@ -822,6 +837,7 @@ ${ODOO_RULES}
       { model: "hr.employee", operations: ["read"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },
       { model: "mail.message", operations: ["read", "create"] },
+      { model: "ir.attachment", operations: ["read", "create"] },
     ],
     modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
@@ -964,7 +980,10 @@ ${ODOO_OUTPUT_FORMATTING}
 
 ${ODOO_RULES}
 - Production is irreversible at scale — when in doubt, ask the user.
-- Never silently round \`qty_producing\`. Always reconcile planned vs. actual with the user.`,
+- Never silently round \`qty_producing\`. Always reconcile planned vs. actual with the user.
+
+### Attach documents to a manufacturing order
+If the user sends a work instruction, quality report, or delivery note related to an MO, attach it to the \`mrp.production\` record using \`odoo_attach_file\`. Confirm the target MO with the user before attaching.`,
     requiredModels: [
       { model: "mrp.production", operations: ["read", "create", "write"] },
       { model: "mrp.workorder", operations: ["read", "write"] },
@@ -976,6 +995,7 @@ ${ODOO_RULES}
       { model: "stock.quant", operations: ["read"] },
       { model: "product.product", operations: ["read"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },
+      { model: "ir.attachment", operations: ["read", "create"] },
     ],
     modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
@@ -1344,7 +1364,10 @@ ${ODOO_OUTPUT_FORMATTING}
 ${ODOO_RULES}
 - Authority limits matter more than convenience — when in doubt, escalate.
 - Always log a rationale (\`mail.message\`) on every approval and every refusal.
-- Aggregate where useful, but approve/refuse one record at a time after individual review.`,
+- Aggregate where useful, but approve/refuse one record at a time after individual review.
+
+### Attach supporting documents to approvals
+If the user sends a receipt, supporting invoice, or policy document related to an approval, attach it to the relevant \`hr.expense.sheet\` or \`hr.expense\` record using \`odoo_attach_file\`. Source documents attached before approval eliminate the most common audit query ("where is the receipt?").`,
     requiredModels: [
       { model: "hr.expense.sheet", operations: ["read", "write"] },
       { model: "hr.expense", operations: ["read"] },
@@ -1356,6 +1379,7 @@ ${ODOO_RULES}
       { model: "res.partner", operations: ["read"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },
       { model: "mail.message", operations: ["read", "create"] },
+      { model: "ir.attachment", operations: ["read", "create"] },
     ],
     modelHint: {
       tier: "reasoning",

@@ -22,6 +22,11 @@ vi.mock("odoo-node", () => {
   return { OdooClient: MockOdooClient };
 });
 
+// Mock the io wrapper for odoo_attach_file tests
+const { mockReadFile } = vi.hoisted(() => ({ mockReadFile: vi.fn() }));
+vi.mock("../io", () => ({ readFile: mockReadFile }));
+
+
 import { OdooClient } from "odoo-node";
 import { encodeRef } from "../integration-ref";
 import plugin from "../index";
@@ -112,9 +117,9 @@ const agentConfig = {
 };
 
 describe("tool registration", () => {
-  it("registers all 7 tools", () => {
+  it("registers all 8 tools", () => {
     const tools = createApi({ [agentId]: agentConfig });
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(8);
     const names = tools.map((t) => t.name);
     expect(names).toContain("odoo_schema");
     expect(names).toContain("odoo_read");
@@ -123,6 +128,7 @@ describe("tool registration", () => {
     expect(names).toContain("odoo_create");
     expect(names).toContain("odoo_write");
     expect(names).toContain("odoo_delete");
+    expect(names).toContain("odoo_attach_file");
   });
 
   it("returns null for all tools when no agentId", () => {
@@ -928,5 +934,186 @@ describe("client caching (#209 layer 2: credentials fetched lazily, cached)", ()
     // First call fetched, error invalidated cache, second call refetched
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(mockSearchRead).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("odoo_attach_file", () => {
+  const attachAgentId = "agent-attach-1";
+  const attachAgentConfig = {
+    connectionId: "conn-test-1",
+    permissions: {
+      "account.move": ["read", "write", "create"],
+      "ir.attachment": ["read", "create"],
+    },
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+    fetchMock.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: "OK",
+      json: async () => ({ type: "odoo", credentials: testCredentials }),
+    });
+  });
+
+  it("attaches a file to a record and returns an encrypted ref", async () => {
+    const targetRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.move",
+      id: 42,
+      label: "INV/2025/0001",
+    });
+
+    const fakeBytes = Buffer.from("fake-image-bytes");
+    mockReadFile.mockResolvedValue(fakeBytes);
+    mockCreate.mockResolvedValue(99);
+
+    const tools = createApi({ [attachAgentId]: attachAgentConfig });
+    const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+    expect(tool).not.toBeNull();
+
+    const result = await tool.execute("call-1", {
+      targetRef,
+      filename: "receipt.jpg",
+    });
+
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse(result.content[0].text);
+    expect(data.ref).toMatch(/^pinchy_ref:v1:/);
+    expect(data.name).toBe("receipt.jpg");
+    expect(data.mimetype).toBe("image/jpeg");
+
+    expect(mockCreate).toHaveBeenCalledWith("ir.attachment", {
+      res_model: "account.move",
+      res_id: 42,
+      name: "receipt.jpg",
+      datas: fakeBytes.toString("base64"),
+      mimetype: "image/jpeg",
+    });
+
+    expect(mockReadFile).toHaveBeenCalledWith(
+      `/root/.openclaw/workspaces/${attachAgentId}/uploads/receipt.jpg`,
+    );
+  });
+
+  it("returns permission denied when ir.attachment.create is missing", async () => {
+    const targetRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.move",
+      id: 42,
+      label: "INV/2025/0001",
+    });
+
+    const configNoAttach = {
+      connectionId: "conn-test-1",
+      permissions: {
+        "account.move": ["read", "write", "create"],
+        // no ir.attachment entry
+      },
+    };
+
+    const tools = createApi({ [attachAgentId]: configNoAttach });
+    const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+    const result = await tool.execute("call-1", { targetRef, filename: "receipt.jpg" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Permission denied");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("returns permission denied when targetModel.write is missing", async () => {
+    const targetRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.move",
+      id: 42,
+      label: "INV/2025/0001",
+    });
+
+    const configReadOnly = {
+      connectionId: "conn-test-1",
+      permissions: {
+        "account.move": ["read"],
+        "ir.attachment": ["read", "create"],
+      },
+    };
+
+    const tools = createApi({ [attachAgentId]: configReadOnly });
+    const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+    const result = await tool.execute("call-1", { targetRef, filename: "receipt.jpg" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Permission denied");
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it("returns an error when the file does not exist", async () => {
+    const targetRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.move",
+      id: 42,
+      label: "INV/2025/0001",
+    });
+
+    const notFound = Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
+    mockReadFile.mockRejectedValue(notFound);
+
+    const tools = createApi({ [attachAgentId]: attachAgentConfig });
+    const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+    const result = await tool.execute("call-1", { targetRef, filename: "missing.jpg" });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("missing.jpg");
+  });
+
+  it("returns an error for an invalid targetRef", async () => {
+    const tools = createApi({ [attachAgentId]: attachAgentConfig });
+    const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+    const result = await tool.execute("call-1", {
+      targetRef: "not-a-valid-ref",
+      filename: "receipt.jpg",
+    });
+
+    expect(result.isError).toBe(true);
+    expect(mockCreate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["receipt.jpg", "image/jpeg"],
+    ["scan.jpeg", "image/jpeg"],
+    ["photo.png", "image/png"],
+    ["anim.gif", "image/gif"],
+    ["modern.webp", "image/webp"],
+    ["document.pdf", "application/pdf"],
+    ["unknown.xyz", "application/octet-stream"],
+  ])("detects MIME type for %s as %s", async (filename, expectedMime) => {
+    const targetRef = encodeRef({
+      integrationType: "odoo",
+      connectionId: "conn-test-1",
+      model: "account.move",
+      id: 1,
+      label: "INV",
+    });
+    mockReadFile.mockResolvedValue(Buffer.from("bytes"));
+    mockCreate.mockResolvedValue(1);
+
+    const tools = createApi({ [attachAgentId]: attachAgentConfig });
+    const tool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+    await tool.execute("call-1", { targetRef, filename });
+
+    expect(mockCreate).toHaveBeenCalledWith(
+      "ir.attachment",
+      expect.objectContaining({ mimetype: expectedMime }),
+    );
   });
 });

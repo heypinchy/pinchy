@@ -190,6 +190,11 @@ export const MODEL_CATEGORIES: ModelCategory[] = [
     label: "Notes",
     models: [{ model: "note.note", name: "Notes" }],
   },
+  {
+    id: "files",
+    label: "Files & Attachments",
+    models: [{ model: "ir.attachment", name: "Attachments" }],
+  },
 ];
 
 /**

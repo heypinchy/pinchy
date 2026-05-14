@@ -1,3 +1,5 @@
+import { readFile } from "./io";
+import { extname } from "path";
 import { OdooClient } from "odoo-node";
 import {
   checkPermission,
@@ -5,6 +7,27 @@ import {
   type Permissions,
 } from "./permissions";
 import { decodeRef, encodeRef } from "./integration-ref";
+
+const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
+
+const MIME_BY_EXT: Record<string, string> = {
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".png": "image/png",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".pdf": "application/pdf",
+  ".doc": "application/msword",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  ".xls": "application/vnd.ms-excel",
+  ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  ".txt": "text/plain",
+  ".csv": "text/csv",
+};
+
+function mimeForFilename(filename: string): string {
+  return MIME_BY_EXT[extname(filename).toLowerCase()] ?? "application/octet-stream";
+}
 
 interface PluginToolContext {
   agentId?: string;
@@ -1124,6 +1147,100 @@ const plugin = {
         };
       },
       { name: "odoo_delete" },
+    );
+
+    // 8. odoo_attach_file
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+        const config = getAgentConfig(agentConfigs, agentId);
+        if (!config) return null;
+
+        return {
+          name: "odoo_attach_file",
+          label: "Odoo Attach File",
+          description:
+            "Attach an uploaded file to an existing Odoo record. Pass the opaque ref of the target record and the filename of a file in the agent's uploads directory. Returns the encrypted ref of the new ir.attachment record.",
+          parameters: {
+            type: "object",
+            properties: {
+              targetRef: {
+                type: "string",
+                description: "Opaque ref of the Odoo record to attach the file to (e.g. from odoo_read or odoo_create)",
+              },
+              filename: {
+                type: "string",
+                description: "Filename of an existing upload in the agent's workspace uploads directory",
+              },
+            },
+            required: ["targetRef", "filename"],
+            additionalProperties: false,
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            const filename = params.filename as string;
+            try {
+              const targetRef = params.targetRef as string;
+              const decoded = decodeRef(targetRef);
+
+              if (!checkPermission(config.permissions, "ir.attachment", "create")) {
+                return permissionDenied("create", "ir.attachment");
+              }
+              if (!checkPermission(config.permissions, decoded.model, "write")) {
+                return permissionDenied("write", decoded.model);
+              }
+
+              const filePath = `${WORKSPACE_ROOT}/${agentId}/uploads/${filename}`;
+              let fileBuffer: Buffer;
+              try {
+                fileBuffer = await readFile(filePath) as Buffer;
+              } catch (err) {
+                const code = err && typeof err === "object" && "code" in err ? String((err as { code: unknown }).code) : "";
+                if (code === "ENOENT") {
+                  return {
+                    isError: true as const,
+                    content: [{ type: "text", text: `File not found: ${filename}. Make sure the file was uploaded before calling odoo_attach_file.` }],
+                  };
+                }
+                throw err;
+              }
+
+              const mimetype = mimeForFilename(filename);
+              const datas = fileBuffer.toString("base64");
+
+              const newId = await withAuthRetry(agentId, config, (client) =>
+                client.create("ir.attachment", {
+                  res_model: decoded.model,
+                  res_id: decoded.id,
+                  name: filename,
+                  datas,
+                  mimetype,
+                }),
+              );
+
+              const ref = encodeRef({
+                integrationType: "odoo",
+                connectionId: config.connectionId,
+                model: "ir.attachment",
+                id: newId as number,
+                label: filename,
+              });
+
+              return {
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({ ref, name: filename, mimetype }),
+                  },
+                ],
+              };
+            } catch (error) {
+              return errorResult(error, { operation: "attach", model: "ir.attachment" });
+            }
+          },
+        };
+      },
+      { name: "odoo_attach_file" },
     );
   },
 };

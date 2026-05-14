@@ -35,8 +35,15 @@ describe("integration refs", () => {
       label: "Austria",
     });
 
-    expect(() => decodeRef(ref.replace(/.$/, "x"))).toThrow(
-      /Invalid integration reference/,
-    );
+    // Corrupt a character well before the end to avoid base64url end-padding
+    // effects: in the final 2-char or 3-char group, trailing bits are
+    // zero-padded and changing only those bits leaves the decoded bytes
+    // unchanged, which would make AES-GCM auth pass. Position -10 is safely
+    // inside a full 4-char group where all 6 bits of every character matter.
+    const idx = ref.length - 10;
+    const flipped = ref[idx] === "a" ? "b" : "a";
+    const tampered = ref.slice(0, idx) + flipped + ref.slice(idx + 1);
+
+    expect(() => decodeRef(tampered)).toThrow(/Invalid integration reference/);
   });
 });
