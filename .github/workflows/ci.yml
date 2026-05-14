@@ -325,15 +325,26 @@ jobs:
         run: |
           # OpenClaw creates openclaw.json with root-only permissions (600).
           # Pinchy runs as non-root and needs write access for provider/agent config.
-          # start-openclaw.sh must chmod the file after each OpenClaw startup.
-          PERMS=$(docker compose exec -T pinchy stat -c '%a' /openclaw-config/openclaw.json 2>/dev/null || echo "000")
-          echo "openclaw.json permissions: $PERMS"
-          if [ "$PERMS" != "666" ]; then
-            echo "::error::openclaw.json has permissions $PERMS (expected 666). Pinchy cannot write config."
-            docker compose exec -T openclaw ls -la /root/.openclaw/openclaw.json
-            exit 1
-          fi
-          echo "Config file permissions verified"
+          # start-openclaw.sh chmods the file to 666 via a 50ms background tick
+          # after each OpenClaw startup, including the SIGUSR1-driven internal
+          # restarts triggered when setup writes the Smithers config.
+          #
+          # The state we're asserting is "eventually 666" — OpenClaw can write
+          # 600 again at any moment of an internal reload. Poll for up to 10s
+          # to ride out any restart-then-chmod cycle before declaring failure.
+          ATTEMPTS=20
+          PERMS="000"
+          for i in $(seq 1 $ATTEMPTS); do
+            PERMS=$(docker compose exec -T pinchy stat -c '%a' /openclaw-config/openclaw.json 2>/dev/null || echo "000")
+            if [ "$PERMS" = "666" ]; then
+              echo "Config file permissions verified ($PERMS, attempt $i)"
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "::error::openclaw.json has permissions $PERMS (expected 666 after $ATTEMPTS attempts). Pinchy cannot write config."
+          docker compose exec -T openclaw ls -la /root/.openclaw/openclaw.json
+          exit 1
 
       - name: Verify clean startup (production)
         run: |
