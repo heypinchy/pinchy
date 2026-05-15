@@ -209,6 +209,14 @@ export async function pinchyPost(path: string, body: unknown, cookie: string): P
   });
 }
 
+export async function pinchyPut(path: string, body: unknown, cookie: string): Promise<Response> {
+  return fetch(`${PINCHY_URL}${path}`, {
+    method: "PUT",
+    headers: mutatingHeaders(cookie),
+    body: JSON.stringify(body),
+  });
+}
+
 export async function pinchyPatch(path: string, body: unknown, cookie: string): Promise<Response> {
   return fetch(`${PINCHY_URL}${path}`, {
     method: "PATCH",

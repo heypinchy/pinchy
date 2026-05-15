@@ -220,9 +220,9 @@ Every plugin tool must be covered at three layers:
 3. **Behavior test** — at least one tool per plugin must have an E2E test that:
    a. Sends a chat message containing a trigger string handled by `fake-ollama-server.ts`.
    b. The fake LLM returns a deterministic `tool_calls` response for that tool.
-   c. The test polls `/api/audit?eventType=tool.<toolName>&limit=10` and asserts the entry appears.
+   c. The test asserts the audit entry appears, either via a literal `/api/audit?eventType=tool.<toolName>&limit=10` query or via the shared `pollAuditForTool({ toolName, agentId })` helper in `packages/web/e2e/shared/dispatch-probe.ts`.
 
-   The coverage guard (`plugin-tool-coverage.test.ts`) scans all `*.spec.ts` files for `eventType=tool.<toolName>` patterns. If a plugin has tools but no matching E2E event query, CI fails there.
+   The coverage guard (`plugin-tool-coverage.test.ts`) scans all `*.spec.ts` files for both `eventType=tool.<toolName>` and `pollAuditForTool(... toolName: "<toolName>" ...)` patterns. If a plugin has tools but no matching E2E assertion, CI fails there.
 
 **Recipe for adding a new tool to an existing plugin:**
 
@@ -230,7 +230,7 @@ Every plugin tool must be covered at three layers:
 2. Add `"new_tool"` to `contracts.tools` in `openclaw.plugin.json`.
 3. Add a `TriggerConfig` entry in `packages/web/e2e/shared/fake-ollama/fake-ollama-server.ts`.
 4. Export the trigger constant from `fake-ollama-server.ts`.
-5. Add a `test.describe` block (or extend an existing one) in the relevant E2E spec that sends the trigger and polls `/api/audit?eventType=tool.new_tool`.
+5. Add a `test.describe` block (or extend an existing one) in the relevant E2E spec that sends the trigger and calls `pollAuditForTool(page, { toolName: "new_tool", agentId })` (or polls the literal `/api/audit?eventType=tool.new_tool` URL).
 
 **Recipe for adding a brand-new plugin:**
 

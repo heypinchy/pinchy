@@ -20,6 +20,12 @@ import {
   startFakeOllama,
   stopFakeOllama,
 } from "../shared/fake-ollama/fake-ollama-server";
+import {
+  loginViaUI,
+  pollAuditForTool,
+  seedDefaultProviderToOllama,
+  waitForOpenClawStable,
+} from "../shared/dispatch-probe";
 
 const MOCK_ODOO_URL = process.env.MOCK_ODOO_URL || "http://localhost:9002";
 
@@ -260,27 +266,22 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
   let dispatchCookie: string;
   let dispatchConnectionId: string;
   let dispatchAgentId: string;
+  let restoreSettings: (() => Promise<void>) | null = null;
 
-  test.beforeAll(async () => {
+  test.beforeAll(async ({}, testInfo) => {
+    testInfo.setTimeout(180_000);
+
     // 1. Start fake-Ollama on the host (port 11435).
     await startFakeOllama();
 
-    // 2. Seed ollama_local_url and switch default provider to ollama-local.
+    // 2. Swap default_provider to ollama-local and seed ollama_local_url.
     //    Pinchy can reach ollama.local via the extra_hosts mapping added to the
     //    docker-compose.odoo-test.yml overlay. OpenClaw already has this mapping.
     const dbUrl =
       process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
-    const { default: postgres } = await import("postgres");
-    const sql = postgres(dbUrl);
-    await sql`
-      INSERT INTO settings (key, value, encrypted) VALUES
-        ('ollama_local_url', ${"http://ollama.local:" + String(FAKE_OLLAMA_PORT)}, false),
-        ('default_provider', 'ollama-local', false)
-      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, encrypted = false
-    `;
-    await sql.end();
+    restoreSettings = await seedDefaultProviderToOllama(dbUrl, FAKE_OLLAMA_PORT);
 
-    // 3. Login
+    // 3. Login (API cookie).
     dispatchCookie = await login();
 
     // 4. Create Odoo connection so the agent config includes the plugin block.
@@ -311,64 +312,36 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
     );
     expect(patchRes.status).toBe(200);
 
-    // 8. Wait for OpenClaw to stabilise with the new Ollama config (5 s consecutive).
-    const deadline = Date.now() + 60_000;
-    let connectedSince: number | null = null;
-    while (Date.now() < deadline) {
-      const res = await pinchyGet("/api/health/openclaw", dispatchCookie);
-      if (res.ok) {
-        const body = (await res.json()) as { connected?: boolean };
-        if (body.connected) {
-          connectedSince ??= Date.now();
-          if (Date.now() - connectedSince >= 5000) break;
-        } else {
-          connectedSince = null;
-        }
-      }
-      await new Promise((r) => setTimeout(r, 500));
-    }
-    if (!connectedSince || Date.now() - connectedSince < 5000) {
-      throw new Error("OpenClaw did not stabilise after Ollama config regen");
-    }
+    // 8. Wait for OpenClaw to stabilise with the new Ollama config.
+    await waitForOpenClawStable(() => pinchyGet("/api/health/openclaw", dispatchCookie));
   });
 
   test.afterAll(async () => {
     if (dispatchAgentId) {
       await pinchyDelete(`/api/agents/${dispatchAgentId}`, dispatchCookie);
     }
+    if (dispatchConnectionId) {
+      await pinchyDelete(`/api/integrations/${dispatchConnectionId}`, dispatchCookie);
+    }
+    if (restoreSettings) await restoreSettings();
     await stopFakeOllama();
   });
 
   test("odoo_schema dispatches via fake-LLM and writes audit entry", async ({ page }) => {
-    await page.goto("/login");
-    await page.getByLabel(/email/i).fill(getAdminEmail());
-    await page.getByLabel("Password", { exact: true }).fill(getAdminPassword());
-    await page.getByRole("button", { name: /sign in/i }).click();
-    await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
+    await loginViaUI(page, getAdminEmail(), getAdminPassword());
 
     await page.goto(`/chat/${dispatchAgentId}`);
-    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10000 });
+    await expect(page).toHaveURL(`/chat/${dispatchAgentId}`, { timeout: 10_000 });
 
     const input = page.getByPlaceholder(/send a message/i);
-    await expect(input).toBeVisible({ timeout: 10000 });
+    await expect(input).toBeVisible({ timeout: 10_000 });
     await input.fill(`${FAKE_OLLAMA_ODOO_SCHEMA_TOOL_TRIGGER}: describe Odoo models`);
     await input.press("Enter");
 
-    const deadline = Date.now() + 30000;
-    let found = false;
-    while (Date.now() < deadline) {
-      const res = await page.request.get("/api/audit?eventType=tool.odoo_schema&limit=10");
-      expect(res.status()).toBe(200);
-      const audit = await res.json();
-      found = (
-        audit.entries as Array<{ resource: string | null; detail: { toolName?: string } | null }>
-      ).some(
-        (entry) =>
-          entry.resource === `agent:${dispatchAgentId}` && entry.detail?.toolName === "odoo_schema"
-      );
-      if (found) break;
-      await new Promise((r) => setTimeout(r, 500));
-    }
+    const found = await pollAuditForTool(page, {
+      toolName: "odoo_schema",
+      agentId: dispatchAgentId,
+    });
     expect(found).toBe(true);
   });
 });
