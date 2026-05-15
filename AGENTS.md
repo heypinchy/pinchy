@@ -209,6 +209,33 @@ External-integration plugins, such as web search, email, Odoo, and future third-
 
 Internal plugins, such as files, context, docs, and audit, must be listed in `INTERNAL_PLUGINS` and exercised by `packages/web/e2e/integration/agent-chat.spec.ts` or another E2E spec with a clear assertion comment mentioning the plugin id.
 
+### Tool dispatch coverage
+
+Every plugin tool must be covered at three layers:
+
+1. **`openclaw.plugin.json#contracts.tools`** — list every tool name. OpenClaw 5.3+ silently ignores `registerTool()` calls that are not declared here. The bidirectional drift guard (`manifest-tools-drift.test.ts`) enforces that this list matches the `registerTool()` calls in `index.ts`.
+
+2. **Drift guard** — `packages/web/src/__tests__/lib/manifest-tools-drift.test.ts` checks that `contracts.tools` and `registerTool()` are in sync. Runs in `pnpm test`.
+
+3. **Behavior test** — at least one tool per plugin must have an E2E test that:
+   a. Sends a chat message containing a trigger string handled by `fake-ollama-server.ts`.
+   b. The fake LLM returns a deterministic `tool_calls` response for that tool.
+   c. The test polls `/api/audit?eventType=tool.<toolName>&limit=10` and asserts the entry appears.
+
+   The coverage guard (`plugin-tool-coverage.test.ts`) scans all `*.spec.ts` files for `eventType=tool.<toolName>` patterns. If a plugin has tools but no matching E2E event query, CI fails there.
+
+**Recipe for adding a new tool to an existing plugin:**
+
+1. Add `registerTool(api, schema, { name: "new_tool" }, handler)` in `index.ts`.
+2. Add `"new_tool"` to `contracts.tools` in `openclaw.plugin.json`.
+3. Add a `TriggerConfig` entry in `packages/web/e2e/shared/fake-ollama/fake-ollama-server.ts`.
+4. Export the trigger constant from `fake-ollama-server.ts`.
+5. Add a `test.describe` block (or extend an existing one) in the relevant E2E spec that sends the trigger and polls `/api/audit?eventType=tool.new_tool`.
+
+**Recipe for adding a brand-new plugin:**
+
+Follow the Plugin Integration Contract above, then apply the tool dispatch coverage recipe for each tool the plugin registers.
+
 ## Documentation
 
 - Docs live in `docs/`, use Astro Starlight, and follow the Diataxis framework.
