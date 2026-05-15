@@ -6,7 +6,7 @@ settings:
 
 overrides:
   defu@<=6.1.4: ^6.1.5
-  devalue@<=5.6.3: ^5.6.4
+  devalue@<5.8.1: ^5.8.1
   dompurify@<3.4.0: ^3.4.0
   h3@>=1.15.0 <1.15.9: ^1.15.9
   lodash-es@<4.18.0: ^4.18.0
@@ -1180,8 +1180,8 @@ packages:
     resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==}
     engines: {node: '>=8'}
 
-  devalue@5.7.1:
-    resolution: {integrity: sha512-MUbZ586EgQqdRnC4yDrlod3BEdyvE4TapGYHMW2CiaW+KkkFmWEFqBUaLltEZCGi0iFXCEjRF0OjF0DV2QHjOA==}
+  devalue@5.8.1:
+    resolution: {integrity: sha512-4CXDYRBGqN+57wVJkuXBYmpAVUSg3L6JAQa/DFqm238G73E1wuyc/JhGQJzN7vUf/CMphYau2zXbfWzDR5aTEw==}
 
   devlop@1.1.0:
     resolution: {integrity: sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA==}
@@ -3092,7 +3092,7 @@ snapshots:
       clsx: 2.1.1
       common-ancestor-path: 2.0.0
       cookie: 1.1.1
-      devalue: 5.7.1
+      devalue: 5.8.1
       diff: 8.0.3
       dset: 3.1.4
       es-module-lexer: 2.0.0
@@ -3466,7 +3466,7 @@ snapshots:
   detect-libc@2.1.2:
     optional: true
 
-  devalue@5.7.1: {}
+  devalue@5.8.1: {}
 
   devlop@1.1.0:
     dependencies:
