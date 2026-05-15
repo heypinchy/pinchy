@@ -274,14 +274,27 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
     // 1. Start fake-Ollama on the host (port 11435).
     await startFakeOllama();
 
-    // 2. Swap default_provider to ollama-local and seed ollama_local_url.
+    // 2. Drain OC's config.apply rate-limit window. OC 5.3 allows ~3 calls per
+    //    45 s per (device,IP) tuple. Tests 1–5 of this suite each trigger one
+    //    regenerateOpenClawConfig() (PATCHes / setAgentPermissions cascades),
+    //    so by the time this probe starts the rate-limit counter is at or near
+    //    the cap. The second config.apply from this probe (after POST agent +
+    //    PATCH allowedTools) then gets rejected with UNAVAILABLE, falls through
+    //    to the inotify file-watcher fallback, and races a still-in-flight
+    //    earlier config.apply that overwrites OC's in-memory state with stale
+    //    content — leading to "unknown agent id" when the dispatch chat fires.
+    //    A 45 s quiescent wait flushes the window so this probe's regens are
+    //    the only ones contending.
+    await new Promise((r) => setTimeout(r, 45_000));
+
+    // 3. Swap default_provider to ollama-local and seed ollama_local_url.
     //    Pinchy can reach ollama.local via the extra_hosts mapping added to the
     //    docker-compose.odoo-test.yml overlay. OpenClaw already has this mapping.
     const dbUrl =
       process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
     restoreSettings = await seedDefaultProviderToOllama(dbUrl, FAKE_OLLAMA_PORT);
 
-    // 3. Login (API cookie).
+    // 4. Login (API cookie).
     dispatchCookie = await login();
 
     // 4. Create Odoo connection so the agent config includes the plugin block.
