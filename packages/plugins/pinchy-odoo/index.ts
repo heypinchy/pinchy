@@ -224,6 +224,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+// Some LLMs (observed: ollama-cloud/gemini-3-flash-preview during v0.5.4 staging
+// click-through) emit tool_call arguments where the keys of object-valued args
+// are wrapped in literal JSON-quoted strings — e.g. `{"\"name\"": "Tesla"}`
+// instead of `{"name": "Tesla"}`. Whether this is the model's tokenizer leaking
+// raw JSON into the arguments string or a pi-ai parsing quirk is upstream of us;
+// at the plugin edge we just strip a single surrounding pair of quotes from each
+// key before forwarding to Odoo. Odoo field names never contain quotes, so this
+// rewrite is information-preserving for the well-formed case.
+function unquoteFieldKeys(values: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, val] of Object.entries(values)) {
+    const stripped =
+      key.length >= 2 && key.startsWith('"') && key.endsWith('"')
+        ? key.slice(1, -1)
+        : key;
+    out[stripped] = val;
+  }
+  return out;
+}
+
 function getSearchReadRecords(result: unknown): OdooRecord[] {
   if (Array.isArray(result)) return result.filter(isRecord);
   if (isRecord(result) && Array.isArray(result.records)) {
@@ -1029,7 +1049,7 @@ const plugin = {
                         client,
                         config.connectionId,
                         model,
-                        params.values,
+                        unquoteFieldKeys(params.values),
                       )
                     : (params.values as Record<string, unknown>);
                   return client.create(model, values);
@@ -1097,7 +1117,7 @@ const plugin = {
                         client,
                         config.connectionId,
                         model,
-                        params.values,
+                        unquoteFieldKeys(params.values),
                       )
                     : (params.values as Record<string, unknown>);
                   return client.write(model, params.ids as number[], values);

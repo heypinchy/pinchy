@@ -663,6 +663,39 @@ describe("odoo_create", () => {
     expect(result.isError).toBe(true);
     expect(mockCreate).not.toHaveBeenCalled();
   });
+
+  // Regression guard: some LLMs (observed with ollama-cloud/gemini-3-flash-preview
+  // on the v0.5.4 staging click-through) emit tool_call arguments where the keys
+  // of object-valued args contain literal JSON-escaped quotes — e.g.
+  //   values: { "\"name\"": "Tesla", "\"city\"": "Wien" }
+  // instead of
+  //   values: { "name": "Tesla", "city": "Wien" }
+  // Without sanitization those quotes reach Odoo verbatim and create() rejects
+  // every record because no field "\"name\"" exists.
+  it("strips literal JSON-escaped quotes from value keys before create()", async () => {
+    mockCreate.mockResolvedValue(99);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-quoted-keys", {
+      model: "res.partner",
+      values: {
+        '"name"': "Tesla Motors Austria GmbH",
+        '"vat"': "ATU67878139",
+        '"city"': "Wien",
+        '"is_company"': true,
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockCreate).toHaveBeenCalledWith("res.partner", {
+      name: "Tesla Motors Austria GmbH",
+      vat: "ATU67878139",
+      city: "Wien",
+      is_company: true,
+    });
+  });
 });
 
 describe("odoo_write", () => {
@@ -702,6 +735,26 @@ describe("odoo_write", () => {
     expect(result.content[0].text).toContain("Permission denied");
     expect(result.isError).toBe(true);
     expect(mockWrite).not.toHaveBeenCalled();
+  });
+
+  // Same regression guard as odoo_create — see comment above the create test.
+  it("strips literal JSON-escaped quotes from value keys before write()", async () => {
+    mockWrite.mockResolvedValue(true);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_write", agentId)!;
+
+    const result = await tool.execute("call-quoted-keys", {
+      model: "res.partner",
+      ids: [42],
+      values: { '"email"': "updated@example.com", '"city"': "Linz" },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockWrite).toHaveBeenCalledWith("res.partner", [42], {
+      email: "updated@example.com",
+      city: "Linz",
+    });
   });
 });
 
