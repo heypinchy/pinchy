@@ -4,7 +4,7 @@ import {
   FAKE_OLLAMA_SLOW_STREAM_TRIGGER,
   FAKE_OLLAMA_SLOW_STREAM_RESPONSE,
   FAKE_OLLAMA_SLOW_STREAM_DELAY_MS,
-} from "./fake-ollama-server";
+} from "../shared/fake-ollama/fake-ollama-server";
 import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
 const RESPONSE_WORDS = FAKE_OLLAMA_SLOW_STREAM_RESPONSE.split(" ");

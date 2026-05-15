@@ -1,4 +1,4 @@
-// packages/web/e2e/integration/fake-ollama-server.ts
+// packages/web/e2e/shared/fake-ollama/fake-ollama-server.ts
 //
 // Minimal Ollama API implementation for integration tests.
 // Endpoints used by Pinchy's provider-models.ts:
@@ -16,6 +16,65 @@ const DOMAIN_LOCK_TOOL_RESPONSE = "Domain lock docs tool call completed.";
 const SLOW_STREAM_TRIGGER = "E2E_SLOW_STREAM";
 const SLOW_STREAM_RESPONSE = "one two three four five six seven eight nine ten";
 const SLOW_STREAM_DELAY_MS = 500;
+
+// Per-plugin tool triggers — one per plugin, used by behavior tests to assert
+// that the plugin loaded and registerTool() worked end-to-end.
+const FILES_LS_TRIGGER = "E2E_FILES_LS_TOOL";
+const FILES_LS_RESPONSE = "Files listed: coverage probe complete.";
+const CONTEXT_SAVE_USER_TRIGGER = "E2E_CONTEXT_SAVE_USER_TOOL";
+const CONTEXT_SAVE_USER_RESPONSE = "Context saved: coverage probe complete.";
+const ODOO_SCHEMA_TRIGGER = "E2E_ODOO_SCHEMA_TOOL";
+const ODOO_SCHEMA_RESPONSE = "Schema retrieved: coverage probe complete.";
+const EMAIL_LIST_TRIGGER = "E2E_EMAIL_LIST_TOOL";
+const EMAIL_LIST_RESPONSE = "Emails listed: coverage probe complete.";
+const WEB_SEARCH_TRIGGER = "E2E_WEB_SEARCH_TOOL";
+const WEB_SEARCH_RESPONSE = "Search complete: coverage probe complete.";
+
+interface TriggerConfig {
+  trigger: string;
+  response: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+}
+
+const TOOL_TRIGGERS: TriggerConfig[] = [
+  {
+    trigger: DOMAIN_LOCK_TOOL_TRIGGER,
+    response: DOMAIN_LOCK_TOOL_RESPONSE,
+    toolName: "docs_list",
+    arguments: {},
+  },
+  {
+    trigger: FILES_LS_TRIGGER,
+    response: FILES_LS_RESPONSE,
+    toolName: "pinchy_ls",
+    arguments: { path: "/data" },
+  },
+  {
+    trigger: CONTEXT_SAVE_USER_TRIGGER,
+    response: CONTEXT_SAVE_USER_RESPONSE,
+    toolName: "pinchy_save_user_context",
+    arguments: { content: "E2E coverage probe" },
+  },
+  {
+    trigger: ODOO_SCHEMA_TRIGGER,
+    response: ODOO_SCHEMA_RESPONSE,
+    toolName: "odoo_schema",
+    arguments: {},
+  },
+  {
+    trigger: EMAIL_LIST_TRIGGER,
+    response: EMAIL_LIST_RESPONSE,
+    toolName: "email_list",
+    arguments: {},
+  },
+  {
+    trigger: WEB_SEARCH_TRIGGER,
+    response: WEB_SEARCH_RESPONSE,
+    toolName: "pinchy_web_search",
+    arguments: { query: "E2E coverage probe" },
+  },
+];
 
 function writeNdjson(res: http.ServerResponse, chunks: unknown[]) {
   res.writeHead(200, { "Content-Type": "application/x-ndjson" });
@@ -150,11 +209,12 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const lastUserMessage = [...messages]
       .reverse()
       .find((message) => (message as { role?: unknown })?.role === "user");
-    const isDomainLockToolPrompt =
-      messageContent(lastUserMessage).includes(DOMAIN_LOCK_TOOL_TRIGGER);
     const hasToolResult = messages.some(hasToolRole);
 
-    if (isDomainLockToolPrompt && !hasToolResult) {
+    const lastContent = messageContent(lastUserMessage);
+    const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
+
+    if (activeTrigger && !hasToolResult) {
       writeNdjson(res, [
         {
           model: MODEL_NAME,
@@ -165,8 +225,8 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
             tool_calls: [
               {
                 function: {
-                  name: "docs_list",
-                  arguments: {},
+                  name: activeTrigger.toolName,
+                  arguments: activeTrigger.arguments,
                 },
               },
             ],
@@ -179,13 +239,13 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
       return;
     }
 
-    const isSlowStreamPrompt = messageContent(lastUserMessage).includes(SLOW_STREAM_TRIGGER);
+    const isSlowStreamPrompt = lastContent.includes(SLOW_STREAM_TRIGGER);
     if (isSlowStreamPrompt && !hasToolResult) {
       await streamTextResponseSlow(res, SLOW_STREAM_RESPONSE);
       return;
     }
 
-    streamTextResponse(res, isDomainLockToolPrompt ? DOMAIN_LOCK_TOOL_RESPONSE : FAKE_RESPONSE);
+    streamTextResponse(res, activeTrigger ? activeTrigger.response : FAKE_RESPONSE);
     return;
   }
 
@@ -202,6 +262,16 @@ export const FAKE_OLLAMA_DOMAIN_LOCK_TOOL_RESPONSE = DOMAIN_LOCK_TOOL_RESPONSE;
 export const FAKE_OLLAMA_SLOW_STREAM_TRIGGER = SLOW_STREAM_TRIGGER;
 export const FAKE_OLLAMA_SLOW_STREAM_RESPONSE = SLOW_STREAM_RESPONSE;
 export const FAKE_OLLAMA_SLOW_STREAM_DELAY_MS = SLOW_STREAM_DELAY_MS;
+export const FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER = FILES_LS_TRIGGER;
+export const FAKE_OLLAMA_FILES_LS_TOOL_RESPONSE = FILES_LS_RESPONSE;
+export const FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_TRIGGER = CONTEXT_SAVE_USER_TRIGGER;
+export const FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_RESPONSE = CONTEXT_SAVE_USER_RESPONSE;
+export const FAKE_OLLAMA_ODOO_SCHEMA_TOOL_TRIGGER = ODOO_SCHEMA_TRIGGER;
+export const FAKE_OLLAMA_ODOO_SCHEMA_TOOL_RESPONSE = ODOO_SCHEMA_RESPONSE;
+export const FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER = EMAIL_LIST_TRIGGER;
+export const FAKE_OLLAMA_EMAIL_LIST_TOOL_RESPONSE = EMAIL_LIST_RESPONSE;
+export const FAKE_OLLAMA_WEB_SEARCH_TOOL_TRIGGER = WEB_SEARCH_TRIGGER;
+export const FAKE_OLLAMA_WEB_SEARCH_TOOL_RESPONSE = WEB_SEARCH_RESPONSE;
 
 let server: http.Server | null = null;
 

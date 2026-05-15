@@ -13,7 +13,7 @@ import { execSync, spawn } from "child_process";
 import path from "path";
 import { existsSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "fs";
 import { networkInterfaces } from "os";
-import { FAKE_OLLAMA_PORT } from "./fake-ollama-server";
+import { FAKE_OLLAMA_PORT } from "../shared/fake-ollama/fake-ollama-server";
 
 const ADMIN_DB_URL = "postgresql://pinchy:pinchy_dev@localhost:5435/pinchy";
 const INTEGRATION_DB = "pinchy_integration_test";
@@ -65,7 +65,7 @@ function startFakeOllamaProcess() {
   stopStaleFakeOllamaProcess();
   const child = spawn(
     process.execPath,
-    ["--import", "tsx", path.join(PACKAGE_ROOT, "e2e/integration/fake-ollama-process.ts")],
+    ["--import", "tsx", path.join(PACKAGE_ROOT, "e2e/shared/fake-ollama/fake-ollama-process.ts")],
     {
       cwd: PACKAGE_ROOT,
       detached: true,

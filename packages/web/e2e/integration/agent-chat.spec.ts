@@ -5,7 +5,7 @@ import {
   FAKE_OLLAMA_DOMAIN_LOCK_TOOL_RESPONSE,
   FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER,
   FAKE_OLLAMA_RESPONSE,
-} from "./fake-ollama-server";
+} from "../shared/fake-ollama/fake-ollama-server";
 
 test.describe("Agent chat — full integration", () => {
   async function login(page: Page) {
