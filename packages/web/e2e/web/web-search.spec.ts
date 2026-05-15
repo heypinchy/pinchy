@@ -127,6 +127,7 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
   let dispatchCookie: string;
   let dispatchConnectionId: string;
   let dispatchAgentId: string;
+  let reusedConnection = false;
   let restoreSettings: (() => Promise<void>) | null = null;
 
   test.beforeAll(async ({}, testInfo) => {
@@ -143,11 +144,24 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
     // 3. Login (API cookie).
     dispatchCookie = await login();
 
-    // 4. Create web-search connection (so the plugin config is emitted).
-    const connRes = await createWebSearchConnection(dispatchCookie, "E2E Web Dispatch");
-    if (connRes.status !== 201)
-      throw new Error(`Web connection creation failed: ${String(connRes.status)}`);
-    dispatchConnectionId = ((await connRes.json()) as { id: string }).id;
+    // 4. Reuse the existing web-search connection if a previous test left one
+    //    (web-search is a singleton — only one per org, see integrations/route.ts).
+    //    The "pinchy-web plugin loads" regression test earlier in the file creates
+    //    one without afterAll cleanup, so the probe inherits it. Otherwise create
+    //    our own.
+    const listRes = await pinchyGet("/api/integrations", dispatchCookie);
+    if (!listRes.ok) throw new Error(`List integrations failed: ${String(listRes.status)}`);
+    const existing = (await listRes.json()) as Array<{ id: string; type: string }>;
+    const reusable = existing.find((c) => c.type === "web-search");
+    if (reusable) {
+      dispatchConnectionId = reusable.id;
+      reusedConnection = true;
+    } else {
+      const connRes = await createWebSearchConnection(dispatchCookie, "E2E Web Dispatch");
+      if (connRes.status !== 201)
+        throw new Error(`Web connection creation failed: ${String(connRes.status)}`);
+      dispatchConnectionId = ((await connRes.json()) as { id: string }).id;
+    }
 
     // 5. Create the dispatch agent.
     const createRes = await pinchyPost(
@@ -176,7 +190,9 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
     if (dispatchAgentId) {
       await pinchyDelete(`/api/agents/${dispatchAgentId}`, dispatchCookie);
     }
-    if (dispatchConnectionId) {
+    // Only delete the connection if we created it ourselves; reusing one left
+    // by an earlier test means leaving it alone for any later test in the file.
+    if (dispatchConnectionId && !reusedConnection) {
       await pinchyDelete(`/api/integrations/${dispatchConnectionId}`, dispatchCookie);
     }
     if (restoreSettings) await restoreSettings();

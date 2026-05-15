@@ -158,6 +158,20 @@ function messageContent(message: unknown): string {
   if (!message || typeof message !== "object") return "";
   const content = (message as { content?: unknown }).content;
   if (typeof content === "string") return content;
+  // OpenAI/pi-ai may emit content as a parts array: [{type:"text", text:"..."}, ...]
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part && typeof part === "object") {
+          const p = part as { text?: unknown; content?: unknown };
+          if (typeof p.text === "string") return p.text;
+          if (typeof p.content === "string") return p.content;
+        }
+        return "";
+      })
+      .join(" ");
+  }
   return "";
 }
 

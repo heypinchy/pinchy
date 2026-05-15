@@ -250,37 +250,44 @@ test.describe("Plugin behavior — pinchy-context", () => {
 
 // ── Plugin behavior: pinchy-files ────────────────────────────────────────────
 // Proves pinchy-files loaded correctly and registerTool() worked end-to-end.
-// Creates a temporary agent with /data as allowed path (path may not exist
-// in the container — the tool call outcome is "failure" via ENOENT, but the
-// audit entry IS written, proving the tool was dispatched).
 //
-// Uses templateId "custom" instead of a KB template such as contract-analyzer
-// because the KB templates declare modelHint.capabilities=["vision", ...] which
-// fake-Ollama's single non-vision model cannot satisfy → 400 from
-// resolveModelForTemplate. The follow-up PATCH wires allowedTools + the
-// pluginConfig that pinchy-files needs.
+// Reuses the existing Smithers agent (already has its workspace + auth-profiles
+// directory created by the setup wizard) and temporarily grants it
+// pinchy_ls / pinchy_read plus a /data allow-list via PATCH. Creating a brand
+// new agent here would hit EACCES because the integration suite bind-mounts
+// /tmp/pinchy-integration-openclaw into OpenClaw (root in container) while
+// Pinchy runs on the host as a non-root user — mkdir of a new
+// agents/<UUID>/agent subdir then fails. The probe's purpose is only to prove
+// registerTool() fires + the audit hook posts; the agent identity does not
+// matter, so reuse is the simpler, more robust path.
+//
+// Restores Smithers' original allowedTools + pluginConfig in `finally`.
 test.describe("Plugin behavior — pinchy-files", () => {
   test("pinchy_ls dispatches via fake-LLM and writes audit entry", async ({ page }) => {
     await login(page);
-    await waitForOpenClawConnected(page);
+    const agentId = await getSmithersAgentId(page);
 
-    const createRes = await page.request.post("/api/agents", {
-      data: { name: "E2E Files Probe", templateId: "custom" },
-    });
-    expect(createRes.status()).toBe(201);
-    const agent = await createRes.json();
-    const agentId = agent.id as string;
+    const beforeRes = await page.request.get(`/api/agents/${agentId}`);
+    expect(beforeRes.status()).toBe(200);
+    const before = (await beforeRes.json()) as {
+      allowedTools: string[] | null;
+      pluginConfig: Record<string, unknown> | null;
+    };
+    const originalAllowedTools = before.allowedTools ?? [];
+    const originalPluginConfig = before.pluginConfig ?? null;
 
     const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
       data: {
-        allowedTools: ["pinchy_ls", "pinchy_read"],
-        pluginConfig: { "pinchy-files": { allowed_paths: ["/data"] } },
+        allowedTools: [...new Set([...originalAllowedTools, "pinchy_ls", "pinchy_read"])],
+        pluginConfig: {
+          ...(originalPluginConfig ?? {}),
+          "pinchy-files": { allowed_paths: ["/data"] },
+        },
       },
     });
     expect(patchRes.status()).toBe(200);
 
     try {
-      // Wait for OpenClaw to reload the updated config (the new agent).
       await waitForOpenClawConnected(page);
 
       await page.goto(`/chat/${agentId}`);
@@ -306,7 +313,12 @@ test.describe("Plugin behavior — pinchy-files", () => {
       }
       expect(found).toBe(true);
     } finally {
-      await page.request.delete(`/api/agents/${agentId}`);
+      await page.request.patch(`/api/agents/${agentId}`, {
+        data: {
+          allowedTools: originalAllowedTools,
+          pluginConfig: originalPluginConfig,
+        },
+      });
     }
   });
 });
