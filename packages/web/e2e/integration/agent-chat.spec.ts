@@ -2,10 +2,13 @@
 import { test, expect } from "@playwright/test";
 import type { Page } from "@playwright/test";
 import {
+  FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_TRIGGER,
   FAKE_OLLAMA_DOMAIN_LOCK_TOOL_RESPONSE,
   FAKE_OLLAMA_DOMAIN_LOCK_TOOL_TRIGGER,
+  FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER,
   FAKE_OLLAMA_RESPONSE,
 } from "../shared/fake-ollama/fake-ollama-server";
+import { login, getSmithersAgentId, waitForOpenClawConnected } from "./helpers";
 
 test.describe("Agent chat — full integration", () => {
   async function login(page: Page) {
@@ -203,6 +206,100 @@ test.describe("Agent chat — full integration", () => {
       expect(foundAuditEntry).toBe(true);
     } finally {
       await page.request.delete("/api/settings/domain");
+    }
+  });
+});
+
+// ── Plugin behavior: pinchy-context ─────────────────────────────────────────
+// Proves pinchy-context loaded correctly and registerTool() worked end-to-end.
+// Smithers is the personal onboarding agent and has pinchy_save_user_context
+// in its allowed tools by default — no agent creation needed.
+test.describe("Plugin behavior — pinchy-context", () => {
+  test("pinchy_save_user_context dispatches via fake-LLM and writes audit entry", async ({
+    page,
+  }) => {
+    await login(page);
+    const agentId = await getSmithersAgentId(page);
+    await page.goto(`/chat/${agentId}`);
+    await waitForOpenClawConnected(page);
+
+    const input = page.getByPlaceholder(/send a message/i);
+    await expect(input).toBeVisible({ timeout: 10000 });
+    await input.fill(`${FAKE_OLLAMA_CONTEXT_SAVE_USER_TOOL_TRIGGER}: save my context`);
+    await input.press("Enter");
+
+    const deadline = Date.now() + 30000;
+    let found = false;
+    while (Date.now() < deadline) {
+      const res = await page.request.get(
+        "/api/audit?eventType=tool.pinchy_save_user_context&limit=10"
+      );
+      expect(res.status()).toBe(200);
+      const audit = await res.json();
+      found = audit.entries.some(
+        (entry: { resource: string | null; detail: { toolName?: string } | null }) =>
+          entry.resource === `agent:${agentId}` &&
+          entry.detail?.toolName === "pinchy_save_user_context"
+      );
+      if (found) break;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    expect(found).toBe(true);
+  });
+});
+
+// ── Plugin behavior: pinchy-files ────────────────────────────────────────────
+// Proves pinchy-files loaded correctly and registerTool() worked end-to-end.
+// Creates a temporary KB agent with /data as allowed path (path may not exist
+// in the container — the tool call outcome is "failure" via ENOENT, but the
+// audit entry IS written, proving the tool was dispatched).
+test.describe("Plugin behavior — pinchy-files", () => {
+  test("pinchy_ls dispatches via fake-LLM and writes audit entry", async ({ page }) => {
+    await login(page);
+    await waitForOpenClawConnected(page);
+
+    // Create a KB agent — this calls regenerateOpenClawConfig() which triggers
+    // OpenClaw to reload its config. waitForOpenClawConnected below waits for
+    // the bridge to stabilise before we navigate to the chat page.
+    const createRes = await page.request.post("/api/agents", {
+      data: {
+        name: "E2E Files Probe",
+        templateId: "contract-analyzer",
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data"] } },
+      },
+    });
+    expect(createRes.status()).toBe(201);
+    const agent = await createRes.json();
+    const agentId = agent.id as string;
+
+    try {
+      // Wait for OpenClaw to reload the updated config (the new agent).
+      await waitForOpenClawConnected(page);
+
+      await page.goto(`/chat/${agentId}`);
+      await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10000 });
+
+      const input = page.getByPlaceholder(/send a message/i);
+      await expect(input).toBeVisible({ timeout: 10000 });
+      await input.fill(`${FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER}: list knowledge base files`);
+      await input.press("Enter");
+
+      const deadline = Date.now() + 30000;
+      let found = false;
+      while (Date.now() < deadline) {
+        const res = await page.request.get("/api/audit?eventType=tool.pinchy_ls&limit=10");
+        expect(res.status()).toBe(200);
+        const audit = await res.json();
+        found = audit.entries.some(
+          (entry: { resource: string | null; detail: { toolName?: string } | null }) =>
+            entry.resource === `agent:${agentId}` && entry.detail?.toolName === "pinchy_ls"
+        );
+        if (found) break;
+        await new Promise((r) => setTimeout(r, 500));
+      }
+      expect(found).toBe(true);
+    } finally {
+      await page.request.delete(`/api/agents/${agentId}`);
     }
   });
 });
