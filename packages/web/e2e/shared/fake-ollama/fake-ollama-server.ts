@@ -167,6 +167,102 @@ function hasToolRole(message: unknown): boolean {
   );
 }
 
+// Detect whether the LAST exchange in the message history is a tool result —
+// i.e. the assistant emitted a tool_call in the previous step and the runtime
+// has now sent us back the tool's output to summarise. We split on the most
+// recent user message and only look at messages AFTER it. Looking at the whole
+// history was wrong: a long-lived chat session that called a tool once would
+// then never receive another tool_call response, because `messages.some` saw
+// the stale tool message from a previous round.
+function lastRoundHasToolResult(messages: unknown[]): boolean {
+  let lastUserIndex = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if ((messages[i] as { role?: unknown })?.role === "user") {
+      lastUserIndex = i;
+      break;
+    }
+  }
+  if (lastUserIndex === -1) return messages.some(hasToolRole);
+  return messages.slice(lastUserIndex + 1).some(hasToolRole);
+}
+
+// ── OpenAI-compatible SSE helpers ──────────────────────────────────────────
+// Real Ollama exposes both /api/chat (Ollama-native NDJSON) and
+// /v1/chat/completions (OpenAI-style SSE). When Pinchy emits OpenClaw's ollama
+// provider config it uses `api: "openai-completions"`, which means pi-ai
+// inside OC sends requests to /v1/chat/completions. Without these handlers
+// every dispatch probe gets a 404 from the fake server and the test times out.
+
+function sseHeaders(res: http.ServerResponse) {
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  res.flushHeaders?.();
+}
+
+function sseWrite(res: http.ServerResponse, chunk: unknown) {
+  res.write(`data: ${JSON.stringify(chunk)}\n\n`);
+}
+
+function sseDone(res: http.ServerResponse) {
+  res.write("data: [DONE]\n\n");
+  res.end();
+}
+
+function chatCompletionChunk(fields: {
+  content?: string;
+  toolCalls?: Array<{ name: string; arguments: unknown }>;
+  finishReason?: string | null;
+}) {
+  const delta: Record<string, unknown> = {};
+  if (fields.content !== undefined) delta.content = fields.content;
+  if (fields.toolCalls) {
+    delta.tool_calls = fields.toolCalls.map((tc, index) => ({
+      index,
+      id: `call_${index}_${Date.now()}`,
+      type: "function",
+      function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+    }));
+  }
+  return {
+    id: `chatcmpl-${Date.now()}`,
+    object: "chat.completion.chunk",
+    created: Math.floor(Date.now() / 1000),
+    model: MODEL_NAME,
+    choices: [
+      {
+        index: 0,
+        delta,
+        finish_reason: fields.finishReason ?? null,
+      },
+    ],
+  };
+}
+
+function streamOpenAiText(res: http.ServerResponse, text: string) {
+  sseHeaders(res);
+  const words = text.split(" ");
+  for (let i = 0; i < words.length; i++) {
+    const piece = i === 0 ? words[i] : " " + words[i];
+    sseWrite(res, chatCompletionChunk({ content: piece }));
+  }
+  sseWrite(res, chatCompletionChunk({ finishReason: "stop" }));
+  sseDone(res);
+}
+
+function streamOpenAiToolCalls(
+  res: http.ServerResponse,
+  toolName: string,
+  args: Record<string, unknown>
+) {
+  sseHeaders(res);
+  sseWrite(res, chatCompletionChunk({ toolCalls: [{ name: toolName, arguments: args }] }));
+  sseWrite(res, chatCompletionChunk({ finishReason: "tool_calls" }));
+  sseDone(res);
+}
+
 async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
   const url = req.url ?? "";
   const method = req.method ?? "";
@@ -209,7 +305,7 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     const lastUserMessage = [...messages]
       .reverse()
       .find((message) => (message as { role?: unknown })?.role === "user");
-    const hasToolResult = messages.some(hasToolRole);
+    const hasToolResult = lastRoundHasToolResult(messages);
 
     const lastContent = messageContent(lastUserMessage);
     const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
@@ -246,6 +342,48 @@ async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse
     }
 
     streamTextResponse(res, activeTrigger ? activeTrigger.response : FAKE_RESPONSE);
+    return;
+  }
+
+  // ── OpenAI-compatible API surface (Pinchy emits ollama as api:
+  // "openai-completions" so pi-ai inside OpenClaw uses /v1/chat/completions
+  // + /v1/models, not the Ollama-native /api/* surface).
+  if (method === "GET" && url === "/v1/models") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(
+      JSON.stringify({
+        object: "list",
+        data: [
+          {
+            id: MODEL_NAME,
+            object: "model",
+            created: Math.floor(Date.now() / 1000),
+            owned_by: "ollama",
+          },
+        ],
+      })
+    );
+    return;
+  }
+
+  if (method === "POST" && url === "/v1/chat/completions") {
+    const payload = await readJsonBody(req);
+    const messages = Array.isArray(payload.messages) ? payload.messages : [];
+    const lastUserMessage = [...messages]
+      .reverse()
+      .find((message) => (message as { role?: unknown })?.role === "user");
+    const hasToolResult = lastRoundHasToolResult(messages);
+    const lastContent = messageContent(lastUserMessage);
+    const activeTrigger = TOOL_TRIGGERS.find(({ trigger }) => lastContent.includes(trigger));
+
+    if (activeTrigger && !hasToolResult) {
+      streamOpenAiToolCalls(res, activeTrigger.toolName, activeTrigger.arguments);
+      return;
+    }
+
+    // Slow-stream path is integration-only (uses /api/chat); /v1 callers fall
+    // through to the standard text response.
+    streamOpenAiText(res, activeTrigger ? activeTrigger.response : FAKE_RESPONSE);
     return;
   }
 

@@ -250,27 +250,34 @@ test.describe("Plugin behavior — pinchy-context", () => {
 
 // ── Plugin behavior: pinchy-files ────────────────────────────────────────────
 // Proves pinchy-files loaded correctly and registerTool() worked end-to-end.
-// Creates a temporary KB agent with /data as allowed path (path may not exist
+// Creates a temporary agent with /data as allowed path (path may not exist
 // in the container — the tool call outcome is "failure" via ENOENT, but the
 // audit entry IS written, proving the tool was dispatched).
+//
+// Uses templateId "custom" instead of a KB template such as contract-analyzer
+// because the KB templates declare modelHint.capabilities=["vision", ...] which
+// fake-Ollama's single non-vision model cannot satisfy → 400 from
+// resolveModelForTemplate. The follow-up PATCH wires allowedTools + the
+// pluginConfig that pinchy-files needs.
 test.describe("Plugin behavior — pinchy-files", () => {
   test("pinchy_ls dispatches via fake-LLM and writes audit entry", async ({ page }) => {
     await login(page);
     await waitForOpenClawConnected(page);
 
-    // Create a KB agent — this calls regenerateOpenClawConfig() which triggers
-    // OpenClaw to reload its config. waitForOpenClawConnected below waits for
-    // the bridge to stabilise before we navigate to the chat page.
     const createRes = await page.request.post("/api/agents", {
-      data: {
-        name: "E2E Files Probe",
-        templateId: "contract-analyzer",
-        pluginConfig: { "pinchy-files": { allowed_paths: ["/data"] } },
-      },
+      data: { name: "E2E Files Probe", templateId: "custom" },
     });
     expect(createRes.status()).toBe(201);
     const agent = await createRes.json();
     const agentId = agent.id as string;
+
+    const patchRes = await page.request.patch(`/api/agents/${agentId}`, {
+      data: {
+        allowedTools: ["pinchy_ls", "pinchy_read"],
+        pluginConfig: { "pinchy-files": { allowed_paths: ["/data"] } },
+      },
+    });
+    expect(patchRes.status()).toBe(200);
 
     try {
       // Wait for OpenClaw to reload the updated config (the new agent).
