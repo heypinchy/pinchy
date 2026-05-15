@@ -15,6 +15,17 @@ services:
       timeout: 3s
       retries: 10
 
+  pinchy:
+    environment:
+      # Emit a dummy API-key SecretRef for the local Ollama provider so OpenClaw
+      # authenticates when routing to host.docker.internal (not treated as local).
+      - PINCHY_E2E_OLLAMA_LOCAL_API_KEY=1
+    extra_hosts:
+      # Allows Pinchy (Docker) to fetch the Ollama model list from fake-Ollama on
+      # the host during regenerateOpenClawConfig(). OpenClaw already has this
+      # mapping via the base docker-compose.yml extra_hosts block.
+      - "ollama.local:host-gateway"
+
   openclaw:
     environment:
       - GMAIL_API_BASE_URL=http://gmail-mock:9004
