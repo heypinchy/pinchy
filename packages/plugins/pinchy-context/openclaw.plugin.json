@@ -2,6 +2,9 @@
   "id": "pinchy-context",
   "name": "Pinchy Context",
   "description": "Allows agents to save user and organization context during onboarding.",
+  "contracts": {
+    "tools": ["pinchy_save_user_context", "pinchy_save_org_context"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

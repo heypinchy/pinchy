@@ -2,6 +2,9 @@
   "id": "pinchy-files",
   "name": "Pinchy Files",
   "description": "Scoped read-only file access for Pinchy Knowledge Base agents.",
+  "contracts": {
+    "tools": ["pinchy_ls", "pinchy_read"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

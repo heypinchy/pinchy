@@ -2,6 +2,18 @@
   "id": "pinchy-odoo",
   "name": "Pinchy Odoo",
   "description": "Odoo ERP integration with model-level permissions. Credentials are fetched at runtime from Pinchy's internal credentials API — never stored in this config.",
+  "contracts": {
+    "tools": [
+      "odoo_schema",
+      "odoo_read",
+      "odoo_count",
+      "odoo_aggregate",
+      "odoo_create",
+      "odoo_write",
+      "odoo_delete",
+      "odoo_attach_file"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

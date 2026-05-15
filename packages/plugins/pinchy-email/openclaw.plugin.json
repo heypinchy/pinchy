@@ -2,6 +2,9 @@
   "id": "pinchy-email",
   "name": "Pinchy Email",
   "description": "Email integration (Gmail, Outlook, IMAP) with per-agent permissions.",
+  "contracts": {
+    "tools": ["email_list", "email_read", "email_search", "email_draft", "email_send"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,

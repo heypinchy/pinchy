@@ -2,6 +2,9 @@
   "id": "pinchy-web",
   "name": "Pinchy Web",
   "description": "Web search and page fetching with domain filtering. Credentials are fetched at runtime from Pinchy's internal credentials API — never stored in this config.",
+  "contracts": {
+    "tools": ["pinchy_web_search", "pinchy_web_fetch"]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
