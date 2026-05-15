@@ -80,13 +80,20 @@ export async function seedDefaultProviderToOllama(
  * consecutive milliseconds. A single transient `true` during a hot-reload
  * cycle is not enough — config-regen briefly tears down the bridge and a
  * naive poll catches the pre-reload state.
+ *
+ * `stableForMs` defaults to 30 s because Pinchy's `pushConfigInBackground` is
+ * fire-and-forget: `regenerateOpenClawConfig()` returns after the disk write
+ * but the WebSocket `config.apply` can still be in-flight, and OC's
+ * `config.apply` rate-limit (~3 calls / 45 s window) makes the second of two
+ * rapid regens fall through to the inotify-debounced file-watcher reload.
+ * 30 s of consecutive `connected=true` covers that worst case.
  */
 export async function waitForOpenClawStable(
   fetchHealth: () => Promise<{ ok: boolean; json: () => Promise<{ connected?: boolean }> }>,
   opts: { deadlineMs?: number; stableForMs?: number; intervalMs?: number } = {}
 ): Promise<void> {
-  const deadline = Date.now() + (opts.deadlineMs ?? 60_000);
-  const stableFor = opts.stableForMs ?? 5_000;
+  const deadline = Date.now() + (opts.deadlineMs ?? 90_000);
+  const stableFor = opts.stableForMs ?? 30_000;
   const interval = opts.intervalMs ?? 500;
   let connectedSince: number | null = null;
 
