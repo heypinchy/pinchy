@@ -737,6 +737,35 @@ describe("odoo_write", () => {
     expect(mockWrite).not.toHaveBeenCalled();
   });
 
+  // Nested-record variant of the gemini-3-flash-preview regression: Odoo's
+  // x2many command tuples wrap fresh records as `[0, 0, {…}]`, and gemini
+  // applies the same quote-wrapping bug to the inner record's keys too.
+  // Without recursive sanitization the outer field passes but the line never
+  // materialises in Odoo, which causes a write retry loop on staging.
+  it("strips quote-wrapped keys recursively from nested x2many records", async () => {
+    mockWrite.mockResolvedValue(true);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_write", agentId)!;
+
+    const result = await tool.execute("call-nested-quotes", {
+      model: "res.partner",
+      ids: [42],
+      values: {
+        '"name"': "Tesla",
+        '"child_ids"': [
+          [0, 0, { '"name"': "Contact 1", '"email"': "a@example.com" }],
+        ],
+      },
+    });
+
+    expect(result.isError).toBeFalsy();
+    expect(mockWrite).toHaveBeenCalledWith("res.partner", [42], {
+      name: "Tesla",
+      child_ids: [[0, 0, { name: "Contact 1", email: "a@example.com" }]],
+    });
+  });
+
   // Same regression guard as odoo_create — see comment above the create test.
   it("strips literal JSON-escaped quotes from value keys before write()", async () => {
     mockWrite.mockResolvedValue(true);

@@ -232,16 +232,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 // at the plugin edge we just strip a single surrounding pair of quotes from each
 // key before forwarding to Odoo. Odoo field names never contain quotes, so this
 // rewrite is information-preserving for the well-formed case.
-function unquoteFieldKeys(values: Record<string, unknown>): Record<string, unknown> {
+//
+// Recursion matters: Odoo's many2many/one2many commands nest fresh records,
+// e.g. `{ invoice_line_ids: [[0, 0, { quantity: 1, price_unit: 8.33 }]] }`.
+// Strip quotes at every depth so the inner field names land clean too.
+function unquoteFieldKeysDeep(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(unquoteFieldKeysDeep);
+  if (!isRecord(value)) return value;
   const out: Record<string, unknown> = {};
-  for (const [key, val] of Object.entries(values)) {
+  for (const [key, val] of Object.entries(value)) {
     const stripped =
       key.length >= 2 && key.startsWith('"') && key.endsWith('"')
         ? key.slice(1, -1)
         : key;
-    out[stripped] = val;
+    out[stripped] = unquoteFieldKeysDeep(val);
   }
   return out;
+}
+
+function unquoteFieldKeys(values: Record<string, unknown>): Record<string, unknown> {
+  return unquoteFieldKeysDeep(values) as Record<string, unknown>;
 }
 
 function getSearchReadRecords(result: unknown): OdooRecord[] {
