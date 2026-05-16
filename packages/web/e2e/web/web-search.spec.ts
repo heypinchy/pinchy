@@ -136,12 +136,25 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
     // 1. Start fake-Ollama on the host (port 11435).
     await startFakeOllama();
 
-    // 2. Swap default_provider to ollama-local and seed ollama_local_url.
+    // 2. Drain OC's config.apply rate-limit window. Same race the Odoo
+    //    dispatch probe hit (see odoo-agent-chat.spec.ts step 2): OC 5.3 allows
+    //    ~3 calls per 45 s per (device,IP); tests 1–2 of this suite each
+    //    trigger one or two regens, and this probe's POST agent + PATCH
+    //    allowedTools would push us past the cap. The rejected config.apply
+    //    falls through to the inotify file-watcher fallback, but an earlier
+    //    still-in-flight config.apply succeeds later and overwrites OC's
+    //    in-memory state with stale content — agents.list silently loses the
+    //    dispatch agent and the chat fires INVALID_REQUEST "unknown agent id".
+    //    Run 25936887310 reproduced this exact failure mode at 19:26:54
+    //    (rate-limited) → 19:27:27 (unknown agent id) for pinchy_web_search.
+    await new Promise((r) => setTimeout(r, 45_000));
+
+    // 3. Swap default_provider to ollama-local and seed ollama_local_url.
     const dbUrl =
       process.env.DATABASE_URL || "postgresql://pinchy:pinchy_dev@localhost:5434/pinchy";
     restoreSettings = await seedDefaultProviderToOllama(dbUrl, FAKE_OLLAMA_PORT);
 
-    // 3. Login (API cookie).
+    // 4. Login (API cookie).
     dispatchCookie = await login();
 
     // 4. Reuse the existing web-search connection if a previous test left one
