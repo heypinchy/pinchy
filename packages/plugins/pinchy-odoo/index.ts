@@ -899,7 +899,7 @@ const plugin = {
       { name: "odoo_list_models" },
     );
 
-    // 2. odoo_schema
+    // 2. odoo_describe_model
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx.agentId;
@@ -908,44 +908,50 @@ const plugin = {
         if (!config) return null;
 
         return {
-          name: "odoo_schema",
-          label: "Odoo Schema",
+          name: "odoo_describe_model",
+          label: "Odoo Describe Model",
           description:
-            "Discover available Odoo models and their fields. Call without parameters to list all available models with their human-readable names. Call with a model name to see its fields, types, and relations.",
+            "Get the field definitions for one Odoo model in a compact, agent-friendly format. By default returns the ~40 most commonly-needed fields (id, name, state, foreign keys, dates, amounts). Pass `fields: ['<name>', ...]` to target specific fields, `fields: ['__all__']` to get every field (large), or `verbose: true` for full Odoo metadata.",
           parameters: {
             type: "object",
             properties: {
               model: {
                 type: "string",
+                description: "Odoo model name to describe, e.g. 'account.move'.",
+              },
+              fields: {
+                type: "array",
+                items: { type: "string" },
                 description:
-                  "Model name to get fields for. Omit to list all available models.",
+                  "Filter the response to these specific field names. Special value '__all__' returns every field. Omit to receive the curated default set.",
+              },
+              limit: {
+                type: "number",
+                description:
+                  "Cap on field count when `fields` is omitted (default 40).",
+              },
+              verbose: {
+                type: "boolean",
+                description:
+                  "Include readonly/required/string-label metadata. Off by default for compactness.",
               },
             },
+            required: ["model"],
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
-              const model = params.model as string | undefined;
-              const names = config.modelNames ?? {};
-
-              if (!model) {
-                // List all permitted models with human-readable names
-                const permittedModels = getPermittedModels(
-                  config.permissions,
-                  "read",
-                );
-                const models = permittedModels.map((m) => ({
-                  model: m,
-                  name: names[m] ?? m,
-                }));
+              const model = params.model;
+              if (typeof model !== "string" || model.length === 0) {
                 return {
-                  content: [{ type: "text", text: JSON.stringify(models) }],
+                  isError: true as const,
+                  content: [
+                    { type: "text", text: "`model` is required (string)." },
+                  ],
                 };
               }
-
-              // Check if model is in permissions
               if (!config.permissions[model]) {
                 return {
-                  isError: true,
+                  isError: true as const,
                   content: [
                     {
                       type: "text",
@@ -955,19 +961,28 @@ const plugin = {
                 };
               }
 
-              // Fetch fields live from Odoo (lightweight call — the agent
-              // caches the result in its conversation context naturally)
-              const fields = await withAuthRetry(agentId, config, (client) =>
+              const rawFields = await withAuthRetry(agentId, config, (client) =>
                 client.fields(model),
               );
+              const normalised = normalizeFields(rawFields);
 
+              const result = compactSchema(normalised, {
+                fields: Array.isArray(params.fields)
+                  ? (params.fields as string[])
+                  : undefined,
+                limit: typeof params.limit === "number" ? params.limit : 40,
+                verbose: params.verbose === true,
+              });
+
+              const names = config.modelNames ?? {};
               return {
                 content: [
                   {
                     type: "text",
                     text: JSON.stringify({
+                      model,
                       name: names[model] ?? model,
-                      fields,
+                      ...result,
                     }),
                   },
                 ],
@@ -978,10 +993,10 @@ const plugin = {
           },
         };
       },
-      { name: "odoo_schema" },
+      { name: "odoo_describe_model" },
     );
 
-    // 2. odoo_read
+    // 3. odoo_read
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx.agentId;

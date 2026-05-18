@@ -434,7 +434,7 @@ describe("tool registration", () => {
     expect(tools).toHaveLength(9);
     const names = tools.map((t) => t.name);
     expect(names).toContain("odoo_list_models");
-    expect(names).toContain("odoo_schema");
+    expect(names).toContain("odoo_describe_model");
     expect(names).toContain("odoo_read");
     expect(names).toContain("odoo_count");
     expect(names).toContain("odoo_aggregate");
@@ -456,6 +456,50 @@ describe("tool registration", () => {
     for (const tool of tools) {
       expect(tool.factory({ agentId: "unknown-agent" })).toBeNull();
     }
+  });
+});
+
+describe("odoo_describe_model", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("rejects calls without a model parameter", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_describe_model", agentId)!;
+    expect(tool).toBeTruthy();
+
+    const result = await tool.execute("call-1", {});
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/model.*required/i);
+  });
+
+  it("returns compact field map for a permitted model", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", type: "integer" },
+      { name: "name", type: "char" },
+      { name: "partner_id", type: "many2one", relation: "res.partner" },
+    ]);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_describe_model", agentId)!;
+
+    const result = await tool.execute("call-1", { model: "res.partner" });
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse(result.content[0].text) as { model: string; fields: Record<string, unknown>; _meta: { total: number; returned: number; truncated: boolean } };
+    expect(data.model).toBe("res.partner");
+    expect(data.fields).toBeDefined();
+    expect(data._meta).toBeDefined();
+    expect(data._meta.returned).toBeGreaterThan(0);
+  });
+
+  it("denies access to unpermitted models", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_describe_model", agentId)!;
+
+    const result = await tool.execute("call-1", { model: "stock.move" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/not available/i);
   });
 });
 
