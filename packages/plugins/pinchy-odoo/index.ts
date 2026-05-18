@@ -269,6 +269,9 @@ const TYPE_ABBREVIATIONS: Record<string, string> = {
 };
 
 export function compactType(field: OdooField): string {
+  if (field.type === "many2one") return `m2o:${field.relation ?? "?"}`;
+  if (field.type === "one2many") return `o2m:${field.relation ?? "?"}`;
+  if (field.type === "many2many") return `m2m:${field.relation ?? "?"}`;
   const t = TYPE_ABBREVIATIONS[field.type ?? ""];
   return t ?? (field.type ?? "unknown");
 }

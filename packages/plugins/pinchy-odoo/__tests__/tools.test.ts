@@ -136,6 +136,28 @@ describe("compactType", () => {
   it("returns 'unknown' for undefined type", () => {
     expect(compactType({ name: "wtf", type: undefined as unknown as string })).toBe("unknown");
   });
+
+  it("encodes many2one as 'm2o:<relation>'", () => {
+    expect(compactType({ name: "partner_id", type: "many2one", relation: "res.partner" })).toBe(
+      "m2o:res.partner"
+    );
+  });
+
+  it("encodes one2many as 'o2m:<relation>'", () => {
+    expect(compactType({ name: "line_ids", type: "one2many", relation: "account.move.line" })).toBe(
+      "o2m:account.move.line"
+    );
+  });
+
+  it("encodes many2many as 'm2m:<relation>'", () => {
+    expect(compactType({ name: "tag_ids", type: "many2many", relation: "res.partner.category" })).toBe(
+      "m2m:res.partner.category"
+    );
+  });
+
+  it("falls back to '<type>:?' if relation is missing", () => {
+    expect(compactType({ name: "x", type: "many2one" })).toBe("m2o:?");
+  });
 });
 
 describe("tool registration", () => {
