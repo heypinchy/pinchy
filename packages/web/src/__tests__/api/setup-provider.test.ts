@@ -82,6 +82,20 @@ vi.mock("@/lib/provider-models", () => ({
   ]),
 }));
 
+vi.mock("@/lib/model-resolver", () => ({
+  resolveModelForTemplate: vi
+    .fn()
+    .mockResolvedValue({
+      model: "anthropic/claude-sonnet-4-6",
+      reason: "balanced",
+      fallbackUsed: false,
+    }),
+}));
+
+vi.mock("@/lib/personal-agent", () => ({
+  SMITHERS_MODEL_HINT: { tier: "balanced", capabilities: ["tools", "long-context"] },
+}));
+
 vi.mock("@/db", () => ({
   db: {
     update: vi.fn().mockReturnValue({
@@ -108,6 +122,8 @@ import { appendAuditLog } from "@/lib/audit";
 import { db } from "@/db";
 import { requireAdmin } from "@/lib/api-auth";
 import { resetCache, getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
+import { resolveModelForTemplate } from "@/lib/model-resolver";
+import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
 
 describe("POST /api/setup/provider", () => {
   beforeEach(() => {
@@ -404,8 +420,35 @@ describe("POST /api/setup/provider", () => {
     expect(data.error).toContain("No");
   });
 
-  it("should set dynamically resolved default model for ollama-local as first provider", async () => {
-    vi.mocked(getDefaultModel).mockResolvedValueOnce("ollama/llama3:latest");
+  it("updates Smithers' model using SMITHERS_MODEL_HINT when provider is configured as first provider", async () => {
+    vi.mocked(resolveModelForTemplate).mockResolvedValueOnce({
+      model: "anthropic/claude-sonnet-4-6",
+      reason: "balanced tier",
+      fallbackUsed: false,
+    });
+
+    await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-key",
+      }) as any
+    );
+
+    expect(resolveModelForTemplate).toHaveBeenCalledWith({
+      hint: SMITHERS_MODEL_HINT,
+      provider: "anthropic",
+    });
+    expect(db.update).toHaveBeenCalled();
+    // getDefaultModel must NOT be called — the route must use resolveModelForTemplate
+    expect(getDefaultModel).not.toHaveBeenCalled();
+  });
+
+  it("updates Smithers' model via SMITHERS_MODEL_HINT for ollama-local as first provider", async () => {
+    vi.mocked(resolveModelForTemplate).mockResolvedValueOnce({
+      model: "ollama/qwen2.5:7b",
+      reason: "balanced tier",
+      fallbackUsed: false,
+    });
 
     await POST(
       makeRequest({
@@ -414,8 +457,12 @@ describe("POST /api/setup/provider", () => {
       }) as any
     );
 
-    expect(getDefaultModel).toHaveBeenCalledWith("ollama-local");
+    expect(resolveModelForTemplate).toHaveBeenCalledWith({
+      hint: SMITHERS_MODEL_HINT,
+      provider: "ollama-local",
+    });
     expect(db.update).toHaveBeenCalled();
+    expect(getDefaultModel).not.toHaveBeenCalled();
   });
 
   it("writes an audit log entry with named provider snapshot for an api-key provider", async () => {
