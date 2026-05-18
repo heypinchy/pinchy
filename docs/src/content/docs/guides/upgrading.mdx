@@ -172,6 +172,8 @@ The `odoo_schema` tool has been replaced by two narrower tools: `odoo_list_model
 
 **No action required.** A startup migration rewrites every agent's `allowed_tools` to use the new names, and the read-write Odoo operator templates (Bookkeeper, Warehouse Operator, HR Operator, etc.) ship with updated guidance for the agent.
 
+For existing agents created before %%PINCHY_VERSION%%, the old `odoo_schema` tool name is kept as a deprecated alias. The `AGENTS.md` files those agents store in their workspace still contain literal `odoo_schema` references — the alias keeps them working without any manual file editing, and routes the call through the new compact code path. You can safely ignore the alias; it will be removed in v0.6.x.
+
 #### Six new Odoo agent templates
 
 The agent picker now includes a Bookkeeper template and five read-write Odoo operator counterparts to the existing read-only Analysts:

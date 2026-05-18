@@ -158,10 +158,38 @@ describe("computeDeniedGroups", () => {
 describe("Odoo access level helpers", () => {
   it("all odoo tools have integration: 'odoo'", () => {
     const odooTools = TOOL_REGISTRY.filter((t) => t.id.startsWith("odoo_"));
-    expect(odooTools.length).toBe(9);
+    // 9 active tools + 1 deprecated alias (odoo_schema) = 10.
+    expect(odooTools.length).toBe(10);
     for (const tool of odooTools) {
       expect(tool.integration).toBe("odoo");
     }
+  });
+
+  it("odoo_schema is registered as a deprecated alias", () => {
+    const odooSchema = TOOL_REGISTRY.find((t) => t.id === "odoo_schema");
+    expect(odooSchema).toBeDefined();
+    expect(odooSchema?.deprecated).toBe(true);
+  });
+
+  it("odoo_schema is NOT included in any access-level preset", () => {
+    for (const level of ["read-only", "read-write", "full", "custom"] as const) {
+      expect(getOdooToolsForAccessLevel(level)).not.toContain("odoo_schema");
+    }
+  });
+
+  it("detectOdooAccessLevel ignores odoo_schema when matching presets", () => {
+    // A read-only agent that picked up the compat alias must still classify
+    // as "read-only" (not "custom"), otherwise the UI loses its preset.
+    expect(
+      detectOdooAccessLevel([
+        "odoo_list_models",
+        "odoo_describe_model",
+        "odoo_read",
+        "odoo_count",
+        "odoo_aggregate",
+        "odoo_schema",
+      ])
+    ).toBe("read-only");
   });
 
   it("web search tools have integration: 'web-search'", () => {
@@ -227,9 +255,9 @@ describe("Odoo access level helpers", () => {
     expect(tools).toEqual(["odoo_list_models", "odoo_describe_model"]);
   });
 
-  it("getOdooTools() returns exactly 9 tools", () => {
+  it("getOdooTools() returns exactly 10 tools (9 active + 1 deprecated alias)", () => {
     const tools = getOdooTools();
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(10);
     expect(tools.every((t) => t.integration === "odoo")).toBe(true);
   });
 

@@ -460,12 +460,13 @@ describe("odoo_list_models", () => {
 });
 
 describe("tool registration", () => {
-  it("registers all 9 tools", () => {
+  it("registers all 10 tools (including the deprecated odoo_schema alias)", () => {
     const tools = createApi({ [agentId]: agentConfig });
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(10);
     const names = tools.map((t) => t.name);
     expect(names).toContain("odoo_list_models");
     expect(names).toContain("odoo_describe_model");
+    expect(names).toContain("odoo_schema");
     expect(names).toContain("odoo_read");
     expect(names).toContain("odoo_count");
     expect(names).toContain("odoo_aggregate");
@@ -534,10 +535,60 @@ describe("odoo_describe_model", () => {
   });
 });
 
-describe("odoo_schema removed", () => {
-  it("does not register a tool named odoo_schema", () => {
+describe("odoo_schema deprecated alias", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("is still registered as a tool for backwards compatibility", () => {
     const tools = createApi({ [agentId]: agentConfig });
-    expect(tools.find((t) => t.name === "odoo_schema")).toBeUndefined();
+    const tool = tools.find((t) => t.name === "odoo_schema");
+    expect(tool).toBeDefined();
+  });
+
+  it("when called without a model parameter, behaves like odoo_list_models", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_schema", agentId)!;
+
+    const result = await tool.execute("call-1", {});
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse(result.content[0].text) as { models: Array<{ model: string; name: string }> };
+    expect(data.models).toEqual(
+      expect.arrayContaining([expect.objectContaining({ model: "res.partner" })])
+    );
+  });
+
+  it("when called with a model parameter, returns the compact describe payload", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", type: "integer" },
+      { name: "name", type: "char" },
+    ]);
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_schema", agentId)!;
+
+    const result = await tool.execute("call-1", { model: "res.partner" });
+    expect(result.isError).toBeFalsy();
+    const data = JSON.parse(result.content[0].text) as {
+      model: string;
+      fields: Record<string, string>;
+      _meta: { total: number; returned: number; truncated: boolean };
+    };
+    expect(data.model).toBe("res.partner");
+    expect(data._meta.returned).toBeGreaterThan(0);
+    // The whole point of the v0.5.4 split: even when called via the deprecated
+    // alias, the response uses the compact map format (not the verbose Odoo
+    // metadata dump that exploded gemini-3-flash-preview's input budget).
+    expect(typeof data.fields.id).toBe("string");
+    expect(data.fields.id).toBe("int");
+  });
+
+  it("denies access to unpermitted models (alias enforces the same permissions)", async () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_schema", agentId)!;
+
+    const result = await tool.execute("call-1", { model: "stock.move" });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/not available/i);
   });
 });
 

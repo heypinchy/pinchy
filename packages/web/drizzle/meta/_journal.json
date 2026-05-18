@@ -225,6 +225,13 @@
       "when": 1779408000000,
       "tag": "0031_odoo_schema_rename",
       "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1779408060000,
+      "tag": "0032_odoo_schema_compat_alias",
+      "breakpoints": true
     }
   ]
 }

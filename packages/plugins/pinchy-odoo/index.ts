@@ -870,6 +870,91 @@ const plugin = {
       }
     }
 
+    // Shared implementation of the list-models tool body. Reused by the
+    // deprecated `odoo_schema` alias so legacy AGENTS.md content that calls
+    // `odoo_schema` (without args) keeps working through v0.5.x.
+    function listModelsImpl(config: AgentOdooConfig) {
+      try {
+        const names = config.modelNames ?? {};
+        const models = Object.entries(config.permissions).map(
+          ([model, ops]) => ({
+            model,
+            name: names[model] ?? model,
+            operations: ops,
+          }),
+        );
+        return {
+          content: [
+            { type: "text" as const, text: JSON.stringify({ models }) },
+          ],
+        };
+      } catch (error) {
+        return errorResult(error);
+      }
+    }
+
+    // Shared implementation of the describe-model tool body. Reused by the
+    // deprecated `odoo_schema` alias so legacy AGENTS.md content that calls
+    // `odoo_schema` with a `model` arg keeps working — and crucially, gets
+    // the new compact response shape (the whole point of the v0.5.4 split).
+    async function describeModelImpl(
+      agentId: string,
+      config: AgentOdooConfig,
+      params: Record<string, unknown>,
+    ) {
+      try {
+        const model = params.model;
+        if (typeof model !== "string" || model.length === 0) {
+          return {
+            isError: true as const,
+            content: [
+              { type: "text" as const, text: "`model` is required (string)." },
+            ],
+          };
+        }
+        if (!config.permissions[model]) {
+          return {
+            isError: true as const,
+            content: [
+              {
+                type: "text" as const,
+                text: `Model "${model}" is not available for this agent.`,
+              },
+            ],
+          };
+        }
+
+        const rawFields = await withAuthRetry(agentId, config, (client) =>
+          client.fields(model),
+        );
+        const normalised = normalizeFields(rawFields);
+
+        const result = compactSchema(normalised, {
+          fields: Array.isArray(params.fields)
+            ? (params.fields as string[])
+            : undefined,
+          limit: typeof params.limit === "number" ? params.limit : 40,
+          verbose: params.verbose === true,
+        });
+
+        const names = config.modelNames ?? {};
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text: JSON.stringify({
+                model,
+                name: names[model] ?? model,
+                ...result,
+              }),
+            },
+          ],
+        };
+      } catch (error) {
+        return errorResult(error);
+      }
+    }
+
     // 1. odoo_list_models
     api.registerTool(
       (ctx: PluginToolContext) => {
@@ -888,21 +973,7 @@ const plugin = {
             properties: {},
           },
           async execute() {
-            try {
-              const names = config.modelNames ?? {};
-              const models = Object.entries(config.permissions).map(
-                ([model, ops]) => ({
-                  model,
-                  name: names[model] ?? model,
-                  operations: ops,
-                }),
-              );
-              return {
-                content: [{ type: "text", text: JSON.stringify({ models }) }],
-              };
-            } catch (error) {
-              return errorResult(error);
-            }
+            return listModelsImpl(config);
           },
         };
       },
@@ -949,61 +1020,66 @@ const plugin = {
             required: ["model"],
           },
           async execute(_toolCallId: string, params: Record<string, unknown>) {
-            try {
-              const model = params.model;
-              if (typeof model !== "string" || model.length === 0) {
-                return {
-                  isError: true as const,
-                  content: [
-                    { type: "text", text: "`model` is required (string)." },
-                  ],
-                };
-              }
-              if (!config.permissions[model]) {
-                return {
-                  isError: true as const,
-                  content: [
-                    {
-                      type: "text",
-                      text: `Model "${model}" is not available for this agent.`,
-                    },
-                  ],
-                };
-              }
-
-              const rawFields = await withAuthRetry(agentId, config, (client) =>
-                client.fields(model),
-              );
-              const normalised = normalizeFields(rawFields);
-
-              const result = compactSchema(normalised, {
-                fields: Array.isArray(params.fields)
-                  ? (params.fields as string[])
-                  : undefined,
-                limit: typeof params.limit === "number" ? params.limit : 40,
-                verbose: params.verbose === true,
-              });
-
-              const names = config.modelNames ?? {};
-              return {
-                content: [
-                  {
-                    type: "text",
-                    text: JSON.stringify({
-                      model,
-                      name: names[model] ?? model,
-                      ...result,
-                    }),
-                  },
-                ],
-              };
-            } catch (error) {
-              return errorResult(error);
-            }
+            return describeModelImpl(agentId, config, params);
           },
         };
       },
       { name: "odoo_describe_model" },
+    );
+
+    // 2b. odoo_schema (deprecated alias — kept for AGENTS.md files written by
+    // pre-v0.5.4 versions, which still contain literal `odoo_schema`
+    // references. Behaviour mirrors the legacy tool: no `model` → list, with
+    // `model` → describe. Both branches now go through the compact path.
+    // Slated for removal in v0.6.x.
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+        const config = getAgentConfig(agentConfigs, agentId);
+        if (!config) return null;
+
+        return {
+          name: "odoo_schema",
+          label: "Odoo Schema (deprecated)",
+          description:
+            "DEPRECATED — prefer `odoo_list_models` (no arguments) or `odoo_describe_model` (with `model`). Kept for backwards compatibility with agents created before v0.5.4. Without `model`, returns the list of available models; with `model`, returns the compact field map for that model.",
+          parameters: {
+            type: "object",
+            properties: {
+              model: {
+                type: "string",
+                description:
+                  "Odoo model name to describe. Omit to list available models.",
+              },
+              fields: {
+                type: "array",
+                items: { type: "string" },
+                description:
+                  "Filter the response to these specific field names. Special value '__all__' returns every field. Omit to receive the curated default set.",
+              },
+              limit: {
+                type: "number",
+                description:
+                  "Cap on field count when `fields` is omitted (default 40).",
+              },
+              verbose: {
+                type: "boolean",
+                description:
+                  "Include readonly/required/string-label metadata. Off by default for compactness.",
+              },
+            },
+          },
+          async execute(_toolCallId: string, params: Record<string, unknown>) {
+            const model = params.model;
+            if (typeof model !== "string" || model.length === 0) {
+              return listModelsImpl(config);
+            }
+            return describeModelImpl(agentId, config, params);
+          },
+        };
+      },
+      { name: "odoo_schema" },
     );
 
     // 3. odoo_read

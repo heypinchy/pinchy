@@ -5,6 +5,13 @@ export interface ToolDefinition {
   category: "safe" | "powerful";
   requiresDirectories?: boolean;
   integration?: string;
+  /**
+   * Tool is kept for backwards compatibility with agents created before the
+   * tool was renamed/split. The permissions UI hides deprecated tools so
+   * new agents don't pick them up, but the registry still recognises them
+   * as legitimate `allowed_tools` entries.
+   */
+  deprecated?: true;
 }
 
 export const TOOL_REGISTRY: readonly ToolDefinition[] = [
@@ -59,6 +66,20 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     description: "Discover fields and types for a specific Odoo model",
     category: "safe",
     integration: "odoo",
+  },
+  // Deprecated alias for `odoo_list_models` + `odoo_describe_model`. Kept so
+  // that agents created before v0.5.4 (whose AGENTS.md still says
+  // "always call odoo_schema first") keep working through the transition.
+  // The permissions UI filters this out; we only recognise it as a valid
+  // entry in stored `allowed_tools` arrays.
+  {
+    id: "odoo_schema",
+    label: "Odoo: Schema (deprecated)",
+    description:
+      "Deprecated. Use odoo_list_models or odoo_describe_model. Kept for backwards compatibility with agents created before v0.5.4.",
+    category: "safe",
+    integration: "odoo",
+    deprecated: true,
   },
   {
     id: "odoo_read",
@@ -248,7 +269,15 @@ export function getOdooToolsForAccessLevel(level: OdooAccessLevel): string[] {
 
 /** Given a set of allowed tool IDs, detect which OdooAccessLevel they correspond to. */
 export function detectOdooAccessLevel(allowedToolIds: string[]): OdooAccessLevel {
-  const odooIds = allowedToolIds.filter((id) => id.startsWith("odoo_"));
+  // Ignore deprecated odoo_* aliases when matching against presets — they're
+  // attached to migrated agents for compat but are not part of any preset.
+  // Without this filter, a v0.5.3-era read-only agent that picked up the
+  // odoo_schema compat entry would be misclassified as "custom" and the UI
+  // would lose its preset selection.
+  const deprecatedIds = new Set(
+    TOOL_REGISTRY.filter((t) => t.deprecated && t.integration === "odoo").map((t) => t.id)
+  );
+  const odooIds = allowedToolIds.filter((id) => id.startsWith("odoo_") && !deprecatedIds.has(id));
   const odooSet = new Set(odooIds);
 
   const presets: [OdooAccessLevel, readonly string[]][] = [
