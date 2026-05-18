@@ -1223,14 +1223,22 @@ describe("isRejectedVariant", () => {
     "openai/gpt-5.5-thinking",
     "openai/gpt-5.5-instant",
     "openai/gpt-5.5-nano",
+    "openai/gpt-5.5-search",
     "openai/gpt-5.5-search-preview",
     "openai/gpt-5.5-realtime",
     "openai/gpt-5.5-audio",
     "anthropic/claude-sonnet-5-0-beta",
     "anthropic/claude-sonnet-5-0-alpha",
     "anthropic/claude-sonnet-5-0-rc",
+    "anthropic/claude-sonnet-5-0-vision-only",
     "google/gemini-3-pro-exp",
     "google/gemini-3-pro-experimental",
+    // Ollama Cloud reasoning/fast-tier models: correctly rejected for balanced-default
+    // selection. kimi-k2-thinking is a reasoning model; nemotron-3-nano is fast/cheap.
+    // They appear in the allowlist because they are tool-capable, but isRejectedVariant
+    // intentionally filters them from the auto-selected balanced default.
+    "ollama-cloud/kimi-k2-thinking",
+    "ollama-cloud/nemotron-3-nano:30b",
   ])("rejects %s", (id) => {
     expect(isRejectedVariant(id)).toBe(true);
   });
