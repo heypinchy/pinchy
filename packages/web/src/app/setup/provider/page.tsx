@@ -9,13 +9,15 @@ import { CheckCircle2 } from "lucide-react";
 import { ProviderKeyForm } from "@/components/provider-key-form";
 import { SmithersModelInfoLine } from "@/components/setup/smithers-model-info-line";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
+import { BALANCED_ANCHORS } from "@/lib/provider-models";
 
 export default function SetupProviderPage() {
   const router = useRouter();
   const [configuredProvider, setConfiguredProvider] = useState<ProviderName | null>(null);
 
   if (configuredProvider) {
-    const defaultModel = PROVIDERS[configuredProvider].defaultModel;
+    const defaultModel =
+      BALANCED_ANCHORS[configuredProvider] || PROVIDERS[configuredProvider].defaultModel;
     return (
       <div className="min-h-screen flex items-center justify-center px-4">
         <div className="w-full max-w-md flex flex-col items-center gap-6">

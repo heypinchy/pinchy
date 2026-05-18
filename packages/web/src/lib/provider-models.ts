@@ -178,7 +178,7 @@ const BALANCED_PATTERNS: Record<ProviderName, RegExp> = {
   "ollama-local": /.*/,
 };
 
-const BALANCED_ANCHORS: Record<ProviderName, string> = {
+export const BALANCED_ANCHORS: Record<ProviderName, string> = {
   anthropic: "anthropic/claude-sonnet-4-6",
   openai: "openai/gpt-5.5",
   google: "google/gemini-2.5-pro",

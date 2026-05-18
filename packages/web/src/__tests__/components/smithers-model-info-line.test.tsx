@@ -6,7 +6,7 @@ import { SmithersModelInfoLine } from "@/components/setup/smithers-model-info-li
 describe("SmithersModelInfoLine", () => {
   it("displays the model display name and link to agent settings", () => {
     render(<SmithersModelInfoLine modelId="anthropic/claude-sonnet-4-6" />);
-    expect(screen.getByText(/Claude Sonnet 4.6/i)).toBeInTheDocument();
+    expect(screen.getByText(/Claude Sonnet 4\.6/i)).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /Agent Settings/i })).toHaveAttribute(
       "href",
       "/settings/agents"
@@ -15,7 +15,7 @@ describe("SmithersModelInfoLine", () => {
 
   it("renders with openai model id", () => {
     render(<SmithersModelInfoLine modelId="openai/gpt-5.5" />);
-    expect(screen.getByText(/Gpt 5.5/i)).toBeInTheDocument();
+    expect(screen.getByText(/GPT 5\.5/i)).toBeInTheDocument();
   });
 
   it("renders with google model id", () => {
