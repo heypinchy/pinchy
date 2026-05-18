@@ -685,6 +685,54 @@ describe("odoo_read", () => {
     });
   });
 
+  it("emits self-ref AND wraps m2o values on the same record (regression-guard)", async () => {
+    // Self-ref emission and m2o-field wrapping share `wrapReadResult`. A
+    // future refactor that re-orders the field loop or short-circuits could
+    // silently drop one. Assert both survive on the same record.
+    mockFields.mockResolvedValue([
+      { name: "id", string: "ID", type: "integer" },
+      { name: "name", string: "Name", type: "char" },
+      {
+        name: "country_id",
+        string: "Country",
+        type: "many2one",
+        relation: "res.country",
+      },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [{ id: 7, name: "Wien Partner", country_id: [14, "Austria"] }],
+      total: 1,
+      limit: 100,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-combined", {
+      model: "res.partner",
+      filters: [],
+      fields: ["name", "country_id"],
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    const record = data.records[0];
+
+    // Self-ref present and decodes to this record
+    expect(record._pinchy_ref).toMatch(/^pinchy_ref:v1:/);
+    const selfDecoded = decodeRef(record._pinchy_ref);
+    expect(selfDecoded.model).toBe("res.partner");
+    expect(selfDecoded.id).toBe(7);
+
+    // m2o still wrapped (not collapsed by self-ref logic)
+    expect(record.country_id).toEqual({
+      ref: expect.stringMatching(/^pinchy_ref:v1:/),
+      label: "Austria",
+      model: "res.country",
+    });
+    expect(record.country_id.ref).not.toBe(record._pinchy_ref);
+  });
+
   it("attaches a `_pinchy_ref` self-ref to every returned record", async () => {
     // Symmetric with odoo_create: every record the LLM sees should have a
     // ref it can pass to tools like odoo_attach_file. Without this, an
