@@ -107,6 +107,8 @@ export interface OdooField {
   type?: string;
   relation?: string;
   selection?: Array<[string, string]>;
+  readonly?: boolean;
+  required?: boolean;
 }
 
 type OdooRecord = Record<string, unknown>;
@@ -282,6 +284,117 @@ export function compactType(field: OdooField): string {
   }
   const t = TYPE_ABBREVIATIONS[field.type ?? ""];
   return t ?? (field.type ?? "unknown");
+}
+
+const COMMON_FIELDS = [
+  "id",
+  "name",
+  "display_name",
+  "state",
+  "active",
+  "create_date",
+  "write_date",
+  "partner_id",
+  "company_id",
+  "currency_id",
+  "journal_id",
+  "user_id",
+  "amount_total",
+  "amount_untaxed",
+  "amount_residual",
+  "date",
+  "invoice_date",
+  "invoice_date_due",
+  "move_type",
+  "ref",
+] as const;
+
+const COMMON_INDEX = new Map(COMMON_FIELDS.map((f, i) => [f, i]));
+
+export function sortFieldsByPriority(fields: OdooField[]): OdooField[] {
+  return [...fields].sort((a, b) => {
+    const ia = COMMON_INDEX.get(a.name) ?? Infinity;
+    const ib = COMMON_INDEX.get(b.name) ?? Infinity;
+    if (ia !== ib) return ia - ib;
+    return a.name.localeCompare(b.name);
+  });
+}
+
+interface CompactSchemaOptions {
+  fields?: string[];
+  limit: number;
+  verbose: boolean;
+}
+
+interface CompactSchemaResult {
+  fields: Record<string, unknown>;
+  _meta: {
+    total: number;
+    returned: number;
+    truncated: boolean;
+    hint?: string;
+  };
+}
+
+export function compactSchema(
+  allFields: OdooField[],
+  opts: CompactSchemaOptions,
+): CompactSchemaResult {
+  const sorted = sortFieldsByPriority(allFields);
+
+  let selected: OdooField[];
+  let hint: string | undefined;
+
+  const wantsAll = opts.fields?.length === 1 && opts.fields[0] === "__all__";
+
+  if (opts.fields && opts.fields.length > 0 && !wantsAll) {
+    const requested = new Set(opts.fields);
+    selected = sorted.filter((f) => requested.has(f.name));
+    if (selected.length === 0) {
+      hint =
+        "no requested fields matched this model's schema; call again without `fields` to see what is available";
+    }
+  } else if (wantsAll) {
+    selected = sorted;
+  } else {
+    selected = sorted.slice(0, opts.limit);
+  }
+
+  const out: Record<string, unknown> = {};
+  for (const f of selected) {
+    if (opts.verbose) {
+      out[f.name] = {
+        type: f.type,
+        ...(f.type === "many2one" ||
+        f.type === "one2many" ||
+        f.type === "many2many"
+          ? { relation: f.relation }
+          : {}),
+        ...(f.type === "selection" ? { selection: f.selection ?? [] } : {}),
+        required: f.required ?? false,
+        readonly: f.readonly ?? false,
+        ...(f.string ? { string: f.string } : {}),
+      };
+    } else {
+      out[f.name] = compactType(f);
+    }
+  }
+
+  const truncated = !opts.fields && sorted.length > selected.length;
+  if (truncated) {
+    hint =
+      "default-truncated to most common fields; pass fields:['__all__'] for the full list or fields:[…] to target specific ones";
+  }
+
+  return {
+    fields: out,
+    _meta: {
+      total: sorted.length,
+      returned: selected.length,
+      truncated,
+      ...(hint ? { hint } : {}),
+    },
+  };
 }
 
 function getSearchReadRecords(result: unknown): OdooRecord[] {
