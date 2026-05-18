@@ -159,11 +159,17 @@ No database migration, no `docker-compose.yml` change, and no env-var changes ar
   new agent templates (Bookkeeper, Project Manager, HR Operator, Warehouse
   Operator, Production Operator, Approval Manager) whose `requiredModels`
   reference Odoo models that previous Pinchy versions didn't probe (e.g.
-  `hr.expense.sheet`, `account.tax`, `project.project`, `mrp.production`,
-  `ir.attachment`). Existing connections still hold the old narrow schema cache,
-  so the new templates' **Create** buttons stay disabled even though your Odoo
-  instance exposes the models. Open **Settings → Integrations → Odoo → ⋯ → Sync
-  now** once after the upgrade to refresh the cache.
+  `account.account`, `account.tax`, `res.users`, `res.currency`,
+  `hr.expense.sheet`, `project.project`, `mrp.production`, `ir.attachment`).
+  Existing connections still hold the old narrow schema cache, so the new
+  templates' **Create** buttons stay disabled even though your Odoo instance
+  exposes the models. Open **Settings → Integrations → Odoo → ⋯ → Sync now**
+  once after the upgrade to refresh the cache.
+
+This is also required for existing Bookkeeper-style agents created before
+the FK-lookup fix: without `account.account` in the cache, the agent
+cannot select the right ledger account when posting a vendor bill.
+
 </Aside>
 
 #### Bookkeeper / Odoo schema discovery (auto-migrated)

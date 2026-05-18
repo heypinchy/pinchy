@@ -276,11 +276,13 @@ You book incoming bills and customer invoices into Odoo, reconcile them against 
 
 ## Available Data
 - **account.move** — Invoices, bills, journal entries. Key fields: \`name\`, \`partner_id\`, \`move_type\` ("out_invoice"=customer invoice, "in_invoice"=vendor bill, "out_refund"=credit note, "in_refund"=vendor credit note), \`state\` ("draft", "posted", "cancel"), \`payment_state\`, \`amount_total\`, \`amount_residual\` (open balance), \`invoice_date\`, \`invoice_date_due\`, \`journal_id\`, \`invoice_line_ids\` (the lines, see below)
-- **account.move.line** — Journal items (the lines of a move). Key fields: \`move_id\`, \`product_id\`, \`name\` (description), \`quantity\`, \`price_unit\`, \`account_id\`, \`tax_ids\`, \`debit\`, \`credit\`
+- **account.move.line** — Journal items (the lines of a move). Key fields: \`move_id\`, \`product_id\`, \`name\` (description), \`quantity\`, \`price_unit\`, \`account_id\` (→ \`account.account\`), \`tax_ids\` (→ \`account.tax\`), \`debit\`, \`credit\`
 - **account.payment** — Payments (typically created by bank imports, not by you). Key fields: \`partner_id\`, \`amount\`, \`payment_type\` ("inbound"/"outbound"), \`date\`, \`state\`, \`reconciled_invoice_ids\`
 - **res.partner** — Customers and suppliers. Key fields: \`name\`, \`vat\` (VAT-ID), \`street\`, \`city\`, \`zip\`, \`country_id\`, \`email\`, \`is_company\`, \`supplier_rank\`, \`customer_rank\`
+- **account.account** — Chart of accounts (read-only). Key fields: \`code\`, \`name\`, \`account_type\` ("asset_receivable", "asset_cash", "expense", "expense_direct_cost", "income", etc.). Every \`account.move.line.account_id\` references this — look up the right ledger account here before posting a bill.
 - **account.tax** — Tax rates (read-only). Key fields: \`name\`, \`amount\`, \`type_tax_use\` ("sale"/"purchase"), \`country_id\`
 - **account.journal** — Accounting journals (read-only). Key fields: \`name\`, \`code\`, \`type\` ("sale", "purchase", "cash", "bank", "general")
+- **res.currency** — Currencies (read-only). Key fields: \`name\` (ISO code), \`symbol\`, \`active\`
 - **account.analytic.line / account.analytic.account** — Cost-centre data (read-only context)
 
 **Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
@@ -334,9 +336,10 @@ You do not create \`account.payment\` records — those come from bank imports. 
 2. \`odoo_search\` on \`res.partner\` for the supplier. If exact match → use it. If no match → create the partner in one call with vat/street/city if visible.
 3. \`odoo_search\` on \`account.move\` for a possible duplicate (same partner + date + amount).
 4. Look up the correct \`account.tax\` ID via \`odoo_search\` on \`account.tax\` filtered by country and \`type_tax_use="purchase"\` and matching rate — never guess tax IDs.
-5. Create the \`account.move\` in draft, with \`move_type="in_invoice"\`, all line items via \`invoice_line_ids\`, and correct \`tax_ids\` per line.
-6. Show the user a summary table and ask for posting confirmation.
-7. On confirmation, \`odoo_write\` to change \`state\` to \`"posted"\`.
+5. Look up the correct expense \`account.account\` for each line via \`odoo_search\` on \`account.account\` filtered by \`account_type\` (e.g. \`expense\` or \`expense_direct_cost\`) and a meaningful \`code\`/\`name\` for the kind of expense (office supplies, software, travel, …). Never guess account IDs; if the Chart of Accounts has no obvious match, ask the user.
+6. Create the \`account.move\` in draft, with \`move_type="in_invoice"\`, all line items via \`invoice_line_ids\`, and correct \`account_id\` + \`tax_ids\` per line.
+7. Show the user a summary table and ask for posting confirmation.
+8. On confirmation, \`odoo_write\` to change \`state\` to \`"posted"\`.
 
 ### Match a posted bill against an existing bank payment
 1. \`odoo_read\` on \`account.move\` to confirm the bill is posted and \`amount_residual > 0\`.
@@ -357,8 +360,10 @@ After creating a draft \`account.move\`, offer to attach the uploaded receipt or
       { model: "account.move.line", operations: ["read", "write"] },
       { model: "account.payment", operations: ["read", "write"] },
       { model: "res.partner", operations: ["read", "create", "write"] },
+      { model: "account.account", operations: ["read"] },
       { model: "account.tax", operations: ["read"] },
       { model: "account.journal", operations: ["read"] },
+      { model: "res.currency", operations: ["read"] },
       { model: "account.analytic.line", operations: ["read"] },
       { model: "account.analytic.account", operations: ["read"] },
       { model: "ir.attachment", operations: ["read", "create"] },
@@ -415,6 +420,9 @@ ${ODOO_RULES}
       { model: "crm.stage", operations: ["read"] },
       { model: "sale.order", operations: ["read", "create", "write"] },
       { model: "res.partner", operations: ["read", "create", "write"] },
+      { model: "product.product", operations: ["read"] },
+      { model: "account.tax", operations: ["read"] },
+      { model: "res.currency", operations: ["read"] },
       { model: "mail.message", operations: ["read", "create"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },
     ],
@@ -472,6 +480,8 @@ ${ODOO_RULES}
       { model: "stock.quant", operations: ["read"] },
       { model: "res.partner", operations: ["read"] },
       { model: "product.product", operations: ["read"] },
+      { model: "account.tax", operations: ["read"] },
+      { model: "res.currency", operations: ["read"] },
     ],
     modelHint: { tier: "balanced", capabilities: ["vision", "long-context", "tools"] },
   }),
@@ -835,6 +845,7 @@ If the user sends a file related to a task or project (specification, screenshot
       { model: "project.task.type", operations: ["read"] },
       { model: "account.analytic.line", operations: ["read", "create", "write"] },
       { model: "hr.employee", operations: ["read"] },
+      { model: "res.users", operations: ["read"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },
       { model: "mail.message", operations: ["read", "create"] },
       { model: "ir.attachment", operations: ["read", "create"] },
@@ -993,6 +1004,8 @@ If the user sends a work instruction, quality report, or delivery note related t
       { model: "stock.move", operations: ["read", "write"] },
       { model: "stock.move.line", operations: ["read", "write"] },
       { model: "stock.quant", operations: ["read"] },
+      { model: "stock.location", operations: ["read"] },
+      { model: "stock.warehouse", operations: ["read"] },
       { model: "product.product", operations: ["read"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },
       { model: "ir.attachment", operations: ["read", "create"] },
@@ -1372,11 +1385,14 @@ If the user sends a receipt, supporting invoice, or policy document related to a
       { model: "hr.expense.sheet", operations: ["read", "write"] },
       { model: "hr.expense", operations: ["read"] },
       { model: "hr.leave", operations: ["read", "write"] },
+      { model: "hr.leave.type", operations: ["read"] },
       { model: "purchase.order", operations: ["read", "write"] },
       { model: "approval.request", operations: ["read", "write"], optional: true },
       { model: "approval.category", operations: ["read"], optional: true },
       { model: "hr.employee", operations: ["read"] },
       { model: "res.partner", operations: ["read"] },
+      { model: "product.product", operations: ["read"] },
+      { model: "res.currency", operations: ["read"] },
       { model: "mail.activity", operations: ["read", "create", "write"] },
       { model: "mail.message", operations: ["read", "create"] },
       { model: "ir.attachment", operations: ["read", "create"] },

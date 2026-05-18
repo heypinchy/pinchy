@@ -63,6 +63,7 @@ export const MODEL_CATEGORIES: ModelCategory[] = [
       { model: "res.company", name: "Companies" },
       { model: "res.country", name: "Countries" },
       { model: "res.country.state", name: "States" },
+      { model: "res.users", name: "Users" },
     ],
   },
   {
