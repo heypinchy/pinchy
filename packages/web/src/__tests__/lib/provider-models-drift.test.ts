@@ -18,14 +18,6 @@ describe("balanced default — drift resistance", () => {
       ];
       expect(selectDefaultModel("openai", models)).toBe("openai/gpt-6-2026-06-01");
     });
-
-    it("google: gemini-3-pro-002 beats gemini-2.5-pro-002", () => {
-      const models = [
-        { id: "google/gemini-2.5-pro-002", name: "x" },
-        { id: "google/gemini-3-pro-002", name: "x" },
-      ];
-      expect(selectDefaultModel("google", models)).toBe("google/gemini-3-pro-002");
-    });
   });
 
   describe("rejected variants never win", () => {
@@ -52,6 +44,14 @@ describe("balanced default — drift resistance", () => {
         { id: "anthropic/claude-sonnet-5-0", name: "x" },
       ];
       expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-5-0");
+    });
+
+    it("google: gemini-3-pro-002 beats gemini-2.5-pro-002", () => {
+      const models = [
+        { id: "google/gemini-2.5-pro-002", name: "x" },
+        { id: "google/gemini-3-pro-002", name: "x" },
+      ];
+      expect(selectDefaultModel("google", models)).toBe("google/gemini-3-pro-002");
     });
   });
 
