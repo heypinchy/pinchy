@@ -147,7 +147,10 @@ test.describe("Web dispatch probe (pinchy-web plugin coverage)", () => {
     //    dispatch agent and the chat fires INVALID_REQUEST "unknown agent id".
     //    Run 25936887310 reproduced this exact failure mode at 19:26:54
     //    (rate-limited) → 19:27:27 (unknown agent id) for pinchy_web_search.
-    await new Promise((r) => setTimeout(r, 45_000));
+    //    Run 26038713754 hit the same race on the Odoo dispatch probe even
+    //    with the original 45 s drain — OC's "retry after 9s" indicated the
+    //    counter still held stale calls. Bumped to 60 s for a safer margin.
+    await new Promise((r) => setTimeout(r, 60_000));
 
     // 3. Swap default_provider to ollama-local and seed ollama_local_url.
     const dbUrl =

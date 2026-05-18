@@ -135,12 +135,21 @@ export async function loginViaUI(page: Page, email: string, password: string): P
  * Poll `/api/audit?eventType=tool.<toolName>` until an entry for the given
  * agent + tool combination appears, or the deadline elapses. Returns true on
  * success.
+ *
+ * Default deadline is 60 s, not 30 s, because the dispatch path includes
+ * a chat UI navigation (Playwright nav + WS connect + LLM round-trip via
+ * fake-ollama + OC tool dispatch + audit write). On a clean CI runner the
+ * happy path completes in 5–10 s, but transient OC reconnects after a
+ * config.apply still in flight can add 20+ s before the agent is dispatchable.
+ * 30 s sat right at that race window and produced sporadic CI failures
+ * (e.g. run 26038713754) — 60 s leaves comfortable slack without masking
+ * real "tool was never called" bugs.
  */
 export async function pollAuditForTool(
   page: Page,
   params: { toolName: string; agentId: string; deadlineMs?: number; intervalMs?: number }
 ): Promise<boolean> {
-  const deadline = Date.now() + (params.deadlineMs ?? 30_000);
+  const deadline = Date.now() + (params.deadlineMs ?? 60_000);
   const interval = params.intervalMs ?? 500;
   while (Date.now() < deadline) {
     const res = await page.request.get(`/api/audit?eventType=tool.${params.toolName}&limit=10`);

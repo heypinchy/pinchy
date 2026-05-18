@@ -289,9 +289,13 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
     //    to the inotify file-watcher fallback, and races a still-in-flight
     //    earlier config.apply that overwrites OC's in-memory state with stale
     //    content — leading to "unknown agent id" when the dispatch chat fires.
-    //    A 45 s quiescent wait flushes the window so this probe's regens are
-    //    the only ones contending.
-    await new Promise((r) => setTimeout(r, 45_000));
+    //
+    //    45 s wasn't enough: CI run 26038713754 showed
+    //      "rate limit exceeded for config.apply; retry after 9s"
+    //    AT the end of the 45 s drain, meaning OC's counter still had stale
+    //    calls in the window. 60 s gives ~15 s slack past the rate-limit
+    //    window so this probe's regens always land in a fully fresh window.
+    await new Promise((r) => setTimeout(r, 60_000));
 
     // 3. Swap default_provider to ollama-local and seed ollama_local_url.
     //    Pinchy can reach ollama.local via the extra_hosts mapping added to the
