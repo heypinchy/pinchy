@@ -163,19 +163,17 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
     });
   });
 
-  it("odoo_schema returns the model's fields after a real round-trip through Pinchy + Odoo", async () => {
+  it("odoo_describe_model returns the model's fields after a real round-trip through Pinchy + Odoo", async () => {
     const tools = createApi({ [agentId]: agentConfig });
-    const tool = findTool(tools, "odoo_schema", agentId);
+    const tool = findTool(tools, "odoo_describe_model", agentId);
 
     const result = await tool.execute("call-1", { model: "sale.order" });
 
     expect(result.isError).toBeFalsy();
     const data = JSON.parse(result.content[0].text);
     expect(data.name).toBe("Sales Order");
-    expect(data.fields.length).toBeGreaterThan(0);
-    expect(data.fields.some((f: { name: string }) => f.name === "name")).toBe(
-      true,
-    );
+    expect(data._meta.returned).toBeGreaterThan(0);
+    expect(Object.keys(data.fields)).toContain("name");
   });
 
   it("odoo_count returns { count: number } for an empty filter", async () => {
@@ -297,7 +295,7 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
     });
 
     const tools = createApi({ [agentId]: agentConfig });
-    const tool = findTool(tools, "odoo_schema", agentId);
+    const tool = findTool(tools, "odoo_describe_model", agentId);
 
     const result = await tool.execute("call-1", { model: "sale.order" });
 
@@ -322,7 +320,7 @@ describe("pinchy-odoo against real mock-odoo + mock-pinchy (#209 layer 2)", () =
     const tools = createApi({
       [agentId]: { ...agentConfig, connectionId: "unknown-connection-id" },
     });
-    const tool = findTool(tools, "odoo_schema", agentId);
+    const tool = findTool(tools, "odoo_describe_model", agentId);
 
     const result = await tool.execute("call-1", { model: "sale.order" });
 
