@@ -30,7 +30,7 @@ export function validateOdooTemplate(
       // Optional models (edition- or module-conditional, e.g. approval.request
       // which exists in Odoo Enterprise but not Community) are surfaced as
       // warnings but do not block agent creation. The agent's AGENTS.md is
-      // expected to gate its own usage of these models via `odoo_schema` at
+      // expected to gate its own usage of these models via `odoo_describe_model` at
       // runtime.
       if (!required.optional) {
         missingModels.push({

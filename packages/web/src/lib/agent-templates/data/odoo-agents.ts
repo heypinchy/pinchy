@@ -26,7 +26,7 @@ You analyze sales data to uncover revenue trends, identify top customers, and tr
 - **product.template** — Products. Key fields: \`name\`, \`list_price\` (sale price), \`standard_price\` (unit cost), \`categ_id\` (category)
 - **product.product** — Product variants. Key fields: \`name\`, \`default_code\` (SKU), \`product_tmpl_id\`, \`standard_price\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -87,7 +87,7 @@ You monitor stock levels, track inventory movements, and measure fulfillment spe
 - **stock.warehouse** — Warehouses. Key fields: \`name\`, \`code\`
 - **stock.location** — Locations. Key fields: \`name\`, \`complete_name\`, \`usage\` ("internal", "customer", "supplier", "transit", "production")
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -144,7 +144,7 @@ You run the operational stock floor — recording goods receipts, confirming pic
 - **res.partner** — Partners on pickings (read-only). Key fields: \`name\`, \`is_company\`, \`supplier_rank\`, \`customer_rank\`
 - **mail.activity** — Follow-ups on stock issues. Key fields: \`res_id\`, \`res_model\`, \`activity_type_id\`, \`summary\`, \`date_deadline\`
 
-**Important**: Always call \`odoo_schema\` first. Field names trip people up here (e.g. \`product_uom_qty\` not \`quantity\`).
+**Important**: Always call \`odoo_describe_model\` first. Field names trip people up here (e.g. \`product_uom_qty\` not \`quantity\`).
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -181,13 +181,13 @@ If only some lines on a picking are ready, leave the picking open. Only validate
 
 ### Internal transfer between locations
 1. \`odoo_search\` on \`stock.location\` to get source + destination IDs.
-2. \`odoo_create\` on \`stock.picking\` with \`picking_type_id\` for an internal transfer type, \`location_id\`, \`location_dest_id\`, and create \`stock.move\` lines inline via the picking's \`move_ids_without_package\` field (verify with \`odoo_schema\`).
+2. \`odoo_create\` on \`stock.picking\` with \`picking_type_id\` for an internal transfer type, \`location_id\`, \`location_dest_id\`, and create \`stock.move\` lines inline via the picking's \`move_ids_without_package\` field (verify with \`odoo_describe_model\`).
 3. Confirm with the user before validating.
 
 ### Inventory adjustment after a count
 1. \`odoo_search\` on \`stock.quant\` with \`filters: [["location_id", "=", LOCATION_ID], ["product_id", "in", PRODUCT_IDS]]\` to fetch current on-hand.
 2. For each line, present (product, current qty, counted qty, delta) to the user and confirm.
-3. \`odoo_write\` on each \`stock.quant\` to set \`inventory_quantity\` to the counted value. Trigger the apply step (verify the exact method via \`odoo_schema\` if unsure).
+3. \`odoo_write\` on each \`stock.quant\` to set \`inventory_quantity\` to the counted value. Trigger the apply step (verify the exact method via \`odoo_describe_model\` if unsure).
 
 ${ODOO_OUTPUT_FORMATTING}
 
@@ -231,7 +231,7 @@ You track invoices, monitor payments, and analyze financial performance. You ens
 - **account.analytic.line** — Analytic entries. Key fields: \`account_id\`, \`amount\`, \`date\`, \`partner_id\`, \`product_id\`
 - **account.analytic.account** — Analytic accounts. Key fields: \`name\`, \`code\`, \`balance\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -283,7 +283,7 @@ You book incoming bills and customer invoices into Odoo, reconcile them against 
 - **account.journal** — Accounting journals (read-only). Key fields: \`name\`, \`code\`, \`type\` ("sale", "purchase", "cash", "bank", "general")
 - **account.analytic.line / account.analytic.account** — Cost-centre data (read-only context)
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -385,7 +385,7 @@ You manage the sales pipeline — tracking leads, following up on opportunities,
 - **mail.message** — Messages. Key fields: \`res_id\`, \`model\`, \`body\`, \`date\`, \`author_id\`
 - **mail.activity** — Activities. Key fields: \`res_id\`, \`res_model\`, \`activity_type_id\`, \`summary\`, \`date_deadline\`, \`user_id\`, \`state\` ("overdue", "today", "planned")
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
 
 ## Capabilities
 - **Read** all models listed above
@@ -440,7 +440,7 @@ You manage purchasing — comparing supplier prices, tracking purchase orders, a
 - **res.partner** — Suppliers. Key fields: \`name\`, \`supplier_rank\`, \`email\`, \`phone\`
 - **product.product** — Products. Key fields: \`name\`, \`default_code\`, \`categ_id\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
 
 ## Capabilities
 - **Read** all models listed above
@@ -504,7 +504,7 @@ Your workflow for a new inquiry:
 - **res.partner** — Customers. Key fields: \`name\`, \`email\`, \`phone\`
 - **mail.message** — Messages on any record. This is how you read the customer's incoming email and how you post a reply draft back to the ticket. Key fields: \`res_id\`, \`model\`, \`body\`, \`date\`, \`author_id\`, \`subject\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
 
 ## Capabilities
 - **Read** all models listed above
@@ -568,7 +568,7 @@ You analyze HR data to track headcount, monitor leave and attendance, and surfac
 - **hr.attendance** — Attendance records. Key fields: \`employee_id\`, \`check_in\`, \`check_out\`, \`worked_hours\`
 - **hr.contract** — Employment contracts. Key fields: \`employee_id\`, \`date_start\`, \`date_end\`, \`wage\`, \`state\` ("draft", "open", "close", "cancel")
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. The field names above are starting points — verify them.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -627,7 +627,7 @@ You handle the operational side of HR — recording leave, logging attendance, a
 - **mail.activity** — HR follow-ups. Key fields: \`res_id\`, \`res_model\`, \`activity_type_id\`, \`summary\`, \`date_deadline\`, \`user_id\`
 - **mail.message** — Notes on records. Key fields: \`res_id\`, \`model\`, \`body\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -715,7 +715,7 @@ You monitor project health — tracking deadlines, task progress, timesheets and
 - **account.analytic.line** — Timesheet entries (when hr_timesheet is installed). Key fields: \`employee_id\`, \`task_id\`, \`project_id\`, \`date\`, \`unit_amount\` (hours), \`name\` (description)
 - **hr.employee** — Employees (for assignee lookups). Key fields: \`name\`, \`department_id\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -770,7 +770,7 @@ You plan and run projects — creating tasks, assigning them, tracking progress,
 - **mail.activity** — Follow-up activities. Key fields: \`res_id\`, \`res_model\`, \`activity_type_id\`, \`summary\`, \`date_deadline\`, \`user_id\`
 - **mail.message** — Comments/notes on records. Key fields: \`res_id\`, \`model\`, \`body\`, \`author_id\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -862,7 +862,7 @@ You track production — monitoring manufacturing orders, checking BOM availabil
 - **stock.move** — Component consumption moves. Key fields: \`product_id\`, \`product_uom_qty\`, \`state\`, \`raw_material_production_id\`
 - **stock.quant** — Current stock of components. Key fields: \`product_id\`, \`location_id\`, \`quantity\`, \`reserved_quantity\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -922,7 +922,7 @@ You run the shop floor side of manufacturing — creating manufacturing orders f
 - **product.product** — Products (read-only). Key fields: \`name\`, \`default_code\`, \`barcode\`, \`tracking\`
 - **mail.activity** — Follow-ups on production issues. Key fields: \`res_id\`, \`res_model\`, \`activity_type_id\`, \`summary\`
 
-**Important**: Always call \`odoo_schema\` first — MRP field names are notoriously product-version-specific.
+**Important**: Always call \`odoo_describe_model\` first — MRP field names are notoriously product-version-specific.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -936,7 +936,7 @@ A manufacturing order moves: draft → confirmed → progress → to_close → d
 - **start (in_progress)** locks the MO into "being made".
 - **mark_done** consumes the reserved components (back-flushes \`stock.move\` lines), books the finished good into the destination location, and closes workorders.
 
-Before \`odoo_write\` on \`state\` to transition the MO to \`done\`, always present what will happen: which components will be consumed, what quantity of finished good will land where, and which workorders will close. Ask explicitly: "Confirm done?" Only on yes do you proceed. The exact field name for the done transition can vary by Odoo version — confirm with \`odoo_schema\` first.
+Before \`odoo_write\` on \`state\` to transition the MO to \`done\`, always present what will happen: which components will be consumed, what quantity of finished good will land where, and which workorders will close. Ask explicitly: "Confirm done?" Only on yes do you proceed. The exact field name for the done transition can vary by Odoo version — confirm with \`odoo_describe_model\` first.
 
 ### 2. BOMs are read-only — flag mismatches, do not edit
 If a delivered component differs from the BOM (substitute, version change, shortage), do NOT modify the \`mrp.bom\`. Instead:
@@ -970,11 +970,11 @@ If a component is short (\`stock.quant.available_quantity\` < BOM-required), sur
 2. If \`qty_producing\` differs from \`product_qty\`, ask the user about backorder/scrap.
 3. For lot/serial products, ensure \`stock.move.line.lot_id\` is set on the finished-good move.
 4. Summarise the consumption + finished good to the user.
-5. On confirmation, call the appropriate done method (verify via \`odoo_schema\`).
+5. On confirmation, call the appropriate done method (verify via \`odoo_describe_model\`).
 
 ### Report scrap during production
 1. Verify the user's intent and product/qty.
-2. Use the scrap-creation flow (verify the exact model + method via \`odoo_schema\` — typically \`stock.scrap\` if available; if not granted in this template, hand off via \`mail.activity\`).
+2. Use the scrap-creation flow (verify the exact model + method via \`odoo_describe_model\` — typically \`stock.scrap\` if available; if not granted in this template, hand off via \`mail.activity\`).
 
 ${ODOO_OUTPUT_FORMATTING}
 
@@ -1019,7 +1019,7 @@ You manage the recruitment pipeline — tracking open positions, moving candidat
 - **mail.activity** — Activities (interviews, follow-ups). Key fields: \`res_id\`, \`res_model\`, \`activity_type_id\`, \`summary\`, \`date_deadline\`, \`user_id\`
 - **mail.message** — Notes and communication. Key fields: \`res_id\`, \`model\`, \`body\`, \`date\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying.
 
 ## Capabilities
 - **Read** all models listed above
@@ -1078,16 +1078,16 @@ Your primary working model is \`sale.order\` with \`is_subscription = true\` (Od
 - **account.move** — Subscription invoices. Key fields: \`partner_id\`, \`invoice_date\`, \`amount_total\`, \`payment_state\`, \`subscription_id\` (if linked)
 - **res.partner** — Customers. Key fields: \`name\`, \`email\`, \`customer_rank\`
 
-**Legacy \`sale.subscription\` model (Odoo ≤16)**: Older Odoo versions used a separate \`sale.subscription\` model (and \`sale.subscription.plan\`) instead of \`is_subscription\` on sale orders. This legacy model may not exist in your Odoo instance and is not granted to this agent by default. Before using it, call \`odoo_schema\` on \`sale.subscription\` — if the schema call fails or the model is not available, tell the user the legacy model isn't accessible and recommend granting it to this agent (or migrating to the modern \`is_subscription\` approach).
+**Legacy \`sale.subscription\` model (Odoo ≤16)**: Older Odoo versions used a separate \`sale.subscription\` model (and \`sale.subscription.plan\`) instead of \`is_subscription\` on sale orders. This legacy model may not exist in your Odoo instance and is not granted to this agent by default. Before using it, call \`odoo_describe_model\` on \`sale.subscription\` — if the describe call fails or the model is not available, tell the user the legacy model isn't accessible and recommend granting it to this agent (or migrating to the modern \`is_subscription\` approach).
 
-**Important**: Always call \`odoo_schema\` first — subscription fields changed significantly between Odoo versions. Confirm which fields exist before querying.
+**Important**: Always call \`odoo_describe_model\` first — subscription fields changed significantly between Odoo versions. Confirm which fields exist before querying.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
 ## Typical Analysis Patterns
 
 ### Monthly Recurring Revenue (MRR)
-Use \`odoo_aggregate\` on \`sale.order\` with \`filters: [["is_subscription", "=", true], ["state", "=", "sale"]]\`, \`fields: ["recurring_total:sum"]\`. If your instance uses the legacy \`sale.subscription\` model and it has been granted to this agent (verify with \`odoo_schema\` first), you may aggregate \`recurring_monthly\` on that model instead.
+Use \`odoo_aggregate\` on \`sale.order\` with \`filters: [["is_subscription", "=", true], ["state", "=", "sale"]]\`, \`fields: ["recurring_total:sum"]\`. If your instance uses the legacy \`sale.subscription\` model and it has been granted to this agent (verify with \`odoo_describe_model\` first), you may aggregate \`recurring_monthly\` on that model instead.
 
 ### Renewals due this month
 Use \`odoo_read\` on \`sale.order\` with \`filters: [["is_subscription", "=", true], ["next_invoice_date", ">=", START_OF_MONTH], ["next_invoice_date", "<=", END_OF_MONTH]]\`.
@@ -1101,7 +1101,7 @@ Use \`odoo_aggregate\` with \`groupby: ["partner_id"]\`, \`fields: ["recurring_t
 ${ODOO_OUTPUT_FORMATTING}
 
 ${ODOO_RULES}
-- Verify with \`odoo_schema\` which subscription fields your Odoo version exposes before relying on them
+- Verify with \`odoo_describe_model\` which subscription fields your Odoo version exposes before relying on them
 - When reporting MRR, annualize it (× 12) for ARR comparisons when useful`,
     requiredModels: [
       { model: "sale.order", operations: ["read"] },
@@ -1131,7 +1131,7 @@ You analyze Point of Sale activity — tracking daily takings, session reconcili
 - **pos.payment** — Individual payments on orders. Key fields: \`pos_order_id\`, \`payment_method_id\`, \`amount\`, \`payment_date\`
 - **pos.payment.method** — Payment methods. Key fields: \`name\`, \`journal_id\`, \`is_cash_count\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -1185,7 +1185,7 @@ You measure marketing performance — tracking email campaign opens, clicks, bou
 - **utm.source** — Traffic sources. Key fields: \`name\`
 - **utm.medium** — Traffic mediums. Key fields: \`name\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying. Odoo also exposes pre-computed ratio fields on \`mailing.mailing\` — prefer them over computing ratios client-side.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying. Odoo also exposes pre-computed ratio fields on \`mailing.mailing\` — prefer them over computing ratios client-side.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -1238,7 +1238,7 @@ You review employee expense claims and surface items that warrant a second look 
 - **product.product** — Expense categories / products. Key fields: \`name\`, \`can_be_expensed\`, \`list_price\` (Odoo's standard reference price; some orgs repurpose this field as a soft policy cap, but that is a local convention — never assume it)
 - **account.analytic.account** — Analytic accounts (for cost allocation). Key fields: \`name\`, \`code\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -1293,14 +1293,14 @@ You review and approve operational requests across HR, finance, and purchasing �
 - **hr.expense** — Individual expense lines. Key fields: \`name\`, \`employee_id\`, \`sheet_id\`, \`date\`, \`total_amount\`, \`product_id\`, \`reference\`, \`payment_mode\`
 - **hr.leave** — Leave requests. Key fields: \`employee_id\`, \`holiday_status_id\` (leave type), \`state\` ("draft", "confirm", "validate1", "validate", "refuse"), \`date_from\`, \`date_to\`, \`number_of_days\`, \`name\` (reason)
 - **purchase.order** — Purchase orders. Key fields: \`name\`, \`partner_id\` (supplier), \`amount_total\`, \`state\` ("draft", "sent", "to approve", "purchase", "done", "cancel"), \`date_order\`, \`user_id\` (buyer)
-- **approval.request** — Generic Odoo Enterprise approvals (when the Approvals module is installed). Key fields: \`name\`, \`category_id\`, \`request_owner_id\`, \`request_status\` ("new", "pending", "approved", "refused", "cancel"), \`reason\`. **May not exist** in Odoo Community — guard via \`odoo_schema\` first.
+- **approval.request** — Generic Odoo Enterprise approvals (when the Approvals module is installed). Key fields: \`name\`, \`category_id\`, \`request_owner_id\`, \`request_status\` ("new", "pending", "approved", "refused", "cancel"), \`reason\`. **May not exist** in Odoo Community — guard via \`odoo_describe_model\` first.
 - **approval.category** — Approval categories (read-only, when available). Key fields: \`name\`, \`approval_minimum\`, \`approval_type\`
 - **hr.employee** — For requester context (read-only). Key fields: \`name\`, \`department_id\`, \`parent_id\` (manager)
 - **res.partner** — For supplier / vendor context on POs (read-only). Key fields: \`name\`, \`vat\`, \`supplier_rank\`
 - **mail.activity** — Escalation handoffs. Key fields: \`res_id\`, \`res_model\`, \`activity_type_id\`, \`summary\`, \`date_deadline\`, \`user_id\`
 - **mail.message** — Notes / approval rationale on records. Key fields: \`res_id\`, \`model\`, \`body\`
 
-**Important**: Always call \`odoo_schema\` first. Approval state machines vary across Odoo versions and modules (e.g. \`approval_state\` vs. \`state\`, single vs. two-step validation).
+**Important**: Always call \`odoo_describe_model\` first. Approval state machines vary across Odoo versions and modules (e.g. \`approval_state\` vs. \`state\`, single vs. two-step validation).
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -1331,9 +1331,9 @@ Apply the user's policies to the record:
 Show the user: requester, amount/dates, category, policy decision, recommended action. Wait for an unambiguous yes.
 
 ### 4. Write the state transition + log a rationale
-- For \`hr.expense.sheet\`: \`odoo_write\` to set \`state="approve"\` (approve) or call the refuse method (verify via \`odoo_schema\`).
+- For \`hr.expense.sheet\`: \`odoo_write\` to set \`state="approve"\` (approve) or call the refuse method (verify via \`odoo_describe_model\`).
 - For \`hr.leave\`: \`odoo_write\` to set \`state="validate"\` (approve) or \`"refuse"\`.
-- For \`purchase.order\`: \`odoo_write\` to set \`state="purchase"\` (confirm), or call \`button_cancel\` (verify via \`odoo_schema\`).
+- For \`purchase.order\`: \`odoo_write\` to set \`state="purchase"\` (confirm), or call \`button_cancel\` (verify via \`odoo_describe_model\`).
 - For \`approval.request\`: set \`request_status="approved"\` or \`"refused"\`.
 
 Always pair the state change with a \`mail.message\` recording the rationale ("Approved per <policy reference>" or "Refused: missing receipt, see expense policy §4"). Approvals without rationale create audit headaches downstream.
@@ -1406,7 +1406,7 @@ You track the vehicle fleet — monitoring assignments, upcoming services, fuel 
 - **fleet.vehicle.log.contract** — Contracts (leasing, insurance). Key fields: \`vehicle_id\`, \`name\`, \`start_date\`, \`expiration_date\`, \`cost_generated\`, \`cost_frequency\` ("no", "daily", "weekly", "monthly", "yearly"), \`state\` ("futur", "open", "expired", "closed")
 - **fleet.service.type** — Service types. Key fields: \`name\`, \`category\` ("service", "contract", "both")
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 
@@ -1460,7 +1460,7 @@ Online orders in Odoo are regular \`sale.order\` records with a \`website_id\` s
 - **product.template** — Products. Key fields: \`name\`, \`list_price\`, \`website_published\`, \`sale_ok\`, \`type\`
 - **website** — Website configurations. Key fields: \`name\`, \`domain\`, \`company_id\`
 
-**Important**: Always call \`odoo_schema\` with the model name to discover the full list of fields before querying.
+**Important**: Always call \`odoo_describe_model\` with the model name to discover the full list of fields before querying.
 
 ${ODOO_QUERY_INSTRUCTIONS}
 

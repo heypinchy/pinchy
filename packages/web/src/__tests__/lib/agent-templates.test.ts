@@ -428,7 +428,8 @@ describe("Odoo templates", () => {
 
   it("read-only templates have only read tools", () => {
     const t = getTemplate("odoo-sales-analyst")!;
-    expect(t.allowedTools).toContain("odoo_schema");
+    expect(t.allowedTools).toContain("odoo_list_models");
+    expect(t.allowedTools).toContain("odoo_describe_model");
     expect(t.allowedTools).toContain("odoo_read");
     expect(t.allowedTools).not.toContain("odoo_create");
     expect(t.allowedTools).not.toContain("odoo_write");
@@ -552,7 +553,7 @@ describe("Odoo templates", () => {
     ];
     for (const id of ids) {
       const t = getTemplate(id)!;
-      expect(t.defaultAgentsMd).toContain("odoo_schema");
+      expect(t.defaultAgentsMd).toContain("odoo_describe_model");
       expect(t.defaultAgentsMd).toContain("odoo_read");
     }
   });
@@ -617,7 +618,7 @@ describe("Additional Odoo templates (10 new)", () => {
       const t = getTemplate(id)!;
       expect(t.defaultAgentsMd).toBeTruthy();
       expect(t.defaultAgentsMd!.length).toBeGreaterThan(200);
-      expect(t.defaultAgentsMd).toContain("odoo_schema");
+      expect(t.defaultAgentsMd).toContain("odoo_describe_model");
       expect(t.defaultAgentsMd).toContain("odoo_read");
     }
   });
@@ -641,7 +642,8 @@ describe("Additional Odoo templates (10 new)", () => {
   it("allowedTools respect the accessLevel", () => {
     for (const id of NEW_ODOO_TEMPLATE_IDS) {
       const t = getTemplate(id)!;
-      expect(t.allowedTools).toContain("odoo_schema");
+      expect(t.allowedTools).toContain("odoo_list_models");
+      expect(t.allowedTools).toContain("odoo_describe_model");
       expect(t.allowedTools).toContain("odoo_read");
       if (t.odooConfig!.accessLevel === "read-only") {
         expect(t.allowedTools).not.toContain("odoo_create");

@@ -47,9 +47,16 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
 
   // Odoo integration tools (safe = read-only, powerful = write operations)
   {
-    id: "odoo_schema",
-    label: "Odoo: Browse schema",
-    description: "Discover available Odoo models and their fields",
+    id: "odoo_list_models",
+    label: "Odoo: List models",
+    description: "List all available Odoo models",
+    category: "safe",
+    integration: "odoo",
+  },
+  {
+    id: "odoo_describe_model",
+    label: "Odoo: Describe model",
+    description: "Discover fields and types for a specific Odoo model",
     category: "safe",
     integration: "odoo",
   },
@@ -205,7 +212,13 @@ export function detectEmailOperations(allowedToolIds: string[]): string[] {
 
 export type OdooAccessLevel = "read-only" | "read-write" | "full" | "custom";
 
-const ODOO_READ_TOOLS = ["odoo_schema", "odoo_read", "odoo_count", "odoo_aggregate"] as const;
+const ODOO_READ_TOOLS = [
+  "odoo_list_models",
+  "odoo_describe_model",
+  "odoo_read",
+  "odoo_count",
+  "odoo_aggregate",
+] as const;
 const ODOO_WRITE_TOOLS = ["odoo_create", "odoo_write", "odoo_attach_file"] as const;
 const ODOO_DELETE_TOOLS = ["odoo_delete"] as const;
 
@@ -229,7 +242,7 @@ export function getOdooToolsForAccessLevel(level: OdooAccessLevel): string[] {
     case "full":
       return [...ODOO_READ_TOOLS, ...ODOO_WRITE_TOOLS, ...ODOO_DELETE_TOOLS];
     case "custom":
-      return ["odoo_schema"];
+      return ["odoo_list_models", "odoo_describe_model"];
   }
 }
 

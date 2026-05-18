@@ -161,7 +161,7 @@ export function AgentSettingsPermissions({
           odooToolIds = getOdooToolsForAccessLevel("read-only");
         } else {
           // Custom: include schema + specific operation tools
-          odooToolIds = ["odoo_schema"];
+          odooToolIds = ["odoo_list_models", "odoo_describe_model"];
           if (hasCreate) odooToolIds.push("odoo_create");
           if (hasWrite) odooToolIds.push("odoo_write");
           if (hasDelete) odooToolIds.push("odoo_delete");

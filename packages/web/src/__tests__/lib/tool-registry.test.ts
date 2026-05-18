@@ -158,7 +158,7 @@ describe("computeDeniedGroups", () => {
 describe("Odoo access level helpers", () => {
   it("all odoo tools have integration: 'odoo'", () => {
     const odooTools = TOOL_REGISTRY.filter((t) => t.id.startsWith("odoo_"));
-    expect(odooTools.length).toBe(8);
+    expect(odooTools.length).toBe(9);
     for (const tool of odooTools) {
       expect(tool.integration).toBe("odoo");
     }
@@ -182,15 +182,22 @@ describe("Odoo access level helpers", () => {
     }
   });
 
-  it("getOdooToolsForAccessLevel('read-only') returns exactly the 4 read tools", () => {
+  it("getOdooToolsForAccessLevel('read-only') returns exactly the 5 read tools", () => {
     const tools = getOdooToolsForAccessLevel("read-only");
-    expect(tools).toEqual(["odoo_schema", "odoo_read", "odoo_count", "odoo_aggregate"]);
+    expect(tools).toEqual([
+      "odoo_list_models",
+      "odoo_describe_model",
+      "odoo_read",
+      "odoo_count",
+      "odoo_aggregate",
+    ]);
   });
 
-  it("getOdooToolsForAccessLevel('read-write') returns 7 tools", () => {
+  it("getOdooToolsForAccessLevel('read-write') returns 8 tools", () => {
     const tools = getOdooToolsForAccessLevel("read-write");
     expect(tools).toEqual([
-      "odoo_schema",
+      "odoo_list_models",
+      "odoo_describe_model",
       "odoo_read",
       "odoo_count",
       "odoo_aggregate",
@@ -200,10 +207,11 @@ describe("Odoo access level helpers", () => {
     ]);
   });
 
-  it("getOdooToolsForAccessLevel('full') returns all 8 tools", () => {
+  it("getOdooToolsForAccessLevel('full') returns all 9 tools", () => {
     const tools = getOdooToolsForAccessLevel("full");
     expect(tools).toEqual([
-      "odoo_schema",
+      "odoo_list_models",
+      "odoo_describe_model",
       "odoo_read",
       "odoo_count",
       "odoo_aggregate",
@@ -214,27 +222,34 @@ describe("Odoo access level helpers", () => {
     ]);
   });
 
-  it("getOdooToolsForAccessLevel('custom') returns only schema", () => {
+  it("getOdooToolsForAccessLevel('custom') returns list and describe tools", () => {
     const tools = getOdooToolsForAccessLevel("custom");
-    expect(tools).toEqual(["odoo_schema"]);
+    expect(tools).toEqual(["odoo_list_models", "odoo_describe_model"]);
   });
 
-  it("getOdooTools() returns exactly 8 tools", () => {
+  it("getOdooTools() returns exactly 9 tools", () => {
     const tools = getOdooTools();
-    expect(tools).toHaveLength(8);
+    expect(tools).toHaveLength(9);
     expect(tools.every((t) => t.integration === "odoo")).toBe(true);
   });
 
   it("detectOdooAccessLevel correctly identifies read-only preset", () => {
     expect(
-      detectOdooAccessLevel(["odoo_schema", "odoo_read", "odoo_count", "odoo_aggregate"])
+      detectOdooAccessLevel([
+        "odoo_list_models",
+        "odoo_describe_model",
+        "odoo_read",
+        "odoo_count",
+        "odoo_aggregate",
+      ])
     ).toBe("read-only");
   });
 
   it("detectOdooAccessLevel correctly identifies read-write preset", () => {
     expect(
       detectOdooAccessLevel([
-        "odoo_schema",
+        "odoo_list_models",
+        "odoo_describe_model",
         "odoo_read",
         "odoo_count",
         "odoo_aggregate",
@@ -248,7 +263,8 @@ describe("Odoo access level helpers", () => {
   it("detectOdooAccessLevel correctly identifies full preset", () => {
     expect(
       detectOdooAccessLevel([
-        "odoo_schema",
+        "odoo_list_models",
+        "odoo_describe_model",
         "odoo_read",
         "odoo_count",
         "odoo_aggregate",
@@ -261,8 +277,8 @@ describe("Odoo access level helpers", () => {
   });
 
   it("detectOdooAccessLevel returns 'custom' for non-preset combinations", () => {
-    // Only schema + delete — not a standard preset
-    expect(detectOdooAccessLevel(["odoo_schema", "odoo_delete"])).toBe("custom");
+    // Only list_models + delete — not a standard preset
+    expect(detectOdooAccessLevel(["odoo_list_models", "odoo_delete"])).toBe("custom");
   });
 
   it("detectOdooAccessLevel returns 'custom' when no odoo tools present", () => {

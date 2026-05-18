@@ -2,7 +2,7 @@ import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
 import type { AgentTemplate, OdooAgentTemplateSpec, OdooOperation } from "./types";
 
 export const ODOO_QUERY_INSTRUCTIONS = `## Mandatory Workflow
-1. **Always call \`odoo_schema\` first** before querying any model. This gives you the exact field names and types. Never guess field names — they differ from what you might expect (e.g., \`product_uom_qty\` not \`quantity\`, \`amount_total\` not \`total\`).
+1. **Always call \`odoo_describe_model\` first** before querying any model. This gives you the exact field names and types. Never guess field names — they differ from what you might expect (e.g., \`product_uom_qty\` not \`quantity\`, \`amount_total\` not \`total\`). Use \`odoo_list_models\` to discover which models are available.
 2. Use \`odoo_count\` to check dataset size before fetching large result sets.
 3. Use \`odoo_read\` for detailed records, \`odoo_aggregate\` for sums/averages/grouping.
 

@@ -15,7 +15,7 @@ import {
   pinchyDelete,
 } from "./helpers";
 import {
-  FAKE_OLLAMA_ODOO_SCHEMA_TOOL_TRIGGER,
+  FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER,
   FAKE_OLLAMA_PORT,
   startFakeOllama,
   stopFakeOllama,
@@ -110,7 +110,13 @@ test.describe("Odoo Agent Chat", () => {
   });
 
   test("agent allowedTools includes Odoo tools after PATCH", async () => {
-    const odooTools = ["odoo_schema", "odoo_read", "odoo_count", "odoo_aggregate"];
+    const odooTools = [
+      "odoo_list_models",
+      "odoo_describe_model",
+      "odoo_read",
+      "odoo_count",
+      "odoo_aggregate",
+    ];
 
     // PATCH the agent to allow Odoo tools
     const patchRes = await pinchyPatch(
@@ -186,7 +192,7 @@ test.describe("Odoo Agent Chat", () => {
     // Grant Odoo tools — a second config regen, this time plugins.entries["pinchy-odoo"] is emitted.
     const patchRes = await pinchyPatch(
       `/api/agents/${agentId}`,
-      { allowedTools: ["odoo_schema", "odoo_read", "odoo_count"] },
+      { allowedTools: ["odoo_list_models", "odoo_describe_model", "odoo_read", "odoo_count"] },
       cookie
     );
     expect(patchRes.status).toBe(200);
@@ -260,8 +266,8 @@ test.describe("Odoo Agent Chat", () => {
 // ── Dispatch probe (pinchy-odoo plugin coverage) ─────────────────────────────
 // Proves pinchy-odoo loaded correctly and registerTool() worked end-to-end.
 // Switches the default provider to fake-Ollama for this describe block only,
-// creates a disposable agent with odoo_schema allowed, and asserts that the
-// fake-LLM trigger results in an audit entry for tool.odoo_schema.
+// creates a disposable agent with odoo_list_models allowed, and asserts that the
+// fake-LLM trigger results in an audit entry for tool.odoo_list_models.
 test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
   let dispatchCookie: string;
   let dispatchConnectionId: string;
@@ -317,10 +323,10 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
       { model: "sale.order", operation: "read" },
     ]);
 
-    // 7. Allow odoo_schema — second config regen with the tool in the allow-list.
+    // 7. Allow odoo_list_models — second config regen with the tool in the allow-list.
     const patchRes = await pinchyPatch(
       `/api/agents/${dispatchAgentId}`,
-      { allowedTools: ["odoo_schema"] },
+      { allowedTools: ["odoo_list_models"] },
       dispatchCookie
     );
     expect(patchRes.status).toBe(200);
@@ -340,7 +346,7 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
     await stopFakeOllama();
   });
 
-  test("odoo_schema dispatches via fake-LLM and writes audit entry", async ({ page }) => {
+  test("odoo_list_models dispatches via fake-LLM and writes audit entry", async ({ page }) => {
     await loginViaUI(page, getAdminEmail(), getAdminPassword());
 
     await page.goto(`/chat/${dispatchAgentId}`);
@@ -348,11 +354,11 @@ test.describe("Odoo dispatch probe (pinchy-odoo plugin coverage)", () => {
 
     const input = page.getByPlaceholder(/send a message/i);
     await expect(input).toBeVisible({ timeout: 10_000 });
-    await input.fill(`${FAKE_OLLAMA_ODOO_SCHEMA_TOOL_TRIGGER}: describe Odoo models`);
+    await input.fill(`${FAKE_OLLAMA_ODOO_LIST_MODELS_TOOL_TRIGGER}: list Odoo models`);
     await input.press("Enter");
 
     const found = await pollAuditForTool(page, {
-      toolName: "odoo_schema",
+      toolName: "odoo_list_models",
       agentId: dispatchAgentId,
     });
     expect(found).toBe(true);
