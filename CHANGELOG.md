@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Pinchy-Odoo: `odoo_read`, `odoo_count`, `odoo_aggregate` now accepted by OpenAI's strict function-calling validator.** The `filters` parameter schema declared a nested array (`type: "array"` of `type: "array"`) without an inner `items` definition. OpenAI rejected the request with `400 Invalid schema for function 'odoo_aggregate': In context=('properties','filters','items'), array schema missing items.`, surfaced in the UI as `OpenClaw error chunk: LLM request failed: provider rejected the request schema or tool payload`. Anthropic and Ollama accept the looser schema, so the regression was invisible on those providers. A new drift-guard test (`openai-schema-compat`) walks every Pinchy-Odoo tool schema and fails the build if any `type: array` is missing `items`.
+
 ### Breaking Changes
 
 - **Pinchy-Odoo: opaque self-refs on every record.** `odoo_create` now returns `{id, _pinchy_ref}` (was `{id}`), and every record from `odoo_read` gains a `_pinchy_ref` field. Read-write operator templates (Bookkeeper, Warehouse Operator, HR Operator, Project Manager, Production Operator, Approval Manager) can now chain `odoo_create` → `odoo_attach_file` directly: pass the returned `_pinchy_ref` as `targetRef`. The previous behaviour — `odoo_create` returning only a raw integer `id` with no path for the LLM to obtain a valid encrypted ref — made `odoo_attach_file` unreachable in fresh-create flows. The field is named `_pinchy_ref` (not `ref`) to avoid shadowing Odoo's own `ref` field on `account.move` / `account.payment` etc. Old downstream tools that accept raw `ids` (`odoo_write`, `odoo_delete`, etc.) are unchanged.

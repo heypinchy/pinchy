@@ -1130,6 +1130,7 @@ const plugin = {
                 type: "array",
                 items: {
                   type: "array",
+                  items: {},
                   description:
                     "A [field, operator, value] tuple, e.g. ['state', '=', 'sale']",
                 },
@@ -1225,6 +1226,7 @@ const plugin = {
                 type: "array",
                 items: {
                   type: "array",
+                  items: {},
                   description: "A [field, operator, value] tuple",
                 },
                 description: "Odoo domain filter. Use [] for no filter.",
@@ -1279,6 +1281,7 @@ const plugin = {
                 type: "array",
                 items: {
                   type: "array",
+                  items: {},
                   description: "A [field, operator, value] tuple",
                 },
                 description: "Odoo domain filter. Use [] for no filter.",
