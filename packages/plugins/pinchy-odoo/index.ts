@@ -419,6 +419,10 @@ export function normalizeFields(fields: unknown): OdooField[] {
           selection: Array.isArray(field.selection)
             ? (field.selection as Array<[string, string]>)
             : undefined,
+          readonly:
+            typeof field.readonly === "boolean" ? field.readonly : undefined,
+          required:
+            typeof field.required === "boolean" ? field.required : undefined,
         },
       ];
     });
@@ -438,6 +442,10 @@ export function normalizeFields(fields: unknown): OdooField[] {
         selection: Array.isArray(field.selection)
           ? (field.selection as Array<[string, string]>)
           : undefined,
+        readonly:
+          typeof field.readonly === "boolean" ? field.readonly : undefined,
+        required:
+          typeof field.required === "boolean" ? field.required : undefined,
       },
     ];
   });

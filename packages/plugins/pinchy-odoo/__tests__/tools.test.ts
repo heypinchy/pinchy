@@ -234,6 +234,33 @@ describe("normalizeFields", () => {
       ["posted", "Posted"],
     ]);
   });
+
+  it("preserves readonly and required flags", () => {
+    const raw = {
+      partner_id: {
+        name: "partner_id",
+        type: "many2one",
+        string: "Partner",
+        relation: "res.partner",
+        readonly: true,
+        required: false,
+      },
+      name_field: {
+        name: "name_field",
+        type: "char",
+        string: "Name",
+        readonly: false,
+        required: true,
+      },
+    };
+    const result = normalizeFields(raw);
+    const partner = result.find((f) => f.name === "partner_id");
+    const nameF = result.find((f) => f.name === "name_field");
+    expect(partner?.readonly).toBe(true);
+    expect(partner?.required).toBe(false);
+    expect(nameF?.readonly).toBe(false);
+    expect(nameF?.required).toBe(true);
+  });
 });
 
 describe("sortFieldsByPriority", () => {
