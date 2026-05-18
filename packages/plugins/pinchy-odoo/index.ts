@@ -1372,7 +1372,7 @@ const plugin = {
                 return permissionDenied("create", model);
               }
 
-              const id = (await withAuthRetry(
+              const id = await withAuthRetry(
                 agentId,
                 config,
                 async (client) => {
@@ -1386,7 +1386,7 @@ const plugin = {
                     : (params.values as Record<string, unknown>);
                   return client.create(model, values);
                 },
-              )) as number;
+              );
 
               // Emit a self-ref so the LLM can chain into tools that consume
               // opaque references (most importantly odoo_attach_file). Without
