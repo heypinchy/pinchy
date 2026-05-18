@@ -134,11 +134,11 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from v0.5.3 to %%PINCHY_VERSION%%
+## Upgrading from %%PINCHY_VERSION%% to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
-None.
+- **`odoo_schema` tool replaced** — see [Bookkeeper / Odoo schema discovery](#bookkeeper--odoo-schema-discovery-auto-migrated) below. Existing agents are auto-migrated on startup; no manual action is required.
 
 ### Upgrade notes
 
@@ -148,7 +148,7 @@ Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.3/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=%%PINCHY_VERSION%%/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d
 ```
 
@@ -165,6 +165,12 @@ No database migration, no `docker-compose.yml` change, and no env-var changes ar
   instance exposes the models. Open **Settings → Integrations → Odoo → ⋯ → Sync
   now** once after the upgrade to refresh the cache.
 </Aside>
+
+#### Bookkeeper / Odoo schema discovery (auto-migrated)
+
+The `odoo_schema` tool has been replaced by two narrower tools: `odoo_list_models` and `odoo_describe_model`. The new `odoo_describe_model` returns a compact field map (default ~40 most-common fields per model) and accepts `fields: ["…"]`, `limit`, and `verbose: true` arguments. This cuts typical schema-discovery context cost from ~18 kB per model to ~1 kB, which unblocks vision-capable models like `ollama-cloud/gemini-3-flash-preview` for invoice-processing flows.
+
+**No action required.** A startup migration rewrites every agent's `allowed_tools` to use the new names, and the read-write Odoo operator templates (Bookkeeper, Warehouse Operator, HR Operator, etc.) ship with updated guidance for the agent.
 
 #### Six new Odoo agent templates
 
@@ -226,7 +232,7 @@ The upgrading guide's "Verify" step is updated to use `/api/version` instead of 
 - **OpenClaw 2026.5.7** (was 2026.5.3) — picked up via `Dockerfile.openclaw` and the bundled `openclaw-node 0.8.0`.
 - **Next.js 16.2.6** (was 16.2.4) — addresses [GHSA-wfc6-r584-vfw7](https://github.com/advisories/GHSA-wfc6-r584-vfw7) and [GHSA-26hh-7cqf-hhc6](https://github.com/advisories/GHSA-26hh-7cqf-hhc6).
 
-## Upgrading from v0.5.2 to v0.5.3
+## Upgrading from v0.5.2 to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
@@ -234,13 +240,13 @@ None.
 
 ### Upgrade notes
 
-v0.5.3 is a maintenance release focused on chat reliability: the recommended Ollama Cloud reasoning model was swapped after the previous default soft-deprecated upstream, model errors now surface as actionable in-chat bubbles instead of raw HTTP 500s, and the chat layout was restructured so per-agent runtimes survive in-app navigation. File attachments also got a proper preview surface.
+%%PINCHY_VERSION%% is a maintenance release focused on chat reliability: the recommended Ollama Cloud reasoning model was swapped after the previous default soft-deprecated upstream, model errors now surface as actionable in-chat bubbles instead of raw HTTP 500s, and the chat layout was restructured so per-agent runtimes survive in-app navigation. File attachments also got a proper preview surface.
 
 Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.2/PINCHY_VERSION=v0.5.3/' .env
+sed -i 's/PINCHY_VERSION=v0.5.2/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d
 ```
 
