@@ -8,9 +8,9 @@ describe("resolveGoogle", () => {
     expect(r.fallbackUsed).toBe(false);
   });
 
-  it("maps tier=balanced to gemini-2.5-flash (Google's balanced stable)", () => {
+  it("maps tier=balanced to gemini-2.5-pro (Google's balanced stable, matches BALANCED_ANCHORS)", () => {
     const r = resolveGoogle({ tier: "balanced" });
-    expect(r.model).toBe("google/gemini-2.5-flash");
+    expect(r.model).toBe("google/gemini-2.5-pro");
   });
 
   it("maps tier=reasoning to gemini-2.5-pro (Google's most-advanced stable)", () => {

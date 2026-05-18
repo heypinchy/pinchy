@@ -8,9 +8,9 @@ describe("resolveOpenAI", () => {
     expect(r.fallbackUsed).toBe(false);
   });
 
-  it("maps tier=balanced to gpt-5.4", () => {
+  it("maps tier=balanced to gpt-5.5 (matches BALANCED_ANCHORS)", () => {
     const r = resolveOpenAI({ tier: "balanced" });
-    expect(r.model).toBe("openai/gpt-5.4");
+    expect(r.model).toBe("openai/gpt-5.5");
   });
 
   it("maps tier=reasoning to gpt-5.5", () => {

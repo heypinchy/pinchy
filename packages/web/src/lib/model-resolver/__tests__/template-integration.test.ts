@@ -50,8 +50,8 @@ const CASES: Array<{ templateId: string; provider: ProviderName; expected: strin
     provider: "anthropic",
     expected: "anthropic/claude-sonnet-4-6",
   },
-  { templateId: "contract-analyzer", provider: "openai", expected: "openai/gpt-5.4" },
-  { templateId: "contract-analyzer", provider: "google", expected: "google/gemini-2.5-flash" },
+  { templateId: "contract-analyzer", provider: "openai", expected: "openai/gpt-5.5" },
+  { templateId: "contract-analyzer", provider: "google", expected: "google/gemini-2.5-pro" },
 ];
 
 describe("template + provider resolves to expected model", () => {
