@@ -15,7 +15,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     authType: "api-key",
     settingsKey: "anthropic_api_key",
     envVar: "ANTHROPIC_API_KEY",
-    defaultModel: "anthropic/claude-haiku-4-5-20251001",
+    defaultModel: "anthropic/claude-sonnet-4-6",
     placeholder: "sk-ant-...",
   },
   openai: {
@@ -23,7 +23,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     authType: "api-key",
     settingsKey: "openai_api_key",
     envVar: "OPENAI_API_KEY",
-    defaultModel: "openai/gpt-5.4-mini",
+    defaultModel: "openai/gpt-5.5",
     placeholder: "sk-...",
   },
   google: {
@@ -31,7 +31,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     authType: "api-key",
     settingsKey: "google_api_key",
     envVar: "GEMINI_API_KEY",
-    defaultModel: "google/gemini-2.5-flash",
+    defaultModel: "google/gemini-2.5-pro",
     placeholder: "AIza...",
   },
   "ollama-cloud": {
@@ -39,7 +39,7 @@ export const PROVIDERS: Record<ProviderName, ProviderConfig> = {
     authType: "api-key",
     settingsKey: "ollama_cloud_api_key",
     envVar: "OLLAMA_CLOUD_API_KEY",
-    defaultModel: "ollama-cloud/gemini-3-flash-preview",
+    defaultModel: "ollama-cloud/qwen3-next:80b",
     placeholder: "sk-...",
   },
   "ollama-local": {

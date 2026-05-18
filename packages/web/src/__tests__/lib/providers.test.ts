@@ -128,11 +128,11 @@ describe("validateProviderKey", () => {
 });
 
 describe("PROVIDERS", () => {
-  it("should have default models for all providers", () => {
-    expect(PROVIDERS.anthropic.defaultModel).toBe("anthropic/claude-haiku-4-5-20251001");
-    expect(PROVIDERS.openai.defaultModel).toBe("openai/gpt-5.4-mini");
-    expect(PROVIDERS.google.defaultModel).toBe("google/gemini-2.5-flash");
-    expect(PROVIDERS["ollama-cloud"].defaultModel).toBe("ollama-cloud/gemini-3-flash-preview");
+  it("should have balanced-tier default models for all providers", () => {
+    expect(PROVIDERS.anthropic.defaultModel).toBe("anthropic/claude-sonnet-4-6");
+    expect(PROVIDERS.openai.defaultModel).toBe("openai/gpt-5.5");
+    expect(PROVIDERS.google.defaultModel).toBe("google/gemini-2.5-pro");
+    expect(PROVIDERS["ollama-cloud"].defaultModel).toBe("ollama-cloud/qwen3-next:80b");
   });
 
   it("should have settings keys for all providers", () => {

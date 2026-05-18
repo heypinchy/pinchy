@@ -170,12 +170,20 @@ async function fetchModelsForProvider(
   return config.transform(data);
 }
 
-const DEFAULT_MODEL_PATTERNS: Record<ProviderName, RegExp> = {
-  anthropic: /haiku/,
-  openai: /gpt-.*-mini/,
-  google: /gemini-.*-flash/,
-  "ollama-cloud": /flash/,
+const BALANCED_PATTERNS: Record<ProviderName, RegExp> = {
+  anthropic: /^anthropic\/claude-sonnet-\d+-\d+(?:-\d{8})?$/,
+  openai: /^openai\/gpt-([5-9]|\d{2,})(\.\d+)?(?:-\d{4}-\d{2}-\d{2})?$/,
+  google: /^google\/gemini-[2-9](?:\.\d+)?-pro(?:-\d{3})?$/,
+  "ollama-cloud": /^ollama-cloud\/qwen3-next:\d+b$/,
   "ollama-local": /.*/,
+};
+
+const BALANCED_ANCHORS: Record<ProviderName, string> = {
+  anthropic: "anthropic/claude-sonnet-4-6",
+  openai: "openai/gpt-5.5",
+  google: "google/gemini-2.5-pro",
+  "ollama-cloud": "ollama-cloud/qwen3-next:80b",
+  "ollama-local": "",
 };
 
 function parseParameterSize(size: string): number {
@@ -358,13 +366,15 @@ export function extractModelDate(modelId: string): number {
 }
 
 export function selectDefaultModel(provider: ProviderName, models: ModelInfo[]): string {
-  const pattern = DEFAULT_MODEL_PATTERNS[provider];
-  const candidates = models.filter((m) => pattern.test(m.id) && !PREVIEW_PATTERN.test(m.id));
+  const pattern = BALANCED_PATTERNS[provider];
+  const candidates = models.filter(
+    (m) => pattern.test(m.id) && !PREVIEW_PATTERN.test(m.id) && !isRejectedVariant(m.id)
+  );
 
   if (candidates.length > 0) {
     // Pick the most recent model by date suffix (YYYYMMDD), with lexicographic
-    // descending as a tiebreaker so newer-named variants (e.g. claude-haiku-5-0)
-    // deterministically beat older sibling names (e.g. claude-haiku-4-5) when
+    // descending as a tiebreaker so newer-named variants (e.g. claude-sonnet-5-0)
+    // deterministically beat older sibling names (e.g. claude-sonnet-4-6) when
     // neither carries a date suffix.
     candidates.sort((a, b) => {
       const dateDelta = extractModelDate(b.id) - extractModelDate(a.id);
@@ -374,7 +384,7 @@ export function selectDefaultModel(provider: ProviderName, models: ModelInfo[]):
     return candidates[0].id;
   }
 
-  return PROVIDERS[provider].defaultModel;
+  return BALANCED_ANCHORS[provider] || PROVIDERS[provider].defaultModel;
 }
 
 export async function getDefaultModel(provider: ProviderName): Promise<string> {

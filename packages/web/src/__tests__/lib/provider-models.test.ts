@@ -6,28 +6,28 @@ vi.mock("@/lib/providers", () => ({
       name: "Anthropic",
       settingsKey: "anthropic_api_key",
       envVar: "ANTHROPIC_API_KEY",
-      defaultModel: "anthropic/claude-haiku-4-5-20251001",
+      defaultModel: "anthropic/claude-sonnet-4-6",
       placeholder: "sk-ant-...",
     },
     openai: {
       name: "OpenAI",
       settingsKey: "openai_api_key",
       envVar: "OPENAI_API_KEY",
-      defaultModel: "openai/gpt-5.4-mini",
+      defaultModel: "openai/gpt-5.5",
       placeholder: "sk-...",
     },
     google: {
       name: "Google",
       settingsKey: "google_api_key",
       envVar: "GEMINI_API_KEY",
-      defaultModel: "google/gemini-2.5-flash",
+      defaultModel: "google/gemini-2.5-pro",
       placeholder: "AIza...",
     },
     "ollama-cloud": {
       name: "Ollama Cloud",
       settingsKey: "ollama_cloud_api_key",
       envVar: "OLLAMA_CLOUD_API_KEY",
-      defaultModel: "ollama-cloud/gemini-3-flash-preview",
+      defaultModel: "ollama-cloud/qwen3-next:80b",
       placeholder: "sk-...",
     },
     "ollama-local": {
@@ -54,6 +54,7 @@ import {
   fetchOllamaLocalModelsFromUrl,
   extractModelDate,
   isRejectedVariant,
+  selectDefaultModel,
 } from "@/lib/provider-models";
 import { getSetting } from "@/lib/settings";
 
@@ -716,82 +717,82 @@ describe("fetchProviderModels", () => {
 });
 
 describe("selectDefaultModel", () => {
-  it("selects the smallest Anthropic model (haiku pattern)", async () => {
+  it("selects the balanced-tier Anthropic model (sonnet pattern)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
       { id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" },
       { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
       { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
     ];
-    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-4-6");
   });
 
-  it("selects the mini OpenAI model (gpt-*-mini pattern)", async () => {
+  it("selects the balanced-tier OpenAI model (gpt-5+ pattern)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
       { id: "openai/gpt-5.4", name: "gpt-5.4" },
       { id: "openai/gpt-5.4-mini", name: "gpt-5.4-mini" },
       { id: "openai/o1", name: "o1" },
     ];
-    expect(selectDefaultModel("openai", models)).toBe("openai/gpt-5.4-mini");
+    expect(selectDefaultModel("openai", models)).toBe("openai/gpt-5.4");
   });
 
-  it("selects the flash Google model (gemini-*-flash pattern)", async () => {
+  it("selects the pro Google model (gemini-*-pro pattern)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
       { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
       { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
     ];
-    expect(selectDefaultModel("google", models)).toBe("google/gemini-2.5-flash");
+    expect(selectDefaultModel("google", models)).toBe("google/gemini-2.5-pro");
   });
 
-  it("falls back to hardcoded default when all flash candidates are preview versions (ollama)", async () => {
+  it("falls back to BALANCED_ANCHORS when no candidate matches balanced pattern (ollama-cloud)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
       { id: "ollama-cloud/kimi-k2.5", name: "Kimi K2.5" },
       { id: "ollama-cloud/gemini-3-flash-preview", name: "Gemini 3 Flash Preview" },
       { id: "ollama-cloud/qwen3.5:397b", name: "Qwen 3.5 397B" },
     ];
-    expect(selectDefaultModel("ollama-cloud", models)).toBe("ollama-cloud/gemini-3-flash-preview");
+    expect(selectDefaultModel("ollama-cloud", models)).toBe("ollama-cloud/qwen3-next:80b");
   });
 
   it("prefers stable versions over preview versions", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
-      { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
-      { id: "anthropic/claude-haiku-4-5-20251001-preview", name: "Claude Haiku 4.5 Preview" },
+      { id: "anthropic/claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+      { id: "anthropic/claude-sonnet-4-6-preview", name: "Claude Sonnet 4.6 Preview" },
     ];
-    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-4-6");
   });
 
-  it("selects the most recent model when multiple versions match", async () => {
+  it("selects the most recent balanced-tier model when multiple versions match", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
-      { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
-      { id: "anthropic/claude-3-haiku-20240307", name: "Claude 3 Haiku" },
+      { id: "anthropic/claude-sonnet-4-6-20251001", name: "Claude Sonnet 4.6 (Oct)" },
+      { id: "anthropic/claude-sonnet-4-6-20240307", name: "Claude Sonnet 4.6 (Mar)" },
     ];
-    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-4-6-20251001");
   });
 
-  it("selects the most recent model regardless of list order", async () => {
+  it("selects the most recent balanced-tier model regardless of list order", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
-      { id: "anthropic/claude-3-haiku-20240307", name: "Claude 3 Haiku" },
-      { id: "anthropic/claude-haiku-4-5-20251001", name: "Claude Haiku 4.5" },
+      { id: "anthropic/claude-sonnet-4-6-20240307", name: "Claude Sonnet 4.6 (Mar)" },
+      { id: "anthropic/claude-sonnet-4-6-20251001", name: "Claude Sonnet 4.6 (Oct)" },
     ];
-    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-4-6-20251001");
   });
 
-  it("falls back to hardcoded default when no pattern matches", async () => {
+  it("falls back to BALANCED_ANCHORS when no pattern matches", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [{ id: "anthropic/claude-opus-4-7", name: "Claude Opus 4.7" }];
-    // No haiku in the list — falls back to PROVIDERS[provider].defaultModel
-    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
+    // No sonnet in the list — falls back to BALANCED_ANCHORS
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-4-6");
   });
 
-  it("falls back to hardcoded default when model list is empty", async () => {
+  it("falls back to BALANCED_ANCHORS when model list is empty", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
-    expect(selectDefaultModel("openai", [])).toBe("openai/gpt-5.4-mini");
+    expect(selectDefaultModel("openai", [])).toBe("openai/gpt-5.5");
   });
 });
 
@@ -799,38 +800,33 @@ describe("selectDefaultModel — lexikalischer Tiebreaker", () => {
   it("picks lexicographically greater model when dates are equal (both 0)", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
-      { id: "anthropic/claude-haiku-4-5", name: "x" },
-      { id: "anthropic/claude-haiku-5-0", name: "x" },
+      { id: "anthropic/claude-sonnet-4-5", name: "x" },
+      { id: "anthropic/claude-sonnet-5-0", name: "x" },
     ];
-    // claude-haiku-5-0 > claude-haiku-4-5 lexikalisch → sollte 5-0 gewinnen
-    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-5-0");
+    // claude-sonnet-5-0 > claude-sonnet-4-5 lexikalisch → sollte 5-0 gewinnen
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-5-0");
   });
 
   it("date-suffix still beats no-suffix when both match pattern", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
     const models = [
-      { id: "anthropic/claude-haiku-4-5-20251001", name: "x" },
-      { id: "anthropic/claude-haiku-5-0", name: "x" },
+      { id: "anthropic/claude-sonnet-4-6-20251001", name: "x" },
+      { id: "anthropic/claude-sonnet-5-0", name: "x" },
     ];
-    // 20251001 > 0 → date wins, auch wenn haiku-5-0 lexikalisch größer
-    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
+    // 20251001 > 0 → date wins, auch wenn sonnet-5-0 lexikalisch größer
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-4-6-20251001");
   });
 
-  it("google: flash-lite beats flash lexicographically (temporary — resolved in Phase 2 when pattern switches to pro-only)", async () => {
+  it("google: pro pattern anchored — flash and flash-lite do not match pro pattern", async () => {
     const { selectDefaultModel } = await import("@/lib/provider-models");
-    // Current fast-tier pattern /gemini-.*-flash/ has no $ anchor, so it matches
-    // both flash and flash-lite (flash-lite contains "flash" as a substring).
-    // Lexicographic tiebreaker picks flash-lite over flash since
-    // "-lite" makes the string longer. This is expected behavior with
-    // the current pattern; Phase 2 switches to pro-only which avoids
-    // this class of ambiguity entirely.
+    // Balanced-tier pattern /gemini-[2-9]...-pro/ is anchored, so flash and
+    // flash-lite don't match. Only pro variants are candidates.
     const models = [
       { id: "google/gemini-2.5-flash", name: "x" },
       { id: "google/gemini-2.5-flash-lite", name: "x" },
+      { id: "google/gemini-2.5-pro", name: "x" },
     ];
-    const result = selectDefaultModel("google", models);
-    // Document actual behavior — don't assert which is "better"
-    expect(result).toBe("google/gemini-2.5-flash-lite");
+    expect(selectDefaultModel("google", models)).toBe("google/gemini-2.5-pro");
   });
 });
 
@@ -841,7 +837,7 @@ describe("getDefaultModel", () => {
     vi.mocked(getSetting).mockResolvedValue(null);
   });
 
-  it("returns dynamically selected model from live model list", async () => {
+  it("returns dynamically selected balanced-tier model from live model list", async () => {
     vi.mocked(getSetting).mockImplementation(async (key: string) => {
       if (key === "anthropic_api_key") return "sk-ant-test-key";
       return null;
@@ -862,15 +858,15 @@ describe("getDefaultModel", () => {
 
     const { getDefaultModel } = await import("@/lib/provider-models");
     const model = await getDefaultModel("anthropic");
-    expect(model).toBe("anthropic/claude-haiku-4-5-20251001");
+    expect(model).toBe("anthropic/claude-sonnet-4-6");
   });
 
-  it("falls back to hardcoded default when provider has no API key", async () => {
+  it("falls back to BALANCED_ANCHORS when provider has no API key", async () => {
     vi.mocked(getSetting).mockResolvedValue(null);
 
     const { getDefaultModel } = await import("@/lib/provider-models");
     const model = await getDefaultModel("openai");
-    expect(model).toBe("openai/gpt-5.4-mini");
+    expect(model).toBe("openai/gpt-5.5");
   });
 });
 
@@ -1253,6 +1249,51 @@ describe("extractModelDate", () => {
 
   it("returns 0 when YYYY-MM-DD is not at the end (suffix follows)", () => {
     expect(extractModelDate("openai/gpt-5-mini-2025-08-07-preview")).toBe(0);
+  });
+});
+
+describe("selectDefaultModel — balanced-tier defaults", () => {
+  it("picks Sonnet (not Haiku) for Anthropic", () => {
+    const models = [
+      { id: "anthropic/claude-opus-4-7", name: "Opus" },
+      { id: "anthropic/claude-sonnet-4-6", name: "Sonnet" },
+      { id: "anthropic/claude-haiku-4-5-20251001", name: "Haiku" },
+    ];
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-4-6");
+  });
+
+  it("picks GPT-5 (not gpt-4o-mini) for OpenAI", () => {
+    const models = [
+      { id: "openai/gpt-4o-mini", name: "x" },
+      { id: "openai/gpt-4o-mini-2024-07-18", name: "x" },
+      { id: "openai/gpt-5", name: "x" },
+      { id: "openai/gpt-5.5", name: "x" },
+      { id: "openai/gpt-5-mini-2025-08-07", name: "x" },
+    ];
+    expect(selectDefaultModel("openai", models)).toBe("openai/gpt-5.5");
+  });
+
+  it("picks Gemini-Pro (not Flash) for Google", () => {
+    const models = [
+      { id: "google/gemini-2.5-pro", name: "x" },
+      { id: "google/gemini-2.5-flash", name: "x" },
+      { id: "google/gemini-2.5-flash-lite", name: "x" },
+    ];
+    expect(selectDefaultModel("google", models)).toBe("google/gemini-2.5-pro");
+  });
+
+  it("rejects -thinking/-preview/-experimental variants", () => {
+    const models = [
+      { id: "openai/gpt-5.5-thinking", name: "x" },
+      { id: "openai/gpt-5.5", name: "x" },
+      { id: "openai/gpt-5.5-preview", name: "x" },
+    ];
+    expect(selectDefaultModel("openai", models)).toBe("openai/gpt-5.5");
+  });
+
+  it("falls back to BALANCED_ANCHORS when no candidate matches", () => {
+    const models = [{ id: "anthropic/claude-experimental-foo", name: "x" }];
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-sonnet-4-6");
   });
 });
 
