@@ -134,7 +134,7 @@ If you need to roll back after an upgrade:
   backup step matters.
 </Aside>
 
-## Upgrading from %%PINCHY_VERSION%% to %%PINCHY_VERSION%%
+## Upgrading from v0.5.3 to %%PINCHY_VERSION%%
 
 ### Breaking changes
 
@@ -148,7 +148,7 @@ Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=%%PINCHY_VERSION%%/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=v0.5.3/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
 docker compose pull && docker compose up -d
 ```
 
@@ -232,7 +232,7 @@ The upgrading guide's "Verify" step is updated to use `/api/version` instead of 
 - **OpenClaw 2026.5.7** (was 2026.5.3) — picked up via `Dockerfile.openclaw` and the bundled `openclaw-node 0.8.0`.
 - **Next.js 16.2.6** (was 16.2.4) — addresses [GHSA-wfc6-r584-vfw7](https://github.com/advisories/GHSA-wfc6-r584-vfw7) and [GHSA-26hh-7cqf-hhc6](https://github.com/advisories/GHSA-26hh-7cqf-hhc6).
 
-## Upgrading from v0.5.2 to %%PINCHY_VERSION%%
+## Upgrading from v0.5.2 to v0.5.3
 
 ### Breaking changes
 
@@ -240,13 +240,13 @@ None.
 
 ### Upgrade notes
 
-%%PINCHY_VERSION%% is a maintenance release focused on chat reliability: the recommended Ollama Cloud reasoning model was swapped after the previous default soft-deprecated upstream, model errors now surface as actionable in-chat bubbles instead of raw HTTP 500s, and the chat layout was restructured so per-agent runtimes survive in-app navigation. File attachments also got a proper preview surface.
+v0.5.3 is a maintenance release focused on chat reliability: the recommended Ollama Cloud reasoning model was swapped after the previous default soft-deprecated upstream, model errors now surface as actionable in-chat bubbles instead of raw HTTP 500s, and the chat layout was restructured so per-agent runtimes survive in-app navigation. File attachments also got a proper preview surface.
 
 Upgrade with the standard flow:
 
 ```bash
 cd /opt/pinchy
-sed -i 's/PINCHY_VERSION=v0.5.2/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
+sed -i 's/PINCHY_VERSION=v0.5.2/PINCHY_VERSION=v0.5.3/' .env
 docker compose pull && docker compose up -d
 ```
 

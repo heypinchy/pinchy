@@ -8,6 +8,11 @@
 # 1. PINCHY_VERSION env var (set by CI)
 # 2. Git tag on current commit (e.g., v0.2.1)
 # 3. packages/web/package.json
+#
+# Each file we touch gets a sibling `.preinject` backup so that
+# restore-placeholders.sh can revert byte-for-byte, including legitimate
+# historical version strings (e.g. the heading "Upgrading from v0.5.3 to
+# %%PINCHY_VERSION%%") that a naive sed-reverse would clobber.
 
 set -e
 
@@ -35,22 +40,32 @@ if [ -z "$TAG" ]; then
   exit 0
 fi
 
-# Count replacements for feedback
-COUNT=$(grep -r '%%PINCHY_VERSION%%' "$DOCS_DIR/src" --include='*.mdx' --include='*.md' --include='*.yml' -l 2>/dev/null | wc -l | tr -d ' ')
+# Find files that actually contain the placeholder — we only touch (and
+# back up) those, so unrelated docs files are left alone.
+PLACEHOLDER_FILES=$(grep -r '%%PINCHY_VERSION%%' "$DOCS_DIR/src" --include='*.mdx' --include='*.md' --include='*.yml' -l 2>/dev/null || true)
 
-if [ "$COUNT" = "0" ]; then
+if [ -z "$PLACEHOLDER_FILES" ]; then
   echo "[docs] No %%PINCHY_VERSION%% placeholders found (version: $TAG)"
   exit 0
 fi
 
-# Save the injected tag so restore-placeholders.sh can reverse it exactly
-echo "$TAG" > "$DOCS_DIR/.injected-version"
+COUNT=0
+echo "$PLACEHOLDER_FILES" | while IFS= read -r f; do
+  [ -z "$f" ] && continue
+  cp "$f" "$f.preinject"
+  # sed in-place with portable .bak suffix (works on both macOS and Linux)
+  sed -i.bak "s/%%PINCHY_VERSION%%/$TAG/g" "$f"
+  rm -f "$f.bak"
+  COUNT=$((COUNT + 1))
+done
 
-# Replace in-place (works on both macOS and Linux)
-find "$DOCS_DIR/src" \( -name '*.mdx' -o -name '*.md' -o -name '*.yml' \) -exec sed -i.bak "s/%%PINCHY_VERSION%%/$TAG/g" {} +
-find "$DOCS_DIR/src" -name '*.bak' -delete
+# Track the tag and the touched file list so restore can revert exactly.
+echo "$TAG" > "$DOCS_DIR/.injected-version"
+echo "$PLACEHOLDER_FILES" > "$DOCS_DIR/.injected-files"
 
 # Regenerate public/cloud-init.yml from the (now version-injected) source
 cp "$DOCS_DIR/src/snippets/cloud-init.yml" "$DOCS_DIR/public/cloud-init.yml"
 
+# Count outside the subshell pipe (which doesn't propagate the counter on POSIX sh)
+COUNT=$(echo "$PLACEHOLDER_FILES" | grep -c '^' || true)
 echo "[docs] Injected $TAG into $COUNT file(s)"
