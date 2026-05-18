@@ -172,7 +172,7 @@ function renderStepWithLink(label: string, link: { text: string; url: string }) 
 }
 
 interface ProviderKeyFormProps {
-  onSuccess: () => void;
+  onSuccess: (provider?: ProviderName) => void;
   submitLabel?: string;
   configuredProviders?: Record<string, { configured: boolean; hint?: string }>;
   defaultProvider?: string | null;
@@ -253,7 +253,7 @@ export function ProviderKeyForm({
       form.reset();
       toast.success(isUrlProvider ? "URL saved" : "API key saved");
       triggerRestart();
-      onSuccess();
+      onSuccess(provider);
     } catch (err) {
       const message = err instanceof Error ? err.message : "Setup failed";
       setValidationStatus("error");
@@ -434,7 +434,7 @@ export function ProviderKeyForm({
                             throw new Error(data.error || "Failed to remove key");
                           }
                           triggerRestart();
-                          onSuccess();
+                          onSuccess(provider!);
                         } catch (err) {
                           toast.error(err instanceof Error ? err.message : "Failed to remove key");
                         } finally {
