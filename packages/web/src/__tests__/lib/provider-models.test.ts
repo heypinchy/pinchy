@@ -52,6 +52,7 @@ import {
   resetCache,
   getOllamaLocalModels,
   fetchOllamaLocalModelsFromUrl,
+  extractModelDate,
 } from "@/lib/provider-models";
 import { getSetting } from "@/lib/settings";
 
@@ -1190,5 +1191,23 @@ describe("fetchOllamaLocalModelsFromUrl timeout behavior", () => {
     // The aborted show call should be skipped, not propagated, leaving
     // an empty model list rather than an unhandled exception.
     expect(result).toEqual([]);
+  });
+});
+
+describe("extractModelDate", () => {
+  it("parses YYYYMMDD suffix (Anthropic format)", () => {
+    expect(extractModelDate("anthropic/claude-haiku-4-5-20251001")).toBe(20251001);
+  });
+
+  it("parses YYYY-MM-DD suffix (OpenAI format)", () => {
+    expect(extractModelDate("openai/gpt-5-mini-2025-08-07")).toBe(20250807);
+  });
+
+  it("returns 0 when no date suffix is present", () => {
+    expect(extractModelDate("openai/gpt-4o-mini")).toBe(0);
+  });
+
+  it("returns 0 for non-date suffixes", () => {
+    expect(extractModelDate("google/gemini-2.5-pro-002")).toBe(0);
   });
 });

@@ -340,9 +340,14 @@ export async function fetchOllamaLocalModelsFromUrl(
 const PREVIEW_PATTERN = /preview/i;
 
 /** Extract the YYYYMMDD date suffix from a model ID, or 0 if none found. */
-function extractModelDate(modelId: string): number {
-  const match = /(\d{8})$/.exec(modelId);
-  return match ? parseInt(match[1], 10) : 0;
+export function extractModelDate(modelId: string): number {
+  const ymd = /(\d{8})$/.exec(modelId);
+  if (ymd) return parseInt(ymd[1], 10);
+
+  const isoDate = /(\d{4})-(\d{2})-(\d{2})$/.exec(modelId);
+  if (isoDate) return parseInt(`${isoDate[1]}${isoDate[2]}${isoDate[3]}`, 10);
+
+  return 0;
 }
 
 export function selectDefaultModel(provider: ProviderName, models: ModelInfo[]): string {
