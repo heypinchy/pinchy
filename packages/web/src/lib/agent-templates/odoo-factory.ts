@@ -56,6 +56,21 @@ export const ODOO_RULES = `## Important Rules
 - Always state the time period of your analysis`;
 
 /**
+ * Shared docstring for read-write Odoo operator templates that call
+ * \`odoo_attach_file\`. Explains the ref-flow contract so the LLM doesn't
+ * fabricate \`"<model>,<id>"\`-style strings (which the plugin rejects with
+ * "Invalid integration reference"). Splice into every template's
+ * \`defaultAgentsMd\` that grants attachment permissions.
+ */
+export const ODOO_ATTACHMENT_REF_FLOW = `## Attaching files to records
+
+Every \`odoo_create\` response includes a \`_pinchy_ref\` field — an opaque token (starting with \`pinchy_ref:v1:\`) that identifies the new record. Pass that value **verbatim** as \`odoo_attach_file.targetRef\`.
+
+The same \`_pinchy_ref\` field appears on every record returned by \`odoo_read\`, so you can attach files to existing records the same way: read the target record, grab its \`_pinchy_ref\`, pass it as \`targetRef\`.
+
+Never construct ref strings yourself. Formats like \`"account.move,37"\`, \`"37"\`, or any other guess will be rejected. The token is encrypted — only the plugin can produce a valid one.`;
+
+/**
  * Derive the minimal Odoo access level that satisfies the given per-model
  * operations. `delete` requires `full`, `create`/`write` require `read-write`,
  * everything else is `read-only`. This is the inverse of

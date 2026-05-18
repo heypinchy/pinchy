@@ -723,12 +723,36 @@ function wrapMany2OneValue(
 
 function wrapReadResult(
   connectionId: string,
+  model: string,
   fields: OdooField[],
   result: unknown,
 ): unknown {
   const byName = new Map(fields.map((field) => [field.name, field]));
   const wrapRecord = (record: OdooRecord): OdooRecord => {
     const wrapped = { ...record };
+
+    // Emit a self-ref so the LLM can chain into tools that consume opaque
+    // references (most notably odoo_attach_file). Symmetric with odoo_create.
+    // Without this, the LLM only sees the raw integer id and tries to
+    // construct ref strings like "<model>,<id>" which decodeRef rejects.
+    // Field name is `_pinchy_ref` (not `ref`) to avoid shadowing the real
+    // Odoo `ref` field that exists on account.move, account.payment, etc.
+    if (typeof record.id === "number") {
+      const label =
+        typeof record.display_name === "string"
+          ? record.display_name
+          : typeof record.name === "string"
+            ? record.name
+            : `${model}#${record.id}`;
+      wrapped._pinchy_ref = encodeRef({
+        integrationType: "odoo",
+        connectionId,
+        model,
+        id: record.id,
+        label,
+      });
+    }
+
     for (const [name, value] of Object.entries(wrapped)) {
       const field = byName.get(name);
       if (field) {
@@ -1158,6 +1182,7 @@ const plugin = {
                   );
                   return wrapReadResult(
                     config.connectionId,
+                    model,
                     modelFields,
                     records,
                   );
@@ -1327,7 +1352,7 @@ const plugin = {
           name: "odoo_create",
           label: "Odoo Create",
           description:
-            "Create a new record in Odoo. Returns the ID of the created record. For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code.",
+            "Create a new record in Odoo. Returns `{id, _pinchy_ref}` — pass the `_pinchy_ref` verbatim to any tool that takes an opaque reference (e.g. `odoo_attach_file.targetRef`). For many2one fields, do not pass raw numeric IDs; use an opaque ref from odoo_read, an exact display name, or a supported lookup such as a country code.",
           parameters: {
             type: "object",
             properties: {
@@ -1347,7 +1372,7 @@ const plugin = {
                 return permissionDenied("create", model);
               }
 
-              const id = await withAuthRetry(
+              const id = (await withAuthRetry(
                 agentId,
                 config,
                 async (client) => {
@@ -1361,10 +1386,35 @@ const plugin = {
                     : (params.values as Record<string, unknown>);
                   return client.create(model, values);
                 },
-              );
+              )) as number;
+
+              // Emit a self-ref so the LLM can chain into tools that consume
+              // opaque references (most importantly odoo_attach_file). Without
+              // this, the LLM only sees the raw integer id and has no way to
+              // construct a valid pinchy_ref:v1:… token. Label fallback chain:
+              // values.name → values.display_name → "<model>#<id>".
+              const valuesObj = isRecord(params.values) ? params.values : {};
+              const label =
+                typeof valuesObj.name === "string"
+                  ? valuesObj.name
+                  : typeof valuesObj.display_name === "string"
+                    ? valuesObj.display_name
+                    : `${model}#${id}`;
+              const selfRef = encodeRef({
+                integrationType: "odoo",
+                connectionId: config.connectionId,
+                model,
+                id,
+                label,
+              });
 
               return {
-                content: [{ type: "text", text: JSON.stringify({ id }) }],
+                content: [
+                  {
+                    type: "text",
+                    text: JSON.stringify({ id, _pinchy_ref: selfRef }),
+                  },
+                ],
               };
             } catch (error) {
               return errorResult(error, {
@@ -1515,7 +1565,7 @@ const plugin = {
               targetRef: {
                 type: "string",
                 description:
-                  "Opaque ref of the Odoo record to attach the file to (e.g. from odoo_read or odoo_create)",
+                  "Opaque reference to the Odoo record to attach the file to. Use the `_pinchy_ref` field returned by `odoo_create` (for a record you just created) or `odoo_read` (for an existing record). The value is an encrypted token starting with `pinchy_ref:v1:` — do NOT construct strings like `\"<model>,<id>\"` or pass raw numeric IDs; the plugin will reject them.",
               },
               filename: {
                 type: "string",

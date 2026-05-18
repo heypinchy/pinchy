@@ -31,7 +31,7 @@ const { mockReadFile, mockStat } = vi.hoisted(() => ({
 vi.mock("../io", () => ({ readFile: mockReadFile, stat: mockStat }));
 
 import { OdooClient } from "odoo-node";
-import { encodeRef } from "../integration-ref";
+import { encodeRef, decodeRef } from "../integration-ref";
 import plugin, { compactType, normalizeFields, sortFieldsByPriority, compactSchema } from "../index";
 
 interface AgentTool {
@@ -684,6 +684,81 @@ describe("odoo_read", () => {
       model: "res.country",
     });
   });
+
+  it("attaches a `_pinchy_ref` self-ref to every returned record", async () => {
+    // Symmetric with odoo_create: every record the LLM sees should have a
+    // ref it can pass to tools like odoo_attach_file. Without this, an
+    // agent that reads an existing account.move and then wants to attach
+    // a receipt to it has no way to obtain the targetRef.
+    mockFields.mockResolvedValue([
+      { name: "id", string: "ID", type: "integer" },
+      { name: "name", string: "Name", type: "char" },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [
+        { id: 11, name: "Partner A" },
+        { id: 22, name: "Partner B" },
+      ],
+      total: 2,
+      limit: 100,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-self-ref-read", {
+      model: "res.partner",
+      filters: [],
+      fields: ["name"],
+    });
+
+    const data = JSON.parse(result.content[0].text) as {
+      records: Array<{ id: number; _pinchy_ref: string }>;
+    };
+    expect(data.records).toHaveLength(2);
+
+    for (const r of data.records) {
+      expect(r._pinchy_ref).toMatch(/^pinchy_ref:v1:/);
+      const decoded = decodeRef(r._pinchy_ref);
+      expect(decoded.model).toBe("res.partner");
+      expect(decoded.id).toBe(r.id);
+    }
+  });
+
+  it("uses display_name as the read-record ref label when present, otherwise name, otherwise `<model>#<id>`", async () => {
+    mockFields.mockResolvedValue([
+      { name: "id", string: "ID", type: "integer" },
+      { name: "name", string: "Name", type: "char" },
+      { name: "display_name", string: "Display Name", type: "char" },
+    ]);
+    mockSearchRead.mockResolvedValue({
+      records: [
+        { id: 1, name: "Plain Name", display_name: "Fancy Display" },
+        { id: 2, name: "Only Name" },
+        { id: 3 },
+      ],
+      total: 3,
+      limit: 100,
+      offset: 0,
+    });
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+
+    const result = await tool.execute("call-label-fallback", {
+      model: "res.partner",
+      filters: [],
+      fields: ["name", "display_name"],
+    });
+
+    const data = JSON.parse(result.content[0].text) as {
+      records: Array<{ id: number; _pinchy_ref: string }>;
+    };
+    expect(decodeRef(data.records[0]._pinchy_ref).label).toBe("Fancy Display");
+    expect(decodeRef(data.records[1]._pinchy_ref).label).toBe("Only Name");
+    expect(decodeRef(data.records[2]._pinchy_ref).label).toBe("res.partner#3");
+  });
 });
 
 describe("odoo_count", () => {
@@ -795,6 +870,86 @@ describe("odoo_create", () => {
       name: "New Partner",
       email: "new@example.com",
     });
+  });
+
+  it("returns a `_pinchy_ref` self-ref alongside the id", async () => {
+    mockCreate.mockResolvedValue(42);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      model: "res.partner",
+      values: { name: "New Partner" },
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(data._pinchy_ref).toBeDefined();
+    expect(typeof data._pinchy_ref).toBe("string");
+    expect(data._pinchy_ref).toMatch(/^pinchy_ref:v1:/);
+
+    const decoded = decodeRef(data._pinchy_ref);
+    expect(decoded).toEqual({
+      integrationType: "odoo",
+      connectionId: agentConfig.connectionId,
+      model: "res.partner",
+      id: 42,
+      label: "New Partner",
+    });
+  });
+
+  it("falls back to values.display_name as the ref label when values.name is missing", async () => {
+    mockCreate.mockResolvedValue(7);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      model: "res.partner",
+      values: { display_name: "Display Only" },
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(decodeRef(data._pinchy_ref).label).toBe("Display Only");
+  });
+
+  it("falls back to `<model>#<id>` as the ref label when no name is provided", async () => {
+    mockCreate.mockResolvedValue(9);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_create", agentId)!;
+
+    const result = await tool.execute("call-1", {
+      model: "res.partner",
+      // No name / display_name in values — exercise the fallback path.
+      values: { email: "x@example.com" },
+    });
+
+    const data = JSON.parse(result.content[0].text);
+    expect(decodeRef(data._pinchy_ref).label).toBe("res.partner#9");
+  });
+
+  it("ref returned by odoo_create is accepted as targetRef by odoo_attach_file", async () => {
+    // Regression for the v0.5.4 staging bug: an LLM creating a record and
+    // chaining odoo_attach_file with the returned ref must succeed without
+    // any "Invalid integration reference" rejection. This guards the
+    // round-trip surface — encode in odoo_create, decode in odoo_attach_file.
+    mockCreate.mockResolvedValue(99);
+
+    const tools = createApi({ [agentId]: agentConfig });
+    const create = findTool(tools, "odoo_create", agentId)!;
+    const createRes = await create.execute("call-1", {
+      model: "res.partner",
+      values: { name: "Round-Trip" },
+    });
+    const { _pinchy_ref: ref } = JSON.parse(createRes.content[0].text) as {
+      _pinchy_ref: string;
+    };
+
+    expect(() => decodeRef(ref)).not.toThrow();
+    const decoded = decodeRef(ref);
+    expect(decoded.model).toBe("res.partner");
+    expect(decoded.id).toBe(99);
   });
 
   it("resolves country_id by exact country name instead of using the first same-letter country", async () => {
@@ -1702,6 +1857,53 @@ describe("odoo_attach_file", () => {
 
       expect(result.isError).toBeFalsy();
       expect(mockCreate).toHaveBeenCalled();
+    });
+  });
+
+  describe("odoo_create → odoo_attach_file end-to-end roundtrip", () => {
+    // Production-relevant chain: agent creates a record, then attaches a
+    // file to it using the ref returned by create. This regression-tested
+    // the v0.5.4 staging bug where odoo_create's raw {id} response left
+    // the LLM no path to a valid targetRef.
+    it("chains odoo_create → odoo_attach_file via _pinchy_ref without manual ref construction", async () => {
+      mockCreate
+        .mockResolvedValueOnce(123) // odoo_create returns id 123 for account.move
+        .mockResolvedValueOnce(456); // odoo_attach_file create for ir.attachment
+
+      const tools = createApi({ [attachAgentId]: attachAgentConfig });
+      const createTool = findTool(tools, "odoo_create", attachAgentId)!;
+      const attachTool = findTool(tools, "odoo_attach_file", attachAgentId)!;
+
+      // 1. Agent creates an account.move (vendor bill draft).
+      const createResult = await createTool.execute("call-1", {
+        model: "account.move",
+        values: { move_type: "in_invoice", invoice_date: "2026-01-15" },
+      });
+      const createData = JSON.parse(createResult.content[0].text) as {
+        id: number;
+        _pinchy_ref: string;
+      };
+      expect(createData.id).toBe(123);
+      expect(createData._pinchy_ref).toMatch(/^pinchy_ref:v1:/);
+
+      // 2. Agent chains the _pinchy_ref directly into odoo_attach_file —
+      //    no string construction, no raw ID guessing, no "<model>,<id>"
+      //    notation. Just pass the opaque token verbatim.
+      mockReadFile.mockResolvedValue(Buffer.from("invoice PDF bytes"));
+      const attachResult = await attachTool.execute("call-2", {
+        targetRef: createData._pinchy_ref,
+        filename: "invoice.pdf",
+      });
+
+      expect(attachResult.isError).toBeFalsy();
+      // ir.attachment was created against the same model+id from create
+      expect(mockCreate).toHaveBeenLastCalledWith("ir.attachment", {
+        res_model: "account.move",
+        res_id: 123,
+        name: "invoice.pdf",
+        datas: expect.any(String),
+        mimetype: "application/pdf",
+      });
     });
   });
 });
