@@ -101,7 +101,7 @@ interface OdooCredentials {
   apiKey: string;
 }
 
-interface OdooField {
+export interface OdooField {
   name: string;
   string?: string;
   type?: string;
@@ -252,6 +252,25 @@ function unquoteFieldKeysDeep(value: unknown): unknown {
 
 function unquoteFieldKeys(values: Record<string, unknown>): Record<string, unknown> {
   return unquoteFieldKeysDeep(values) as Record<string, unknown>;
+}
+
+const TYPE_ABBREVIATIONS: Record<string, string> = {
+  integer: "int",
+  char: "char",
+  text: "text",
+  float: "float",
+  monetary: "float",
+  boolean: "bool",
+  date: "date",
+  datetime: "datetime",
+  binary: "binary",
+  html: "html",
+  selection: "selection",
+};
+
+export function compactType(field: { name: string; type: string | undefined }): string {
+  const t = TYPE_ABBREVIATIONS[field.type ?? ""];
+  return t ?? (field.type ?? "unknown");
 }
 
 function getSearchReadRecords(result: unknown): OdooRecord[] {

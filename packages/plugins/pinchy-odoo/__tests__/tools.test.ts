@@ -31,7 +31,7 @@ vi.mock("../io", () => ({ readFile: mockReadFile, stat: mockStat }));
 
 import { OdooClient } from "odoo-node";
 import { encodeRef } from "../integration-ref";
-import plugin from "../index";
+import plugin, { compactType, type OdooField } from "../index";
 
 interface AgentTool {
   name: string;
@@ -117,6 +117,26 @@ const agentConfig = {
     "account.move": "Journal Entry",
   },
 };
+
+describe("compactType", () => {
+  it("maps primitive types to short tokens", () => {
+    expect(compactType({ name: "id", type: "integer" })).toBe("int");
+    expect(compactType({ name: "name", type: "char" })).toBe("char");
+    expect(compactType({ name: "amount", type: "float" })).toBe("float");
+    expect(compactType({ name: "active", type: "boolean" })).toBe("bool");
+    expect(compactType({ name: "notes", type: "text" })).toBe("text");
+    expect(compactType({ name: "date", type: "date" })).toBe("date");
+    expect(compactType({ name: "ts", type: "datetime" })).toBe("datetime");
+  });
+
+  it("falls back to the raw type string for known-but-unshortened types", () => {
+    expect(compactType({ name: "weird", type: "binary" })).toBe("binary");
+  });
+
+  it("returns 'unknown' for undefined type", () => {
+    expect(compactType({ name: "wtf", type: undefined as unknown as string })).toBe("unknown");
+  });
+});
 
 describe("tool registration", () => {
   it("registers all 8 tools", () => {
