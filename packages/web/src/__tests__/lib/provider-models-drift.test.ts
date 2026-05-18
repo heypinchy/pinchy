@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { selectDefaultModel } from "@/lib/provider-models";
+import { selectDefaultModel, BALANCED_PATTERNS } from "@/lib/provider-models";
+import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 
 describe("balanced default — drift resistance", () => {
   describe("new date-suffix models win", () => {
@@ -76,6 +77,20 @@ describe("balanced default — drift resistance", () => {
       const noMatch = [{ id: `${provider}/something-totally-unexpected`, name: "x" }];
       expect(selectDefaultModel(provider, noMatch)).toBe(anchor);
     });
+  });
+
+  describe("BALANCED_ANCHORS match their own BALANCED_PATTERNS", () => {
+    // If an anchor doesn't match its provider's pattern, the anchor would
+    // never be selected from a live model list — only from the fallback
+    // branch. That makes the anchor a silent dead letter rather than the
+    // canonical balanced default. Lock the invariant down.
+    it.each([["anthropic"], ["openai"], ["google"], ["ollama-cloud"]] as const)(
+      "%s: anchor passes its own pattern",
+      (provider) => {
+        const anchor = BALANCED_ANCHORS[provider];
+        expect(BALANCED_PATTERNS[provider].test(anchor)).toBe(true);
+      }
+    );
   });
 
   describe("REJECT_PATTERN coverage", () => {

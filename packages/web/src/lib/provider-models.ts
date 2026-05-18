@@ -69,10 +69,6 @@ const FALLBACK_MODELS: Record<ProviderName, ModelInfo[]> = {
     { id: "openai/gpt-5.4", name: "GPT-5.4" },
     { id: "openai/gpt-5.4-mini", name: "GPT-5.4 Mini" },
   ],
-  // Order matters for selectDefaultModel tie-breaking when no model carries a
-  // YYYYMMDD date suffix (current state for the Gemini 2.5 family). The default
-  // pattern is /gemini-.*-flash/, so flash and flash-lite both match — first
-  // match wins.
   google: [
     { id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro" },
     { id: "google/gemini-2.5-flash", name: "Gemini 2.5 Flash" },
@@ -170,7 +166,7 @@ async function fetchModelsForProvider(
   return config.transform(data);
 }
 
-const BALANCED_PATTERNS: Record<ProviderName, RegExp> = {
+export const BALANCED_PATTERNS: Record<ProviderName, RegExp> = {
   anthropic: /^anthropic\/claude-sonnet-\d+-\d+(?:-\d{8})?$/,
   openai: /^openai\/gpt-([5-9]|\d{2,})(\.\d+)?(?:-\d{4}-\d{2}-\d{2})?$/,
   google: /^google\/gemini-[2-9](?:\.\d+)?-pro(?:-\d{3})?$/,
@@ -178,8 +174,8 @@ const BALANCED_PATTERNS: Record<ProviderName, RegExp> = {
   "ollama-local": /.*/,
 };
 
-export { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
+export { BALANCED_ANCHORS };
 
 function parseParameterSize(size: string): number {
   const match = size.match(/^([\d.]+)([BMK]?)$/i);
