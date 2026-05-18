@@ -9,7 +9,7 @@ import { CheckCircle2 } from "lucide-react";
 import { ProviderKeyForm } from "@/components/provider-key-form";
 import { SmithersModelInfoLine } from "@/components/setup/smithers-model-info-line";
 import { PROVIDERS, type ProviderName } from "@/lib/providers";
-import { BALANCED_ANCHORS } from "@/lib/provider-models";
+import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 
 export default function SetupProviderPage() {
   const router = useRouter();

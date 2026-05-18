@@ -178,13 +178,8 @@ const BALANCED_PATTERNS: Record<ProviderName, RegExp> = {
   "ollama-local": /.*/,
 };
 
-export const BALANCED_ANCHORS: Record<ProviderName, string> = {
-  anthropic: "anthropic/claude-sonnet-4-6",
-  openai: "openai/gpt-5.5",
-  google: "google/gemini-2.5-pro",
-  "ollama-cloud": "ollama-cloud/qwen3-next:80b",
-  "ollama-local": "",
-};
+export { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
+import { BALANCED_ANCHORS } from "@/lib/provider-model-constants";
 
 function parseParameterSize(size: string): number {
   const match = size.match(/^([\d.]+)([BMK]?)$/i);
