@@ -861,7 +861,7 @@ describe("getDefaultModel", () => {
     expect(model).toBe("anthropic/claude-sonnet-4-6");
   });
 
-  it("falls back to BALANCED_ANCHORS when provider has no API key", async () => {
+  it("returns provider default model when no models are available", async () => {
     vi.mocked(getSetting).mockResolvedValue(null);
 
     const { getDefaultModel } = await import("@/lib/provider-models");
