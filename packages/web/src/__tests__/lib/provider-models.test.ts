@@ -815,6 +815,23 @@ describe("selectDefaultModel — lexikalischer Tiebreaker", () => {
     // 20251001 > 0 → date wins, auch wenn haiku-5-0 lexikalisch größer
     expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
   });
+
+  it("google: flash-lite beats flash lexicographically (temporary — resolved in Phase 2 when pattern switches to pro-only)", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    // Current fast-tier pattern /gemini-.*-flash/ has no $ anchor, so it matches
+    // both flash and flash-lite (flash-lite contains "flash" as a substring).
+    // Lexicographic tiebreaker picks flash-lite over flash since
+    // "-lite" makes the string longer. This is expected behavior with
+    // the current pattern; Phase 2 switches to pro-only which avoids
+    // this class of ambiguity entirely.
+    const models = [
+      { id: "google/gemini-2.5-flash", name: "x" },
+      { id: "google/gemini-2.5-flash-lite", name: "x" },
+    ];
+    const result = selectDefaultModel("google", models);
+    // Document actual behavior — don't assert which is "better"
+    expect(result).toBe("google/gemini-2.5-flash-lite");
+  });
 });
 
 describe("getDefaultModel", () => {
