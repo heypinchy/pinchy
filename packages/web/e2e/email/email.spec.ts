@@ -203,20 +203,26 @@ test.describe("Email dispatch probe (pinchy-email plugin coverage)", () => {
       throw new Error(`Agent creation failed: ${String(createRes.status)}`);
     dispatchAgentId = ((await createRes.json()) as { id: string }).id;
 
-    // 6. Grant email read + send permissions → triggers regenerateOpenClawConfig()
-    //    which now reads default_provider=ollama-local and emits the Ollama
-    //    provider block. We grant `send` here too so the send round-trip test
-    //    below doesn't have to do a second permissions edit (each edit triggers
-    //    its own config-apply rate-limit cost on OC).
+    // 6. Grant email read + send permissions in one PUT.
+    //
+    // Main expanded the test in #355 to grant `send` here too so the send
+    // round-trip below doesn't pay a second config-apply rate-limit cost
+    // (each edit triggers its own regen on OC). PR #298 changed the PUT body
+    // to the discriminated-union shape — email/Google connections share the
+    // agentConnectionPermissions table with Odoo, so both entries ride the
+    // `kind: "odoo"` discriminator.
     const permRes = await pinchyPut(
       `/api/agents/${dispatchAgentId}/integrations`,
-      {
-        connectionId: dispatchConnectionId,
-        permissions: [
-          { model: "email", operation: "read" },
-          { model: "email", operation: "send" },
-        ],
-      },
+      [
+        {
+          kind: "odoo",
+          connectionId: dispatchConnectionId,
+          entries: [
+            { model: "email", operation: "read" },
+            { model: "email", operation: "send" },
+          ],
+        },
+      ],
       dispatchCookie
     );
     if (permRes.status !== 200)
