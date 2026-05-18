@@ -158,6 +158,38 @@ describe("compactType", () => {
   it("falls back to '<type>:?' if relation is missing", () => {
     expect(compactType({ name: "x", type: "many2one" })).toBe("m2o:?");
   });
+
+  it("encodes selection as 'selection:<a>|<b>|<c>'", () => {
+    expect(
+      compactType({
+        name: "state",
+        type: "selection",
+        selection: [
+          ["draft", "Draft"],
+          ["posted", "Posted"],
+          ["cancel", "Cancelled"],
+        ],
+      })
+    ).toBe("selection:draft|posted|cancel");
+  });
+
+  it("handles selection with one option", () => {
+    expect(
+      compactType({
+        name: "color",
+        type: "selection",
+        selection: [["red", "Red"]],
+      })
+    ).toBe("selection:red");
+  });
+
+  it("handles selection without options (empty array)", () => {
+    expect(compactType({ name: "x", type: "selection", selection: [] })).toBe("selection:");
+  });
+
+  it("handles selection without options (undefined)", () => {
+    expect(compactType({ name: "x", type: "selection" })).toBe("selection:");
+  });
 });
 
 describe("tool registration", () => {

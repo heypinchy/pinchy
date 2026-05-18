@@ -106,6 +106,7 @@ export interface OdooField {
   string?: string;
   type?: string;
   relation?: string;
+  selection?: Array<[string, string]>;
 }
 
 type OdooRecord = Record<string, unknown>;
@@ -268,10 +269,18 @@ const TYPE_ABBREVIATIONS: Record<string, string> = {
   selection: "selection",
 };
 
+const MAX_SELECTION_OPTIONS = 20;
+
 export function compactType(field: OdooField): string {
   if (field.type === "many2one") return `m2o:${field.relation ?? "?"}`;
   if (field.type === "one2many") return `o2m:${field.relation ?? "?"}`;
   if (field.type === "many2many") return `m2m:${field.relation ?? "?"}`;
+  if (field.type === "selection") {
+    const all = field.selection ?? [];
+    const opts = all.slice(0, MAX_SELECTION_OPTIONS).map(([key]) => key);
+    const tail = all.length > MAX_SELECTION_OPTIONS ? "|..." : "";
+    return `selection:${opts.join("|")}${tail}`;
+  }
   const t = TYPE_ABBREVIATIONS[field.type ?? ""];
   return t ?? (field.type ?? "unknown");
 }
