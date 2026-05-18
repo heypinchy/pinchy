@@ -398,11 +398,42 @@ describe("compactSchema", () => {
   });
 });
 
-describe("tool registration", () => {
-  it("registers all 8 tools", () => {
+describe("odoo_list_models", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns only models with read permission", async () => {
     const tools = createApi({ [agentId]: agentConfig });
-    expect(tools).toHaveLength(8);
+    const tool = findTool(tools, "odoo_list_models", agentId)!;
+    expect(tool).toBeTruthy();
+
+    const result = await tool.execute("call-1", {});
+    const data = JSON.parse(result.content[0].text) as { models: Array<{ model: string; name: string; operations: string[] }> };
+    expect(data.models).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ model: "res.partner" }),
+      ])
+    );
+    expect(data.models.length).toBeGreaterThan(0);
+  });
+
+  it("returns empty when agent has no permissions", async () => {
+    const tools = createApi({ [agentId]: { ...agentConfig, permissions: {} } });
+    const tool = findTool(tools, "odoo_list_models", agentId)!;
+    expect(tool).toBeTruthy();
+    const result = await tool.execute("call-1", {});
+    const data = JSON.parse(result.content[0].text) as { models: unknown[] };
+    expect(data.models).toEqual([]);
+  });
+});
+
+describe("tool registration", () => {
+  it("registers all 9 tools", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    expect(tools).toHaveLength(9);
     const names = tools.map((t) => t.name);
+    expect(names).toContain("odoo_list_models");
     expect(names).toContain("odoo_schema");
     expect(names).toContain("odoo_read");
     expect(names).toContain("odoo_count");

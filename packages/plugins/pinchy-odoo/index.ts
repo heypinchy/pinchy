@@ -860,7 +860,46 @@ const plugin = {
       }
     }
 
-    // 1. odoo_schema
+    // 1. odoo_list_models
+    api.registerTool(
+      (ctx: PluginToolContext) => {
+        const agentId = ctx.agentId;
+        if (!agentId) return null;
+        const config = getAgentConfig(agentConfigs, agentId);
+        if (!config) return null;
+
+        return {
+          name: "odoo_list_models",
+          label: "Odoo List Models",
+          description:
+            "Discover which Odoo models this agent can access. Returns a compact list of {model, name, operations}. Call this first when you don't know which model to query.",
+          parameters: {
+            type: "object",
+            properties: {},
+          },
+          async execute() {
+            try {
+              const names = config.modelNames ?? {};
+              const models = Object.entries(config.permissions).map(
+                ([model, ops]) => ({
+                  model,
+                  name: names[model] ?? model,
+                  operations: ops,
+                }),
+              );
+              return {
+                content: [{ type: "text", text: JSON.stringify({ models }) }],
+              };
+            } catch (error) {
+              return errorResult(error);
+            }
+          },
+        };
+      },
+      { name: "odoo_list_models" },
+    );
+
+    // 2. odoo_schema
     api.registerTool(
       (ctx: PluginToolContext) => {
         const agentId = ctx.agentId;
