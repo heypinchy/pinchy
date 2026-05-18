@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { OdooField } from "../index";
 
 // Mock odoo-node before importing the plugin
 const mockSearchRead = vi.fn();
@@ -31,7 +32,7 @@ vi.mock("../io", () => ({ readFile: mockReadFile, stat: mockStat }));
 
 import { OdooClient } from "odoo-node";
 import { encodeRef } from "../integration-ref";
-import plugin, { compactType, normalizeFields, type OdooField } from "../index";
+import plugin, { compactType, normalizeFields, sortFieldsByPriority, compactSchema } from "../index";
 
 interface AgentTool {
   name: string;
@@ -232,6 +233,141 @@ describe("normalizeFields", () => {
       ["draft", "Draft"],
       ["posted", "Posted"],
     ]);
+  });
+});
+
+describe("sortFieldsByPriority", () => {
+  it("places COMMON_FIELDS first in canonical order, then alphabetical", () => {
+    const input: OdooField[] = [
+      { name: "x_custom_field", type: "char" },
+      { name: "amount_total", type: "float" },
+      { name: "id", type: "integer" },
+      { name: "partner_id", type: "many2one", relation: "res.partner" },
+      { name: "active", type: "boolean" },
+      { name: "z_alpha_last", type: "char" },
+      { name: "name", type: "char" },
+    ];
+    const sorted = sortFieldsByPriority(input);
+    expect(sorted.map((f) => f.name)).toEqual([
+      "id",
+      "name",
+      "active",
+      "partner_id",
+      "amount_total",
+      "x_custom_field",
+      "z_alpha_last",
+    ]);
+  });
+
+  it("is a pure function — does not mutate input", () => {
+    const input: OdooField[] = [
+      { name: "b", type: "char" },
+      { name: "a", type: "char" },
+    ];
+    sortFieldsByPriority(input);
+    expect(input.map((f) => f.name)).toEqual(["b", "a"]);
+  });
+});
+
+describe("compactSchema", () => {
+  const baseFields: OdooField[] = [
+    { name: "id", type: "integer" },
+    { name: "name", type: "char" },
+    { name: "partner_id", type: "many2one", relation: "res.partner" },
+  ];
+
+  it("returns compact field map keyed by name with short type codes", () => {
+    const out = compactSchema(baseFields, { limit: 40, verbose: false });
+    expect(out.fields).toEqual({
+      id: "int",
+      name: "char",
+      partner_id: "m2o:res.partner",
+    });
+  });
+
+  it("includes _meta with total/returned/truncated", () => {
+    const out = compactSchema(baseFields, { limit: 40, verbose: false });
+    expect(out._meta).toEqual({
+      total: 3,
+      returned: 3,
+      truncated: false,
+    });
+  });
+
+  it("with fields:[a,b] returns only those (ignoring limit)", () => {
+    const fs: OdooField[] = [
+      { name: "a", type: "char" },
+      { name: "b", type: "char" },
+      { name: "c", type: "char" },
+    ];
+    const out = compactSchema(fs, { fields: ["a", "b"], limit: 1, verbose: false });
+    expect(Object.keys(out.fields)).toEqual(["a", "b"]);
+    expect(out._meta.returned).toBe(2);
+    expect(out._meta.truncated).toBe(false);
+  });
+
+  it("with fields:[unknown] returns empty fields + hint", () => {
+    const fs: OdooField[] = [{ name: "a", type: "char" }];
+    const out = compactSchema(fs, { fields: ["does_not_exist"], limit: 40, verbose: false });
+    expect(out.fields).toEqual({});
+    expect(out._meta.returned).toBe(0);
+    expect(out._meta.hint).toMatch(/no requested fields/i);
+  });
+
+  it("with fields:['__all__'] returns every field, no limit", () => {
+    const fs: OdooField[] = Array.from({ length: 50 }, (_, i) => ({
+      name: `f${i}`,
+      type: "char" as const,
+    }));
+    const out = compactSchema(fs, { fields: ["__all__"], limit: 40, verbose: false });
+    expect(out._meta.returned).toBe(50);
+    expect(out._meta.truncated).toBe(false);
+  });
+
+  it("emits truncation hint when truncated", () => {
+    const fs: OdooField[] = Array.from({ length: 50 }, (_, i) => ({
+      name: `f${i}`,
+      type: "char" as const,
+    }));
+    const out = compactSchema(fs, { limit: 10, verbose: false });
+    expect(out._meta.truncated).toBe(true);
+    expect(out._meta.returned).toBe(10);
+    expect(out._meta.hint).toMatch(/__all__/);
+  });
+
+  it("verbose:true returns full Odoo metadata (readonly/required/string)", () => {
+    const fs: OdooField[] = [
+      {
+        name: "name",
+        type: "char",
+        readonly: false,
+        required: true,
+        string: "Name",
+      },
+    ];
+    const out = compactSchema(fs, { limit: 40, verbose: true });
+    expect(out.fields).toEqual({
+      name: {
+        type: "char",
+        required: true,
+        readonly: false,
+        string: "Name",
+      },
+    });
+  });
+
+  it("verbose:true does not omit falsy flags", () => {
+    const fs: OdooField[] = [
+      {
+        name: "id",
+        type: "integer",
+        readonly: true,
+        required: false,
+        string: "ID",
+      },
+    ];
+    const out = compactSchema(fs, { limit: 40, verbose: true });
+    expect((out.fields.id as { readonly: boolean }).readonly).toBe(true);
   });
 });
 
