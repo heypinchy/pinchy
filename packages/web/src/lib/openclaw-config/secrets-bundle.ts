@@ -1,5 +1,6 @@
 import { readSecretsFile, type SecretsBundle } from "@/lib/openclaw-secrets";
 import { getOrCreateGatewayToken } from "@/lib/gateway-token-source";
+import { getOrCreatePluginSecret } from "@/lib/plugin-secrets-source";
 import { PROVIDERS } from "@/lib/providers";
 import { getSetting } from "@/lib/settings";
 
@@ -86,6 +87,35 @@ export async function readGatewayTokenFromConfig(
 }
 
 /**
+ * Collect per-plugin shared secrets that pinchy-* plugins need at runtime
+ * (Pattern A-prime in the secrets matrix — not OC-resolved SecretRefs because
+ * OC 2026.4.x doesn't walk SecretRefs in arbitrary plugin config trees, but
+ * also not Pattern B because these aren't customer integration credentials).
+ *
+ * Each entry is generated once and persisted in the settings DB via
+ * `getOrCreatePluginSecret`, then materialised into `secrets.json` so the
+ * OC-side plugin can read it from the shared volume.
+ *
+ * Current entries:
+ *   - pinchy-odoo.refTokenKey — AES-256-GCM key for encrypting opaque
+ *     integration-ref tokens (replaces the broken /app/secrets fallback that
+ *     never existed in the OC container).
+ *
+ * Add new plugin secrets here whenever a plugin needs a symmetric key that
+ * must match between pinchy-web and the OC-side plugin code.
+ */
+export async function collectPluginSecrets(): Promise<{
+  plugins: Record<string, Record<string, string>>;
+}> {
+  const refTokenKey = await getOrCreatePluginSecret("pinchy-odoo:ref-token-key");
+  return {
+    plugins: {
+      "pinchy-odoo": { refTokenKey },
+    },
+  };
+}
+
+/**
  * Assemble the runtime SecretsBundle written to secrets.json.
  *
  * Each input is collected upstream during config building:
@@ -93,16 +123,19 @@ export async function readGatewayTokenFromConfig(
  *   - providers:    Pattern A LLM-provider keys (collectProviderSecrets)
  *   - integrations: Pattern B placeholder (live integrations fetch via
  *                   /api/internal/integrations/.../credentials)
+ *   - plugins:      Per-plugin shared secrets (collectPluginSecrets)
  *   - env:          Pattern A resolved env-var values (collectProviderSecrets)
  */
 export function buildSecretsBundle(parts: {
   gateway: SecretsBundle["gateway"];
   providers: SecretsBundle["providers"];
   integrations: SecretsBundle["integrations"];
+  plugins?: SecretsBundle["plugins"];
 }): SecretsBundle {
   return {
     gateway: parts.gateway,
     providers: parts.providers,
     integrations: parts.integrations,
+    ...(parts.plugins ? { plugins: parts.plugins } : {}),
   };
 }

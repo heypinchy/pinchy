@@ -23,6 +23,7 @@ import { configsAreEquivalentUpToOpenClawMetadata } from "./normalize";
 import { readExistingConfig, pushConfigInBackground } from "./write";
 import {
   buildSecretsBundle,
+  collectPluginSecrets,
   collectProviderSecrets,
   readGatewayTokenFromConfig,
 } from "./secrets-bundle";
@@ -1050,10 +1051,12 @@ export async function regenerateOpenClawConfig() {
 
   // Always write secrets.json — tmpfs is wiped on container restart, secrets.json
   // must be present for OpenClaw to resolve SecretRef pointers (provider API keys etc.).
+  const { plugins: pluginSecrets } = await collectPluginSecrets();
   const secretsBundle = buildSecretsBundle({
     gateway: gatewaySecret,
     providers: providerSecrets,
     integrations: integrationSecrets,
+    plugins: pluginSecrets,
   });
   writeSecretsFile(secretsBundle);
 

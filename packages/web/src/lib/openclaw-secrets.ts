@@ -18,6 +18,14 @@ export type SecretsBundle = {
   providers?: Record<string, { apiKey: string }>;
   integrations?: Record<string, Record<string, string>>;
   telegram?: Record<string, { botToken: string }>;
+  /**
+   * Per-plugin shared secrets. Pinchy generates and persists each entry in the
+   * settings DB and materialises it here so OC-side plugins can read it from
+   * the shared `/openclaw-secrets/secrets.json` file at runtime. Use for
+   * symmetric keys / HMAC secrets that need to be the same in pinchy-web and
+   * a pinchy-* plugin (e.g. `pinchy-odoo` integration-ref encryption).
+   */
+  plugins?: Record<string, Record<string, string>>;
 };
 
 export function writeSecretsFile(bundle: SecretsBundle): void {

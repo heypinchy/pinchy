@@ -1,10 +1,11 @@
 import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
-import { existsSync, readFileSync, writeFileSync } from "fs";
-import { join } from "path";
+import { existsSync, readFileSync } from "fs";
 
 const PREFIX = "pinchy_ref:v1:";
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 12;
+const DEFAULT_SECRETS_PATH = "/openclaw-secrets/secrets.json";
+const HEX_64 = /^[0-9a-fA-F]{64}$/;
 
 export interface IntegrationRefPayload {
   integrationType: "odoo";
@@ -15,6 +16,14 @@ export interface IntegrationRefPayload {
 }
 
 let cachedKey: Buffer | null = null;
+
+/**
+ * Test-only: clears the in-memory cached key so a test can change the source
+ * (env var, secrets file) and re-derive on the next encode/decode call.
+ */
+export function _resetKeyCacheForTest(): void {
+  cachedKey = null;
+}
 
 function isPayload(value: unknown): value is IntegrationRefPayload {
   if (!value || typeof value !== "object") return false;
@@ -32,52 +41,67 @@ function isPayload(value: unknown): value is IntegrationRefPayload {
   );
 }
 
-function readKeyFile(keyPath: string): Buffer {
-  const fileKey = readFileSync(keyPath, "utf-8").trim();
-  if (fileKey.length !== 64 || !/^[0-9a-fA-F]+$/.test(fileKey)) {
-    throw new Error(`Invalid secret in ${keyPath}: expected 64 hex characters`);
+function readKeyFromSecretsBundle(): string | null {
+  const path = process.env.OPENCLAW_SECRETS_PATH || DEFAULT_SECRETS_PATH;
+  if (!existsSync(path)) return null;
+  try {
+    const raw = readFileSync(path, "utf-8");
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object") return null;
+    const plugins = (parsed as Record<string, unknown>).plugins;
+    if (!plugins || typeof plugins !== "object") return null;
+    const odooPlugin = (plugins as Record<string, unknown>)["pinchy-odoo"];
+    if (!odooPlugin || typeof odooPlugin !== "object") return null;
+    const key = (odooPlugin as Record<string, unknown>).refTokenKey;
+    return typeof key === "string" ? key : null;
+  } catch {
+    return null;
   }
-  return Buffer.from(fileKey, "hex");
 }
 
+/**
+ * Resolve the integration-ref encryption key.
+ *
+ * Source priority:
+ *   1. `PINCHY_REF_TOKEN_KEY` env var (tests, local dev, override)
+ *   2. `plugins["pinchy-odoo"].refTokenKey` in the shared secrets bundle
+ *      at `/openclaw-secrets/secrets.json` (production — written by
+ *      pinchy-web's `collectPluginSecrets()` on `regenerateOpenClawConfig()`).
+ *
+ * No file-system fallback: the plugin no longer auto-generates a key into
+ * a local directory. Earlier versions did, but that path silently broke in
+ * Docker deployments where `/app/secrets` doesn't exist in the OC
+ * container, and it produced different keys per container instance — both
+ * encryption fails. Pinchy is now the single source of truth.
+ */
 function getKey(): Buffer {
   if (cachedKey) return cachedKey;
 
   const envKey = process.env.PINCHY_REF_TOKEN_KEY;
   if (envKey) {
-    if (envKey.length !== 64 || !/^[0-9a-fA-F]+$/.test(envKey)) {
+    if (!HEX_64.test(envKey)) {
       throw new Error("PINCHY_REF_TOKEN_KEY must be 64 hex characters");
     }
     cachedKey = Buffer.from(envKey, "hex");
     return cachedKey;
   }
 
-  const keyDir = process.env.ENCRYPTION_KEY_DIR || "/app/secrets";
-  const keyPath = join(keyDir, ".integration_ref_key");
-  if (existsSync(keyPath)) {
-    cachedKey = readKeyFile(keyPath);
-    return cachedKey;
-  }
-
-  if (existsSync(keyDir)) {
-    const newKey = randomBytes(32).toString("hex");
-    try {
-      writeFileSync(keyPath, newKey, { mode: 0o600, flag: "wx" });
-      cachedKey = Buffer.from(newKey, "hex");
-    } catch (error) {
-      const code =
-        error && typeof error === "object" && "code" in error
-          ? String((error as { code: unknown }).code)
-          : "";
-      if (code !== "EEXIST") throw error;
-      cachedKey = readKeyFile(keyPath);
+  const bundleKey = readKeyFromSecretsBundle();
+  if (bundleKey) {
+    if (!HEX_64.test(bundleKey)) {
+      throw new Error(
+        "plugins['pinchy-odoo'].refTokenKey in secrets.json is invalid: expected 64 hex characters",
+      );
     }
+    cachedKey = Buffer.from(bundleKey, "hex");
     return cachedKey;
   }
 
   throw new Error(
     "PINCHY_REF_TOKEN_KEY environment variable is required (64 hex characters) " +
-      "or ENCRYPTION_KEY_DIR must point to a writable directory",
+      "or pinchy-web must have written secrets.json with plugins['pinchy-odoo'].refTokenKey. " +
+      "If you upgraded an existing deployment, restart the pinchy service to trigger " +
+      "regenerateOpenClawConfig() and provision the key.",
   );
 }
 

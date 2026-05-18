@@ -47,6 +47,7 @@ vi.mock("@/db", () => ({
 
 vi.mock("@/lib/settings", () => ({
   getSetting: vi.fn().mockResolvedValue(null),
+  setSetting: vi.fn().mockResolvedValue(undefined),
 }));
 
 const { mockDecrypt } = vi.hoisted(() => ({
