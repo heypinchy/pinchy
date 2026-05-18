@@ -190,6 +190,26 @@ describe("compactType", () => {
   it("handles selection without options (undefined)", () => {
     expect(compactType({ name: "x", type: "selection" })).toBe("selection:");
   });
+
+  it("truncates selection options past 20 with '|...'", () => {
+    const opts: Array<[string, string]> = Array.from({ length: 25 }, (_, i) => [
+      `opt${i}`,
+      `Option ${i}`,
+    ]);
+    const result = compactType({ name: "x", type: "selection", selection: opts });
+    expect(result).toMatch(/^selection:opt0\|opt1\|.*\|opt19\|\.\.\.$/);
+    expect(result.split("|")).toHaveLength(21); // 20 opts + "..."
+  });
+
+  it("does not truncate selections of exactly 20", () => {
+    const opts: Array<[string, string]> = Array.from({ length: 20 }, (_, i) => [
+      `opt${i}`,
+      `Option ${i}`,
+    ]);
+    const result = compactType({ name: "x", type: "selection", selection: opts });
+    expect(result.endsWith("|...")).toBe(false);
+    expect(result.split("|")).toHaveLength(20);
+  });
 });
 
 describe("tool registration", () => {
