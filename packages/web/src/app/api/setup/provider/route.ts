@@ -11,6 +11,7 @@ import { getSetting, setSetting } from "@/lib/settings";
 import { regenerateOpenClawConfig } from "@/lib/openclaw-config";
 import { resetCache, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { resolveModelForTemplate } from "@/lib/model-resolver";
+import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
 import { db } from "@/db";
 import { agents } from "@/db/schema";
@@ -134,11 +135,18 @@ export async function POST(request: NextRequest) {
   if (isFirstProvider) {
     const smithers = await db.query.agents.findFirst();
     if (smithers) {
-      const resolved = await resolveModelForTemplate({
-        hint: SMITHERS_MODEL_HINT,
-        provider: provider as ProviderName,
-      });
-      await db.update(agents).set({ model: resolved.model }).where(eq(agents.id, smithers.id));
+      try {
+        const resolved = await resolveModelForTemplate({
+          hint: SMITHERS_MODEL_HINT,
+          provider: provider as ProviderName,
+        });
+        await db.update(agents).set({ model: resolved.model }).where(eq(agents.id, smithers.id));
+      } catch (err) {
+        if (!(err instanceof TemplateCapabilityUnavailableError)) {
+          throw err;
+        }
+        // Provider has no model matching Smithers' hint — keep existing model.
+      }
     }
   }
 
