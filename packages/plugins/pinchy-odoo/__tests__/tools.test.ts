@@ -31,7 +31,7 @@ vi.mock("../io", () => ({ readFile: mockReadFile, stat: mockStat }));
 
 import { OdooClient } from "odoo-node";
 import { encodeRef } from "../integration-ref";
-import plugin, { compactType, type OdooField } from "../index";
+import plugin, { compactType, normalizeFields, type OdooField } from "../index";
 
 interface AgentTool {
   name: string;
@@ -209,6 +209,29 @@ describe("compactType", () => {
     const result = compactType({ name: "x", type: "selection", selection: opts });
     expect(result.endsWith("|...")).toBe(false);
     expect(result.split("|")).toHaveLength(20);
+  });
+});
+
+describe("normalizeFields", () => {
+  it("preserves selection options through normalization", () => {
+    const raw = {
+      state: {
+        name: "state",
+        type: "selection",
+        string: "Status",
+        selection: [
+          ["draft", "Draft"],
+          ["posted", "Posted"],
+        ],
+      },
+    };
+    const result = normalizeFields(raw);
+    const stateField = result.find((f) => f.name === "state");
+    expect(stateField).toBeDefined();
+    expect(stateField!.selection).toEqual([
+      ["draft", "Draft"],
+      ["posted", "Posted"],
+    ]);
   });
 });
 

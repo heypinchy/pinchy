@@ -266,7 +266,6 @@ const TYPE_ABBREVIATIONS: Record<string, string> = {
   datetime: "datetime",
   binary: "binary",
   html: "html",
-  selection: "selection",
 };
 
 const MAX_SELECTION_OPTIONS = 20;
@@ -293,7 +292,7 @@ function getSearchReadRecords(result: unknown): OdooRecord[] {
   return [];
 }
 
-function normalizeFields(fields: unknown): OdooField[] {
+export function normalizeFields(fields: unknown): OdooField[] {
   if (Array.isArray(fields)) {
     return fields.filter(isRecord).flatMap((field) => {
       if (typeof field.name !== "string") return [];
@@ -304,6 +303,9 @@ function normalizeFields(fields: unknown): OdooField[] {
           type: typeof field.type === "string" ? field.type : undefined,
           relation:
             typeof field.relation === "string" ? field.relation : undefined,
+          selection: Array.isArray(field.selection)
+            ? (field.selection as Array<[string, string]>)
+            : undefined,
         },
       ];
     });
@@ -320,6 +322,9 @@ function normalizeFields(fields: unknown): OdooField[] {
         type: typeof field.type === "string" ? field.type : undefined,
         relation:
           typeof field.relation === "string" ? field.relation : undefined,
+        selection: Array.isArray(field.selection)
+          ? (field.selection as Array<[string, string]>)
+          : undefined,
       },
     ];
   });
