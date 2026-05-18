@@ -302,8 +302,22 @@ export const PUT = withAdmin<RouteContext>(async (request, { params }, session) 
       }
     }
 
-    // ── Regenerate OpenClaw config ─────────────────────────────────────────
-    await regenerateOpenClawConfig();
+    // ── Regenerate OpenClaw config — only when MCP permissions changed ────
+    // Odoo/email/web-search plugins fetch credentials AND per-agent
+    // permissions lazily at runtime (Pattern B from AGENTS.md § Secret
+    // Handling), so the emitted config doesn't include those grants and
+    // doesn't need a regen on permission change. MCP is different: the
+    // emitted `agentTools` map IS in the plugin config, so a regen is
+    // required when those entries shift.
+    //
+    // Skipping the no-op regen also avoids a real race: a follow-up
+    // PATCH /api/agents/:id (e.g. allowedTools) triggers its own regen,
+    // and two regens within ~13 s hit OpenClaw's config.apply rate
+    // limit — see e2e/email/email.spec.ts dispatch probe (run 26042864847).
+    const mcpPermsTouched = oldMcpPerms.length > 0 || mcpEntries.length > 0;
+    if (mcpPermsTouched) {
+      await regenerateOpenClawConfig();
+    }
 
     // ── Audit log ──────────────────────────────────────────────────────────
     // `UpdateDetail` requires `changes: Record<string, { from, to }>`.

@@ -380,7 +380,7 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
     vi.unstubAllEnvs();
   });
 
-  it("pure-Odoo round-trip: deletes old Odoo, inserts new Odoo, audits, regenerates config", async () => {
+  it("pure-Odoo round-trip: deletes old Odoo, inserts new Odoo, audits (no regen — Pattern B)", async () => {
     const body = [
       {
         kind: "odoo",
@@ -436,8 +436,13 @@ describe("PUT /api/agents/[agentId]/integrations", () => {
       })
     );
 
-    // Config regenerated
-    expect(mockRegenerateOpenClawConfig).toHaveBeenCalled();
+    // Config NOT regenerated — Odoo/email/web-search plugins fetch perms
+    // lazily at runtime (Pattern B), so the emitted config is unaffected
+    // by per-agent grants. Skipping the no-op regen also avoids racing
+    // with the follow-up PATCH /api/agents/:id allowedTools that the UI
+    // typically issues right after — back-to-back config.apply calls hit
+    // OpenClaw's rate limit. See e2e/email/email.spec.ts dispatch probe.
+    expect(mockRegenerateOpenClawConfig).not.toHaveBeenCalled();
   });
 
   it("pure-MCP round-trip: validates tools, deletes old, inserts new, audits diff", async () => {
