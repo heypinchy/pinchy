@@ -74,6 +74,12 @@ vi.mock("@/lib/provider-models", () => {
   };
 });
 
+// ── Mock @/lib/model-resolver ─────────────────────────────────────────────────
+const resolveModelForTemplateMock = vi.fn();
+vi.mock("@/lib/model-resolver", () => ({
+  resolveModelForTemplate: (...args: unknown[]) => resolveModelForTemplateMock(...args),
+}));
+
 // ── Mock @/lib/providers ─────────────────────────────────────────────────────
 vi.mock("@/lib/providers", () => ({
   PROVIDERS: {
@@ -520,6 +526,11 @@ describe("seedPersonalAgent", () => {
 
   it("uses the default model from provider settings when available", async () => {
     getSettingMock.mockResolvedValue("openai");
+    resolveModelForTemplateMock.mockResolvedValue({
+      model: "openai/gpt-5.4-mini",
+      reason: "balanced tier match",
+      fallbackUsed: false,
+    });
     const fakeAgent = {
       id: "agent-3",
       name: "Smithers",
@@ -597,5 +608,46 @@ describe("seedPersonalAgent", () => {
 
     expect(agent).toEqual(existingAgent);
     expect(insertMock).not.toHaveBeenCalled();
+  });
+
+  it("resolves Smithers model via resolveModelForTemplate with balanced hint when provider is configured", async () => {
+    findFirstMock.mockResolvedValue(undefined);
+    getSettingMock.mockResolvedValue("anthropic");
+    resolveModelForTemplateMock.mockResolvedValue({
+      model: "anthropic/claude-sonnet-4-6",
+      reason: "balanced tier match",
+      fallbackUsed: false,
+    });
+    const fakeAgent = {
+      id: "agent-hint-1",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-6",
+      ownerId: "user-1",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { seedPersonalAgent, SMITHERS_MODEL_HINT } = await import("@/lib/personal-agent");
+    await seedPersonalAgent("user-1");
+
+    expect(resolveModelForTemplateMock).toHaveBeenCalledWith({
+      hint: SMITHERS_MODEL_HINT,
+      provider: "anthropic",
+    });
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "anthropic/claude-sonnet-4-6",
+      })
+    );
+  });
+
+  it("exports SMITHERS_MODEL_HINT with balanced tier and tools+long-context capabilities", async () => {
+    const { SMITHERS_MODEL_HINT } = await import("@/lib/personal-agent");
+
+    expect(SMITHERS_MODEL_HINT).toEqual({
+      tier: "balanced",
+      capabilities: ["tools", "long-context"],
+    });
   });
 });

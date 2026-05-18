@@ -9,9 +9,15 @@ import {
 import { getContextForAgent } from "@/lib/context-sync";
 import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
-import { getDefaultModel } from "@/lib/provider-models";
+import { resolveModelForTemplate } from "@/lib/model-resolver";
+import type { ModelHint } from "@/lib/model-resolver/types";
 import { SMITHERS_SOUL_MD } from "@/lib/smithers-soul";
 import { getOnboardingPrompt, ONBOARDING_GREETING } from "@/lib/onboarding-prompt";
+
+export const SMITHERS_MODEL_HINT: ModelHint = {
+  tier: "balanced",
+  capabilities: ["tools", "long-context"],
+};
 
 interface CreateSmithersOptions {
   model: string;
@@ -72,9 +78,16 @@ export async function seedPersonalAgent(userId: string, isAdmin = false) {
   if (existing) return existing;
 
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
-  const model = defaultProvider
-    ? await getDefaultModel(defaultProvider)
-    : "anthropic/claude-sonnet-4-6";
+  let model: string;
+  if (defaultProvider) {
+    const resolved = await resolveModelForTemplate({
+      hint: SMITHERS_MODEL_HINT,
+      provider: defaultProvider,
+    });
+    model = resolved.model;
+  } else {
+    model = "anthropic/claude-sonnet-4-6";
+  }
 
   return createSmithersAgent({ model, ownerId: userId, isPersonal: true, isAdmin });
 }
