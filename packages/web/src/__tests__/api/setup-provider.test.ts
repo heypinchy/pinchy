@@ -83,13 +83,11 @@ vi.mock("@/lib/provider-models", () => ({
 }));
 
 vi.mock("@/lib/model-resolver", () => ({
-  resolveModelForTemplate: vi
-    .fn()
-    .mockResolvedValue({
-      model: "anthropic/claude-sonnet-4-6",
-      reason: "balanced",
-      fallbackUsed: false,
-    }),
+  resolveModelForTemplate: vi.fn().mockResolvedValue({
+    model: "anthropic/claude-sonnet-4-6",
+    reason: "balanced",
+    fallbackUsed: false,
+  }),
 }));
 
 vi.mock("@/lib/personal-agent", () => ({
@@ -123,6 +121,7 @@ import { db } from "@/db";
 import { requireAdmin } from "@/lib/api-auth";
 import { resetCache, getDefaultModel, fetchOllamaLocalModelsFromUrl } from "@/lib/provider-models";
 import { resolveModelForTemplate } from "@/lib/model-resolver";
+import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 import { SMITHERS_MODEL_HINT } from "@/lib/personal-agent";
 
 describe("POST /api/setup/provider", () => {
@@ -544,5 +543,28 @@ describe("POST /api/setup/provider", () => {
     expect(serialized).not.toContain("http://host.docker.internal:11434");
     // ...but the host:port is acceptable as a non-secret diagnostic
     expect(detail).toMatchObject({ host: "host.docker.internal:11434" });
+  });
+
+  it("succeeds with 200 even when resolveModelForTemplate throws TemplateCapabilityUnavailableError", async () => {
+    // Provider is being added as the first provider, but resolver finds no
+    // matching model — e.g. an Ollama instance with only text-only models.
+    vi.mocked(resolveModelForTemplate).mockRejectedValueOnce(
+      new TemplateCapabilityUnavailableError(["tools"], "anthropic", "https://docs.heypinchy.com")
+    );
+
+    const response = await POST(
+      makeRequest({
+        provider: "anthropic",
+        apiKey: "sk-ant-key",
+      }) as any
+    );
+
+    // Provider is still saved and route returns 200.
+    expect(response.status).toBe(200);
+    const data = await response.json();
+    expect(data.success).toBe(true);
+    expect(setSetting).toHaveBeenCalledWith("anthropic_api_key", "sk-ant-key", true);
+    // Smithers' model must NOT be updated because resolution failed.
+    expect(db.update).not.toHaveBeenCalled();
   });
 });
