@@ -362,8 +362,15 @@ export function selectDefaultModel(provider: ProviderName, models: ModelInfo[]):
   const candidates = models.filter((m) => pattern.test(m.id) && !PREVIEW_PATTERN.test(m.id));
 
   if (candidates.length > 0) {
-    // Pick the most recent model by date suffix (YYYYMMDD)
-    candidates.sort((a, b) => extractModelDate(b.id) - extractModelDate(a.id));
+    // Pick the most recent model by date suffix (YYYYMMDD), with lexicographic
+    // descending as a tiebreaker so newer-named variants (e.g. claude-haiku-5-0)
+    // deterministically beat older sibling names (e.g. claude-haiku-4-5) when
+    // neither carries a date suffix.
+    candidates.sort((a, b) => {
+      const dateDelta = extractModelDate(b.id) - extractModelDate(a.id);
+      if (dateDelta !== 0) return dateDelta;
+      return b.id.localeCompare(a.id);
+    });
     return candidates[0].id;
   }
 

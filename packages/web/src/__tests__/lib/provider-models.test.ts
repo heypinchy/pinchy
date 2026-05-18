@@ -795,6 +795,28 @@ describe("selectDefaultModel", () => {
   });
 });
 
+describe("selectDefaultModel — lexikalischer Tiebreaker", () => {
+  it("picks lexicographically greater model when dates are equal (both 0)", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    const models = [
+      { id: "anthropic/claude-haiku-4-5", name: "x" },
+      { id: "anthropic/claude-haiku-5-0", name: "x" },
+    ];
+    // claude-haiku-5-0 > claude-haiku-4-5 lexikalisch → sollte 5-0 gewinnen
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-5-0");
+  });
+
+  it("date-suffix still beats no-suffix when both match pattern", async () => {
+    const { selectDefaultModel } = await import("@/lib/provider-models");
+    const models = [
+      { id: "anthropic/claude-haiku-4-5-20251001", name: "x" },
+      { id: "anthropic/claude-haiku-5-0", name: "x" },
+    ];
+    // 20251001 > 0 → date wins, auch wenn haiku-5-0 lexikalisch größer
+    expect(selectDefaultModel("anthropic", models)).toBe("anthropic/claude-haiku-4-5-20251001");
+  });
+});
+
 describe("getDefaultModel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
