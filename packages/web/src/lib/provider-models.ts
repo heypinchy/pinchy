@@ -339,6 +339,13 @@ export async function fetchOllamaLocalModelsFromUrl(
 
 const PREVIEW_PATTERN = /preview/i;
 
+const REJECT_PATTERN =
+  /-(preview|beta|alpha|rc|exp|experimental|thinking|instant|nano|search|realtime|audio|vision-only)\b/i;
+
+export function isRejectedVariant(modelId: string): boolean {
+  return REJECT_PATTERN.test(modelId);
+}
+
 /** Extract the YYYYMMDD date suffix from a model ID, or 0 if none found. */
 export function extractModelDate(modelId: string): number {
   const ymd = /(\d{8})$/.exec(modelId);

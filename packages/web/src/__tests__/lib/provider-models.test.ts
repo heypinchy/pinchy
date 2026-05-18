@@ -53,6 +53,7 @@ import {
   getOllamaLocalModels,
   fetchOllamaLocalModelsFromUrl,
   extractModelDate,
+  isRejectedVariant,
 } from "@/lib/provider-models";
 import { getSetting } from "@/lib/settings";
 
@@ -1213,5 +1214,35 @@ describe("extractModelDate", () => {
 
   it("returns 0 when YYYY-MM-DD is not at the end (suffix follows)", () => {
     expect(extractModelDate("openai/gpt-5-mini-2025-08-07-preview")).toBe(0);
+  });
+});
+
+describe("isRejectedVariant", () => {
+  it.each([
+    "openai/gpt-5.5-preview",
+    "openai/gpt-5.5-thinking",
+    "openai/gpt-5.5-instant",
+    "openai/gpt-5.5-nano",
+    "openai/gpt-5.5-search-preview",
+    "openai/gpt-5.5-realtime",
+    "openai/gpt-5.5-audio",
+    "anthropic/claude-sonnet-5-0-beta",
+    "anthropic/claude-sonnet-5-0-alpha",
+    "anthropic/claude-sonnet-5-0-rc",
+    "google/gemini-3-pro-exp",
+    "google/gemini-3-pro-experimental",
+  ])("rejects %s", (id) => {
+    expect(isRejectedVariant(id)).toBe(true);
+  });
+
+  it.each([
+    "openai/gpt-5.5",
+    "openai/gpt-5.5-2025-08-07",
+    "anthropic/claude-sonnet-4-6",
+    "anthropic/claude-sonnet-4-6-20251001",
+    "google/gemini-2.5-pro",
+    "google/gemini-2.5-pro-002",
+  ])("does not reject %s", (id) => {
+    expect(isRejectedVariant(id)).toBe(false);
   });
 });
