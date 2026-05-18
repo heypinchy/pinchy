@@ -1210,4 +1210,8 @@ describe("extractModelDate", () => {
   it("returns 0 for non-date suffixes", () => {
     expect(extractModelDate("google/gemini-2.5-pro-002")).toBe(0);
   });
+
+  it("returns 0 when YYYY-MM-DD is not at the end (suffix follows)", () => {
+    expect(extractModelDate("openai/gpt-5-mini-2025-08-07-preview")).toBe(0);
+  });
 });
