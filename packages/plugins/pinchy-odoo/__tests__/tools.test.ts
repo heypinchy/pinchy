@@ -503,65 +503,10 @@ describe("odoo_describe_model", () => {
   });
 });
 
-describe("odoo_schema", () => {
-  it("lists only permitted models when called without parameters", async () => {
+describe("odoo_schema removed", () => {
+  it("does not register a tool named odoo_schema", () => {
     const tools = createApi({ [agentId]: agentConfig });
-    const tool = findTool(tools, "odoo_schema", agentId)!;
-    expect(tool).not.toBeNull();
-
-    const result = await tool.execute("call-1", {});
-    const data = JSON.parse(result.content[0].text);
-    // Only sale.order and res.partner are in permissions (not account.move)
-    expect(data).toHaveLength(2);
-    expect(data).toContainEqual({ model: "sale.order", name: "Sales Order" });
-    expect(data).toContainEqual({ model: "res.partner", name: "Contact" });
-  });
-
-  it("returns fields for a specific permitted model", async () => {
-    const expectedFields = [
-      {
-        name: "name",
-        string: "Order Reference",
-        type: "char",
-        required: true,
-        readonly: true,
-      },
-      {
-        name: "partner_id",
-        string: "Customer",
-        type: "many2one",
-        required: true,
-        readonly: false,
-        relation: "res.partner",
-      },
-      {
-        name: "amount_total",
-        string: "Total",
-        type: "monetary",
-        required: false,
-        readonly: true,
-      },
-    ];
-    mockFields.mockResolvedValue(expectedFields);
-
-    const tools = createApi({ [agentId]: agentConfig });
-    const tool = findTool(tools, "odoo_schema", agentId)!;
-
-    const result = await tool.execute("call-2", { model: "sale.order" });
-    const data = JSON.parse(result.content[0].text);
-    expect(data.name).toBe("Sales Order");
-    expect(data.fields).toHaveLength(3);
-    expect(data.fields[0].name).toBe("name");
-    expect(mockFields).toHaveBeenCalledWith("sale.order");
-  });
-
-  it("denies access to unpermitted model schema", async () => {
-    const tools = createApi({ [agentId]: agentConfig });
-    const tool = findTool(tools, "odoo_schema", agentId)!;
-
-    const result = await tool.execute("call-3", { model: "account.move" });
-    expect(result.content[0].text).toContain("not available");
-    expect(result.isError).toBe(true);
+    expect(tools.find((t) => t.name === "odoo_schema")).toBeUndefined();
   });
 });
 

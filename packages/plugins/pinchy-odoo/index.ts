@@ -3,7 +3,6 @@ import { basename, extname } from "path";
 import { OdooClient } from "odoo-node";
 import {
   checkPermission,
-  getPermittedModels,
   type Permissions,
 } from "./permissions";
 import { decodeRef, encodeRef } from "./integration-ref";
