@@ -268,7 +268,7 @@ const TYPE_ABBREVIATIONS: Record<string, string> = {
   selection: "selection",
 };
 
-export function compactType(field: { name: string; type: string | undefined }): string {
+export function compactType(field: OdooField): string {
   const t = TYPE_ABBREVIATIONS[field.type ?? ""];
   return t ?? (field.type ?? "unknown");
 }
