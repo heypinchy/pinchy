@@ -335,18 +335,28 @@ interface CompactSchemaResult {
   };
 }
 
+const DEFAULT_FIELD_LIMIT = 40;
+
 export function compactSchema(
   allFields: OdooField[],
   opts: CompactSchemaOptions,
 ): CompactSchemaResult {
   const sorted = sortFieldsByPriority(allFields);
 
+  // Empty `fields: []` is treated the same as omitted — the agent didn't ask
+  // for anything specific, so fall through to the default-truncate path.
+  const hasFieldsFilter = Array.isArray(opts.fields) && opts.fields.length > 0;
+  const wantsAll = hasFieldsFilter && opts.fields!.length === 1 && opts.fields![0] === "__all__";
+
+  // Clamp limit: NaN / non-finite → default; negative → 0.
+  const safeLimit = Number.isFinite(opts.limit)
+    ? Math.max(0, Math.trunc(opts.limit))
+    : DEFAULT_FIELD_LIMIT;
+
   let selected: OdooField[];
   let hint: string | undefined;
 
-  const wantsAll = opts.fields?.length === 1 && opts.fields[0] === "__all__";
-
-  if (opts.fields && opts.fields.length > 0 && !wantsAll) {
+  if (hasFieldsFilter && !wantsAll) {
     const requested = new Set(opts.fields);
     selected = sorted.filter((f) => requested.has(f.name));
     if (selected.length === 0) {
@@ -356,7 +366,7 @@ export function compactSchema(
   } else if (wantsAll) {
     selected = sorted;
   } else {
-    selected = sorted.slice(0, opts.limit);
+    selected = sorted.slice(0, safeLimit);
   }
 
   const out: Record<string, unknown> = {};
@@ -379,7 +389,8 @@ export function compactSchema(
     }
   }
 
-  const truncated = !opts.fields && sorted.length > selected.length;
+  const truncated =
+    !hasFieldsFilter && !wantsAll && sorted.length > selected.length;
   if (truncated) {
     hint =
       "default-truncated to most common fields; pass fields:['__all__'] for the full list or fields:[…] to target specific ones";
@@ -932,7 +943,7 @@ const plugin = {
               verbose: {
                 type: "boolean",
                 description:
-                  "Include readonly/required/string-label metadata. Off by default for compactness.",
+                  "Include readonly/required/string-label metadata, plus the full selection-option list. Off by default for compactness; verbose responses on models with large selection fields can be substantially larger.",
               },
             },
             required: ["model"],

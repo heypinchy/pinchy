@@ -396,6 +396,37 @@ describe("compactSchema", () => {
     const out = compactSchema(fs, { limit: 40, verbose: true });
     expect((out.fields.id as { readonly: boolean }).readonly).toBe(true);
   });
+
+  it("treats fields:[] like an omitted filter (default-truncates with hint)", () => {
+    const fs: OdooField[] = Array.from({ length: 50 }, (_, i) => ({
+      name: `f${i}`,
+      type: "char" as const,
+    }));
+    const out = compactSchema(fs, { fields: [], limit: 10, verbose: false });
+    expect(out._meta.returned).toBe(10);
+    expect(out._meta.truncated).toBe(true);
+    expect(out._meta.hint).toMatch(/__all__/);
+  });
+
+  it("clamps a negative limit to 0", () => {
+    const fs: OdooField[] = [
+      { name: "a", type: "char" },
+      { name: "b", type: "char" },
+    ];
+    const out = compactSchema(fs, { limit: -1, verbose: false });
+    expect(out._meta.returned).toBe(0);
+    expect(out._meta.truncated).toBe(true);
+  });
+
+  it("clamps a non-finite limit to a sane default (40)", () => {
+    const fs: OdooField[] = Array.from({ length: 50 }, (_, i) => ({
+      name: `f${i}`,
+      type: "char" as const,
+    }));
+    const out = compactSchema(fs, { limit: Number.NaN, verbose: false });
+    expect(out._meta.returned).toBe(40);
+    expect(out._meta.truncated).toBe(true);
+  });
 });
 
 describe("odoo_list_models", () => {
