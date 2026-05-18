@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 
 // ── Mock @/db ────────────────────────────────────────────────────────────────
 const returningMock = vi.fn();
@@ -59,20 +60,6 @@ vi.mock("@/lib/onboarding-prompt", () => ({
   getOnboardingPrompt: vi.fn().mockReturnValue("## Onboarding\n\nTest onboarding content"),
   ONBOARDING_GREETING: "Test onboarding greeting",
 }));
-
-// ── Mock @/lib/provider-models ──────────────────────────────────────────────
-vi.mock("@/lib/provider-models", () => {
-  const defaults: Record<string, string> = {
-    anthropic: "anthropic/claude-haiku-4-5-20251001",
-    openai: "openai/gpt-5.4-mini",
-    google: "google/gemini-2.5-flash",
-    "ollama-cloud": "ollama-cloud/gemini-3-flash-preview",
-    "ollama-local": "",
-  };
-  return {
-    getDefaultModel: vi.fn(async (provider: string) => defaults[provider] ?? ""),
-  };
-});
 
 // ── Mock @/lib/model-resolver ─────────────────────────────────────────────────
 const resolveModelForTemplateMock = vi.fn();
@@ -376,7 +363,7 @@ describe("createSmithersAgent", () => {
     );
   });
 
-  it("writes onboarding prompt to USER.md when no context exists", async () => {
+  it("writes onboarding prompt to USER.md when no context exists (admin)", async () => {
     getContextForAgentMock.mockResolvedValueOnce("");
     const fakeAgent = {
       id: "agent-onboard-1",
@@ -649,5 +636,31 @@ describe("seedPersonalAgent", () => {
       tier: "balanced",
       capabilities: ["tools", "long-context"],
     });
+  });
+
+  it("falls back to claude-sonnet-4-6 when resolveModelForTemplate throws TemplateCapabilityUnavailableError", async () => {
+    vi.mocked(getSettingMock).mockResolvedValue("anthropic");
+    resolveModelForTemplateMock.mockRejectedValue(
+      new TemplateCapabilityUnavailableError(["tools"], "anthropic", "https://docs.heypinchy.com")
+    );
+    const fakeAgent = {
+      id: "agent-fallback-1",
+      name: "Smithers",
+      model: "anthropic/claude-sonnet-4-6",
+      ownerId: "user-fallback",
+      isPersonal: true,
+      createdAt: new Date(),
+    };
+    returningMock.mockResolvedValue([fakeAgent]);
+
+    const { seedPersonalAgent } = await import("@/lib/personal-agent");
+    const smithers = await seedPersonalAgent("user-fallback");
+
+    expect(valuesMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "anthropic/claude-sonnet-4-6",
+      })
+    );
+    expect(smithers.model).toBe("anthropic/claude-sonnet-4-6");
   });
 });

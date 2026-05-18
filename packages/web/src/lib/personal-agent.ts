@@ -11,6 +11,7 @@ import { getSetting } from "@/lib/settings";
 import { type ProviderName } from "@/lib/providers";
 import { resolveModelForTemplate } from "@/lib/model-resolver";
 import type { ModelHint } from "@/lib/model-resolver/types";
+import { TemplateCapabilityUnavailableError } from "@/lib/model-resolver/types";
 import { SMITHERS_SOUL_MD } from "@/lib/smithers-soul";
 import { getOnboardingPrompt, ONBOARDING_GREETING } from "@/lib/onboarding-prompt";
 
@@ -80,11 +81,19 @@ export async function seedPersonalAgent(userId: string, isAdmin = false) {
   const defaultProvider = (await getSetting("default_provider")) as ProviderName | null;
   let model: string;
   if (defaultProvider) {
-    const resolved = await resolveModelForTemplate({
-      hint: SMITHERS_MODEL_HINT,
-      provider: defaultProvider,
-    });
-    model = resolved.model;
+    try {
+      const resolved = await resolveModelForTemplate({
+        hint: SMITHERS_MODEL_HINT,
+        provider: defaultProvider,
+      });
+      model = resolved.model;
+    } catch (err) {
+      if (err instanceof TemplateCapabilityUnavailableError) {
+        model = "anthropic/claude-sonnet-4-6";
+      } else {
+        throw err;
+      }
+    }
   } else {
     model = "anthropic/claude-sonnet-4-6";
   }
