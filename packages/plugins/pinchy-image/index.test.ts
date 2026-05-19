@@ -1,5 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync } from "node:fs";
+import {
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+  readFileSync,
+  mkdirSync,
+  symlinkSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import sharp from "sharp";
@@ -59,6 +67,7 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(workspaceRoot, { recursive: true, force: true });
   delete process.env.PINCHY_IMAGE_WORKSPACE_ROOT;
+  delete process.env.PINCHY_IMAGE_MAX_BYTES;
 });
 
 describe("pinchy-image plugin", () => {
@@ -246,5 +255,113 @@ describe("pinchy-image plugin", () => {
     expect(plugin.id).toBe("pinchy-image");
     expect(plugin.name).toBe("Pinchy Image");
     expect(plugin.configSchema).toBeDefined();
+  });
+
+  it("configSchema.validate rejects when agents is not a plain object", async () => {
+    const { default: plugin } = await import("./index");
+    const validate = (plugin.configSchema as { validate: (v: unknown) => { ok: boolean } }).validate;
+    expect(validate({ agents: null }).ok).toBe(false);
+    expect(validate({ agents: [] }).ok).toBe(false);
+    expect(validate({ agents: "nope" }).ok).toBe(false);
+    expect(validate({ agents: {} }).ok).toBe(true);
+  });
+
+  it("rejects .gif source files (animation would be silently dropped)", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    // Seed a real PNG but name it .gif — extension check happens before read.
+    await seedImage("agent-all", "anim.gif");
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "image_crop"
+    )?.[0];
+    const tool = factory({ agentId: "agent-all" });
+    const result = await tool.execute("call-1", {
+      source: "anim.gif",
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/unsupported|extension/i);
+  });
+
+  it("rejects filenames containing a NUL byte", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "image_crop"
+    )?.[0];
+    const tool = factory({ agentId: "agent-all" });
+    const result = await tool.execute("call-1", {
+      source: "evil\x00.png",
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/invalid|filename/i);
+  });
+
+  it("rejects when the source filename resolves to a symlink", async () => {
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const uploadsDir = join(workspaceRoot, "agent-all", "uploads");
+    mkdirSync(uploadsDir, { recursive: true });
+    // Real target outside the uploads dir — symlink defends against an attacker
+    // who has write access to the uploads dir but wants to make us read e.g.
+    // /etc/passwd through the workspace boundary.
+    const realTarget = join(workspaceRoot, "outside-target.png");
+    const png = await sharp({
+      create: { width: 10, height: 10, channels: 3, background: { r: 1, g: 2, b: 3 } },
+    }).png().toBuffer();
+    writeFileSync(realTarget, png);
+    symlinkSync(realTarget, join(uploadsDir, "link.png"));
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "image_crop"
+    )?.[0];
+    const tool = factory({ agentId: "agent-all" });
+    const result = await tool.execute("call-1", {
+      source: "link.png",
+      x: 0,
+      y: 0,
+      width: 5,
+      height: 5,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/symlink|regular file/i);
+  });
+
+  it("PINCHY_IMAGE_MAX_BYTES env var overrides the default size cap", async () => {
+    // Set a tiny cap; the seeded PNG (200x100, 3 channels) is several hundred
+    // bytes, so a 100-byte cap forces a rejection.
+    process.env.PINCHY_IMAGE_MAX_BYTES = "100";
+    const api = createMockApi(defaultConfig);
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+    await seedImage("agent-all", "big.png");
+
+    const factory = mockRegisterTool.mock.calls.find(
+      (c: any[]) => c[1]?.name === "image_crop"
+    )?.[0];
+    const tool = factory({ agentId: "agent-all" });
+    const result = await tool.execute("call-1", {
+      source: "big.png",
+      x: 0,
+      y: 0,
+      width: 10,
+      height: 10,
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/too large/i);
   });
 });

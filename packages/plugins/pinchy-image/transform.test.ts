@@ -71,6 +71,20 @@ describe("resizeImage", () => {
       resizeImage(basePng, { width: 50, fit: "stretch" })
     ).rejects.toThrow();
   });
+
+  it("rejects width above MAX_RESIZE_DIMENSION", async () => {
+    await expect(resizeImage(basePng, { width: 20000 })).rejects.toThrow(/exceeds/i);
+  });
+
+  it("rejects height above MAX_RESIZE_DIMENSION", async () => {
+    await expect(resizeImage(basePng, { height: 20000 })).rejects.toThrow(/exceeds/i);
+  });
+
+  it("accepts width at the upper bound (8192)", async () => {
+    const out = await resizeImage(basePng, { width: 8192 });
+    const meta = await sharp(out).metadata();
+    expect(meta.width).toBe(8192);
+  });
 });
 
 describe("rotateImage", () => {

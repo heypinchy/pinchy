@@ -6,6 +6,12 @@ export type ConvertFormat = "png" | "jpeg" | "webp";
 const ALLOWED_FITS: ReadonlyArray<ResizeFit> = ["cover", "contain", "fill", "inside"];
 const ALLOWED_FORMATS: ReadonlyArray<ConvertFormat> = ["png", "jpeg", "webp"];
 
+// Upper bound on resize dimensions. libvips can allocate large buffers for big
+// targets — without this an LLM could request `width: 100000` and OOM the
+// gateway. 8192 px covers practical use cases (8K displays, large prints) with
+// headroom.
+export const MAX_RESIZE_DIMENSION = 8192;
+
 export interface CropParams {
   x: number;
   y: number;
@@ -65,6 +71,12 @@ export async function resizeImage(input: Buffer, params: ResizeParams): Promise<
   }
   if (params.width !== undefined) assertPositiveInt("width", params.width);
   if (params.height !== undefined) assertPositiveInt("height", params.height);
+  if (params.width !== undefined && params.width > MAX_RESIZE_DIMENSION) {
+    throw new Error(`width ${params.width} exceeds maximum ${MAX_RESIZE_DIMENSION}`);
+  }
+  if (params.height !== undefined && params.height > MAX_RESIZE_DIMENSION) {
+    throw new Error(`height ${params.height} exceeds maximum ${MAX_RESIZE_DIMENSION}`);
+  }
   if (params.fit !== undefined && !ALLOWED_FITS.includes(params.fit)) {
     throw new Error(`fit must be one of: ${ALLOWED_FITS.join(", ")}`);
   }
