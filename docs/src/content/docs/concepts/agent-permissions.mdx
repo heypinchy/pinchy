@@ -23,12 +23,15 @@ Pinchy organizes tools into two categories:
 
 Safe tools provide **sandboxed access** to directories the admin has approved. The agent cannot access anything outside those directories.
 
-| Tool                          | What it does                                                                                   |
-| ----------------------------- | ---------------------------------------------------------------------------------------------- |
-| **List approved directories** | List files in directories the admin has selected                                               |
-| **Read approved files**       | Read file contents from approved directories, including PDF text extraction and image analysis |
+| Tool                          | What it does                                                                                                                     |
+| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **List approved directories** | List files in directories the admin has selected                                                                                 |
+| **Read approved files**       | Read file contents from approved directories, including PDF text extraction and image analysis                                   |
+| **Write files**               | Save files back to the agent's own workspace (`uploads/` directory). Agents must explicitly request overwrite on existing files. |
 
-When you enable a safe tool, a directory picker appears so you can select which directories under `/data/` the agent can access. Every file access request is validated against these directories at runtime.
+`pinchy_ls` and `pinchy_read` are always-on for an agent's own workspace — the agent can already list and read files you've uploaded. The **Write files** permission (`pinchy_write`) is optional and must be explicitly enabled.
+
+When you enable **List approved directories** or **Read approved files**, a directory picker appears so you can select which directories under `/data/` the agent can access. Every file access request is validated against these directories at runtime.
 
 ### Web Search Tools
 
@@ -53,7 +56,6 @@ Powerful tools give the agent **direct access to the server**. Only enable them 
 | ----------------- | ------------------------------------------------- |
 | **Run commands**  | Execute shell commands on the server              |
 | **Read any file** | Read any file on the system, without restrictions |
-| **Write files**   | Create and modify files on the system             |
 
 An agent with powerful tools enabled has significantly broader capabilities. Use these only for trusted, internal use cases.
 
