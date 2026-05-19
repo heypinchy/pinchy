@@ -3950,73 +3950,11 @@ describe("useWsRuntime", () => {
       expect(result.current.isRunning).toBe(true);
     });
 
-    it("preserves image attachments when retrying a failed message", async () => {
-      const { result } = renderHook(() => useWsRuntime("agent-1"));
-
-      await act(async () => {
-        latestWs().simulateOpen();
-        latestWs().simulateMessage({ type: "history", messages: [] });
-      });
-
-      // Send a message with an image attachment.
-      // Use valid base64 ("YWJj" encodes "abc") so dataUrlToFile parses it correctly.
-      // Await onNew because it's now async (it runs image compression).
-      const imageDataUrl = "data:image/png;base64,YWJj";
-      await act(async () => {
-        await result.current.runtime.onNew({
-          content: [{ type: "text", text: "look at this image" }],
-          attachments: [
-            {
-              type: "image",
-              content: [{ type: "image", image: imageDataUrl }],
-            },
-          ],
-        });
-      });
-
-      const ws = latestWs();
-      const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
-        clientMessageId: string;
-      };
-      const messageId = sentPayload.clientMessageId;
-
-      // Advance 10s — timeout fires, message transitions to "failed"
-      await act(async () => {
-        await vi.advanceTimersByTimeAsync(10_000);
-      });
-
-      // Clear send call history so we can assert the retry re-send
-      ws.send.mockClear();
-
-      // Call onRetryResend
-      await act(async () => {
-        result.current.onRetryResend(messageId);
-      });
-
-      // The retry WS frame must include the image in content
-      const retryCalls = ws.send.mock.calls.filter((call) => {
-        const parsed = JSON.parse(call[0] as string) as { type: string };
-        return parsed.type === "message";
-      });
-      expect(retryCalls).toHaveLength(1);
-      const retryFrame = JSON.parse(retryCalls[0][0] as string) as {
-        type: string;
-        clientMessageId: string;
-        content: unknown;
-      };
-      expect(retryFrame.clientMessageId).toBe(messageId);
-      // Content must be a structured array including the image_url part
-      expect(Array.isArray(retryFrame.content)).toBe(true);
-      const contentArr = retryFrame.content as Array<{
-        type: string;
-        text?: string;
-        image_url?: { url: string };
-      }>;
-      const textPart = contentArr.find((p) => p.type === "text");
-      const imagePart = contentArr.find((p) => p.type === "image_url");
-      expect(textPart?.text).toBe("look at this image");
-      expect(imagePart?.image_url?.url).toBe(imageDataUrl);
-    });
+    // "preserves image attachments when retrying" was removed together with
+    // the legacy base64-over-WS flow. The two-phase upload pipeline doesn't
+    // round-trip attachmentIds on retry (they materialize at send time and
+    // the row is already in `attached` state). Retry just re-sends text.
+    // See src/__tests__/hooks/use-pending-uploads.test.ts for the new shape.
 
     it("restarts the 10s ack timer after retry", async () => {
       const { result } = renderHook(() => useWsRuntime("agent-1"));
@@ -4247,132 +4185,12 @@ describe("useWsRuntime", () => {
     });
 
     describe("binary file attachments (PDF)", () => {
-      it("includes PDF attachment as image_url content part with filename in WS payload", async () => {
-        const { result } = renderHook(() => useWsRuntime("agent-1"));
-        await act(async () => {
-          latestWs().simulateOpen();
-          latestWs().simulateMessage({ type: "history", messages: [] });
-        });
-
-        const pdfBase64 = "YWJj";
-        await act(async () => {
-          await result.current.runtime.onNew({
-            content: [{ type: "text", text: "see this PDF" }],
-            attachments: [
-              {
-                type: "file",
-                name: "document.pdf",
-                // file carries the size for the pre-send size check
-                file: { size: 100 } as unknown as File,
-                content: [{ type: "file", data: pdfBase64, mimeType: "application/pdf" }],
-              },
-            ],
-          });
-        });
-
-        const ws = latestWs();
-        const messageCalls = ws.send.mock.calls.filter((call) => {
-          const parsed = JSON.parse(call[0] as string) as { type: string };
-          return parsed.type === "message";
-        });
-        expect(messageCalls).toHaveLength(1);
-        const frame = JSON.parse(messageCalls[0][0] as string) as {
-          content: unknown;
-          filenames?: string[];
-        };
-
-        // Content must include an image_url part with the reconstructed data URL
-        expect(Array.isArray(frame.content)).toBe(true);
-        const contentArr = frame.content as Array<{
-          type: string;
-          image_url?: { url: string };
-        }>;
-        const filePart = contentArr.find((p) => p.type === "image_url");
-        expect(filePart?.image_url?.url).toBe(`data:application/pdf;base64,${pdfBase64}`);
-
-        // Filenames must be passed alongside the content
-        expect(frame.filenames).toEqual(["document.pdf"]);
-      });
-
-      it("renders the user message with a file content part so the chat shows an attachment chip", async () => {
-        // Bug from PR #316 review: the PDF was sent in the WS payload and persisted
-        // server-side, but the local user-message state only carried `images`. The
-        // FilePart component was wired in UserMessage but never received a `file`
-        // content part, so the attachment chip was invisible next to the user
-        // bubble. Assert the chip data is present in the rendered user message.
-        const { result } = renderHook(() => useWsRuntime("agent-1"));
-        await act(async () => {
-          latestWs().simulateOpen();
-          latestWs().simulateMessage({ type: "history", messages: [] });
-        });
-
-        const pdfBase64 = "YWJj";
-        await act(async () => {
-          await result.current.runtime.onNew({
-            content: [{ type: "text", text: "see this PDF" }],
-            attachments: [
-              {
-                type: "file",
-                name: "report.pdf",
-                file: { size: 100 } as unknown as File,
-                content: [{ type: "file", data: pdfBase64, mimeType: "application/pdf" }],
-              },
-            ],
-          });
-        });
-
-        const userMsg = (
-          result.current.runtime.messages as Array<{
-            role: string;
-            content: Array<{ type: string; filename?: string; mimeType?: string }>;
-          }>
-        ).find((m) => m.role === "user");
-        expect(userMsg).toBeDefined();
-        const filePart = userMsg!.content.find((p) => p.type === "file");
-        expect(filePart).toBeDefined();
-        expect(filePart!.filename).toBe("report.pdf");
-        expect(filePart!.mimeType).toBe("application/pdf");
-      });
-
-      it("shows payloadTooLarge error and does not send WS message when binary file exceeds size limit", async () => {
-        const { result } = renderHook(() => useWsRuntime("agent-1"));
-        await act(async () => {
-          latestWs().simulateOpen();
-          latestWs().simulateMessage({ type: "history", messages: [] });
-        });
-
-        await act(async () => {
-          await result.current.runtime.onNew({
-            content: [{ type: "text", text: "big file" }],
-            attachments: [
-              {
-                type: "file",
-                name: "huge.pdf",
-                // file.size drives the pre-send size check in onNew
-                file: { size: CLIENT_MAX_ATTACHMENT_SIZE_BYTES + 1 } as unknown as File,
-                content: [{ type: "file", data: "YWJj", mimeType: "application/pdf" }],
-              },
-            ],
-          });
-        });
-
-        const ws = latestWs();
-        const messageCalls = ws.send.mock.calls.filter((call) => {
-          const parsed = JSON.parse(call[0] as string) as { type: string };
-          return parsed.type === "message";
-        });
-        // No message frame should be sent
-        expect(messageCalls).toHaveLength(0);
-
-        // A payloadTooLarge error bubble must appear in the thread
-        const errorMsg = (
-          result.current.runtime.messages as Array<{
-            role: string;
-            metadata?: { custom?: { error?: { payloadTooLarge?: boolean } } };
-          }>
-        ).find((m) => m.role === "assistant" && m.metadata?.custom?.error?.payloadTooLarge);
-        expect(errorMsg).toBeDefined();
-      });
+      // The legacy "PDF carried as image_url in WS content" tests were retired
+      // together with the base64-over-WS flow. Equivalent coverage now lives
+      // in src/__tests__/hooks/use-pending-uploads.test.ts (attachmentIds in
+      // the WS payload), src/__tests__/api/uploads-post.integration.test.ts
+      // (server-side size/MIME rejection with 413 / 415) and
+      // e2e/integration/upload-and-send.spec.ts (full round-trip).
 
       it("renders the chip on a user message loaded from history (files field round-tripped)", async () => {
         // Reload regression: PDF chip survived the fresh-send path (PR #316 review
