@@ -32,7 +32,12 @@ vi.mock("../io", () => ({ readFile: mockReadFile, stat: mockStat }));
 
 import { OdooClient } from "odoo-node";
 import { encodeRef, decodeRef } from "../integration-ref";
-import plugin, { compactType, normalizeFields, sortFieldsByPriority, compactSchema } from "../index";
+import plugin, {
+  compactType,
+  normalizeFields,
+  sortFieldsByPriority,
+  compactSchema,
+} from "../index";
 
 interface AgentTool {
   name: string;
@@ -135,25 +140,39 @@ describe("compactType", () => {
   });
 
   it("returns 'unknown' for undefined type", () => {
-    expect(compactType({ name: "wtf", type: undefined as unknown as string })).toBe("unknown");
+    expect(
+      compactType({ name: "wtf", type: undefined as unknown as string }),
+    ).toBe("unknown");
   });
 
   it("encodes many2one as 'm2o:<relation>'", () => {
-    expect(compactType({ name: "partner_id", type: "many2one", relation: "res.partner" })).toBe(
-      "m2o:res.partner"
-    );
+    expect(
+      compactType({
+        name: "partner_id",
+        type: "many2one",
+        relation: "res.partner",
+      }),
+    ).toBe("m2o:res.partner");
   });
 
   it("encodes one2many as 'o2m:<relation>'", () => {
-    expect(compactType({ name: "line_ids", type: "one2many", relation: "account.move.line" })).toBe(
-      "o2m:account.move.line"
-    );
+    expect(
+      compactType({
+        name: "line_ids",
+        type: "one2many",
+        relation: "account.move.line",
+      }),
+    ).toBe("o2m:account.move.line");
   });
 
   it("encodes many2many as 'm2m:<relation>'", () => {
-    expect(compactType({ name: "tag_ids", type: "many2many", relation: "res.partner.category" })).toBe(
-      "m2m:res.partner.category"
-    );
+    expect(
+      compactType({
+        name: "tag_ids",
+        type: "many2many",
+        relation: "res.partner.category",
+      }),
+    ).toBe("m2m:res.partner.category");
   });
 
   it("falls back to '<type>:?' if relation is missing", () => {
@@ -170,7 +189,7 @@ describe("compactType", () => {
           ["posted", "Posted"],
           ["cancel", "Cancelled"],
         ],
-      })
+      }),
     ).toBe("selection:draft|posted|cancel");
   });
 
@@ -180,12 +199,14 @@ describe("compactType", () => {
         name: "color",
         type: "selection",
         selection: [["red", "Red"]],
-      })
+      }),
     ).toBe("selection:red");
   });
 
   it("handles selection without options (empty array)", () => {
-    expect(compactType({ name: "x", type: "selection", selection: [] })).toBe("selection:");
+    expect(compactType({ name: "x", type: "selection", selection: [] })).toBe(
+      "selection:",
+    );
   });
 
   it("handles selection without options (undefined)", () => {
@@ -197,7 +218,11 @@ describe("compactType", () => {
       `opt${i}`,
       `Option ${i}`,
     ]);
-    const result = compactType({ name: "x", type: "selection", selection: opts });
+    const result = compactType({
+      name: "x",
+      type: "selection",
+      selection: opts,
+    });
     expect(result).toMatch(/^selection:opt0\|opt1\|.*\|opt19\|\.\.\.$/);
     expect(result.split("|")).toHaveLength(21); // 20 opts + "..."
   });
@@ -207,7 +232,11 @@ describe("compactType", () => {
       `opt${i}`,
       `Option ${i}`,
     ]);
-    const result = compactType({ name: "x", type: "selection", selection: opts });
+    const result = compactType({
+      name: "x",
+      type: "selection",
+      selection: opts,
+    });
     expect(result.endsWith("|...")).toBe(false);
     expect(result.split("|")).toHaveLength(20);
   });
@@ -327,7 +356,11 @@ describe("compactSchema", () => {
       { name: "b", type: "char" },
       { name: "c", type: "char" },
     ];
-    const out = compactSchema(fs, { fields: ["a", "b"], limit: 1, verbose: false });
+    const out = compactSchema(fs, {
+      fields: ["a", "b"],
+      limit: 1,
+      verbose: false,
+    });
     expect(Object.keys(out.fields)).toEqual(["a", "b"]);
     expect(out._meta.returned).toBe(2);
     expect(out._meta.truncated).toBe(false);
@@ -335,7 +368,11 @@ describe("compactSchema", () => {
 
   it("with fields:[unknown] returns empty fields + hint", () => {
     const fs: OdooField[] = [{ name: "a", type: "char" }];
-    const out = compactSchema(fs, { fields: ["does_not_exist"], limit: 40, verbose: false });
+    const out = compactSchema(fs, {
+      fields: ["does_not_exist"],
+      limit: 40,
+      verbose: false,
+    });
     expect(out.fields).toEqual({});
     expect(out._meta.returned).toBe(0);
     expect(out._meta.hint).toMatch(/no requested fields/i);
@@ -346,7 +383,11 @@ describe("compactSchema", () => {
       name: `f${i}`,
       type: "char" as const,
     }));
-    const out = compactSchema(fs, { fields: ["__all__"], limit: 40, verbose: false });
+    const out = compactSchema(fs, {
+      fields: ["__all__"],
+      limit: 40,
+      verbose: false,
+    });
     expect(out._meta.returned).toBe(50);
     expect(out._meta.truncated).toBe(false);
   });
@@ -427,6 +468,62 @@ describe("compactSchema", () => {
     expect(out._meta.returned).toBe(40);
     expect(out._meta.truncated).toBe(true);
   });
+
+  // Issue #377: agents confuse Odoo's internal numeric `id` with `default_code`
+  // (the human-readable SKU / internal reference). When a model has both
+  // fields, surface a disambiguation hint in the describe output so the LLM
+  // can see the distinction at the point of decision.
+  describe("id vs default_code disambiguation (issue #377)", () => {
+    it("annotates id and default_code in compact mode when both are present", () => {
+      const fs: OdooField[] = [
+        { name: "id", type: "integer" },
+        { name: "default_code", type: "char" },
+        { name: "name", type: "char" },
+      ];
+      const out = compactSchema(fs, { limit: 40, verbose: false });
+      expect(String(out.fields.id)).toMatch(/NOT the SKU/i);
+      expect(String(out.fields.default_code)).toMatch(/NOT the database id/i);
+      expect(String(out.fields.default_code)).toMatch(
+        /SKU|internal reference/i,
+      );
+      // Unrelated fields stay as plain compact type strings.
+      expect(out.fields.name).toBe("char");
+    });
+
+    it("does not annotate id when default_code is absent", () => {
+      const fs: OdooField[] = [
+        { name: "id", type: "integer" },
+        { name: "name", type: "char" },
+      ];
+      const out = compactSchema(fs, { limit: 40, verbose: false });
+      expect(out.fields.id).toBe("int");
+    });
+
+    it("does not annotate default_code when id is filtered out", () => {
+      const fs: OdooField[] = [
+        { name: "id", type: "integer" },
+        { name: "default_code", type: "char" },
+      ];
+      const out = compactSchema(fs, {
+        fields: ["default_code"],
+        limit: 40,
+        verbose: false,
+      });
+      expect(out.fields.default_code).toBe("char");
+    });
+
+    it("annotates id and default_code in verbose mode too", () => {
+      const fs: OdooField[] = [
+        { name: "id", type: "integer" },
+        { name: "default_code", type: "char" },
+      ];
+      const out = compactSchema(fs, { limit: 40, verbose: true });
+      const idField = out.fields.id as { note?: string };
+      const dcField = out.fields.default_code as { note?: string };
+      expect(idField.note).toMatch(/NOT the SKU/i);
+      expect(dcField.note).toMatch(/NOT the database id/i);
+    });
+  });
 });
 
 describe("odoo_list_models", () => {
@@ -440,11 +537,13 @@ describe("odoo_list_models", () => {
     expect(tool).toBeTruthy();
 
     const result = await tool.execute("call-1", {});
-    const data = JSON.parse(result.content[0].text) as { models: Array<{ model: string; name: string; operations: string[] }> };
+    const data = JSON.parse(result.content[0].text) as {
+      models: Array<{ model: string; name: string; operations: string[] }>;
+    };
     expect(data.models).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ model: "res.partner" }),
-      ])
+      ]),
     );
     expect(data.models.length).toBeGreaterThan(0);
   });
@@ -518,7 +617,11 @@ describe("odoo_describe_model", () => {
 
     const result = await tool.execute("call-1", { model: "res.partner" });
     expect(result.isError).toBeFalsy();
-    const data = JSON.parse(result.content[0].text) as { model: string; fields: Record<string, unknown>; _meta: { total: number; returned: number; truncated: boolean } };
+    const data = JSON.parse(result.content[0].text) as {
+      model: string;
+      fields: Record<string, unknown>;
+      _meta: { total: number; returned: number; truncated: boolean };
+    };
     expect(data.model).toBe("res.partner");
     expect(data.fields).toBeDefined();
     expect(data._meta).toBeDefined();
@@ -532,6 +635,16 @@ describe("odoo_describe_model", () => {
     const result = await tool.execute("call-1", { model: "stock.move" });
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/not available/i);
+  });
+
+  // Issue #377: tool description itself should call out the distinction
+  // between `id` and `default_code` so the LLM picks the right field even
+  // before it has read any model's schema.
+  it("tool description disambiguates id from default_code", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_describe_model", agentId)!;
+    expect(tool.description).toMatch(/default_code/);
+    expect(tool.description).toMatch(/SKU|internal reference/i);
   });
 });
 
@@ -552,9 +665,13 @@ describe("odoo_schema deprecated alias", () => {
 
     const result = await tool.execute("call-1", {});
     expect(result.isError).toBeFalsy();
-    const data = JSON.parse(result.content[0].text) as { models: Array<{ model: string; name: string }> };
+    const data = JSON.parse(result.content[0].text) as {
+      models: Array<{ model: string; name: string }>;
+    };
     expect(data.models).toEqual(
-      expect.arrayContaining([expect.objectContaining({ model: "res.partner" })])
+      expect.arrayContaining([
+        expect.objectContaining({ model: "res.partner" }),
+      ]),
     );
   });
 
@@ -596,6 +713,17 @@ describe("odoo_read", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubEnv("PINCHY_REF_TOKEN_KEY", "a".repeat(64));
+  });
+
+  // Issue #377: when a user references "the SKU" or "internal reference" the
+  // model frequently filters by `id` (the numeric DB primary key) and silently
+  // returns nothing. The tool description should steer the model toward
+  // `default_code` for human-given references.
+  it("tool description disambiguates default_code vs id for product references", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_read", agentId)!;
+    expect(tool.description).toMatch(/default_code/);
+    expect(tool.description).toMatch(/SKU|internal reference/i);
   });
 
   it("reads records with correct parameters", async () => {
@@ -814,6 +942,17 @@ describe("odoo_count", () => {
     vi.clearAllMocks();
   });
 
+  // Issue #377: `odoo_count` accepts the same domain-filter shape as
+  // `odoo_read`, so an agent counting `[["id", "=", "WIDGET-12"]]` silently
+  // returns 0 with no signal that it should have used `default_code`. The
+  // description should carry the same disambiguation hint.
+  it("tool description disambiguates default_code vs id for product references", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_count", agentId)!;
+    expect(tool.description).toMatch(/default_code/);
+    expect(tool.description).toMatch(/SKU|internal reference/i);
+  });
+
   it("counts records for a permitted model", async () => {
     mockSearchCount.mockResolvedValue(42);
 
@@ -849,6 +988,16 @@ describe("odoo_count", () => {
 describe("odoo_aggregate", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  // Issue #377: same domain-filter shape as `odoo_read`/`odoo_count` — an
+  // agent grouping by `id` when the user said "the SKU" silently aggregates
+  // the wrong dimension. Description carries the same disambiguation hint.
+  it("tool description disambiguates default_code vs id for product references", () => {
+    const tools = createApi({ [agentId]: agentConfig });
+    const tool = findTool(tools, "odoo_aggregate", agentId)!;
+    expect(tool.description).toMatch(/default_code/);
+    expect(tool.description).toMatch(/SKU|internal reference/i);
   });
 
   it("aggregates data for a permitted model", async () => {

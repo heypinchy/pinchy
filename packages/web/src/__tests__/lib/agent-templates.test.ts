@@ -570,6 +570,31 @@ describe("Odoo templates", () => {
       expect(t.defaultAgentsMd).toContain("odoo_read");
     }
   });
+
+  // Issue #377: a frequent silent-failure mode is the agent searching by
+  // `default_code` when the user said "the product ID", or by `id` when they
+  // gave an SKU. The query instructions shared across every Odoo template
+  // should call out the distinction explicitly so the model can disambiguate
+  // from the human-given wording before issuing the search.
+  //
+  // This test dynamically enumerates every `odoo-*` template from the
+  // registry rather than hardcoding IDs, so newly-added Odoo templates
+  // (e.g. bookkeeper, hr-analyst, fleet-manager, ...) cannot silently drift
+  // out of compliance.
+  it("every odoo template's AGENTS.md disambiguates id (DB primary key) from default_code (SKU/internal reference)", () => {
+    const odooTemplates = getTemplateList().filter((t) => t.id.startsWith("odoo-"));
+    expect(odooTemplates.length).toBeGreaterThan(0);
+
+    for (const t of odooTemplates) {
+      expect(t.defaultAgentsMd, `template ${t.id} is missing the default_code mention`).toContain(
+        "default_code"
+      );
+      expect(
+        t.defaultAgentsMd,
+        `template ${t.id} is missing the SKU / internal-reference mention`
+      ).toMatch(/SKU|internal reference/i);
+    }
+  });
 });
 
 describe("suggestedNames", () => {

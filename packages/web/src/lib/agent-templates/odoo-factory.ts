@@ -6,6 +6,14 @@ export const ODOO_QUERY_INSTRUCTIONS = `## Mandatory Workflow
 2. Use \`odoo_count\` to check dataset size before fetching large result sets.
 3. Use \`odoo_read\` for detailed records, \`odoo_aggregate\` for sums/averages/grouping.
 
+## Identifier Disambiguation (\`id\` vs \`default_code\`)
+Odoo uses two unrelated identifiers on product-like models, and confusing them is a frequent source of silent search failures (the query returns nothing, the agent guesses, the downstream action lands on the wrong record):
+
+- \`id\` — Odoo's internal numeric primary key (e.g. \`42\`). Opaque. Appears in URLs.
+- \`default_code\` — the human-readable internal reference / SKU (e.g. \`WIDGET-12\`).
+
+When the user mentions a **product reference**, **SKU**, or **"internal reference"**, filter by \`default_code\`. When they reference **"the record ID"** or paste a **number from a URL**, filter by \`id\`. Never use one when the user wrote the other.
+
 ## Query Syntax Reference
 ### Filters (domain)
 Array of \`[field, operator, value]\` tuples. Operators: \`=\`, \`!=\`, \`>\`, \`>=\`, \`<\`, \`<=\`, \`in\`, \`not in\`, \`like\`, \`ilike\`.

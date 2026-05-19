@@ -1,10 +1,7 @@
 import { readFile, stat } from "./io";
 import { basename, extname } from "path";
 import { OdooClient } from "odoo-node";
-import {
-  checkPermission,
-  type Permissions,
-} from "./permissions";
+import { checkPermission, type Permissions } from "./permissions";
 import { decodeRef, encodeRef } from "./integration-ref";
 
 const WORKSPACE_ROOT = "/root/.openclaw/workspaces";
@@ -252,7 +249,9 @@ function unquoteFieldKeysDeep(value: unknown): unknown {
   return out;
 }
 
-function unquoteFieldKeys(values: Record<string, unknown>): Record<string, unknown> {
+function unquoteFieldKeys(
+  values: Record<string, unknown>,
+): Record<string, unknown> {
   return unquoteFieldKeysDeep(values) as Record<string, unknown>;
 }
 
@@ -282,7 +281,7 @@ export function compactType(field: OdooField): string {
     return `selection:${opts.join("|")}${tail}`;
   }
   const t = TYPE_ABBREVIATIONS[field.type ?? ""];
-  return t ?? (field.type ?? "unknown");
+  return t ?? field.type ?? "unknown";
 }
 
 const COMMON_FIELDS = [
@@ -337,6 +336,17 @@ interface CompactSchemaResult {
 
 const DEFAULT_FIELD_LIMIT = 40;
 
+// Issue #377: agents (and the LLMs behind them) routinely confuse Odoo's
+// internal numeric primary key `id` with `default_code` (the human-readable
+// SKU / internal reference). Each silent mismatch returns no results, the
+// model guesses, and the downstream action lands on the wrong record. When a
+// model exposes both fields, surface a one-line hint next to each so the LLM
+// sees the distinction at the point of decision.
+const ID_DISAMBIGUATION_NOTE =
+  "Odoo's internal numeric primary key. NOT the SKU.";
+const DEFAULT_CODE_DISAMBIGUATION_NOTE =
+  "Human-readable internal reference / SKU. NOT the database id.";
+
 export function compactSchema(
   allFields: OdooField[],
   opts: CompactSchemaOptions,
@@ -346,7 +356,10 @@ export function compactSchema(
   // Empty `fields: []` is treated the same as omitted — the agent didn't ask
   // for anything specific, so fall through to the default-truncate path.
   const hasFieldsFilter = Array.isArray(opts.fields) && opts.fields.length > 0;
-  const wantsAll = hasFieldsFilter && opts.fields!.length === 1 && opts.fields![0] === "__all__";
+  const wantsAll =
+    hasFieldsFilter &&
+    opts.fields!.length === 1 &&
+    opts.fields![0] === "__all__";
 
   // Clamp limit: NaN / non-finite → default; negative → 0.
   const safeLimit = Number.isFinite(opts.limit)
@@ -369,8 +382,28 @@ export function compactSchema(
     selected = sorted.slice(0, safeLimit);
   }
 
+  // Detect models that expose both `id` and `default_code` *in this schema
+  // response window* — note that this is about the describe-model output the
+  // LLM is reading right now, NOT about the records `odoo_read` returns
+  // (Odoo always returns `id` on records regardless of the requested field
+  // list). Annotating an `id` field in the schema is only useful if
+  // `default_code` is also visible to the LLM in the same response,
+  // otherwise the note adds noise to models that happen to share a column
+  // name with products.
+  const selectedNames = new Set(selected.map((f) => f.name));
+  const annotateIdVsCode =
+    selectedNames.has("id") && selectedNames.has("default_code");
+
+  function noteFor(name: string): string | undefined {
+    if (!annotateIdVsCode) return undefined;
+    if (name === "id") return ID_DISAMBIGUATION_NOTE;
+    if (name === "default_code") return DEFAULT_CODE_DISAMBIGUATION_NOTE;
+    return undefined;
+  }
+
   const out: Record<string, unknown> = {};
   for (const f of selected) {
+    const note = noteFor(f.name);
     if (opts.verbose) {
       out[f.name] = {
         type: f.type,
@@ -383,9 +416,10 @@ export function compactSchema(
         required: f.required ?? false,
         readonly: f.readonly ?? false,
         ...(f.string ? { string: f.string } : {}),
+        ...(note ? { note } : {}),
       };
     } else {
-      out[f.name] = compactType(f);
+      out[f.name] = note ? `${compactType(f)} — ${note}` : compactType(f);
     }
   }
 
@@ -1016,13 +1050,14 @@ const plugin = {
           name: "odoo_describe_model",
           label: "Odoo Describe Model",
           description:
-            "Get the field definitions for one Odoo model in a compact, agent-friendly format. By default returns the ~40 most commonly-needed fields (id, name, state, foreign keys, dates, amounts). Pass `fields: ['<name>', ...]` to target specific fields, `fields: ['__all__']` to get every field (large), or `verbose: true` for full Odoo metadata.",
+            "Get the field definitions for one Odoo model in a compact, agent-friendly format. By default returns the ~40 most commonly-needed fields (id, name, state, foreign keys, dates, amounts). Pass `fields: ['<name>', ...]` to target specific fields, `fields: ['__all__']` to get every field (large), or `verbose: true` for full Odoo metadata. Note: `id` is Odoo's internal numeric primary key and is NOT the SKU. The human-readable internal reference / SKU is `default_code` on product-like models — when both fields are present in the response, each is annotated to keep them distinct.",
           parameters: {
             type: "object",
             properties: {
               model: {
                 type: "string",
-                description: "Odoo model name to describe, e.g. 'account.move'.",
+                description:
+                  "Odoo model name to describe, e.g. 'account.move'.",
               },
               fields: {
                 type: "array",
@@ -1118,7 +1153,7 @@ const plugin = {
           name: "odoo_read",
           label: "Odoo Read",
           description:
-            "Query records from Odoo. Returns matching records with field selection and pagination. Always returns { records, total, limit, offset } so you know if there's more data.",
+            "Query records from Odoo. Returns matching records with field selection and pagination. Always returns { records, total, limit, offset } so you know if there's more data. When the user mentions a product reference, SKU, or 'internal reference', filter by `default_code`, not `id`. When they reference 'the record ID' or pass a number from a URL, filter by `id`.",
           parameters: {
             type: "object",
             properties: {
@@ -1217,7 +1252,7 @@ const plugin = {
           name: "odoo_count",
           label: "Odoo Count",
           description:
-            "Count matching records without transferring data. Much faster than reading all records.",
+            "Count matching records without transferring data. Much faster than reading all records. When the user mentions a product reference, SKU, or 'internal reference', filter by `default_code`, not `id`. When they reference 'the record ID' or pass a number from a URL, filter by `id`.",
           parameters: {
             type: "object",
             properties: {
@@ -1272,7 +1307,7 @@ const plugin = {
           name: "odoo_aggregate",
           label: "Odoo Aggregate",
           description:
-            "Server-side aggregation — sums, averages, counts, grouped by fields. Use this instead of reading records and calculating yourself. Fields support aggregation: 'amount_total:sum', 'amount_total:avg', 'partner_id:count_distinct'. Groupby supports date granularity: 'date_order:month', 'date_order:week', 'date_order:year'.",
+            "Server-side aggregation — sums, averages, counts, grouped by fields. Use this instead of reading records and calculating yourself. Fields support aggregation: 'amount_total:sum', 'amount_total:avg', 'partner_id:count_distinct'. Groupby supports date granularity: 'date_order:month', 'date_order:week', 'date_order:year'. When the user mentions a product reference, SKU, or 'internal reference', filter or group by `default_code`, not `id`. When they reference 'the record ID' or pass a number from a URL, use `id`.",
           parameters: {
             type: "object",
             properties: {
@@ -1568,7 +1603,7 @@ const plugin = {
               targetRef: {
                 type: "string",
                 description:
-                  "Opaque reference to the Odoo record to attach the file to. Use the `_pinchy_ref` field returned by `odoo_create` (for a record you just created) or `odoo_read` (for an existing record). The value is an encrypted token starting with `pinchy_ref:v1:` — do NOT construct strings like `\"<model>,<id>\"` or pass raw numeric IDs; the plugin will reject them.",
+                  'Opaque reference to the Odoo record to attach the file to. Use the `_pinchy_ref` field returned by `odoo_create` (for a record you just created) or `odoo_read` (for an existing record). The value is an encrypted token starting with `pinchy_ref:v1:` — do NOT construct strings like `"<model>,<id>"` or pass raw numeric IDs; the plugin will reject them.',
               },
               filename: {
                 type: "string",

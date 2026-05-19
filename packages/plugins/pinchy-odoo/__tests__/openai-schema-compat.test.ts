@@ -11,6 +11,7 @@ import plugin from "../index";
 
 interface AgentTool {
   name: string;
+  description: string;
   parameters: Record<string, unknown>;
 }
 
@@ -111,5 +112,31 @@ describe("OpenAI strict-schema compatibility", () => {
     }
 
     expect(offenders).toEqual([]);
+  });
+
+  // Issue #377: tool descriptions are agent-facing free-form strings. A future
+  // edit that accidentally introduces an unescaped backtick, a control
+  // character, or an empty string would either break JSON serialization on
+  // the wire or starve the LLM of guidance for that tool. This is a cheap
+  // smoke test that catches both classes of regression in one shot.
+  it("every tool has a non-empty description that survives JSON round-trip", () => {
+    const tools = collectAllTools();
+    expect(tools.length).toBeGreaterThan(0);
+
+    for (const tool of tools) {
+      expect(
+        typeof tool.description,
+        `${tool.name}: description must be a string`,
+      ).toBe("string");
+      expect(
+        tool.description.length,
+        `${tool.name}: description must be non-empty`,
+      ).toBeGreaterThan(0);
+
+      // Round-trip catches non-serializable values (functions, undefined),
+      // and the equality check catches silent re-encoding glitches.
+      const roundTripped = JSON.parse(JSON.stringify({ d: tool.description }));
+      expect(roundTripped.d).toBe(tool.description);
+    }
   });
 });
