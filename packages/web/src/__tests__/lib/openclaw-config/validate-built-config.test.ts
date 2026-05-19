@@ -95,4 +95,60 @@ describe("validateBuiltConfig", () => {
       expect(joined).toMatch(/pinchy-web/);
     }
   });
+
+  it("rejects pinchy-files config where write_paths is not a subset of allowed_paths", () => {
+    const config = {
+      plugins: {
+        allow: ["pinchy-files"],
+        entries: {
+          "pinchy-files": {
+            enabled: true,
+            config: {
+              apiBaseUrl: "http://pinchy:7777",
+              gatewayToken: "t",
+              agents: {
+                agent1: {
+                  allowed_paths: ["/data/kb"],
+                  write_paths: ["/data/kb", "/root/.openclaw/workspaces/abc123/uploads"],
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    const result = validateBuiltConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.join("\n")).toMatch(/subset|write_paths/i);
+    }
+  });
+
+  it("rejects write_paths that contains workspace root without /uploads subdir", () => {
+    const config = {
+      plugins: {
+        allow: ["pinchy-files"],
+        entries: {
+          "pinchy-files": {
+            enabled: true,
+            config: {
+              apiBaseUrl: "http://pinchy:7777",
+              gatewayToken: "t",
+              agents: {
+                agent1: {
+                  allowed_paths: ["/root/.openclaw/workspaces/abc123"],
+                  write_paths: ["/root/.openclaw/workspaces/abc123"],
+                },
+              },
+            },
+          },
+        },
+      },
+    };
+    const result = validateBuiltConfig(config);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.errors.join("\n")).toMatch(/workspace root|forbidden/i);
+    }
+  });
 });
