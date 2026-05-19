@@ -54,12 +54,17 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
    `up -d` applies any pending database migrations, regenerates the OpenClaw configuration, and restarts all services. `docker image prune -f` then removes the previous image layer for each Pinchy service that `pull` left dangling — without this, every upgrade keeps the prior `pinchy` and `pinchy-openclaw` layers on disk and a long-running deployment eventually fills its root volume.
 
    <Aside type="tip">
-     `prune -f` only touches dangling layers (the old digest of the tag you just
-     replaced) and is safe to run on a live deployment. If you've been upgrading
-     for a while and want to reclaim space from **older pinned versions** as
-     well (e.g. `v0.5.0` you no longer plan to roll back to), run `docker image
-     prune -a -f` instead. This removes every image not currently associated
-     with a container, so you lose the ability to instantly roll back without
+     `prune -f` removes layers that no tag and no container references —
+     typically the prior digest of the tag you just replaced, plus any older
+     dangling layers left over from previous upgrades. It's safe to run on a
+     live deployment because the running container still references the new
+     image. On a host that runs other Docker workloads alongside Pinchy, this
+     also clears their dangling layers — that's almost always what you want, but
+     worth knowing if you share the daemon. If you've been upgrading for a while
+     and want to reclaim space from **older pinned versions** as well (e.g.
+     `v0.5.0` you no longer plan to roll back to), run `docker image prune -a
+     -f` instead. This removes every image not currently associated with a
+     container, so you lose the ability to instantly roll back without
      re-pulling — schedule it between upgrades, not as part of one.
    </Aside>
 

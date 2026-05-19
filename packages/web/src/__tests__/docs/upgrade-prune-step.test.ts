@@ -51,19 +51,39 @@ describe("upgrade flow includes Docker image disk-hygiene step (#370)", () => {
 
   it("Upgrading guide documents when to escalate to `docker image prune -a -f`", () => {
     // Acceptance criterion: "Upgrading guide covers when manual `prune -a`
-    // is appropriate vs. the default `prune`." This catches a refactor that
-    // adds the snippet but drops the rationale for the aggressive variant.
-    expect(upgrading).toMatch(/docker image prune -a -f\b/);
-    expect(upgrading.toLowerCase()).toMatch(/\b(tagged|pinned|version|release)\b/);
+    // is appropriate vs. the default `prune`." We scope the rationale check
+    // to the `<Aside>` block that actually contains the `-a -f` invocation,
+    // so a refactor that empties the aside but leaves the keyword "version"
+    // sitting in some unrelated section heading can't trick the test into
+    // passing.
+    //
+    // We collapse whitespace before matching because prettier wraps long
+    // prose lines — `docker image prune -a -f` typically gets broken as
+    // `docker image\n     prune -a -f` across two lines, which a literal-
+    // space regex misses. Normalizing keeps the assertion stable across
+    // prettier re-flows.
+    const collapse = (s: string) => s.replace(/\s+/g, " ");
+    expect(collapse(upgrading)).toMatch(/docker image prune -a -f\b/);
+    const asides = [...upgrading.matchAll(/<Aside\b[\s\S]*?<\/Aside>/g)].map((m) => m[0]);
+    const escalationAside = asides.find((block) =>
+      /docker image prune -a -f\b/.test(collapse(block))
+    );
+    expect(escalationAside, "escalation Aside block not found").toBeDefined();
+    expect(collapse(escalationAside!).toLowerCase()).toMatch(
+      /\b(tagged|pinned|rollback|roll back)\b/
+    );
   });
 
   it("latest version-specific upgrade one-liner pipes through prune", () => {
     // The %%PINCHY_VERSION%% section ships in the active release notes.
     // It must show the same hygiene step as the Standard upgrade flow so
-    // copy-paste deployments stay consistent.
+    // copy-paste deployments stay consistent. We match the heading version
+    // pattern agnostically so this test survives each release bump without
+    // hand-editing — the `%%PINCHY_VERSION%%` placeholder is the stable
+    // anchor that identifies the current section.
     const currentSection = sectionBetween(
       upgrading,
-      /^##\s+Upgrading from v0\.5\.3 to %%PINCHY_VERSION%%\s*$/m,
+      /^##\s+Upgrading from v[\d.]+ to %%PINCHY_VERSION%%\s*$/m,
       /^##\s+Upgrading from /m
     );
     expect(currentSection, "current-version upgrade section not found").toBeDefined();
