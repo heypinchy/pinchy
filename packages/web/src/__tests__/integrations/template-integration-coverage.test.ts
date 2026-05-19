@@ -88,6 +88,10 @@ const NO_SCHEMA_REQUIRED: ReadonlyArray<KnownPinchyPlugin> = [
   // separate per-instance schema (probed identifier list) for this plugin to
   // drift against.
   "pinchy-knowledge",
+  // pinchy-image: pure in-process image transforms (sharp). No external schema,
+  //   no per-template config — templates just opt into the image_* tools via
+  //   `additionalAllowedTools`.
+  "pinchy-image",
   // External plugins without per-template schema requirements (today).
   // pinchy-email: templates declare `requiresEmailConnection: true` but no
   //   `requiredFolders` / `requiredLabels` — any IMAP/Gmail account works.

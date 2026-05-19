@@ -317,6 +317,8 @@ const PDF_ATTACHMENT_READ_TRIGGER = "E2E_PDF_ATTACHMENT_READ_TOOL";
 const PDF_ATTACHMENT_READ_RESPONSE = "PDF read: coverage probe complete.";
 const KNOWLEDGE_SEARCH_TRIGGER = "E2E_KNOWLEDGE_SEARCH_TOOL";
 const KNOWLEDGE_SEARCH_RESPONSE = "Knowledge base searched: coverage probe complete.";
+const IMAGE_CROP_TRIGGER = "E2E_IMAGE_CROP_TOOL";
+const IMAGE_CROP_RESPONSE = "Image cropped: coverage probe complete.";
 
 // ── KB Eval Harness attribution self-test triggers (Task 2.2) ──────────────
 // Five deterministic `knowledge_search` scripted answers for the Layer-2
@@ -916,6 +918,12 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     response: KB_RUNON_FORMAT_RESPONSE,
     toolName: "knowledge_search",
     arguments: { query: KB_RUNON_FORMAT_TRIGGER },
+  },
+  {
+    trigger: IMAGE_CROP_TRIGGER,
+    response: IMAGE_CROP_RESPONSE,
+    toolName: "image_crop",
+    arguments: { source: "receipt.png", x: 0, y: 0, width: 10, height: 10 },
   },
 ];
 
@@ -2298,6 +2306,8 @@ export const FAKE_OLLAMA_CRM_LEAD_FIELDS = {
   phone: CRM_LEAD_PHONE,
   expectedRevenue: CRM_LEAD_EXPECTED_REVENUE,
 } as const;
+export const FAKE_OLLAMA_IMAGE_CROP_TOOL_TRIGGER = IMAGE_CROP_TRIGGER;
+export const FAKE_OLLAMA_IMAGE_CROP_TOOL_RESPONSE = IMAGE_CROP_RESPONSE;
 
 let server: http.Server | null = null;
 

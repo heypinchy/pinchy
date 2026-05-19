@@ -55,7 +55,7 @@ ensure_secrets_root_owned() {
     echo "[secrets-fix] $SECRETS_FILE: $before -> $after"
 }
 
-# Install pinchy-{files,odoo,web,email} plugin runtime dependencies from the
+# Install pinchy-{files,odoo,web,email,image} plugin runtime dependencies from the
 # container image. In dev mode, source files are volume-mounted from the
 # host, but host node_modules contain macOS native bindings that won't work
 # in Linux. Extracted to config/install-plugin-deps.sh (same pattern as

@@ -7,6 +7,7 @@ import {
   FAKE_OLLAMA_FILES_LS_TOOL_TRIGGER,
   FAKE_OLLAMA_FILES_READ_DOCX_TOOL_TRIGGER,
   FAKE_OLLAMA_GENERATE_FILE_TOOL_TRIGGER,
+  FAKE_OLLAMA_IMAGE_CROP_TOOL_TRIGGER,
   FAKE_OLLAMA_KNOWLEDGE_SEARCH_TOOL_TRIGGER,
   FAKE_OLLAMA_RESPONSE,
 } from "../shared/fake-ollama/fake-ollama-server";
@@ -323,6 +324,7 @@ test.describe("Plugin behavior — pinchy-context", () => {
 // reports on a string, not on a test.) pinchy-files' real dispatch coverage
 // is the running `pinchy_generate_file` probe further down this file and the
 // `pinchy_read` probe in upload-and-send.spec.ts.
+
 test.describe("Plugin behavior — pinchy-files", () => {
   test.skip("pinchy_ls dispatches via fake-LLM and writes audit entry", async ({ page }) => {
     await login(page);

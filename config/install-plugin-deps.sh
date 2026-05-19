@@ -51,7 +51,7 @@ install_plugin_deps_for() {
 }
 
 install_plugin_deps() {
-    for plugin in pinchy-files pinchy-odoo pinchy-web pinchy-email; do
+    for plugin in pinchy-files pinchy-odoo pinchy-web pinchy-email pinchy-image; do
         install_plugin_deps_for "$plugin"
     done
 }
