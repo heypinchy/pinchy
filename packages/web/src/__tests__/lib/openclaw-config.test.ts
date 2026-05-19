@@ -1019,6 +1019,53 @@ describe("regenerateOpenClawConfig", () => {
     expect(agentConfig.allowed_paths).toContain("/root/.openclaw/workspaces/agent-2/uploads");
   });
 
+  it("injects write_paths when pinchy_write is in allowedTools", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "writer",
+          name: "Writer Agent",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: ["pinchy_write"],
+          pluginConfig: null,
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["writer"];
+
+    expect(agentConfig.write_paths).toEqual(["/root/.openclaw/workspaces/writer/uploads"]);
+  });
+
+  it("does not inject write_paths when pinchy_write is not in allowedTools", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "reader",
+          name: "Reader Agent",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: [],
+          pluginConfig: null,
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["reader"];
+
+    expect(agentConfig).toBeDefined();
+    expect(agentConfig.write_paths).toBeUndefined();
+  });
+
   it("should not keep stale env vars from previous config", async () => {
     const existingConfig = {
       gateway: {
