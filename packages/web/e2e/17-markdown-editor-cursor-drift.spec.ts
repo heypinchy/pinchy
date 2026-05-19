@@ -45,9 +45,10 @@ test.describe("Markdown editor caret alignment", () => {
     const agentId = href!.match(/\/chat\/([0-9a-f-]+)/)![1];
 
     // Open the Instructions tab (AGENTS.md) — the exact URL from the bug
-    // report.
+    // report. Wait on the editor element directly rather than
+    // `networkidle`: the latter is flaky under streaming/long-lived
+    // connections and is no longer Playwright-recommended.
     await page.goto(`/chat/${agentId}/settings?tab=instructions`);
-    await page.waitForLoadState("networkidle");
 
     const editor = page.locator(".markdown-editor").first();
     await editor.waitFor({ timeout: 10000 });
