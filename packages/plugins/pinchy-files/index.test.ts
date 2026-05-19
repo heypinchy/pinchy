@@ -676,11 +676,15 @@ describe("pinchy_write tool", () => {
     });
     // content must NOT be in details (PII protection)
     expect(JSON.stringify(result.details)).not.toContain("name,age");
+    // path must be relative (not start with /) — strips workspace prefix
+    expect(result.details.path).not.toMatch(/^\//);
+    const leaf = tmpDir.split("/").filter(Boolean).pop()!;
+    expect(result.details.path).toBe(`${leaf}/report.csv`);
   });
 
   it("fails with isError when file exists and overwrite=false (default)", async () => {
     const filePath = join(tmpDir, "existing.csv");
-    writeFileSync(filePath, "old content");
+    writeFileSync(filePath, "secret-csv-content-with-pii");
 
     const api = createMockApi({
       "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
@@ -693,14 +697,65 @@ describe("pinchy_write tool", () => {
 
     const result = await tool.execute("call-1", {
       path: filePath,
-      content: "new content",
+      content: "secret-new-content-pii",
     });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toMatch(/already exists/i);
 
     // Original file must be unchanged
-    expect(realReadFileSync(filePath, "utf-8")).toBe("old content");
+    expect(realReadFileSync(filePath, "utf-8")).toBe("secret-csv-content-with-pii");
+
+    // Failure path MUST set details so the audit endpoint suppresses raw params.
+    // Without this, the audit log captures params.content verbatim (PII leak).
+    expect(result.details).toBeDefined();
+    expect(result.details.error).toMatch(/already exists/i);
+    expect(result.details.overwrite).toBe(false);
+    // content must NOT be in details
+    expect(JSON.stringify(result.details)).not.toContain("secret-new-content");
+  });
+
+  it("validation error returns details (no content leak) when path is invalid", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getWriteFactory();
+    const tool = factory({ agentId: "agent-1" });
+
+    const result = await tool.execute("call-1", {
+      path: 12345 as unknown as string, // not a string — triggers validation error
+      content: "secret-pii-content",
+    });
+
+    expect(result.isError).toBe(true);
+    // details must be present so audit endpoint suppresses params (content leak guard)
+    expect(result.details).toBeDefined();
+    expect(JSON.stringify(result.details)).not.toContain("secret-pii-content");
+  });
+
+  it("oversize content error returns details (no content leak)", async () => {
+    const api = createMockApi({
+      "agent-1": { allowed_paths: [tmpDir], write_paths: [tmpDir] },
+    });
+    const { default: plugin } = await import("./index");
+    plugin.register!(api as any);
+
+    const factory = getWriteFactory();
+    const tool = factory({ agentId: "agent-1" });
+
+    const oversize = "x".repeat(11 * 1024 * 1024); // > MAX_FILE_SIZE (10MB)
+    const result = await tool.execute("call-1", {
+      path: join(tmpDir, "big.csv"),
+      content: oversize,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.details).toBeDefined();
+    // content must NOT be embedded in details
+    expect(JSON.stringify(result.details).length).toBeLessThan(2048);
   });
 
   it("overwrites when overwrite=true, returns previousContentHash", async () => {
@@ -728,6 +783,8 @@ describe("pinchy_write tool", () => {
       previousContentHash: expect.stringMatching(/^[a-f0-9]{64}$/),
       overwrite: true,
     });
+    // path must be relative
+    expect(result.details.path).not.toMatch(/^\//);
 
     expect(realReadFileSync(filePath, "utf-8")).toBe("new content");
   });

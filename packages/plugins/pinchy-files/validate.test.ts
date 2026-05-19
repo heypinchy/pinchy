@@ -99,6 +99,22 @@ describe("multi-root + mode validation", () => {
     ).not.toThrow();
   });
 
+  it("rejects write when path is in write_paths but not in allowed_paths (defense in depth)", () => {
+    // Defense against tampered or buggy config that has write_paths NOT being
+    // a subset of allowed_paths. Build-time validator enforces the subset
+    // invariant, but the runtime must not trust the config layout blindly.
+    expect(() =>
+      validateAccess(
+        {
+          allowed_paths: ["/data/kb"],
+          write_paths: ["/data/other"], // not in allowed_paths
+        },
+        "/data/other/x.csv",
+        "write"
+      )
+    ).toThrow(/allowed_paths|subset/i);
+  });
+
   it("ALLOWED_ROOTS contains both /data/ and workspace prefix", () => {
     expect(ALLOWED_ROOTS).toContain("/data/");
     expect(ALLOWED_ROOTS).toContain("/root/.openclaw/workspaces/");

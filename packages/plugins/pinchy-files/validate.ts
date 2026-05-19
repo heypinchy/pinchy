@@ -43,6 +43,17 @@ export function validateAccess(
     );
   }
 
+  // Defense in depth: build-time validator enforces write_paths ⊆ allowed_paths,
+  // but a tampered or buggy config must not bypass the invariant at runtime.
+  if (mode === "write") {
+    const inAllowed = config.allowed_paths.some(
+      (p) => resolved.startsWith(p) || (resolved + "/").startsWith(p)
+    );
+    if (!inAllowed) {
+      throw new Error("Access denied: path not in allowed_paths (subset invariant)");
+    }
+  }
+
   const relativeSegments = resolved.slice(matchedRoot.length).split("/");
   if (relativeSegments.some((s) => s.startsWith(".") && s.length > 1)) {
     throw new Error("Hidden files are not accessible");

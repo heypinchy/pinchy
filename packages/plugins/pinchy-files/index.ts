@@ -16,6 +16,22 @@ interface PluginToolContext {
   agentId?: string;
 }
 
+// Strips the workspace/writePath prefix from an absolute path for audit logging.
+// Keeps the last segment of the matched writePath as a marker (e.g. "uploads/result.csv")
+// so audit entries don't expose the full container path /root/.openclaw/workspaces/<id>/...
+function relativizeWritePath(absolutePath: string, writePaths: readonly string[]): string {
+  for (const wp of writePaths) {
+    const normalized = wp.replace(/\/+$/, "");
+    if (absolutePath === normalized || absolutePath.startsWith(normalized + "/")) {
+      const leaf = normalized.split("/").filter(Boolean).pop();
+      if (!leaf) return absolutePath;
+      const rest = absolutePath.slice(normalized.length).replace(/^\//, "");
+      return rest ? `${leaf}/${rest}` : leaf;
+    }
+  }
+  return absolutePath;
+}
+
 interface ContentBlock {
   type: string;
   text: string;
@@ -421,6 +437,14 @@ const plugin = {
                           text: `File already exists at ${requestedPath}. Set overwrite=true to replace.`,
                         },
                       ],
+                      // Set details so the audit endpoint suppresses raw params
+                      // (which include the full content blob — PII protection).
+                      details: {
+                        path: relativizeWritePath(resolved, writePaths),
+                        mode: "create",
+                        overwrite: false,
+                        error: "File already exists",
+                      },
                     };
                   }
                   throw err;
@@ -437,7 +461,7 @@ const plugin = {
                   },
                 ],
                 details: {
-                  path: resolved,
+                  path: relativizeWritePath(resolved, writePaths),
                   mode,
                   sizeBytes: buffer.byteLength,
                   contentHash,
@@ -447,9 +471,17 @@ const plugin = {
               };
             } catch (error) {
               const message = error instanceof Error ? error.message : "Unknown error";
+              // Set details on every error path so the audit endpoint suppresses
+              // raw params (notably params.content — PII protection).
+              const safePath = typeof params.path === "string" ? params.path : undefined;
               return {
                 isError: true,
                 content: [{ type: "text", text: message }],
+                details: {
+                  ...(safePath !== undefined ? { path: safePath } : {}),
+                  overwrite: params.overwrite === true,
+                  error: message,
+                },
               };
             }
           },
