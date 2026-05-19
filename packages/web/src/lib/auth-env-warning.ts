@@ -14,8 +14,8 @@
  * domain cache, otherwise the Domain-Lock arm of this check is a no-op.
  */
 export function getBetterAuthUrlStartupWarning(
-  env: NodeJS.ProcessEnv = process.env,
-  domain: string | null = null
+  env: NodeJS.ProcessEnv,
+  domain: string | null
 ): string | null {
   if (env.BETTER_AUTH_URL) {
     return (
@@ -26,7 +26,7 @@ export function getBetterAuthUrlStartupWarning(
     );
   }
 
-  if (domain) {
+  if (domain && domain.length > 0) {
     return (
       `⚠ Domain Lock is configured (${domain}) but BETTER_AUTH_URL is unset. ` +
       "Outbound links in email verification and password reset emails will be wrong. " +

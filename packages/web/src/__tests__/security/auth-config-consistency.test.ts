@@ -96,6 +96,29 @@ describe("auth config consistency", () => {
     expect(content).not.toContain("BETTER_AUTH_URL is set but no longer used");
   });
 
+  it("getBetterAuthUrlStartupWarning should require the domain argument (no default)", () => {
+    // A default value on `domain` silently disables the Domain-Lock arm if a
+    // future caller forgets the second argument. Force every call site to
+    // pass a value (getCachedDomain() returns null when unconfigured).
+    const content = readFileSync(
+      resolve(PROJECT_ROOT, "packages/web/src/lib/auth-env-warning.ts"),
+      "utf-8"
+    );
+    expect(content).not.toMatch(/domain:\s*string\s*\|\s*null\s*=\s*null/);
+  });
+
+  it("server.ts should emit the BETTER_AUTH_URL warning after bootInits populates the domain cache", () => {
+    // The Domain-Lock arm of the warning needs getCachedDomain() to return a
+    // real value, which requires bootInits() → loadDomainCache() to have run
+    // first. A module-load call would always see `null` and never warn.
+    const content = readFileSync(resolve(PROJECT_ROOT, "packages/web/server.ts"), "utf-8");
+    const bootInitsIdx = content.indexOf("await bootInits()");
+    const warningCallIdx = content.indexOf("getBetterAuthUrlStartupWarning(");
+    expect(bootInitsIdx).toBeGreaterThan(-1);
+    expect(warningCallIdx).toBeGreaterThan(-1);
+    expect(warningCallIdx).toBeGreaterThan(bootInitsIdx);
+  });
+
   it("auth.ts should configure trustedOrigins for dynamic origin detection", () => {
     const content = readFileSync(resolve(PROJECT_ROOT, "packages/web/src/lib/auth.ts"), "utf-8");
     expect(content).toContain("trustedOrigins");

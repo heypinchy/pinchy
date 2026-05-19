@@ -69,4 +69,11 @@ describe("getBetterAuthUrlStartupWarning", () => {
     expect(warning).not.toBeNull();
     expect(warning).not.toMatch(/is unset|not set/i);
   });
+
+  it("treats an empty domain string the same as no Domain Lock", () => {
+    // getCachedDomain() returns string | null, but a defensive caller could
+    // pass "" — mirror the BETTER_AUTH_URL empty-string handling so neither
+    // arm fires on a meaningless value.
+    expect(getBetterAuthUrlStartupWarning({}, "")).toBeNull();
+  });
 });
