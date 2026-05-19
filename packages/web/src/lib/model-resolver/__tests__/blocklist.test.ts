@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isBlocked } from "../blocklist";
+import { getForbiddenCapabilitySets, isBlocked } from "../blocklist";
 
 describe("isBlocked", () => {
   it("blocks deepseek-r1 when tools capability is required", () => {
@@ -35,5 +35,21 @@ describe("isBlocked", () => {
   it("does not block stable gemini models", () => {
     expect(isBlocked("gemini-2.5-pro", ["tools"])).toBe(false);
     expect(isBlocked("gemini-2.5-flash-lite", ["tools"])).toBe(false);
+  });
+});
+
+describe("getForbiddenCapabilitySets", () => {
+  it("returns one entry per rule, each a non-empty capability list", () => {
+    const sets = getForbiddenCapabilitySets();
+    expect(sets.length).toBeGreaterThan(0);
+    for (const set of sets) {
+      expect(set.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("includes the tools capability (current rules all forbid tools)", () => {
+    const sets = getForbiddenCapabilitySets();
+    const flattened = sets.flatMap((s) => [...s]);
+    expect(flattened).toContain("tools");
   });
 });

@@ -3,8 +3,9 @@ import {
   TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS,
   TOOL_CAPABLE_OLLAMA_CLOUD_MODELS,
 } from "@/lib/ollama-cloud-models";
-import { isBlocked } from "../blocklist";
+import { getForbiddenCapabilitySets, isBlocked } from "../blocklist";
 import { resolveOllamaCloud } from "../providers/ollama-cloud";
+import type { ModelCapability } from "../types";
 
 describe("resolveOllamaCloud", () => {
   it("picks a flash model for tier=fast", () => {
@@ -116,6 +117,43 @@ describe("resolveOllamaCloud — vision capability", () => {
       offenders.length === 0
         ? ""
         : `\n  Vision-slot models that are in the tools-blocklist:\n${offenders.map((o) => `    • ${o}`).join("\n")}\n`
+    ).toEqual([]);
+  });
+
+  // Generic drift-guard: covers every `forbiddenWhen` capability-set currently
+  // declared in `blocklist.ts`, exercising both the vision-slot path (vision in
+  // capabilities) and the general/taskType path. When someone adds a new
+  // blocklist rule with a new forbidden capability (e.g. `["long-context"]`),
+  // this test automatically picks it up — no need to nachziehen the test
+  // alongside the rule.
+  it("does NOT return a blocked model for any tier × taskType × known forbidden capability-set", () => {
+    const tiers = ["fast", "balanced", "reasoning"] as const;
+    const taskTypes = ["general", "coder", "vision", "reasoning"] as const;
+    const forbiddenSets = getForbiddenCapabilitySets();
+    const offenders: string[] = [];
+    for (const tier of tiers) {
+      for (const taskType of taskTypes) {
+        for (const forbidden of forbiddenSets) {
+          for (const includeVision of [false, true]) {
+            const capabilities: ModelCapability[] = includeVision
+              ? Array.from(new Set<ModelCapability>([...forbidden, "vision"]))
+              : [...forbidden];
+            const result = resolveOllamaCloud({ tier, taskType, capabilities });
+            const bareId = result.model.replace(/^ollama-cloud\//, "");
+            if (isBlocked(bareId, capabilities)) {
+              offenders.push(
+                `tier=${tier}, taskType=${taskType}, caps=[${capabilities.join(",")}] → ${result.model}`
+              );
+            }
+          }
+        }
+      }
+    }
+    expect(
+      offenders,
+      offenders.length === 0
+        ? ""
+        : `\n  Resolver returned blocked models for these inputs:\n${offenders.map((o) => `    • ${o}`).join("\n")}\n`
     ).toEqual([]);
   });
 

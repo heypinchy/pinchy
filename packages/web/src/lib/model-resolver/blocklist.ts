@@ -29,3 +29,13 @@ export function isBlocked(modelId: string, requiredCapabilities: ModelCapability
       rule.forbiddenWhen.some((c) => requiredCapabilities.includes(c))
   );
 }
+
+/**
+ * Returns every distinct `forbiddenWhen` capability-set across all blocklist
+ * rules. Exposed so resolver drift-guards can iterate over current rules
+ * instead of hard-coding `["tools"]`. Add a new rule with a new forbidden
+ * capability and the drift-guards automatically cover it.
+ */
+export function getForbiddenCapabilitySets(): ReadonlyArray<readonly ModelCapability[]> {
+  return RULES.map((r) => r.forbiddenWhen);
+}

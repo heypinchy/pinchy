@@ -8,6 +8,12 @@ import type { OllamaCloudModelId } from "@/lib/ollama-cloud-models";
 // (`llama3.3:70b → HTTP 404`) would have failed `tsc` here.
 type OllamaCloudModelRef = `ollama-cloud/${OllamaCloudModelId}`;
 
+// NOTE: this resolver hardcodes its picks and does NOT filter through
+// `isBlocked` at runtime (unlike `ollama-local.ts`, which does). The
+// drift-guard test in `__tests__/ollama-cloud.test.ts` ("does NOT return
+// a blocked model for any tier's vision slot") is what enforces the
+// invariant — if you add or change an entry below that lands in the
+// tools-blocklist, that test will fail before the regression ships.
 const BY_TIER_FAMILY: Record<
   ModelTier,
   Partial<Record<ModelTaskType, OllamaCloudModelRef>> & {
