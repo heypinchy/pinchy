@@ -768,6 +768,14 @@ jobs:
 
   end-user-upgrade:
     name: End-user upgrade simulation
+    needs: build-image
+    if: >-
+      always() &&
+      (needs.build-image.result == 'success' ||
+       needs.build-image.result == 'skipped')
+    permissions:
+      contents: read
+      packages: read
     runs-on: ubuntu-latest
 
     steps:
@@ -780,6 +788,14 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Determine previous release tag
         id: prev
@@ -798,18 +814,26 @@ jobs:
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Build this PR's images locally
-        if: steps.prev.outputs.skip == 'false'
+      - name: Pull pre-built CI images (skip on fork PRs)
+        if: steps.prev.outputs.skip == 'false' && needs.build-image.result == 'success'
+        run: |
+          docker pull ${{ needs.build-image.outputs.pinchy-image }}
+          docker pull ${{ needs.build-image.outputs.openclaw-image }}
+
+      - name: Build this PR's images locally (fork PR fallback)
+        if: steps.prev.outputs.skip == 'false' && needs.build-image.result == 'skipped'
         run: |
           docker build -t ghcr.io/heypinchy/pinchy:latest -f Dockerfile.pinchy .
           docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
 
-      - name: Tag locally-built images for the test version
+      - name: Tag images for the test version
         if: steps.prev.outputs.skip == 'false'
         run: |
           SHORT_SHA=$(echo "${GITHUB_SHA}" | cut -c1-12)
-          docker tag ghcr.io/heypinchy/pinchy:latest "ghcr.io/heypinchy/pinchy:test-${SHORT_SHA}"
-          docker tag ghcr.io/heypinchy/pinchy-openclaw:latest "ghcr.io/heypinchy/pinchy-openclaw:test-${SHORT_SHA}"
+          PINCHY_SRC="${{ needs.build-image.outputs.pinchy-image || 'ghcr.io/heypinchy/pinchy:latest' }}"
+          OPENCLAW_SRC="${{ needs.build-image.outputs.openclaw-image || 'ghcr.io/heypinchy/pinchy-openclaw:latest' }}"
+          docker tag "$PINCHY_SRC" "ghcr.io/heypinchy/pinchy:test-${SHORT_SHA}"
+          docker tag "$OPENCLAW_SRC" "ghcr.io/heypinchy/pinchy-openclaw:test-${SHORT_SHA}"
 
       - name: Generate shared DB_PASSWORD for both phases
         if: steps.prev.outputs.skip == 'false'
