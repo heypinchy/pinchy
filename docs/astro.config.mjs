@@ -164,6 +164,7 @@ export default defineConfig({
           label: 'Reference',
           items: [
             { label: 'API Reference', slug: 'reference/api' },
+            { label: 'Organization Timezone', slug: 'reference/organization-timezone' },
             { label: 'SBOM', slug: 'reference/sbom' },
           ],
         },
