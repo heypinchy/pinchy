@@ -3,15 +3,12 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { AlertTriangle } from "lucide-react";
 import { DirectoryPicker } from "@/components/directory-picker";
 import {
   getToolsByCategory,
   getOdooToolsForAccessLevel,
   getEmailToolsForOperations,
 } from "@/lib/tool-registry";
-import { isModelVisionCapable } from "@/lib/model-vision";
 import { OdooPermissionSection } from "@/components/odoo-permission-section";
 import { EmailPermissionSection } from "@/components/email-permission-section";
 import { WebSearchPermissionSection } from "@/components/web-search-permission-section";
@@ -305,18 +302,6 @@ export function AgentSettingsPermissions({
             </Label>
           </div>
         ))}
-
-        {allowedKbTools.includes("pinchy_read") && !isModelVisionCapable(agent.model) && (
-          <Alert className="border-amber-500/50 text-amber-700 dark:text-amber-400">
-            <AlertTriangle className="size-4" />
-            <AlertTitle>Limited PDF support</AlertTitle>
-            <AlertDescription>
-              The selected model doesn&apos;t support vision. Scanned PDFs and embedded images
-              won&apos;t be fully readable — only digitally created PDFs with a text layer will
-              work.
-            </AlertDescription>
-          </Alert>
-        )}
       </section>
 
       {/* Web Search section — only when at least one active Web Search connection exists */}

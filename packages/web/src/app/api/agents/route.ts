@@ -40,6 +40,7 @@ const createAgentSchema = z.object({
   tagline: z.string().nullish(),
   pluginConfig: pluginConfigSchema.nullish(),
   connectionId: z.string().nullish(),
+  defaultAllowedTools: z.array(z.string()).optional(),
 });
 
 export const GET = withAuth(async (_req, _ctx, session) => {
@@ -50,7 +51,8 @@ export const GET = withAuth(async (_req, _ctx, session) => {
 export const POST = withAdmin(async (request, _ctx, session) => {
   const parsed = await parseRequestBody(createAgentSchema, request);
   if ("error" in parsed) return parsed.error;
-  const { name, templateId, tagline, pluginConfig, connectionId } = parsed.data;
+  const { name, templateId, tagline, pluginConfig, connectionId, defaultAllowedTools } =
+    parsed.data;
 
   const template = getTemplate(templateId);
   if (!template) {
@@ -139,6 +141,10 @@ export const POST = withAdmin(async (request, _ctx, session) => {
     modelSelectionReason = `provider-default (${defaultProvider ?? "anthropic fallback"})`;
   }
 
+  const mergedAllowedTools = [
+    ...new Set([...(template.allowedTools ?? []), ...(defaultAllowedTools ?? [])]),
+  ];
+
   const [agent] = await db
     .insert(agents)
     .values({
@@ -147,7 +153,7 @@ export const POST = withAdmin(async (request, _ctx, session) => {
       templateId,
       pluginConfig: template.pluginId && pluginConfig ? pluginConfig : null,
       ownerId: session.user.id,
-      allowedTools: template.allowedTools,
+      allowedTools: mergedAllowedTools,
       tagline: tagline || template.defaultTagline || null,
       avatarSeed: generateAvatarSeed(),
       personalityPresetId: template.defaultPersonality,
