@@ -463,6 +463,10 @@ A dedicated guard, `odoo-ref-tool-e2e-coverage.test.ts` (pinchy#791), enforces t
 
 `odoo_reconcile` is covered via the **payment-counterpart** path only: the mock's `js_assign_outstanding_line` handler zeroes the bill's `amount_residual`, which is the sole signal the plugin's `didReconcile` trusts, so `outcome=success` proves the real verification path rather than a blind return value. The **bank-statement** counterpart path (x2many write-command expansion + journal suspense/default accounts, which real Odoo 19 makes silent-no-op-prone) is deliberately left on live verification — a naive mock of it would risk a false-green, and the payment path already discharges the tool's coverage obligation.
 
+### Plugin package manager
+
+Plugin packages under `packages/plugins/*` use **npm**, not pnpm. The runtime installs their dependencies in the OpenClaw container via `npm install --omit=dev` (see `Dockerfile.openclaw`), and several plugins depend on native modules (e.g. `sharp`'s prebuilt libvips binaries) that need the npm install layout. The repo's root `.gitignore` ignores `packages/plugins/*/package-lock.json` because each plugin's lockfile is regenerated at image-build time from its `package.json`. Do not add plugin packages to the root pnpm workspace.
+
 ## Documentation
 
 - Docs live in `docs/`, use Astro Starlight, and follow the Diataxis framework.
