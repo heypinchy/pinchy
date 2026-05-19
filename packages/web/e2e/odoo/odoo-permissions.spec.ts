@@ -312,8 +312,10 @@ test.describe.serial("Odoo Permission Setup", () => {
     await expect(page.getByRole("heading", { name: "Odoo" })).toBeVisible({ timeout: 10000 });
 
     // Toggle a KB tool — its change crosses one of the snapshots that the
-    // child component used to freeze at mount.
-    await page.getByLabel("List approved directories").click();
+    // child component used to freeze at mount. Use "Write files" (pinchy_write):
+    // it's the only KB toggle still rendered after pinchy_ls/pinchy_read became
+    // implicit always-on tools (#384).
+    await page.getByLabel("Write files").click();
     await expect(page.getByText("Unsaved changes")).toBeVisible({ timeout: 10000 });
 
     // Remove enterprise badge overlay if present (blocks button clicks).
