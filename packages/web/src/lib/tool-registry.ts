@@ -3,7 +3,6 @@ export interface ToolDefinition {
   label: string;
   description: string;
   category: "safe" | "powerful";
-  requiresDirectories?: boolean;
   integration?: string;
   /**
    * Tool is kept for backwards compatibility with agents created before the
@@ -15,22 +14,6 @@ export interface ToolDefinition {
 }
 
 export const TOOL_REGISTRY: readonly ToolDefinition[] = [
-  // Safe tools — sandboxed, admin-configured paths only
-  {
-    id: "pinchy_ls",
-    label: "List approved directories",
-    description: "List files in admin-approved directories only",
-    category: "safe",
-    requiresDirectories: true,
-  },
-  {
-    id: "pinchy_read",
-    label: "Read approved files",
-    description: "Read files (including PDFs) from approved directories only",
-    category: "safe",
-    requiresDirectories: true,
-  },
-
   // Note: docs_list / docs_read are NOT listed here. They are provided by the
   // pinchy-docs plugin, which is enabled automatically for personal agents
   // (Smithers) via openclaw-config.ts. They are not admin-configurable per
@@ -166,6 +149,14 @@ export const TOOL_REGISTRY: readonly ToolDefinition[] = [
     description: "Send email directly",
     category: "powerful",
     integration: "email",
+  },
+
+  // Workspace write — governed by pinchy-files plugin
+  {
+    id: "pinchy_write",
+    label: "Write files",
+    description: "Write files into the agent's workspace (uploads directory)",
+    category: "powerful",
   },
 ];
 
