@@ -34,14 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-pnpm
 
       - name: Lint
         run: pnpm --filter @pinchy/web lint
@@ -139,14 +132,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-pnpm
 
       - name: Run vitest integration tests
         run: pnpm -C packages/web test:db
@@ -185,14 +171,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-pnpm
 
       - name: Install Playwright Chromium
         run: pnpm -C packages/web exec playwright install chromium --with-deps
@@ -917,14 +896,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-pnpm
 
       - name: Start test stack with mock Odoo
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.odoo-test.yml up --build -d
@@ -1014,14 +986,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-pnpm
 
       - name: Start test stack with mock Brave
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.web-test.yml up --build -d
@@ -1111,14 +1076,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-pnpm
 
       - name: Start test stack with mock Gmail
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml up --build -d
@@ -1219,14 +1177,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-pnpm
 
       # Chromium is needed by agent-hot-reload.spec.ts which drives the chat UI.
       # The other Telegram tests are fetch-only, but Playwright still requires
@@ -1360,14 +1311,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-pnpm
 
       # On Linux, host.docker.internal doesn't resolve outside containers by default.
       # globalSetup spawns fake Ollama on the host and probes it from inside the
@@ -1442,14 +1386,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: pnpm/action-setup@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
+      - uses: ./.github/actions/setup-pnpm
 
       - name: Install Ollama
         run: curl -fsSL https://ollama.com/install.sh | sh
