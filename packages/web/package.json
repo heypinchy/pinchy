@@ -68,6 +68,8 @@
     "remark-gfm": "^4.0.1",
     "sonner": "^2.0.7",
     "tailwind-merge": "^3.6.0",
+    "turndown": "^7.2.0",
+    "turndown-plugin-gfm": "^1.0.2",
     "ws": "^8.21.0",
     "zod": "^4.4.3",
     "zustand": "^5.0.13"
@@ -82,6 +84,7 @@
     "@types/prismjs": "^1.26.6",
     "@types/react": "^19.2.15",
     "@types/react-dom": "^19.2.3",
+    "@types/turndown": "^5.0.5",
     "@types/ws": "^8.18.1",
     "@vitejs/plugin-react": "^6.0.2",
     "drizzle-kit": "^0.31.10",
