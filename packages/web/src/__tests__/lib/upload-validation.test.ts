@@ -3,6 +3,7 @@ import {
   sanitizeFilename,
   validateUploadBuffer,
   ALLOWED_ATTACHMENT_MIMES,
+  ALLOWED_TEXT_MIMES,
 } from "@/lib/upload-validation";
 
 describe("sanitizeFilename", () => {
@@ -154,5 +155,45 @@ describe("validateUploadBuffer", () => {
       Buffer.alloc(32, 0),
     ]);
     await expect(validateUploadBuffer(M4A_HEADER, "audio/x-m4a")).rejects.toThrow(/not supported/i);
+  });
+});
+
+describe("text file support", () => {
+  it("ALLOWED_TEXT_MIMES contains the required text types", () => {
+    expect(ALLOWED_TEXT_MIMES.has("text/plain")).toBe(true);
+    expect(ALLOWED_TEXT_MIMES.has("text/csv")).toBe(true);
+    expect(ALLOWED_TEXT_MIMES.has("text/markdown")).toBe(true);
+    expect(ALLOWED_TEXT_MIMES.has("application/json")).toBe(true);
+    expect(ALLOWED_TEXT_MIMES.has("text/yaml")).toBe(true);
+  });
+
+  it("accepts valid UTF-8 CSV content", async () => {
+    const csv = Buffer.from("name,age\nAlice,30\nBob,25\n", "utf-8");
+    await expect(validateUploadBuffer(csv, "text/csv")).resolves.toBe("text/csv");
+  });
+
+  it("accepts valid plain text content", async () => {
+    const txt = Buffer.from("Hello, World!\nThis is a plain text file.\n", "utf-8");
+    await expect(validateUploadBuffer(txt, "text/plain")).resolves.toBe("text/plain");
+  });
+
+  it("accepts valid Markdown content", async () => {
+    const md = Buffer.from("# Title\n\nSome **bold** text.\n", "utf-8");
+    await expect(validateUploadBuffer(md, "text/markdown")).resolves.toBe("text/markdown");
+  });
+
+  it("accepts valid JSON content", async () => {
+    const json = Buffer.from('{"key": "value", "number": 42}\n', "utf-8");
+    await expect(validateUploadBuffer(json, "application/json")).resolves.toBe("application/json");
+  });
+
+  it("rejects binary content claiming to be text/csv (null bytes present)", async () => {
+    // Buffer with an embedded NUL byte — not valid UTF-8 text
+    const binary = Buffer.from([0x68, 0x65, 0x6c, 0x6c, 0x6f, 0x00, 0x77, 0x6f, 0x72, 0x6c, 0x64]);
+    await expect(validateUploadBuffer(binary, "text/csv")).rejects.toThrow(/binary/i);
+  });
+
+  it("rejects known binary (PDF magic bytes) claiming text/csv", async () => {
+    await expect(validateUploadBuffer(PDF_HEADER, "text/csv")).rejects.toThrow(/mismatch/i);
   });
 });

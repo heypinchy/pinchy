@@ -2,12 +2,26 @@
 // no state change, audit log not required (see AGENTS.md § audit rules).
 import { NextResponse } from "next/server";
 import { open, stat } from "fs/promises";
-import { join, resolve, sep } from "path";
+import { join, resolve, sep, extname } from "path";
 import { fileTypeFromBuffer } from "file-type";
 import { withAuth } from "@/lib/api-auth";
 import { getAgentWithAccess } from "@/lib/agent-access";
 import { getWorkspacePath } from "@/lib/workspace";
-import { sanitizeFilename, ALLOWED_ATTACHMENT_MIMES } from "@/lib/upload-validation";
+import {
+  sanitizeFilename,
+  ALLOWED_ATTACHMENT_MIMES,
+  ALLOWED_TEXT_MIMES,
+} from "@/lib/upload-validation";
+
+const EXTENSION_TO_MIME: Record<string, string> = {
+  ".csv": "text/csv",
+  ".txt": "text/plain",
+  ".md": "text/markdown",
+  ".markdown": "text/markdown",
+  ".json": "application/json",
+  ".yaml": "text/yaml",
+  ".yml": "text/yaml",
+};
 
 type Params = { params: Promise<{ agentId: string; filename: string }> };
 
@@ -70,13 +84,28 @@ export const GET = withAuth<Params>(async (_req, { params }, session) => {
   const detected = await fileTypeFromBuffer(
     new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
   );
-  if (!detected || !ALLOWED_ATTACHMENT_MIMES.has(detected.mime)) {
-    return new NextResponse("Unsupported media type", { status: 415 });
+
+  let servedMime: string;
+  if (!detected) {
+    // Text files have no magic bytes. Derive MIME from extension and verify
+    // against the text allowlist. Null-byte check guards against binary
+    // files renamed to .csv / .txt.
+    const ext = extname(safeName).toLowerCase();
+    const textMime = EXTENSION_TO_MIME[ext];
+    if (!textMime || !ALLOWED_TEXT_MIMES.has(textMime) || buffer.includes(0x00)) {
+      return new NextResponse("Unsupported media type", { status: 415 });
+    }
+    servedMime = textMime;
+  } else {
+    if (!ALLOWED_ATTACHMENT_MIMES.has(detected.mime)) {
+      return new NextResponse("Unsupported media type", { status: 415 });
+    }
+    servedMime = detected.mime;
   }
 
   return new NextResponse(Uint8Array.from(buffer), {
     headers: {
-      "content-type": detected.mime,
+      "content-type": servedMime,
       "content-length": String(buffer.byteLength),
       "cache-control": "private, max-age=3600",
       // Inline so the browser renders PDFs/images directly instead of
