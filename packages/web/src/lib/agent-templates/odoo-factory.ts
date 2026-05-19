@@ -138,7 +138,10 @@ export function createOdooTemplate(spec: OdooAgentTemplateSpec): AgentTemplate {
     iconName: spec.iconName,
     name: spec.name,
     description: spec.description,
-    allowedTools: getOdooToolsForAccessLevel(accessLevel),
+    allowedTools: [
+      ...getOdooToolsForAccessLevel(accessLevel),
+      ...(spec.additionalAllowedTools ?? []),
+    ],
     pluginId: null,
     defaultPersonality: spec.defaultPersonality,
     defaultTagline: spec.defaultTagline,

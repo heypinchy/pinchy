@@ -58,6 +58,13 @@ RUN cd /tmp/pinchy-email && npm install --omit=dev && \
     cp -r /tmp/pinchy-email/node_modules /opt/pinchy-email-deps/ && \
     rm -rf /tmp/pinchy-email
 
+# Install pinchy-image plugin dependencies (sharp ships prebuilt libvips binaries)
+COPY packages/plugins/pinchy-image/package.json /tmp/pinchy-image/package.json
+RUN cd /tmp/pinchy-image && npm install --omit=dev && \
+    mkdir -p /opt/pinchy-image-deps && \
+    cp -r /tmp/pinchy-image/node_modules /opt/pinchy-image-deps/ && \
+    rm -rf /tmp/pinchy-image
+
 # Pre-warm the bundled-plugin runtime-deps cache. Rationale and full
 # behaviour live in config/prewarm-openclaw.sh; in short: boot the
 # gateway once at build time so the npm install of ~15 plugin runtime

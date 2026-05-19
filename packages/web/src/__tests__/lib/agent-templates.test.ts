@@ -939,11 +939,15 @@ describe("Odoo template drift invariants", () => {
     expect(fabricated.odooConfig.accessLevel).not.toBe(derived);
   });
 
-  it("every Odoo template's allowedTools matches getOdooToolsForAccessLevel(accessLevel)", () => {
+  it("every Odoo template's odoo_* allowedTools match getOdooToolsForAccessLevel(accessLevel)", () => {
+    // Extra cross-plugin tools (e.g. image_crop) are allowed via
+    // additionalAllowedTools and live alongside the odoo_* tools — they must
+    // not be compared against the Odoo-only preset, so filter the namespace
+    // before comparing. Drift in the odoo_* slice still fails here.
     const drifted: Array<{ id: string }> = [];
     for (const [id, t] of odooEntries) {
       const expected = getOdooToolsForAccessLevel(t.odooConfig!.accessLevel);
-      const actual = [...t.allowedTools].sort();
+      const actual = t.allowedTools.filter((tool) => tool.startsWith("odoo_")).sort();
       const want = [...expected].sort();
       if (actual.length !== want.length || !actual.every((v, i) => v === want[i])) {
         drifted.push({ id });

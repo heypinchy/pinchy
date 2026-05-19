@@ -45,6 +45,8 @@ const WORKSPACE_READ_TRIGGER = "E2E_WORKSPACE_READ_TOOL";
 const WORKSPACE_READ_RESPONSE = "File read: coverage probe complete.";
 const WORKSPACE_WRITE_TRIGGER = "E2E_WORKSPACE_WRITE_TOOL";
 const WORKSPACE_WRITE_RESPONSE = "File written: coverage probe complete.";
+const IMAGE_CROP_TRIGGER = "E2E_IMAGE_CROP_TOOL";
+const IMAGE_CROP_RESPONSE = "Image cropped: coverage probe complete.";
 
 interface TriggerConfig {
   trigger: string;
@@ -123,6 +125,12 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     response: WORKSPACE_WRITE_RESPONSE,
     toolName: "pinchy_write",
     arguments: { path: "uploads/result.csv", content: "id,value\n1,E2E probe\n" },
+  },
+  {
+    trigger: IMAGE_CROP_TRIGGER,
+    response: IMAGE_CROP_RESPONSE,
+    toolName: "image_crop",
+    arguments: { source: "receipt.png", x: 0, y: 0, width: 10, height: 10 },
   },
 ];
 
@@ -543,6 +551,8 @@ export const FAKE_OLLAMA_WORKSPACE_READ_TOOL_TRIGGER = WORKSPACE_READ_TRIGGER;
 export const FAKE_OLLAMA_WORKSPACE_READ_TOOL_RESPONSE = WORKSPACE_READ_RESPONSE;
 export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_TRIGGER = WORKSPACE_WRITE_TRIGGER;
 export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_RESPONSE = WORKSPACE_WRITE_RESPONSE;
+export const FAKE_OLLAMA_IMAGE_CROP_TOOL_TRIGGER = IMAGE_CROP_TRIGGER;
+export const FAKE_OLLAMA_IMAGE_CROP_TOOL_RESPONSE = IMAGE_CROP_RESPONSE;
 
 let server: http.Server | null = null;
 
