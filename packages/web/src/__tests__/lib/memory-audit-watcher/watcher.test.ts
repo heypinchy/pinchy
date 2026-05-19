@@ -6,7 +6,12 @@ import { startMemoryAuditWatcher } from "@/lib/memory-audit-watcher";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-describe("startMemoryAuditWatcher (integration)", () => {
+// Each test interacts with the real filesystem via chokidar polling (50 ms
+// interval + 50 ms stability threshold). Under CI load, a single polling
+// cycle can take 2–5× longer than on a quiet dev machine. The "delete" case
+// needs TWO polling phases; other tests need one. 15 s per test gives 3–5×
+// headroom over the worst observed CI timing.
+describe("startMemoryAuditWatcher (integration)", { timeout: 15000 }, () => {
   let root: string;
   let appended: Array<Record<string, unknown>>;
   let stop: () => Promise<void>;
@@ -86,7 +91,7 @@ describe("startMemoryAuditWatcher (integration)", () => {
   });
 });
 
-describe("startMemoryAuditWatcher (handler error resilience)", () => {
+describe("startMemoryAuditWatcher (handler error resilience)", { timeout: 15000 }, () => {
   // Separate describe block: we replace lookupAgent with a throwing one and
   // need to verify the watcher survives without raising unhandledRejection.
   let root: string;
