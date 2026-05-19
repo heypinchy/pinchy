@@ -1,0 +1,77 @@
+---
+title: Instructions vs. Memory
+description: When to write something into an agent's Instructions and when to let it live in Memory — a quick heuristic for agent authors.
+---
+
+import { Aside } from "@astrojs/starlight/components";
+
+Agents in Pinchy have two places to hold knowledge: **Instructions** and **Memory**. They look similar — both are Markdown, both shape future replies — but they serve different jobs. Putting knowledge in the wrong place is the most common reason agents feel forgetful, repetitive, or "drift" over time.
+
+This page is the short version. Use it as a cheat sheet when you're editing an agent.
+
+## The two stores
+
+- **Instructions** — what the agent _is_ and how it _operates_. Loaded at the start of every conversation. In Pinchy, this is the **SOUL.md** ([Personality tab](/concepts/agent-settings/#personality-tab)) plus **AGENTS.md** ([Instructions tab](/concepts/agent-settings/#instructions-tab)).
+- **Memory** — what the agent has _learned_ across conversations. Stored in `MEMORY.md` and daily logs under `memory/YYYY-MM-DD.md`. Written automatically when the agent decides something is worth keeping, or explicitly when you tell it to "remember this."
+
+A useful mental model: Instructions are the job description you hand a new hire on day one. Memory is the notebook they fill in as they work.
+
+## The heuristic
+
+| Question                                                           | Where to put it                                                                                                                                          |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| WHO is the agent? (persona, tone, language)                        | **Instructions** — SOUL.md                                                                                                                               |
+| HOW does the agent behave? (rules, SOPs, tool order)               | **Instructions** — AGENTS.md                                                                                                                             |
+| Stable fact, relevant every session (product list, tax rates, IDs) | **Memory** — say "remember this" in chat                                                                                                                 |
+| User preference learned from interaction                           | **Memory** — auto-memory usually catches this on its own                                                                                                 |
+| One-off detail for a single conversation                           | **Don't persist** — leave it in chat context                                                                                                             |
+| Large body of knowledge (manuals, policies, codebases)             | **Knowledge base** — mount as a [data directory](/guides/mount-data-directories/) and use a [knowledge-base agent](/guides/create-knowledge-base-agent/) |
+
+If you're still not sure: ask yourself whether a brand-new conversation tomorrow would need this. If yes, persist it. If only this conversation needs it, don't.
+
+## Why the distinction matters
+
+Memory and Instructions have different lifetimes and load rules:
+
+- **Memory survives compaction.** When a conversation gets long, the agent runtime compacts the chat history into a summary — older messages disappear. Memory entries do not. Anything important enough to outlive a single thread belongs in Memory, not in the chat itself.
+- **Auto-memory flushes before compaction.** The agent writes pending memory entries to disk right before compacting, so a long conversation doesn't lose unsaved learnings.
+- **Subagent and cron sessions don't load MEMORY.md.** Background and delegated sessions intentionally skip Memory to stay focused on their task. If a piece of knowledge needs to be available to _every_ session — including cron jobs and subagents — it belongs in **Instructions**, not Memory. See [openclaw#24404](https://github.com/openclaw/openclaw/issues/24404) for the exact filter logic.
+
+<Aside type="tip" title="Rule of thumb">
+  If a fact must reach every session (including cron and subagents), put it in
+  Instructions. If it only needs to reach future _interactive_ conversations,
+  Memory is enough — and lighter.
+</Aside>
+
+## Examples
+
+**Put in Instructions:**
+
+- "Always answer in English, even if the user writes in another language."
+- "When the user asks for a deploy, run `pnpm build`, then `docker compose up -d`, in that order."
+- "You are the HR assistant for Acme Corp. Be warm and discreet."
+
+**Let Memory hold:**
+
+- "Our quarterly board meeting is the first Friday of every quarter at 10:00 CET."
+- "Project IDs follow the format `PRJ-NNNN`."
+- "Clemens prefers shorter answers without bullet points."
+
+**Don't persist at all:**
+
+- "For this conversation only, pretend you're reviewing a draft PR."
+- "Look at the file I just pasted and find the bug." (the file is in the chat already)
+
+## Editing each store
+
+- **Instructions** — open the agent's settings, then the [Personality](/concepts/agent-settings/#personality-tab) or [Instructions](/concepts/agent-settings/#instructions-tab) tab.
+- **Memory** — talk to the agent. Say "remember this: …" to add an entry, or "forget …" to remove one. Auto-memory does most of the work without you having to ask.
+
+For more on how memory is scoped between personal and shared agents (and what that means for privacy), see [Understanding Agent Memory](/explanation/agent-memory/).
+
+## Upstream references
+
+Pinchy runs on the [OpenClaw](https://docs.openclaw.ai) runtime, which owns the underlying mechanics:
+
+- [OpenClaw — Memory](https://docs.openclaw.ai/concepts/memory)
+- [OpenClaw — System Prompt](https://docs.openclaw.ai/concepts/system-prompt)

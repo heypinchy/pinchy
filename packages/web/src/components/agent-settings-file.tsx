@@ -39,7 +39,22 @@ export function AgentSettingsFile({
 
   return (
     <div className="space-y-4">
-      <p className="text-sm text-muted-foreground">{EXPLANATIONS[filename]}</p>
+      <p className="text-sm text-muted-foreground">
+        {EXPLANATIONS[filename]}
+        {filename === "AGENTS.md" && (
+          <>
+            {" "}
+            <a
+              href="https://docs.heypinchy.com/explanation/instructions-vs-memory/"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline underline-offset-4 hover:text-foreground"
+            >
+              Instructions vs. Memory →
+            </a>
+          </>
+        )}
+      </p>
       <MarkdownEditor value={content} onChange={handleChange} />
     </div>
   );

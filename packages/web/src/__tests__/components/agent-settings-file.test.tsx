@@ -58,6 +58,21 @@ describe("AgentSettingsFile", () => {
 
       expect(screen.getByText(/operating instructions/i)).toBeInTheDocument();
     });
+
+    it("should link to the Instructions vs. Memory docs page", () => {
+      render(
+        <AgentSettingsFile agentId="agent-1" filename="AGENTS.md" content="" onChange={vi.fn()} />
+      );
+
+      const link = screen.getByRole("link", { name: /instructions vs\.? memory/i });
+      expect(link).toBeInTheDocument();
+      expect(link).toHaveAttribute(
+        "href",
+        "https://docs.heypinchy.com/explanation/instructions-vs-memory/"
+      );
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
+    });
   });
 
   describe("onChange behavior", () => {
