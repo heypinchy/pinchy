@@ -4,7 +4,8 @@
  * Run with: npx tsx generate-docx-fixtures.ts
  *
  * Creates:
- *   test-fixtures/simple.docx — heading + paragraphs + 2x3 table + inline bold
+ *   test-fixtures/simple.docx     — heading + paragraphs + 2x3 table + inline bold
+ *   test-fixtures/with-image.docx — two paragraphs surrounding an embedded PNG image
  */
 
 import {
@@ -16,7 +17,14 @@ import {
   Table,
   TableRow,
   TableCell,
+  ImageRun,
 } from "docx";
+
+// Minimal 1×1 px red PNG (base64). This byte array is a valid PNG.
+const TINY_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI6QAAAABJRU5ErkJggg==",
+  "base64",
+);
 import { writeFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 
@@ -76,12 +84,43 @@ async function createSimpleDocx(): Promise<Buffer> {
   return Packer.toBuffer(doc);
 }
 
+async function createWithImageDocx(): Promise<Buffer> {
+  const doc = new Document({
+    sections: [
+      {
+        children: [
+          new Paragraph({
+            children: [new TextRun("Before image")],
+          }),
+          new Paragraph({
+            children: [
+              new ImageRun({
+                data: TINY_PNG,
+                transformation: { width: 1, height: 1 },
+                type: "png",
+              }),
+            ],
+          }),
+          new Paragraph({
+            children: [new TextRun("After image")],
+          }),
+        ],
+      },
+    ],
+  });
+  return Packer.toBuffer(doc);
+}
+
 async function main() {
   console.log("Generating .docx test fixtures...\n");
 
   const simple = await createSimpleDocx();
   writeFileSync(join(FIXTURES_DIR, "simple.docx"), simple);
   console.log(`  simple.docx — ${simple.length.toLocaleString()} bytes`);
+
+  const withImage = await createWithImageDocx();
+  writeFileSync(join(FIXTURES_DIR, "with-image.docx"), withImage);
+  console.log(`  with-image.docx — ${withImage.length.toLocaleString()} bytes`);
 
   console.log("\nDone! Fixtures written to test-fixtures/");
 }
