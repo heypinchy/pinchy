@@ -39,6 +39,20 @@ vi.mock("@/lib/telegram-allow-store", () => ({
     mockRecalculateTelegramAllowStores(...args),
 }));
 
+const mockNotifyRestart = vi.fn();
+vi.mock("@/server/restart-state", () => ({
+  restartState: {
+    notifyRestart: (...args: unknown[]) => mockNotifyRestart(...args),
+    notifyReady: vi.fn(),
+    get isRestarting() {
+      return false;
+    },
+    triggeredAt: null,
+    on: vi.fn(),
+    emit: vi.fn(),
+  },
+}));
+
 vi.mock("@/db", () => ({
   db: {
     query: {
@@ -299,6 +313,37 @@ describe("POST /api/agents/[agentId]/channels/telegram", () => {
     expect(mockRecalculateTelegramAllowStores).toHaveBeenCalled();
   });
 
+  it("notifies restart state so the health endpoint reflects pending OC restart", async () => {
+    // Adding/changing the Telegram channel triggers a full OC restart via inotify.
+    // Without notifyRestart, the health endpoint stays "ok" and the client overlay
+    // disappears before OC is actually ready — Telegram polling not yet running.
+    const response = await POST(makeRequest({ botToken: "123456:ABC-token" }), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockNotifyRestart).toHaveBeenCalled();
+  });
+
+  it("does not notify restart on validation failure", async () => {
+    mockValidateTelegramBotToken.mockResolvedValueOnce({
+      valid: false,
+      error: "Invalid token",
+    });
+
+    await POST(makeRequest({ botToken: "invalid" }), { params: mockParams });
+
+    expect(mockNotifyRestart).not.toHaveBeenCalled();
+  });
+
+  it("does not notify restart when main bot is missing", async () => {
+    mockHasMainTelegramBot.mockResolvedValueOnce(false);
+
+    await POST(makeRequest({ botToken: "123456:ABC-token" }), { params: mockParams });
+
+    expect(mockNotifyRestart).not.toHaveBeenCalled();
+  });
+
   it("returns 409 when main bot is not configured", async () => {
     mockHasMainTelegramBot.mockResolvedValueOnce(false);
 
@@ -391,6 +436,26 @@ describe("DELETE /api/agents/[agentId]/channels/telegram", () => {
     expect(response.status).toBe(400);
     expect(data.error).toContain("Remove Telegram for everyone");
     expect(deleteSetting).not.toHaveBeenCalled();
+  });
+
+  it("notifies restart state so the health endpoint reflects pending OC restart", async () => {
+    const response = await DELETE(new Request("http://localhost"), {
+      params: mockParams,
+    });
+
+    expect(response.status).toBe(200);
+    expect(mockNotifyRestart).toHaveBeenCalled();
+  });
+
+  it("does not notify restart when trying to disconnect a personal agent's bot", async () => {
+    vi.mocked(db.query.agents.findFirst).mockResolvedValueOnce({
+      ...mockAgent,
+      isPersonal: true,
+    } as any);
+
+    await DELETE(new Request("http://localhost"), { params: mockParams });
+
+    expect(mockNotifyRestart).not.toHaveBeenCalled();
   });
 
   it("returns 404 for non-existent agent", async () => {

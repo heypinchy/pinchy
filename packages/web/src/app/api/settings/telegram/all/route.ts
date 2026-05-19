@@ -7,6 +7,7 @@ import { deleteSetting } from "@/lib/settings";
 import { db } from "@/db";
 import { channelLinks, settings } from "@/db/schema";
 import { eq, like } from "drizzle-orm";
+import { restartState } from "@/server/restart-state";
 
 export async function DELETE() {
   const admin = await requireAdmin();
@@ -31,6 +32,10 @@ export async function DELETE() {
   // Clear all per-account allow-from stores and remove all channel config
   clearAllAllowStores();
   updateTelegramChannelConfig(null, null, null);
+
+  // Removing all Telegram channels triggers an OC restart — mark the server-side
+  // state so /api/health/openclaw reflects the truth (see agent-channel route).
+  restartState.notifyRestart();
 
   await appendAuditLog({
     actorType: "user",

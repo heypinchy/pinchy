@@ -13,6 +13,7 @@ import { db } from "@/db";
 import { agents, settings } from "@/db/schema";
 import { eq, like } from "drizzle-orm";
 import { parseRequestBody } from "@/lib/api-validation";
+import { restartState } from "@/server/restart-state";
 
 const setBotTokenSchema = z.object({
   botToken: z.string().min(1),
@@ -105,6 +106,12 @@ export async function POST(req: NextRequest, { params }: { params: Promise<{ age
     null // Don't touch identityLinks — preserved from existing config
   );
 
+  // Adding/changing a Telegram channel flips top-level config fields that OC treats
+  // as restart-triggering. Mark the server-side restart state so /api/health/openclaw
+  // reflects the truth — otherwise the client overlay clears before OC's Telegram
+  // polling has come back up, and the user sees the pairing code arrive late.
+  restartState.notifyRestart();
+
   // Populate allow-from store with all linked users who have permission to this agent
   await recalculateTelegramAllowStores();
 
@@ -158,6 +165,9 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ agent
   clearAllowStoreForAccount(agentId);
   // Remove this account from config (other accounts preserved)
   updateTelegramChannelConfig(agentId, null, null);
+
+  // See POST handler — removing a Telegram channel also triggers an OC restart.
+  restartState.notifyRestart();
 
   await appendAuditLog({
     actorType: "user",
