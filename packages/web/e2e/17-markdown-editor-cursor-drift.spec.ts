@@ -54,8 +54,6 @@ test.describe("Markdown editor caret alignment", () => {
 
     const textarea = editor.locator("textarea").first();
     await textarea.click();
-    await page.keyboard.press("ControlOrMeta+A");
-    await page.keyboard.press("Backspace");
 
     // Build a realistic AGENTS.md-style content:
     //   - 20 headings interleaved with paragraphs and short list items
@@ -77,8 +75,21 @@ test.describe("Markdown editor caret alignment", () => {
     sections.push("- trailing line 1");
     sections.push("- trailing line 2");
     const CONTENT = sections.join("\n");
-    // delay:0 is fast enough; we're testing layout, not key event timing.
-    await page.keyboard.type(CONTENT, { delay: 1 });
+
+    // Set the textarea value via React's controlled-input pattern: use the
+    // native value setter so React's input event listener picks up the
+    // change, then dispatch a synthetic input event. Typing character by
+    // character via page.keyboard.type would take 30+ seconds for this
+    // payload on CI and trip the test timeout.
+    await editor.evaluate((root, value) => {
+      const ta = root.querySelector("textarea") as HTMLTextAreaElement;
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLTextAreaElement.prototype,
+        "value"
+      )!.set!;
+      setter.call(ta, value);
+      ta.dispatchEvent(new Event("input", { bubbles: true }));
+    }, CONTENT);
 
     await expect(editor.locator("pre .token.code-snippet").first()).toBeVisible();
     await expect(editor.locator("pre .token.title.important").first()).toBeVisible();
