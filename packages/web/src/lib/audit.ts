@@ -49,6 +49,7 @@ export type AuditEventType =
   | "channel.deleted"
   | "chat.retry_triggered"
   | "agent.model_unavailable"
+  | "agent.memory_changed"
   | "audit.exported"
   | "attachment.uploaded";
 
@@ -230,6 +231,16 @@ export type AuditLogEntry =
         providerError: string;
         ref?: string;
         httpStatus: number;
+      };
+    })
+  | (AuditLogBase & {
+      eventType: "agent.memory_changed";
+      detail: {
+        agent: { id: string; name: string };
+        file: string;
+        addedLines: number;
+        removedLines: number;
+        byteSize: number;
       };
     })
   | (AuditLogBase & {
