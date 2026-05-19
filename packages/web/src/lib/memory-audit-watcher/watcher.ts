@@ -98,17 +98,34 @@ export async function startMemoryAuditWatcher(
     );
   };
 
+  // We detach handler invocations from the chokidar event loop with `.catch`
+  // wrappers. Without them, any uncaught rejection (e.g. lookupAgent throws
+  // because the DB is momentarily down) becomes an unhandledRejection and
+  // can crash the host process under Node's --unhandled-rejections=strict
+  // mode. Catch and log so the watcher stays up — the alternative would be
+  // losing all future memory-audit coverage after a single transient blip.
+  const logWatcherError = (err: unknown, absolutePath: string) => {
+    console.error(
+      JSON.stringify({
+        level: "error",
+        event: "memory_audit_watcher_handler_failed",
+        path: absolutePath,
+        error: err instanceof Error ? err.message : String(err),
+      })
+    );
+  };
+
   watcher.on("add", (p) => {
-    void onFileEvent("add", p, readyState);
+    onFileEvent("add", p, readyState).catch((err) => logWatcherError(err, p));
   });
   watcher.on("change", (p) => {
-    void onFileEvent("change", p, readyState);
+    onFileEvent("change", p, readyState).catch((err) => logWatcherError(err, p));
   });
   watcher.on("unlink", (p) => {
-    void handleMemoryFileEvent(
+    handleMemoryFileEvent(
       { kind: "unlink", absolutePath: p },
       { ...handlerDepsBase, readyState }
-    );
+    ).catch((err) => logWatcherError(err, p));
   });
 
   await new Promise<void>((resolve) => {

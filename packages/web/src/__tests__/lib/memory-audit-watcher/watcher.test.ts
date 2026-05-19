@@ -81,3 +81,65 @@ describe("startMemoryAuditWatcher (integration)", () => {
     expect(appended).toHaveLength(0);
   });
 });
+
+describe("startMemoryAuditWatcher (handler error resilience)", () => {
+  // Separate describe block: we replace lookupAgent with a throwing one and
+  // need to verify the watcher survives without raising unhandledRejection.
+  let root: string;
+  let appended: Array<Record<string, unknown>>;
+  let stop: () => Promise<void>;
+  let unhandled: unknown[];
+  let unhandledHandler: (reason: unknown) => void;
+  let lookupShouldThrow: boolean;
+
+  beforeEach(async () => {
+    root = mkdtempSync(join(tmpdir(), "pinchy-memwatch-err-"));
+    mkdirSync(join(root, "agents", "agent-1", "memory"), { recursive: true });
+    appended = [];
+    unhandled = [];
+    lookupShouldThrow = true;
+
+    unhandledHandler = (reason) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", unhandledHandler);
+
+    stop = await startMemoryAuditWatcher({
+      root,
+      lookupAgent: async (id) => {
+        if (lookupShouldThrow) throw new Error("DB unreachable");
+        return id === "agent-1" ? { id, name: "Smithers" } : null;
+      },
+      appendAuditLog: async (entry) => {
+        appended.push(entry as Record<string, unknown>);
+      },
+      recordAuditFailure: vi.fn(),
+    });
+  });
+
+  afterEach(async () => {
+    process.off("unhandledRejection", unhandledHandler);
+    await stop();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("does not raise unhandledRejection when lookupAgent throws, and recovers on next event", async () => {
+    // Fire a write while lookup throws — the void-detached handler would
+    // surface an unhandledRejection without the watcher's catch wrapper.
+    writeFileSync(join(root, "agents", "agent-1", "MEMORY.md"), "first write\n", "utf8");
+    // Give chokidar + the handler time to fire and reject.
+    await wait(800);
+    expect(unhandled).toEqual([]);
+    expect(appended).toHaveLength(0); // lookup threw, no audit emitted
+
+    // Watcher must still be alive: fix lookup, write again, expect audit.
+    lookupShouldThrow = false;
+    writeFileSync(
+      join(root, "agents", "agent-1", "MEMORY.md"),
+      "first write\nsecond write\n",
+      "utf8"
+    );
+    await vi.waitFor(() => expect(appended.length).toBe(1), { timeout: 5000 });
+    expect(unhandled).toEqual([]);
+  });
+});
