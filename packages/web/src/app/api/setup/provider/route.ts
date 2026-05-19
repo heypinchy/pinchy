@@ -63,7 +63,7 @@ export async function POST(request: NextRequest) {
       // naming the offending host, plus a structured `docs` link pointing at
       // option B of the Ollama setup guide. The client renders `docs.label`
       // as a real <a> next to the error so users can click instead of having
-      // to copy-paste a URL out of inline text (#296 review follow-up).
+      // to copy-paste a URL out of inline text.
       if (validation.error === "unsupported_local_host") {
         return NextResponse.json(
           {
