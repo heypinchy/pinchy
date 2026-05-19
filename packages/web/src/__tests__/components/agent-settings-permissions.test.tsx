@@ -105,7 +105,7 @@ describe("AgentSettingsPermissions", () => {
     data: null,
   };
 
-  it("should render Knowledge Base heading with checkboxes for KB tools", () => {
+  it("should render Knowledge Base heading with pinchy_write toggle", () => {
     render(
       <AgentSettingsPermissions
         agent={defaultAgent}
@@ -117,8 +117,7 @@ describe("AgentSettingsPermissions", () => {
     );
 
     expect(screen.getByText("Knowledge Base")).toBeInTheDocument();
-    expect(screen.getByLabelText("List approved directories")).toBeInTheDocument();
-    expect(screen.getByLabelText("Read approved files")).toBeInTheDocument();
+    expect(screen.getByLabelText("Write files")).toBeInTheDocument();
   });
 
   it("should not render odoo tools as checkboxes", () => {
@@ -155,7 +154,7 @@ describe("AgentSettingsPermissions", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("should show DirectoryPicker when a safe tool is checked", async () => {
+  it("should show DirectoryPicker when directories are provided", () => {
     render(
       <AgentSettingsPermissions
         agent={defaultAgent}
@@ -165,19 +164,15 @@ describe("AgentSettingsPermissions", () => {
         onChange={vi.fn()}
       />
     );
-
-    expect(screen.queryByText("Allowed Directories")).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByLabelText("List approved directories"));
 
     expect(screen.getByText("Allowed Directories")).toBeInTheDocument();
   });
 
-  it("should NOT show DirectoryPicker when no safe tools are checked", () => {
+  it("should NOT show DirectoryPicker when no directories are provided", () => {
     render(
       <AgentSettingsPermissions
         agent={defaultAgent}
-        directories={defaultDirectories}
+        directories={[]}
         connections={[]}
         isAdmin={true}
         onChange={vi.fn()}
@@ -187,16 +182,16 @@ describe("AgentSettingsPermissions", () => {
     expect(screen.queryByText("Allowed Directories")).not.toBeInTheDocument();
   });
 
-  it("should show DirectoryPicker when agent already has safe tools allowed", () => {
-    const agentWithTools = {
+  it("should show DirectoryPicker when agent has allowed paths configured", () => {
+    const agentWithPaths = {
       ...defaultAgent,
-      allowedTools: ["pinchy_ls"],
+      allowedTools: [],
       pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs"] } },
     };
 
     render(
       <AgentSettingsPermissions
-        agent={agentWithTools}
+        agent={agentWithPaths}
         directories={defaultDirectories}
         connections={[]}
         isAdmin={true}
@@ -527,12 +522,12 @@ describe("AgentSettingsPermissions", () => {
         />
       );
 
-      await userEvent.click(screen.getByLabelText("List approved directories"));
+      await userEvent.click(screen.getByLabelText("Write files"));
 
       await waitFor(() => {
         expect(onChange).toHaveBeenCalledWith(
           expect.objectContaining({
-            allowedTools: expect.arrayContaining(["pinchy_ls"]),
+            allowedTools: expect.arrayContaining(["pinchy_write"]),
             integrations: [],
           }),
           true
@@ -585,6 +580,48 @@ describe("AgentSettingsPermissions", () => {
         false
       );
     });
+  });
+
+  it("renders Knowledge Base directory picker independent of pinchy_ls/pinchy_read toggles", () => {
+    render(
+      <AgentSettingsPermissions
+        agent={{ ...defaultAgent, allowedTools: [] /* no fs tools at all */ }}
+        directories={[{ path: "/data/kb", name: "kb" }]}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+    // KB-Picker visible even without fs permissions
+    expect(screen.getByText(/knowledge base/i)).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", { name: /kb/i })).toBeInTheDocument();
+  });
+
+  it("renders pinchy_write toggle in tool permissions section", () => {
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={[]}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+    expect(screen.getByLabelText("Write files")).toBeInTheDocument();
+  });
+
+  it("does not render pinchy_ls or pinchy_read toggles", () => {
+    render(
+      <AgentSettingsPermissions
+        agent={defaultAgent}
+        directories={[]}
+        connections={[]}
+        isAdmin={true}
+        onChange={vi.fn()}
+      />
+    );
+    expect(screen.queryByText(/list approved directories/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/read approved files/i)).not.toBeInTheDocument();
   });
 
   // After a successful save the parent updates the `agent` prop to reflect
@@ -676,12 +713,12 @@ describe("AgentSettingsPermissions", () => {
         />
       );
 
-      // User checks a KB tool.
-      await userEvent.click(screen.getByLabelText("List approved directories"));
+      // User checks the pinchy_write tool.
+      await userEvent.click(screen.getByLabelText("Write files"));
 
       await waitFor(() => {
         expect(onChange).toHaveBeenLastCalledWith(
-          expect.objectContaining({ allowedTools: expect.arrayContaining(["pinchy_ls"]) }),
+          expect.objectContaining({ allowedTools: expect.arrayContaining(["pinchy_write"]) }),
           true
         );
       });
@@ -694,7 +731,7 @@ describe("AgentSettingsPermissions", () => {
         <AgentSettingsPermissions
           agent={{
             ...initialAgent,
-            allowedTools: ["pinchy_ls"],
+            allowedTools: ["pinchy_write"],
             pluginConfig: { "pinchy-files": { allowed_paths: [] } },
           }}
           directories={defaultDirectories}

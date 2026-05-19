@@ -303,10 +303,15 @@ export function NewAgentForm() {
     setSubmitting(true);
 
     try {
+      // pinchy_write is default-on for new agents so they can save files to the
+      // workspace out of the box. Templates that override allowedTools explicitly
+      // (e.g. Odoo, Email) will have pinchy_write merged in by the API if it
+      // supports the field; for now this documents the intent.
       const body: Record<string, unknown> = {
         name: values.name.trim(),
         tagline: values.tagline?.trim() || null,
         templateId: selectedTemplate,
+        defaultAllowedTools: ["pinchy_write"],
       };
 
       if (requiresDirectories && selectedPaths.length > 0) {

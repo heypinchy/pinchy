@@ -58,8 +58,11 @@ export function AgentSettingsPermissions({
   isAdmin,
   onChange,
 }: AgentSettingsPermissionsProps) {
-  // KB tools = non-integration safe tools only
+  // KB tools: non-integration safe tools (pinchy_ls / pinchy_read are now implicit — not shown)
   const kbTools = getToolsByCategory("safe").filter((t) => !t.integration);
+
+  // Powerful tools shown in the KB section: non-integration powerful tools (e.g. pinchy_write)
+  const powerfulKbTools = getToolsByCategory("powerful").filter((t) => !t.integration);
 
   // Web tools = powerful tools with web-search integration
   const webTools = getToolsByCategory("powerful").filter((t) => t.integration === "web-search");
@@ -106,15 +109,11 @@ export function AgentSettingsPermissions({
     initialWebSearchConfig.current = agent.pluginConfig?.["pinchy-web"] ?? {};
   }, [agent.allowedTools, agent.pluginConfig]);
 
-  const hasKbToolChecked = kbTools.some((tool) => allowedKbTools.includes(tool.id));
   const hasWebToolChecked = webTools.some((tool) => allowedKbTools.includes(tool.id));
 
-  // Check if the agent has sensitive data access (file tools or odoo tools)
+  // Check if the agent has sensitive data access (any allowed paths or odoo/email tools)
   const hasSensitiveDataAccess =
-    allowedKbTools.includes("pinchy_ls") ||
-    allowedKbTools.includes("pinchy_read") ||
-    odooIntegration !== null ||
-    emailIntegration !== null;
+    allowedPaths.length > 0 || odooIntegration !== null || emailIntegration !== null;
 
   const showSecurityWarning = hasWebToolChecked && hasSensitiveDataAccess;
 
@@ -258,25 +257,10 @@ export function AgentSettingsPermissions({
       {/* Knowledge Base section */}
       <section className="space-y-4">
         <h3 className="text-lg font-semibold">Knowledge Base</h3>
-        <div className="space-y-3">
-          {kbTools.map((tool) => (
-            <div key={tool.id} className="flex items-center space-x-3">
-              <Checkbox
-                id={`tool-${tool.id}`}
-                checked={allowedKbTools.includes(tool.id)}
-                onCheckedChange={() => handleToolToggle(tool.id)}
-                aria-label={tool.label}
-              />
-              <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
-                <span className="font-medium">{tool.label}</span>
-                <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
-              </Label>
-            </div>
-          ))}
-        </div>
 
-        {hasKbToolChecked && (
-          <div className="ml-6 space-y-2">
+        {/* Directory picker — always shown when directories are available */}
+        {directories.length > 0 && (
+          <div className="space-y-2">
             <h4 className="text-sm font-medium">Allowed Directories</h4>
             <DirectoryPicker
               directories={directories}
@@ -286,8 +270,44 @@ export function AgentSettingsPermissions({
           </div>
         )}
 
+        {/* Explicit KB tool toggles (safe, non-integration) — empty after pinchy_ls/pinchy_read became implicit */}
+        {kbTools.length > 0 && (
+          <div className="space-y-3">
+            {kbTools.map((tool) => (
+              <div key={tool.id} className="flex items-center space-x-3">
+                <Checkbox
+                  id={`tool-${tool.id}`}
+                  checked={allowedKbTools.includes(tool.id)}
+                  onCheckedChange={() => handleToolToggle(tool.id)}
+                  aria-label={tool.label}
+                />
+                <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
+                  <span className="font-medium">{tool.label}</span>
+                  <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
+                </Label>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Powerful non-integration tools (e.g. pinchy_write) */}
+        {powerfulKbTools.map((tool) => (
+          <div key={tool.id} className="flex items-center space-x-3">
+            <Checkbox
+              id={`tool-${tool.id}`}
+              checked={allowedKbTools.includes(tool.id)}
+              onCheckedChange={() => handleToolToggle(tool.id)}
+              aria-label={tool.label}
+            />
+            <Label htmlFor={`tool-${tool.id}`} className="cursor-pointer">
+              <span className="font-medium">{tool.label}</span>
+              <span className="text-sm text-muted-foreground ml-2">{tool.description}</span>
+            </Label>
+          </div>
+        ))}
+
         {allowedKbTools.includes("pinchy_read") && !isModelVisionCapable(agent.model) && (
-          <Alert className="ml-6 border-amber-500/50 text-amber-700 dark:text-amber-400">
+          <Alert className="border-amber-500/50 text-amber-700 dark:text-amber-400">
             <AlertTriangle className="size-4" />
             <AlertTitle>Limited PDF support</AlertTitle>
             <AlertDescription>
