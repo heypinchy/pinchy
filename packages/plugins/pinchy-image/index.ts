@@ -1,4 +1,4 @@
-import { readFile, writeFile, mkdir, stat } from "fs/promises";
+import { readFile, writeFile, mkdir, stat, lstat } from "fs/promises";
 import { basename, extname, join } from "path";
 import { randomBytes } from "crypto";
 import {
@@ -12,8 +12,12 @@ import {
 } from "./transform";
 
 const WORKSPACE_ROOT_DEFAULT = "/root/.openclaw/workspaces";
-const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
-const ALLOWED_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif"]);
+const MAX_IMAGE_BYTES_DEFAULT = 25 * 1024 * 1024;
+// `.gif` is intentionally NOT supported: sharp's default pipeline drops all
+// frames but the first, which would silently destroy animated GIFs. If a real
+// use case for static GIF processing emerges, switch to `{ animated: true }`
+// in sharp() and re-add `.gif` here.
+const ALLOWED_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
 interface PluginToolContext {
   agentId?: string;
@@ -60,11 +64,21 @@ function workspaceRoot(): string {
   return process.env.PINCHY_IMAGE_WORKSPACE_ROOT || WORKSPACE_ROOT_DEFAULT;
 }
 
+function maxImageBytes(): number {
+  const raw = process.env.PINCHY_IMAGE_MAX_BYTES;
+  if (!raw) return MAX_IMAGE_BYTES_DEFAULT;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : MAX_IMAGE_BYTES_DEFAULT;
+}
+
 function isSafeFilename(filename: string): boolean {
   if (typeof filename !== "string" || filename.length === 0) return false;
   if (filename !== basename(filename)) return false;
   if (filename.startsWith(".")) return false;
   if (filename.includes("\\")) return false;
+  // NUL bytes terminate paths in POSIX syscalls — Node usually throws, but
+  // some code paths (logging, audit) would still see the truncated string.
+  if (filename.includes("\0")) return false;
   return true;
 }
 
@@ -107,9 +121,12 @@ async function readSourceImage(
   }
 
   const sourcePath = join(agentUploadsDir(agentId), filename);
-  let fileStat: { size: number };
+  // lstat (does NOT follow symlinks) — we reject anything that isn't a regular
+  // file. This prevents an attacker who has write access to the uploads dir
+  // from making the tool read a file outside the workspace via a symlink.
+  let lstatRes: { size: number; isFile(): boolean; isSymbolicLink(): boolean };
   try {
-    fileStat = await stat(sourcePath);
+    lstatRes = await lstat(sourcePath);
   } catch (err) {
     const code =
       err && typeof err === "object" && "code" in err
@@ -124,10 +141,25 @@ async function readSourceImage(
     }
     throw err;
   }
-  if (fileStat.size > MAX_IMAGE_BYTES) {
+  if (lstatRes.isSymbolicLink()) {
     return {
       error: errorContent(
-        `Image too large: "${filename}" is ${fileStat.size} bytes; max allowed is ${MAX_IMAGE_BYTES}.`
+        `Refusing to read "${filename}": file is a symlink, only regular files are allowed.`
+      ),
+    };
+  }
+  if (!lstatRes.isFile()) {
+    return {
+      error: errorContent(
+        `Refusing to read "${filename}": not a regular file.`
+      ),
+    };
+  }
+  const maxBytes = maxImageBytes();
+  if (lstatRes.size > maxBytes) {
+    return {
+      error: errorContent(
+        `Image too large: "${filename}" is ${lstatRes.size} bytes; max allowed is ${maxBytes}.`
       ),
     };
   }
@@ -185,11 +217,26 @@ const plugin = {
   name: "Pinchy Image",
   description: "Image transformation tools (crop, resize, rotate, convert) for agent attachments.",
   configSchema: {
+    // This is a smoke-check only. The authoritative schema lives in
+    // openclaw.plugin.json and is enforced by OpenClaw's Ajv loader against
+    // additionalProperties: false. We still verify that `agents` is a plain
+    // object (not null, not array, not a primitive) so that mis-shaped configs
+    // fail loudly here too.
     validate: (value: unknown) => {
-      if (value && typeof value === "object" && "agents" in value) {
+      if (
+        value &&
+        typeof value === "object" &&
+        "agents" in value &&
+        (value as { agents: unknown }).agents !== null &&
+        typeof (value as { agents: unknown }).agents === "object" &&
+        !Array.isArray((value as { agents: unknown }).agents)
+      ) {
         return { ok: true as const, value };
       }
-      return { ok: false as const, errors: ["Missing 'agents' key in config"] };
+      return {
+        ok: false as const,
+        errors: ["Config must include an `agents` object"],
+      };
     },
   },
 

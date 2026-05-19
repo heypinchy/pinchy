@@ -266,6 +266,10 @@ Every plugin tool must be covered at three layers:
 
 Follow the Plugin Integration Contract above, then apply the tool dispatch coverage recipe for each tool the plugin registers.
 
+### Plugin package manager
+
+Plugin packages under `packages/plugins/*` use **npm**, not pnpm. The runtime installs their dependencies in the OpenClaw container via `npm install --omit=dev` (see `Dockerfile.openclaw`), and several plugins depend on native modules (e.g. `sharp`'s prebuilt libvips binaries) that need the npm install layout. The repo's root `.gitignore` ignores `packages/plugins/*/package-lock.json` because each plugin's lockfile is regenerated at image-build time from its `package.json`. Do not add plugin packages to the root pnpm workspace.
+
 ## Documentation
 
 - Docs live in `docs/`, use Astro Starlight, and follow the Diataxis framework.
