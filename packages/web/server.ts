@@ -26,9 +26,6 @@ import { SERVER_WS_MAX_PAYLOAD_BYTES } from "./src/lib/limits";
 
 logCapture.install();
 
-const betterAuthUrlWarning = getBetterAuthUrlStartupWarning();
-if (betterAuthUrlWarning) console.warn(betterAuthUrlWarning);
-
 if (process.env.PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT === "1") {
   // Surface this loud at startup. Production deployments must NEVER set this
   // — it disables Better Auth's brute-force protection on /sign-in/*. The
@@ -247,6 +244,13 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   // bootInits(), at which point Docker Compose marks the container healthy.
   const { bootInits } = await import("./src/lib/boot-inits");
   const setupWasComplete = await bootInits();
+
+  // Emit BETTER_AUTH_URL diagnostics now that bootInits has populated the
+  // domain cache. Both arms of the warning (URL-set explanation and
+  // URL-unset-but-Domain-Locked misconfiguration) need an accurate Domain
+  // Lock value to be useful.
+  const betterAuthUrlWarning = getBetterAuthUrlStartupWarning(process.env, getCachedDomain());
+  if (betterAuthUrlWarning) console.warn(betterAuthUrlWarning);
 
   // Connect to OpenClaw AFTER bootInits so the gateway token and config are
   // ready. On a completed install, bootInits() has already run
