@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE } from "./validate";
+import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, ALLOWED_ROOTS } from "./validate";
 
 const agentConfig = {
   allowed_paths: ["/data/hr-docs/", "/data/policies/"],
@@ -52,8 +52,6 @@ describe("MAX_FILE_SIZE exports", () => {
     expect(MAX_PDF_FILE_SIZE).toBe(50 * 1024 * 1024);
   });
 });
-
-import { ALLOWED_ROOTS } from "./validate";
 
 describe("multi-root + mode validation", () => {
   it("accepts paths under /data/ root", () => {

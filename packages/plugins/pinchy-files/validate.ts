@@ -26,7 +26,8 @@ export function validateAccess(
 
   const resolved = resolve(normalize(requestedPath));
 
-  if (!ALLOWED_ROOTS.some((root) => resolved.startsWith(root))) {
+  const matchedRoot = ALLOWED_ROOTS.find((root) => resolved.startsWith(root));
+  if (!matchedRoot) {
     throw new Error("Access denied: path outside allowed roots");
   }
 
@@ -42,7 +43,6 @@ export function validateAccess(
     );
   }
 
-  const matchedRoot = ALLOWED_ROOTS.find((root) => resolved.startsWith(root))!;
   const relativeSegments = resolved.slice(matchedRoot.length).split("/");
   if (relativeSegments.some((s) => s.startsWith(".") && s.length > 1)) {
     throw new Error("Hidden files are not accessible");
