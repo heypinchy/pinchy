@@ -1616,6 +1616,8 @@ jobs:
           mkdir -p /tmp/pinchy-integration-openclaw/workspaces
           mkdir -p /tmp/pinchy-integration-secrets
           docker compose -f docker-compose.integration.yml up -d --wait
+        env:
+          OPENCLAW_IMAGE: ghcr.io/heypinchy/pinchy-openclaw:latest
 
       - name: Create and migrate integration DB
         run: |
