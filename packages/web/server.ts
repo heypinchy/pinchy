@@ -227,18 +227,6 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   await new Promise<void>((resolve) => server.listen(port, resolve));
   console.log(`Pinchy ready on http://localhost:${port}`);
 
-  // Graceful shutdown: stop the usage poller interval so Node can exit,
-  // then close the HTTP server. Without this, a SIGTERM (e.g. from Docker
-  // Compose) leaves the setInterval dangling and the process hangs until
-  // the container's kill-grace period expires.
-  registerShutdownHandlers([
-    () => stopUsagePoller(),
-    () =>
-      new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      }),
-  ]);
-
   // Run boot initializations AFTER the server is listening. The healthcheck
   // endpoint returns 503 until markOpenClawConfigReady() is called inside
   // bootInits(), at which point Docker Compose marks the container healthy.
@@ -251,6 +239,45 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
   // Lock value to be useful.
   const betterAuthUrlWarning = getBetterAuthUrlStartupWarning(process.env, getCachedDomain());
   if (betterAuthUrlWarning) console.warn(betterAuthUrlWarning);
+
+  // Start the memory-audit watcher after bootInits resolves. Guarded by
+  // setupWasComplete: on a fresh install the `agents/` directory under
+  // OPENCLAW_DATA_PATH may not exist yet and the agents table is empty,
+  // so we skip and let the next process restart (after setup) pick it up.
+  // The lazy `await import(...)` is intentional — bootstrap pulls in `@/db`
+  // and we want DB modules evaluated only after bootInits has completed.
+  // Errors during watcher boot are logged but not rethrown: this watcher is
+  // non-critical to Pinchy's operation (the API audit log works without it).
+  let stopMemoryAuditWatcher: (() => Promise<void>) | null = null;
+  if (setupWasComplete) {
+    try {
+      const { bootstrapMemoryAuditWatcher } = await import("./src/lib/memory-audit-watcher");
+      stopMemoryAuditWatcher = await bootstrapMemoryAuditWatcher({});
+      console.log("[pinchy] memory audit watcher started");
+    } catch (err) {
+      console.error("[pinchy] failed to start memory audit watcher", err);
+    }
+  }
+
+  // Graceful shutdown: stop the usage poller interval, close the memory-audit
+  // watcher, then close the HTTP server. Without this, a SIGTERM (e.g. from
+  // Docker Compose) leaves the setInterval dangling and the process hangs
+  // until the container's kill-grace period expires.
+  //
+  // Note: registration happens AFTER bootInits() + watcher boot so the
+  // memory-audit stop fn can be included in the array. A SIGTERM arriving
+  // during the bootInits or watcher-boot phase will therefore not be handled
+  // gracefully; that window is short (a few seconds at most) and the
+  // alternative (mutable wrapper / re-registration) adds noise for negligible
+  // benefit.
+  registerShutdownHandlers([
+    () => stopUsagePoller(),
+    () => (stopMemoryAuditWatcher ? stopMemoryAuditWatcher() : Promise.resolve()),
+    () =>
+      new Promise<void>((resolve) => {
+        server.close(() => resolve());
+      }),
+  ]);
 
   // Connect to OpenClaw AFTER bootInits so the gateway token and config are
   // ready. On a completed install, bootInits() has already run
