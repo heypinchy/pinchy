@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { classifyModelError } from "@/server/model-error-classifier";
+import { classifyModelError, classifyUpstreamFormatError } from "@/server/model-error-classifier";
 
 describe("classifyModelError", () => {
   it("matches HTTP 500 with ref and returns model_unavailable", () => {
@@ -54,5 +54,76 @@ describe("classifyModelError", () => {
       const result = classifyModelError("HTTP 500: boom", model);
       expect(result?.model).toBe(model);
     }
+  });
+});
+
+describe("classifyUpstreamFormatError", () => {
+  // Production payload shape (issue #338, prod gateway log 2026-05-11):
+  //   LLM request failed: provider rejected the request schema or tool payload.
+  //   rawError=400 "Function call is missing a thought_signature in functionCall parts. (ref: ...)"
+  const PROD_ERROR_TEXT =
+    "LLM request failed: provider rejected the request schema or tool payload. " +
+    'rawError=400 "Function call is missing a thought_signature in functionCall parts. ' +
+    '(ref: 3d5cf450-a3f6-4566-a1db-a7c5c0515cc0)"';
+
+  it("matches the thought_signature pattern and returns upstream_format_error", () => {
+    const result = classifyUpstreamFormatError(
+      PROD_ERROR_TEXT,
+      "ollama-cloud/gemini-3-flash-preview"
+    );
+    expect(result).toEqual({
+      kind: "upstream_format_error",
+      model: "ollama-cloud/gemini-3-flash-preview",
+      errorPattern: "thought_signature",
+      ref: "3d5cf450-a3f6-4566-a1db-a7c5c0515cc0",
+    });
+  });
+
+  it("matches camelCase 'thoughtSignature' variant (some replay paths use it)", () => {
+    const result = classifyUpstreamFormatError(
+      "Function call is missing a thoughtSignature in functionCall parts.",
+      "google/gemini-3-pro"
+    );
+    expect(result?.kind).toBe("upstream_format_error");
+    expect(result?.errorPattern).toBe("thought_signature");
+  });
+
+  it("returns null when the pattern is absent", () => {
+    expect(
+      classifyUpstreamFormatError("HTTP 500: Internal Server Error", "google/gemini-3-pro")
+    ).toBeNull();
+    expect(
+      classifyUpstreamFormatError(
+        "rawError=400 schema validation failed for tool foo",
+        "google/gemini-3-pro"
+      )
+    ).toBeNull();
+  });
+
+  it("returns null for empty model identifier", () => {
+    expect(classifyUpstreamFormatError(PROD_ERROR_TEXT, "")).toBeNull();
+  });
+
+  it("matches even when ref is missing (some OC error frames omit it)", () => {
+    const result = classifyUpstreamFormatError(
+      "rawError=400 missing thought_signature in functionCall parts.",
+      "ollama-cloud/gemini-3-flash-preview"
+    );
+    expect(result).toEqual({
+      kind: "upstream_format_error",
+      model: "ollama-cloud/gemini-3-flash-preview",
+      errorPattern: "thought_signature",
+      ref: undefined,
+    });
+  });
+
+  it("does not collide with classifyModelError (orthogonal classifiers)", () => {
+    // The same thought_signature text should classify as upstream_format_error
+    // but NOT as model_unavailable — the issue is upstream schema, not server
+    // overload, and the wording the user sees has to match the actual cause.
+    expect(classifyModelError(PROD_ERROR_TEXT, "ollama-cloud/gemini-3-flash-preview")).toBeNull();
+    expect(
+      classifyUpstreamFormatError(PROD_ERROR_TEXT, "ollama-cloud/gemini-3-flash-preview")?.kind
+    ).toBe("upstream_format_error");
   });
 });

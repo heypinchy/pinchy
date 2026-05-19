@@ -30,3 +30,30 @@ export const modelUnavailableErrorSchema = z.object({
 });
 
 export type ModelUnavailableError = z.infer<typeof modelUnavailableErrorSchema>;
+
+/**
+ * Structured payload attached to an `error` frame when the upstream provider
+ * rejects the request payload due to a known schema/format defect that retry
+ * usually clears (issue #338). The browser renders a dedicated "transient
+ * upstream issue" bubble whose copy tells the user to click Retry — the
+ * underlying generic provider-error wording sounds like Pinchy's fault, but
+ * the cause is upstream (e.g. openclaw/openclaw#72879 dropping
+ * `thought_signature` on Gemini 3 replay turns).
+ *
+ * `errorPattern` is the matched pattern family, kept open for future patterns
+ * sharing the same UX shape. The server also writes an
+ * `agent.upstream_format_error` audit entry (throttled) to make frequency
+ * tracking automatic rather than manual log-grepping (issue #338 tracking
+ * item #1).
+ *
+ * Produced by `server/model-error-classifier.ts:classifyUpstreamFormatError`.
+ * Consumed by `components/assistant-ui/chat-error-message.tsx`.
+ */
+export const upstreamFormatErrorSchema = z.object({
+  kind: z.literal("upstream_format_error"),
+  model: z.string(),
+  errorPattern: z.literal("thought_signature"),
+  ref: z.string().optional(),
+});
+
+export type UpstreamFormatError = z.infer<typeof upstreamFormatErrorSchema>;

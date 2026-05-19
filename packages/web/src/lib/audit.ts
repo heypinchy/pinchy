@@ -50,6 +50,7 @@ export type AuditEventType =
   | "chat.retry_triggered"
   | "agent.model_unavailable"
   | "agent.memory_changed"
+  | "agent.upstream_format_error"
   | "audit.exported"
   | "attachment.uploaded";
 
@@ -241,6 +242,18 @@ export type AuditLogEntry =
         addedLines: number;
         removedLines: number;
         byteSize: number;
+      };
+    })
+  | (AuditLogBase & {
+      eventType: "agent.upstream_format_error";
+      detail: {
+        agent: { id: string; name: string };
+        model: string | null | undefined;
+        providerError: string;
+        ref?: string;
+        // Pattern family the error matched. Open-ended so new known patterns
+        // can be added without a schema migration; current values: "thought_signature".
+        errorPattern: string;
       };
     })
   | (AuditLogBase & {

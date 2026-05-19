@@ -17,6 +17,7 @@
  */
 const lastEmittedAt = new Map<string, number>();
 const lastSilentStreamAt = new Map<string, number>();
+const lastUpstreamFormatErrorAt = new Map<string, number>();
 const TTL_MS = 5 * 60 * 1000;
 
 export function shouldEmitModelUnavailableAudit(
@@ -50,7 +51,28 @@ export function shouldEmitSilentStreamAudit(
   return true;
 }
 
+/**
+ * Throttle for `agent.upstream_format_error` audit events (issue #338).
+ * Kept separate from the 5xx and silent-stream throttles so a tool-using turn
+ * that hits a 400 schema rejection (e.g. Gemini 3 missing `thought_signature`,
+ * openclaw/openclaw#72879) still audits even when the same (agent, model) pair
+ * had a 5xx or silent-stream blip within the TTL. The three signals are
+ * operationally distinct and feed different remediation decisions.
+ */
+export function shouldEmitUpstreamFormatErrorAudit(
+  agentId: string,
+  model: string,
+  now: number = Date.now()
+): boolean {
+  const key = `${agentId}:${model}`;
+  const last = lastUpstreamFormatErrorAt.get(key);
+  if (last !== undefined && now - last < TTL_MS) return false;
+  lastUpstreamFormatErrorAt.set(key, now);
+  return true;
+}
+
 export function __resetModelUnavailableThrottleForTests(): void {
   lastEmittedAt.clear();
   lastSilentStreamAt.clear();
+  lastUpstreamFormatErrorAt.clear();
 }

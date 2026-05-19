@@ -235,3 +235,78 @@ describe("ChatErrorMessage — modelUnavailable", () => {
     expect(screen.getByRole("button", { name: /technical details/i })).toBeInTheDocument();
   });
 });
+
+describe("ChatErrorMessage — upstreamFormatError (issue #338)", () => {
+  const baseError = {
+    agentName: "Smithers",
+    providerError:
+      "LLM request failed: provider rejected the request schema or tool payload. " +
+      'rawError=400 "Function call is missing a thought_signature in functionCall parts. ' +
+      '(ref: 3d5cf450)"',
+    upstreamFormatError: {
+      kind: "upstream_format_error" as const,
+      model: "ollama-cloud/gemini-3-flash-preview",
+      errorPattern: "thought_signature" as const,
+      ref: "3d5cf450",
+    },
+  };
+
+  it("renders the agent name in the headline", () => {
+    render(<ChatErrorMessage error={baseError} agentId="agent-1" />);
+    expect(screen.getByText(/Smithers couldn't respond/i)).toBeInTheDocument();
+  });
+
+  it("explains that this is a known upstream issue and that Retry usually clears it", () => {
+    // Pain point from issue #338: the misleading generic provider-error
+    // wording sounds like Pinchy's fault. The replacement copy must (a) say
+    // it's upstream and (b) tell the user Retry is reliable, so they don't
+    // give up after the first failure.
+    render(<ChatErrorMessage error={baseError} agentId="agent-1" />);
+    expect(screen.getByText(/retry/i)).toBeInTheDocument();
+    expect(screen.getByText(/upstream|known/i)).toBeInTheDocument();
+  });
+
+  it("does not render the 'Switch model' link — the model isn't the problem here", () => {
+    render(<ChatErrorMessage error={baseError} agentId="agent-1" />);
+    expect(screen.queryByRole("link", { name: /switch model/i })).not.toBeInTheDocument();
+  });
+
+  it("hides raw providerError behind a collapsible 'Technical details'", () => {
+    render(<ChatErrorMessage error={baseError} agentId="agent-1" />);
+    const btn = screen.getByRole("button", { name: /technical details/i });
+    expect(btn).toBeInTheDocument();
+    expect(screen.queryByText(/Function call is missing/)).not.toBeInTheDocument();
+    fireEvent.click(btn);
+    expect(screen.getByText(/Function call is missing/)).toBeInTheDocument();
+  });
+
+  it("uses role=alert for screen readers", () => {
+    render(<ChatErrorMessage error={baseError} agentId="agent-1" />);
+    expect(screen.getByRole("alert")).toBeInTheDocument();
+  });
+
+  it("takes precedence over modelUnavailable when both somehow coexist (defensive: never offer 'Switch model' for a schema bug)", () => {
+    // Real chunks should never set both at the same time (orthogonal classifiers
+    // — see model-error-classifier test "does not collide"), but if a future
+    // refactor accidentally produces both, we must render the upstream-format
+    // bubble, not the modelUnavailable one. Otherwise users would see a
+    // "Switch model" button suggesting their model choice is broken, when in
+    // fact the next replay of the *same* model usually succeeds.
+    render(
+      <ChatErrorMessage
+        error={{
+          ...baseError,
+          modelUnavailable: {
+            kind: "model_unavailable",
+            model: "ollama-cloud/gemini-3-flash-preview",
+            httpStatus: 500,
+            ref: "x",
+          },
+        }}
+        agentId="agent-1"
+      />
+    );
+    expect(screen.queryByRole("link", { name: /switch model/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/retry/i)).toBeInTheDocument();
+  });
+});

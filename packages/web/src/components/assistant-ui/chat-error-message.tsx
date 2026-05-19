@@ -7,7 +7,7 @@ import { PROVIDER_SETTINGS_HINT } from "@/server/error-hints";
 import { ReportIssueLink } from "@/components/report-issue-link";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Button } from "@/components/ui/button";
-import type { ModelUnavailableError } from "@/lib/schemas/chat-frames";
+import type { ModelUnavailableError, UpstreamFormatError } from "@/lib/schemas/chat-frames";
 
 export interface ChatError {
   agentName?: string;
@@ -18,6 +18,7 @@ export interface ChatError {
   timedOut?: true;
   payloadTooLarge?: true;
   modelUnavailable?: ModelUnavailableError;
+  upstreamFormatError?: UpstreamFormatError;
   attachmentInvalid?: true;
 }
 
@@ -94,6 +95,42 @@ export const ChatErrorMessage: FC<{
           You can send your message again to retry.{" "}
           <ReportIssueLink error="Agent timed out — no response after 60 seconds" />
         </p>
+      </div>
+    );
+  }
+
+  if (error.upstreamFormatError) {
+    // Issue #338: a known upstream defect (e.g. openclaw/openclaw#72879 dropping
+    // Gemini 3 `thought_signature` on tool-call replay) rejects the request with
+    // a 400. The raw provider wording ("provider rejected the request schema or
+    // tool payload") sounds like Pinchy's fault, so we replace it with copy that
+    // names the cause and tells the user that Retry is a reliable workaround.
+    // Deliberately no "Switch model" button — the model itself isn't broken,
+    // and switching would push users away from the model they actually chose.
+    return (
+      <div role="alert" className={wrapperClass}>
+        <div className="flex items-center gap-2 font-medium text-destructive dark:text-red-200">
+          <AlertTriangle className="size-4 shrink-0" data-testid="error-warning-icon" />
+          <span className="flex-1">{`${error.agentName ?? "The agent"} couldn't respond`}</span>
+          {actionSlot}
+        </div>
+        <p className="mt-1.5 text-destructive/90 dark:text-red-300/90">
+          The model <code className="font-mono text-xs">{error.upstreamFormatError.model}</code>{" "}
+          returned a temporary schema error from its provider. This is a known upstream issue —
+          click <strong>Retry</strong> and the same message usually succeeds on the next try.
+        </p>
+        <Collapsible open={isOpen} onOpenChange={setIsOpen} className="mt-3">
+          <CollapsibleTrigger asChild>
+            <Button variant="ghost" size="sm" className="text-xs">
+              Technical details
+            </Button>
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <pre className="mt-1 text-xs text-destructive/75 dark:text-red-300/75 whitespace-pre-wrap break-words">
+              {error.providerError}
+            </pre>
+          </CollapsibleContent>
+        </Collapsible>
       </div>
     );
   }

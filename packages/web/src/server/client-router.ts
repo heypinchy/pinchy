@@ -8,10 +8,11 @@ import { recordAuditFailure } from "@/lib/audit-deferred";
 import {
   shouldEmitModelUnavailableAudit,
   shouldEmitSilentStreamAudit,
+  shouldEmitUpstreamFormatErrorAudit,
 } from "@/server/model-unavailable-throttle";
 import { SessionCache } from "@/server/session-cache";
 import { getErrorHint } from "@/server/error-hints";
-import { classifyModelError } from "@/server/model-error-classifier";
+import { classifyModelError, classifyUpstreamFormatError } from "@/server/model-error-classifier";
 import {
   SILENT_REPLY_TOKEN,
   safeEmitLength,
@@ -589,6 +590,13 @@ export class ClientRouter {
           } else if (chunk.type === "error") {
             sawError = true;
             const modelUnavailable = classifyModelError(chunk.text, agent.model ?? "");
+            // Issue #338: detect upstream schema/format rejections (e.g. Gemini 3
+            // missing `thought_signature` on tool-call replay) so the user sees a
+            // bubble explaining that retry usually works, instead of the
+            // misleading generic provider-error wording. Orthogonal to
+            // modelUnavailable: that one fires on 5xx, this one on 400 schema
+            // rejection, and the same chunk should never match both.
+            const upstreamFormatError = classifyUpstreamFormatError(chunk.text, agent.model ?? "");
             this.sendToClient(clientWs, {
               type: "error",
               agentName: agent.name,
@@ -596,6 +604,7 @@ export class ClientRouter {
               hint: getErrorHint(chunk.text, this.userRole),
               messageId,
               ...(modelUnavailable ? { modelUnavailable } : {}),
+              ...(upstreamFormatError ? { upstreamFormatError } : {}),
             });
             if (modelUnavailable && shouldEmitModelUnavailableAudit(agent.id, agent.model ?? "")) {
               // PII note: `chunk.text` is the raw provider error string. For
@@ -617,6 +626,35 @@ export class ClientRouter {
                   providerError: chunk.text.slice(0, 1024),
                   ...(modelUnavailable.ref ? { ref: modelUnavailable.ref } : {}),
                   httpStatus: modelUnavailable.httpStatus,
+                },
+                outcome: "failure" as const,
+              };
+              try {
+                await appendAuditLog(auditEntry);
+              } catch (err) {
+                recordAuditFailure(err, auditEntry);
+              }
+            }
+            if (
+              upstreamFormatError &&
+              shouldEmitUpstreamFormatErrorAudit(agent.id, agent.model ?? "")
+            ) {
+              // PII note: same reasoning as the model_unavailable branch above.
+              // The thought_signature 400 originates inside the provider's
+              // schema validator before any tool call is dispatched; the
+              // returned body echoes the offending field name, not user prompt
+              // text. Still truncated to 1024 bytes as a safety belt.
+              const auditEntry = {
+                actorType: "user" as const,
+                actorId: this.userId,
+                eventType: "agent.upstream_format_error" as const,
+                resource: `agent:${agent.id}`,
+                detail: {
+                  agent: { id: agent.id, name: agent.name },
+                  model: agent.model,
+                  providerError: chunk.text.slice(0, 1024),
+                  errorPattern: upstreamFormatError.errorPattern,
+                  ...(upstreamFormatError.ref ? { ref: upstreamFormatError.ref } : {}),
                 },
                 outcome: "failure" as const,
               };

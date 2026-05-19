@@ -951,6 +951,7 @@ export function useWsRuntime(agentId: string): {
                   providerError: data.providerError,
                   hint: data.hint,
                   modelUnavailable: data.modelUnavailable,
+                  upstreamFormatError: data.upstreamFormatError,
                 }
               : data.code === "attachment_invalid"
                 ? { attachmentInvalid: true, message: data.message }
