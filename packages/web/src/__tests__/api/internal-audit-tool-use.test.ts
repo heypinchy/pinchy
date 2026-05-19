@@ -323,6 +323,84 @@ describe("POST /api/internal/audit/tool-use", () => {
     expect(body.error).toBe("Audit logging failed");
   });
 
+  describe("result.details override (PII protection)", () => {
+    it("uses result.details as audit detail when plugin sets it (suppresses params)", async () => {
+      const res = await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "pinchy_write",
+          agentId: "agent-1",
+          sessionKey: "agent:agent-1:direct:user-1",
+          params: {
+            path: "/root/.openclaw/workspaces/agent-1/uploads/secret.txt",
+            content: "MY PRIVATE PERSONAL CONTENT WITH SECRETS",
+            overwrite: false,
+          },
+          result: {
+            content: [{ type: "text", text: "Wrote 40 bytes" }],
+            details: {
+              path: "uploads/secret.txt",
+              mode: "create",
+              sizeBytes: 40,
+              contentHash: "abc123",
+              overwrite: false,
+            },
+          },
+        })
+      );
+
+      expect(res.status).toBe(200);
+
+      const call = vi.mocked(appendAuditLog).mock.calls[0][0];
+      expect(call.detail.toolName).toBe("pinchy_write");
+      // details fields merged into audit detail
+      expect(call.detail.path).toBe("uploads/secret.txt");
+      expect(call.detail.contentHash).toBe("abc123");
+      expect(call.detail.mode).toBe("create");
+      // raw params must NOT appear
+      expect(call.detail).not.toHaveProperty("params");
+      // raw content string must NOT appear anywhere in audit detail
+      expect(JSON.stringify(call.detail)).not.toContain("PRIVATE PERSONAL");
+    });
+
+    it("keeps params in audit detail when result has no details field", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "pinchy_read",
+          agentId: "agent-1",
+          params: { path: "/data/kb/report.md" },
+          result: {
+            content: [{ type: "text", text: "file contents" }],
+            // no details field
+          },
+        })
+      );
+
+      const call = vi.mocked(appendAuditLog).mock.calls[0][0];
+      expect(call.detail).toHaveProperty("params");
+      expect((call.detail.params as Record<string, unknown>).path).toBe("/data/kb/report.md");
+    });
+
+    it("keeps params when result.details is not a plain object", async () => {
+      await POST(
+        makeRequest({
+          phase: "end",
+          toolName: "some_tool",
+          agentId: "agent-1",
+          params: { action: "run" },
+          result: {
+            content: [{ type: "text", text: "ok" }],
+            details: "just a string",
+          },
+        })
+      );
+
+      const call = vi.mocked(appendAuditLog).mock.calls[0][0];
+      expect(call.detail).toHaveProperty("params");
+    });
+  });
+
   describe("sensitive data sanitization", () => {
     it("redacts sensitive key names in params before logging", async () => {
       await POST(

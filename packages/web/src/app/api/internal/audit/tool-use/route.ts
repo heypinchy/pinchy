@@ -93,9 +93,23 @@ export async function POST(request: NextRequest) {
     success: !payload.error,
   };
 
+  const resultObj = isObject(payload.result) ? payload.result : null;
+
   if (payload.params !== undefined) detail.params = payload.params;
   if (payload.error) detail.error = payload.error;
   if (payload.durationMs !== undefined) detail.durationMs = payload.durationMs;
+
+  // Plugin can override the audit detail by returning result.details.
+  // Used by tools whose params contain sensitive data (e.g. pinchy_write.content).
+  // When details is set, raw params are not logged.
+  const resultDetails =
+    resultObj && isObject(resultObj.details)
+      ? (resultObj.details as Record<string, unknown>)
+      : null;
+  if (resultDetails) {
+    delete detail.params;
+    Object.assign(detail, resultDetails);
+  }
 
   // Change 3: Actor becomes the user extracted from sessionKey when possible
   const userId = extractUserIdFromSessionKey(payload.sessionKey);
@@ -112,7 +126,6 @@ export async function POST(request: NextRequest) {
   // Transport errors take precedence because they're the more fundamental
   // failure. For semantic errors, we try to lift the first text content
   // entry as the error message.
-  const resultObj = isObject(payload.result) ? payload.result : null;
   const resultIsError = resultObj?.isError === true;
   const semanticErrorMessage =
     resultIsError && resultObj
