@@ -22,6 +22,7 @@ import {
 } from "@/lib/limits";
 import { compressImageForChat } from "@/lib/image-compression";
 import { dataUrlToFile, fileToDataUrl } from "@/lib/data-url";
+import mammoth from "mammoth";
 
 /** Lightweight metadata for binary file attachments shown next to user messages. */
 export interface WsFileMeta {
@@ -227,9 +228,65 @@ export class SimpleBinaryFileAttachmentAdapter {
   }
 }
 
+/**
+ * Adapter for Office documents the model needs as readable text.
+ *
+ * Currently: .docx only. The file is a ZIP archive of XML; reading it via
+ * the plain-text adapter would ship the model the literal "PK…" bytes of
+ * the archive. We extract the text with mammoth at upload time and ship it
+ * as a text part, mirroring SimpleTextAttachmentAdapter for .txt files.
+ *
+ * Filename is preserved in the `<attachment name=…>` wrapper so the agent
+ * can cite the source document.
+ */
+export class OfficeDocumentAttachmentAdapter {
+  public accept = "application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx";
+
+  async add(state: { file: File }) {
+    const { file } = state;
+    if (file.size > CLIENT_MAX_ATTACHMENT_SIZE_BYTES) {
+      const limitMb = Math.round(CLIENT_MAX_ATTACHMENT_SIZE_BYTES / 1024 / 1024);
+      throw new Error(
+        `File "${file.name}" is too large (${Math.round(file.size / 1024 / 1024)} MB). The limit is ${limitMb} MB.`
+      );
+    }
+    return {
+      id: file.name,
+      type: "document" as const,
+      name: file.name,
+      contentType: file.type,
+      file,
+      status: { type: "requires-action" as const, reason: "composer-send" as const },
+    };
+  }
+
+  async send(attachment: { id?: string; name: string; file: File }) {
+    const arrayBuffer = await attachment.file.arrayBuffer();
+    const { value } = await mammoth.extractRawText({ arrayBuffer });
+    return {
+      id: attachment.id ?? attachment.name,
+      type: "document" as const,
+      name: attachment.name,
+      file: attachment.file,
+      status: { type: "complete" as const },
+      content: [
+        {
+          type: "text" as const,
+          text: `<attachment name=${attachment.name}>\n${value}\n</attachment>`,
+        },
+      ],
+    };
+  }
+
+  async remove(): Promise<void> {
+    // No-op — local files require no cleanup
+  }
+}
+
 const attachmentAdapter = new CompositeAttachmentAdapter([
   new SimpleImageAttachmentAdapter(),
   new CodeTextAttachmentAdapter(),
+  new OfficeDocumentAttachmentAdapter(),
   new SimpleBinaryFileAttachmentAdapter(),
 ]);
 
