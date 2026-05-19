@@ -3,6 +3,7 @@ import { resolve, normalize } from "path";
 export const ALLOWED_ROOTS = ["/data/", "/root/.openclaw/workspaces/"] as const;
 const MAX_FILE_SIZE = 10 * 1024 * 1024;
 const MAX_PDF_FILE_SIZE = 50 * 1024 * 1024;
+const MAX_DOCX_FILE_SIZE = 50 * 1024 * 1024;
 
 export interface AgentFileConfig {
   allowed_paths: string[];
@@ -78,4 +79,4 @@ export function validateAccess(
   return resolved;
 }
 
-export { MAX_FILE_SIZE, MAX_PDF_FILE_SIZE };
+export { MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, MAX_DOCX_FILE_SIZE };

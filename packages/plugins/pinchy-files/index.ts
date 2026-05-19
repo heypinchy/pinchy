@@ -2,7 +2,7 @@ import { readFileSync, readdirSync, statSync, realpathSync } from "fs";
 import { readFile, open, writeFile } from "fs/promises";
 import { createHash } from "crypto";
 import { join } from "path";
-import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, type AgentFileConfig } from "./validate";
+import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, MAX_DOCX_FILE_SIZE, type AgentFileConfig } from "./validate";
 import { extractDocxText } from "./docx-extract";
 import { extractPdfText } from "./pdf-extract";
 import { formatPdfResult } from "./pdf-format";
@@ -262,8 +262,14 @@ const plugin = {
               validateAccess({ allowed_paths: paths }, realPath);
 
               const stats = statSync(realPath);
-              const isPdf = realPath.toLowerCase().endsWith(".pdf");
-              const sizeLimit = isPdf ? MAX_PDF_FILE_SIZE : MAX_FILE_SIZE;
+              const lowerPath = realPath.toLowerCase();
+              const isPdf = lowerPath.endsWith(".pdf");
+              const isDocx = lowerPath.endsWith(".docx");
+              const sizeLimit = isPdf
+                ? MAX_PDF_FILE_SIZE
+                : isDocx
+                  ? MAX_DOCX_FILE_SIZE
+                  : MAX_FILE_SIZE;
               if (stats.size > sizeLimit) {
                 return {
                   isError: true,
@@ -321,7 +327,7 @@ const plugin = {
               // .docx — extract text via mammoth. Reading a .docx as utf-8
               // returns the ZIP archive's binary bytes (starting with "PK"),
               // which is unintelligible to the model.
-              if (realPath.toLowerCase().endsWith(".docx")) {
+              if (isDocx) {
                 const buffer = await readFile(realPath);
                 const { text } = await extractDocxText(buffer);
                 return { content: [{ type: "text", text }] };

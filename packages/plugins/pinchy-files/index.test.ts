@@ -590,6 +590,31 @@ describe("pinchy_read DOCX integration", () => {
     expect(result.content[0].type).toBe("text");
     expect(result.content[0].text).toMatch(/ENOENT|no such file/);
   });
+
+  it("rejects .docx files larger than MAX_DOCX_FILE_SIZE with isError=true", async () => {
+    const { writeFileSync, mkdtempSync, rmSync } = await import("fs");
+    const { tmpdir } = await import("os");
+    const tmpDir = mkdtempSync(join(tmpdir(), "pinchy-files-test-"));
+    const oversizedPath = join(tmpDir, "big.docx");
+    // 51 MB of zero bytes — 1 MB over the 50 MB DOCX limit. The content
+    // doesn't need to be a valid ZIP because the size gate runs before
+    // mammoth ever sees the buffer.
+    writeFileSync(oversizedPath, Buffer.alloc(51 * 1024 * 1024));
+
+    try {
+      const api = createMockApi({ "agent-1": { allowed_paths: [tmpDir + "/"] } });
+      const tool = await getReadTool(api);
+
+      const result = await tool.execute("call-1", { path: oversizedPath });
+
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/too large/i);
+      // The cited limit must be the 50 MB DOCX cap, not the 10 MB generic one.
+      expect(result.content[0].text).toMatch(/52428800/);
+    } finally {
+      rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("pinchy_write tool", () => {
