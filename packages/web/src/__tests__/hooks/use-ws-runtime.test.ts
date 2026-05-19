@@ -326,6 +326,97 @@ describe("useWsRuntime", () => {
     });
   });
 
+  it("forwards a valid upstreamFormatError payload onto the error metadata (issue #338)", () => {
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "error",
+          agentName: "Smithers",
+          providerError:
+            'rawError=400 "Function call is missing a thought_signature in functionCall parts."',
+          hint: "Click Retry — the same message usually succeeds on the next try.",
+          messageId: "msg-1",
+          upstreamFormatError: {
+            kind: "upstream_format_error",
+            model: "ollama-cloud/gemini-3-flash-preview",
+            errorPattern: "thought_signature",
+            ref: "abc-123",
+          },
+        }),
+      });
+    });
+
+    const messages = result.current.runtime.messages;
+    const errorMsg = messages.find((m: any) => m.role === "assistant" && m.metadata?.custom?.error);
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.metadata.custom.error.upstreamFormatError).toEqual({
+      kind: "upstream_format_error",
+      model: "ollama-cloud/gemini-3-flash-preview",
+      errorPattern: "thought_signature",
+      ref: "abc-123",
+    });
+  });
+
+  it("drops a malformed upstreamFormatError payload (defense-in-depth zod safeParse, issue #338)", () => {
+    // If a stale Pinchy server or a hypothetical replay attack ever sends a
+    // frame whose `upstreamFormatError` shape doesn't match the schema (wrong
+    // kind, missing model, unknown errorPattern, …) the hook must NOT pass
+    // the untrusted object through to the UI — otherwise the bubble component
+    // could render a "Retry usually clears it" message for a completely
+    // unrelated error and mislead the user. The bare providerError text stays
+    // available so the generic error bubble still shows.
+    const { result } = renderHook(() => useWsRuntime("agent-1"));
+    const ws = wsInstances[0];
+
+    act(() => {
+      ws.onopen?.();
+    });
+    act(() => {
+      result.current.runtime.onNew({
+        content: [{ type: "text", text: "Hello" }],
+        parentId: "root",
+      });
+    });
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          type: "error",
+          agentName: "Smithers",
+          providerError: "Some upstream error",
+          messageId: "msg-1",
+          // Malformed: wrong `kind` discriminator, no `model`, unknown
+          // `errorPattern` literal. zod must reject this.
+          upstreamFormatError: {
+            kind: "something_else",
+            errorPattern: "made_up_pattern",
+            ref: 42,
+          },
+        }),
+      });
+    });
+
+    const messages = result.current.runtime.messages;
+    const errorMsg = messages.find((m: any) => m.role === "assistant" && m.metadata?.custom?.error);
+    expect(errorMsg).toBeDefined();
+    expect(errorMsg.metadata.custom.error.upstreamFormatError).toBeUndefined();
+    // The bare error text is still rendered so the generic bubble can show up.
+    expect(errorMsg.metadata.custom.error.providerError).toBe("Some upstream error");
+  });
+
   it("should stay running when only done arrives (turn end), and stop on complete", () => {
     const { result } = renderHook(() => useWsRuntime("agent-1"));
     const ws = wsInstances[0];

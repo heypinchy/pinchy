@@ -82,6 +82,17 @@ When the provider returns a server error (HTTP 5xx) that Pinchy recognises as a 
 
 This avoids having to hunt through menus when a model goes down.
 
+### Upstream schema/format errors (`thought_signature`)
+
+When the chat surfaces a **transient upstream issue bubble** mentioning `thought_signature`, the upstream provider has rejected the request because of a known schema defect — most commonly Gemini 3 dropping its required `thought_signature` field on a tool-call replay turn (upstream `openclaw/openclaw#72879`, tracked in Pinchy as [#338](https://github.com/heypinchy/pinchy/issues/338)). The model itself is healthy; the next replay of the same message usually succeeds.
+
+What to do:
+
+1. Click **Retry** on the failed message. The vast majority of these clear on the first retry.
+2. If retries fail repeatedly for the same agent on the same model, the upstream issue is currently more severe than usual. Open the audit page filtered by `eventType=agent.upstream_format_error` to confirm the frequency, then either pause that agent or switch it to a different model family (e.g. `anthropic/claude-sonnet-4.5` or `ollama-cloud/deepseek-v4-pro`) until upstream stabilises.
+
+Pinchy will continue to ship a fix for this once OpenClaw closes the matching OpenAI-compat path bug (upstream `openclaw/openclaw#34008`); the native Google provider path is already fixed in OpenClaw 2026.5.18.
+
 ### Removed model: `ollama-cloud/kimi-k2-thinking`
 
 `ollama-cloud/kimi-k2-thinking` has been removed from Pinchy's supported model list. Agents that used this model will show the model-unavailable bubble the next time they receive a message. To resolve it:

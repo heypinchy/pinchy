@@ -13,6 +13,7 @@ import {
   type AssistantRuntime,
 } from "@assistant-ui/react";
 import type { ChatError } from "@/components/assistant-ui/chat-error-message";
+import { upstreamFormatErrorSchema } from "@/lib/schemas/chat-frames";
 import { reduceMessages, type Action } from "./message-status-reducer";
 import type { MessageStatus } from "./message-status-reducer";
 import { isOrphaned as computeIsOrphaned } from "./orphan-detector";
@@ -945,13 +946,27 @@ export function useWsRuntime(agentId: string): {
             clearStuckTimer();
             setIsDelayed(false);
 
+            // Defense-in-depth: parse the structured upstream-format-error
+            // payload with the zod schema instead of trusting the inbound
+            // shape. A stale server or malformed frame must NOT be able to
+            // render the "Retry usually clears it" bubble for an unrelated
+            // error — that would lie to the user about the cause and the
+            // recovery path. On parse failure the bare providerError still
+            // surfaces via the generic bubble. Issue #338.
+            const upstreamFormatErrorParsed = data.upstreamFormatError
+              ? upstreamFormatErrorSchema.safeParse(data.upstreamFormatError)
+              : null;
+            const upstreamFormatError = upstreamFormatErrorParsed?.success
+              ? upstreamFormatErrorParsed.data
+              : undefined;
+
             const error: ChatError = data.providerError
               ? {
                   agentName: data.agentName,
                   providerError: data.providerError,
                   hint: data.hint,
                   modelUnavailable: data.modelUnavailable,
-                  upstreamFormatError: data.upstreamFormatError,
+                  upstreamFormatError,
                 }
               : data.code === "attachment_invalid"
                 ? { attachmentInvalid: true, message: data.message }

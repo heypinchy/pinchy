@@ -40,11 +40,16 @@ export type ModelUnavailableError = z.infer<typeof modelUnavailableErrorSchema>;
  * the cause is upstream (e.g. openclaw/openclaw#72879 dropping
  * `thought_signature` on Gemini 3 replay turns).
  *
- * `errorPattern` is the matched pattern family, kept open for future patterns
- * sharing the same UX shape. The server also writes an
- * `agent.upstream_format_error` audit entry (throttled) to make frequency
- * tracking automatic rather than manual log-grepping (issue #338 tracking
- * item #1).
+ * `errorPattern` is the matched pattern family. The chat-frame schema below
+ * intentionally constrains it to `z.literal("thought_signature")` — the only
+ * pattern currently surfaced to the UI. Adding a new visible pattern requires
+ * both extending this literal (so the client's safeParse accepts it) and
+ * teaching the bubble component how to render it. The matching `audit.ts`
+ * detail type keeps `errorPattern: string` so new patterns can land in the
+ * audit table from a server-only commit, without a schema migration, ahead of
+ * any UI work. The server also writes an `agent.upstream_format_error` audit
+ * entry (throttled) to make frequency tracking automatic rather than manual
+ * log-grepping (issue #338 tracking item #1).
  *
  * Produced by `server/model-error-classifier.ts:classifyUpstreamFormatError`.
  * Consumed by `components/assistant-ui/chat-error-message.tsx`.

@@ -251,8 +251,13 @@ export type AuditLogEntry =
         model: string | null | undefined;
         providerError: string;
         ref?: string;
-        // Pattern family the error matched. Open-ended so new known patterns
-        // can be added without a schema migration; current values: "thought_signature".
+        // Pattern family the error matched. Kept as `string` (rather than a
+        // narrower literal union) so server-only commits can add a new known
+        // pattern to the audit table — for frequency tracking — without a
+        // schema migration. The chat-frame schema in `lib/schemas/chat-frames`
+        // keeps the visible-to-UI set narrower (currently the single literal
+        // `"thought_signature"`); extending the UI surface is a separate
+        // commit that has to update both. Current values: "thought_signature".
         errorPattern: string;
       };
     })

@@ -42,6 +42,18 @@ The bubble shows the affected agent name, the model identifier, and a plain-Engl
 
 See [Manage LLM Providers — Model-unavailable errors](/guides/llm-providers/#model-unavailable-errors) for step-by-step instructions and the list of removed models.
 
+## Upstream format errors
+
+Some providers occasionally reject a request payload because of a known schema defect that retries usually clear — the canonical example is Gemini 3 dropping its required `thought_signature` field on a tool-call replay turn (upstream `openclaw/openclaw#72879`). When Pinchy recognises one of these patterns, the chat shows a dedicated **transient upstream issue bubble** instead of the generic provider-error wording.
+
+The bubble is deliberately different from the model-unavailable one above:
+
+- It names the affected model and explains the cause is **upstream**, not your configuration.
+- It tells you to click **Retry** — the same message usually succeeds on the next try.
+- It does **not** offer a "Switch model →" link. The model is fine; switching would push you away from the one you actually chose.
+
+Each occurrence writes a throttled `agent.upstream_format_error` audit entry (one per `(agent, model)` per 5 minutes) so admins can track frequency from the audit page rather than grepping gateway logs.
+
 ## Navigating away mid-conversation
 
 When you send a message and move to a different page in Pinchy, the chat keeps running in the background. Come back any time during the same browser session and the in-flight reply is right there — no reload, no lost output. A pulse dot next to the agent name in the sidebar shows when an agent is actively responding; a red dot indicates an error on the last turn. Closing the tab or doing a full page reload ends the session.

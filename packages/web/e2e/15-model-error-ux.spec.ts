@@ -266,3 +266,217 @@ test.describe("model-unavailable error UX", () => {
     await expect(page).toHaveURL(/\/settings\?tab=general#model/, { timeout: 10000 });
   });
 });
+
+/**
+ * Upstream-format-error UX test — Issue #338.
+ *
+ * Mirrors the model-unavailable spec above but exercises the second classifier:
+ * when OpenClaw forwards a Gemini 3 `thought_signature` 400 (upstream
+ * openclaw/openclaw#72879), the chat must render the dedicated
+ * "transient upstream issue" bubble — explicitly NOT the modelUnavailable
+ * one — and the "Switch model →" link must not appear.
+ *
+ * This locks in the full chain at the browser layer: server frame shape →
+ * client zod safeParse → bubble component selection. The unit tests cover
+ * each link individually; this E2E joins them so a future refactor that
+ * silently breaks the join (e.g. renames `upstreamFormatError` on the wire
+ * or accidentally rewires the bubble precedence) is caught here.
+ */
+const UPSTREAM_FORMAT_MODEL = "ollama-cloud/gemini-3-flash-preview";
+const UPSTREAM_FORMAT_PROVIDER_ERROR =
+  "LLM request failed: provider rejected the request schema or tool payload. " +
+  'rawError=400 "Function call is missing a thought_signature in functionCall parts. ' +
+  '(ref: e2e-upstream-fmt-1)"';
+const UPSTREAM_FORMAT_REF = "e2e-upstream-fmt-1";
+
+test.describe("upstream-format-error UX (issue #338)", () => {
+  test("transient upstream bubble shows retry guidance, no switch-model link, with technical details", async ({
+    page,
+    request,
+  }) => {
+    const setupRes = await request.post("/api/setup", {
+      data: {
+        name: "Test Admin",
+        email: "admin@test.local",
+        password: "test-password-123",
+      },
+    });
+    expect([201, 403]).toContain(setupRes.status());
+
+    await seedProviderConfig();
+
+    await page.goto("/login");
+    await page.getByLabel(/email/i).fill("admin@test.local");
+    await page.getByLabel("Password", { exact: true }).fill("test-password-123");
+    await page.getByRole("button", { name: /sign in/i }).click();
+    await expect(page).toHaveURL(/\/chat\//, { timeout: 15000 });
+
+    const chatUrl = page.url();
+    const agentIdMatch = chatUrl.match(/\/chat\/([^/?#]+)/);
+    expect(agentIdMatch).toBeTruthy();
+    const agentId = agentIdMatch![1];
+
+    await page.addInitScript(
+      ({
+        targetAgentId,
+        modelId,
+        providerError,
+        errorRef,
+        agentName,
+      }: {
+        targetAgentId: string;
+        modelId: string;
+        providerError: string;
+        errorRef: string;
+        agentName: string;
+      }) => {
+        type ClientMessage = {
+          type?: string;
+          clientMessageId?: string;
+        };
+
+        const RealWebSocket = window.WebSocket;
+
+        class MockWebSocket {
+          static CONNECTING = 0;
+          static OPEN = 1;
+          static CLOSING = 2;
+          static CLOSED = 3;
+
+          CONNECTING = 0;
+          OPEN = 1;
+          CLOSING = 2;
+          CLOSED = 3;
+
+          onopen: (() => void) | null = null;
+          onmessage: ((event: { data: string }) => void) | null = null;
+          onclose: (() => void) | null = null;
+          onerror: (() => void) | null = null;
+          readyState = 1;
+          binaryType: string = "blob";
+
+          constructor(url: string) {
+            if (url.includes("/_next/")) {
+              return new RealWebSocket(url) as unknown as MockWebSocket;
+            }
+            if (!url.includes(targetAgentId)) {
+              return new RealWebSocket(url) as unknown as MockWebSocket;
+            }
+            queueMicrotask(() => this.onopen?.());
+          }
+
+          addEventListener() {}
+          removeEventListener() {}
+
+          send(raw: string) {
+            const message = JSON.parse(raw) as ClientMessage;
+
+            if (message.type === "history") {
+              setTimeout(() => {
+                this.onmessage?.({
+                  data: JSON.stringify({
+                    type: "openclaw_status",
+                    connected: true,
+                  }),
+                });
+              }, 0);
+              setTimeout(() => {
+                this.onmessage?.({
+                  data: JSON.stringify({
+                    type: "history",
+                    messages: [],
+                    sessionKnown: true,
+                  }),
+                });
+              }, 5);
+              return;
+            }
+
+            if (message.type === "message") {
+              const clientMessageId = message.clientMessageId;
+
+              setTimeout(() => {
+                this.onmessage?.({
+                  data: JSON.stringify({ type: "ack", clientMessageId }),
+                });
+              }, 0);
+
+              // Inject the upstream-format-error frame matching exactly what
+              // client-router.ts emits when classifyUpstreamFormatError matches.
+              setTimeout(() => {
+                this.onmessage?.({
+                  data: JSON.stringify({
+                    type: "error",
+                    agentName: agentName,
+                    providerError: providerError,
+                    upstreamFormatError: {
+                      kind: "upstream_format_error",
+                      model: modelId,
+                      errorPattern: "thought_signature",
+                      ref: errorRef,
+                    },
+                    messageId: "e2e-upstream-fmt-msg-1",
+                  }),
+                });
+              }, 10);
+            }
+          }
+
+          close() {
+            this.readyState = 3;
+            this.onclose?.();
+          }
+        }
+
+        Object.defineProperty(window, "WebSocket", {
+          configurable: true,
+          writable: true,
+          value: MockWebSocket,
+        });
+      },
+      {
+        targetAgentId: agentId,
+        modelId: UPSTREAM_FORMAT_MODEL,
+        providerError: UPSTREAM_FORMAT_PROVIDER_ERROR,
+        errorRef: UPSTREAM_FORMAT_REF,
+        agentName: AGENT_NAME,
+      }
+    );
+
+    await page.goto(`/chat/${agentId}`);
+    await expect(page).toHaveURL(`/chat/${agentId}`, { timeout: 10000 });
+
+    const input = page.getByLabel("Message input");
+    await expect(input).toBeVisible({ timeout: 10000 });
+
+    await input.fill("Trigger upstream format error");
+    await page.getByRole("button", { name: "Send message" }).click();
+
+    // Bubble headline reuses the "{agent} couldn't respond" framing — same
+    // hasText filter rationale as the model-unavailable test above.
+    const errorBubble = page.getByRole("alert").filter({ hasText: "couldn't respond" });
+    await expect(errorBubble).toBeVisible({ timeout: 10000 });
+
+    // Copy must mention retry guidance — the central pain point of issue #338
+    // is that the previous bubble didn't tell users that retry was reliable.
+    await expect(errorBubble).toContainText(/Retry/i);
+
+    // Crucially, the model identifier appears so the user knows which model
+    // hit the issue (not all models do).
+    await expect(errorBubble).toContainText(UPSTREAM_FORMAT_MODEL);
+
+    // The "Switch model →" link must NOT render — the model isn't the
+    // problem here, and offering the link would push users away from a
+    // model that's actually fine.
+    await expect(page.getByRole("link", { name: /switch model/i })).toHaveCount(0);
+
+    // Technical details collapsible: hidden by default, expandable on click.
+    const technicalDetailsButton = page.getByRole("button", { name: /technical details/i });
+    await expect(technicalDetailsButton).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(/Function call is missing/)).not.toBeVisible();
+
+    await technicalDetailsButton.click();
+    await expect(page.getByText(/Function call is missing/)).toBeVisible({ timeout: 5000 });
+    await expect(page.getByText(new RegExp(UPSTREAM_FORMAT_REF))).toBeVisible();
+  });
+});

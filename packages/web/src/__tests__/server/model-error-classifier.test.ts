@@ -117,6 +117,22 @@ describe("classifyUpstreamFormatError", () => {
     });
   });
 
+  it("requires a separator between 'thought' and 'signature' — bare 'thoughtsignature' is not a real OpenClaw variant and must not match", () => {
+    // Defensive: keep the regex narrow enough that a future provider error
+    // mentioning the wrong English word ("a thoughtsignature mismatch" in
+    // some other unrelated context, vendor docs string, etc.) cannot hijack
+    // this classifier and trigger the upstream-format-error UX for an
+    // unrelated bug. Only the two real OpenClaw variants
+    // (`thought_signature` snake_case, `thoughtSignature` camelCase) should
+    // match — both have a separator (underscore or upper-case S).
+    expect(
+      classifyUpstreamFormatError(
+        "rawError=400 thoughtsignature mismatch detected by linter",
+        "ollama-cloud/gemini-3-flash-preview"
+      )
+    ).toBeNull();
+  });
+
   it("does not collide with classifyModelError (orthogonal classifiers)", () => {
     // The same thought_signature text should classify as upstream_format_error
     // but NOT as model_unavailable — the issue is upstream schema, not server
