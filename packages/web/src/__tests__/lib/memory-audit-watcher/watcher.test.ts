@@ -24,6 +24,10 @@ describe("startMemoryAuditWatcher (integration)", () => {
         appended.push(entry as Record<string, unknown>);
       },
       recordAuditFailure: vi.fn(),
+      // Fast polling so tests complete well within the default 5 s timeout
+      // even under CI load. Production uses 250 ms / 200 ms defaults.
+      pollingInterval: 50,
+      stabilityThreshold: 50,
     });
   });
 
@@ -114,6 +118,8 @@ describe("startMemoryAuditWatcher (handler error resilience)", () => {
         appended.push(entry as Record<string, unknown>);
       },
       recordAuditFailure: vi.fn(),
+      pollingInterval: 50,
+      stabilityThreshold: 50,
     });
   });
 

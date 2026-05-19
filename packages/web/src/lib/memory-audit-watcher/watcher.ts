@@ -11,6 +11,10 @@ export type MemoryAuditWatcherDeps = {
   lookupAgent: (agentId: string) => Promise<{ id: string; name: string } | null>;
   appendAuditLog: (entry: AuditLogEntry) => Promise<void>;
   recordAuditFailure: (err: unknown, entry: AuditLogEntry) => void;
+  /** Polling interval in ms (default: 250). Lower values increase responsiveness at the cost of more FS I/O. */
+  pollingInterval?: number;
+  /** Write stabilization threshold in ms (default: 200). Events fire only after the file hasn't changed for this long. */
+  stabilityThreshold?: number;
 };
 
 /**
@@ -47,10 +51,10 @@ export async function startMemoryAuditWatcher(
     // 250 ms is well within budget for a watch tree of a few dozen agents and
     // makes the watcher behave identically across all host/container setups.
     usePolling: true,
-    interval: 250,
+    interval: deps.pollingInterval ?? 250,
     // Wait for writes to settle before firing add/change — prevents emitting
     // on partial writes during editor saves or atomic-replace flows.
-    awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 50 },
+    awaitWriteFinish: { stabilityThreshold: deps.stabilityThreshold ?? 200, pollInterval: 50 },
     // Filter to memory files only. The matcher fires for both directories
     // (no stats arg in some chokidar paths) and files (stats present). Return
     // `true` to ignore. We never ignore directories — they need to be walked
