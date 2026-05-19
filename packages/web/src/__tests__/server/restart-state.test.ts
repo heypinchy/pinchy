@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 let restartState: typeof import("@/server/restart-state").restartState;
 
@@ -87,5 +87,72 @@ describe("restartState", () => {
 
     const mod2 = await import("@/server/restart-state");
     expect(mod2.restartState.isRestarting).toBe(true);
+  });
+
+  describe("auto-clear safety net", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("auto-clears isRestarting after 60s if notifyReady never arrives", () => {
+      // notifyRestart assumes a corresponding OC restart will fire notifyReady
+      // via server.ts's reconnect handler. But OC may treat the file change as
+      // a no-op (e.g., byte diff but no functional diff) and never restart —
+      // in which case isRestarting would stay true forever, blocking the UI
+      // overlay and any test polling /api/health/openclaw for status="ok".
+      restartState.notifyRestart();
+      expect(restartState.isRestarting).toBe(true);
+
+      vi.advanceTimersByTime(59_999);
+      expect(restartState.isRestarting).toBe(true);
+
+      vi.advanceTimersByTime(2);
+      expect(restartState.isRestarting).toBe(false);
+    });
+
+    it("emits 'ready' when auto-clear fires", () => {
+      const listener = vi.fn();
+      restartState.on("ready", listener);
+
+      restartState.notifyRestart();
+      vi.advanceTimersByTime(60_001);
+
+      expect(listener).toHaveBeenCalledOnce();
+    });
+
+    it("cancels auto-clear when notifyReady fires first", () => {
+      restartState.notifyRestart();
+      vi.advanceTimersByTime(10_000);
+
+      restartState.notifyReady();
+      expect(restartState.isRestarting).toBe(false);
+
+      // Advance past the original 60s — auto-clear must not fire a redundant
+      // ready event (which would confuse the WS broadcaster).
+      const readyListener = vi.fn();
+      restartState.on("ready", readyListener);
+      vi.advanceTimersByTime(60_000);
+
+      expect(readyListener).not.toHaveBeenCalled();
+    });
+
+    it("resets the 60s window when notifyRestart is called again", () => {
+      restartState.notifyRestart();
+      vi.advanceTimersByTime(50_000);
+
+      // A second notifyRestart (e.g., another channel mutation) restarts the
+      // safety-net countdown — don't auto-clear 10s after the second call.
+      restartState.notifyRestart();
+      vi.advanceTimersByTime(20_000);
+
+      expect(restartState.isRestarting).toBe(true);
+
+      vi.advanceTimersByTime(40_001);
+      expect(restartState.isRestarting).toBe(false);
+    });
   });
 });
