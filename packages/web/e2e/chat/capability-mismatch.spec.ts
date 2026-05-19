@@ -44,14 +44,12 @@
 import { test, expect } from "@playwright/test";
 import { seedProviderConfig } from "../helpers";
 
-// Must match the model the seeded Smithers agent actually has — see
-// seedDefaultAgent → PROVIDERS.anthropic.defaultModel (haiku-4.5 at the time
-// of writing). The mocked /api/models/capabilities lies about this model's
-// capabilities (claims vision: false) so the composer's hard-block logic
-// kicks in even though the real model is vision-capable. Using a real model
-// id avoids needing a separate API/DB write to flip the agent's model
-// before the test runs.
-const TEXT_ONLY_MODEL = "anthropic/claude-haiku-4-5-20251001";
+// The mocked /api/models/capabilities lies about the seeded agent's actual
+// model (claims vision: false), so the composer's hard-block logic kicks
+// in even when the real provider's default model is vision-capable. The
+// model key is resolved per-test from the seeded agent (see `seededModel`
+// below), not hardcoded — this keeps the test robust against upstream
+// changes to PROVIDERS[*].defaultModel.
 const VISION_MODEL = "vision-provider/gpt-4o";
 const PNG_FILENAME = "test-image.png";
 
@@ -84,14 +82,16 @@ test.describe("capability-mismatch — block + recovery", () => {
     expect(agentIdMatch).toBeTruthy();
     const agentId = agentIdMatch![1];
 
-    // The seeded agent's name may not be "Smithers" — earlier tests in the
-    // suite share the test DB and can rename or replace the default agent.
-    // Fetch the actual name so the RecoveryPanel assertion is robust against
-    // test-ordering, not against a fragile constant.
+    // Earlier tests in the suite share the test DB and can rename, replace,
+    // or remodel the default agent. Resolve the seeded agent's actual name
+    // AND model from the API so the capability-map mock keys off the model
+    // the Composer will actually see — not a constant that drifts when the
+    // default model anchor changes upstream.
     const agentRes = await page.request.get(`/api/agents/${agentId}`);
     expect(agentRes.ok()).toBe(true);
-    const agentBody = (await agentRes.json()) as { name: string };
+    const agentBody = (await agentRes.json()) as { name: string; model: string };
     const agentName = agentBody.name;
+    const seededModel = agentBody.model;
 
     // ── 3. Inject mock fetch (capabilities + PATCH) before navigation ─────────
     //    addInitScript serialises the closure; constants must be inlined via the
@@ -199,7 +199,7 @@ test.describe("capability-mismatch — block + recovery", () => {
         };
       },
       {
-        textOnlyModel: TEXT_ONLY_MODEL,
+        textOnlyModel: seededModel,
         visionModel: VISION_MODEL,
         targetAgentId: agentId,
       }
