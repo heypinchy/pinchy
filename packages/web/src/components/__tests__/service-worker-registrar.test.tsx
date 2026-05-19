@@ -7,7 +7,6 @@ describe("<ServiceWorkerRegistrar />", () => {
   const originalServiceWorker = (
     navigator as Navigator & { serviceWorker?: ServiceWorkerContainer }
   ).serviceWorker;
-  const originalNodeEnv = process.env.NODE_ENV;
 
   beforeEach(() => {
     registerSpy.mockClear();
@@ -27,23 +26,23 @@ describe("<ServiceWorkerRegistrar />", () => {
       // @ts-expect-error - restore by deletion
       delete (navigator as Navigator & { serviceWorker?: unknown }).serviceWorker;
     }
-    process.env.NODE_ENV = originalNodeEnv;
+    vi.unstubAllEnvs();
   });
 
   it("registers /sw.js in production", () => {
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     render(<ServiceWorkerRegistrar />);
     expect(registerSpy).toHaveBeenCalledWith("/sw.js");
   });
 
   it("does NOT register in development", () => {
-    process.env.NODE_ENV = "development";
+    vi.stubEnv("NODE_ENV", "development");
     render(<ServiceWorkerRegistrar />);
     expect(registerSpy).not.toHaveBeenCalled();
   });
 
   it("renders nothing", () => {
-    process.env.NODE_ENV = "production";
+    vi.stubEnv("NODE_ENV", "production");
     const { container } = render(<ServiceWorkerRegistrar />);
     expect(container.firstChild).toBeNull();
   });
