@@ -46,7 +46,7 @@ Click **Save** to apply the permissions.
 Go back to the agent's chat and start asking questions. The agent can:
 
 - List files in the directories you selected
-- Read the contents of those files, including **PDF documents**
+- Read the contents of those files, including **PDF documents** and **Microsoft Word `.docx` files**
 - Answer questions based on what it reads
 
 ### PDF support
@@ -58,6 +58,10 @@ Knowledge Base agents fully support PDF files:
 - **Mixed PDFs** — documents with both text and scanned pages are handled automatically
 
 For best results with scanned documents, use a vision-capable model (all Anthropic, OpenAI, and Google models support this). If you're using Ollama, choose a vision model like `llava` or `llama3.2-vision`. You'll see a warning in the Permissions tab if the selected model doesn't support vision.
+
+### Word document support
+
+Drop a `.docx` file into an approved directory and the agent reads it the same way it reads a PDF. Paragraphs, headings, and table cells round-trip as text — no vision model needed. Embedded images inside the document are not yet processed.
 
 The agent **cannot**:
 

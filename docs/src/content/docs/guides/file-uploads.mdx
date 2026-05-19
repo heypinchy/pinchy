@@ -10,6 +10,11 @@ Drop a file into a Pinchy chat and the agent receives its content directly — n
 **Documents**
 
 - PDF
+- Microsoft Word (`.docx`)
+
+**Code and text**
+
+- `.txt`, `.md`, `.csv`, `.json`, `.xml`, `.html`, `.css`, plus common source-file extensions
 
 **Images**
 
@@ -31,6 +36,8 @@ Two things happen when you attach a file:
 2. **Images are also sent inline** to the LLM when the model supports vision, so the agent can "see" an image without a separate read step.
 
 For PDFs, Pinchy automatically picks the best vision-capable model available in your provider configuration. Anthropic Claude and Google Gemini handle PDFs natively; other vision-capable models fall back to a text-and-image extraction step.
+
+For Microsoft Word `.docx` files, Pinchy extracts the document's text — paragraphs, headings, and tables — at upload time and ships it directly to the agent as text. No vision model required. Embedded images in `.docx` are not yet processed.
 
 Workspaces are isolated per agent: file-reading tools only see files in that agent's own workspace, never another agent's files or the host system. See [Agent Workspaces](/concepts/workspaces/) for the full picture.
 
