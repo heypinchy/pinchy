@@ -52,3 +52,57 @@ describe("MAX_FILE_SIZE exports", () => {
     expect(MAX_PDF_FILE_SIZE).toBe(50 * 1024 * 1024);
   });
 });
+
+import { ALLOWED_ROOTS } from "./validate";
+
+describe("multi-root + mode validation", () => {
+  it("accepts paths under /data/ root", () => {
+    expect(() =>
+      validateAccess({ allowed_paths: ["/data/kb"] }, "/data/kb/file.txt", "read")
+    ).not.toThrow();
+  });
+
+  it("accepts paths under /root/.openclaw/workspaces/ root", () => {
+    expect(() =>
+      validateAccess(
+        { allowed_paths: ["/root/.openclaw/workspaces/agent-1/uploads"] },
+        "/root/.openclaw/workspaces/agent-1/uploads/file.txt",
+        "read"
+      )
+    ).not.toThrow();
+  });
+
+  it("rejects paths outside both allowed roots", () => {
+    expect(() =>
+      validateAccess({ allowed_paths: ["/data/kb"] }, "/etc/passwd", "read")
+    ).toThrow(/outside.*allowed root/i);
+  });
+
+  it("rejects write to read-only path when write_paths excludes it", () => {
+    expect(() =>
+      validateAccess(
+        { allowed_paths: ["/data/kb"], write_paths: [] },
+        "/data/kb/file.txt",
+        "write"
+      )
+    ).toThrow(/not in.*write/i);
+  });
+
+  it("accepts write to path in write_paths", () => {
+    expect(() =>
+      validateAccess(
+        {
+          allowed_paths: ["/root/.openclaw/workspaces/agent-1/uploads"],
+          write_paths: ["/root/.openclaw/workspaces/agent-1/uploads"],
+        },
+        "/root/.openclaw/workspaces/agent-1/uploads/out.csv",
+        "write"
+      )
+    ).not.toThrow();
+  });
+
+  it("ALLOWED_ROOTS contains both /data/ and workspace prefix", () => {
+    expect(ALLOWED_ROOTS).toContain("/data/");
+    expect(ALLOWED_ROOTS).toContain("/root/.openclaw/workspaces/");
+  });
+});

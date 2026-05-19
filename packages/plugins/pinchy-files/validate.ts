@@ -1,41 +1,50 @@
 import { resolve, normalize } from "path";
 
-const DATA_ROOT = "/data/";
-const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
-const MAX_PDF_FILE_SIZE = 50 * 1024 * 1024; // 50 MB
+export const ALLOWED_ROOTS = ["/data/", "/root/.openclaw/workspaces/"] as const;
+const MAX_FILE_SIZE = 10 * 1024 * 1024;
+const MAX_PDF_FILE_SIZE = 50 * 1024 * 1024;
 
 export interface AgentFileConfig {
   allowed_paths: string[];
+  write_paths?: string[];
   allowed_extensions?: string[];
 }
 
+export type AccessMode = "read" | "write";
+
 export function validateAccess(
   config: AgentFileConfig,
-  requestedPath: string
+  requestedPath: string,
+  mode: AccessMode = "read"
 ): string {
   if (typeof requestedPath !== "string") {
     throw new Error("Invalid path: must be a string");
   }
-
   if (requestedPath.includes("\0")) {
     throw new Error("Invalid path: contains null bytes");
   }
 
   const resolved = resolve(normalize(requestedPath));
 
-  if (!resolved.startsWith(DATA_ROOT)) {
-    throw new Error("Access denied: path outside data directory");
+  if (!ALLOWED_ROOTS.some((root) => resolved.startsWith(root))) {
+    throw new Error("Access denied: path outside allowed roots");
   }
 
-  const allowed = config.allowed_paths.some(
+  const pathList = mode === "write" ? (config.write_paths ?? []) : config.allowed_paths;
+  const allowed = pathList.some(
     (p) => resolved.startsWith(p) || (resolved + "/").startsWith(p)
   );
   if (!allowed) {
-    throw new Error("Access denied: path not in allowed directories");
+    throw new Error(
+      mode === "write"
+        ? "Access denied: path not in write_paths"
+        : "Access denied: path not in allowed directories"
+    );
   }
 
-  const segments = resolved.split("/");
-  if (segments.some((s) => s.startsWith(".") && s.length > 1)) {
+  const matchedRoot = ALLOWED_ROOTS.find((root) => resolved.startsWith(root))!;
+  const relativeSegments = resolved.slice(matchedRoot.length).split("/");
+  if (relativeSegments.some((s) => s.startsWith(".") && s.length > 1)) {
     throw new Error("Hidden files are not accessible");
   }
 
