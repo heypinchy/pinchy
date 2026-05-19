@@ -1,5 +1,5 @@
 import { readFileSync, readdirSync, statSync, realpathSync } from "fs";
-import { readFile } from "fs/promises";
+import { readFile, open, writeFile } from "fs/promises";
 import { createHash } from "crypto";
 import { join } from "path";
 import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, type AgentFileConfig } from "./validate";
@@ -366,12 +366,12 @@ const plugin = {
           async execute(_toolCallId: string, params: Record<string, unknown>) {
             try {
               const requestedPath = params.path as string;
-              const content = params.content as string;
-              const overwrite = params.overwrite === true;
 
-              if (typeof content !== "string") {
+              if (typeof params.content !== "string") {
                 throw new Error("content must be a string");
               }
+              const content = params.content;
+              const overwrite = params.overwrite === true;
 
               const resolved = validateAccess(
                 { allowed_paths: config.allowed_paths, write_paths: writePaths },
@@ -386,16 +386,13 @@ const plugin = {
                 );
               }
 
-              const { open, writeFile, readFile: readFileAsync } = await import("fs/promises");
-              const { createHash: hash } = await import("crypto");
-
               let mode: "create" | "overwrite";
               let previousContentHash: string | undefined;
 
               if (overwrite) {
                 try {
-                  const existing = await readFileAsync(resolved);
-                  previousContentHash = hash("sha256").update(existing).digest("hex");
+                  const existing = await readFile(resolved);
+                  previousContentHash = createHash("sha256").update(existing).digest("hex");
                   mode = "overwrite";
                 } catch (err) {
                   if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
@@ -427,7 +424,7 @@ const plugin = {
                 }
               }
 
-              const contentHash = hash("sha256").update(buffer).digest("hex");
+              const contentHash = createHash("sha256").update(buffer).digest("hex");
 
               return {
                 content: [
@@ -437,7 +434,7 @@ const plugin = {
                   },
                 ],
                 details: {
-                  path: requestedPath,
+                  path: resolved,
                   mode,
                   sizeBytes: buffer.byteLength,
                   contentHash,
