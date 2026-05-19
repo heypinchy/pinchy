@@ -14,7 +14,11 @@ runs:
       id: pw-version
       shell: bash
       run: |
-        version=$(node -e "console.log(require('./packages/web/node_modules/@playwright/test/package.json').version)" 2>/dev/null || echo "unknown")
+        version=$(node -e "console.log(require('./packages/web/node_modules/@playwright/test/package.json').version)" 2>/dev/null)
+        if [ -z "$version" ]; then
+          echo "::error::Could not resolve Playwright version from node_modules — run setup-pnpm first" >&2
+          exit 1
+        fi
         echo "version=${version}" >> $GITHUB_OUTPUT
 
     - name: Cache Playwright browsers
@@ -27,9 +31,13 @@ runs:
     - name: Install Playwright browsers + deps
       if: steps.pw-cache.outputs.cache-hit != 'true'
       shell: bash
-      run: pnpm -C packages/web exec playwright install --with-deps ${{ inputs.browsers }}
+      env:
+        BROWSERS: ${{ inputs.browsers }}
+      run: pnpm -C packages/web exec playwright install --with-deps $BROWSERS
 
     - name: Install Playwright system deps only (cache hit)
       if: steps.pw-cache.outputs.cache-hit == 'true'
       shell: bash
-      run: pnpm -C packages/web exec playwright install-deps ${{ inputs.browsers }}
+      env:
+        BROWSERS: ${{ inputs.browsers }}
+      run: pnpm -C packages/web exec playwright install-deps $BROWSERS
