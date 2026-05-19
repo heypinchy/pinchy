@@ -314,10 +314,12 @@ export class OfficeDocumentAttachmentAdapter {
     const { default: TurndownService } = await import("turndown");
     const { gfm } = await import("turndown-plugin-gfm");
 
-    const { value: html } = await mammoth.convertToHtml({
-      arrayBuffer,
-      convertImage: mammoth.images.imgElement(() => Promise.resolve({ src: "" })),
-    });
+    const { value: html } = await mammoth.convertToHtml(
+      { arrayBuffer },
+      {
+        convertImage: mammoth.images.imgElement(() => Promise.resolve({ src: "" })),
+      }
+    );
 
     const normalizedHtml = normalizeDocxTableHtml(html);
 
