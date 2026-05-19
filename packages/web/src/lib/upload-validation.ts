@@ -76,13 +76,33 @@ export const ALLOWED_ATTACHMENT_MIMES = new Set<string>([
   "image/heif",
 ]);
 
+// Text formats have no magic bytes, so fileTypeFromBuffer returns undefined.
+// These are validated by UTF-8 null-byte guard instead.
+export const ALLOWED_TEXT_MIMES = new Set<string>([
+  "text/plain",
+  "text/csv",
+  "text/markdown",
+  "application/json",
+  "text/yaml",
+]);
+
 export async function validateUploadBuffer(buffer: Buffer, claimedMime: string): Promise<string> {
   const detected = await fileTypeFromBuffer(
     new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength)
   );
+
   if (!detected) {
+    // Text files have no magic bytes. Accept if claimed MIME is in text allowlist
+    // and content contains no null bytes (binary content guard).
+    if (ALLOWED_TEXT_MIMES.has(claimedMime)) {
+      if (buffer.includes(0x00)) {
+        throw new Error("Binary content detected in claimed text file");
+      }
+      return claimedMime;
+    }
     throw new Error("Unable to detect file type");
   }
+
   if (!ALLOWED_ATTACHMENT_MIMES.has(detected.mime)) {
     throw new Error(`File type ${detected.mime} not supported`);
   }

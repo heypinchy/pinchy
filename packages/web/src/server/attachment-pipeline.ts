@@ -213,6 +213,16 @@ export async function processIncomingAttachments(
 function toolNameForMime(mimeType: string): string {
   if (mimeType === "application/pdf") return "`pdf`";
   if (mimeType.startsWith("image/")) return "`image`";
+  // Text formats (CSV, Markdown, JSON, YAML, plain text) are workspace files
+  // read via the pinchy_read plugin tool rather than an OpenClaw built-in.
+  if (
+    mimeType === "text/plain" ||
+    mimeType === "text/csv" ||
+    mimeType === "text/markdown" ||
+    mimeType === "application/json" ||
+    mimeType === "text/yaml"
+  )
+    return "`pinchy_read`";
   throw new Error(
     `attachment-pipeline: no built-in tool registered for MIME ${mimeType}. ` +
       `Update toolNameForMime() when adding a new attachment type.`
