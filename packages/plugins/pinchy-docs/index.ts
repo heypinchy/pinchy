@@ -48,12 +48,16 @@ interface DocEntry {
  *   - strip extension and trailing `/index`
  *   - append trailing slash
  *   - `index.mdx` at the root collapses to the bare base URL
+ *   - leading slashes on relPath are stripped so concatenation can't produce
+ *     `//` (defensive: `listMdxFiles()` never emits them, but `docs_read`
+ *     accepts a user-supplied path)
  * Returns null when `baseUrl` is falsy (air-gapped fork — keep path-only output).
  */
 export function buildPublicUrl(baseUrl: string | undefined, relPath: string): string | null {
   if (!baseUrl) return null;
   const base = baseUrl.replace(/\/+$/, "");
   const slug = relPath
+    .replace(/^\/+/, "")
     .replace(/\.(mdx|md)$/i, "")
     .replace(/\/index$/i, "")
     .replace(/^index$/i, "");

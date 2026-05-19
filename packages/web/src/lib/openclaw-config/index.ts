@@ -9,7 +9,11 @@
 //   normalize.ts   — openclaw#75534 workarounds, removable per #215 (internal)
 //   secrets-bundle.ts — SecretsBundle assembly helper (internal)
 //   paths.ts       — CONFIG_PATH constant (internal)
-export { regenerateOpenClawConfig } from "./build";
+export {
+  regenerateOpenClawConfig,
+  DEFAULT_DOCS_PUBLIC_BASE_URL,
+  DOCS_PUBLIC_BASE_URL_SETTING_KEY,
+} from "./build";
 export {
   sanitizeOpenClawConfig,
   seedRestartClassOverridesIfMissing,

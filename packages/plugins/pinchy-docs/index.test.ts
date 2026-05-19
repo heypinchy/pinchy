@@ -591,5 +591,20 @@ describe("pinchy-docs plugin", () => {
       expect(result.content[0].text).not.toContain("Public URL:");
       expect(result.content[0].text).toContain("Hello body.");
     });
+
+    it("buildPublicUrl strips a leading slash on relPath so the URL never contains '//'", async () => {
+      // Defensive: `listMdxFiles()` builds relPath without leading slashes,
+      // but `docs_read` accepts a user-supplied path. A path like
+      // "/guides/foo.mdx" must not collapse `${base}/${slug}/` into
+      // `${base}//guides/foo/`. Lock the contract directly on the exported
+      // helper so future call sites cannot regress it.
+      const { buildPublicUrl } = await import("./index");
+      expect(buildPublicUrl("https://docs.heypinchy.com", "/guides/foo.mdx")).toBe(
+        "https://docs.heypinchy.com/guides/foo/"
+      );
+      expect(buildPublicUrl("https://docs.heypinchy.com", "///guides/foo.mdx")).toBe(
+        "https://docs.heypinchy.com/guides/foo/"
+      );
+    });
   });
 });

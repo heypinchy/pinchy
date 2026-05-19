@@ -50,6 +50,22 @@ const BUILTIN_PROVIDER_BASE_URL_ENV_VARS: Record<"anthropic" | "openai" | "googl
 };
 
 /**
+ * Public docs URL configuration for the bundled `pinchy-docs` plugin.
+ *
+ * `DOCS_PUBLIC_BASE_URL_SETTING_KEY` is the operator-facing settings row that
+ * overrides the default. Three-state semantics:
+ *   - `null` (unset)       → fall back to {@link DEFAULT_DOCS_PUBLIC_BASE_URL}
+ *   - `""` (empty string)  → opt-out, plugin emits path-only output for
+ *                            air-gapped forks without published docs
+ *   - any other string     → use as the public base URL
+ *
+ * Keep this as the single source of truth — tests import these constants
+ * rather than the literal so a domain move only touches one line.
+ */
+export const DOCS_PUBLIC_BASE_URL_SETTING_KEY = "docs_public_base_url";
+export const DEFAULT_DOCS_PUBLIC_BASE_URL = "https://docs.heypinchy.com";
+
+/**
  * Rewrites the user-supplied Ollama URL so OpenClaw's `isLocalBaseUrl` check
  * passes (see model-auth-CsyLGY9m.js:111 in OpenClaw 2026.4.27). Docker host
  * aliases (see DOCKER_HOST_ALIASES) get rewritten to `ollama.local`; private
@@ -465,16 +481,15 @@ export async function regenerateOpenClawConfig() {
   // platform documentation on demand. The plugin scopes itself to listed agents.
   const personalAgentIds = allAgents.filter((a) => a.isPersonal && !a.deletedAt).map((a) => a.id);
   if (personalAgentIds.length > 0) {
-    // Empty-string setting means the operator explicitly opted out (air-gapped
-    // fork without published docs) — keep path-only behaviour. `null` means
-    // unset, fall back to Pinchy's hosted docs.
-    const docsBaseUrlSetting = await getSetting("docs_public_base_url");
+    // Three-state setting (see DOCS_PUBLIC_BASE_URL_SETTING_KEY doc-comment):
+    // unset → default, empty → opt-out, value → use as-is.
+    const docsBaseUrlSetting = await getSetting(DOCS_PUBLIC_BASE_URL_SETTING_KEY);
     const docsConfig: Record<string, unknown> = {
       docsPath: "/pinchy-docs",
       agents: Object.fromEntries(personalAgentIds.map((id) => [id, {}])),
     };
     const resolvedDocsBaseUrl =
-      docsBaseUrlSetting === null ? "https://docs.heypinchy.com" : docsBaseUrlSetting;
+      docsBaseUrlSetting === null ? DEFAULT_DOCS_PUBLIC_BASE_URL : docsBaseUrlSetting;
     if (resolvedDocsBaseUrl) {
       docsConfig.publicBaseUrl = resolvedDocsBaseUrl;
     }

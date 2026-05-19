@@ -126,6 +126,8 @@ import {
   sanitizeOpenClawConfig,
   seedRestartClassOverridesIfMissing,
   updateTelegramChannelConfig,
+  DEFAULT_DOCS_PUBLIC_BASE_URL,
+  DOCS_PUBLIC_BASE_URL_SETTING_KEY,
 } from "@/lib/openclaw-config";
 import { pushConfigInBackground, _resetPushGeneration } from "@/lib/openclaw-config/write";
 import { db } from "@/db";
@@ -2022,6 +2024,15 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.allow).toContain("pinchy-docs");
   });
 
+  it("exports a single DEFAULT_DOCS_PUBLIC_BASE_URL constant (single source of truth for the hosted-docs default)", () => {
+    // Locks in the refactor that removed the duplicated literal between
+    // build.ts and the test suite. If the hosted docs domain ever moves,
+    // grep for the constant — there must be exactly one definition.
+    expect(typeof DEFAULT_DOCS_PUBLIC_BASE_URL).toBe("string");
+    expect(DEFAULT_DOCS_PUBLIC_BASE_URL).toMatch(/^https:\/\//);
+    expect(DOCS_PUBLIC_BASE_URL_SETTING_KEY).toBe("docs_public_base_url");
+  });
+
   it("defaults pinchy-docs publicBaseUrl to https://docs.heypinchy.com when the setting is unset", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([
@@ -2043,13 +2054,13 @@ describe("regenerateOpenClawConfig", () => {
     const config = JSON.parse(written);
 
     expect(config.plugins.entries["pinchy-docs"].config.publicBaseUrl).toBe(
-      "https://docs.heypinchy.com"
+      DEFAULT_DOCS_PUBLIC_BASE_URL
     );
   });
 
   it("honours an admin-set docs_public_base_url setting for self-hosted docs", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
-      if (key === "docs_public_base_url") return "https://docs.example.com";
+      if (key === DOCS_PUBLIC_BASE_URL_SETTING_KEY) return "https://docs.example.com";
       return null;
     });
     mockedDb.select.mockReturnValue({
@@ -2078,7 +2089,7 @@ describe("regenerateOpenClawConfig", () => {
 
   it("omits publicBaseUrl when the admin explicitly clears the setting (air-gapped fork)", async () => {
     mockedGetSetting.mockImplementation(async (key: string) => {
-      if (key === "docs_public_base_url") return "";
+      if (key === DOCS_PUBLIC_BASE_URL_SETTING_KEY) return "";
       return null;
     });
     mockedDb.select.mockReturnValue({
