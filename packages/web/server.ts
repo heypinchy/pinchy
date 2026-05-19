@@ -278,7 +278,6 @@ ${domain ? `<p><a href="https://${domain}">Go to ${domain} →</a></p>` : ""}
     console.error("[pinchy] failed to start memory audit watcher", err);
   }
 
-
   // Sweep expired staged uploads hourly. Also fire once 30s after boot so
   // any orphans from a previous crashed process are cleaned up quickly.
   const { startUploadGc, stopUploadGc } = await import("./src/server/upload-gc");

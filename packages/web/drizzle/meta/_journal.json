@@ -253,6 +253,13 @@
       "when": 1779412860000,
       "tag": "0034_auth_failed_integration_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1780426949494,
+      "tag": "0035_smart_misty_knight",
+      "breakpoints": true
     }
   ]
 }
