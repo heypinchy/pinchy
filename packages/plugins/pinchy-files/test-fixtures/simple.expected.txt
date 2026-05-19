@@ -1,0 +1,11 @@
+Customer Briefing
+ACME Corporation wants a quote for
+20 widgets
+delivered by Q3.
+The customer prefers blue widgets and has previously ordered from us in 2024.
+Pricing
+SKU
+Quantity
+Unit Price
+WIDGET-BLUE-01
+EUR 42.50

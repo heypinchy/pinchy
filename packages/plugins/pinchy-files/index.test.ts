@@ -540,3 +540,53 @@ describe("pinchy_read PDF integration", () => {
     db.close();
   });
 });
+
+describe("pinchy_read DOCX integration", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function getReadTool(api: ReturnType<typeof createMockApi>) {
+    const { default: plugin } = await import("./index");
+    plugin.register(api as any);
+    const readFactory = mockRegisterTool.mock.calls.find(
+      (call: any[]) => call[1]?.name === "pinchy_read"
+    )?.[0];
+    return readFactory({ agentId: "agent-1" });
+  }
+
+  it("returns extracted text for .docx files instead of ZIP binary", async () => {
+    const fixturePath = join(FIXTURES, "simple.docx");
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", { path: fixturePath });
+
+    expect(result.content[0].type).toBe("text");
+    // The bug we are fixing: utf-8 reading a docx returns binary that
+    // begins with the ZIP magic bytes "PK".
+    expect(result.content[0].text.startsWith("PK")).toBe(false);
+
+    // Every phrase from the golden file must appear in the agent-visible text.
+    const expected = realReadFileSync(
+      join(FIXTURES, "simple.expected.txt"),
+      "utf-8",
+    );
+    for (const phrase of expected.split("\n").filter(Boolean)) {
+      expect(result.content[0].text).toContain(phrase);
+    }
+  });
+
+  it("marks missing .docx files with isError=true (MCP convention)", async () => {
+    const api = createMockApi({ "agent-1": { allowed_paths: [FIXTURES + "/"] } });
+    const tool = await getReadTool(api);
+
+    const result = await tool.execute("call-1", {
+      path: join(FIXTURES, "does-not-exist.docx"),
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].type).toBe("text");
+    expect(result.content[0].text).toMatch(/ENOENT|no such file/);
+  });
+});

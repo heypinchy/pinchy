@@ -3,6 +3,7 @@ import { readFile } from "fs/promises";
 import { createHash } from "crypto";
 import { join } from "path";
 import { validateAccess, MAX_FILE_SIZE, MAX_PDF_FILE_SIZE, type AgentFileConfig } from "./validate";
+import { extractDocxText } from "./docx-extract";
 import { extractPdfText } from "./pdf-extract";
 import { formatPdfResult } from "./pdf-format";
 import { PdfCache } from "./pdf-cache";
@@ -301,7 +302,16 @@ const plugin = {
                 return { content: pdfResult.content };
               }
 
-              // Non-PDF: existing behavior
+              // .docx — extract text via mammoth. Reading a .docx as utf-8
+              // returns the ZIP archive's binary bytes (starting with "PK"),
+              // which is unintelligible to the model.
+              if (realPath.toLowerCase().endsWith(".docx")) {
+                const buffer = await readFile(realPath);
+                const { text } = await extractDocxText(buffer);
+                return { content: [{ type: "text", text }] };
+              }
+
+              // Non-PDF, non-.docx: existing behavior
               const content = readFileSync(realPath, "utf-8");
               return { content: [{ type: "text", text: content }] };
             } catch (error) {
