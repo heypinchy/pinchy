@@ -245,8 +245,13 @@ jobs:
 
   docker-smoke:
     name: Docker smoke test
+    needs: build-image
+    # Run even when build-image is skipped (fork PRs) or on push events
+    if: >-
+      always() &&
+      (needs.build-image.result == 'success' ||
+       needs.build-image.result == 'skipped')
     runs-on: ubuntu-latest
-
     # Dev-mode CI test: images are built locally and tagged :latest. Satisfy
     # the compose fail-loud check on ${PINCHY_VERSION:?} without depending on
     # a .env file.
@@ -264,7 +269,24 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build production images locally
+      - name: Log in to GHCR (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull pre-built CI images (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        run: |
+          docker pull ${{ needs.build-image.outputs.pinchy-image }}
+          docker pull ${{ needs.build-image.outputs.openclaw-image }}
+          docker tag ${{ needs.build-image.outputs.pinchy-image }} ghcr.io/heypinchy/pinchy:latest
+          docker tag ${{ needs.build-image.outputs.openclaw-image }} ghcr.io/heypinchy/pinchy-openclaw:latest
+
+      - name: Build production images locally (fork PR fallback)
+        if: needs.build-image.result == 'skipped'
         run: |
           docker build -t ghcr.io/heypinchy/pinchy:latest -f Dockerfile.pinchy .
           docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
