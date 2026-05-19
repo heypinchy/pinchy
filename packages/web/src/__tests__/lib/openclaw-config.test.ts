@@ -3956,6 +3956,40 @@ describe("restart-state integration", () => {
     expect(restartState.notifyRestart).not.toHaveBeenCalled();
   });
 
+  it("updateTelegramChannelConfig calls restartState.notifyRestart when channels.telegram changes", async () => {
+    // channels.telegram mutations always trigger a full OC restart (inotify),
+    // unlike regenerateOpenClawConfig where most blocks hot-reload. The notify
+    // must fire so /api/health/openclaw returns "restarting" and the client
+    // overlay stays visible until OC's Telegram polling is actually back up.
+    const { restartState } = await import("@/server/restart-state");
+    mockedReadFileSync.mockReturnValue(JSON.stringify({ gateway: { mode: "local", bind: "lan" } }));
+
+    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null);
+
+    expect(mockedWriteFileSync).toHaveBeenCalled();
+    expect(restartState.notifyRestart).toHaveBeenCalledOnce();
+  });
+
+  it("updateTelegramChannelConfig does NOT call restartState.notifyRestart when content is unchanged (dedup)", async () => {
+    // No actual config write = no inotify event = no OC restart. Spurious
+    // notifyRestart would block the UI behind the overlay for 30 s for nothing.
+    const { restartState } = await import("@/server/restart-state");
+
+    // First write produces canonical content
+    mockedReadFileSync.mockReturnValue(JSON.stringify({ gateway: { mode: "local", bind: "lan" } }));
+    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null);
+    const firstWrite = mockedWriteFileSync.mock.calls[0][1] as string;
+
+    vi.clearAllMocks();
+    // Second call with identical resulting content — dedup should kick in
+    mockedReadFileSync.mockReturnValue(firstWrite);
+
+    updateTelegramChannelConfig("agent-99", { botToken: "tg-secret-token" }, null);
+
+    expect(mockedWriteFileSync).not.toHaveBeenCalled();
+    expect(restartState.notifyRestart).not.toHaveBeenCalled();
+  });
+
   it("should include Telegram channel config with accounts format when bot token is configured", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([
