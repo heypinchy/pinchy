@@ -349,6 +349,9 @@ export async function regenerateOpenClawConfig() {
     if (!pluginConfigs["pinchy-files"]) pluginConfigs["pinchy-files"] = {};
 
     const agentFilesConfig: Record<string, unknown> = { allowed_paths: allowedPaths };
+    if (allowedTools.includes("pinchy_write")) {
+      agentFilesConfig.write_paths = [workspaceUploads];
+    }
     pluginConfigs["pinchy-files"][agent.id] = agentFilesConfig;
 
     // Collect plugin config for agents that have context tools (pinchy_save_*)
