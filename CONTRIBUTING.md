@@ -231,8 +231,10 @@ The staging instance is set up once (see [Staging instance setup](#staging-insta
 **Before each release**, refresh staging to pick up the latest `:next` build, then click through the key flows: Smithers chat, one live integration, one custom agent with chat history.
 
 ```bash
-ssh root@<staging-host> "cd /opt/pinchy && docker compose pull && docker compose up -d"
+ssh root@<staging-host> "cd /opt/pinchy && docker compose pull && docker compose up -d && docker image prune -f"
 ```
+
+The `docker image prune -f` step removes the previous `:next` image that `pull` left dangling. Staging cycles `:next` many times per day, so without it the root volume fills up within a release window (see [#370](https://github.com/heypinchy/pinchy/issues/370)).
 
 Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184) and lands in v0.6.0.
 
@@ -259,7 +261,7 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 
 **Staging**
 
-- [ ] Staging instance on `:next` was clicked through today: Smithers chat, one live integration, one custom agent. See [Staging instance setup](#staging-instance-setup) for the one-time setup and the refresh command (`docker compose pull && up -d`) you run before each click-through.
+- [ ] Staging instance on `:next` was clicked through today: Smithers chat, one live integration, one custom agent. See [Staging instance setup](#staging-instance-setup) for the one-time setup and the refresh command (`docker compose pull && up -d && docker image prune -f`) you run before each click-through.
 
 ### Release steps
 
@@ -315,7 +317,7 @@ This is intentionally an internal/contributor workflow — the public docs at [d
 Every push to `main` triggers the **Pre-release** workflow, which builds and publishes new `:next` images. Pull them onto your staging instance:
 
 ```bash
-ssh root@<staging-ip> "cd /opt/pinchy && docker compose pull && docker compose up -d"
+ssh root@<staging-ip> "cd /opt/pinchy && docker compose pull && docker compose up -d && docker image prune -f"
 ```
 
 Run this manually before each pre-release click-through. Auto-deploy on every push to `main` is tracked in [issue #184](https://github.com/heypinchy/pinchy/issues/184) and lands in v0.6.0.

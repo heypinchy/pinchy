@@ -45,13 +45,23 @@ Pinchy handles most upgrade steps automatically — database migrations run on s
      which is rare.
    </Aside>
 
-3. **Restart**
+3. **Restart and prune the old image layer**
 
    ```bash
-   docker compose up -d
+   docker compose up -d && docker image prune -f
    ```
 
-   This applies any pending database migrations, regenerates the OpenClaw configuration, and restarts all services.
+   `up -d` applies any pending database migrations, regenerates the OpenClaw configuration, and restarts all services. `docker image prune -f` then removes the previous image layer for each Pinchy service that `pull` left dangling — without this, every upgrade keeps the prior `pinchy` and `pinchy-openclaw` layers on disk and a long-running deployment eventually fills its root volume.
+
+   <Aside type="tip">
+     `prune -f` only touches dangling layers (the old digest of the tag you just
+     replaced) and is safe to run on a live deployment. If you've been upgrading
+     for a while and want to reclaim space from **older pinned versions** as
+     well (e.g. `v0.5.0` you no longer plan to roll back to), run `docker image
+     prune -a -f` instead. This removes every image not currently associated
+     with a container, so you lose the ability to instantly roll back without
+     re-pulling — schedule it between upgrades, not as part of one.
+   </Aside>
 
 4. **Verify**
 
@@ -149,7 +159,7 @@ Upgrade with the standard flow:
 ```bash
 cd /opt/pinchy
 sed -i 's/PINCHY_VERSION=v0.5.3/PINCHY_VERSION=%%PINCHY_VERSION%%/' .env
-docker compose pull && docker compose up -d
+docker compose pull && docker compose up -d && docker image prune -f
 ```
 
 No database migration, no `docker-compose.yml` change, and no env-var changes are required.

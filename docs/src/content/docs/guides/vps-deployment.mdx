@@ -306,9 +306,10 @@ docker compose exec db pg_dump -U pinchy pinchy > backup-$(date +%Y%m%d).sql
 curl -fsSL https://raw.githubusercontent.com/heypinchy/pinchy/%%PINCHY_VERSION%%/docker-compose.yml -o docker-compose.yml
 docker compose pull
 docker compose up -d
+docker image prune -f
 ```
 
-Pinchy runs database migrations automatically on startup — no manual steps needed. See the [Upgrade Guide](/guides/upgrading/) for version-specific notes, rollback instructions, and how to set up automated backups.
+Pinchy runs database migrations automatically on startup — no manual steps needed. `docker image prune -f` after `up -d` removes the previous image layer left dangling by `pull`; without it, a long-running deployment slowly fills its root volume with `<none>:<none>` layers from prior upgrades. See the [Upgrade Guide](/guides/upgrading/) for version-specific notes, rollback instructions, when to escalate to `docker image prune -a -f`, and how to set up automated backups.
 
 ## Troubleshooting
 

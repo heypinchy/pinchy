@@ -414,9 +414,10 @@ Check for new Pinchy releases and update:
 ```bash
 docker compose pull
 docker compose up -d
+docker image prune -f
 ```
 
-Always read the release notes before updating. Back up the database first.
+Always read the release notes before updating. Back up the database first. The final `docker image prune -f` removes the previous image layer that `pull` left dangling — skip it and `pinchy`/`pinchy-openclaw` `<none>:<none>` layers slowly fill the root volume across upgrades. For a deeper sweep that also drops older pinned versions you no longer need for rollback, run `docker image prune -a -f` between upgrades (not as part of one).
 
 ### Dependency scanning
 
