@@ -262,7 +262,7 @@ describe("POST /api/agents", () => {
 
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: ["pinchy_ls", "pinchy_read"],
+        allowedTools: [],
       })
     );
   });
@@ -1041,10 +1041,10 @@ describe("POST /api/agents", () => {
 
     await POST(request);
 
-    // Template already has ["pinchy_ls", "pinchy_read"]; defaultAllowedTools adds "pinchy_write"
+    // Template has []; defaultAllowedTools adds "pinchy_write"
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: expect.arrayContaining(["pinchy_ls", "pinchy_read", "pinchy_write"]),
+        allowedTools: expect.arrayContaining(["pinchy_write"]),
       })
     );
     // Ensure no duplicates
@@ -1089,7 +1089,7 @@ describe("POST /api/agents", () => {
 
     expect(insertValuesMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        allowedTools: ["pinchy_ls", "pinchy_read"],
+        allowedTools: [],
       })
     );
   });

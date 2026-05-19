@@ -12,12 +12,25 @@ import { PERSONALITY_PRESETS } from "@/lib/personality-presets";
 import { TEMPLATE_ICON_COMPONENTS } from "@/lib/template-icons";
 import { getOdooToolsForAccessLevel } from "@/lib/tool-registry";
 
+describe("implicit-tool guard", () => {
+  it("no template references implicit tools pinchy_ls or pinchy_read in allowedTools", () => {
+    for (const [id, tpl] of Object.entries(AGENT_TEMPLATES)) {
+      expect(tpl.allowedTools, `template "${id}" should not contain pinchy_ls`).not.toContain(
+        "pinchy_ls"
+      );
+      expect(tpl.allowedTools, `template "${id}" should not contain pinchy_read`).not.toContain(
+        "pinchy_read"
+      );
+    }
+  });
+});
+
 describe("agent-templates", () => {
   it("should have a knowledge-base template", () => {
     expect(AGENT_TEMPLATES["knowledge-base"]).toBeDefined();
     expect(AGENT_TEMPLATES["knowledge-base"].name).toBe("Knowledge Base");
     expect(AGENT_TEMPLATES["knowledge-base"].pluginId).toBe("pinchy-files");
-    expect(AGENT_TEMPLATES["knowledge-base"].allowedTools).toEqual(["pinchy_ls", "pinchy_read"]);
+    expect(AGENT_TEMPLATES["knowledge-base"].allowedTools).toEqual([]);
   });
 
   it("should have a custom template with no allowed tools", () => {
@@ -333,7 +346,7 @@ describe("Document templates", () => {
     for (const id of DOCUMENT_TEMPLATE_IDS) {
       const t = getTemplate(id)!;
       expect(t.pluginId).toBe("pinchy-files");
-      expect(t.allowedTools).toEqual(["pinchy_ls", "pinchy_read"]);
+      expect(t.allowedTools).toEqual([]);
     }
   });
 

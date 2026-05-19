@@ -5,7 +5,7 @@ export const KNOWLEDGE_BASE_TEMPLATES: Record<string, AgentTemplate> = {
     iconName: "FileText",
     name: "Knowledge Base",
     description: "Answer questions from your docs",
-    allowedTools: ["pinchy_ls", "pinchy_read"],
+    allowedTools: [],
     pluginId: "pinchy-files",
     defaultPersonality: "the-professor",
     defaultTagline: "Answer questions from your docs",
