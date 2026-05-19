@@ -37,12 +37,20 @@
 
 import { test, expect } from "@playwright/test";
 import { execSync } from "child_process";
-import { readFileSync } from "fs";
 import { resolve } from "path";
 
 const REPO_ROOT = resolve(__dirname, "../../../..");
-const COMPOSE_FILE = "-f docker-compose.integration.yml";
-const CONFIG_PATH = "/tmp/pinchy-integration-openclaw/openclaw.json";
+// Compose chain matches the integration stack started by the CI workflow and
+// by local dev. PINCHY_VERSION must be non-empty to satisfy the `${PINCHY_VERSION:?}`
+// guard on docker-compose.yml's `image:` lines — the build directives in
+// docker-compose.e2e.yml take precedence.
+const COMPOSE_FILES =
+  "-f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.integration.yml";
+const COMPOSE_ENV = { ...process.env, PINCHY_VERSION: process.env.PINCHY_VERSION || "local" };
+// Pinchy mounts the shared volume at /openclaw-config (Dockerfile.pinchy entrypoint).
+// Pre-issue #196 the test read the host bind-mount path; with the production-image
+// stack the same file is only reachable via `docker compose exec`.
+const CONFIG_CONTAINER_PATH = "/openclaw-config/openclaw.json";
 const PINCHY_URL = "http://localhost:7779";
 
 function stripMeta(raw: string): string {
@@ -52,23 +60,33 @@ function stripMeta(raw: string): string {
 }
 
 /**
- * Read CONFIG_PATH with EACCES retry. Mirrors the production retry loop in
- * `src/lib/openclaw-config/write.ts`: OpenClaw rewrites the file as
- * `root:0600` on every internal SIGUSR1 restart, and start-openclaw.sh's
- * chmod loop opens it back up to 0666 — so the test runner can hit a small
- * window where the file exists but is unreadable. Without retry, a naked
- * readFileSync fails the assertion even though the production code path
- * tolerates this race.
+ * Read openclaw.json from inside the Pinchy container with EACCES retry.
+ * Mirrors the production retry loop in `src/lib/openclaw-config/write.ts`:
+ * OpenClaw rewrites the file as `root:0600` on every internal SIGUSR1
+ * restart, and start-openclaw.sh's chmod loop opens it back up to 0666 — so
+ * the test runner can hit a small window where the file exists but is
+ * unreadable. Without retry, a naked read fails the assertion even though
+ * the production code path tolerates this race.
+ *
+ * Reading via `docker compose exec pinchy cat ...` exercises the same uid
+ * 999 file-access path the production server uses, so we get the EACCES
+ * retry behavior for free if start-openclaw.sh's chmod tick momentarily
+ * lags.
  */
 function readConfigSafely(): string {
   for (let attempt = 0; attempt < 10; attempt++) {
     try {
-      return readFileSync(CONFIG_PATH, "utf-8");
+      return execSync(
+        `docker compose ${COMPOSE_FILES} exec -T pinchy cat ${CONFIG_CONTAINER_PATH}`,
+        {
+          encoding: "utf-8",
+          cwd: REPO_ROOT,
+          env: COMPOSE_ENV,
+          stdio: ["pipe", "pipe", "pipe"],
+        }
+      );
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException)?.code;
-      if (code !== "EACCES" || attempt === 9) throw err;
-      // Sync sleep — keeps callers synchronous (every call site uses the
-      // result inline) without burning a CPU core in a busy-wait.
+      if (attempt === 9) throw err;
       execSync("sleep 0.1");
     }
   }
@@ -77,9 +95,10 @@ function readConfigSafely(): string {
 }
 
 function openClawLogsSince(sinceIso: string): string {
-  return execSync(`docker compose ${COMPOSE_FILE} logs openclaw --since "${sinceIso}" 2>&1`, {
+  return execSync(`docker compose ${COMPOSE_FILES} logs openclaw --since "${sinceIso}" 2>&1`, {
     encoding: "utf-8",
     cwd: REPO_ROOT,
+    env: COMPOSE_ENV,
     maxBuffer: 16 * 1024 * 1024,
   });
 }

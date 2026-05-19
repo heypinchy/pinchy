@@ -261,18 +261,16 @@ test.describe("Plugin behavior — pinchy-context", () => {
 // registerTool() fires + the audit hook posts; the agent identity does not
 // matter, so reuse is the simpler, more robust path.
 //
-// Restores Smithers' original allowedTools + pluginConfig in `finally`.
-// SKIPPED until the integration suite supports dispatch probing for pinchy-files:
-// the docker-compose.integration.yml bind-mounts /tmp/pinchy-integration-openclaw
-// into OpenClaw (root in container) while Pinchy webServer runs on the host as a
-// non-root user. Creating a new agent triggers
-// `mkdir(/tmp/.../agents/<UUID>/agent)` which OC pre-creates as root → EACCES on
-// the Pinchy side. Reusing Smithers fails too: PATCH allowedTools on a personal
-// agent returns 400 (Cannot change permissions for personal agents). Both paths
-// blocked; leaving the test code in place so the coverage guard still sees the
-// pinchy_ls token (skipped tests still count for static scans). Re-enable once
-// the integration stack supports either uid-aligned mounts or a shared-agent
-// workspace that bypasses /tmp ownership semantics.
+// SKIPPED: reusing Smithers fails — PATCH allowedTools on a personal agent
+// returns 400 ("Cannot change permissions for personal agents"). The
+// pre-#196 /tmp-ownership blocker on the create-new-agent path is gone
+// (the integration stack now runs Pinchy in a container with uid 999
+// matching production), but the personal-agent permission rule still
+// prevents the easier reuse path. Leaving the test code in place so the
+// dispatch-probe coverage guard still sees the pinchy_ls token (skipped
+// tests count for static scans). Re-enable once Pinchy supports either
+// (a) creating a shared agent via API for tests, or (b) overriding the
+// permissions guard for the integration admin.
 test.describe("Plugin behavior — pinchy-files", () => {
   test.skip("pinchy_ls dispatches via fake-LLM and writes audit entry", async ({ page }) => {
     await login(page);
