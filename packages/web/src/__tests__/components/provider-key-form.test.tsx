@@ -491,6 +491,94 @@ describe("ProviderKeyForm", () => {
     });
   });
 
+  // #296 review follow-up — when the route returns structured `docs`
+  // metadata (currently only for `unsupported_local_host`), the form should
+  // render a clickable <a> next to the inline error instead of forcing the
+  // user to copy a URL from prose text. The prose itself stays plain (no
+  // long URL squashed in), and the link opens in a new tab.
+  describe("structured docs hint on error (#296)", () => {
+    const unsupportedHostResponse = {
+      ok: false,
+      json: async () => ({
+        error: 'Host "ollama" is not an allowed local Ollama host. Use localhost, ...',
+        docs: {
+          href: "https://docs.heypinchy.com/guides/ollama-setup/#b-ollama-as-a-docker-service",
+          label: "See the recommended Docker setup",
+        },
+      }),
+    } as Response;
+
+    async function submitOllamaLocal() {
+      fireEvent.click(screen.getByRole("button", { name: /ollama \(local\)/i }));
+      fireEvent.change(screen.getByLabelText(/ollama url/i), {
+        target: { value: "http://ollama:11434" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: /continue/i }));
+    }
+
+    it("renders the docs hint as a clickable anchor with the structured href and label", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce(unsupportedHostResponse);
+
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+      await submitOllamaLocal();
+
+      const link = await screen.findByRole("link", { name: /see the recommended docker setup/i });
+      expect(link).toHaveAttribute(
+        "href",
+        "https://docs.heypinchy.com/guides/ollama-setup/#b-ollama-as-a-docker-service"
+      );
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", expect.stringContaining("noopener"));
+    });
+
+    it("shows the plain error text without the URL embedded inline", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce(unsupportedHostResponse);
+
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+      await submitOllamaLocal();
+
+      // The visible error prose must not contain "http" — the URL belongs in
+      // the anchor, not squashed into the sentence.
+      const errorText = await screen.findByText(/is not an allowed local ollama host/i);
+      expect(errorText.textContent).not.toMatch(/https?:\/\//);
+    });
+
+    it("does not render a docs link when the response has no docs field", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce({
+        ok: false,
+        json: async () => ({ error: "Could not connect to Ollama at this URL." }),
+      } as Response);
+
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+      await submitOllamaLocal();
+
+      await screen.findByText(/could not connect to ollama/i);
+      // The setup-guide link from the help guide is hidden inside the
+      // collapsed Collapsible — when the user hasn't expanded the guide, no
+      // ollama-setup link should be visible.
+      expect(
+        screen.queryByRole("link", { name: /see the recommended docker setup/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("clears the docs link when switching providers", async () => {
+      vi.mocked(global.fetch).mockResolvedValueOnce(unsupportedHostResponse);
+
+      render(<ProviderKeyForm onSuccess={onSuccess} />);
+      await submitOllamaLocal();
+
+      await screen.findByRole("link", { name: /see the recommended docker setup/i });
+
+      // Switching to a different provider resets all error state — including
+      // the docs hint — so stale hints don't bleed across providers.
+      fireEvent.click(screen.getByRole("button", { name: /anthropic/i }));
+
+      expect(
+        screen.queryByRole("link", { name: /see the recommended docker setup/i })
+      ).not.toBeInTheDocument();
+    });
+  });
+
   describe("URL-based provider (ollama-local)", () => {
     it("should show 'Ollama URL' label instead of 'API Key' when ollama-local is selected", () => {
       render(<ProviderKeyForm onSuccess={onSuccess} />);
