@@ -1285,8 +1285,7 @@ describe("odoo_create", () => {
   it("description documents price_unit net convention for invoice/order line models", () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_create", agentId)!;
-    expect(tool.description).toMatch(/price_unit/);
-    expect(tool.description).toMatch(/tax-exclusive|net/i);
+    expect(tool.description).toMatch(/price_unit`[^.]{0,80}tax-exclusive/i);
   });
 });
 
@@ -1381,8 +1380,7 @@ describe("odoo_write", () => {
   it("description documents price_unit net convention for invoice/order line models", () => {
     const tools = createApi({ [agentId]: agentConfig });
     const tool = findTool(tools, "odoo_write", agentId)!;
-    expect(tool.description).toMatch(/price_unit/);
-    expect(tool.description).toMatch(/tax-exclusive|net/i);
+    expect(tool.description).toMatch(/price_unit`[^.]{0,80}tax-exclusive/i);
   });
 });
 

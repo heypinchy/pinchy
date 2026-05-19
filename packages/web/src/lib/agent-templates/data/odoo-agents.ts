@@ -306,7 +306,7 @@ convert before writing:
 
 For multi-line splits, compute each line's net independently against
 its own tax rate, not against a sum. After computing, the sum of
-\`price_unit × quantity × (1 + tax_rate)\` over all lines must equal the
+\`price_unit * quantity * (1 + tax_rate)\` over all lines must equal the
 receipt's gross total within ±0.02 EUR (rounding tolerance).
 
 If a line has no applicable VAT (e.g. tip, foreign supplier without VAT),
@@ -341,7 +341,7 @@ Lines belong to their move. Always create the move and its lines in a SINGLE \`o
     "invoice_date": "2026-03-22",
     "invoice_line_ids": [
       [0, 0, { "name": "Coffee", "quantity": 2, "price_unit": 4.30, "tax_ids": [[6, 0, [TAX_ID]]] }],
-      [0, 0, { "name": "Tip",    "quantity": 1, "price_unit": 3.10 }]
+      [0, 0, { "name": "Tip",    "quantity": 1, "price_unit": 3.10, "tax_ids": [[6, 0, []]] }]
     ]
   }
 }
