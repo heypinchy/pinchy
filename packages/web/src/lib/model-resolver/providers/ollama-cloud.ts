@@ -28,9 +28,13 @@ const BY_TIER_FAMILY: Record<
   },
   reasoning: {
     general: "ollama-cloud/deepseek-v4-pro",
-    // 1M context (matches deepseek-v4-pro), reasoning+vision+tools.
-    // Kimi family avoided: v0.5.3 silent-500 stability incident.
-    vision: "ollama-cloud/gemini-3-flash-preview",
+    // Largest non-preview reasoning+vision+tools model (262K context).
+    // gemini-3-flash-preview was the previous pick (1M context) but is blocked
+    // by the tools-blocklist as of pinchy#344 (silent hang + schema rejection on
+    // the tools+vision path). Kimi family also avoided: v0.5.3 silent-500 incident.
+    // Restore gemini-3-flash-preview here once upstream openclaw#72879 ships and
+    // the silent-hang variant is fixed (track in pinchy#344).
+    vision: "ollama-cloud/qwen3.5:397b",
   },
 };
 

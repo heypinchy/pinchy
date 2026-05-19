@@ -3,6 +3,7 @@ import {
   TOOL_CAPABLE_OLLAMA_CLOUD_MODEL_IDS,
   TOOL_CAPABLE_OLLAMA_CLOUD_MODELS,
 } from "@/lib/ollama-cloud-models";
+import { isBlocked } from "../blocklist";
 import { resolveOllamaCloud } from "../providers/ollama-cloud";
 
 describe("resolveOllamaCloud", () => {
@@ -98,6 +99,24 @@ describe("resolveOllamaCloud — vision capability", () => {
   it("still returns deepseek-v4-pro for reasoning tier when vision is NOT in capabilities", () => {
     const result = resolveOllamaCloud({ tier: "reasoning", taskType: "reasoning" });
     expect(result.model).toBe("ollama-cloud/deepseek-v4-pro");
+  });
+
+  it("does NOT return a blocked model for any tier's vision slot (pinchy#344)", () => {
+    const tiers = ["fast", "balanced", "reasoning"] as const;
+    const offenders: string[] = [];
+    for (const tier of tiers) {
+      const result = resolveOllamaCloud({ tier, capabilities: ["vision", "tools"] });
+      const bareId = result.model.replace(/^ollama-cloud\//, "");
+      if (isBlocked(bareId, ["tools"])) {
+        offenders.push(`${tier}: ${result.model}`);
+      }
+    }
+    expect(
+      offenders,
+      offenders.length === 0
+        ? ""
+        : `\n  Vision-slot models that are in the tools-blocklist:\n${offenders.map((o) => `    • ${o}`).join("\n")}\n`
+    ).toEqual([]);
   });
 
   it("drift guard: every tier's vision-slot model has vision:true in TOOL_CAPABLE_OLLAMA_CLOUD_MODELS", () => {
