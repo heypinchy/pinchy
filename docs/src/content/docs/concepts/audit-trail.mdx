@@ -68,11 +68,33 @@ exports too.
 
 ### Agent management
 
-| Event Type      | Description                                     |
-| --------------- | ----------------------------------------------- |
-| `agent.created` | A new agent was created                         |
-| `agent.updated` | An agent's settings or permissions were changed |
-| `agent.deleted` | An agent was deleted                            |
+| Event Type             | Description                                                                                                     |
+| ---------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `agent.created`        | A new agent was created                                                                                         |
+| `agent.updated`        | An agent's settings or permissions were changed                                                                 |
+| `agent.deleted`        | An agent was deleted                                                                                            |
+| `agent.memory_changed` | A file in the agent's durable long-term memory (`MEMORY.md` or `memory/*.md`) was created, modified, or deleted |
+
+#### `agent.memory_changed`
+
+OpenClaw maintains durable per-agent long-term memory in `~/.openclaw/agents/<agentId>/MEMORY.md` and `~/.openclaw/agents/<agentId>/memory/*.md`. Those files are reloaded into the agent's context at every session start, so they directly shape behavior in every future conversation. Memory is written in two ways:
+
+- Explicitly, when the user or agent decides to remember something.
+- Implicitly, via the pre-compaction memory flush — a silent turn that runs before OpenClaw summarizes a long conversation and asks the agent to save important context.
+
+Pinchy watches these files and emits an audit entry on every change so an auditor can answer "the agent suddenly believes X — when and how did that get into its memory?"
+
+- `actorType`: `"agent"` — the agent whose memory changed.
+- `actorId`: the agent id.
+- `resource`: `agent:<agentId>`.
+- `detail`:
+  - `agent`: `{ id, name }` — snapshot of the agent at the time of the change.
+  - `file`: the relative path under the agent directory — either `"MEMORY.md"` or `"memory/<file>.md"`.
+  - `addedLines`: number of lines added compared to the prior snapshot.
+  - `removedLines`: number of lines removed compared to the prior snapshot.
+  - `byteSize`: size of the file in bytes after the change (`0` for deletions).
+
+The detail never contains file contents — only counts and the relative filename. Deletions surface as `byteSize: 0` and `removedLines` equal to the previous line count.
 
 ### User management
 
