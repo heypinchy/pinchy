@@ -61,7 +61,11 @@ For best results with scanned documents, use a vision-capable model (all Anthrop
 
 ### Word document support
 
-Drop a `.docx` file into an approved directory and the agent reads it the same way it reads a PDF. Paragraphs, headings, and table cells round-trip as text — no vision model needed. Embedded images inside the document are not yet processed.
+Drop a `.docx` file into an approved directory and the agent reads it as Markdown. Headings round-trip as `#`/`##`, tables as GitHub-flavored pipe tables, and lists as bullet or numbered lines — the agent can reason over the document's structure, not just its words. No vision model is required.
+
+Embedded images are replaced with `[image]` placeholders for now. Real image descriptions will arrive in a future release.
+
+The size limit for `.docx` files is **50 MB**.
 
 The agent **cannot**:
 
