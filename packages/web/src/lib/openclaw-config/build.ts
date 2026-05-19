@@ -32,6 +32,8 @@ import { writeAgentAuthProfiles, type AuthProfilesProvider } from "./agent-auth-
 // with `validateProviderUrl`'s save-time allowlist check (#296).
 import { DOCKER_HOST_ALIASES } from "@/lib/openclaw-local-url";
 import { validateBuiltConfig } from "./validate-built-config";
+import { isRestartClassDiff } from "./restart-class";
+import { restartState } from "@/server/restart-state";
 
 // OC 2026.4.27+ requires `baseUrl` in `models.providers.<name>` for every configured
 // built-in provider — startup config validation rejects the file otherwise. We write
@@ -1087,8 +1089,12 @@ export async function regenerateOpenClawConfig() {
   // hashes diverge and chokidar fires a redundant reload that diffs against
   // a stale `currentCompareConfig` — see #193 / openclaw#75534.
   const newContent = JSON.stringify(config, null, 2).trimEnd() + "\n";
+  // Captured from the dedup read below so the restart-class diff (further down)
+  // compares against the same file snapshot that OC will see overwritten.
+  let existingFileForRestartCheck: string | undefined;
   try {
     const existing = readFileSync(CONFIG_PATH, "utf-8");
+    existingFileForRestartCheck = existing;
     if (existing === newContent) return;
     // Workaround for openclaw#75534: OpenClaw stamps `meta.lastTouchedAt`
     // on every write it performs (config.apply RPC, internal restart
@@ -1189,6 +1195,26 @@ export async function regenerateOpenClawConfig() {
       agentId: agent.id,
       providers: agentProviders,
     });
+  }
+
+  // Restart-class detection: if the new content touches a top-level block OC
+  // treats as restart-class (gateway, discovery, canvasHost, update, channels,
+  // bindings — see restart-class.ts), mark the server-side restart state so
+  // /api/health/openclaw returns "restarting" until OC reconnects. Without
+  // this signal, the client overlay clears after the first 2 s health poll
+  // — before OC's gateway restart even begins.
+  // Cold-start (no existing file) does not restart: OC boots from the freshly
+  // written file. JSON.parse failure on the existing file is treated the same.
+  if (existingFileForRestartCheck !== undefined) {
+    try {
+      const oldCfg = JSON.parse(existingFileForRestartCheck) as Record<string, unknown>;
+      const newCfg = JSON.parse(newContent) as Record<string, unknown>;
+      if (isRestartClassDiff(oldCfg, newCfg)) {
+        restartState.notifyRestart();
+      }
+    } catch {
+      // Unparseable existing file — fall through, treat as cold-start
+    }
   }
 
   // Push config to OpenClaw. When a WS client is available, config.apply

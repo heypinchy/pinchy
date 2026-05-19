@@ -3925,7 +3925,9 @@ describe("restart-state integration", () => {
     mockedGetSetting.mockResolvedValue(null);
   });
 
-  it("regenerateOpenClawConfig does not call restartState.notifyRestart (OpenClaw detects file changes)", async () => {
+  it("regenerateOpenClawConfig does not call restartState.notifyRestart on cold start (no existing config)", async () => {
+    // On cold start there is no existing config file to compare against, so
+    // OC starts from the freshly written file at boot — no restart needed.
     const { restartState } = await import("@/server/restart-state");
 
     await regenerateOpenClawConfig();
@@ -3954,6 +3956,76 @@ describe("restart-state integration", () => {
 
     expect(mockedWriteFileSync).not.toHaveBeenCalled();
     expect(restartState.notifyRestart).not.toHaveBeenCalled();
+  });
+
+  it("regenerateOpenClawConfig calls restartState.notifyRestart when a restart-class block changes (channels added)", async () => {
+    // Existing config has no Telegram channel; new build adds one (agent has a
+    // bot token). channels.* is restart-class → must notify so the health
+    // endpoint reflects the pending OC restart.
+    const { restartState } = await import("@/server/restart-state");
+    mockedReadFileSync.mockReturnValue(
+      JSON.stringify({
+        gateway: { mode: "local", bind: "lan", controlUi: { enabled: false } },
+        discovery: { mdns: { mode: "off" } },
+        update: { checkOnStart: false },
+        canvasHost: { enabled: false },
+        agents: { list: [] },
+      })
+    );
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Smithers",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+    mockedGetSetting.mockImplementation(async (key: string) => {
+      if (key === "telegram_bot_token:agent-1") return "123456:ABC-token";
+      if (key === "telegram_bot_username:agent-1") return "smithers_bot";
+      return null;
+    });
+
+    await regenerateOpenClawConfig();
+
+    expect(restartState.notifyRestart).toHaveBeenCalledOnce();
+  });
+
+  it("regenerateOpenClawConfig does NOT call notifyRestart when only hot-reload-class blocks change (agents.list, models, plugins)", async () => {
+    // Existing config and new build have identical gateway/discovery/canvasHost/
+    // update/channels/bindings; only agents.list and models differ. OC hot-reloads
+    // those without restart, so spurious notifyRestart would block the UI for nothing.
+    const { restartState } = await import("@/server/restart-state");
+    // Pre-write to capture canonical restart-class shape, then re-run with a
+    // different agent list. First run is on cold-start (read throws), records
+    // the full canonical config Pinchy emits.
+    await regenerateOpenClawConfig();
+    const firstWrite = mockedWriteFileSync.mock.calls[0][1] as string;
+
+    vi.clearAllMocks();
+    mockedReadFileSync.mockReturnValue(firstWrite);
+    mockedExistsSync.mockReturnValue(true);
+    // Same provider config but a different agent — agents.list will differ
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "new-agent",
+          name: "New",
+          model: "anthropic/claude-haiku-4-5-20251001",
+          allowedTools: [],
+          createdAt: new Date(),
+        },
+      ]),
+    } as never);
+    mockedGetSetting.mockResolvedValue(null);
+
+    await regenerateOpenClawConfig();
+
+    expect(mockedWriteFileSync).toHaveBeenCalled(); // content did change
+    expect(restartState.notifyRestart).not.toHaveBeenCalled(); // but only hot-reload paths
   });
 
   it("updateTelegramChannelConfig calls restartState.notifyRestart when channels.telegram changes", async () => {
