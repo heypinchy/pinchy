@@ -1547,6 +1547,14 @@ jobs:
   integration:
     name: Integration Tests (OpenClaw + Fake Ollama)
     runs-on: ubuntu-latest
+    needs: build-image
+    if: >-
+      always() &&
+      (needs.build-image.result == 'success' ||
+       needs.build-image.result == 'skipped')
+    permissions:
+      contents: read
+      packages: read
 
     steps:
       - uses: actions/checkout@v4
@@ -1559,7 +1567,24 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Log in to GHCR (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - uses: ./.github/actions/setup-pnpm
+
+      - name: Pull pre-built OpenClaw image (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        run: docker pull ${{ needs.build-image.outputs.openclaw-image }}
+
+      - name: Build OpenClaw image locally (fork PR fallback)
+        if: needs.build-image.result == 'skipped'
+        run: docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
+
 
       # On Linux, host.docker.internal doesn't resolve outside containers by default.
       # Add it to /etc/hosts so Pinchy (host process) can reach the fake Ollama the
@@ -1570,7 +1595,20 @@ jobs:
       # Pre-start Docker stack + migrate DB BEFORE Playwright launches the webServer.
       # Playwright starts webServer before globalSetup, so Pinchy would try to connect
       # to the DB before it exists unless we pre-provision it here.
-      - name: Pre-start integration Docker stack
+      - name: Pre-start integration Docker stack (CI — pre-built image)
+        if: needs.build-image.result == 'success'
+        run: |
+          # Pre-create bind-mount targets so Docker doesn't create them as root,
+          # which would prevent Pinchy (running on the host as the CI user) from
+          # writing secrets.json — see openclaw-tmpfs branch.
+          mkdir -p /tmp/pinchy-integration-openclaw/workspaces
+          mkdir -p /tmp/pinchy-integration-secrets
+          docker compose -f docker-compose.integration.yml up -d --wait
+        env:
+          OPENCLAW_IMAGE: ${{ needs.build-image.outputs.openclaw-image }}
+
+      - name: Pre-start integration Docker stack (fork PR fallback)
+        if: needs.build-image.result == 'skipped'
         run: |
           # Pre-create bind-mount targets so Docker doesn't create them as root,
           # which would prevent Pinchy (running on the host as the CI user) from
