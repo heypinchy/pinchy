@@ -96,11 +96,23 @@ describe("docker-compose.e2e.yml build-directive coverage", () => {
   });
 
   it("does not pin pinchy or openclaw to a published image tag", () => {
-    // If someone replaces `build:` with `image:` (e.g. to speed up CI), the
-    // suite would pull from the registry and stop exercising the local
-    // production Dockerfile. Reject any `image:` on these services in this
-    // overlay specifically.
-    expect(serviceKeyValue(serviceBlockLines(COMPOSE_E2E, "pinchy"), "image")).toBeUndefined();
-    expect(serviceKeyValue(serviceBlockLines(COMPOSE_E2E, "openclaw"), "image")).toBeUndefined();
+    // `image:` is allowed when it uses a variable reference (${VAR:-fallback}),
+    // enabling the CI pre-build override pattern (PINCHY_IMAGE / OPENCLAW_IMAGE)
+    // while `build:` remains present (checked above). A hardcoded registry tag
+    // would flip the suite from "build from prod Dockerfile" to "pull stale image".
+    const pinchyImage = serviceKeyValue(serviceBlockLines(COMPOSE_E2E, "pinchy"), "image");
+    const openclawImage = serviceKeyValue(serviceBlockLines(COMPOSE_E2E, "openclaw"), "image");
+
+    if (pinchyImage !== undefined) {
+      expect(pinchyImage, "pinchy image must be a variable reference, not a hardcoded tag").toMatch(
+        /^\$\{/
+      );
+    }
+    if (openclawImage !== undefined) {
+      expect(
+        openclawImage,
+        "openclaw image must be a variable reference, not a hardcoded tag"
+      ).toMatch(/^\$\{/);
+    }
   });
 });
