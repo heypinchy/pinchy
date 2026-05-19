@@ -16,6 +16,9 @@
 
 services:
   pinchy:
+    # Image-first: CI sets PINCHY_IMAGE to a pre-built GHCR tag.
+    # Local dev (no PINCHY_IMAGE set) falls through to `build:`.
+    image: ${PINCHY_IMAGE:-pinchy:e2e}
     build:
       context: .
       dockerfile: Dockerfile.pinchy
@@ -28,6 +31,7 @@ services:
       # this var from being added to `docker-compose.yml` or `.dev.yml`.
       PINCHY_E2E_DISABLE_AUTH_RATE_LIMIT: "1"
   openclaw:
+    image: ${OPENCLAW_IMAGE:-pinchy-openclaw:e2e}
     build:
       context: .
       dockerfile: Dockerfile.openclaw
