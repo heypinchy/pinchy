@@ -39,6 +39,12 @@ const nextConfig: NextConfig = {
         source: "/api/agents/:agentId/uploads/:filename",
         headers: [{ key: "X-Frame-Options", value: "SAMEORIGIN" }],
       },
+      {
+        // Service worker must not be long-cached, otherwise future SW updates
+        // never reach users. Same pattern as other PWAs (Slack, Mattermost).
+        source: "/sw.js",
+        headers: [{ key: "Cache-Control", value: "no-cache, max-age=0, must-revalidate" }],
+      },
     ];
   },
 };
