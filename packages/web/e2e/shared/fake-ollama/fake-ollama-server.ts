@@ -33,6 +33,12 @@ const EMAIL_LIST_TRIGGER = "E2E_EMAIL_LIST_TOOL";
 const EMAIL_LIST_RESPONSE = "Emails listed: coverage probe complete.";
 const WEB_SEARCH_TRIGGER = "E2E_WEB_SEARCH_TOOL";
 const WEB_SEARCH_RESPONSE = "Search complete: coverage probe complete.";
+const WORKSPACE_LS_TRIGGER = "E2E_WORKSPACE_LS_TOOL";
+const WORKSPACE_LS_RESPONSE = "Workspace listed: coverage probe complete.";
+const WORKSPACE_READ_TRIGGER = "E2E_WORKSPACE_READ_TOOL";
+const WORKSPACE_READ_RESPONSE = "File read: coverage probe complete.";
+const WORKSPACE_WRITE_TRIGGER = "E2E_WORKSPACE_WRITE_TOOL";
+const WORKSPACE_WRITE_RESPONSE = "File written: coverage probe complete.";
 
 interface TriggerConfig {
   trigger: string;
@@ -83,6 +89,24 @@ const TOOL_TRIGGERS: TriggerConfig[] = [
     response: WEB_SEARCH_RESPONSE,
     toolName: "pinchy_web_search",
     arguments: { query: "E2E coverage probe" },
+  },
+  {
+    trigger: WORKSPACE_LS_TRIGGER,
+    response: WORKSPACE_LS_RESPONSE,
+    toolName: "pinchy_ls",
+    arguments: { path: "uploads" },
+  },
+  {
+    trigger: WORKSPACE_READ_TRIGGER,
+    response: WORKSPACE_READ_RESPONSE,
+    toolName: "pinchy_read",
+    arguments: { path: "uploads/report.csv" },
+  },
+  {
+    trigger: WORKSPACE_WRITE_TRIGGER,
+    response: WORKSPACE_WRITE_RESPONSE,
+    toolName: "pinchy_write",
+    arguments: { path: "uploads/result.csv", content: "id,value\n1,E2E probe\n" },
   },
 ];
 
@@ -437,6 +461,12 @@ export const FAKE_OLLAMA_EMAIL_LIST_TOOL_TRIGGER = EMAIL_LIST_TRIGGER;
 export const FAKE_OLLAMA_EMAIL_LIST_TOOL_RESPONSE = EMAIL_LIST_RESPONSE;
 export const FAKE_OLLAMA_WEB_SEARCH_TOOL_TRIGGER = WEB_SEARCH_TRIGGER;
 export const FAKE_OLLAMA_WEB_SEARCH_TOOL_RESPONSE = WEB_SEARCH_RESPONSE;
+export const FAKE_OLLAMA_WORKSPACE_LS_TOOL_TRIGGER = WORKSPACE_LS_TRIGGER;
+export const FAKE_OLLAMA_WORKSPACE_LS_TOOL_RESPONSE = WORKSPACE_LS_RESPONSE;
+export const FAKE_OLLAMA_WORKSPACE_READ_TOOL_TRIGGER = WORKSPACE_READ_TRIGGER;
+export const FAKE_OLLAMA_WORKSPACE_READ_TOOL_RESPONSE = WORKSPACE_READ_RESPONSE;
+export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_TRIGGER = WORKSPACE_WRITE_TRIGGER;
+export const FAKE_OLLAMA_WORKSPACE_WRITE_TOOL_RESPONSE = WORKSPACE_WRITE_RESPONSE;
 
 let server: http.Server | null = null;
 
