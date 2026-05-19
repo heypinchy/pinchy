@@ -262,6 +262,9 @@ The release script and CI enforce image builds, GHCR visibility, end-user instal
 **Staging**
 
 - [ ] Staging instance on `:next` was clicked through today: Smithers chat, one live integration, one custom agent. See [Staging instance setup](#staging-instance-setup) for the one-time setup and the refresh command (`docker compose pull && up -d && docker image prune -f`) you run before each click-through.
+- [ ] PWA install check:
+      Open the staging URL in Chrome Desktop — confirm an install icon appears in the address bar and clicking it produces a standalone window.
+      Open the same URL in iOS Safari — confirm **Share → Add to Home Screen** produces a launcher icon that opens Pinchy full-screen with a branded splash.
 
 ### Release steps
 
