@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added
+
+- **Startup warning when Domain Lock is configured but `BETTER_AUTH_URL` is unset.** Better Auth's own `baseURL` detection does not read Pinchy's Domain Lock value (verified on staging v0.5.4 — Better Auth still logged `Base URL could not be determined`). A Domain-Locked deployment without `BETTER_AUTH_URL` silently sends password-reset and email-verification links pointing at the wrong host. Pinchy now logs `⚠ Domain Lock is configured (<domain>) but BETTER_AUTH_URL is unset…` on every startup of such a deployment, with the exact env-var assignment to copy-paste. The existing `BETTER_AUTH_URL is set` warning is retained, but is now emitted after `bootInits()` so both arms share a single call site. (#352)
+
 ### Fixed
 
 - **Pinchy-Odoo: `odoo_read`, `odoo_count`, `odoo_aggregate` now accepted by OpenAI's strict function-calling validator.** The `filters` parameter schema declared a nested array (`type: "array"` of `type: "array"`) without an inner `items` definition. OpenAI rejected the request with `400 Invalid schema for function 'odoo_aggregate': In context=('properties','filters','items'), array schema missing items.`, surfaced in the UI as `OpenClaw error chunk: LLM request failed: provider rejected the request schema or tool payload`. Anthropic and Ollama accept the looser schema, so the regression was invisible on those providers. A new drift-guard test (`openai-schema-compat`) walks every Pinchy-Odoo tool schema and fails the build if any `type: array` is missing `items`.

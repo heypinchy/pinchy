@@ -133,6 +133,13 @@ From this point on, only the locked domain can reach the app. Use the same hostn
   and restart Pinchy.
 </Aside>
 
+<Aside type="caution">
+  If Domain Lock is configured but `BETTER_AUTH_URL` is unset, Pinchy logs a
+  warning on every startup — Better Auth cannot derive the base URL from the
+  Domain Lock value, so password reset and email verification links would point
+  to the wrong host. Set `BETTER_AUTH_URL` to your locked domain and restart.
+</Aside>
+
 ## Remove the lock
 
 If the business needs change (different domain, temporary maintenance URL, etc.):
