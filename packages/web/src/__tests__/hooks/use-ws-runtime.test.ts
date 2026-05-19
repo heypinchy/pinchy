@@ -42,10 +42,10 @@ class MockWebSocket {
   static CLOSING = 2;
   static CLOSED = 3;
 
-  onopen: (() => void) | null = null;
-  onmessage: ((event: { data: string }) => void) | null = null;
-  onclose: ((event?: CloseEvent) => void) | null = null;
-  onerror: (() => void) | null = null;
+  onopen: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onclose: ((event: CloseEvent) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
   readyState = 1;
   send = vi.fn();
   close = vi.fn();
@@ -56,12 +56,12 @@ class MockWebSocket {
 
   /** Trigger onopen so the WS is considered connected */
   simulateOpen() {
-    this.onopen?.();
+    this.onopen?.(new Event("open"));
   }
 
   /** Deliver a JSON-serialised frame to onmessage */
   simulateMessage(data: unknown) {
-    this.onmessage?.({ data: JSON.stringify(data) });
+    this.onmessage?.(new MessageEvent("message", { data: JSON.stringify(data) }));
   }
 
   simulateClose(code = 1006) {
@@ -2932,8 +2932,9 @@ describe("useWsRuntime", () => {
     });
 
     it("does not start a timeout timer for history messages", async () => {
-      // This is a sanity check — history messages don't go through onNew,
-      // so no timer should be started for them.
+      // History messages don't go through onNew, so no ack timer is armed for
+      // them — an armed timer would flip status to "failed" after 10s. Assert
+      // directly on the user message's status after 15s.
       const { result } = renderHook(() => useWsRuntime("agent-1"));
 
       await act(async () => {
@@ -2944,14 +2945,21 @@ describe("useWsRuntime", () => {
         });
       });
 
-      // Advance 10+ seconds — no timeout dispatch expected (no errors)
+      // Advance past the 10s ack timeout window.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(15_000);
       });
 
-      // isOrphaned should be false since isRunning=false and last message role=user
-      // but status is undefined (loaded from history, not sent via onNew)
-      expect(result.current.isOrphaned).toBe(false);
+      const historyUserMsg = (
+        result.current.runtime.messages as Array<{
+          role: string;
+          metadata?: { custom?: { status?: string } };
+        }>
+      ).find((m) => m.role === "user");
+      expect(historyUserMsg).toBeDefined();
+      // History messages have no status (server payload didn't include one),
+      // and crucially they did NOT transition to "failed".
+      expect(historyUserMsg!.metadata?.custom?.status).not.toBe("failed");
     });
 
     it("isOrphaned is false when assistant has responded", async () => {
@@ -3079,31 +3087,28 @@ describe("useWsRuntime", () => {
         latestWs().simulateMessage({ type: "history", messages: [] });
       });
 
-      // Send a user message
       await act(async () => {
         result.current.runtime.onNew(makeUserMessage("hello"));
       });
 
-      // Before timeout: isRunning=true → isOrphaned=false
-      expect(result.current.isOrphaned).toBe(false);
+      const ws = latestWs();
+      const sentPayload = JSON.parse(ws.send.mock.calls.at(-1)![0] as string) as {
+        clientMessageId: string;
+      };
 
-      // Advance 10 seconds — timeout should fire, message → "failed"
+      // Advance 10 seconds — ack timer fires, message must transition to "failed".
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10_000);
       });
 
-      // Deliver complete (no ack was sent)
-      await act(async () => {
-        latestWs().simulateMessage({ type: "complete" });
-      });
-
-      // After complete: isRunning=false. If the timeout fired correctly, the
-      // last message has status="failed" → isOrphaned=false.
-      // Without the timeout implementation, the message stays "sending" and
-      // isOrphaned would also be false (since "sending" ≠ "sent"), but a late ack
-      // would then flip it to "sent". The key distinction is tested in the
-      // "late ack" test below. Here we verify the happy-path of the timeout.
-      expect(result.current.isOrphaned).toBe(false);
+      const failedMsg = (
+        result.current.runtime.messages as Array<{
+          id?: string;
+          role: string;
+          metadata?: { custom?: { status?: string } };
+        }>
+      ).find((m) => m.role === "user" && m.id === sentPayload.clientMessageId);
+      expect(failedMsg?.metadata?.custom?.status).toBe("failed");
     });
 
     it("does NOT fail message if ack arrives before 10s", async () => {
@@ -3114,7 +3119,6 @@ describe("useWsRuntime", () => {
         latestWs().simulateMessage({ type: "history", messages: [] });
       });
 
-      // Send a user message
       await act(async () => {
         result.current.runtime.onNew(makeUserMessage("hello"));
       });
@@ -3124,29 +3128,27 @@ describe("useWsRuntime", () => {
         clientMessageId: string;
       };
 
-      // Advance 5 seconds (before the 10s timeout)
+      // Ack arrives before the 10s timer fires.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5_000);
       });
-
-      // Deliver ack before timeout fires
       await act(async () => {
         ws.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId });
       });
 
-      // Advance 5 more seconds — total 10s passed, timeout would have fired
+      // Advance past the original 10s window — timer must NOT flip status now.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(5_000);
       });
 
-      // Now deliver complete
-      await act(async () => {
-        ws.simulateMessage({ type: "complete" });
-      });
-
-      // Message was acked (status=sent), then complete arrived → isOrphaned=true
-      // (last message is user with status "sent" and isRunning=false)
-      expect(result.current.isOrphaned).toBe(true);
+      const sentMsg = (
+        result.current.runtime.messages as Array<{
+          id?: string;
+          role: string;
+          metadata?: { custom?: { status?: string } };
+        }>
+      ).find((m) => m.role === "user" && m.id === sentPayload.clientMessageId);
+      expect(sentMsg?.metadata?.custom?.status).toBe("sent");
     });
 
     it("late ack after failed transition is discarded", async () => {
@@ -3157,7 +3159,6 @@ describe("useWsRuntime", () => {
         latestWs().simulateMessage({ type: "history", messages: [] });
       });
 
-      // Send a user message
       await act(async () => {
         result.current.runtime.onNew(makeUserMessage("hello"));
       });
@@ -3167,24 +3168,25 @@ describe("useWsRuntime", () => {
         clientMessageId: string;
       };
 
-      // Advance 10 seconds — timeout fires, message → failed
+      // Timer fires — message → "failed".
       await act(async () => {
         await vi.advanceTimersByTimeAsync(10_000);
       });
 
-      // Now deliver a late ack
+      // Late ack arrives after the failure. Reducer must ignore it.
       await act(async () => {
         ws.simulateMessage({ type: "ack", clientMessageId: sentPayload.clientMessageId });
-      });
-
-      // Then complete
-      await act(async () => {
         ws.simulateMessage({ type: "complete" });
       });
 
-      // Message remains "failed" (reducer ignores acks for non-sending messages).
-      // isOrphaned=false because status is "failed", not "sent"
-      expect(result.current.isOrphaned).toBe(false);
+      const lateMsg = (
+        result.current.runtime.messages as Array<{
+          id?: string;
+          role: string;
+          metadata?: { custom?: { status?: string } };
+        }>
+      ).find((m) => m.role === "user" && m.id === sentPayload.clientMessageId);
+      expect(lateMsg?.metadata?.custom?.status).toBe("failed");
     });
   });
 
