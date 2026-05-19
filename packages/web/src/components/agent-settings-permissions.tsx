@@ -38,7 +38,6 @@ const EMAIL_CONNECTION_TYPES = new Set(["google", "microsoft", "imap"]);
 interface AgentSettingsPermissionsProps {
   agent: {
     id: string;
-    model: string;
     allowedTools: string[];
     pluginConfig: AgentPluginConfig | null;
   };

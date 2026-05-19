@@ -387,7 +387,7 @@ describe("AgentSettingsPermissions", () => {
         <AgentSettingsPermissions
           agent={{
             ...defaultAgent,
-            allowedTools: ["pinchy_web_fetch", "pinchy_ls"],
+            allowedTools: ["pinchy_web_fetch"],
             pluginConfig: { "pinchy-files": { allowed_paths: ["/data"] } },
           }}
           directories={defaultDirectories}
