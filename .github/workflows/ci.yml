@@ -1556,6 +1556,15 @@ jobs:
       contents: read
       packages: read
 
+    # Production-image CI test (Tier 3 of the dev/prod parity work, #196).
+    # Pinchy is built from `Dockerfile.pinchy` (uid 999 demotion via
+    # entrypoint.sh) inside the compose stack, like every other E2E suite.
+    # ${PINCHY_VERSION:?} on docker-compose.yml's `image:` line is satisfied
+    # by any non-empty string; the build directive in docker-compose.e2e.yml
+    # takes precedence when PINCHY_IMAGE is not set.
+    env:
+      PINCHY_VERSION: latest
+
     steps:
       - uses: actions/checkout@v4
 
@@ -1577,54 +1586,65 @@ jobs:
 
       - uses: ./.github/actions/setup-pnpm
 
-      - name: Pull pre-built OpenClaw image (skip on fork PRs)
+      - name: Pull pre-built Pinchy and OpenClaw images (skip on fork PRs)
         if: needs.build-image.result == 'success'
-        run: docker pull ${{ needs.build-image.outputs.openclaw-image }}
+        run: |
+          docker pull ${{ needs.build-image.outputs.pinchy-image }}
+          docker pull ${{ needs.build-image.outputs.openclaw-image }}
 
-      - name: Build OpenClaw image locally (fork PR fallback)
+      - name: Build Pinchy and OpenClaw images locally (fork PR fallback)
         if: needs.build-image.result == 'skipped'
-        run: docker build -t ghcr.io/heypinchy/pinchy-openclaw:latest -f Dockerfile.openclaw .
+        run: |
+          docker build -t pinchy:e2e -f Dockerfile.pinchy .
+          docker build -t pinchy-openclaw:e2e -f Dockerfile.openclaw .
 
-      # On Linux, host.docker.internal doesn't resolve outside containers by default.
-      # Add it to /etc/hosts so Pinchy (host process) can reach the fake Ollama the
-      # same way OpenClaw (Docker container) does.
+      # On Linux, host.docker.internal doesn't resolve outside containers by
+      # default. globalSetup spawns fake Ollama on the host and probes it from
+      # inside the OpenClaw container; this entry is a defensive fallback for
+      # helpers that fetch host URLs from the host side too.
       - name: Add host.docker.internal to /etc/hosts
         run: echo "127.0.0.1 host.docker.internal" | sudo tee -a /etc/hosts
 
-      # Pre-start Docker stack + migrate DB BEFORE Playwright launches the webServer.
-      # Playwright starts webServer before globalSetup, so Pinchy would try to connect
-      # to the DB before it exists unless we pre-provision it here.
-      - name: Pre-start integration Docker stack (CI — pre-built image)
+      - name: Start integration stack (CI — pre-built images)
         if: needs.build-image.result == 'success'
         run: |
-          # Pre-create bind-mount targets so Docker doesn't create them as root,
-          # which would prevent Pinchy (running on the host as the CI user) from
-          # writing secrets.json — see openclaw-tmpfs branch.
-          mkdir -p /tmp/pinchy-integration-openclaw/workspaces
-          mkdir -p /tmp/pinchy-integration-secrets
-          docker compose -f docker-compose.integration.yml up -d --wait
+          docker compose -f docker-compose.yml \
+                         -f docker-compose.e2e.yml \
+                         -f docker-compose.integration.yml \
+                         up -d
         env:
+          PINCHY_IMAGE: ${{ needs.build-image.outputs.pinchy-image }}
           OPENCLAW_IMAGE: ${{ needs.build-image.outputs.openclaw-image }}
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
-      - name: Pre-start integration Docker stack (fork PR fallback)
+      - name: Start integration stack (fork PR fallback — local build)
         if: needs.build-image.result == 'skipped'
         run: |
-          # Pre-create bind-mount targets so Docker doesn't create them as root,
-          # which would prevent Pinchy (running on the host as the CI user) from
-          # writing secrets.json — see openclaw-tmpfs branch.
-          mkdir -p /tmp/pinchy-integration-openclaw/workspaces
-          mkdir -p /tmp/pinchy-integration-secrets
-          docker compose -f docker-compose.integration.yml up -d --wait
+          docker compose -f docker-compose.yml \
+                         -f docker-compose.e2e.yml \
+                         -f docker-compose.integration.yml \
+                         up -d
         env:
-          OPENCLAW_IMAGE: ghcr.io/heypinchy/pinchy-openclaw:latest
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 
-      - name: Create and migrate integration DB
+      - name: Wait for Pinchy to be ready
         run: |
-          PGPASSWORD=pinchy_dev psql -h localhost -p 5435 -U pinchy -d pinchy \
-            -c "DROP DATABASE IF EXISTS pinchy_integration_test WITH (FORCE);" \
-            -c "CREATE DATABASE pinchy_integration_test;"
-          DATABASE_URL=postgresql://pinchy:pinchy_dev@localhost:5435/pinchy_integration_test \
-            pnpm -C packages/web db:migrate
+          echo "Waiting for Pinchy at localhost:7779..."
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:7779/api/internal/openclaw-config-ready >/dev/null 2>&1; then
+              echo "Pinchy ready (attempt $i)"
+              exit 0
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "::error::Pinchy not ready after 120s"
+              docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
+                             -f docker-compose.integration.yml logs pinchy
+              exit 1
+            fi
+            sleep 2
+          done
 
       - uses: ./.github/actions/setup-playwright
 
@@ -1639,14 +1659,24 @@ jobs:
           echo "=== OpenClaw logs (captured by globalTeardown before stack-down) ==="
           cat /tmp/openclaw-integration.log 2>/dev/null || echo "no captured log file"
           echo ""
-          echo "=== OpenClaw logs (live, may be empty if container already stopped) ==="
-          docker compose -f docker-compose.integration.yml logs openclaw 2>/dev/null || true
+          echo "=== Container state ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
+                         -f docker-compose.integration.yml ps --all 2>&1 || true
+          echo "=== Pinchy logs ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
+                         -f docker-compose.integration.yml logs pinchy 2>&1 | tail -500
+          echo "=== OpenClaw logs (live) ==="
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
+                         -f docker-compose.integration.yml logs openclaw 2>&1 | tail -1500
           echo "=== DB logs ==="
-          docker compose -f docker-compose.integration.yml logs db 2>/dev/null || true
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
+                         -f docker-compose.integration.yml logs db 2>&1 | tail -50
 
       - name: Tear down
         if: always()
-        run: docker compose -f docker-compose.integration.yml down 2>/dev/null || true
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.e2e.yml \
+                         -f docker-compose.integration.yml down -v 2>/dev/null || true
 
   ollama-integration:
     name: Ollama integration tests
