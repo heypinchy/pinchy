@@ -274,11 +274,12 @@ export class SimpleBinaryFileAttachmentAdapter {
  *
  * Currently: .docx only. The file is a ZIP archive of XML; reading it via
  * the plain-text adapter would ship the model the literal "PK…" bytes of
- * the archive. We extract the text with mammoth at upload time and ship it
- * as a text part, mirroring SimpleTextAttachmentAdapter for .txt files.
+ * the archive. We convert it to Markdown with mammoth + turndown at upload
+ * time — headings survive as ATX `#`/`##`, tables as GFM pipe tables, lists
+ * as bullet/numbered lines, and embedded images become `[image]` placeholders.
  *
- * Mammoth is dynamically imported inside send() so it doesn't land in the
- * initial chat bundle for users who never attach a .docx.
+ * Mammoth and turndown are dynamically imported inside send() so they don't
+ * land in the initial chat bundle for users who never attach a .docx.
  *
  * Filename is XML-escaped into the `<attachment name="…">` wrapper so the
  * agent can cite the source document even when the name contains spaces,
@@ -366,7 +367,9 @@ export class OfficeDocumentAttachmentAdapter {
  *  1. Strips `<p>` wrappers inside cells so content is inline.
  *  2. Promotes the first `<tr>` into a `<thead>` with `<th>` cells.
  *
- * Mirrors the same helper in `packages/plugins/pinchy-files/docx-extract.ts`.
+ * KEEP-IN-SYNC with `normalizeTableHtml` in
+ * `packages/plugins/pinchy-files/docx-extract.ts`. See that file for the
+ * rationale for the intentional duplication.
  */
 function normalizeDocxTableHtml(html: string): string {
   // Step 1: strip <p> wrappers inside <td>/<th> cells.

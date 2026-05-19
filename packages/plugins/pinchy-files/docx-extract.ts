@@ -33,6 +33,12 @@ turndown.addRule("strip-image", {
  *  1. Strip `<p>` wrappers inside cells so content is inline.
  *  2. Promote the first `<tr>` into a `<thead>` with `<th>` cells so the
  *     GFM rule fires and emits pipe-delimited Markdown.
+ *
+ * KEEP-IN-SYNC with `normalizeDocxTableHtml` in
+ * `packages/web/src/hooks/use-ws-runtime.ts`. Both must apply the same
+ * transformations so KB reads and composer uploads produce identical table
+ * Markdown. Intentional duplication: the web file uses dynamic imports for
+ * bundle isolation; a shared package would complicate that.
  */
 function normalizeTableHtml(html: string): string {
   // Step 1: strip <p> wrappers inside <td>/<th> cells.
@@ -71,12 +77,14 @@ function normalizeTableHtml(html: string): string {
 export async function extractDocxText(
   buffer: Buffer,
 ): Promise<DocxExtractionResult> {
-  const { value: rawHtml } = await mammoth.convertToHtml({
-    buffer,
-    convertImage: mammoth.images.imgElement(() =>
-      Promise.resolve({ src: "" })
-    ),
-  });
+  const { value: rawHtml } = await mammoth.convertToHtml(
+    { buffer },
+    {
+      convertImage: mammoth.images.imgElement(() =>
+        Promise.resolve({ src: "" })
+      ),
+    }
+  );
   const html = normalizeTableHtml(rawHtml);
   const text = turndown.turndown(html);
   return { text };
