@@ -1260,6 +1260,14 @@ jobs:
   email-e2e:
     name: Email (Gmail) E2E Tests
     runs-on: ubuntu-latest
+    needs: build-image
+    if: >-
+      always() &&
+      (needs.build-image.result == 'success' ||
+       needs.build-image.result == 'skipped')
+    permissions:
+      contents: read
+      packages: read
 
     env:
       PINCHY_VERSION: latest
@@ -1275,9 +1283,33 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      - name: Log in to GHCR (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
       - uses: ./.github/actions/setup-pnpm
 
-      - name: Start test stack with mock Gmail
+      - name: Pull pre-built CI images (skip on fork PRs)
+        if: needs.build-image.result == 'success'
+        run: |
+          docker pull ${{ needs.build-image.outputs.pinchy-image }}
+          docker pull ${{ needs.build-image.outputs.openclaw-image }}
+
+      - name: Start test stack with mock Gmail (CI — pre-built images)
+        if: needs.build-image.result == 'success'
+        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml up -d
+        env:
+          PINCHY_IMAGE: ${{ needs.build-image.outputs.pinchy-image }}
+          OPENCLAW_IMAGE: ${{ needs.build-image.outputs.openclaw-image }}
+          BETTER_AUTH_SECRET: ci-test-secret-not-for-production
+          ENCRYPTION_KEY: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+
+      - name: Start test stack with mock Gmail (fork PR fallback — local build)
+        if: needs.build-image.result == 'skipped'
         run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml -f docker-compose.email-test.yml up --build -d
         env:
           BETTER_AUTH_SECRET: ci-test-secret-not-for-production
