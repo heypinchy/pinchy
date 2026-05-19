@@ -324,17 +324,16 @@ export async function regenerateOpenClawConfig() {
       fs: { workspaceOnly: true },
     };
 
-    // Collect plugin config for agents that have file tools (pinchy_ls, pinchy_read)
-    const hasFileTools = allowedTools.some((t: string) => t === "pinchy_ls" || t === "pinchy_read");
-    if (hasFileTools && agent.pluginConfig) {
-      const filesConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-files"];
-      if (filesConfig) {
-        if (!pluginConfigs["pinchy-files"]) {
-          pluginConfigs["pinchy-files"] = {};
-        }
-        pluginConfigs["pinchy-files"][agent.id] = filesConfig as Record<string, unknown>;
-      }
-    }
+    // pinchy-files: always inject workspace uploads; merge with admin-configured KB paths
+    const adminFilesConfig = (agent.pluginConfig as AgentPluginConfig)?.["pinchy-files"];
+    const adminPaths: string[] = adminFilesConfig?.allowed_paths ?? [];
+    const workspaceUploads = `${getOpenClawWorkspacePath(agent.id)}/uploads`;
+    const allowedPaths = [...adminPaths, workspaceUploads];
+
+    if (!pluginConfigs["pinchy-files"]) pluginConfigs["pinchy-files"] = {};
+
+    const agentFilesConfig: Record<string, unknown> = { allowed_paths: allowedPaths };
+    pluginConfigs["pinchy-files"][agent.id] = agentFilesConfig;
 
     // Collect plugin config for agents that have context tools (pinchy_save_*)
     const contextTools = allowedTools.filter((t: string) => t.startsWith("pinchy_save_"));
@@ -498,7 +497,7 @@ export async function regenerateOpenClawConfig() {
     },
   };
 
-  // Note: pinchy-files is only included when agents use it (via pluginConfigs loop above).
+  // Note: pinchy-files is always included (workspace uploads) — per-agent paths are built above.
 
   // Collect Odoo integration configs for agents with integration permissions
   // Only include active connections — pending ones have no usable credentials

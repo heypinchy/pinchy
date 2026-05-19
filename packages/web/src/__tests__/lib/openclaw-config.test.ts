@@ -912,7 +912,7 @@ describe("regenerateOpenClawConfig", () => {
           pluginConfig: {
             "pinchy-files": { allowed_paths: ["/data/hr-docs/", "/data/policies/"] },
           },
-          allowedTools: ["pinchy_ls", "pinchy_read"],
+          allowedTools: [],
           createdAt: new Date(),
         },
       ]),
@@ -926,7 +926,11 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.plugins.entries["pinchy-files"]).toBeDefined();
     expect(config.plugins.entries["pinchy-files"].enabled).toBe(true);
     expect(config.plugins.entries["pinchy-files"].config.agents["kb-agent-id"]).toEqual({
-      allowed_paths: ["/data/hr-docs/", "/data/policies/"],
+      allowed_paths: [
+        "/data/hr-docs/",
+        "/data/policies/",
+        "/root/.openclaw/workspaces/kb-agent-id/uploads",
+      ],
     });
   });
 
@@ -944,7 +948,7 @@ describe("regenerateOpenClawConfig", () => {
           model: "anthropic/claude-haiku-4-5-20251001",
           templateId: "knowledge-base",
           pluginConfig: { "pinchy-files": { allowed_paths: ["/data/hr-docs/"] } },
-          allowedTools: ["pinchy_ls", "pinchy_read"],
+          allowedTools: [],
           createdAt: new Date(),
         },
       ]),
@@ -962,8 +966,57 @@ describe("regenerateOpenClawConfig", () => {
     expect(typeof config.plugins.entries["pinchy-files"].config.gatewayToken).toBe("string");
     // Per-agent allowed_paths is still nested under .agents
     expect(config.plugins.entries["pinchy-files"].config.agents["kb-agent-id"]).toEqual({
-      allowed_paths: ["/data/hr-docs/"],
+      allowed_paths: ["/data/hr-docs/", "/root/.openclaw/workspaces/kb-agent-id/uploads"],
     });
+  });
+
+  it("injects workspace/uploads into pinchy-files.allowed_paths for every agent", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-1",
+          name: "Test Agent",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: [], // NO file tools in allowedTools — workspace inject must still happen
+          pluginConfig: { "pinchy-files": { allowed_paths: ["/data/kb"] } },
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["agent-1"];
+
+    expect(agentConfig).toBeDefined();
+    expect(agentConfig.allowed_paths).toContain("/data/kb");
+    expect(agentConfig.allowed_paths).toContain("/root/.openclaw/workspaces/agent-1/uploads");
+  });
+
+  it("injects workspace/uploads even when agent has no pluginConfig", async () => {
+    mockedDb.select.mockReturnValue({
+      from: mockFrom([
+        {
+          id: "agent-2",
+          name: "Bare Agent",
+          model: "anthropic/claude-opus-4-7",
+          createdAt: new Date(),
+          allowedTools: [],
+          pluginConfig: null,
+        },
+      ]),
+    } as never);
+
+    await regenerateOpenClawConfig();
+
+    const written = mockedWriteFileSync.mock.calls[0][1] as string;
+    const config = JSON.parse(written);
+    const agentConfig = config.plugins.entries["pinchy-files"]?.config?.agents?.["agent-2"];
+
+    expect(agentConfig).toBeDefined();
+    expect(agentConfig.allowed_paths).toContain("/root/.openclaw/workspaces/agent-2/uploads");
   });
 
   it("should not keep stale env vars from previous config", async () => {
@@ -1122,7 +1175,7 @@ describe("regenerateOpenClawConfig", () => {
           name: "KB Agent",
           model: "anthropic/claude-sonnet-4-6",
           pluginConfig: { "pinchy-files": { allowed_paths: ["/data/docs/"] } },
-          allowedTools: ["pinchy_ls", "pinchy_read"],
+          allowedTools: [],
           ownerId: null,
           isPersonal: false,
           createdAt: new Date(),
@@ -1911,7 +1964,7 @@ describe("regenerateOpenClawConfig", () => {
     expect(config.models.providers["ollama"].models).toEqual([]);
   });
 
-  it("should omit pinchy-context and pinchy-files when no agents use them", async () => {
+  it("should omit pinchy-context but always include pinchy-files for workspace access", async () => {
     mockedDb.select.mockReturnValue({
       from: mockFrom([
         {
@@ -1930,14 +1983,14 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    // Unused plugins are omitted from entries AND allow list to prevent
-    // auto-discovery (restart loop) and "disabled but config present" spam
+    // pinchy-context and pinchy-docs are still omitted when no agents use them
     expect(config.plugins.entries["pinchy-context"]).toBeUndefined();
-    expect(config.plugins.entries["pinchy-files"]).toBeUndefined();
     expect(config.plugins.entries["pinchy-docs"]).toBeUndefined();
     expect(config.plugins.allow).not.toContain("pinchy-context");
-    expect(config.plugins.allow).not.toContain("pinchy-files");
     expect(config.plugins.allow).not.toContain("pinchy-docs");
+    // pinchy-files is NOW always included (workspace access for every agent)
+    expect(config.plugins.entries["pinchy-files"]).toBeDefined();
+    expect(config.plugins.allow).toContain("pinchy-files");
     // pinchy-audit is always enabled to capture tool usage at source
     expect(config.plugins.entries["pinchy-audit"].enabled).toBe(true);
     expect(config.plugins.allow).toContain("pinchy-audit");
@@ -1975,8 +2028,9 @@ describe("regenerateOpenClawConfig", () => {
     const written = mockedWriteFileSync.mock.calls[0][1] as string;
     const config = JSON.parse(written);
 
-    // pinchy-files and pinchy-odoo have no entries → must be removed from allow
-    expect(config.plugins.allow).not.toContain("pinchy-files");
+    // pinchy-files now always has entries (workspace inject) — it should stay in allow
+    expect(config.plugins.allow).toContain("pinchy-files");
+    // pinchy-odoo has no entries → must be removed from allow
     expect(config.plugins.allow).not.toContain("pinchy-odoo");
     // Non-pinchy plugins (OpenClaw-managed) must be preserved
     expect(config.plugins.allow).toContain("telegram");
@@ -4264,8 +4318,13 @@ describe("restart-state integration", () => {
 
     // Order must match the existing file exactly. Anything else - even with
     // identical contents - triggers a full gateway restart.
-    // document-extract is a required bundled plugin appended after pinchy-* entries.
-    expect(config.plugins.allow).toEqual(["pinchy-audit", "telegram", "document-extract"]);
+    // pinchy-files is now always emitted (workspace inject); document-extract is required bundled.
+    expect(config.plugins.allow).toEqual([
+      "pinchy-audit",
+      "telegram",
+      "pinchy-files",
+      "document-extract",
+    ]);
   });
 
   it("appends new pinchy plugins at the end of plugins.allow (#193 follow-up)", async () => {
@@ -4699,12 +4758,13 @@ describe("restart-state integration", () => {
       const written = JSON.parse(write[1] as string);
       // Same set, same order. Without the fix, telegram migrates to position 0
       // and the pinchy-* entries get re-shuffled by entries-insertion order.
-      // document-extract is a required bundled plugin appended after pinchy-* entries.
+      // pinchy-files is always emitted (workspace inject); document-extract is required bundled.
       expect(written.plugins.allow).toEqual([
         "pinchy-audit",
         "pinchy-context",
         "pinchy-docs",
         "telegram",
+        "pinchy-files",
         "document-extract",
       ]);
     }
