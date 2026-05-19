@@ -194,7 +194,8 @@ export function updateTelegramChannelConfig(
   // until OC's Telegram polling is actually back (server.ts calls notifyReady()
   // on Gateway reconnect, closing the loop). Co-located with the write so any
   // future caller inherits the invariant; gated by the dedup above so spurious
-  // no-op writes don't strand the UI behind a 30 s overlay.
+  // no-op writes don't strand the UI until RestartProvider's 30 s client-side
+  // timeout flips it into the "this is taking longer than expected" error state.
   restartState.notifyRestart();
 }
 

@@ -106,12 +106,17 @@ describe("restartState", () => {
       // overlay and any test polling /api/health/openclaw for status="ok".
       restartState.notifyRestart();
       expect(restartState.isRestarting).toBe(true);
+      expect(restartState.triggeredAt).not.toBeNull();
 
       vi.advanceTimersByTime(59_999);
       expect(restartState.isRestarting).toBe(true);
 
       vi.advanceTimersByTime(2);
       expect(restartState.isRestarting).toBe(false);
+      // Auto-clear must take the full notifyReady() path — both flags reset —
+      // so any future caller relying on `triggeredAt == null` as the
+      // "not restarting" tell sees consistent state.
+      expect(restartState.triggeredAt).toBeNull();
     });
 
     it("emits 'ready' when auto-clear fires", () => {
